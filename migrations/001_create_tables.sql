@@ -2,9 +2,12 @@ CREATE EXTENSION IF NOT EXISTS pg_partman;
 
 CREATE TABLE chats (
     id         UUID PRIMARY KEY,
+    user_id    TEXT,
     lang       TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE INDEX idx_chats_user_id ON chats (user_id);
 
 CREATE TABLE messages (
     id         BIGSERIAL NOT NULL,
