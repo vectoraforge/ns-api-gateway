@@ -38,3 +38,10 @@ class ChatHistoryLimitError(ServiceError):
         self.max_human = max_human
         self.max_assistant = max_assistant
         super().__init__("Chat history limit reached")
+
+
+class MessageTooLargeError(ServiceError):
+    def __init__(self, role: str, limit: int):
+        self.role = role
+        self.limit = limit
+        super().__init__(f"{role} message exceeds {limit} characters")

@@ -11,6 +11,7 @@ from app.exceptions import (
     QueueFullError,
     CircuitOpenError,
     ChatHistoryLimitError,
+    MessageTooLargeError,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,13 @@ async def chat_history_limit_handler(_: Request, exc: ChatHistoryLimitError) -> 
     )
 
 
+async def message_too_large_handler(_: Request, exc: MessageTooLargeError) -> JSONResponse:
+    return JSONResponse(
+        status_code=413,
+        content={"detail": f"{exc.role.capitalize()} message exceeds {exc.limit} characters"},
+    )
+
+
 async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
     logger.error("Validation error: %s", exc)
     return JSONResponse(status_code=422, content={"detail": "Invalid request"})
@@ -69,5 +77,6 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(QueueFullError, queue_full_handler)
     app.add_exception_handler(CircuitOpenError, circuit_open_handler)
     app.add_exception_handler(ChatHistoryLimitError, chat_history_limit_handler)
+    app.add_exception_handler(MessageTooLargeError, message_too_large_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(Exception, generic_error_handler)

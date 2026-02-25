@@ -17,6 +17,7 @@ from app.exceptions import (
     QueueFullError,
     CircuitOpenError,
     ChatHistoryLimitError,
+    MessageTooLargeError,
 )
 
 try:
@@ -141,6 +142,7 @@ class AnalysisService:
         retry_backoff_max_seconds: float,
         history_max_human_messages: int,
         history_max_assistant_messages: int,
+        message_max_chars: int,
         chats: Chats,
     ):
         self.prompt = prompt
@@ -154,6 +156,7 @@ class AnalysisService:
         self.retry_backoff_max_seconds = retry_backoff_max_seconds
         self.history_max_human_messages = history_max_human_messages
         self.history_max_assistant_messages = history_max_assistant_messages
+        self.message_max_chars = message_max_chars
         self.chats = chats
 
     @property
@@ -175,6 +178,10 @@ class AnalysisService:
                 max_human=self.history_max_human_messages,
                 max_assistant=self.history_max_assistant_messages,
             )
+
+    def _ensure_message_size(self, content: str, role: str) -> None:
+        if len(content) > self.message_max_chars:
+            raise MessageTooLargeError(role=role, limit=self.message_max_chars)
 
     async def _invoke(self, chain, params: dict):
         for attempt in range(1, self.retry_max_attempts + 1):
@@ -203,6 +210,7 @@ class AnalysisService:
         raise AnalysisError("LLM request failed")
 
     async def analyze(self, db: AsyncSession, text: str, lang: str, chat_id: UUID | None = None) -> AnalyzeResponse:
+        self._ensure_message_size(text, "user")
         if lang not in self.examples:
             raise UnsupportedLanguageError(lang=lang, supported=self.supported_languages)
 
@@ -224,11 +232,14 @@ class AnalysisService:
         history = await self.chats.load_history(db, chat_id, limit=history_limit)
         response = await self._invoke(chain, {"lang": lang, "phrase": text, "history": history})
 
-        await self.chats.save_messages(db, chat_id, f"Analyze this phrase: {text}", str(response))
+        assistant_payload = str(response)
+        self._ensure_message_size(assistant_payload, "assistant")
+        await self.chats.save_messages(db, chat_id, f"Analyze this phrase: {text}", assistant_payload)
 
         return AnalyzeResponse.model_validate({**response, "text": text, "lang": lang, "chat_id": chat_id})
 
     async def chat(self, db: AsyncSession, chat_id: UUID, text: str) -> AnalyzeResponse:
+        self._ensure_message_size(text, "user")
         lang = await self._get_chat_lang(db, chat_id)
         await self._ensure_history_capacity(db, chat_id)
         history_limit = self.history_max_human_messages + self.history_max_assistant_messages
@@ -243,7 +254,9 @@ class AnalysisService:
 
         response = await self._invoke(chain, {"lang": lang, "history": history, "phrase": text})
 
-        await self.chats.save_messages(db, chat_id, text, str(response))
+        assistant_payload = str(response)
+        self._ensure_message_size(assistant_payload, "assistant")
+        await self.chats.save_messages(db, chat_id, text, assistant_payload)
 
         return AnalyzeResponse.model_validate({**response, "text": text, "lang": lang, "chat_id": chat_id})
 

@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class AnalyzeRequest(BaseModel):
-    text: str = Field(..., description="The phrase to analyze")
+    text: str = Field(..., max_length=4096, description="The phrase to analyze")
     lang: str | None = Field(default="en", description="Language code (e.g., 'en', 'es')")
     chat_id: UUID | None = Field(default=None, description="Existing chat ID for follow-up")
 
@@ -29,6 +29,5 @@ class ExamplesResponse(BaseModel):
 
 
 class ChatMessageRequest(BaseModel):
-    text: str = Field(..., description="Follow-up message text")
-
+    text: str = Field(..., max_length=4096, description="Follow-up message text")
 
