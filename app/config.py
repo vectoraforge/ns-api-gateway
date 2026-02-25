@@ -1,44 +1,59 @@
 import yaml
 from pathlib import Path
-from pydantic import BaseModel, Field
+from enum import StrEnum
+import logging
+
+from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+LogLevel = StrEnum("LogLevel", list(logging.getLevelNamesMapping()))
 
 
 class BaseConfig(BaseSettings):
-    model_config = SettingsConfigDict(env_nested_delimiter="_"    )
+    model_config = SettingsConfigDict(env_nested_delimiter="__")
 
 
-class FileConfig(BaseSettings):
-    config_path: str = Field(default="config/config.yaml")
-    prompt_path: str = Field(default="config/prompt.txt")
-    examples_path: str = Field(default="config/examples.yaml")
+class DatabaseConfig(BaseModel):
+    host: str = Field(default="localhost")
+    port: int = Field(default=5432)
+    user: str = Field(default="postgres")
+    password: SecretStr = Field(default=SecretStr("postgres"))
+    name: str = Field(default="nativespeaker")
+    pool_size: int = Field(default=5, ge=1)
+
+    @property
+    def url(self) -> str:
+        return f"postgresql+asyncpg://{self.user}:{self.password.get_secret_value()}@{self.host}:{self.port}/{self.name}"
 
 
 class ModelConfig(BaseModel):
     name: str = Field(default="gpt-4o-mini")
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
     max_tokens: int = Field(default=1000, ge=1)
+    pool_size: int = Field(default=5, ge=1)
 
 
 class AppConfig(BaseConfig):
-    log_level: str = Field(default="INFO")
-    pool_size: int = Field(default=5, ge=1)
+    log_level: LogLevel = Field(default=LogLevel.INFO)  # type: ignore
+
     model: ModelConfig = Field(default_factory=ModelConfig)
+    db: DatabaseConfig = Field(default_factory=DatabaseConfig)
+
+    prompt: str = None
+    examples: dict[str, list[str]] = {}
 
 
-class ContentConfig(BaseModel):
-    prompt: str
-    examples: dict[str, list[str]]
+class MainConfig(BaseConfig):
+    config_dir: Path = Field(default="config/config.yaml")
+    prompt_path: Path = Field(default="config/prompt.txt")
+    examples_path: Path = Field(default="config/examples.yaml")
 
+    app: AppConfig = None
 
-def load_app_config() -> AppConfig:
-    file_config = FileConfig()
-    yaml_data = yaml.safe_load(Path(file_config.config_path).read_text())
-    return AppConfig(**yaml_data)
-
-
-def load_content_config() -> ContentConfig:
-    file_config = FileConfig()
-    prompt = Path(file_config.prompt_path).read_text()
-    examples = yaml.safe_load(Path(file_config.examples_path).read_text())
-    return ContentConfig(prompt=prompt, examples=examples)
+    @model_validator(mode='after')
+    def load_config(self):
+        yaml_data = yaml.safe_load(self.config_dir.read_text())
+        app_config = AppConfig(**yaml_data)
+        app_config.prompt = self.prompt_path.read_text()
+        app_config.examples = yaml.safe_load(self.examples_path.read_text())
+        self.app = app_config

@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 import pytest
 from pydantic import ValidationError
 
@@ -6,62 +8,77 @@ from app.schema import (
     Issue,
     AnalyzeResponse,
     ExamplesResponse,
+    ChatMessageRequest,
 )
 from app.exceptions import (
     UnsupportedLanguageError,
     AnalysisError,
+    InvalidChatError,
     ServiceError,
 )
 
 
 class TestAnalyzeRequest:
     def test_valid_request(self):
-        request = AnalyzeRequest(phrase="Hello world", lang="en")
-        assert request.phrase == "Hello world"
+        request = AnalyzeRequest(text="Hello world", lang="en")
+        assert request.text == "Hello world"
         assert request.lang == "en"
 
     def test_default_language(self):
-        request = AnalyzeRequest(phrase="Hello world")
+        request = AnalyzeRequest(text="Hello world")
         assert request.lang == "en"
 
-    def test_missing_phrase(self):
+    def test_missing_text(self):
         with pytest.raises(ValidationError) as exc_info:
             AnalyzeRequest(lang="en")
-        assert "phrase" in str(exc_info.value)
+        assert "text" in str(exc_info.value)
+
+    def test_with_chat_id(self):
+        cid = uuid4()
+        request = AnalyzeRequest(text="Hello", chat_id=cid)
+        assert request.chat_id == cid
+
+    def test_chat_id_defaults_to_none(self):
+        request = AnalyzeRequest(text="Hello")
+        assert request.chat_id is None
 
 
 class TestIssue:
     def test_valid_issue(self):
         issue = Issue(
-            phrase_part="going to home",
+            text_part="going to home",
             explanation="Should be 'going home'"
         )
-        assert issue.phrase_part == "going to home"
+        assert issue.text_part == "going to home"
         assert issue.explanation == "Should be 'going home'"
 
     def test_issue_missing_fields(self):
         with pytest.raises(ValidationError):
-            Issue(phrase_part="going to home")
+            Issue(text_part="going to home")
 
 
 class TestAnalyzeResponse:
     def test_valid_response(self):
+        cid = uuid4()
         response = AnalyzeResponse(
-            phrase="Test phrase",
+            text="Test phrase",
             lang="en",
+            chat_id=cid,
             issues=[],
             alternatives=[],
             assessment="Good"
         )
-        assert response.phrase == "Test phrase"
+        assert response.text == "Test phrase"
         assert response.lang == "en"
+        assert response.chat_id == cid
         assert response.assessment == "Good"
 
     def test_response_with_issues_and_alternatives(self):
-        issue = Issue(phrase_part="going to home", explanation="Remove 'to'")
+        issue = Issue(text_part="going to home", explanation="Remove 'to'")
         response = AnalyzeResponse(
-            phrase="Test",
+            text="Test",
             lang="en",
+            chat_id=uuid4(),
             issues=[issue],
             alternatives=["I am going home."],
             assessment="Needs work"
@@ -69,6 +86,12 @@ class TestAnalyzeResponse:
         assert len(response.issues) == 1
         assert len(response.alternatives) == 1
         assert response.alternatives[0] == "I am going home."
+
+
+class TestChatModels:
+    def test_chat_message_request(self):
+        req = ChatMessageRequest(text="Why is that wrong?")
+        assert req.text == "Why is that wrong?"
 
 
 class TestExamplesResponse:
@@ -92,6 +115,13 @@ class TestExceptions:
     def test_analysis_error(self):
         error = AnalysisError("Something went wrong")
         assert "Something went wrong" in str(error)
+        assert isinstance(error, ServiceError)
+
+    def test_invalid_chat_error(self):
+        cid = uuid4()
+        error = InvalidChatError(cid)
+        assert error.chat_id == cid
+        assert str(cid) in str(error)
         assert isinstance(error, ServiceError)
 
     def test_service_error_base(self):

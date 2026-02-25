@@ -16,7 +16,7 @@ class TestRealLLM:
         response = real_client.post(
             "/prompts/analyze",
             json={
-                "phrase": "I am going to home.",
+                "text": "I am going to home.",
                 "lang": "en"
             }
         )
@@ -25,8 +25,9 @@ class TestRealLLM:
 
         data = response.json()
 
-        assert data["phrase"] == "I am going to home."
+        assert data["text"] == "I am going to home."
         assert data["lang"] == "en"
+        assert "chat_id" in data
         assert "issues" in data
         assert "alternatives" in data
         assert "assessment" in data
@@ -37,7 +38,7 @@ class TestRealLLM:
         response = real_client.post(
             "/prompts/analyze",
             json={
-                "phrase": "Yo soy va a casa.",
+                "text": "Yo soy va a casa.",
                 "lang": "es"
             }
         )
@@ -53,7 +54,7 @@ class TestRealLLM:
         response = real_client.post(
             "/prompts/analyze",
             json={
-                "phrase": "I am going home.",
+                "text": "I am going home.",
                 "lang": "en"
             }
         )

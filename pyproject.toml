@@ -12,6 +12,8 @@ dependencies = [
     "langchain-openai >=1.1",
     "langchain-core >=1.2",
     "openai >=2.21",
+    "asyncpg >=0.30",
+    "sqlmodel >=0.0.22",
     "ruff>=0.15.2",
     "ty>=0.0.17",
 ]

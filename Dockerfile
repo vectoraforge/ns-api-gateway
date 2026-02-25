@@ -15,7 +15,7 @@ COPY --from=builder /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 
 COPY ./app /app/app
-COPY config/config.yaml ./config/config.yaml
+COPY config/ ./config/
 
 # Create non-root user for security
 RUN useradd -m -u 1000 appuser && \
