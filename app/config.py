@@ -10,7 +10,7 @@ LogLevel = StrEnum("LogLevel", list(logging.getLevelNamesMapping()))
 
 
 class BaseConfig(BaseSettings):
-    model_config = SettingsConfigDict(env_nested_delimiter="__")
+    model_config = SettingsConfigDict(env_nested_delimiter="_")
 
 
 class DatabaseConfig(BaseModel):

@@ -142,7 +142,7 @@ docker run -p 8000:8000 \
 - `LLM_TEMPERATURE` (default: 0.3): Temperature for LLM responses
 - `LLM_MAX_TOKENS` (default: 1000): Maximum tokens for responses
 - `LOG_LEVEL` (default: INFO): Logging level
-- `CONFIG_PATH` (default: config.yaml): Path to YAML configuration
+- `CONFIG_DIR` (default: config/config.yaml): Path to YAML configuration
 
 ### YAML Configuration
 
