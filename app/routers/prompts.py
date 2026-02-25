@@ -14,15 +14,21 @@ from app.schema import (
     ExamplesResponse,
 )
 from app.exceptions import InvalidChatError
+from app.auth import get_user_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/prompts")
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
-async def analyze_prompt(request: Request, body: AnalyzeRequest, db: AsyncSession = Depends(get_db)) -> AnalyzeResponse:
+async def analyze_prompt(
+    request: Request,
+    body: AnalyzeRequest,
+    db: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_user_id),
+) -> AnalyzeResponse:
     service = request.app.state.service
-    return await service.analyze(db, body.text, body.lang, body.chat_id)
+    return await service.analyze(db, body.text, body.lang, user_id, body.chat_id)
 
 
 @router.get("/examples", response_model=ExamplesResponse)
@@ -39,10 +45,14 @@ chats_router = APIRouter()
 
 @chats_router.post("/chats/{chat_id}/messages", response_model=AnalyzeResponse)
 async def chat_message(
-    request: Request, chat_id: UUID, body: ChatMessageRequest, db: AsyncSession = Depends(get_db)
+    request: Request,
+    chat_id: UUID,
+    body: ChatMessageRequest,
+    db: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_user_id),
 ) -> AnalyzeResponse:
     service = request.app.state.service
-    return await service.chat(db, chat_id, body.text)
+    return await service.chat(db, chat_id, body.text, user_id)
 
 
 @chats_router.get("/chats/{chat_id}/messages", response_model=ChatMessagesResponse)
@@ -52,13 +62,14 @@ async def list_chat_messages(
     limit: int = Query(50, ge=1),
     cursor: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_user_id),
 ) -> ChatMessagesResponse:
     config = request.app.state.config
     if limit > config.messages_max_page_size:
         raise HTTPException(status_code=400, detail="Limit exceeds maximum page size")
 
     service = request.app.state.service
-    chat = await service.chats.get_chat(db, chat_id)
+    chat = await service.chats.get_chat(db, chat_id, user_id=user_id)
     if not chat:
         raise InvalidChatError(chat_id)
 

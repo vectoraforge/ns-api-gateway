@@ -163,8 +163,8 @@ class AnalysisService:
     def supported_languages(self) -> list[str]:
         return list(self.examples.keys())
 
-    async def _get_chat_lang(self, db: AsyncSession, chat_id: UUID) -> str:
-        chat = await self.chats.get_chat(db, chat_id)
+    async def _get_chat_lang(self, db: AsyncSession, chat_id: UUID, user_id: str) -> str:
+        chat = await self.chats.get_chat(db, chat_id, user_id=user_id)
         if not chat:
             raise InvalidChatError(chat_id)
         return chat["lang"]
@@ -209,17 +209,24 @@ class AnalysisService:
                     await asyncio.sleep(backoff)
         raise AnalysisError("LLM request failed")
 
-    async def analyze(self, db: AsyncSession, text: str, lang: str, chat_id: UUID | None = None) -> AnalyzeResponse:
+    async def analyze(
+        self,
+        db: AsyncSession,
+        text: str,
+        lang: str,
+        user_id: str,
+        chat_id: UUID | None = None,
+    ) -> AnalyzeResponse:
         self._ensure_message_size(text, "user")
         if lang not in self.examples:
             raise UnsupportedLanguageError(lang=lang, supported=self.supported_languages)
 
         if chat_id:
-            lang = await self._get_chat_lang(db, chat_id)
+            lang = await self._get_chat_lang(db, chat_id, user_id=user_id)
             await self._ensure_history_capacity(db, chat_id)
         else:
             chat_id = uuid4()
-            await self.chats.create_chat(db, chat_id, lang)
+            await self.chats.create_chat(db, chat_id, lang, user_id=user_id)
 
         prompt_template = ChatPromptTemplate.from_messages([
             ("system", self.prompt),
@@ -238,9 +245,9 @@ class AnalysisService:
 
         return AnalyzeResponse.model_validate({**response, "text": text, "lang": lang, "chat_id": chat_id})
 
-    async def chat(self, db: AsyncSession, chat_id: UUID, text: str) -> AnalyzeResponse:
+    async def chat(self, db: AsyncSession, chat_id: UUID, text: str, user_id: str) -> AnalyzeResponse:
         self._ensure_message_size(text, "user")
-        lang = await self._get_chat_lang(db, chat_id)
+        lang = await self._get_chat_lang(db, chat_id, user_id=user_id)
         await self._ensure_history_capacity(db, chat_id)
         history_limit = self.history_max_human_messages + self.history_max_assistant_messages
         history = await self.chats.load_history(db, chat_id, limit=history_limit)

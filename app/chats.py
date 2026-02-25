@@ -22,12 +22,16 @@ class Chats:
         created_at_raw, message_id_raw = raw.split("|", 1)
         return datetime.fromisoformat(created_at_raw), int(message_id_raw)
 
-    async def create_chat(self, db: AsyncSession, chat_id: UUID, lang: str, user_id: str | None = None) -> None:
+    async def create_chat(self, db: AsyncSession, chat_id: UUID, lang: str, user_id: str) -> None:
         db.add(Chat(id=chat_id, user_id=user_id, lang=lang))
         await db.commit()
 
-    async def get_chat(self, db: AsyncSession, chat_id: UUID) -> dict | None:
-        chat = await db.get(Chat, chat_id)
+    async def get_chat(self, db: AsyncSession, chat_id: UUID, user_id: str | None = None) -> dict | None:
+        if user_id is None:
+            chat = await db.get(Chat, chat_id)
+        else:
+            statement = select(Chat).where(Chat.id == chat_id, Chat.user_id == user_id)
+            chat = (await db.exec(statement)).first()
         return {"id": chat.id, "lang": chat.lang, "user_id": chat.user_id} if chat else None
 
     async def load_history(
