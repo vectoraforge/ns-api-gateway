@@ -1,7 +1,7 @@
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, HTTPException
+from fastapi import APIRouter, Depends, Query, Request, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -90,3 +90,17 @@ async def list_chat_messages(
         for message in messages
     ]
     return ChatMessagesResponse(messages=items, next_cursor=next_cursor)
+
+
+@chats_router.delete("/chats/{chat_id}", status_code=204)
+async def delete_chat(
+    request: Request,
+    chat_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_user_id),
+) -> Response:
+    service = request.app.state.service
+    deleted = await service.chats.delete_chat(db, chat_id, user_id=user_id)
+    if not deleted:
+        raise InvalidChatError(chat_id)
+    return Response(status_code=204)

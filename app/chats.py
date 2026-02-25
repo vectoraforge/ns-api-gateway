@@ -5,7 +5,7 @@ from uuid import UUID
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
-from sqlalchemy import func, and_, or_, insert
+from sqlalchemy import func, and_, or_, insert, delete
 
 from app.models import Chat, Message
 
@@ -86,6 +86,13 @@ class Chats:
             if last.created_at is not None and last.id is not None:
                 next_cursor = self._encode_cursor(last.created_at, last.id)
         return results, next_cursor
+
+    async def delete_chat(self, db: AsyncSession, chat_id: UUID, user_id: str) -> bool:
+        statement = delete(Chat).where(Chat.id == chat_id, Chat.user_id == user_id).returning(Chat.id)
+        result = await db.execute(statement)
+        deleted = result.scalar_one_or_none()
+        await db.commit()
+        return deleted is not None
 
     async def save_messages(self, db: AsyncSession, chat_id: UUID, human: str, assistant: str) -> None:
         await db.execute(
