@@ -31,3 +31,10 @@ class CircuitOpenError(ServiceError):
     def __init__(self, retry_after_seconds: int):
         self.retry_after_seconds = retry_after_seconds
         super().__init__("LLM circuit breaker is open")
+
+
+class ChatHistoryLimitError(ServiceError):
+    def __init__(self, max_human: int, max_assistant: int):
+        self.max_human = max_human
+        self.max_assistant = max_assistant
+        super().__init__("Chat history limit reached")

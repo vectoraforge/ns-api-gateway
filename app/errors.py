@@ -10,6 +10,7 @@ from app.exceptions import (
     InvalidChatError,
     QueueFullError,
     CircuitOpenError,
+    ChatHistoryLimitError,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,13 @@ async def circuit_open_handler(_: Request, exc: CircuitOpenError) -> JSONRespons
     )
 
 
+async def chat_history_limit_handler(_: Request, exc: ChatHistoryLimitError) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={"detail": "Chat history limit reached"},
+    )
+
+
 async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
     logger.error("Validation error: %s", exc)
     return JSONResponse(status_code=422, content={"detail": "Invalid request"})
@@ -60,5 +68,6 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(InvalidChatError, invalid_chat_handler)
     app.add_exception_handler(QueueFullError, queue_full_handler)
     app.add_exception_handler(CircuitOpenError, circuit_open_handler)
+    app.add_exception_handler(ChatHistoryLimitError, chat_history_limit_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(Exception, generic_error_handler)

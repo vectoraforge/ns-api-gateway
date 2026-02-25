@@ -46,6 +46,8 @@ class AppConfig(BaseConfig):
 
     model: ModelConfig = Field(default_factory=ModelConfig)
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    history_max_human_messages: int = Field(default=50, ge=1)
+    history_max_assistant_messages: int = Field(default=50, ge=1)
 
     prompt: str = None
     examples: dict[str, list[str]] = {}

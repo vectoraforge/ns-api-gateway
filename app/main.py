@@ -61,6 +61,8 @@ async def lifespan(app: FastAPI):
         retry_max_attempts=config.model.retry_max_attempts,
         retry_backoff_base_seconds=config.model.retry_backoff_base_seconds,
         retry_backoff_max_seconds=config.model.retry_backoff_max_seconds,
+        history_max_human_messages=config.history_max_human_messages,
+        history_max_assistant_messages=config.history_max_assistant_messages,
         chats=chats,
     )
 
