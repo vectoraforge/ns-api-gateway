@@ -1,5 +1,6 @@
 import asyncio
 import time
+from contextlib import asynccontextmanager
 from collections.abc import Awaitable, Callable
 from uuid import UUID, uuid4
 
@@ -94,38 +95,30 @@ class CircuitBreaker:
 class LLMExecutionGate:
     def __init__(self, max_concurrency: int, max_queue: int, retry_after_seconds: int):
         self._semaphore = asyncio.Semaphore(max_concurrency)
-        self._queue = asyncio.Queue(maxsize=max_queue)
+        total_slots = max_concurrency + max_queue
+        self._slots = asyncio.Queue(maxsize=total_slots)
+        for _ in range(total_slots):
+            self._slots.put_nowait(object())
         self._retry_after_seconds = retry_after_seconds
 
-    async def run(self, operation: Callable[[], Awaitable]):
-        token_added = False
-        token_removed = False
-        acquired = False
+    @asynccontextmanager
+    async def _inflight_slot(self):
         try:
-            try:
-                self._queue.put_nowait(object())
-                token_added = True
-            except asyncio.QueueFull as exc:
-                raise QueueFullError(self._retry_after_seconds) from exc
-
-            await self._semaphore.acquire()
-            acquired = True
-
-            try:
-                self._queue.get_nowait()
-                token_removed = True
-            except asyncio.QueueEmpty:
-                token_removed = True
-
-            return await operation()
+            token = self._slots.get_nowait()
+        except asyncio.QueueEmpty as exc:
+            raise QueueFullError(self._retry_after_seconds) from exc
+        try:
+            yield
         finally:
-            if acquired:
-                self._semaphore.release()
-            if token_added and not token_removed:
-                try:
-                    self._queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
+            try:
+                self._slots.put_nowait(token)
+            except asyncio.QueueFull:
+                pass
+
+    async def run(self, operation: Callable[[], Awaitable]):
+        async with self._inflight_slot():
+            async with self._semaphore:
+                return await operation()
 
 
 class AnalysisService:
