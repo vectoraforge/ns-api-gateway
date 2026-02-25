@@ -6,7 +6,8 @@ from importlib.metadata import version
 from fastapi import FastAPI
 from langchain.chat_models import init_chat_model
 
-from app.routers import prompts_router, chats_router, root_router
+from app.routers import prompts_router, chats_router, root_router, health_router
+from app.routers.health import ReadinessCache
 from app.config import MainConfig
 from app.errors import register_exception_handlers
 from app.chats import Chats
@@ -51,6 +52,7 @@ async def lifespan(app: FastAPI):
     )
 
     app.state.config = config
+    app.state.readiness_cache = ReadinessCache(config.readiness_cache_seconds)
     app.state.service = AnalysisService(
         prompt=config.prompt,
         examples=config.examples,
@@ -86,4 +88,5 @@ app = FastAPI(
 app.include_router(root_router)
 app.include_router(prompts_router)
 app.include_router(chats_router)
+app.include_router(health_router)
 register_exception_handlers(app)
