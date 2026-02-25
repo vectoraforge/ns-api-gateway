@@ -51,7 +51,7 @@ class TestAnalyzeEndpoint:
         )
 
         assert response.status_code == 200
-        client.app.state.service.analyze.assert_called_once_with(mock_db, "Test phrase", "en", None)
+        client.app.state.service.analyze.assert_called_once_with(mock_db, "Test phrase", "en", "test-user", None)
 
     def test_analyze_with_chat_id(self, client, mock_db):
         chat_id = uuid4()
@@ -72,7 +72,9 @@ class TestAnalyzeEndpoint:
         )
 
         assert response.status_code == 200
-        client.app.state.service.analyze.assert_called_once_with(mock_db, "Follow up", "en", chat_id)
+        client.app.state.service.analyze.assert_called_once_with(
+            mock_db, "Follow up", "en", "test-user", chat_id
+        )
 
     def test_analyze_unsupported_language(self, client):
         client.app.state.service.analyze = AsyncMock(

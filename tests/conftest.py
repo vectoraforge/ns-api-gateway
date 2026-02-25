@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import json
 from unittest.mock import MagicMock, AsyncMock
 
 import pytest
@@ -8,7 +10,7 @@ from fastapi.testclient import TestClient
 from app.database import get_db
 from app.routers import prompts_router, chats_router, root_router
 from app.errors import register_exception_handlers
-from app.services import AnalysisService
+from app.services import AnalysisService, LLMExecutionGate, CircuitBreaker
 
 
 @pytest.fixture
@@ -20,6 +22,7 @@ def mock_config():
     config.model.name = "gpt-4o-mini"
     config.model.temperature = 0.3
     config.model.max_tokens = 1000
+    config.messages_max_page_size = 100
     return config
 
 
@@ -42,12 +45,25 @@ def mock_chats():
     chats.create_chat = AsyncMock()
     chats.get_chat = AsyncMock(return_value=None)
     chats.load_history = AsyncMock(return_value=[])
+    chats.get_message_counts = AsyncMock(return_value={"human": 0, "assistant": 0})
     chats.save_messages = AsyncMock()
     return chats
 
 
+def _make_token(user_id: str) -> str:
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode("utf-8")).rstrip(b"=")
+    payload = base64.urlsafe_b64encode(json.dumps({"user_id": user_id}).encode("utf-8")).rstrip(b"=")
+    return f"{header.decode('utf-8')}.{payload.decode('utf-8')}.signature"
+
+
 @pytest.fixture
-def client(mock_config, mock_examples, mock_chats, mock_db):
+def auth_header():
+    token = _make_token("test-user")
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def client(mock_config, mock_examples, mock_chats, mock_db, auth_header):
     app = FastAPI()
     app.include_router(root_router)
     app.include_router(prompts_router)
@@ -59,14 +75,24 @@ def client(mock_config, mock_examples, mock_chats, mock_db):
     app.state.config = mock_config
 
     mock_llm = MagicMock()
-    semaphore = asyncio.Semaphore(1)
+    gate = LLMExecutionGate(max_concurrency=1, max_queue=1, retry_after_seconds=1)
+    circuit_breaker = CircuitBreaker(failure_threshold=3, reset_seconds=60)
     app.state.service = AnalysisService(
         prompt="Test prompt for {lang}: {phrase}",
         examples=mock_examples,
         llm=mock_llm,
-        semaphore=semaphore,
+        gate=gate,
+        circuit_breaker=circuit_breaker,
+        timeout_seconds=1,
+        retry_max_attempts=1,
+        retry_backoff_base_seconds=0,
+        retry_backoff_max_seconds=0,
+        history_max_human_messages=50,
+        history_max_assistant_messages=50,
+        message_max_chars=4096,
         chats=mock_chats,
     )
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
+        test_client.headers.update(auth_header)
         yield test_client
