@@ -1,4 +1,5 @@
 from uuid import UUID
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -31,3 +32,14 @@ class ExamplesResponse(BaseModel):
 class ChatMessageRequest(BaseModel):
     text: str = Field(..., max_length=4096, description="Follow-up message text")
 
+
+class ChatMessage(BaseModel):
+    id: int
+    role: str
+    content: str
+    created_at: datetime
+
+
+class ChatMessagesResponse(BaseModel):
+    messages: list[ChatMessage]
+    next_cursor: str | None = None

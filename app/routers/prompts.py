@@ -1,7 +1,7 @@
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -9,8 +9,11 @@ from app.schema import (
     AnalyzeRequest,
     AnalyzeResponse,
     ChatMessageRequest,
+    ChatMessage,
+    ChatMessagesResponse,
     ExamplesResponse,
 )
+from app.exceptions import InvalidChatError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/prompts")
@@ -40,3 +43,39 @@ async def chat_message(
 ) -> AnalyzeResponse:
     service = request.app.state.service
     return await service.chat(db, chat_id, body.text)
+
+
+@chats_router.get("/chats/{chat_id}/messages", response_model=ChatMessagesResponse)
+async def list_chat_messages(
+    request: Request,
+    chat_id: UUID,
+    limit: int = Query(50, ge=1),
+    cursor: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+) -> ChatMessagesResponse:
+    config = request.app.state.config
+    if limit > config.messages_max_page_size:
+        raise HTTPException(status_code=400, detail="Limit exceeds maximum page size")
+
+    service = request.app.state.service
+    chat = await service.chats.get_chat(db, chat_id)
+    if not chat:
+        raise InvalidChatError(chat_id)
+
+    try:
+        messages, next_cursor = await service.chats.list_messages(
+            db, chat_id, limit=limit, cursor=cursor
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid cursor") from None
+
+    items = [
+        ChatMessage(
+            id=message.id,
+            role=message.role,
+            content=message.content,
+            created_at=message.created_at,
+        )
+        for message in messages
+    ]
+    return ChatMessagesResponse(messages=items, next_cursor=next_cursor)

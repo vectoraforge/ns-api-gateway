@@ -49,6 +49,7 @@ class AppConfig(BaseConfig):
     history_max_human_messages: int = Field(default=50, ge=1)
     history_max_assistant_messages: int = Field(default=50, ge=1)
     message_max_chars: int = Field(default=4096, ge=1)
+    messages_max_page_size: int = Field(default=100, ge=1)
 
     prompt: str = None
     examples: dict[str, list[str]] = {}
