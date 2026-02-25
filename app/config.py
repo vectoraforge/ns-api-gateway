@@ -33,6 +33,12 @@ class ModelConfig(BaseModel):
     pool_size: int = Field(default=5, ge=1)
     queue_size: int = Field(default=25, ge=1)
     queue_retry_after_seconds: int = Field(default=2, ge=1)
+    timeout_seconds: float = Field(default=30.0, gt=0)
+    retry_max_attempts: int = Field(default=3, ge=1)
+    retry_backoff_base_seconds: float = Field(default=0.5, ge=0)
+    retry_backoff_max_seconds: float = Field(default=4.0, ge=0)
+    circuit_breaker_failure_threshold: int = Field(default=5, ge=1)
+    circuit_breaker_reset_seconds: int = Field(default=60, ge=1)
 
 
 class AppConfig(BaseConfig):

@@ -11,7 +11,7 @@ from app.config import MainConfig
 from app.errors import register_exception_handlers
 from app.chats import Chats
 from app.database import init_engine, engine
-from app.services import AnalysisService, LLMExecutionGate
+from app.services import AnalysisService, LLMExecutionGate, CircuitBreaker
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,10 @@ async def lifespan(app: FastAPI):
         max_queue=config.model.queue_size,
         retry_after_seconds=config.model.queue_retry_after_seconds,
     )
+    circuit_breaker = CircuitBreaker(
+        failure_threshold=config.model.circuit_breaker_failure_threshold,
+        reset_seconds=config.model.circuit_breaker_reset_seconds,
+    )
 
     app.state.config = config
     app.state.service = AnalysisService(
@@ -52,6 +56,11 @@ async def lifespan(app: FastAPI):
         examples=config.examples,
         llm=llm,
         gate=gate,
+        circuit_breaker=circuit_breaker,
+        timeout_seconds=config.model.timeout_seconds,
+        retry_max_attempts=config.model.retry_max_attempts,
+        retry_backoff_base_seconds=config.model.retry_backoff_base_seconds,
+        retry_backoff_max_seconds=config.model.retry_backoff_max_seconds,
         chats=chats,
     )
 

@@ -1,4 +1,5 @@
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from uuid import UUID, uuid4
 
@@ -9,7 +10,83 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chats import Chats
 from app.schema import AnalyzeResponse, ExamplesResponse
-from app.exceptions import UnsupportedLanguageError, AnalysisError, InvalidChatError, QueueFullError
+from app.exceptions import (
+    UnsupportedLanguageError,
+    AnalysisError,
+    InvalidChatError,
+    QueueFullError,
+    CircuitOpenError,
+)
+
+try:
+    from openai import (
+        APIConnectionError,
+        APITimeoutError,
+        RateLimitError,
+        InternalServerError,
+        APIStatusError,
+    )
+except ImportError:  # pragma: no cover - openai is a runtime dependency
+    APIConnectionError = APITimeoutError = RateLimitError = InternalServerError = APIStatusError = ()
+
+
+def _extract_status_code(exc: Exception) -> int | None:
+    status_code = getattr(exc, "status_code", None)
+    if status_code is not None:
+        return status_code
+    response = getattr(exc, "response", None)
+    if response is not None:
+        return getattr(response, "status_code", None)
+    return None
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return True
+    if isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)):
+        return True
+    if isinstance(exc, APIStatusError):
+        status = _extract_status_code(exc)
+        if status in {408, 409, 429, 500, 502, 503, 504}:
+            return True
+    status = _extract_status_code(exc)
+    if status in {408, 409, 429, 500, 502, 503, 504}:
+        return True
+    return False
+
+
+class CircuitBreaker:
+    def __init__(self, failure_threshold: int, reset_seconds: int):
+        self._failure_threshold = failure_threshold
+        self._reset_seconds = reset_seconds
+        self._failure_count = 0
+        self._opened_at: float | None = None
+        self._lock = asyncio.Lock()
+
+    async def before_call(self) -> None:
+        async with self._lock:
+            if self._opened_at is None:
+                return
+            elapsed = time.monotonic() - self._opened_at
+            if elapsed >= self._reset_seconds:
+                self._opened_at = None
+                self._failure_count = 0
+                return
+            retry_after = max(1, int(self._reset_seconds - elapsed))
+            raise CircuitOpenError(retry_after)
+
+    async def record_success(self) -> None:
+        async with self._lock:
+            self._failure_count = 0
+            self._opened_at = None
+
+    async def record_failure(self) -> None:
+        async with self._lock:
+            if self._opened_at is not None:
+                return
+            self._failure_count += 1
+            if self._failure_count >= self._failure_threshold:
+                self._opened_at = time.monotonic()
 
 
 class LLMExecutionGate:
@@ -56,12 +133,22 @@ class AnalysisService:
         examples: dict[str, list[str]],
         llm: ChatOpenAI,
         gate: LLMExecutionGate,
+        circuit_breaker: CircuitBreaker,
+        timeout_seconds: float,
+        retry_max_attempts: int,
+        retry_backoff_base_seconds: float,
+        retry_backoff_max_seconds: float,
         chats: Chats,
     ):
         self.prompt = prompt
         self.examples = examples
         self.llm = llm
         self.gate = gate
+        self.circuit_breaker = circuit_breaker
+        self.timeout_seconds = timeout_seconds
+        self.retry_max_attempts = retry_max_attempts
+        self.retry_backoff_base_seconds = retry_backoff_base_seconds
+        self.retry_backoff_max_seconds = retry_backoff_max_seconds
         self.chats = chats
 
     @property
@@ -75,10 +162,30 @@ class AnalysisService:
         return chat["lang"]
 
     async def _invoke(self, chain, params: dict):
-        try:
-            return await self.gate.run(lambda: chain.ainvoke(params))
-        except Exception as e:
-            raise AnalysisError(str(e)) from e
+        for attempt in range(1, self.retry_max_attempts + 1):
+            await self.circuit_breaker.before_call()
+            try:
+                async def operation():
+                    return await asyncio.wait_for(chain.ainvoke(params), timeout=self.timeout_seconds)
+
+                response = await self.gate.run(operation)
+                await self.circuit_breaker.record_success()
+                return response
+            except QueueFullError:
+                raise
+            except CircuitOpenError:
+                raise
+            except Exception as e:
+                await self.circuit_breaker.record_failure()
+                if attempt >= self.retry_max_attempts or not _is_transient_error(e):
+                    raise AnalysisError(str(e)) from e
+                backoff = min(
+                    self.retry_backoff_max_seconds,
+                    self.retry_backoff_base_seconds * (2 ** (attempt - 1)),
+                )
+                if backoff > 0:
+                    await asyncio.sleep(backoff)
+        raise AnalysisError("LLM request failed")
 
     async def analyze(self, db: AsyncSession, text: str, lang: str, chat_id: UUID | None = None) -> AnalyzeResponse:
         if lang not in self.examples:
