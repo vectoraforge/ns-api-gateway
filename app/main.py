@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -12,7 +11,7 @@ from app.config import MainConfig
 from app.errors import register_exception_handlers
 from app.chats import Chats
 from app.database import init_engine, engine
-from app.services import AnalysisService
+from app.services import AnalysisService, LLMExecutionGate
 
 logger = logging.getLogger(__name__)
 
@@ -41,14 +40,18 @@ async def lifespan(app: FastAPI):
         temperature=config.model.temperature,
         max_tokens=config.model.max_tokens
     )
-    semaphore = asyncio.Semaphore(config.model.pool_size)
+    gate = LLMExecutionGate(
+        max_concurrency=config.model.pool_size,
+        max_queue=config.model.queue_size,
+        retry_after_seconds=config.model.queue_retry_after_seconds,
+    )
 
     app.state.config = config
     app.state.service = AnalysisService(
         prompt=config.prompt,
         examples=config.examples,
         llm=llm,
-        semaphore=semaphore,
+        gate=gate,
         chats=chats,
     )
 

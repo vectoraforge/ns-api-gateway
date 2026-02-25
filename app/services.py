@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 from uuid import UUID, uuid4
 
 from langchain_openai import ChatOpenAI
@@ -8,7 +9,44 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chats import Chats
 from app.schema import AnalyzeResponse, ExamplesResponse
-from app.exceptions import UnsupportedLanguageError, AnalysisError, InvalidChatError
+from app.exceptions import UnsupportedLanguageError, AnalysisError, InvalidChatError, QueueFullError
+
+
+class LLMExecutionGate:
+    def __init__(self, max_concurrency: int, max_queue: int, retry_after_seconds: int):
+        self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._queue = asyncio.Queue(maxsize=max_queue)
+        self._retry_after_seconds = retry_after_seconds
+
+    async def run(self, operation: Callable[[], Awaitable]):
+        token_added = False
+        token_removed = False
+        acquired = False
+        try:
+            try:
+                self._queue.put_nowait(object())
+                token_added = True
+            except asyncio.QueueFull as exc:
+                raise QueueFullError(self._retry_after_seconds) from exc
+
+            await self._semaphore.acquire()
+            acquired = True
+
+            try:
+                self._queue.get_nowait()
+                token_removed = True
+            except asyncio.QueueEmpty:
+                token_removed = True
+
+            return await operation()
+        finally:
+            if acquired:
+                self._semaphore.release()
+            if token_added and not token_removed:
+                try:
+                    self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
 
 
 class AnalysisService:
@@ -17,13 +55,13 @@ class AnalysisService:
         prompt: str,
         examples: dict[str, list[str]],
         llm: ChatOpenAI,
-        semaphore: asyncio.Semaphore,
+        gate: LLMExecutionGate,
         chats: Chats,
     ):
         self.prompt = prompt
         self.examples = examples
         self.llm = llm
-        self.semaphore = semaphore
+        self.gate = gate
         self.chats = chats
 
     @property
@@ -38,8 +76,7 @@ class AnalysisService:
 
     async def _invoke(self, chain, params: dict):
         try:
-            async with self.semaphore:
-                return await chain.ainvoke(params)
+            return await self.gate.run(lambda: chain.ainvoke(params))
         except Exception as e:
             raise AnalysisError(str(e)) from e
 

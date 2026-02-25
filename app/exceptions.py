@@ -19,3 +19,9 @@ class InvalidChatError(ServiceError):
     def __init__(self, chat_id):
         self.chat_id = chat_id
         super().__init__(f"Chat '{chat_id}' not found")
+
+
+class QueueFullError(ServiceError):
+    def __init__(self, retry_after_seconds: int):
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__("LLM queue is full")

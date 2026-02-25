@@ -31,6 +31,8 @@ class ModelConfig(BaseModel):
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
     max_tokens: int = Field(default=1000, ge=1)
     pool_size: int = Field(default=5, ge=1)
+    queue_size: int = Field(default=25, ge=1)
+    queue_retry_after_seconds: int = Field(default=2, ge=1)
 
 
 class AppConfig(BaseConfig):
