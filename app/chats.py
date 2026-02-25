@@ -5,7 +5,7 @@ from uuid import UUID
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
-from sqlalchemy import func, and_, or_
+from sqlalchemy import func, and_, or_, insert
 
 from app.models import Chat, Message
 
@@ -84,6 +84,11 @@ class Chats:
         return results, next_cursor
 
     async def save_messages(self, db: AsyncSession, chat_id: UUID, human: str, assistant: str) -> None:
-        db.add(Message(chat_id=chat_id, role="human", content=human))
-        db.add(Message(chat_id=chat_id, role="assistant", content=assistant))
+        await db.execute(
+            insert(Message),
+            [
+                {"chat_id": chat_id, "role": "human", "content": human},
+                {"chat_id": chat_id, "role": "assistant", "content": assistant},
+            ],
+        )
         await db.commit()
