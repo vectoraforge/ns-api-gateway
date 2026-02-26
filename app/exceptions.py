@@ -45,3 +45,36 @@ class MessageTooLargeError(ServiceError):
         self.role = role
         self.limit = limit
         super().__init__(f"{role} message exceeds {limit} characters")
+
+
+class AuthError(ServiceError):
+    """Base for authentication failures — maps to 401."""
+    pass
+
+
+class MissingTokenError(AuthError):
+    def __init__(self):
+        super().__init__("Missing Bearer token")
+
+
+class InvalidTokenError(AuthError):
+    def __init__(self):
+        super().__init__("Invalid token")
+
+
+class ExpiredTokenError(AuthError):
+    def __init__(self):
+        super().__init__("Expired token")
+
+
+class ChatOwnershipError(ServiceError):
+    """Raised when a user accesses a chat they don't own — maps to 404."""
+    def __init__(self, chat_id):
+        self.chat_id = chat_id
+        super().__init__(f"Chat '{chat_id}' not found")
+
+
+class DatabaseNotInitializedError(ServiceError):
+    """Raised when DB session factory is not initialized — maps to 500."""
+    def __init__(self):
+        super().__init__("Database session factory is not initialized")
