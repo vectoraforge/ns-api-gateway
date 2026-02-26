@@ -1,7 +1,9 @@
 import base64
 import json
 
-from fastapi import Header, HTTPException
+from fastapi import Header
+
+from app.exceptions import MissingTokenError, InvalidTokenError
 
 
 def _decode_jwt_payload(token: str) -> dict:
@@ -16,16 +18,15 @@ def _decode_jwt_payload(token: str) -> dict:
 
 async def get_user_id(authorization: str = Header(...)) -> str:
     if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing Bearer token")
+        raise MissingTokenError()
     token = authorization.split(" ", 1)[1].strip()
     if not token:
-        raise HTTPException(status_code=401, detail="Missing Bearer token")
+        raise MissingTokenError()
     try:
         payload = _decode_jwt_payload(token)
     except Exception:
-        raise HTTPException(status_code=401, detail="Invalid token") from None
-
+        raise InvalidTokenError() from None
     user_id = payload.get("user_id")
     if not user_id:
-        raise HTTPException(status_code=401, detail="Missing user_id claim")
+        raise InvalidTokenError()
     return str(user_id)

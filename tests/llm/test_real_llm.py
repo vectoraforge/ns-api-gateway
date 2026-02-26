@@ -13,10 +13,10 @@ class TestRealLLM:
         from app.main import app
 
         with TestClient(app) as client:
-            header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode("utf-8")).rstrip(b\"=\")
-            payload = base64.urlsafe_b64encode(json.dumps({\"user_id\": \"real-user\"}).encode(\"utf-8\")).rstrip(b\"=\")
-            token = f\"{header.decode('utf-8')}.{payload.decode('utf-8')}.signature\"
-            client.headers.update({\"Authorization\": f\"Bearer {token}\"})
+            header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode("utf-8")).rstrip(b"=")
+            payload = base64.urlsafe_b64encode(json.dumps({"user_id": "real-user"}).encode("utf-8")).rstrip(b"=")
+            token = f"{header.decode('utf-8')}.{payload.decode('utf-8')}.signature"
+            client.headers.update({"Authorization": f"Bearer {token}"})
             yield client
 
     def test_analyze_real_phrase_english(self, real_client):

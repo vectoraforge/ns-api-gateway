@@ -87,7 +87,7 @@ class TestAnalyzeEndpoint:
         )
 
         assert response.status_code == 400
-        assert "fr" in response.json()["detail"]
+        assert "fr" in response.json()["error"]
 
     def test_analyze_invalid_chat(self, client):
         chat_id = uuid4()
@@ -113,7 +113,7 @@ class TestAnalyzeEndpoint:
         )
 
         assert response.status_code == 500
-        assert response.json()["detail"] == "Analysis failed"
+        assert response.json()["error"] == "Analysis failed"
 
     def test_analyze_missing_text(self, client):
         response = client.post(
@@ -239,7 +239,7 @@ class TestExamplesEndpoint:
         response = client.get("/prompts/examples?lang=fr")
 
         assert response.status_code == 400
-        assert "fr" in response.json()["detail"]
+        assert "fr" in response.json()["error"]
 
     def test_examples_missing_lang_param(self, client):
         response = client.get("/prompts/examples")
