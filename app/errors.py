@@ -8,6 +8,8 @@ from starlette.responses import JSONResponse
 from app.exceptions import (
     UnsupportedLanguageError,
     AnalysisError,
+    TransientLLMError,
+    PermanentLLMError,
     InvalidChatError,
     QueueFullError,
     CircuitOpenError,
@@ -23,6 +25,14 @@ logger = logging.getLogger(__name__)
 
 async def unsupported_language_handler(_: Request, exc: UnsupportedLanguageError) -> JSONResponse:
     return JSONResponse(status_code=400, content={"status": 400, "error": f"Unsupported language: '{exc.lang}'"})
+
+
+async def transient_llm_error_handler(_: Request, exc: TransientLLMError) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"status": 503, "error": str(exc)})
+
+
+async def permanent_llm_error_handler(_: Request, exc: PermanentLLMError) -> JSONResponse:
+    return JSONResponse(status_code=502, content={"status": 502, "error": str(exc)})
 
 
 async def analysis_error_handler(_: Request, exc: AnalysisError) -> JSONResponse:
@@ -93,6 +103,8 @@ async def generic_error_handler(_: Request, exc: Exception) -> JSONResponse:
 
 def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(UnsupportedLanguageError, unsupported_language_handler)
+    app.add_exception_handler(TransientLLMError, transient_llm_error_handler)
+    app.add_exception_handler(PermanentLLMError, permanent_llm_error_handler)
     app.add_exception_handler(AnalysisError, analysis_error_handler)
     app.add_exception_handler(InvalidChatError, invalid_chat_handler)
     app.add_exception_handler(QueueFullError, queue_full_handler)

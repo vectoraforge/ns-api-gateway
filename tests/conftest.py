@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.database import get_db
 from app.routers import prompts_router, chats_router, root_router
 from app.errors import register_exception_handlers
+from app.auth import UnsafeBase64Verifier
 from app.services import AnalysisService, LLMExecutionGate, CircuitBreaker
 
 
@@ -73,6 +74,7 @@ def client(mock_config, mock_examples, mock_chats, mock_db, auth_header):
     app.dependency_overrides[get_db] = lambda: mock_db
 
     app.state.config = mock_config
+    app.state.verifier = UnsafeBase64Verifier()
 
     mock_llm = MagicMock()
     gate = LLMExecutionGate(max_concurrency=1, max_queue=1, retry_after_seconds=1)
