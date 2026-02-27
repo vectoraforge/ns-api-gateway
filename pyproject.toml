@@ -40,7 +40,8 @@ pythonpath = ["."]
 env_files = [".env"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "-v --tb=short -m 'not llm'"
+addopts = "-v --tb=short -m 'not llm and not db'"
 markers = [
     "llm: marks tests requiring calls to external LLM (deselect with -m 'not llm')",
+    "db: marks tests requiring a real database (deselect with -m 'not db')",
 ]
