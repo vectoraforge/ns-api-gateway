@@ -38,6 +38,12 @@ class InvalidCursorError(ServiceError):
         super().__init__("Invalid cursor")
 
 
+class PageSizeLimitError(ServiceError):
+    def __init__(self, limit: int):
+        self.limit = limit
+        super().__init__(f"Limit exceeds maximum page size of {limit}")
+
+
 class QueueFullError(ServiceError):
     def __init__(self, retry_after_seconds: int):
         self.retry_after_seconds = retry_after_seconds

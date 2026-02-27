@@ -2,7 +2,7 @@ import base64
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, HTTPException, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -14,7 +14,7 @@ from app.schema import (
     ChatMessagesResponse,
     ExamplesResponse,
 )
-from app.exceptions import ChatOwnershipError, InvalidCursorError
+from app.exceptions import ChatOwnershipError, InvalidCursorError, PageSizeLimitError
 from app.auth import get_user_id
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ async def list_chat_messages(
 ) -> ChatMessagesResponse:
     config = request.app.state.config
     if limit > config.messages_max_page_size:
-        raise HTTPException(status_code=400, detail="Limit exceeds maximum page size")
+        raise PageSizeLimitError(config.messages_max_page_size)
 
     if cursor is not None:
         try:
