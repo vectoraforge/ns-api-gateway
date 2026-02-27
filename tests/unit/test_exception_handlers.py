@@ -83,13 +83,14 @@ def test_validation_error_handler(handler_client):
     assert body["error"]
 
 
-from app.auth import get_user_id
+from app.auth import UnsafeBase64Verifier, get_user_id
 
 
 @pytest.fixture(scope="module")
 def dep_client():
     app = FastAPI()
     register_exception_handlers(app)
+    app.state.verifier = UnsafeBase64Verifier()
 
     @app.get("/protected")
     async def _protected(user_id: str = Depends(get_user_id)):

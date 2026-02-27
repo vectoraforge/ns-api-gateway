@@ -1,8 +1,9 @@
 import base64
 import json
 import time
+from typing import Protocol
 
-from fastapi import Header
+from fastapi import Header, Request
 
 from app.exceptions import MissingTokenError, InvalidTokenError, ExpiredTokenError
 
@@ -17,22 +18,32 @@ def _decode_jwt_payload(token: str) -> dict:
     return json.loads(raw.decode("utf-8"))
 
 
-async def get_user_id(authorization: str | None = Header(None)) -> str:
-    if not authorization:
-        raise MissingTokenError()
-    if not authorization.startswith("Bearer "):
+class TokenVerifier(Protocol):
+    def verify(self, token: str) -> str:
+        """Decode token and return user_id. Raise AuthError subtype on failure."""
+        ...
+
+
+class UnsafeBase64Verifier:
+    def verify(self, token: str) -> str:
+        try:
+            payload = _decode_jwt_payload(token)
+        except Exception:
+            raise InvalidTokenError() from None
+        exp = payload.get("exp")
+        if exp is not None and exp < time.time():
+            raise ExpiredTokenError()
+        user_id = payload.get("user_id")
+        if not user_id:
+            raise InvalidTokenError()
+        return str(user_id)
+
+
+async def get_user_id(request: Request, authorization: str | None = Header(None)) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
         raise MissingTokenError()
     token = authorization.split(" ", 1)[1].strip()
     if not token:
         raise MissingTokenError()
-    try:
-        payload = _decode_jwt_payload(token)
-    except Exception:
-        raise InvalidTokenError() from None
-    exp = payload.get("exp")
-    if exp is not None and exp < time.time():
-        raise ExpiredTokenError()
-    user_id = payload.get("user_id")
-    if not user_id:
-        raise InvalidTokenError()
-    return str(user_id)
+    verifier: TokenVerifier = request.app.state.verifier
+    return verifier.verify(token)
