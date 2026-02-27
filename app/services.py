@@ -14,6 +14,8 @@ from app.schema import AnalyzeResponse, ExamplesResponse
 from app.exceptions import (
     UnsupportedLanguageError,
     AnalysisError,
+    TransientLLMError,
+    PermanentLLMError,
     QueueFullError,
     CircuitOpenError,
     ChatHistoryLimitError,
@@ -190,14 +192,17 @@ class AnalysisService:
             except Exception as e:
                 await self.circuit_breaker.record_failure()
                 if attempt >= self.retry_max_attempts or not _is_transient_error(e):
-                    raise AnalysisError(str(e)) from e
+                    if _is_transient_error(e):
+                        raise TransientLLMError(str(e)) from e
+                    else:
+                        raise PermanentLLMError(str(e)) from e
                 backoff = min(
                     self.retry_backoff_max_seconds,
                     self.retry_backoff_base_seconds * (2 ** (attempt - 1)),
                 )
                 if backoff > 0:
                     await asyncio.sleep(backoff)
-        raise AnalysisError("LLM request failed")
+        raise TransientLLMError("LLM request failed after all retries")
 
     async def analyze(
         self,

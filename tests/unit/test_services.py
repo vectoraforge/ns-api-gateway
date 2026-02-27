@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 
 from app.schema import AnalyzeResponse, ExamplesResponse
-from app.exceptions import UnsupportedLanguageError, AnalysisError, InvalidChatError
+from app.exceptions import UnsupportedLanguageError, AnalysisError, InvalidChatError, PermanentLLMError, TransientLLMError
 from app.services import AnalysisService, LLMExecutionGate, CircuitBreaker
 
 
@@ -134,16 +134,38 @@ class TestAnalyze:
              patch("app.services.JsonOutputParser"):
 
             mock_chain = AsyncMock()
-            mock_chain.ainvoke.side_effect = Exception("LLM API error")
+            original_exc = Exception("LLM API error")
+            mock_chain.ainvoke.side_effect = original_exc
 
             mock_prompt_inst = mock_prompt.from_messages.return_value
             mock_pipe = mock_prompt_inst.__or__.return_value
             mock_pipe.__or__.return_value = mock_chain
 
-            with pytest.raises(AnalysisError) as exc_info:
+            with pytest.raises(PermanentLLMError) as exc_info:
                 await service.analyze(mock_db, "Test phrase", "en", "user-1")
 
             assert "LLM API error" in str(exc_info.value)
+            assert exc_info.value.__cause__ is original_exc
+
+    @pytest.mark.asyncio
+    async def test_transient_llm_error_exhausted(self, service, mock_db):
+        """Retry exhaustion on a transient error raises TransientLLMError with __cause__."""
+        with patch("app.services.ChatPromptTemplate") as mock_prompt, \
+             patch("app.services.JsonOutputParser"), \
+             patch("app.services._is_transient_error", return_value=True):
+
+            mock_chain = AsyncMock()
+            original_exc = Exception("timeout")
+            mock_chain.ainvoke.side_effect = original_exc
+
+            mock_prompt_inst = mock_prompt.from_messages.return_value
+            mock_pipe = mock_prompt_inst.__or__.return_value
+            mock_pipe.__or__.return_value = mock_chain
+
+            with pytest.raises(TransientLLMError) as exc_info:
+                await service.analyze(mock_db, "Test phrase", "en", "user-1")
+
+            assert exc_info.value.__cause__ is original_exc
 
 
 class TestChat:
@@ -193,14 +215,17 @@ class TestChat:
              patch("app.services.JsonOutputParser"):
 
             mock_chain = AsyncMock()
-            mock_chain.ainvoke.side_effect = Exception("LLM failed")
+            original_exc = Exception("LLM failed")
+            mock_chain.ainvoke.side_effect = original_exc
 
             mock_prompt_inst = mock_prompt.from_messages.return_value
             mock_pipe = mock_prompt_inst.__or__.return_value
             mock_pipe.__or__.return_value = mock_chain
 
-            with pytest.raises(AnalysisError):
+            with pytest.raises(PermanentLLMError) as exc_info:
                 await service.chat(mock_db, chat_id, "Hello", "user-1")
+
+            assert exc_info.value.__cause__ is original_exc
 
 
 class TestGetExamples:
