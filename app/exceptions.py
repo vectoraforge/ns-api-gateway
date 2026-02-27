@@ -15,6 +15,18 @@ class AnalysisError(ServiceError):
     pass
 
 
+class TransientLLMError(AnalysisError):
+    """Raised when all retry attempts failed due to a transient LLM error.
+    __cause__ holds the original exception from the last failed attempt."""
+    pass
+
+
+class PermanentLLMError(AnalysisError):
+    """Raised when the LLM call failed with a non-transient error (no retry possible).
+    __cause__ holds the original exception."""
+    pass
+
+
 class InvalidChatError(ServiceError):
     def __init__(self, chat_id):
         self.chat_id = chat_id

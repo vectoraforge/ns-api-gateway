@@ -17,6 +17,8 @@ from app.exceptions import (
     CircuitOpenError,
     ChatHistoryLimitError,
     MessageTooLargeError,
+    TransientLLMError,
+    PermanentLLMError,
 )
 
 CASES = [
@@ -33,6 +35,8 @@ CASES = [
     ("msg_too_large", MessageTooLargeError("human", 4096), 413),
     ("generic_exception", Exception("boom"), 500),
     ("starlette_http", StarletteHTTPException(status_code=404, detail="not found"), 404),
+    ("transient_llm", TransientLLMError("upstream timeout"), 503),
+    ("permanent_llm", PermanentLLMError("bad response format"), 502),
 ]
 
 
@@ -133,3 +137,29 @@ def test_expired_token_returns_401(dep_client):
     body = response.json()
     assert body["status"] == 401
     assert "error" in body
+
+
+@pytest.fixture(scope="module")
+def state_client():
+    """Confirms verifier is resolved from app.state — swapping it changes behavior."""
+    class _AlwaysUser:
+        def verify(self, token: str) -> str:
+            return "hardcoded-user"
+
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.state.verifier = _AlwaysUser()
+
+    @app.get("/whoami")
+    async def _whoami(user_id: str = Depends(get_user_id)):
+        return {"user_id": user_id}
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield client
+
+
+def test_verifier_swappable_via_state(state_client):
+    """Any token resolves to hardcoded-user — proves verifier comes from app.state."""
+    response = state_client.get("/whoami", headers={"Authorization": "Bearer any.token.here"})
+    assert response.status_code == 200
+    assert response.json()["user_id"] == "hardcoded-user"

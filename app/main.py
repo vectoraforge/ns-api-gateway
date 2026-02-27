@@ -10,6 +10,7 @@ from app.routers import prompts_router, chats_router, root_router, health_router
 from app.routers.health import ReadinessCache
 from app.config import MainConfig
 from app.errors import register_exception_handlers
+from app.auth import UnsafeBase64Verifier
 from app.chats import Chats
 from app.database import init_engine, engine
 from app.services import AnalysisService, LLMExecutionGate, CircuitBreaker
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI):
     )
 
     app.state.config = config
+    app.state.verifier = UnsafeBase64Verifier()
     app.state.readiness_cache = ReadinessCache(config.readiness_cache_seconds)
     app.state.service = AnalysisService(
         prompt=config.prompt,
