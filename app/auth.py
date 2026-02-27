@@ -1,9 +1,10 @@
 import base64
 import json
+import time
 
 from fastapi import Header
 
-from app.exceptions import MissingTokenError, InvalidTokenError
+from app.exceptions import MissingTokenError, InvalidTokenError, ExpiredTokenError
 
 
 def _decode_jwt_payload(token: str) -> dict:
@@ -28,6 +29,9 @@ async def get_user_id(authorization: str | None = Header(None)) -> str:
         payload = _decode_jwt_payload(token)
     except Exception:
         raise InvalidTokenError() from None
+    exp = payload.get("exp")
+    if exp is not None and exp < time.time():
+        raise ExpiredTokenError()
     user_id = payload.get("user_id")
     if not user_id:
         raise InvalidTokenError()

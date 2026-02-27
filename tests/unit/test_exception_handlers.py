@@ -120,3 +120,15 @@ def test_valid_bearer_token_resolves_user(dep_client):
     response = dep_client.get("/protected", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200
     assert response.json()["user_id"] == "u1"
+
+
+def test_expired_token_returns_401(dep_client):
+    import base64
+    import json
+    payload = base64.urlsafe_b64encode(json.dumps({"user_id": "u1", "exp": 1}).encode()).rstrip(b"=").decode()
+    token = f"header.{payload}.sig"
+    response = dep_client.get("/protected", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 401
+    body = response.json()
+    assert body["status"] == 401
+    assert "error" in body
