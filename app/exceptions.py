@@ -33,6 +33,11 @@ class InvalidChatError(ServiceError):
         super().__init__(f"Chat '{chat_id}' not found")
 
 
+class InvalidCursorError(ServiceError):
+    def __init__(self):
+        super().__init__("Invalid cursor")
+
+
 class QueueFullError(ServiceError):
     def __init__(self, retry_after_seconds: int):
         self.retry_after_seconds = retry_after_seconds

@@ -11,6 +11,7 @@ from app.exceptions import (
     TransientLLMError,
     PermanentLLMError,
     InvalidChatError,
+    InvalidCursorError,
     QueueFullError,
     CircuitOpenError,
     ChatHistoryLimitError,
@@ -42,6 +43,10 @@ async def analysis_error_handler(_: Request, exc: AnalysisError) -> JSONResponse
 
 async def invalid_chat_handler(_: Request, exc: InvalidChatError) -> JSONResponse:
     return JSONResponse(status_code=404, content={"status": 404, "error": str(exc)})
+
+
+async def invalid_cursor_error_handler(_: Request, exc: InvalidCursorError) -> JSONResponse:
+    return JSONResponse(status_code=400, content={"status": 400, "error": str(exc)})
 
 
 async def queue_full_handler(_: Request, exc: QueueFullError) -> JSONResponse:
@@ -107,6 +112,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(PermanentLLMError, permanent_llm_error_handler)
     app.add_exception_handler(AnalysisError, analysis_error_handler)
     app.add_exception_handler(InvalidChatError, invalid_chat_handler)
+    app.add_exception_handler(InvalidCursorError, invalid_cursor_error_handler)
     app.add_exception_handler(QueueFullError, queue_full_handler)
     app.add_exception_handler(CircuitOpenError, circuit_open_handler)
     app.add_exception_handler(ChatHistoryLimitError, chat_history_limit_handler)

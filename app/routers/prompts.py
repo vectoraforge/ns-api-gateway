@@ -1,3 +1,4 @@
+import base64
 import logging
 from uuid import UUID
 
@@ -13,7 +14,7 @@ from app.schema import (
     ChatMessagesResponse,
     ExamplesResponse,
 )
-from app.exceptions import ChatOwnershipError
+from app.exceptions import ChatOwnershipError, InvalidCursorError
 from app.auth import get_user_id
 
 logger = logging.getLogger(__name__)
@@ -68,15 +69,21 @@ async def list_chat_messages(
     if limit > config.messages_max_page_size:
         raise HTTPException(status_code=400, detail="Limit exceeds maximum page size")
 
+    if cursor is not None:
+        try:
+            padded = cursor + "=" * (-len(cursor) % 4)
+            decoded = base64.urlsafe_b64decode(padded.encode()).decode()
+            if "|" not in decoded:
+                raise ValueError
+        except Exception:
+            raise InvalidCursorError()
+
     service = request.app.state.service
     chat = await service.chats.get_chat_owned(db, chat_id, user_id)
 
-    try:
-        messages, next_cursor = await service.chats.list_messages(
-            db, chat_id, limit=limit, cursor=cursor
-        )
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid cursor") from None
+    messages, next_cursor = await service.chats.list_messages(
+        db, chat_id, limit=limit, cursor=cursor
+    )
 
     items = [
         ChatMessage(
