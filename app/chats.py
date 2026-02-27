@@ -8,6 +8,7 @@ from sqlmodel import select
 from sqlalchemy import func, and_, or_, insert, delete
 
 from app.models import Chat, Message
+from app.exceptions import ChatOwnershipError, InvalidChatError
 
 
 class Chats:
@@ -33,6 +34,27 @@ class Chats:
             statement = select(Chat).where(Chat.id == chat_id, Chat.user_id == user_id)
             chat = (await db.exec(statement)).first()
         return {"id": chat.id, "lang": chat.lang, "user_id": chat.user_id} if chat else None
+
+    async def get_chat_owned(self, db: AsyncSession, chat_id: UUID, user_id: str) -> dict:
+        """Return chat dict if owned by user_id. Raise ChatOwnershipError if exists but wrong owner,
+        InvalidChatError if it doesn't exist."""
+        chat = await db.get(Chat, chat_id)
+        if chat is None:
+            raise InvalidChatError(chat_id)
+        if chat.user_id != user_id:
+            raise ChatOwnershipError(chat_id)
+        return {"id": chat.id, "lang": chat.lang, "user_id": chat.user_id}
+
+    async def delete_chat_owned(self, db: AsyncSession, chat_id: UUID, user_id: str) -> None:
+        """Delete chat owned by user_id. Raise ChatOwnershipError if exists but wrong owner,
+        InvalidChatError if doesn't exist."""
+        chat = await db.get(Chat, chat_id)
+        if chat is None:
+            raise InvalidChatError(chat_id)
+        if chat.user_id != user_id:
+            raise ChatOwnershipError(chat_id)
+        await db.delete(chat)
+        await db.commit()
 
     async def load_history(
         self, db: AsyncSession, chat_id: UUID, limit: int | None = None

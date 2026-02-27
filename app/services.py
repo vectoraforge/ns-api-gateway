@@ -14,7 +14,6 @@ from app.schema import AnalyzeResponse, ExamplesResponse
 from app.exceptions import (
     UnsupportedLanguageError,
     AnalysisError,
-    InvalidChatError,
     QueueFullError,
     CircuitOpenError,
     ChatHistoryLimitError,
@@ -157,9 +156,7 @@ class AnalysisService:
         return list(self.examples.keys())
 
     async def _get_chat_lang(self, db: AsyncSession, chat_id: UUID, user_id: str) -> str:
-        chat = await self.chats.get_chat(db, chat_id, user_id=user_id)
-        if not chat:
-            raise InvalidChatError(chat_id)
+        chat = await self.chats.get_chat_owned(db, chat_id, user_id)
         return chat["lang"]
 
     async def _ensure_history_capacity(self, db: AsyncSession, chat_id: UUID) -> None:

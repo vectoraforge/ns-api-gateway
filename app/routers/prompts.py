@@ -13,7 +13,7 @@ from app.schema import (
     ChatMessagesResponse,
     ExamplesResponse,
 )
-from app.exceptions import InvalidChatError
+from app.exceptions import ChatOwnershipError
 from app.auth import get_user_id
 
 logger = logging.getLogger(__name__)
@@ -69,9 +69,7 @@ async def list_chat_messages(
         raise HTTPException(status_code=400, detail="Limit exceeds maximum page size")
 
     service = request.app.state.service
-    chat = await service.chats.get_chat(db, chat_id, user_id=user_id)
-    if not chat:
-        raise InvalidChatError(chat_id)
+    chat = await service.chats.get_chat_owned(db, chat_id, user_id)
 
     try:
         messages, next_cursor = await service.chats.list_messages(
@@ -100,7 +98,5 @@ async def delete_chat(
     user_id: str = Depends(get_user_id),
 ) -> Response:
     service = request.app.state.service
-    deleted = await service.chats.delete_chat(db, chat_id, user_id=user_id)
-    if not deleted:
-        raise InvalidChatError(chat_id)
+    await service.chats.delete_chat_owned(db, chat_id, user_id)
     return Response(status_code=204)

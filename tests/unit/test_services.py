@@ -27,6 +27,7 @@ def mock_chats():
     chats = AsyncMock()
     chats.create_chat = AsyncMock()
     chats.get_chat = AsyncMock(return_value=None)
+    chats.get_chat_owned = AsyncMock(return_value=None)
     chats.load_history = AsyncMock(return_value=[])
     chats.get_message_counts = AsyncMock(return_value={"human": 0, "assistant": 0})
     chats.save_messages = AsyncMock()
@@ -85,7 +86,7 @@ class TestAnalyze:
     @pytest.mark.asyncio
     async def test_with_existing_chat_id(self, service, mock_chats, mock_db):
         chat_id = uuid4()
-        mock_chats.get_chat.return_value = {"id": chat_id, "lang": "es", "user_id": "user-1"}
+        mock_chats.get_chat_owned.return_value = {"id": chat_id, "lang": "es", "user_id": "user-1"}
 
         llm_response = {
             "issues": [],
@@ -112,7 +113,7 @@ class TestAnalyze:
     @pytest.mark.asyncio
     async def test_invalid_chat_id(self, service, mock_chats, mock_db):
         chat_id = uuid4()
-        mock_chats.get_chat.return_value = None
+        mock_chats.get_chat_owned.side_effect = InvalidChatError(chat_id)
 
         with pytest.raises(InvalidChatError) as exc_info:
             await service.analyze(mock_db, "Test", "en", "user-1", chat_id)
@@ -149,7 +150,7 @@ class TestChat:
     @pytest.mark.asyncio
     async def test_success(self, service, mock_chats, mock_db):
         chat_id = uuid4()
-        mock_chats.get_chat.return_value = {"id": chat_id, "lang": "en", "user_id": "user-1"}
+        mock_chats.get_chat_owned.return_value = {"id": chat_id, "lang": "en", "user_id": "user-1"}
 
         llm_response = {
             "issues": [],
@@ -178,7 +179,7 @@ class TestChat:
     @pytest.mark.asyncio
     async def test_invalid_chat_id(self, service, mock_chats, mock_db):
         chat_id = uuid4()
-        mock_chats.get_chat.return_value = None
+        mock_chats.get_chat_owned.side_effect = InvalidChatError(chat_id)
 
         with pytest.raises(InvalidChatError):
             await service.chat(mock_db, chat_id, "Hello", "user-1")
@@ -186,7 +187,7 @@ class TestChat:
     @pytest.mark.asyncio
     async def test_llm_error(self, service, mock_chats, mock_db):
         chat_id = uuid4()
-        mock_chats.get_chat.return_value = {"id": chat_id, "lang": "en", "user_id": "user-1"}
+        mock_chats.get_chat_owned.return_value = {"id": chat_id, "lang": "en", "user_id": "user-1"}
 
         with patch("app.services.ChatPromptTemplate") as mock_prompt, \
              patch("app.services.JsonOutputParser"):
