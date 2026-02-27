@@ -16,7 +16,9 @@ def _decode_jwt_payload(token: str) -> dict:
     return json.loads(raw.decode("utf-8"))
 
 
-async def get_user_id(authorization: str = Header(...)) -> str:
+async def get_user_id(authorization: str | None = Header(None)) -> str:
+    if not authorization:
+        raise MissingTokenError()
     if not authorization.startswith("Bearer "):
         raise MissingTokenError()
     token = authorization.split(" ", 1)[1].strip()
