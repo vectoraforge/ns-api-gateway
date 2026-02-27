@@ -61,6 +61,17 @@ def _is_transient_error(exc: Exception) -> bool:
 
 class CircuitBreaker:
     def __init__(self, failure_threshold: int, reset_seconds: int):
+        # In-memory circuit breaker: _failure_count and _opened_at are process-local.
+        # In a multi-instance deployment (e.g. multiple Uvicorn workers or Kubernetes pods),
+        # each instance tracks failures independently — one pod can open its circuit while
+        # others remain closed, causing inconsistent behavior under load.
+        #
+        # Migration path for multi-instance: replace _failure_count and _opened_at with
+        # Redis keys (INCR for counts, SET EX for open-until timestamp). Use a single
+        # atomic Lua script or Redis transactions to keep before_call / record_failure /
+        # record_success consistent. The asyncio.Lock can be removed — Redis operations
+        # are serialized by the Redis server. Library: redis-py with asyncio support
+        # (redis.asyncio.Redis).
         self._failure_threshold = failure_threshold
         self._reset_seconds = reset_seconds
         self._failure_count = 0
