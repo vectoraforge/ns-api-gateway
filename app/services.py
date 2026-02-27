@@ -257,7 +257,6 @@ class AnalysisService:
         await self._ensure_history_capacity(db, chat_id)
         history_limit = self.history_max_human_messages + self.history_max_assistant_messages
         history = await self.chats.load_history(db, chat_id, limit=history_limit)
-
         prompt_template = ChatPromptTemplate.from_messages([
             ("system", self.prompt),
             MessagesPlaceholder("history"),
