@@ -1,5 +1,5 @@
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -81,3 +81,42 @@ def test_validation_error_handler(handler_client):
     assert body["status"] == 422
     assert "error" in body
     assert body["error"]
+
+
+from app.auth import get_user_id
+
+
+@pytest.fixture(scope="module")
+def dep_client():
+    app = FastAPI()
+    register_exception_handlers(app)
+
+    @app.get("/protected")
+    async def _protected(user_id: str = Depends(get_user_id)):
+        return {"user_id": user_id}
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield client
+
+
+def test_missing_auth_header_returns_401(dep_client):
+    response = dep_client.get("/protected")
+    assert response.status_code == 401
+    body = response.json()
+    assert body["status"] == 401
+    assert "error" in body
+
+
+def test_invalid_bearer_token_returns_401(dep_client):
+    response = dep_client.get("/protected", headers={"Authorization": "Bearer notajwt"})
+    assert response.status_code == 401
+
+
+def test_valid_bearer_token_resolves_user(dep_client):
+    import base64
+    import json
+    payload = base64.urlsafe_b64encode(json.dumps({"user_id": "u1"}).encode()).rstrip(b"=").decode()
+    token = f"header.{payload}.sig"
+    response = dep_client.get("/protected", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    assert response.json()["user_id"] == "u1"
