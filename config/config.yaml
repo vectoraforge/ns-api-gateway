@@ -8,12 +8,13 @@ model:
   name: gpt-4o-mini
   temperature: 0.3
   max_tokens: 1000
-  pool_size: 5
-  queue_size: 25
-  queue_retry_after_seconds: 2
-  timeout_seconds: 30
-  retry_max_attempts: 3
-  retry_backoff_base_seconds: 0.5
-  retry_backoff_max_seconds: 4
-  circuit_breaker_failure_threshold: 5
-  circuit_breaker_reset_seconds: 60
+  resilience:
+    pool_size: 5
+    queue_size: 25
+    queue_retry_after_seconds: 2
+    timeout_seconds: 30
+    retry_max_attempts: 3
+    retry_backoff_base_seconds: 0.5
+    retry_backoff_max_seconds: 4
+    circuit_breaker_failure_threshold: 5
+    circuit_breaker_reset_seconds: 60

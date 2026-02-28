@@ -3,7 +3,10 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 
-from app.exceptions import CircuitOpenError, QueueFullError
+from typing import Any
+
+from app.config import ResilienceConfig
+from app.exceptions import CircuitOpenError, PermanentLLMError, QueueFullError, TransientLLMError
 
 try:
     from openai import (
@@ -103,3 +106,47 @@ class LLMExecutionGate:
         async with self._inflight_slot():
             async with self._semaphore:
                 return await operation()
+
+
+class ResiliencePolicy:
+    def __init__(self, config: ResilienceConfig):
+        self._circuit_breaker = CircuitBreaker(
+            failure_threshold=config.circuit_breaker_failure_threshold,
+            reset_seconds=config.circuit_breaker_reset_seconds,
+        )
+        self._gate = LLMExecutionGate(
+            max_concurrency=config.pool_size,
+            max_queue=config.queue_size,
+            retry_after_seconds=config.queue_retry_after_seconds,
+        )
+        self._timeout_seconds = config.timeout_seconds
+        self._retry_max_attempts = config.retry_max_attempts
+        self._retry_backoff_base = config.retry_backoff_base_seconds
+        self._retry_backoff_max = config.retry_backoff_max_seconds
+
+    async def invoke(self, operation: Callable[[], Awaitable]) -> Any:
+        for attempt in range(1, self._retry_max_attempts + 1):
+            await self._circuit_breaker.before_call()
+            try:
+
+                async def timed_op():
+                    return await asyncio.wait_for(operation(), timeout=self._timeout_seconds)
+
+                result = await self._gate.run(timed_op)
+                await self._circuit_breaker.record_success()
+                return result
+            except (QueueFullError, CircuitOpenError):
+                raise
+            except Exception as e:
+                await self._circuit_breaker.record_failure()
+                if attempt >= self._retry_max_attempts or not _is_transient_error(e):
+                    if _is_transient_error(e):
+                        raise TransientLLMError(str(e)) from e
+                    raise PermanentLLMError(str(e)) from e
+                backoff = min(
+                    self._retry_backoff_max,
+                    self._retry_backoff_base * (2 ** (attempt - 1)),
+                )
+                if backoff > 0:
+                    await asyncio.sleep(backoff)
+        raise TransientLLMError("LLM request failed after all retries")

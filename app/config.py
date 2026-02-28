@@ -28,10 +28,7 @@ class DatabaseConfig(BaseModel):
         )
 
 
-class ModelConfig(BaseModel):
-    name: str = Field(default="gpt-4o-mini")
-    temperature: float = Field(default=0.3, ge=0.0, le=2.0)
-    max_tokens: int = Field(default=1000, ge=1)
+class ResilienceConfig(BaseModel):
     pool_size: int = Field(default=5, ge=1)
     queue_size: int = Field(default=25, ge=1)
     queue_retry_after_seconds: int = Field(default=2, ge=1)
@@ -41,6 +38,13 @@ class ModelConfig(BaseModel):
     retry_backoff_max_seconds: float = Field(default=4.0, ge=0)
     circuit_breaker_failure_threshold: int = Field(default=5, ge=1)
     circuit_breaker_reset_seconds: int = Field(default=60, ge=1)
+
+
+class ModelConfig(BaseModel):
+    name: str = Field(default="gpt-4o-mini")
+    temperature: float = Field(default=0.3, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=1000, ge=1)
+    resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
 
 
 class AppConfig(BaseConfig):
