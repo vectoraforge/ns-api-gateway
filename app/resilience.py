@@ -1,17 +1,17 @@
 import asyncio
 import time
-from contextlib import asynccontextmanager
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 
 from app.exceptions import CircuitOpenError, QueueFullError
 
 try:
     from openai import (
         APIConnectionError,
-        APITimeoutError,
-        RateLimitError,
-        InternalServerError,
         APIStatusError,
+        APITimeoutError,
+        InternalServerError,
+        RateLimitError,
     )
 except ImportError:  # pragma: no cover - openai is a runtime dependency
     APIConnectionError = APITimeoutError = RateLimitError = InternalServerError = APIStatusError = ()

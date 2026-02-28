@@ -1,17 +1,16 @@
-import asyncio
 import base64
 import json
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.database import get_db
-from app.routers import prompts_router, chats_router, root_router
-from app.errors import register_exception_handlers
 from app.auth import UnsafeBase64Verifier
+from app.database import get_db
+from app.errors import register_exception_handlers
 from app.resilience import CircuitBreaker, LLMExecutionGate
+from app.routers import chats_router, prompts_router, root_router
 from app.services import AnalysisService
 
 

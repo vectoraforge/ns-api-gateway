@@ -1,22 +1,22 @@
 import asyncio
 from uuid import UUID, uuid4
 
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_openai import ChatOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chats import Chats
-from app.resilience import CircuitBreaker, LLMExecutionGate, _is_transient_error
-from app.schema import AnalyzeResponse, AnalyzeResponseLLM, ExamplesResponse
 from app.exceptions import (
-    UnsupportedLanguageError,
-    TransientLLMError,
+    ChatHistoryLimitError,
+    CircuitOpenError,
+    MessageTooLargeError,
     PermanentLLMError,
     QueueFullError,
-    CircuitOpenError,
-    ChatHistoryLimitError,
-    MessageTooLargeError,
+    TransientLLMError,
+    UnsupportedLanguageError,
 )
+from app.resilience import CircuitBreaker, LLMExecutionGate, _is_transient_error
+from app.schema import AnalyzeResponse, AnalyzeResponseLLM, ExamplesResponse
 
 
 class AnalysisService:
@@ -49,14 +49,14 @@ class AnalysisService:
         self.history_max_assistant_messages = history_max_assistant_messages
         self.message_max_chars = message_max_chars
         self.chats = chats
-        structured_llm = self.llm.with_structured_output(
-            AnalyzeResponseLLM, method="json_schema", strict=True
+        structured_llm = self.llm.with_structured_output(AnalyzeResponseLLM, method="json_schema", strict=True)
+        prompt_template = ChatPromptTemplate.from_messages(
+            [
+                ("system", self.prompt),
+                MessagesPlaceholder("history"),
+                ("human", "Analyze this phrase: {phrase}"),
+            ]
         )
-        prompt_template = ChatPromptTemplate.from_messages([
-            ("system", self.prompt),
-            MessagesPlaceholder("history"),
-            ("human", "Analyze this phrase: {phrase}"),
-        ])
         self.chain = prompt_template | structured_llm
 
     @property
@@ -85,6 +85,7 @@ class AnalysisService:
         for attempt in range(1, self.retry_max_attempts + 1):
             await self.circuit_breaker.before_call()
             try:
+
                 async def operation():
                     return await asyncio.wait_for(chain.ainvoke(params), timeout=self.timeout_seconds)
 

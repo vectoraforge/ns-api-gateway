@@ -1,12 +1,12 @@
 import asyncio
 import time
-from typing import Callable, Awaitable
+from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter, Depends, Request
+from openai import AsyncOpenAI
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse
-from openai import AsyncOpenAI
 
 from app.database import get_db
 

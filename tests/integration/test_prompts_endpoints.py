@@ -1,10 +1,8 @@
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-import pytest
-
+from app.exceptions import AnalysisError, InvalidChatError, UnsupportedLanguageError
 from app.schema import AnalyzeResponse
-from app.exceptions import UnsupportedLanguageError, AnalysisError, InvalidChatError
 
 
 class TestAnalyzeEndpoint:
@@ -72,14 +70,10 @@ class TestAnalyzeEndpoint:
         )
 
         assert response.status_code == 200
-        client.app.state.service.analyze.assert_called_once_with(
-            mock_db, "Follow up", "en", "test-user", chat_id
-        )
+        client.app.state.service.analyze.assert_called_once_with(mock_db, "Follow up", "en", "test-user", chat_id)
 
     def test_analyze_unsupported_language(self, client):
-        client.app.state.service.analyze = AsyncMock(
-            side_effect=UnsupportedLanguageError("fr", ["en", "es"])
-        )
+        client.app.state.service.analyze = AsyncMock(side_effect=UnsupportedLanguageError("fr", ["en", "es"]))
 
         response = client.post(
             "/prompts/analyze",
@@ -91,9 +85,7 @@ class TestAnalyzeEndpoint:
 
     def test_analyze_invalid_chat(self, client):
         chat_id = uuid4()
-        client.app.state.service.analyze = AsyncMock(
-            side_effect=InvalidChatError(chat_id)
-        )
+        client.app.state.service.analyze = AsyncMock(side_effect=InvalidChatError(chat_id))
 
         response = client.post(
             "/prompts/analyze",
@@ -103,9 +95,7 @@ class TestAnalyzeEndpoint:
         assert response.status_code == 404
 
     def test_analyze_service_error(self, client):
-        client.app.state.service.analyze = AsyncMock(
-            side_effect=AnalysisError("LLM failed")
-        )
+        client.app.state.service.analyze = AsyncMock(side_effect=AnalysisError("LLM failed"))
 
         response = client.post(
             "/prompts/analyze",
@@ -192,9 +182,7 @@ class TestChatEndpoint:
 
     def test_chat_invalid_id(self, client):
         chat_id = uuid4()
-        client.app.state.service.chat = AsyncMock(
-            side_effect=InvalidChatError(chat_id)
-        )
+        client.app.state.service.chat = AsyncMock(side_effect=InvalidChatError(chat_id))
 
         response = client.post(
             f"/chats/{chat_id}/messages",
@@ -232,9 +220,7 @@ class TestExamplesEndpoint:
         assert data["lang"] == "es"
 
     def test_examples_unsupported_language(self, client):
-        client.app.state.service.get_examples = MagicMock(
-            side_effect=UnsupportedLanguageError("fr", ["en", "es"])
-        )
+        client.app.state.service.get_examples = MagicMock(side_effect=UnsupportedLanguageError("fr", ["en", "es"]))
 
         response = client.get("/prompts/examples?lang=fr")
 

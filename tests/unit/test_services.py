@@ -1,12 +1,11 @@
-import asyncio
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 
-from app.schema import AnalyzeResponse, AnalyzeResponseLLM, ExamplesResponse, Issue
-from app.exceptions import UnsupportedLanguageError, AnalysisError, InvalidChatError, PermanentLLMError, TransientLLMError
+from app.exceptions import InvalidChatError, PermanentLLMError, TransientLLMError, UnsupportedLanguageError
 from app.resilience import CircuitBreaker, LLMExecutionGate
+from app.schema import AnalyzeResponse, AnalyzeResponseLLM, ExamplesResponse, Issue
 from app.services import AnalysisService
 
 

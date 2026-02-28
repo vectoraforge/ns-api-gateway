@@ -3,18 +3,18 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from app.schema import (
-    AnalyzeRequest,
-    Issue,
-    AnalyzeResponse,
-    ExamplesResponse,
-    ChatMessageRequest,
-)
 from app.exceptions import (
-    UnsupportedLanguageError,
     AnalysisError,
     InvalidChatError,
     ServiceError,
+    UnsupportedLanguageError,
+)
+from app.schema import (
+    AnalyzeRequest,
+    AnalyzeResponse,
+    ChatMessageRequest,
+    ExamplesResponse,
+    Issue,
 )
 
 
@@ -45,10 +45,7 @@ class TestAnalyzeRequest:
 
 class TestIssue:
     def test_valid_issue(self):
-        issue = Issue(
-            text_part="going to home",
-            explanation="Should be 'going home'"
-        )
+        issue = Issue(text_part="going to home", explanation="Should be 'going home'")
         assert issue.text_part == "going to home"
         assert issue.explanation == "Should be 'going home'"
 
@@ -61,12 +58,7 @@ class TestAnalyzeResponse:
     def test_valid_response(self):
         cid = uuid4()
         response = AnalyzeResponse(
-            text="Test phrase",
-            lang="en",
-            chat_id=cid,
-            issues=[],
-            alternatives=[],
-            assessment="Good"
+            text="Test phrase", lang="en", chat_id=cid, issues=[], alternatives=[], assessment="Good"
         )
         assert response.text == "Test phrase"
         assert response.lang == "en"
@@ -81,7 +73,7 @@ class TestAnalyzeResponse:
             chat_id=uuid4(),
             issues=[issue],
             alternatives=["I am going home."],
-            assessment="Needs work"
+            assessment="Needs work",
         )
         assert len(response.issues) == 1
         assert len(response.alternatives) == 1
@@ -96,10 +88,7 @@ class TestChatModels:
 
 class TestExamplesResponse:
     def test_valid_response(self):
-        response = ExamplesResponse(
-            lang="en",
-            examples=["Example 1", "Example 2"]
-        )
+        response = ExamplesResponse(lang="en", examples=["Example 1", "Example 2"])
         assert response.lang == "en"
         assert len(response.examples) == 2
 

@@ -4,23 +4,24 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.auth import UnsafeBase64Verifier, get_user_id
 from app.errors import register_exception_handlers
 from app.exceptions import (
-    MissingTokenError,
-    InvalidTokenError,
-    ExpiredTokenError,
+    ChatHistoryLimitError,
     ChatOwnershipError,
+    CircuitOpenError,
     DatabaseNotInitializedError,
-    UnsupportedLanguageError,
+    ExpiredTokenError,
     InvalidChatError,
     InvalidCursorError,
-    PageSizeLimitError,
-    QueueFullError,
-    CircuitOpenError,
-    ChatHistoryLimitError,
+    InvalidTokenError,
     MessageTooLargeError,
-    TransientLLMError,
+    MissingTokenError,
+    PageSizeLimitError,
     PermanentLLMError,
+    QueueFullError,
+    TransientLLMError,
+    UnsupportedLanguageError,
 )
 
 CASES = [
@@ -51,6 +52,7 @@ class _Body(BaseModel):
 def _make_raise_route(exc: Exception):
     async def _route():
         raise exc
+
     return _route
 
 
@@ -91,9 +93,6 @@ def test_validation_error_handler(handler_client):
     assert body["error"]
 
 
-from app.auth import UnsafeBase64Verifier, get_user_id
-
-
 @pytest.fixture(scope="module")
 def dep_client():
     app = FastAPI()
@@ -124,6 +123,7 @@ def test_invalid_bearer_token_returns_401(dep_client):
 def test_valid_bearer_token_resolves_user(dep_client):
     import base64
     import json
+
     payload = base64.urlsafe_b64encode(json.dumps({"user_id": "u1"}).encode()).rstrip(b"=").decode()
     token = f"header.{payload}.sig"
     response = dep_client.get("/protected", headers={"Authorization": f"Bearer {token}"})
@@ -134,6 +134,7 @@ def test_valid_bearer_token_resolves_user(dep_client):
 def test_expired_token_returns_401(dep_client):
     import base64
     import json
+
     payload = base64.urlsafe_b64encode(json.dumps({"user_id": "u1", "exp": 1}).encode()).rstrip(b"=").decode()
     token = f"header.{payload}.sig"
     response = dep_client.get("/protected", headers={"Authorization": f"Bearer {token}"})
@@ -146,6 +147,7 @@ def test_expired_token_returns_401(dep_client):
 @pytest.fixture(scope="module")
 def state_client():
     """Confirms verifier is resolved from app.state — swapping it changes behavior."""
+
     class _AlwaysUser:
         def verify(self, token: str) -> str:
             return "hardcoded-user"

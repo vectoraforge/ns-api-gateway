@@ -10,5 +10,5 @@ async def root(request: Request):
     return {
         "name": "SpeakNative API Gateway",
         "version": version("sn-api-gateway"),
-        "supported_languages": request.app.state.service.supported_languages
+        "supported_languages": request.app.state.service.supported_languages,
     }

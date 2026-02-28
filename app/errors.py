@@ -6,20 +6,20 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
 from app.exceptions import (
-    UnsupportedLanguageError,
     AnalysisError,
-    TransientLLMError,
-    PermanentLLMError,
+    AuthError,
+    ChatHistoryLimitError,
+    ChatOwnershipError,
+    CircuitOpenError,
+    DatabaseNotInitializedError,
     InvalidChatError,
     InvalidCursorError,
-    PageSizeLimitError,
-    QueueFullError,
-    CircuitOpenError,
-    ChatHistoryLimitError,
     MessageTooLargeError,
-    AuthError,
-    ChatOwnershipError,
-    DatabaseNotInitializedError,
+    PageSizeLimitError,
+    PermanentLLMError,
+    QueueFullError,
+    TransientLLMError,
+    UnsupportedLanguageError,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ async def queue_full_handler(_: Request, exc: QueueFullError) -> JSONResponse:
     return JSONResponse(
         status_code=503,
         content={"status": 503, "error": "LLM queue is full"},
-        headers={"Retry-After": str(exc.retry_after_seconds)}
+        headers={"Retry-After": str(exc.retry_after_seconds)},
     )
 
 
@@ -66,7 +66,7 @@ async def circuit_open_handler(_: Request, exc: CircuitOpenError) -> JSONRespons
     return JSONResponse(
         status_code=503,
         content={"status": 503, "error": "LLM circuit breaker is open"},
-        headers={"Retry-After": str(exc.retry_after_seconds)}
+        headers={"Retry-After": str(exc.retry_after_seconds)},
     )
 
 
@@ -103,7 +103,8 @@ async def database_not_initialized_handler(_: Request, exc: DatabaseNotInitializ
 
 
 async def http_exception_handler(_: Request, exc: StarletteHTTPException) -> JSONResponse:
-    return JSONResponse(status_code=exc.status_code, content={"status": exc.status_code, "error": exc.detail or "Error"})
+    content = {"status": exc.status_code, "error": exc.detail or "Error"}
+    return JSONResponse(status_code=exc.status_code, content=content)
 
 
 async def generic_error_handler(_: Request, exc: Exception) -> JSONResponse:

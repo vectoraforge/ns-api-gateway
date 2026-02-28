@@ -1,4 +1,3 @@
-import asyncio
 import base64
 import json
 from collections.abc import AsyncGenerator
@@ -10,12 +9,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.database import get_db
-from app.routers import chats_router
-from app.errors import register_exception_handlers
 from app.auth import UnsafeBase64Verifier
 from app.chats import Chats
+from app.database import get_db
+from app.errors import register_exception_handlers
 from app.resilience import CircuitBreaker, LLMExecutionGate
+from app.routers import chats_router
 from app.services import AnalysisService
 
 TEST_DB_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/nativespeaker"
@@ -37,12 +36,8 @@ async def db_session(db_engine) -> AsyncGenerator[AsyncSession, None]:
 
 
 def _make_token(user_id: str) -> str:
-    header = base64.urlsafe_b64encode(
-        json.dumps({"alg": "none", "typ": "JWT"}).encode()
-    ).rstrip(b"=")
-    payload = base64.urlsafe_b64encode(
-        json.dumps({"user_id": user_id}).encode()
-    ).rstrip(b"=")
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode()).rstrip(b"=")
+    payload = base64.urlsafe_b64encode(json.dumps({"user_id": user_id}).encode()).rstrip(b"=")
     return f"{header.decode()}.{payload.decode()}.signature"
 
 
@@ -97,6 +92,7 @@ async def create_chat(db_session: AsyncSession, user_id: str) -> UUID:
 async def cleanup_chat(db_session: AsyncSession, chat_id: UUID) -> None:
     """Delete a chat row (messages cascade via FK)."""
     from app.models import Chat
+
     chat = await db_session.get(Chat, chat_id)
     if chat:
         await db_session.delete(chat)

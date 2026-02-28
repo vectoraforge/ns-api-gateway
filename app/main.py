@@ -6,14 +6,14 @@ from importlib.metadata import version
 from fastapi import FastAPI
 from langchain.chat_models import init_chat_model
 
-from app.routers import prompts_router, chats_router, root_router, health_router
-from app.routers.health import ReadinessCache
-from app.config import MainConfig
-from app.errors import register_exception_handlers
 from app.auth import UnsafeBase64Verifier
 from app.chats import Chats
-from app.database import init_engine, engine
+from app.config import MainConfig
+from app.database import engine, init_engine
+from app.errors import register_exception_handlers
 from app.resilience import CircuitBreaker, LLMExecutionGate
+from app.routers import chats_router, health_router, prompts_router, root_router
+from app.routers.health import ReadinessCache
 from app.services import AnalysisService
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ def setup_logging(log_level: str):
     logging.basicConfig(
         level=getattr(logging, log_level, logging.INFO),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)]
+        handlers=[logging.StreamHandler(sys.stdout)],
     )
 
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -39,9 +39,7 @@ async def lifespan(app: FastAPI):
     chats = Chats()
 
     llm = init_chat_model(
-        model=config.model.name,
-        temperature=config.model.temperature,
-        max_tokens=config.model.max_tokens
+        model=config.model.name, temperature=config.model.temperature, max_tokens=config.model.max_tokens
     )
     gate = LLMExecutionGate(
         max_concurrency=config.model.pool_size,
@@ -85,7 +83,7 @@ app = FastAPI(
     title="SpeakNative API Gateway",
     description="API Gateway for linguistic analysis of phrases",
     version=version("sn-api-gateway"),
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 app.include_router(root_router)

@@ -5,7 +5,7 @@ from typing import Protocol
 
 from fastapi import Header, Request
 
-from app.exceptions import MissingTokenError, InvalidTokenError, ExpiredTokenError
+from app.exceptions import ExpiredTokenError, InvalidTokenError, MissingTokenError
 
 
 def _decode_jwt_payload(token: str) -> dict:

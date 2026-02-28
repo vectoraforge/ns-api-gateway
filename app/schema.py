@@ -1,5 +1,5 @@
-from uuid import UUID
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,7 @@ class Issue(BaseModel):
 class AnalyzeResponseLLM(BaseModel):
     """Schema for LLM structured output. Separate from AnalyzeResponse (API schema)
     because the LLM does not produce text, lang, or chat_id fields."""
+
     issues: list[Issue] = Field(default_factory=list, description="Issues found in the phrase")
     alternatives: list[str] = Field(default_factory=list, description="Corrected alternatives")
     assessment: str = Field(..., description="Overall assessment of naturalness")

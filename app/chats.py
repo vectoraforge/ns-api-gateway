@@ -3,12 +3,12 @@ from datetime import datetime
 from uuid import UUID
 
 from langchain_core.messages import AIMessage, HumanMessage
+from sqlalchemy import and_, func, insert, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
-from sqlalchemy import func, and_, or_, insert, delete
 
-from app.models import Chat, Message
 from app.exceptions import ChatOwnershipError, InvalidChatError
+from app.models import Chat, Message
 
 
 class Chats:
@@ -52,9 +52,7 @@ class Chats:
         self, db: AsyncSession, chat_id: UUID, limit: int | None = None
     ) -> list[HumanMessage | AIMessage]:
         statement = (
-            select(Message.role, Message.content)
-            .where(Message.chat_id == chat_id)
-            .order_by(Message.created_at.desc())
+            select(Message.role, Message.content).where(Message.chat_id == chat_id).order_by(Message.created_at.desc())
         )
         if limit is not None:
             statement = statement.limit(limit)
@@ -69,9 +67,7 @@ class Chats:
 
     async def get_message_counts(self, db: AsyncSession, chat_id: UUID) -> dict[str, int]:
         statement = (
-            select(Message.role, func.count(Message.id))
-            .where(Message.chat_id == chat_id)
-            .group_by(Message.role)
+            select(Message.role, func.count(Message.id)).where(Message.chat_id == chat_id).group_by(Message.role)
         )
         results = (await db.exec(statement)).all()
         return {role: count for role, count in results}

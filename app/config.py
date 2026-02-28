@@ -1,8 +1,8 @@
-import yaml
-from pathlib import Path
-from enum import StrEnum
 import logging
+from enum import StrEnum
+from pathlib import Path
 
+import yaml
 from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -23,7 +23,9 @@ class DatabaseConfig(BaseModel):
 
     @property
     def url(self) -> str:
-        return f"postgresql+asyncpg://{self.user}:{self.password.get_secret_value()}@{self.host}:{self.port}/{self.name}"
+        return (
+            f"postgresql+asyncpg://{self.user}:{self.password.get_secret_value()}@{self.host}:{self.port}/{self.name}"
+        )
 
 
 class ModelConfig(BaseModel):
@@ -63,10 +65,10 @@ class MainConfig(BaseConfig):
 
     app: AppConfig | None = None
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def load_config(self):
         yaml_data = yaml.safe_load(self.config_dir.read_text())
-        app_config = AppConfig(_env_prefix='__NONE__', **yaml_data)
+        app_config = AppConfig(_env_prefix="__NONE__", **yaml_data)
         app_config.prompt = self.prompt_path.read_text()
         app_config.examples = yaml.safe_load(self.examples_path.read_text())
         self.app = app_config

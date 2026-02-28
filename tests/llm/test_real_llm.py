@@ -6,10 +6,10 @@ import pytest
 
 @pytest.mark.llm
 class TestRealLLM:
-
     @pytest.fixture
     def real_client(self):
         from fastapi.testclient import TestClient
+
         from app.main import app
 
         with TestClient(app) as client:
@@ -20,13 +20,7 @@ class TestRealLLM:
             yield client
 
     def test_analyze_real_phrase_english(self, real_client):
-        response = real_client.post(
-            "/prompts/analyze",
-            json={
-                "text": "I am going to home.",
-                "lang": "en"
-            }
-        )
+        response = real_client.post("/prompts/analyze", json={"text": "I am going to home.", "lang": "en"})
 
         assert response.status_code == 200, response.text
 
@@ -42,13 +36,7 @@ class TestRealLLM:
         assert len(data["issues"]) > 0 or len(data["alternatives"]) > 0
 
     def test_analyze_real_phrase_spanish(self, real_client):
-        response = real_client.post(
-            "/prompts/analyze",
-            json={
-                "text": "Yo soy va a casa.",
-                "lang": "es"
-            }
-        )
+        response = real_client.post("/prompts/analyze", json={"text": "Yo soy va a casa.", "lang": "es"})
 
         assert response.status_code == 200, response.text
         data = response.json()
@@ -58,13 +46,7 @@ class TestRealLLM:
         assert "alternatives" in data
 
     def test_analyze_correct_phrase(self, real_client):
-        response = real_client.post(
-            "/prompts/analyze",
-            json={
-                "text": "I am going home.",
-                "lang": "en"
-            }
-        )
+        response = real_client.post("/prompts/analyze", json={"text": "I am going home.", "lang": "en"})
 
         assert response.status_code == 200, response.text
         data = response.json()

@@ -5,17 +5,17 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_user_id
 from app.database import get_db
+from app.exceptions import InvalidCursorError, PageSizeLimitError
 from app.schema import (
     AnalyzeRequest,
     AnalyzeResponse,
-    ChatMessageRequest,
     ChatMessage,
+    ChatMessageRequest,
     ChatMessagesResponse,
     ExamplesResponse,
 )
-from app.exceptions import ChatOwnershipError, InvalidCursorError, PageSizeLimitError
-from app.auth import get_user_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/prompts")
@@ -79,11 +79,9 @@ async def list_chat_messages(
             raise InvalidCursorError()
 
     service = request.app.state.service
-    chat = await service.chats.get_chat_owned(db, chat_id, user_id)
+    await service.chats.get_chat_owned(db, chat_id, user_id)
 
-    messages, next_cursor = await service.chats.list_messages(
-        db, chat_id, limit=limit, cursor=cursor
-    )
+    messages, next_cursor = await service.chats.list_messages(db, chat_id, limit=limit, cursor=cursor)
 
     items = [
         ChatMessage(

@@ -1,5 +1,6 @@
 import pytest
-from tests.integration.conftest import _make_token, create_chat, cleanup_chat
+
+from tests.integration.conftest import _make_token, cleanup_chat, create_chat
 
 USER_A = "user-a"
 USER_B = "user-b"
@@ -11,7 +12,6 @@ def auth(user_id: str) -> dict:
 
 @pytest.mark.db
 class TestCrossUserIsolation:
-
     @pytest.mark.asyncio
     async def test_user_a_cannot_read_user_b_chat(self, integration_client, db_session):
         chat_id = await create_chat(db_session, USER_B)
