@@ -15,6 +15,14 @@ class Issue(BaseModel):
     explanation: str = Field(..., description="Explanation of why this is an issue")
 
 
+class AnalyzeResponseLLM(BaseModel):
+    """Schema for LLM structured output. Separate from AnalyzeResponse (API schema)
+    because the LLM does not produce text, lang, or chat_id fields."""
+    issues: list[Issue] = Field(default_factory=list, description="Issues found in the phrase")
+    alternatives: list[str] = Field(default_factory=list, description="Corrected alternatives")
+    assessment: str = Field(..., description="Overall assessment of naturalness")
+
+
 class AnalyzeResponse(BaseModel):
     text: str = Field(..., description="The original phrase")
     lang: str = Field(..., description="Language code used")

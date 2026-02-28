@@ -3,12 +3,11 @@ from uuid import UUID, uuid4
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.output_parsers import JsonOutputParser
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chats import Chats
 from app.resilience import CircuitBreaker, LLMExecutionGate, _is_transient_error
-from app.schema import AnalyzeResponse, ExamplesResponse
+from app.schema import AnalyzeResponse, AnalyzeResponseLLM, ExamplesResponse
 from app.exceptions import (
     UnsupportedLanguageError,
     TransientLLMError,
@@ -50,6 +49,15 @@ class AnalysisService:
         self.history_max_assistant_messages = history_max_assistant_messages
         self.message_max_chars = message_max_chars
         self.chats = chats
+        structured_llm = self.llm.with_structured_output(
+            AnalyzeResponseLLM, method="json_schema", strict=True
+        )
+        prompt_template = ChatPromptTemplate.from_messages([
+            ("system", self.prompt),
+            MessagesPlaceholder("history"),
+            ("human", "Analyze this phrase: {phrase}"),
+        ])
+        self.chain = prompt_template | structured_llm
 
     @property
     def supported_languages(self) -> list[str]:
@@ -121,22 +129,15 @@ class AnalysisService:
             chat_id = uuid4()
             await self.chats.create_chat(db, chat_id, lang, user_id=user_id)
 
-        prompt_template = ChatPromptTemplate.from_messages([
-            ("system", self.prompt),
-            MessagesPlaceholder("history"),
-            ("human", "Analyze this phrase: {phrase}"),
-        ])
-        chain = prompt_template | self.llm | JsonOutputParser()
-
         history_limit = self.history_max_human_messages + self.history_max_assistant_messages
         history = await self.chats.load_history(db, chat_id, limit=history_limit)
-        response = await self._invoke(chain, {"lang": lang, "phrase": text, "history": history})
+        response = await self._invoke(self.chain, {"lang": lang, "phrase": text, "history": history})
 
-        assistant_payload = str(response)
+        assistant_payload = str(response.model_dump())
         self._ensure_message_size(assistant_payload, "assistant")
         await self.chats.save_messages(db, chat_id, f"Analyze this phrase: {text}", assistant_payload)
 
-        return AnalyzeResponse.model_validate({**response, "text": text, "lang": lang, "chat_id": chat_id})
+        return AnalyzeResponse(text=text, lang=lang, chat_id=chat_id, **response.model_dump())
 
     async def chat(self, db: AsyncSession, chat_id: UUID, text: str, user_id: str) -> AnalyzeResponse:
         self._ensure_message_size(text, "user")
@@ -144,20 +145,14 @@ class AnalysisService:
         await self._ensure_history_capacity(db, chat_id)
         history_limit = self.history_max_human_messages + self.history_max_assistant_messages
         history = await self.chats.load_history(db, chat_id, limit=history_limit)
-        prompt_template = ChatPromptTemplate.from_messages([
-            ("system", self.prompt),
-            MessagesPlaceholder("history"),
-            ("human", "Analyze this phrase: {phrase}"),
-        ])
-        chain = prompt_template | self.llm | JsonOutputParser()
 
-        response = await self._invoke(chain, {"lang": lang, "history": history, "phrase": text})
+        response = await self._invoke(self.chain, {"lang": lang, "history": history, "phrase": text})
 
-        assistant_payload = str(response)
+        assistant_payload = str(response.model_dump())
         self._ensure_message_size(assistant_payload, "assistant")
         await self.chats.save_messages(db, chat_id, text, assistant_payload)
 
-        return AnalyzeResponse.model_validate({**response, "text": text, "lang": lang, "chat_id": chat_id})
+        return AnalyzeResponse(text=text, lang=lang, chat_id=chat_id, **response.model_dump())
 
     def get_examples(self, lang: str) -> ExamplesResponse:
         examples = self.examples.get(lang, [])
