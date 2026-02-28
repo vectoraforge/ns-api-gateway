@@ -56,7 +56,6 @@ class AppConfig(BaseConfig):
     history_max_assistant_messages: int = Field(default=50, ge=1)
     message_max_chars: int = Field(default=4096, ge=1)
     messages_max_page_size: int = Field(default=100, ge=1)
-    readiness_cache_seconds: int = Field(default=60, ge=1)
 
     prompt: str | None = None
     examples: dict[str, list[str]] = {}

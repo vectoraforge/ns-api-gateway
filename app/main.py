@@ -13,7 +13,6 @@ from app.database import engine, init_engine
 from app.errors import register_exception_handlers
 from app.resilience import ResiliencePolicy
 from app.routers import chats_router, health_router, prompts_router, root_router
-from app.routers.health import ReadinessCache
 from app.services import AnalysisService
 
 logger = logging.getLogger(__name__)
@@ -45,7 +44,6 @@ async def lifespan(app: FastAPI):
 
     app.state.config = config
     app.state.verifier = UnsafeBase64Verifier()
-    app.state.readiness_cache = ReadinessCache(config.readiness_cache_seconds)
     app.state.service = AnalysisService(
         prompt=config.prompt,
         examples=config.examples,

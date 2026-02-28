@@ -3,7 +3,6 @@ history_max_human_messages: 50
 history_max_assistant_messages: 50
 message_max_chars: 4096
 messages_max_page_size: 100
-readiness_cache_seconds: 60
 model:
   name: gpt-4o-mini
   temperature: 0.3
