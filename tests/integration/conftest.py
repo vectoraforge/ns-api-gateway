@@ -11,9 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.auth import UnsafeBase64Verifier
 from app.chats import Chats
+from app.config import ResilienceConfig
 from app.database import get_db
 from app.errors import register_exception_handlers
-from app.config import ResilienceConfig
 from app.resilience import ResiliencePolicy
 from app.routers import chats_router
 from app.services import AnalysisService
@@ -60,12 +60,19 @@ def integration_client(db_session):
     app.state.verifier = UnsafeBase64Verifier()
 
     mock_llm = MagicMock()
-    policy = ResiliencePolicy(ResilienceConfig(
-        pool_size=1, queue_size=1, queue_retry_after_seconds=1,
-        timeout_seconds=5, retry_max_attempts=1,
-        retry_backoff_base_seconds=0, retry_backoff_max_seconds=0,
-        circuit_breaker_failure_threshold=3, circuit_breaker_reset_seconds=60,
-    ))
+    policy = ResiliencePolicy(
+        ResilienceConfig(
+            pool_size=1,
+            queue_size=1,
+            queue_retry_after_seconds=1,
+            timeout_seconds=5,
+            retry_max_attempts=1,
+            retry_backoff_base_seconds=0,
+            retry_backoff_max_seconds=0,
+            circuit_breaker_failure_threshold=3,
+            circuit_breaker_reset_seconds=60,
+        )
+    )
     app.state.service = AnalysisService(
         prompt="Test prompt",
         examples={"en": ["example"]},

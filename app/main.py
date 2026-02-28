@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
     config = MainConfig().app
     setup_logging(log_level=config.log_level)
 
-    init_engine(config.db.url, config.pool_size)
+    init_engine(config.db.url, config.db.pool_size)
     chats = Chats()
 
     llm = init_chat_model(

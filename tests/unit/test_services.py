@@ -3,8 +3,8 @@ from uuid import uuid4
 
 import pytest
 
-from app.exceptions import InvalidChatError, PermanentLLMError, TransientLLMError, UnsupportedLanguageError
 from app.config import ResilienceConfig
+from app.exceptions import InvalidChatError, PermanentLLMError, TransientLLMError, UnsupportedLanguageError
 from app.resilience import ResiliencePolicy
 from app.schema import AnalyzeResponse, AnalyzeResponseLLM, ExamplesResponse, Issue
 from app.services import AnalysisService
@@ -36,12 +36,19 @@ def mock_chats():
 
 @pytest.fixture
 def service(examples, mock_chats):
-    policy = ResiliencePolicy(ResilienceConfig(
-        pool_size=1, queue_size=1, queue_retry_after_seconds=1,
-        timeout_seconds=1, retry_max_attempts=1,
-        retry_backoff_base_seconds=0, retry_backoff_max_seconds=0,
-        circuit_breaker_failure_threshold=3, circuit_breaker_reset_seconds=60,
-    ))
+    policy = ResiliencePolicy(
+        ResilienceConfig(
+            pool_size=1,
+            queue_size=1,
+            queue_retry_after_seconds=1,
+            timeout_seconds=1,
+            retry_max_attempts=1,
+            retry_backoff_base_seconds=0,
+            retry_backoff_max_seconds=0,
+            circuit_breaker_failure_threshold=3,
+            circuit_breaker_reset_seconds=60,
+        )
+    )
     svc = AnalysisService(
         prompt="Analyze {lang} phrase: {phrase}",
         examples=examples,

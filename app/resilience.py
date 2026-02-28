@@ -2,7 +2,6 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
-
 from typing import Any
 
 from app.config import ResilienceConfig

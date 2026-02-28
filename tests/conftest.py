@@ -20,7 +20,7 @@ def mock_config():
     config = MagicMock()
     config.api_key = "test-api-key"
     config.log_level = "DEBUG"
-    config.pool_size = 2
+
     config.model.name = "gpt-4o-mini"
     config.model.temperature = 0.3
     config.model.max_tokens = 1000
