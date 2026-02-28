@@ -27,14 +27,6 @@ class Chats:
         db.add(Chat(id=chat_id, user_id=user_id, lang=lang))
         await db.commit()
 
-    async def get_chat(self, db: AsyncSession, chat_id: UUID, user_id: str | None = None) -> dict | None:
-        if user_id is None:
-            chat = await db.get(Chat, chat_id)
-        else:
-            statement = select(Chat).where(Chat.id == chat_id, Chat.user_id == user_id)
-            chat = (await db.exec(statement)).first()
-        return {"id": chat.id, "lang": chat.lang, "user_id": chat.user_id} if chat else None
-
     async def get_chat_owned(self, db: AsyncSession, chat_id: UUID, user_id: str) -> dict:
         """Return chat dict if owned by user_id. Raise ChatOwnershipError if exists but wrong owner,
         InvalidChatError if it doesn't exist."""
@@ -108,13 +100,6 @@ class Chats:
             if last.created_at is not None and last.id is not None:
                 next_cursor = self._encode_cursor(last.created_at, last.id)
         return results, next_cursor
-
-    async def delete_chat(self, db: AsyncSession, chat_id: UUID, user_id: str) -> bool:
-        statement = delete(Chat).where(Chat.id == chat_id, Chat.user_id == user_id).returning(Chat.id)
-        result = await db.execute(statement)
-        deleted = result.scalar_one_or_none()
-        await db.commit()
-        return deleted is not None
 
     async def save_messages(self, db: AsyncSession, chat_id: UUID, human: str, assistant: str) -> None:
         await db.execute(

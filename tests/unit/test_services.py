@@ -27,7 +27,6 @@ def mock_db():
 def mock_chats():
     chats = AsyncMock()
     chats.create_chat = AsyncMock()
-    chats.get_chat = AsyncMock(return_value=None)
     chats.get_chat_owned = AsyncMock(return_value=None)
     chats.load_history = AsyncMock(return_value=[])
     chats.get_message_counts = AsyncMock(return_value={"human": 0, "assistant": 0})
