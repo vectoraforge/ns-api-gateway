@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.schema import AnalyzeResponse, ExamplesResponse
+from app.schema import AnalyzeResponse, AnalyzeResponseLLM, ExamplesResponse, Issue
 from app.exceptions import UnsupportedLanguageError, AnalysisError, InvalidChatError, PermanentLLMError, TransientLLMError
 from app.resilience import CircuitBreaker, LLMExecutionGate
 from app.services import AnalysisService
@@ -38,7 +38,7 @@ def mock_chats():
 def service(examples, mock_chats):
     gate = LLMExecutionGate(max_concurrency=1, max_queue=1, retry_after_seconds=1)
     circuit_breaker = CircuitBreaker(failure_threshold=3, reset_seconds=60)
-    return AnalysisService(
+    svc = AnalysisService(
         prompt="Analyze {lang} phrase: {phrase}",
         examples=examples,
         llm=MagicMock(),
@@ -53,62 +53,46 @@ def service(examples, mock_chats):
         message_max_chars=4096,
         chats=mock_chats,
     )
+    svc.chain = MagicMock()
+    return svc
 
 
 class TestAnalyze:
     @pytest.mark.asyncio
     async def test_success(self, service, mock_db):
-        llm_response = {
-            "issues": [{"text_part": "going to home", "explanation": "Should be 'going home'"}],
-            "alternatives": ["I am going home."],
-            "assessment": "Minor grammar issue",
-        }
+        llm_response = AnalyzeResponseLLM(
+            issues=[Issue(text_part="going to home", explanation="Should be 'going home'")],
+            alternatives=["I am going home."],
+            assessment="Minor grammar issue",
+        )
 
-        with patch("app.services.ChatPromptTemplate") as mock_prompt, \
-             patch("app.services.JsonOutputParser") as mock_parser:
+        service.chain = AsyncMock()
+        service.chain.ainvoke.return_value = llm_response
 
-            mock_chain = AsyncMock()
-            mock_chain.ainvoke.return_value = llm_response
+        result = await service.analyze(mock_db, "I am going to home", "en", "user-1")
 
-            mock_prompt_inst = mock_prompt.from_messages.return_value
-            mock_pipe = mock_prompt_inst.__or__.return_value
-            mock_pipe.__or__.return_value = mock_chain
-
-            result = await service.analyze(mock_db, "I am going to home", "en", "user-1")
-
-            assert isinstance(result, AnalyzeResponse)
-            assert result.text == "I am going to home"
-            assert result.lang == "en"
-            assert result.chat_id is not None
-            assert len(result.issues) == 1
-            assert result.assessment == "Minor grammar issue"
+        assert isinstance(result, AnalyzeResponse)
+        assert result.text == "I am going to home"
+        assert result.lang == "en"
+        assert result.chat_id is not None
+        assert len(result.issues) == 1
+        assert result.assessment == "Minor grammar issue"
 
     @pytest.mark.asyncio
     async def test_with_existing_chat_id(self, service, mock_chats, mock_db):
         chat_id = uuid4()
         mock_chats.get_chat_owned.return_value = {"id": chat_id, "lang": "es", "user_id": "user-1"}
 
-        llm_response = {
-            "issues": [],
-            "alternatives": [],
-            "assessment": "Good",
-        }
+        llm_response = AnalyzeResponseLLM(issues=[], alternatives=[], assessment="Good")
 
-        with patch("app.services.ChatPromptTemplate") as mock_prompt, \
-             patch("app.services.JsonOutputParser"):
+        service.chain = AsyncMock()
+        service.chain.ainvoke.return_value = llm_response
 
-            mock_chain = AsyncMock()
-            mock_chain.ainvoke.return_value = llm_response
+        result = await service.analyze(mock_db, "Test", "en", "user-1", chat_id)
 
-            mock_prompt_inst = mock_prompt.from_messages.return_value
-            mock_pipe = mock_prompt_inst.__or__.return_value
-            mock_pipe.__or__.return_value = mock_chain
-
-            result = await service.analyze(mock_db, "Test", "en", "user-1", chat_id)
-
-            assert result.chat_id == chat_id
-            assert result.lang == "es"
-            mock_chats.create_chat.assert_not_called()
+        assert result.chat_id == chat_id
+        assert result.lang == "es"
+        mock_chats.create_chat.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_invalid_chat_id(self, service, mock_chats, mock_db):
@@ -130,38 +114,24 @@ class TestAnalyze:
 
     @pytest.mark.asyncio
     async def test_llm_error(self, service, mock_db):
-        with patch("app.services.ChatPromptTemplate") as mock_prompt, \
-             patch("app.services.JsonOutputParser"):
+        service.chain = AsyncMock()
+        original_exc = Exception("LLM API error")
+        service.chain.ainvoke.side_effect = original_exc
 
-            mock_chain = AsyncMock()
-            original_exc = Exception("LLM API error")
-            mock_chain.ainvoke.side_effect = original_exc
+        with pytest.raises(PermanentLLMError) as exc_info:
+            await service.analyze(mock_db, "Test phrase", "en", "user-1")
 
-            mock_prompt_inst = mock_prompt.from_messages.return_value
-            mock_pipe = mock_prompt_inst.__or__.return_value
-            mock_pipe.__or__.return_value = mock_chain
-
-            with pytest.raises(PermanentLLMError) as exc_info:
-                await service.analyze(mock_db, "Test phrase", "en", "user-1")
-
-            assert "LLM API error" in str(exc_info.value)
-            assert exc_info.value.__cause__ is original_exc
+        assert "LLM API error" in str(exc_info.value)
+        assert exc_info.value.__cause__ is original_exc
 
     @pytest.mark.asyncio
     async def test_transient_llm_error_exhausted(self, service, mock_db):
         """Retry exhaustion on a transient error raises TransientLLMError with __cause__."""
-        with patch("app.services.ChatPromptTemplate") as mock_prompt, \
-             patch("app.services.JsonOutputParser"), \
-             patch("app.services._is_transient_error", return_value=True):
+        service.chain = AsyncMock()
+        original_exc = Exception("timeout")
+        service.chain.ainvoke.side_effect = original_exc
 
-            mock_chain = AsyncMock()
-            original_exc = Exception("timeout")
-            mock_chain.ainvoke.side_effect = original_exc
-
-            mock_prompt_inst = mock_prompt.from_messages.return_value
-            mock_pipe = mock_prompt_inst.__or__.return_value
-            mock_pipe.__or__.return_value = mock_chain
-
+        with patch("app.services._is_transient_error", return_value=True):
             with pytest.raises(TransientLLMError) as exc_info:
                 await service.analyze(mock_db, "Test phrase", "en", "user-1")
 
@@ -174,29 +144,18 @@ class TestChat:
         chat_id = uuid4()
         mock_chats.get_chat_owned.return_value = {"id": chat_id, "lang": "en", "user_id": "user-1"}
 
-        llm_response = {
-            "issues": [],
-            "alternatives": [],
-            "assessment": "Looks good",
-        }
+        llm_response = AnalyzeResponseLLM(issues=[], alternatives=[], assessment="Looks good")
 
-        with patch("app.services.ChatPromptTemplate") as mock_prompt, \
-             patch("app.services.JsonOutputParser"):
+        service.chain = AsyncMock()
+        service.chain.ainvoke.return_value = llm_response
 
-            mock_chain = AsyncMock()
-            mock_chain.ainvoke.return_value = llm_response
+        result = await service.chat(mock_db, chat_id, "Why is that wrong?", "user-1")
 
-            mock_prompt_inst = mock_prompt.from_messages.return_value
-            mock_pipe = mock_prompt_inst.__or__.return_value
-            mock_pipe.__or__.return_value = mock_chain
-
-            result = await service.chat(mock_db, chat_id, "Why is that wrong?", "user-1")
-
-            assert isinstance(result, AnalyzeResponse)
-            assert result.chat_id == chat_id
-            assert result.text == "Why is that wrong?"
-            assert result.lang == "en"
-            mock_chats.save_messages.assert_called_once()
+        assert isinstance(result, AnalyzeResponse)
+        assert result.chat_id == chat_id
+        assert result.text == "Why is that wrong?"
+        assert result.lang == "en"
+        mock_chats.save_messages.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_invalid_chat_id(self, service, mock_chats, mock_db):
@@ -211,21 +170,14 @@ class TestChat:
         chat_id = uuid4()
         mock_chats.get_chat_owned.return_value = {"id": chat_id, "lang": "en", "user_id": "user-1"}
 
-        with patch("app.services.ChatPromptTemplate") as mock_prompt, \
-             patch("app.services.JsonOutputParser"):
+        service.chain = AsyncMock()
+        original_exc = Exception("LLM failed")
+        service.chain.ainvoke.side_effect = original_exc
 
-            mock_chain = AsyncMock()
-            original_exc = Exception("LLM failed")
-            mock_chain.ainvoke.side_effect = original_exc
+        with pytest.raises(PermanentLLMError) as exc_info:
+            await service.chat(mock_db, chat_id, "Hello", "user-1")
 
-            mock_prompt_inst = mock_prompt.from_messages.return_value
-            mock_pipe = mock_prompt_inst.__or__.return_value
-            mock_pipe.__or__.return_value = mock_chain
-
-            with pytest.raises(PermanentLLMError) as exc_info:
-                await service.chat(mock_db, chat_id, "Hello", "user-1")
-
-            assert exc_info.value.__cause__ is original_exc
+        assert exc_info.value.__cause__ is original_exc
 
 
 class TestGetExamples:
