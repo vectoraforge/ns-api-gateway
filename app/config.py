@@ -6,7 +6,7 @@ import logging
 from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-LogLevel = StrEnum("LogLevel", list(logging.getLevelNamesMapping()))
+LogLevel = StrEnum("LogLevel", {k: k for k in logging.getLevelNamesMapping()})
 
 
 class BaseConfig(BaseSettings):
@@ -52,7 +52,7 @@ class AppConfig(BaseConfig):
     messages_max_page_size: int = Field(default=100, ge=1)
     readiness_cache_seconds: int = Field(default=60, ge=1)
 
-    prompt: str = None
+    prompt: str | None = None
     examples: dict[str, list[str]] = {}
 
 
@@ -61,12 +61,13 @@ class MainConfig(BaseConfig):
     prompt_path: Path = Field(default="config/prompt.txt")
     examples_path: Path = Field(default="config/examples.yaml")
 
-    app: AppConfig = None
+    app: AppConfig | None = None
 
     @model_validator(mode='after')
     def load_config(self):
         yaml_data = yaml.safe_load(self.config_dir.read_text())
-        app_config = AppConfig(**yaml_data)
+        app_config = AppConfig(_env_prefix='__NONE__', **yaml_data)
         app_config.prompt = self.prompt_path.read_text()
         app_config.examples = yaml.safe_load(self.examples_path.read_text())
         self.app = app_config
+        return self
