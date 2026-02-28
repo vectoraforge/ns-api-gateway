@@ -6,7 +6,8 @@ import pytest
 
 from app.schema import AnalyzeResponse, ExamplesResponse
 from app.exceptions import UnsupportedLanguageError, AnalysisError, InvalidChatError, PermanentLLMError, TransientLLMError
-from app.services import AnalysisService, LLMExecutionGate, CircuitBreaker
+from app.resilience import CircuitBreaker, LLMExecutionGate
+from app.services import AnalysisService
 
 
 @pytest.fixture

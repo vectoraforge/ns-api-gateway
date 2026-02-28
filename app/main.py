@@ -13,7 +13,8 @@ from app.errors import register_exception_handlers
 from app.auth import UnsafeBase64Verifier
 from app.chats import Chats
 from app.database import init_engine, engine
-from app.services import AnalysisService, LLMExecutionGate, CircuitBreaker
+from app.resilience import CircuitBreaker, LLMExecutionGate
+from app.services import AnalysisService
 
 logger = logging.getLogger(__name__)
 

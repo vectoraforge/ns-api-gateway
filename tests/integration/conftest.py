@@ -15,7 +15,8 @@ from app.routers import chats_router
 from app.errors import register_exception_handlers
 from app.auth import UnsafeBase64Verifier
 from app.chats import Chats
-from app.services import AnalysisService, LLMExecutionGate, CircuitBreaker
+from app.resilience import CircuitBreaker, LLMExecutionGate
+from app.services import AnalysisService
 
 TEST_DB_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/nativespeaker"
 

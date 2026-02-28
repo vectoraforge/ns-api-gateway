@@ -11,7 +11,8 @@ from app.database import get_db
 from app.routers import prompts_router, chats_router, root_router
 from app.errors import register_exception_handlers
 from app.auth import UnsafeBase64Verifier
-from app.services import AnalysisService, LLMExecutionGate, CircuitBreaker
+from app.resilience import CircuitBreaker, LLMExecutionGate
+from app.services import AnalysisService
 
 
 @pytest.fixture
