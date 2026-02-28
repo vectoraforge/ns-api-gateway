@@ -20,8 +20,8 @@ def test_model_config_defaults():
     assert config.name == "gpt-4o-mini"
     assert config.temperature == 0.3
     assert config.max_tokens == 1000
-    assert config.queue_size == 25
-    assert config.timeout_seconds == 30.0
+    assert config.resilience.queue_size == 25
+    assert config.resilience.timeout_seconds == 30.0
 
 
 def test_model_config_invalid_temperature():

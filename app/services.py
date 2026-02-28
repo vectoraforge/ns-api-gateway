@@ -1,4 +1,3 @@
-import asyncio
 from uuid import UUID, uuid4
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -6,16 +5,8 @@ from langchain_openai import ChatOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chats import Chats
-from app.exceptions import (
-    ChatHistoryLimitError,
-    CircuitOpenError,
-    MessageTooLargeError,
-    PermanentLLMError,
-    QueueFullError,
-    TransientLLMError,
-    UnsupportedLanguageError,
-)
-from app.resilience import CircuitBreaker, LLMExecutionGate, _is_transient_error
+from app.exceptions import ChatHistoryLimitError, MessageTooLargeError, UnsupportedLanguageError
+from app.resilience import ResiliencePolicy
 from app.schema import AnalyzeResponse, AnalyzeResponseLLM, ExamplesResponse
 
 
@@ -25,12 +16,7 @@ class AnalysisService:
         prompt: str,
         examples: dict[str, list[str]],
         llm: ChatOpenAI,
-        gate: LLMExecutionGate,
-        circuit_breaker: CircuitBreaker,
-        timeout_seconds: float,
-        retry_max_attempts: int,
-        retry_backoff_base_seconds: float,
-        retry_backoff_max_seconds: float,
+        policy: ResiliencePolicy,
         history_max_human_messages: int,
         history_max_assistant_messages: int,
         message_max_chars: int,
@@ -39,12 +25,7 @@ class AnalysisService:
         self.prompt = prompt
         self.examples = examples
         self.llm = llm
-        self.gate = gate
-        self.circuit_breaker = circuit_breaker
-        self.timeout_seconds = timeout_seconds
-        self.retry_max_attempts = retry_max_attempts
-        self.retry_backoff_base_seconds = retry_backoff_base_seconds
-        self.retry_backoff_max_seconds = retry_backoff_max_seconds
+        self.policy = policy
         self.history_max_human_messages = history_max_human_messages
         self.history_max_assistant_messages = history_max_assistant_messages
         self.message_max_chars = message_max_chars
@@ -82,34 +63,7 @@ class AnalysisService:
             raise MessageTooLargeError(role=role, limit=self.message_max_chars)
 
     async def _invoke(self, chain, params: dict):
-        for attempt in range(1, self.retry_max_attempts + 1):
-            await self.circuit_breaker.before_call()
-            try:
-
-                async def operation():
-                    return await asyncio.wait_for(chain.ainvoke(params), timeout=self.timeout_seconds)
-
-                response = await self.gate.run(operation)
-                await self.circuit_breaker.record_success()
-                return response
-            except QueueFullError:
-                raise
-            except CircuitOpenError:
-                raise
-            except Exception as e:
-                await self.circuit_breaker.record_failure()
-                if attempt >= self.retry_max_attempts or not _is_transient_error(e):
-                    if _is_transient_error(e):
-                        raise TransientLLMError(str(e)) from e
-                    else:
-                        raise PermanentLLMError(str(e)) from e
-                backoff = min(
-                    self.retry_backoff_max_seconds,
-                    self.retry_backoff_base_seconds * (2 ** (attempt - 1)),
-                )
-                if backoff > 0:
-                    await asyncio.sleep(backoff)
-        raise TransientLLMError("LLM request failed after all retries")
+        return await self.policy.invoke(lambda: chain.ainvoke(params))
 
     async def analyze(
         self,

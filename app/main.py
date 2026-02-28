@@ -11,7 +11,7 @@ from app.chats import Chats
 from app.config import MainConfig
 from app.database import engine, init_engine
 from app.errors import register_exception_handlers
-from app.resilience import CircuitBreaker, LLMExecutionGate
+from app.resilience import ResiliencePolicy
 from app.routers import chats_router, health_router, prompts_router, root_router
 from app.routers.health import ReadinessCache
 from app.services import AnalysisService
@@ -41,15 +41,7 @@ async def lifespan(app: FastAPI):
     llm = init_chat_model(
         model=config.model.name, temperature=config.model.temperature, max_tokens=config.model.max_tokens
     )
-    gate = LLMExecutionGate(
-        max_concurrency=config.model.pool_size,
-        max_queue=config.model.queue_size,
-        retry_after_seconds=config.model.queue_retry_after_seconds,
-    )
-    circuit_breaker = CircuitBreaker(
-        failure_threshold=config.model.circuit_breaker_failure_threshold,
-        reset_seconds=config.model.circuit_breaker_reset_seconds,
-    )
+    policy = ResiliencePolicy(config.model.resilience)
 
     app.state.config = config
     app.state.verifier = UnsafeBase64Verifier()
@@ -58,12 +50,7 @@ async def lifespan(app: FastAPI):
         prompt=config.prompt,
         examples=config.examples,
         llm=llm,
-        gate=gate,
-        circuit_breaker=circuit_breaker,
-        timeout_seconds=config.model.timeout_seconds,
-        retry_max_attempts=config.model.retry_max_attempts,
-        retry_backoff_base_seconds=config.model.retry_backoff_base_seconds,
-        retry_backoff_max_seconds=config.model.retry_backoff_max_seconds,
+        policy=policy,
         history_max_human_messages=config.history_max_human_messages,
         history_max_assistant_messages=config.history_max_assistant_messages,
         message_max_chars=config.message_max_chars,
@@ -72,7 +59,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting API Gateway")
     logger.info(f"Using LLM model: {config.model.name}")
-    logger.info(f"Max LLM concurrency: {config.model.pool_size}")
+    logger.info(f"Max LLM concurrency: {config.model.resilience.pool_size}")
     logger.info(f"Supported languages: {', '.join(config.examples.keys())}")
     yield
     await engine.dispose()

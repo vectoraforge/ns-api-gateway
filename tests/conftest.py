@@ -9,7 +9,8 @@ from fastapi.testclient import TestClient
 from app.auth import UnsafeBase64Verifier
 from app.database import get_db
 from app.errors import register_exception_handlers
-from app.resilience import CircuitBreaker, LLMExecutionGate
+from app.config import ResilienceConfig
+from app.resilience import ResiliencePolicy
 from app.routers import chats_router, prompts_router, root_router
 from app.services import AnalysisService
 
@@ -76,18 +77,17 @@ def client(mock_config, mock_examples, mock_chats, mock_db, auth_header):
     app.state.verifier = UnsafeBase64Verifier()
 
     mock_llm = MagicMock()
-    gate = LLMExecutionGate(max_concurrency=1, max_queue=1, retry_after_seconds=1)
-    circuit_breaker = CircuitBreaker(failure_threshold=3, reset_seconds=60)
+    policy = ResiliencePolicy(ResilienceConfig(
+        pool_size=1, queue_size=1, queue_retry_after_seconds=1,
+        timeout_seconds=1, retry_max_attempts=1,
+        retry_backoff_base_seconds=0, retry_backoff_max_seconds=0,
+        circuit_breaker_failure_threshold=3, circuit_breaker_reset_seconds=60,
+    ))
     app.state.service = AnalysisService(
         prompt="Test prompt for {lang}: {phrase}",
         examples=mock_examples,
         llm=mock_llm,
-        gate=gate,
-        circuit_breaker=circuit_breaker,
-        timeout_seconds=1,
-        retry_max_attempts=1,
-        retry_backoff_base_seconds=0,
-        retry_backoff_max_seconds=0,
+        policy=policy,
         history_max_human_messages=50,
         history_max_assistant_messages=50,
         message_max_chars=4096,
