@@ -1,7 +1,7 @@
 from uuid import UUID, uuid4
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_openai import ChatOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chats import Chats
@@ -15,7 +15,7 @@ class AnalysisService:
         self,
         prompt: str,
         examples: dict[str, list[str]],
-        llm: ChatOpenAI,
+        llm: BaseChatModel,
         policy: ResiliencePolicy,
         history_max_human_messages: int,
         history_max_assistant_messages: int,
