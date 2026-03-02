@@ -6,7 +6,7 @@ from importlib.metadata import version
 from fastapi import FastAPI
 from langchain.chat_models import init_chat_model
 
-from app.auth import UnsafeBase64Verifier
+from app.auth import JWTVerifier
 from app.chats import Chats
 from app.config import MainConfig
 from app.database import engine, init_engine
@@ -43,7 +43,14 @@ async def lifespan(app: FastAPI):
     policy = ResiliencePolicy(config.model.resilience)
 
     app.state.config = config
-    app.state.verifier = UnsafeBase64Verifier()
+    app.state.verifier = JWTVerifier(
+        jwks_url=config.jwt.jwks_url,
+        audience=config.jwt.audience,
+        issuer=config.jwt.issuer,
+        leeway=config.jwt.leeway_seconds,
+        cache_ttl_seconds=config.jwt.jwks_cache_ttl_seconds,
+    )
+    logger.info(f"Firebase project ID: {config.jwt.project_id}")
     app.state.service = AnalysisService(
         prompt=config.prompt,
         examples=config.examples,
