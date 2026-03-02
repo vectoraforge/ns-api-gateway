@@ -17,3 +17,6 @@ model:
     retry_backoff_max_seconds: 4
     circuit_breaker_failure_threshold: 5
     circuit_breaker_reset_seconds: 60
+jwt:
+  project_id: native-speaker-488021
+  jwks_cache_ttl_seconds: 3600

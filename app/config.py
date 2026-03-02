@@ -40,6 +40,27 @@ class ResilienceConfig(BaseModel):
     circuit_breaker_reset_seconds: int = Field(default=60, ge=1)
 
 
+class JWTConfig(BaseModel):
+    project_id: str
+    jwks_url: str = Field(
+        default="https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
+    )
+    leeway_seconds: int = Field(default=30, ge=0)
+    jwks_cache_ttl_seconds: float = Field(default=3600.0, gt=0)
+
+    # Derived from project_id — not in YAML
+    audience: str = ""
+    issuer: str = ""
+
+    @model_validator(mode="after")
+    def derive_audience_and_issuer(self) -> "JWTConfig":
+        if not self.audience:
+            self.audience = self.project_id
+        if not self.issuer:
+            self.issuer = f"https://securetoken.google.com/{self.project_id}"
+        return self
+
+
 class ModelConfig(BaseModel):
     name: str = Field(default="gpt-4o-mini")
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
@@ -52,6 +73,7 @@ class AppConfig(BaseConfig):
 
     model: ModelConfig = Field(default_factory=ModelConfig)
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    jwt: JWTConfig
     history_max_human_messages: int = Field(default=50, ge=1)
     history_max_assistant_messages: int = Field(default=50, ge=1)
     message_max_chars: int = Field(default=4096, ge=1)

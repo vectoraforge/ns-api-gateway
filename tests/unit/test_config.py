@@ -35,6 +35,8 @@ log_level: INFO
 model:
   name: "gpt-4"
   temperature: 0.5
+jwt:
+  project_id: test-project
 """
     prompt_content = "Analyze {lang} phrase: {phrase}"
     examples_content = """
