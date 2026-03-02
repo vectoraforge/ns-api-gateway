@@ -35,12 +35,12 @@ CASES = [
     ("page_size_limit", PageSizeLimitError(100), 400),
     ("queue_full", QueueFullError(30), 503),
     ("circuit_open", CircuitOpenError(60), 503),
-    ("history_limit", ChatHistoryLimitError(50, 50), 409),
-    ("msg_too_large", MessageTooLargeError("human", 4096), 413),
+    ("history_limit", ChatHistoryLimitError(50, 50), 400),
+    ("msg_too_large", MessageTooLargeError("human", 4096), 400),
     ("generic_exception", Exception("boom"), 500),
     ("starlette_http", StarletteHTTPException(status_code=404, detail="not found"), 404),
     ("transient_llm", TransientLLMError("upstream timeout"), 503),
-    ("permanent_llm", PermanentLLMError("bad response format"), 502),
+    ("permanent_llm", PermanentLLMError("bad response format"), 503),
 ]
 
 
@@ -76,20 +76,21 @@ def test_handler(handler_client, name, exc, expected_status):
     response = handler_client.get(f"/raise/{name}")
     assert response.status_code == expected_status
     body = response.json()
-    assert "status" in body
-    assert "error" in body
-    assert body["status"] == expected_status
-    assert isinstance(body["error"], str)
-    assert body["error"]
+    assert list(body.keys()) == ["code"], f"Expected only 'code' key, got {list(body.keys())}"
+    assert body["code"] in {
+        "invalid_request",
+        "unauthorized",
+        "not_found",
+        "service_unavailable",
+        "internal_error",
+    }
 
 
 def test_validation_error_handler(handler_client):
     response = handler_client.post("/validate-body", json={})
-    assert response.status_code == 422
+    assert response.status_code == 400
     body = response.json()
-    assert body["status"] == 422
-    assert "error" in body
-    assert body["error"]
+    assert body["code"] == "invalid_request"
 
 
 @pytest.fixture(scope="module")
@@ -110,8 +111,7 @@ def test_missing_auth_header_returns_401(dep_client):
     response = dep_client.get("/protected")
     assert response.status_code == 401
     body = response.json()
-    assert body["status"] == 401
-    assert "error" in body
+    assert body["code"] == "unauthorized"
 
 
 def test_invalid_bearer_token_returns_401(dep_client):
@@ -131,8 +131,7 @@ def test_expired_token_returns_401(dep_client):
     response = dep_client.get("/protected", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 401
     body = response.json()
-    assert body["status"] == 401
-    assert "error" in body
+    assert body["code"] == "unauthorized"
 
 
 @pytest.fixture(scope="module")
