@@ -1,7 +1,20 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+ErrorCode = Literal[
+    "invalid_request",
+    "unauthorized",
+    "not_found",
+    "service_unavailable",
+    "internal_error",
+]
+
+
+class ErrorResponse(BaseModel):
+    code: ErrorCode
 
 
 class AnalyzeRequest(BaseModel):
