@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from importlib.metadata import version
 
 from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
 from langchain.chat_models import init_chat_model
 
 from app.auth import JWTVerifier
@@ -13,6 +14,7 @@ from app.database import engine, init_engine
 from app.errors import register_exception_handlers
 from app.resilience import ResiliencePolicy
 from app.routers import chats_router, health_router, prompts_router, root_router
+from app.schema import ErrorResponse
 from app.services import AnalysisService
 
 logger = logging.getLogger(__name__)
@@ -76,6 +78,13 @@ app = FastAPI(
     description="API Gateway for linguistic analysis of phrases",
     version=version("sn-api-gateway"),
     lifespan=lifespan,
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid request"},
+        401: {"model": ErrorResponse, "description": "Unauthorized"},
+        404: {"model": ErrorResponse, "description": "Not found"},
+        500: {"model": ErrorResponse, "description": "Internal error"},
+        503: {"model": ErrorResponse, "description": "Service unavailable"},
+    },
 )
 
 app.include_router(root_router)
@@ -83,3 +92,23 @@ app.include_router(prompts_router)
 app.include_router(chats_router)
 app.include_router(health_router)
 register_exception_handlers(app)
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    for path_item in schema.get("paths", {}).values():
+        for operation in path_item.values():
+            if isinstance(operation, dict):
+                operation.get("responses", {}).pop("422", None)
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
