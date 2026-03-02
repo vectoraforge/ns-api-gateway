@@ -2,7 +2,6 @@ import logging
 from typing import Protocol
 
 import jwt
-from fastapi import Header, Request
 from jwt import PyJWKClient
 
 from app.exceptions import AuthenticationError
@@ -77,13 +76,3 @@ class JWTVerifier:
         if not sub:
             raise AuthenticationError("Missing sub claim")
         return str(sub)
-
-
-def get_user_id(request: Request, authorization: str | None = Header(None)) -> str:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise AuthenticationError("Missing Bearer token")
-    token = authorization.split(" ", 1)[1].strip()
-    if not token:
-        raise AuthenticationError("Missing Bearer token")
-    verifier: TokenVerifier = request.app.state.verifier
-    return verifier.verify(token)
