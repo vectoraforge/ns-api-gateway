@@ -5,12 +5,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.config import ResilienceConfig
-from app.database import get_db
+from app.dependencies import get_config, get_db, get_service, get_user_id
 from app.errors import register_exception_handlers
 from app.resilience import ResiliencePolicy
 from app.routers import chats_router, health_router, prompts_router, root_router
 from app.services import AnalysisService
-from tests.jwt_helpers import make_test_verifier, make_token
 
 
 @pytest.fixture
@@ -50,24 +49,13 @@ def mock_chats():
 
 
 @pytest.fixture
-def auth_header():
-    token = make_token("test-user")
-    return {"Authorization": f"Bearer {token}"}
-
-
-@pytest.fixture
-def client(mock_config, mock_examples, mock_chats, mock_db, auth_header):
+def client(mock_config, mock_examples, mock_chats, mock_db):
     app = FastAPI()
     app.include_router(root_router)
     app.include_router(prompts_router)
     app.include_router(chats_router)
     app.include_router(health_router)
     register_exception_handlers(app)
-
-    app.dependency_overrides[get_db] = lambda: mock_db
-
-    app.state.config = mock_config
-    app.state.verifier = make_test_verifier()
 
     mock_llm = MagicMock()
     policy = ResiliencePolicy(
@@ -83,7 +71,7 @@ def client(mock_config, mock_examples, mock_chats, mock_db, auth_header):
             circuit_breaker_reset_seconds=60,
         )
     )
-    app.state.service = AnalysisService(
+    service = AnalysisService(
         prompt="Test prompt for {lang}: {phrase}",
         examples=mock_examples,
         llm=mock_llm,
@@ -94,6 +82,10 @@ def client(mock_config, mock_examples, mock_chats, mock_db, auth_header):
         chats=mock_chats,
     )
 
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_config] = lambda: mock_config
+    app.dependency_overrides[get_user_id] = lambda: "test-user"
+    app.dependency_overrides[get_service] = lambda: service
+
     with TestClient(app, raise_server_exceptions=False) as test_client:
-        test_client.headers.update(auth_header)
         yield test_client

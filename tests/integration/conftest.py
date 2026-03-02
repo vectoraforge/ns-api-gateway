@@ -9,12 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.chats import Chats
 from app.config import ResilienceConfig
-from app.database import get_db
+from app.dependencies import get_config, get_db, get_service, get_user_id
 from app.errors import register_exception_handlers
 from app.resilience import ResiliencePolicy
 from app.routers import chats_router
 from app.services import AnalysisService
-from tests.jwt_helpers import make_test_verifier, make_token
+from tests.jwt_helpers import make_token
 
 TEST_DB_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/nativespeaker"
 
@@ -49,12 +49,8 @@ def integration_client(db_session):
     async def override_get_db():
         yield db_session
 
-    app.dependency_overrides[get_db] = override_get_db
-
     mock_config = MagicMock()
     mock_config.messages_max_page_size = 100
-    app.state.config = mock_config
-    app.state.verifier = make_test_verifier()
 
     mock_llm = MagicMock()
     policy = ResiliencePolicy(
@@ -70,7 +66,7 @@ def integration_client(db_session):
             circuit_breaker_reset_seconds=60,
         )
     )
-    app.state.service = AnalysisService(
+    service = AnalysisService(
         prompt="Test prompt",
         examples={"en": ["example"]},
         llm=mock_llm,
@@ -80,6 +76,11 @@ def integration_client(db_session):
         message_max_chars=4096,
         chats=Chats(),
     )
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_config] = lambda: mock_config
+    app.dependency_overrides[get_user_id] = lambda: "test-user"
+    app.dependency_overrides[get_service] = lambda: service
 
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client
