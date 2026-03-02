@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.auth import UnsafeBase64Verifier, get_user_id
+from app.auth import get_user_id
 from app.errors import register_exception_handlers
 from app.exceptions import (
     AuthenticationError,
@@ -21,6 +21,7 @@ from app.exceptions import (
     TransientLLMError,
     UnsupportedLanguageError,
 )
+from tests.jwt_helpers import make_test_verifier, make_token
 
 CASES = [
     ("missing_token", AuthenticationError("Missing Bearer token"), 401),
@@ -95,7 +96,7 @@ def test_validation_error_handler(handler_client):
 def dep_client():
     app = FastAPI()
     register_exception_handlers(app)
-    app.state.verifier = UnsafeBase64Verifier()
+    app.state.verifier = make_test_verifier()
 
     @app.get("/protected")
     async def _protected(user_id: str = Depends(get_user_id)):
@@ -119,22 +120,14 @@ def test_invalid_bearer_token_returns_401(dep_client):
 
 
 def test_valid_bearer_token_resolves_user(dep_client):
-    import base64
-    import json
-
-    payload = base64.urlsafe_b64encode(json.dumps({"user_id": "u1"}).encode()).rstrip(b"=").decode()
-    token = f"header.{payload}.sig"
+    token = make_token("u1")
     response = dep_client.get("/protected", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200
     assert response.json()["user_id"] == "u1"
 
 
 def test_expired_token_returns_401(dep_client):
-    import base64
-    import json
-
-    payload = base64.urlsafe_b64encode(json.dumps({"user_id": "u1", "exp": 1}).encode()).rstrip(b"=").decode()
-    token = f"header.{payload}.sig"
+    token = make_token("u1", exp=1)
     response = dep_client.get("/protected", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 401
     body = response.json()

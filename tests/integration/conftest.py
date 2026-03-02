@@ -1,5 +1,3 @@
-import base64
-import json
 from collections.abc import AsyncGenerator
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
@@ -9,7 +7,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.auth import UnsafeBase64Verifier
 from app.chats import Chats
 from app.config import ResilienceConfig
 from app.database import get_db
@@ -17,6 +14,7 @@ from app.errors import register_exception_handlers
 from app.resilience import ResiliencePolicy
 from app.routers import chats_router
 from app.services import AnalysisService
+from tests.jwt_helpers import make_test_verifier, make_token
 
 TEST_DB_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/nativespeaker"
 
@@ -36,10 +34,9 @@ async def db_session(db_engine) -> AsyncGenerator[AsyncSession, None]:
         await session.rollback()
 
 
-def _make_token(user_id: str) -> str:
-    header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode()).rstrip(b"=")
-    payload = base64.urlsafe_b64encode(json.dumps({"user_id": user_id}).encode()).rstrip(b"=")
-    return f"{header.decode()}.{payload.decode()}.signature"
+def auth_token(user_id: str) -> str:
+    """Create a Bearer token for integration tests."""
+    return make_token(user_id)
 
 
 @pytest.fixture
@@ -57,7 +54,7 @@ def integration_client(db_session):
     mock_config = MagicMock()
     mock_config.messages_max_page_size = 100
     app.state.config = mock_config
-    app.state.verifier = UnsafeBase64Verifier()
+    app.state.verifier = make_test_verifier()
 
     mock_llm = MagicMock()
     policy = ResiliencePolicy(

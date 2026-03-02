@@ -1,13 +1,13 @@
 import pytest
 
-from tests.integration.conftest import _make_token, cleanup_chat, create_chat
+from tests.integration.conftest import auth_token, cleanup_chat, create_chat
 
 USER_A = "user-a"
 USER_B = "user-b"
 
 
 def auth(user_id: str) -> dict:
-    return {"Authorization": f"Bearer {_make_token(user_id)}"}
+    return {"Authorization": f"Bearer {auth_token(user_id)}"}
 
 
 @pytest.mark.db

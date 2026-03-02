@@ -1,18 +1,16 @@
-import base64
-import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.auth import UnsafeBase64Verifier
 from app.config import ResilienceConfig
 from app.database import get_db
 from app.errors import register_exception_handlers
 from app.resilience import ResiliencePolicy
 from app.routers import chats_router, health_router, prompts_router, root_router
 from app.services import AnalysisService
+from tests.jwt_helpers import make_test_verifier, make_token
 
 
 @pytest.fixture
@@ -51,15 +49,9 @@ def mock_chats():
     return chats
 
 
-def _make_token(user_id: str) -> str:
-    header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode("utf-8")).rstrip(b"=")
-    payload = base64.urlsafe_b64encode(json.dumps({"user_id": user_id}).encode("utf-8")).rstrip(b"=")
-    return f"{header.decode('utf-8')}.{payload.decode('utf-8')}.signature"
-
-
 @pytest.fixture
 def auth_header():
-    token = _make_token("test-user")
+    token = make_token("test-user")
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -75,7 +67,7 @@ def client(mock_config, mock_examples, mock_chats, mock_db, auth_header):
     app.dependency_overrides[get_db] = lambda: mock_db
 
     app.state.config = mock_config
-    app.state.verifier = UnsafeBase64Verifier()
+    app.state.verifier = make_test_verifier()
 
     mock_llm = MagicMock()
     policy = ResiliencePolicy(
