@@ -89,3 +89,9 @@ def client(mock_config, mock_examples, mock_chats, mock_db):
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def service_instance(client):
+    """The AnalysisService instance injected via DI overrides."""
+    return client.app.dependency_overrides[get_service]()

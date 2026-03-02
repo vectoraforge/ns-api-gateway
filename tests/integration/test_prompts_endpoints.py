@@ -6,7 +6,7 @@ from app.schema import AnalyzeResponse
 
 
 class TestAnalyzeEndpoint:
-    def test_analyze_success(self, client):
+    def test_analyze_success(self, client, service_instance):
         chat_id = uuid4()
         mock_response = AnalyzeResponse(
             text="I am going to home.",
@@ -17,7 +17,7 @@ class TestAnalyzeEndpoint:
             assessment="Test",
         )
 
-        client.app.state.service.analyze = AsyncMock(return_value=mock_response)
+        service_instance.analyze = AsyncMock(return_value=mock_response)
 
         response = client.post(
             "/prompts/analyze",
@@ -30,7 +30,7 @@ class TestAnalyzeEndpoint:
         assert data["lang"] == "en"
         assert data["chat_id"] == str(chat_id)
 
-    def test_analyze_default_language(self, client, mock_db):
+    def test_analyze_default_language(self, client, service_instance, mock_db):
         chat_id = uuid4()
         mock_response = AnalyzeResponse(
             text="Test phrase",
@@ -41,7 +41,7 @@ class TestAnalyzeEndpoint:
             assessment="Good",
         )
 
-        client.app.state.service.analyze = AsyncMock(return_value=mock_response)
+        service_instance.analyze = AsyncMock(return_value=mock_response)
 
         response = client.post(
             "/prompts/analyze",
@@ -49,9 +49,9 @@ class TestAnalyzeEndpoint:
         )
 
         assert response.status_code == 200
-        client.app.state.service.analyze.assert_called_once_with(mock_db, "Test phrase", "en", "test-user", None)
+        service_instance.analyze.assert_called_once_with(mock_db, "Test phrase", "en", "test-user", None)
 
-    def test_analyze_with_chat_id(self, client, mock_db):
+    def test_analyze_with_chat_id(self, client, service_instance, mock_db):
         chat_id = uuid4()
         mock_response = AnalyzeResponse(
             text="Follow up",
@@ -62,7 +62,7 @@ class TestAnalyzeEndpoint:
             assessment="Good",
         )
 
-        client.app.state.service.analyze = AsyncMock(return_value=mock_response)
+        service_instance.analyze = AsyncMock(return_value=mock_response)
 
         response = client.post(
             "/prompts/analyze",
@@ -70,10 +70,10 @@ class TestAnalyzeEndpoint:
         )
 
         assert response.status_code == 200
-        client.app.state.service.analyze.assert_called_once_with(mock_db, "Follow up", "en", "test-user", chat_id)
+        service_instance.analyze.assert_called_once_with(mock_db, "Follow up", "en", "test-user", chat_id)
 
-    def test_analyze_unsupported_language(self, client):
-        client.app.state.service.analyze = AsyncMock(side_effect=UnsupportedLanguageError("fr", ["en", "es"]))
+    def test_analyze_unsupported_language(self, client, service_instance):
+        service_instance.analyze = AsyncMock(side_effect=UnsupportedLanguageError("fr", ["en", "es"]))
 
         response = client.post(
             "/prompts/analyze",
@@ -81,11 +81,11 @@ class TestAnalyzeEndpoint:
         )
 
         assert response.status_code == 400
-        assert "fr" in response.json()["error"]
+        assert response.json()["code"] == "invalid_request"
 
-    def test_analyze_invalid_chat(self, client):
+    def test_analyze_invalid_chat(self, client, service_instance):
         chat_id = uuid4()
-        client.app.state.service.analyze = AsyncMock(side_effect=InvalidChatError(chat_id))
+        service_instance.analyze = AsyncMock(side_effect=InvalidChatError(chat_id))
 
         response = client.post(
             "/prompts/analyze",
@@ -94,8 +94,8 @@ class TestAnalyzeEndpoint:
 
         assert response.status_code == 404
 
-    def test_analyze_service_error(self, client):
-        client.app.state.service.analyze = AsyncMock(side_effect=AnalysisError("LLM failed"))
+    def test_analyze_service_error(self, client, service_instance):
+        service_instance.analyze = AsyncMock(side_effect=AnalysisError("LLM failed"))
 
         response = client.post(
             "/prompts/analyze",
@@ -103,7 +103,7 @@ class TestAnalyzeEndpoint:
         )
 
         assert response.status_code == 500
-        assert response.json()["error"] == "Analysis failed"
+        assert response.json()["code"] == "internal_error"
 
     def test_analyze_missing_text(self, client):
         response = client.post(
@@ -111,9 +111,10 @@ class TestAnalyzeEndpoint:
             json={"lang": "en"},
         )
 
-        assert response.status_code == 422
+        assert response.status_code == 400
+        assert response.json()["code"] == "invalid_request"
 
-    def test_analyze_empty_text(self, client):
+    def test_analyze_empty_text(self, client, service_instance):
         chat_id = uuid4()
         mock_response = AnalyzeResponse(
             text="",
@@ -124,7 +125,7 @@ class TestAnalyzeEndpoint:
             assessment="Empty",
         )
 
-        client.app.state.service.analyze = AsyncMock(return_value=mock_response)
+        service_instance.analyze = AsyncMock(return_value=mock_response)
 
         response = client.post(
             "/prompts/analyze",
@@ -133,7 +134,7 @@ class TestAnalyzeEndpoint:
 
         assert response.status_code == 200
 
-    def test_analyze_spanish(self, client):
+    def test_analyze_spanish(self, client, service_instance):
         chat_id = uuid4()
         mock_response = AnalyzeResponse(
             text="Yo soy va a casa.",
@@ -144,7 +145,7 @@ class TestAnalyzeEndpoint:
             assessment="Test",
         )
 
-        client.app.state.service.analyze = AsyncMock(return_value=mock_response)
+        service_instance.analyze = AsyncMock(return_value=mock_response)
 
         response = client.post(
             "/prompts/analyze",
@@ -156,7 +157,7 @@ class TestAnalyzeEndpoint:
 
 
 class TestChatEndpoint:
-    def test_chat_message_success(self, client):
+    def test_chat_message_success(self, client, service_instance):
         chat_id = uuid4()
         mock_response = AnalyzeResponse(
             text="Why is that wrong?",
@@ -167,7 +168,7 @@ class TestChatEndpoint:
             assessment="Looks good",
         )
 
-        client.app.state.service.chat = AsyncMock(return_value=mock_response)
+        service_instance.chat = AsyncMock(return_value=mock_response)
 
         response = client.post(
             f"/chats/{chat_id}/messages",
@@ -180,9 +181,9 @@ class TestChatEndpoint:
         assert data["text"] == "Why is that wrong?"
         assert data["lang"] == "en"
 
-    def test_chat_invalid_id(self, client):
+    def test_chat_invalid_id(self, client, service_instance):
         chat_id = uuid4()
-        client.app.state.service.chat = AsyncMock(side_effect=InvalidChatError(chat_id))
+        service_instance.chat = AsyncMock(side_effect=InvalidChatError(chat_id))
 
         response = client.post(
             f"/chats/{chat_id}/messages",
@@ -199,7 +200,8 @@ class TestChatEndpoint:
             json={},
         )
 
-        assert response.status_code == 422
+        assert response.status_code == 400
+        assert response.json()["code"] == "invalid_request"
 
 
 class TestExamplesEndpoint:
@@ -219,15 +221,16 @@ class TestExamplesEndpoint:
         data = response.json()
         assert data["lang"] == "es"
 
-    def test_examples_unsupported_language(self, client):
-        client.app.state.service.get_examples = MagicMock(side_effect=UnsupportedLanguageError("fr", ["en", "es"]))
+    def test_examples_unsupported_language(self, client, service_instance):
+        service_instance.get_examples = MagicMock(side_effect=UnsupportedLanguageError("fr", ["en", "es"]))
 
         response = client.get("/prompts/examples?lang=fr")
 
         assert response.status_code == 400
-        assert "fr" in response.json()["error"]
+        assert response.json()["code"] == "invalid_request"
 
     def test_examples_missing_lang_param(self, client):
         response = client.get("/prompts/examples")
 
-        assert response.status_code == 422
+        assert response.status_code == 400
+        assert response.json()["code"] == "invalid_request"
