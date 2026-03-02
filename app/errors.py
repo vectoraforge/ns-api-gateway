@@ -7,7 +7,7 @@ from starlette.responses import JSONResponse
 
 from app.exceptions import (
     AnalysisError,
-    AuthError,
+    AuthenticationError,
     ChatHistoryLimitError,
     ChatOwnershipError,
     CircuitOpenError,
@@ -89,8 +89,13 @@ async def validation_error_handler(_: Request, exc: RequestValidationError) -> J
     return JSONResponse(status_code=422, content={"status": 422, "error": "Invalid request"})
 
 
-async def auth_error_handler(_: Request, exc: AuthError) -> JSONResponse:
-    return JSONResponse(status_code=401, content={"status": 401, "error": str(exc)})
+async def auth_error_handler(_: Request, exc: AuthenticationError) -> JSONResponse:
+    logger.warning("Authentication failure: %s", exc)
+    return JSONResponse(
+        status_code=401,
+        content={"status": 401, "error": "Unauthorized"},
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 async def chat_ownership_error_handler(_: Request, exc: ChatOwnershipError) -> JSONResponse:
@@ -125,7 +130,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ChatHistoryLimitError, chat_history_limit_handler)
     app.add_exception_handler(MessageTooLargeError, message_too_large_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
-    app.add_exception_handler(AuthError, auth_error_handler)
+    app.add_exception_handler(AuthenticationError, auth_error_handler)
     app.add_exception_handler(ChatOwnershipError, chat_ownership_error_handler)
     app.add_exception_handler(DatabaseNotInitializedError, database_not_initialized_handler)
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)

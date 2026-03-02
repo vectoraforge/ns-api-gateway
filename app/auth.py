@@ -5,7 +5,7 @@ from typing import Protocol
 
 from fastapi import Header, Request
 
-from app.exceptions import ExpiredTokenError, InvalidTokenError, MissingTokenError
+from app.exceptions import AuthenticationError
 
 
 def _decode_jwt_payload(token: str) -> dict:
@@ -20,8 +20,15 @@ def _decode_jwt_payload(token: str) -> dict:
 
 class TokenVerifier(Protocol):
     def verify(self, token: str) -> str:
-        """Decode token and return user_id. Raise AuthError subtype on failure."""
+        """Decode token and return user_id. Raise AuthenticationError on failure."""
         ...
+
+
+class JWTVerifier:
+    """Base class for JWT verification — Plan 02 provides the full implementation."""
+
+    def verify(self, token: str) -> str:
+        raise NotImplementedError
 
 
 class UnsafeBase64Verifier:
@@ -29,21 +36,21 @@ class UnsafeBase64Verifier:
         try:
             payload = _decode_jwt_payload(token)
         except Exception:
-            raise InvalidTokenError() from None
+            raise AuthenticationError("Invalid token") from None
         exp = payload.get("exp")
         if exp is not None and exp < time.time():
-            raise ExpiredTokenError()
+            raise AuthenticationError("Expired token")
         user_id = payload.get("user_id")
         if not user_id:
-            raise InvalidTokenError()
+            raise AuthenticationError("Invalid token")
         return str(user_id)
 
 
 async def get_user_id(request: Request, authorization: str | None = Header(None)) -> str:
     if not authorization or not authorization.startswith("Bearer "):
-        raise MissingTokenError()
+        raise AuthenticationError("Missing Bearer token")
     token = authorization.split(" ", 1)[1].strip()
     if not token:
-        raise MissingTokenError()
+        raise AuthenticationError("Missing Bearer token")
     verifier: TokenVerifier = request.app.state.verifier
     return verifier.verify(token)

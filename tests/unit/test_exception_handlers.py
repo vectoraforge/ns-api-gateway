@@ -7,16 +7,14 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.auth import UnsafeBase64Verifier, get_user_id
 from app.errors import register_exception_handlers
 from app.exceptions import (
+    AuthenticationError,
     ChatHistoryLimitError,
     ChatOwnershipError,
     CircuitOpenError,
     DatabaseNotInitializedError,
-    ExpiredTokenError,
     InvalidChatError,
     InvalidCursorError,
-    InvalidTokenError,
     MessageTooLargeError,
-    MissingTokenError,
     PageSizeLimitError,
     PermanentLLMError,
     QueueFullError,
@@ -25,9 +23,9 @@ from app.exceptions import (
 )
 
 CASES = [
-    ("missing_token", MissingTokenError(), 401),
-    ("invalid_token", InvalidTokenError(), 401),
-    ("expired_token", ExpiredTokenError(), 401),
+    ("missing_token", AuthenticationError("Missing Bearer token"), 401),
+    ("invalid_token", AuthenticationError("Invalid token"), 401),
+    ("expired_token", AuthenticationError("Expired token"), 401),
     ("chat_ownership", ChatOwnershipError("abc"), 404),
     ("db_not_init", DatabaseNotInitializedError(), 500),
     ("unsupported_lang", UnsupportedLanguageError("fr", ["en"]), 400),

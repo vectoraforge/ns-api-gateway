@@ -76,25 +76,10 @@ class MessageTooLargeError(ServiceError):
         super().__init__(f"{role} message exceeds {limit} characters")
 
 
-class AuthError(ServiceError):
+class AuthenticationError(ServiceError):
     """Base for authentication failures — maps to 401."""
 
     pass
-
-
-class MissingTokenError(AuthError):
-    def __init__(self):
-        super().__init__("Missing Bearer token")
-
-
-class InvalidTokenError(AuthError):
-    def __init__(self):
-        super().__init__("Invalid token")
-
-
-class ExpiredTokenError(AuthError):
-    def __init__(self):
-        super().__init__("Expired token")
 
 
 class ChatOwnershipError(ServiceError):
