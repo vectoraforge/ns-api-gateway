@@ -1,0 +1,15 @@
+/CLAUDE.md
+/FEATURES.md
+
+__pycache__/
+.pytest_cache/
+*.egg-info/
+
+.venv/
+.env
+
+.idea/
+.vscode/
+
+.DS_Store
+Thumbs.db
