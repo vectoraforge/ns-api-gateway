@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 ErrorCode = Literal[
     "invalid_request",
@@ -17,10 +17,16 @@ class ErrorResponse(BaseModel):
     code: ErrorCode
 
 
-class AnalyzeRequest(BaseModel):
+class ChatRequest(BaseModel):
     text: str = Field(..., max_length=4096, description="The phrase to analyze")
-    lang: str | None = Field(default="en", description="Language code (e.g., 'en', 'es')")
-    chat_id: UUID | None = Field(default=None, description="Existing chat ID for follow-up")
+    lang: str | None = Field(default=None, description="Language code (e.g., 'en', 'es')")
+    chat_id: UUID | None = Field(default=None, description="Existing chat ID for continuation")
+
+    @model_validator(mode="after")
+    def require_lang_for_new_chat(self) -> "ChatRequest":
+        if self.chat_id is None and self.lang is None:
+            raise ValueError("'lang' is required when starting a new chat (no chat_id)")
+        return self
 
 
 class Issue(BaseModel):
@@ -28,31 +34,25 @@ class Issue(BaseModel):
     explanation: str = Field(..., description="Explanation of why this is an issue")
 
 
-class AnalyzeResponseLLM(BaseModel):
-    """Schema for LLM structured output. Separate from AnalyzeResponse (API schema)
-    because the LLM does not produce text, lang, or chat_id fields."""
+class ChatResponseLLM(BaseModel):
+    """Schema for LLM structured output."""
 
     issues: list[Issue] = Field(default_factory=list, description="Issues found in the phrase")
-    alternatives: list[str] = Field(default_factory=list, description="Corrected alternatives")
-    assessment: str = Field(..., description="Overall assessment of naturalness")
+    suggestions: list[str] = Field(default_factory=list, description="Suggested corrections")
+    response: str = Field(..., description="Overall assessment of naturalness")
 
 
-class AnalyzeResponse(BaseModel):
+class ChatResponse(BaseModel):
     text: str = Field(..., description="The original phrase")
-    lang: str = Field(..., description="Language code used")
     chat_id: UUID = Field(..., description="Chat session ID")
     issues: list[Issue] = Field(default_factory=list, description="Issues found in the phrase")
-    alternatives: list[str] = Field(default_factory=list, description="Corrected alternatives")
-    assessment: str = Field(..., description="Overall assessment of naturalness")
+    suggestions: list[str] = Field(default_factory=list, description="Suggested corrections")
+    response: str = Field(..., description="Overall assessment of naturalness")
 
 
 class ExamplesResponse(BaseModel):
     lang: str = Field(..., description="Language code")
     examples: list[str] = Field(..., description="List of example phrases")
-
-
-class ChatMessageRequest(BaseModel):
-    text: str = Field(..., max_length=4096, description="Follow-up message text")
 
 
 class ChatMessage(BaseModel):
