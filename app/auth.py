@@ -50,24 +50,6 @@ class JWTVerifier:
                 leeway=self._leeway,
                 options={"require": ["exp", "iat", "aud", "iss", "sub"]},
             )
-        except jwt.ExpiredSignatureError:
-            logger.warning("Authentication failure: Token expired")
-            raise AuthenticationError("Token expired") from None
-        except jwt.InvalidAudienceError:
-            logger.warning("Authentication failure: Invalid audience")
-            raise AuthenticationError("Invalid audience") from None
-        except jwt.InvalidIssuerError:
-            logger.warning("Authentication failure: Invalid issuer")
-            raise AuthenticationError("Invalid issuer") from None
-        except jwt.DecodeError:
-            logger.warning("Authentication failure: Token decode failed")
-            raise AuthenticationError("Token decode failed") from None
-        except jwt.InvalidAlgorithmError:
-            logger.warning("Authentication failure: Invalid algorithm")
-            raise AuthenticationError("Invalid algorithm") from None
-        except jwt.MissingRequiredClaimError as exc:
-            logger.warning("Authentication failure: Missing claim: %s", exc)
-            raise AuthenticationError(f"Missing claim: {exc}") from None
         except Exception as exc:
             logger.warning("Authentication failure: %s", exc)
             raise AuthenticationError(f"Token verification failed: {exc}") from None
