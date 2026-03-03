@@ -13,16 +13,15 @@ from app.schema import (
     ChatMessagesResponse,
     ChatRequest,
     ChatResponse,
-    ExamplesResponse,
 )
 from app.services import ChatService
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/prompts")
+router = APIRouter()
 
 
-@router.post("/analyze", response_model=ChatResponse)
-async def analyze_prompt(
+@router.post("/chats", response_model=ChatResponse)
+async def create_or_continue_chat(
     body: ChatRequest,
     db: AsyncSession = Depends(get_db),
     user_id: str = Depends(get_user_id),
@@ -31,29 +30,7 @@ async def analyze_prompt(
     return await service.chat(db, body.text, user_id, lang=body.lang, chat_id=body.chat_id)
 
 
-@router.get("/examples", response_model=ExamplesResponse)
-async def get_examples(
-    lang: str = Query(..., description="Language code (e.g., 'en', 'es')"),
-    service: ChatService = Depends(get_service),
-) -> ExamplesResponse:
-    return service.get_examples(lang)
-
-
-chats_router = APIRouter()
-
-
-@chats_router.post("/chats/{chat_id}/messages", response_model=ChatResponse)
-async def chat_message(
-    chat_id: UUID,
-    body: ChatRequest,
-    db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_user_id),
-    service: ChatService = Depends(get_service),
-) -> ChatResponse:
-    return await service.chat(db, body.text, user_id, chat_id=chat_id)
-
-
-@chats_router.get("/chats/{chat_id}/messages", response_model=ChatMessagesResponse)
+@router.get("/chats/{chat_id}/messages", response_model=ChatMessagesResponse)
 async def list_chat_messages(
     chat_id: UUID,
     limit: int = Query(50, ge=1),
@@ -91,7 +68,7 @@ async def list_chat_messages(
     return ChatMessagesResponse(messages=items, next_cursor=next_cursor)
 
 
-@chats_router.delete("/chats/{chat_id}", status_code=204)
+@router.delete("/chats/{chat_id}", status_code=204)
 async def delete_chat(
     chat_id: UUID,
     db: AsyncSession = Depends(get_db),

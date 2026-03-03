@@ -13,7 +13,7 @@ from app.config import MainConfig
 from app.database import engine, init_engine
 from app.errors import register_exception_handlers
 from app.resilience import ResiliencePolicy
-from app.routers import chats_router, health_router, prompts_router, root_router
+from app.routers import chats_router, examples_router, health_router, root_router
 from app.schema import ErrorResponse
 from app.services import ChatService
 
@@ -88,8 +88,8 @@ app = FastAPI(
 )
 
 app.include_router(root_router)
-app.include_router(prompts_router)
 app.include_router(chats_router)
+app.include_router(examples_router)
 app.include_router(health_router)
 register_exception_handlers(app)
 
