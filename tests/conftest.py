@@ -8,8 +8,8 @@ from app.config import ResilienceConfig
 from app.dependencies import get_config, get_db, get_service, get_user_id
 from app.errors import register_exception_handlers
 from app.resilience import ResiliencePolicy
-from app.routers import chats_router, health_router, prompts_router, root_router
-from app.services import AnalysisService
+from app.routers import chats_router, examples_router, health_router, root_router
+from app.services import ChatService
 
 
 @pytest.fixture
@@ -52,8 +52,8 @@ def mock_chats():
 def client(mock_config, mock_examples, mock_chats, mock_db):
     app = FastAPI()
     app.include_router(root_router)
-    app.include_router(prompts_router)
     app.include_router(chats_router)
+    app.include_router(examples_router)
     app.include_router(health_router)
     register_exception_handlers(app)
 
@@ -71,8 +71,8 @@ def client(mock_config, mock_examples, mock_chats, mock_db):
             circuit_breaker_reset_seconds=60,
         )
     )
-    service = AnalysisService(
-        prompt="Test prompt for {lang}: {phrase}",
+    service = ChatService(
+        prompt="Test prompt {lang_directive}: {phrase}",
         examples=mock_examples,
         llm=mock_llm,
         policy=policy,
@@ -93,5 +93,5 @@ def client(mock_config, mock_examples, mock_chats, mock_db):
 
 @pytest.fixture
 def service_instance(client):
-    """The AnalysisService instance injected via DI overrides."""
+    """The ChatService instance injected via DI overrides."""
     return client.app.dependency_overrides[get_service]()

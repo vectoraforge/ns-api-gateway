@@ -6,8 +6,8 @@ import pytest
 from app.config import ResilienceConfig
 from app.exceptions import InvalidChatError, PermanentLLMError, TransientLLMError, UnsupportedLanguageError
 from app.resilience import ResiliencePolicy
-from app.schema import AnalyzeResponse, AnalyzeResponseLLM, ExamplesResponse, Issue
-from app.services import AnalysisService
+from app.schema import ChatResponse, ChatResponseLLM, ExamplesResponse, Issue
+from app.services import ChatService
 
 
 @pytest.fixture
@@ -49,8 +49,8 @@ def service(examples, mock_chats):
             circuit_breaker_reset_seconds=60,
         )
     )
-    svc = AnalysisService(
-        prompt="Analyze {lang} phrase: {phrase}",
+    svc = ChatService(
+        prompt="{lang_directive} Analyze phrase: {phrase}",
         examples=examples,
         llm=MagicMock(),
         policy=policy,
@@ -63,41 +63,39 @@ def service(examples, mock_chats):
     return svc
 
 
-class TestAnalyze:
+class TestChat:
     @pytest.mark.asyncio
-    async def test_success(self, service, mock_db):
-        llm_response = AnalyzeResponseLLM(
+    async def test_new_chat_success(self, service, mock_db):
+        llm_response = ChatResponseLLM(
             issues=[Issue(text_part="going to home", explanation="Should be 'going home'")],
-            alternatives=["I am going home."],
-            assessment="Minor grammar issue",
+            suggestions=["I am going home."],
+            response="Minor grammar issue",
         )
 
         service.chain = AsyncMock()
         service.chain.ainvoke.return_value = llm_response
 
-        result = await service.analyze(mock_db, "I am going to home", "en", "user-1")
+        result = await service.chat(mock_db, "I am going to home", "user-1", lang="en")
 
-        assert isinstance(result, AnalyzeResponse)
+        assert isinstance(result, ChatResponse)
         assert result.text == "I am going to home"
-        assert result.lang == "en"
         assert result.chat_id is not None
         assert len(result.issues) == 1
-        assert result.assessment == "Minor grammar issue"
+        assert result.response == "Minor grammar issue"
 
     @pytest.mark.asyncio
-    async def test_with_existing_chat_id(self, service, mock_chats, mock_db):
+    async def test_new_chat_with_existing_chat_id(self, service, mock_chats, mock_db):
         chat_id = uuid4()
-        mock_chats.get_chat_owned.return_value = {"id": chat_id, "lang": "es", "user_id": "user-1"}
+        mock_chats.get_chat_owned.return_value = {"id": chat_id, "user_id": "user-1"}
 
-        llm_response = AnalyzeResponseLLM(issues=[], alternatives=[], assessment="Good")
+        llm_response = ChatResponseLLM(issues=[], suggestions=[], response="Good")
 
         service.chain = AsyncMock()
         service.chain.ainvoke.return_value = llm_response
 
-        result = await service.analyze(mock_db, "Test", "en", "user-1", chat_id)
+        result = await service.chat(mock_db, "Test", "user-1", lang="en", chat_id=chat_id)
 
         assert result.chat_id == chat_id
-        assert result.lang == "es"
         mock_chats.create_chat.assert_not_called()
 
     @pytest.mark.asyncio
@@ -106,14 +104,14 @@ class TestAnalyze:
         mock_chats.get_chat_owned.side_effect = InvalidChatError(chat_id)
 
         with pytest.raises(InvalidChatError) as exc_info:
-            await service.analyze(mock_db, "Test", "en", "user-1", chat_id)
+            await service.chat(mock_db, "Test", "user-1", lang="en", chat_id=chat_id)
 
         assert exc_info.value.chat_id == chat_id
 
     @pytest.mark.asyncio
     async def test_unsupported_language(self, service, mock_db):
         with pytest.raises(UnsupportedLanguageError) as exc_info:
-            await service.analyze(mock_db, "Test", "fr", "user-1")
+            await service.chat(mock_db, "Test", "user-1", lang="fr")
 
         assert exc_info.value.lang == "fr"
         assert "en" in exc_info.value.supported
@@ -125,7 +123,7 @@ class TestAnalyze:
         service.chain.ainvoke.side_effect = original_exc
 
         with pytest.raises(PermanentLLMError) as exc_info:
-            await service.analyze(mock_db, "Test phrase", "en", "user-1")
+            await service.chat(mock_db, "Test phrase", "user-1", lang="en")
 
         assert "LLM API error" in str(exc_info.value)
         assert exc_info.value.__cause__ is original_exc
@@ -139,49 +137,46 @@ class TestAnalyze:
 
         with patch("app.resilience._is_transient_error", return_value=True):
             with pytest.raises(TransientLLMError) as exc_info:
-                await service.analyze(mock_db, "Test phrase", "en", "user-1")
+                await service.chat(mock_db, "Test phrase", "user-1", lang="en")
 
             assert exc_info.value.__cause__ is original_exc
 
-
-class TestChat:
     @pytest.mark.asyncio
-    async def test_success(self, service, mock_chats, mock_db):
+    async def test_continuation_success(self, service, mock_chats, mock_db):
         chat_id = uuid4()
-        mock_chats.get_chat_owned.return_value = {"id": chat_id, "lang": "en", "user_id": "user-1"}
+        mock_chats.get_chat_owned.return_value = {"id": chat_id, "user_id": "user-1"}
 
-        llm_response = AnalyzeResponseLLM(issues=[], alternatives=[], assessment="Looks good")
+        llm_response = ChatResponseLLM(issues=[], suggestions=[], response="Looks good")
 
         service.chain = AsyncMock()
         service.chain.ainvoke.return_value = llm_response
 
-        result = await service.chat(mock_db, chat_id, "Why is that wrong?", "user-1")
+        result = await service.chat(mock_db, "Why is that wrong?", "user-1", chat_id=chat_id)
 
-        assert isinstance(result, AnalyzeResponse)
+        assert isinstance(result, ChatResponse)
         assert result.chat_id == chat_id
         assert result.text == "Why is that wrong?"
-        assert result.lang == "en"
         mock_chats.save_messages.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_invalid_chat_id(self, service, mock_chats, mock_db):
+    async def test_continuation_invalid_chat_id(self, service, mock_chats, mock_db):
         chat_id = uuid4()
         mock_chats.get_chat_owned.side_effect = InvalidChatError(chat_id)
 
         with pytest.raises(InvalidChatError):
-            await service.chat(mock_db, chat_id, "Hello", "user-1")
+            await service.chat(mock_db, "Hello", "user-1", chat_id=chat_id)
 
     @pytest.mark.asyncio
-    async def test_llm_error(self, service, mock_chats, mock_db):
+    async def test_continuation_llm_error(self, service, mock_chats, mock_db):
         chat_id = uuid4()
-        mock_chats.get_chat_owned.return_value = {"id": chat_id, "lang": "en", "user_id": "user-1"}
+        mock_chats.get_chat_owned.return_value = {"id": chat_id, "user_id": "user-1"}
 
         service.chain = AsyncMock()
         original_exc = Exception("LLM failed")
         service.chain.ainvoke.side_effect = original_exc
 
         with pytest.raises(PermanentLLMError) as exc_info:
-            await service.chat(mock_db, chat_id, "Hello", "user-1")
+            await service.chat(mock_db, "Hello", "user-1", chat_id=chat_id)
 
         assert exc_info.value.__cause__ is original_exc
 

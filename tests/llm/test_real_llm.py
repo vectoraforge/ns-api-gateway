@@ -20,37 +20,35 @@ class TestRealLLM:
             yield client
 
     def test_analyze_real_phrase_english(self, real_client):
-        response = real_client.post("/prompts/analyze", json={"text": "I am going to home.", "lang": "en"})
+        response = real_client.post("/chats", json={"text": "I am going to home.", "lang": "en"})
 
         assert response.status_code == 200, response.text
 
         data = response.json()
 
         assert data["text"] == "I am going to home."
-        assert data["lang"] == "en"
         assert "chat_id" in data
         assert "issues" in data
-        assert "alternatives" in data
-        assert "assessment" in data
+        assert "suggestions" in data
+        assert "response" in data
 
-        assert len(data["issues"]) > 0 or len(data["alternatives"]) > 0
+        assert len(data["issues"]) > 0 or len(data["suggestions"]) > 0
 
     def test_analyze_real_phrase_spanish(self, real_client):
-        response = real_client.post("/prompts/analyze", json={"text": "Yo soy va a casa.", "lang": "es"})
+        response = real_client.post("/chats", json={"text": "Yo soy va a casa.", "lang": "es"})
 
         assert response.status_code == 200, response.text
         data = response.json()
 
-        assert data["lang"] == "es"
         assert "issues" in data
-        assert "alternatives" in data
+        assert "suggestions" in data
 
     def test_analyze_correct_phrase(self, real_client):
-        response = real_client.post("/prompts/analyze", json={"text": "I am going home.", "lang": "en"})
+        response = real_client.post("/chats", json={"text": "I am going home.", "lang": "en"})
 
         assert response.status_code == 200, response.text
         data = response.json()
-        assert "assessment" in data
+        assert "response" in data
 
     def test_root_with_real_config(self, real_client):
         response = real_client.get("/")

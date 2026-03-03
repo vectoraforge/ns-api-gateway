@@ -10,36 +10,41 @@ from app.exceptions import (
     UnsupportedLanguageError,
 )
 from app.schema import (
-    AnalyzeRequest,
-    AnalyzeResponse,
-    ChatMessageRequest,
+    ChatRequest,
+    ChatResponse,
     ExamplesResponse,
     Issue,
 )
 
 
-class TestAnalyzeRequest:
+class TestChatRequest:
     def test_valid_request(self):
-        request = AnalyzeRequest(text="Hello world", lang="en")
+        request = ChatRequest(text="Hello world", lang="en")
         assert request.text == "Hello world"
         assert request.lang == "en"
 
-    def test_default_language(self):
-        request = AnalyzeRequest(text="Hello world")
-        assert request.lang == "en"
+    def test_missing_lang_without_chat_id_raises(self):
+        with pytest.raises(ValidationError):
+            ChatRequest(text="Hello world")
 
     def test_missing_text(self):
         with pytest.raises(ValidationError) as exc_info:
-            AnalyzeRequest(lang="en")
+            ChatRequest(lang="en")
         assert "text" in str(exc_info.value)
 
     def test_with_chat_id(self):
         cid = uuid4()
-        request = AnalyzeRequest(text="Hello", chat_id=cid)
+        request = ChatRequest(text="Hello", chat_id=cid)
+        assert request.chat_id == cid
+
+    def test_lang_optional_with_chat_id(self):
+        cid = uuid4()
+        request = ChatRequest(text="Hello", chat_id=cid)
+        assert request.lang is None
         assert request.chat_id == cid
 
     def test_chat_id_defaults_to_none(self):
-        request = AnalyzeRequest(text="Hello")
+        request = ChatRequest(text="Hello", lang="en")
         assert request.chat_id is None
 
 
@@ -54,36 +59,28 @@ class TestIssue:
             Issue(text_part="going to home")
 
 
-class TestAnalyzeResponse:
+class TestChatResponse:
     def test_valid_response(self):
         cid = uuid4()
-        response = AnalyzeResponse(
-            text="Test phrase", lang="en", chat_id=cid, issues=[], alternatives=[], assessment="Good"
+        response = ChatResponse(
+            text="Test phrase", chat_id=cid, issues=[], suggestions=[], response="Good"
         )
         assert response.text == "Test phrase"
-        assert response.lang == "en"
         assert response.chat_id == cid
-        assert response.assessment == "Good"
+        assert response.response == "Good"
 
-    def test_response_with_issues_and_alternatives(self):
+    def test_response_with_issues_and_suggestions(self):
         issue = Issue(text_part="going to home", explanation="Remove 'to'")
-        response = AnalyzeResponse(
+        response = ChatResponse(
             text="Test",
-            lang="en",
             chat_id=uuid4(),
             issues=[issue],
-            alternatives=["I am going home."],
-            assessment="Needs work",
+            suggestions=["I am going home."],
+            response="Needs work",
         )
         assert len(response.issues) == 1
-        assert len(response.alternatives) == 1
-        assert response.alternatives[0] == "I am going home."
-
-
-class TestChatModels:
-    def test_chat_message_request(self):
-        req = ChatMessageRequest(text="Why is that wrong?")
-        assert req.text == "Why is that wrong?"
+        assert len(response.suggestions) == 1
+        assert response.suggestions[0] == "I am going home."
 
 
 class TestExamplesResponse:

@@ -22,9 +22,7 @@ class TestCrossUserIsolation:
             )
             assert response.status_code == 404
             body = response.json()
-            assert body["status"] == 404
-            # Ownership-opaque: same message as not-found
-            assert "not found" in body["error"].lower()
+            assert body["code"] == "not_found"
         finally:
             await cleanup_chat(db_session, chat_id)
 
@@ -38,7 +36,7 @@ class TestCrossUserIsolation:
             )
             assert response.status_code == 404
             body = response.json()
-            assert body["status"] == 404
+            assert body["code"] == "not_found"
         finally:
             await cleanup_chat(db_session, chat_id)
 
@@ -47,13 +45,13 @@ class TestCrossUserIsolation:
         chat_id = await create_chat(db_session, USER_B)
         try:
             response = integration_client.post(
-                f"/chats/{chat_id}/messages",
-                json={"text": "Hello"},
+                "/chats",
+                json={"text": "Hello", "chat_id": str(chat_id)},
                 headers=auth(USER_A),
             )
             assert response.status_code == 404
             body = response.json()
-            assert body["status"] == 404
+            assert body["code"] == "not_found"
         finally:
             await cleanup_chat(db_session, chat_id)
 
@@ -75,7 +73,7 @@ class TestCrossUserIsolation:
     async def test_user_a_can_delete_own_chat(self, integration_client, db_session):
         """Positive case: user can delete their own chat."""
         chat_id = await create_chat(db_session, USER_A)
-        # No cleanup needed — delete succeeds
+        # No cleanup needed -- delete succeeds
         response = integration_client.delete(
             f"/chats/{chat_id}",
             headers=auth(USER_A),
@@ -93,7 +91,6 @@ class TestCrossUserIsolation:
             )
             assert response.status_code == 400
             body = response.json()
-            assert body["status"] == 400
-            assert "cursor" in body["error"].lower()
+            assert body["code"] == "invalid_request"
         finally:
             await cleanup_chat(db_session, chat_id)

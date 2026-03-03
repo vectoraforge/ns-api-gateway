@@ -13,7 +13,7 @@ from app.dependencies import get_config, get_db, get_service, get_user_id
 from app.errors import register_exception_handlers
 from app.resilience import ResiliencePolicy
 from app.routers import chats_router
-from app.services import AnalysisService
+from app.services import ChatService
 from tests.jwt_helpers import make_token
 
 TEST_DB_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/nativespeaker"
@@ -66,7 +66,7 @@ def integration_client(db_session):
             circuit_breaker_reset_seconds=60,
         )
     )
-    service = AnalysisService(
+    service = ChatService(
         prompt="Test prompt",
         examples={"en": ["example"]},
         llm=mock_llm,
@@ -90,7 +90,7 @@ async def create_chat(db_session: AsyncSession, user_id: str) -> UUID:
     """Insert a chat row directly and return its ID."""
     chats = Chats()
     chat_id = uuid4()
-    await chats.create_chat(db_session, chat_id, "en", user_id)
+    await chats.create_chat(db_session, chat_id, user_id)
     return chat_id
 
 
