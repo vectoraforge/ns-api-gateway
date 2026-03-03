@@ -3,7 +3,6 @@ CREATE EXTENSION IF NOT EXISTS pg_partman;
 CREATE TABLE chats (
     id         UUID PRIMARY KEY,
     user_id    TEXT,
-    lang       TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

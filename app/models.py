@@ -9,7 +9,6 @@ class Chat(SQLModel, table=True):
 
     id: UUID = Field(primary_key=True)
     user_id: str | None = Field(default=None, index=True)
-    lang: str
     created_at: datetime | None = Field(default=None, sa_column_kwargs={"server_default": "now()"})
 
 

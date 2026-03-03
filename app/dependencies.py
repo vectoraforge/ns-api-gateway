@@ -7,10 +7,10 @@ from app.auth import TokenVerifier
 from app.config import AppConfig
 from app.database import session_factory
 from app.exceptions import AuthenticationError, DatabaseNotInitializedError
-from app.services import AnalysisService
+from app.services import ChatService
 
 
-def get_service(request: Request) -> AnalysisService:
+def get_service(request: Request) -> ChatService:
     return request.app.state.service
 
 

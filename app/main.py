@@ -15,7 +15,7 @@ from app.errors import register_exception_handlers
 from app.resilience import ResiliencePolicy
 from app.routers import chats_router, health_router, prompts_router, root_router
 from app.schema import ErrorResponse
-from app.services import AnalysisService
+from app.services import ChatService
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI):
         cache_ttl_seconds=config.jwt.jwks_cache_ttl_seconds,
     )
     logger.info(f"Firebase project ID: {config.jwt.project_id}")
-    app.state.service = AnalysisService(
+    app.state.service = ChatService(
         prompt=config.prompt,
         examples=config.examples,
         llm=llm,
