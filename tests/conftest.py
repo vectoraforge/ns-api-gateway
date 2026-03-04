@@ -41,10 +41,11 @@ def mock_db():
 @pytest.fixture
 def mock_chats():
     chats = AsyncMock()
-    chats.create_chat = AsyncMock()
+    chats.create_chat_with_messages = AsyncMock()
     chats.load_history = AsyncMock(return_value=[])
-    chats.get_message_counts = AsyncMock(return_value={"human": 0, "assistant": 0})
     chats.save_messages = AsyncMock()
+    chats.list_messages = AsyncMock(return_value=([], None))
+    chats.delete_chat = AsyncMock()
     return chats
 
 
@@ -76,8 +77,7 @@ def client(mock_config, mock_examples, mock_chats, mock_db):
         examples=mock_examples,
         llm=mock_llm,
         policy=policy,
-        history_max_human_messages=50,
-        history_max_assistant_messages=50,
+        history_max_messages=50,
         message_max_chars=4096,
         chats=mock_chats,
     )

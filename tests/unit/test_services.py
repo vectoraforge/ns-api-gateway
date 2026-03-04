@@ -2,9 +2,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.config import ResilienceConfig
-from app.exceptions import InvalidChatError, PermanentLLMError, TransientLLMError, UnsupportedLanguageError
+from app.exceptions import (
+    ChatHistoryLimitError,
+    InvalidChatError,
+    PermanentLLMError,
+    TransientLLMError,
+    UnsupportedLanguageError,
+)
 from app.resilience import ResiliencePolicy
 from app.schema import ChatResponse, ChatResponseLLM, ExamplesResponse, Issue
 from app.services import ChatService
@@ -26,10 +33,8 @@ def mock_db():
 @pytest.fixture
 def mock_chats():
     chats = AsyncMock()
-    chats.create_chat = AsyncMock()
-    chats.get_chat_owned = AsyncMock(return_value=None)
+    chats.create_chat_with_messages = AsyncMock()
     chats.load_history = AsyncMock(return_value=[])
-    chats.get_message_counts = AsyncMock(return_value={"human": 0, "assistant": 0})
     chats.save_messages = AsyncMock()
     return chats
 
@@ -54,8 +59,7 @@ def service(examples, mock_chats):
         examples=examples,
         llm=MagicMock(),
         policy=policy,
-        history_max_human_messages=50,
-        history_max_assistant_messages=50,
+        history_max_messages=50,
         message_max_chars=4096,
         chats=mock_chats,
     )
@@ -65,7 +69,7 @@ def service(examples, mock_chats):
 
 class TestChat:
     @pytest.mark.asyncio
-    async def test_new_chat_success(self, service, mock_db):
+    async def test_new_chat_success(self, service, mock_chats, mock_db):
         llm_response = ChatResponseLLM(
             issues=[Issue(text_part="going to home", explanation="Should be 'going home'")],
             suggestions=["I am going home."],
@@ -82,29 +86,37 @@ class TestChat:
         assert result.chat_id is not None
         assert len(result.issues) == 1
         assert result.response == "Minor grammar issue"
+        mock_chats.create_chat_with_messages.assert_called_once()
+        mock_chats.load_history.assert_not_called()
+        mock_chats.save_messages.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_new_chat_with_existing_chat_id(self, service, mock_chats, mock_db):
+    async def test_continuation_with_chat_id(self, service, mock_chats, mock_db):
+        """Continuation: chat_id provided, load_history returns existing messages."""
         chat_id = uuid4()
-        mock_chats.get_chat_owned.return_value = {"id": chat_id, "user_id": "user-1"}
+        mock_chats.load_history.return_value = [
+            HumanMessage(content="Hi"),
+            AIMessage(content="Hello"),
+        ]
 
         llm_response = ChatResponseLLM(issues=[], suggestions=[], response="Good")
 
         service.chain = AsyncMock()
         service.chain.ainvoke.return_value = llm_response
 
-        result = await service.chat(mock_db, "Test", "user-1", lang="en", chat_id=chat_id)
+        result = await service.chat(mock_db, "Test", "user-1", chat_id=chat_id)
 
         assert result.chat_id == chat_id
-        mock_chats.create_chat.assert_not_called()
+        mock_chats.save_messages.assert_called_once()
+        mock_chats.create_chat_with_messages.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_invalid_chat_id(self, service, mock_chats, mock_db):
         chat_id = uuid4()
-        mock_chats.get_chat_owned.side_effect = InvalidChatError(chat_id)
+        mock_chats.load_history.side_effect = InvalidChatError(chat_id)
 
         with pytest.raises(InvalidChatError) as exc_info:
-            await service.chat(mock_db, "Test", "user-1", lang="en", chat_id=chat_id)
+            await service.chat(mock_db, "Test", "user-1", chat_id=chat_id)
 
         assert exc_info.value.chat_id == chat_id
 
@@ -144,7 +156,10 @@ class TestChat:
     @pytest.mark.asyncio
     async def test_continuation_success(self, service, mock_chats, mock_db):
         chat_id = uuid4()
-        mock_chats.get_chat_owned.return_value = {"id": chat_id, "user_id": "user-1"}
+        mock_chats.load_history.return_value = [
+            HumanMessage(content="Hi"),
+            AIMessage(content="Hello"),
+        ]
 
         llm_response = ChatResponseLLM(issues=[], suggestions=[], response="Looks good")
 
@@ -157,11 +172,12 @@ class TestChat:
         assert result.chat_id == chat_id
         assert result.text == "Why is that wrong?"
         mock_chats.save_messages.assert_called_once()
+        mock_chats.create_chat_with_messages.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_continuation_invalid_chat_id(self, service, mock_chats, mock_db):
         chat_id = uuid4()
-        mock_chats.get_chat_owned.side_effect = InvalidChatError(chat_id)
+        mock_chats.load_history.side_effect = InvalidChatError(chat_id)
 
         with pytest.raises(InvalidChatError):
             await service.chat(mock_db, "Hello", "user-1", chat_id=chat_id)
@@ -169,7 +185,10 @@ class TestChat:
     @pytest.mark.asyncio
     async def test_continuation_llm_error(self, service, mock_chats, mock_db):
         chat_id = uuid4()
-        mock_chats.get_chat_owned.return_value = {"id": chat_id, "user_id": "user-1"}
+        mock_chats.load_history.return_value = [
+            HumanMessage(content="Hi"),
+            AIMessage(content="Hello"),
+        ]
 
         service.chain = AsyncMock()
         original_exc = Exception("LLM failed")
@@ -179,6 +198,18 @@ class TestChat:
             await service.chat(mock_db, "Hello", "user-1", chat_id=chat_id)
 
         assert exc_info.value.__cause__ is original_exc
+
+    @pytest.mark.asyncio
+    async def test_continuation_capacity_exceeded(self, service, mock_chats, mock_db):
+        """When load_history returns >= history_max_messages * 2 messages, ChatHistoryLimitError is raised."""
+        chat_id = uuid4()
+        history = [HumanMessage(content="q")] * 50 + [AIMessage(content="a")] * 50
+        mock_chats.load_history.return_value = history
+
+        with pytest.raises(ChatHistoryLimitError) as exc_info:
+            await service.chat(mock_db, "Test", "user-1", chat_id=chat_id)
+
+        assert exc_info.value.max_messages == 50
 
 
 class TestGetExamples:
