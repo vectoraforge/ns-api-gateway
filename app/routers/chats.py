@@ -52,9 +52,7 @@ async def list_chat_messages(
         except Exception:
             raise InvalidCursorError()
 
-    await service.chats.get_chat_owned(db, chat_id, user_id)
-
-    messages, next_cursor = await service.chats.list_messages(db, chat_id, limit=limit, cursor=cursor)
+    messages, next_cursor = await service.chats.list_messages(db, chat_id, user_id, limit=limit, cursor=cursor)
 
     items = [
         ChatMessage(
@@ -75,5 +73,5 @@ async def delete_chat(
     user_id: str = Depends(get_user_id),
     service: ChatService = Depends(get_service),
 ) -> Response:
-    await service.chats.delete_chat_owned(db, chat_id, user_id)
+    await service.chats.delete_chat(db, chat_id, user_id)
     return Response(status_code=204)

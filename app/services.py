@@ -17,8 +17,7 @@ class ChatService:
         examples: dict[str, list[str]],
         llm: BaseChatModel,
         policy: ResiliencePolicy,
-        history_max_human_messages: int,
-        history_max_assistant_messages: int,
+        history_max_messages: int,
         message_max_chars: int,
         chats: Chats,
     ):
@@ -26,8 +25,7 @@ class ChatService:
         self.examples = examples
         self.llm = llm
         self.policy = policy
-        self.history_max_human_messages = history_max_human_messages
-        self.history_max_assistant_messages = history_max_assistant_messages
+        self.history_max_messages = history_max_messages
         self.message_max_chars = message_max_chars
         self.chats = chats
         structured_llm = self.llm.with_structured_output(ChatResponseLLM, method="json_schema", strict=True)
@@ -43,16 +41,6 @@ class ChatService:
     @property
     def supported_languages(self) -> list[str]:
         return list(self.examples.keys())
-
-    async def _ensure_history_capacity(self, db: AsyncSession, chat_id: UUID) -> None:
-        counts = await self.chats.get_message_counts(db, chat_id)
-        human_count = counts.get("human", 0)
-        assistant_count = counts.get("assistant", 0)
-        if human_count >= self.history_max_human_messages or assistant_count >= self.history_max_assistant_messages:
-            raise ChatHistoryLimitError(
-                max_human=self.history_max_human_messages,
-                max_assistant=self.history_max_assistant_messages,
-            )
 
     def _ensure_message_size(self, content: str, role: str) -> None:
         if len(content) > self.message_max_chars:
@@ -72,20 +60,15 @@ class ChatService:
         self._ensure_message_size(text, "user")
 
         if chat_id:
-            # Continuation: verify ownership, check capacity
-            await self.chats.get_chat_owned(db, chat_id, user_id)
-            await self._ensure_history_capacity(db, chat_id)
+            history = await self.chats.load_history(db, chat_id, user_id, limit=self.history_max_messages * 2)
+            if len(history) >= self.history_max_messages * 2:
+                raise ChatHistoryLimitError(max_messages=self.history_max_messages)
         else:
-            # New chat: validate lang, create chat
             if lang not in self.examples:
                 raise UnsupportedLanguageError(lang=lang, supported=self.supported_languages)
             chat_id = uuid4()
-            await self.chats.create_chat(db, chat_id, user_id=user_id)
+            history = []
 
-        history_limit = self.history_max_human_messages + self.history_max_assistant_messages
-        history = await self.chats.load_history(db, chat_id, limit=history_limit)
-
-        # Build lang_directive conditionally
         lang_directive = (
             f"You are a linguistic assistant for advanced non-native speakers of {lang}."
             if lang else ""
@@ -98,7 +81,14 @@ class ChatService:
 
         assistant_payload = str(response.model_dump())
         self._ensure_message_size(assistant_payload, "assistant")
-        await self.chats.save_messages(db, chat_id, f"Analyze this phrase: {text}", assistant_payload)
+
+        human_content = f"Analyze this phrase: {text}"
+        if not history:
+            await self.chats.create_chat_with_messages(
+                db, chat_id, user_id, human_content, assistant_payload
+            )
+        else:
+            await self.chats.save_messages(db, chat_id, human_content, assistant_payload)
 
         return ChatResponse(text=text, chat_id=chat_id, **response.model_dump())
 
