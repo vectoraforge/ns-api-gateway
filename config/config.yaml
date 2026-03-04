@@ -1,6 +1,5 @@
 log_level: INFO
-history_max_human_messages: 50
-history_max_assistant_messages: 50
+history_max_messages: 50
 message_max_chars: 4096
 messages_max_page_size: 100
 model:

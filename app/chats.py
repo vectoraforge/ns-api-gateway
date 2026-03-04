@@ -3,11 +3,11 @@ from datetime import datetime
 from uuid import UUID
 
 from langchain_core.messages import AIMessage, HumanMessage
-from sqlalchemy import and_, func, insert, or_
+from sqlalchemy import and_, delete, insert, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from app.exceptions import ChatOwnershipError, InvalidChatError
+from app.exceptions import InvalidChatError
 from app.models import Chat, Message
 
 
@@ -23,40 +23,39 @@ class Chats:
         created_at_raw, message_id_raw = raw.split("|", 1)
         return datetime.fromisoformat(created_at_raw), int(message_id_raw)
 
-    async def create_chat(self, db: AsyncSession, chat_id: UUID, user_id: str) -> None:
+    async def create_chat_with_messages(
+        self, db: AsyncSession, chat_id: UUID, user_id: str, human: str, assistant: str
+    ) -> None:
         db.add(Chat(id=chat_id, user_id=user_id))
-        await db.commit()
+        await db.execute(
+            insert(Message),
+            [
+                {"chat_id": chat_id, "role": "human", "content": human},
+                {"chat_id": chat_id, "role": "assistant", "content": assistant},
+            ],
+        )
 
-    async def get_chat_owned(self, db: AsyncSession, chat_id: UUID, user_id: str) -> dict:
-        """Return chat dict if owned by user_id. Raise ChatOwnershipError if exists but wrong owner,
-        InvalidChatError if it doesn't exist."""
-        chat = await db.get(Chat, chat_id)
-        if chat is None:
+    async def delete_chat(self, db: AsyncSession, chat_id: UUID, user_id: str) -> None:
+        result = await db.execute(
+            delete(Chat).where(and_(Chat.id == chat_id, Chat.user_id == user_id))
+        )
+        if result.rowcount == 0:
             raise InvalidChatError(chat_id)
-        if chat.user_id != user_id:
-            raise ChatOwnershipError(chat_id)
-        return {"id": chat.id, "user_id": chat.user_id}
-
-    async def delete_chat_owned(self, db: AsyncSession, chat_id: UUID, user_id: str) -> None:
-        """Delete chat owned by user_id. Raise ChatOwnershipError if exists but wrong owner,
-        InvalidChatError if doesn't exist."""
-        chat = await db.get(Chat, chat_id)
-        if chat is None:
-            raise InvalidChatError(chat_id)
-        if chat.user_id != user_id:
-            raise ChatOwnershipError(chat_id)
-        await db.delete(chat)
-        await db.commit()
 
     async def load_history(
-        self, db: AsyncSession, chat_id: UUID, limit: int | None = None
+        self, db: AsyncSession, chat_id: UUID, user_id: str, limit: int | None = None
     ) -> list[HumanMessage | AIMessage]:
         statement = (
-            select(Message.role, Message.content).where(Message.chat_id == chat_id).order_by(Message.created_at.desc())
+            select(Message.role, Message.content)
+            .join(Chat, Message.chat_id == Chat.id)
+            .where(and_(Message.chat_id == chat_id, Chat.user_id == user_id))
+            .order_by(Message.created_at.desc())
         )
         if limit is not None:
             statement = statement.limit(limit)
         results = (await db.exec(statement)).all()
+        if not results:
+            raise InvalidChatError(chat_id)
         messages = []
         for role, content in reversed(results):
             if role == "human":
@@ -65,21 +64,19 @@ class Chats:
                 messages.append(AIMessage(content=content))
         return messages
 
-    async def get_message_counts(self, db: AsyncSession, chat_id: UUID) -> dict[str, int]:
-        statement = (
-            select(Message.role, func.count(Message.id)).where(Message.chat_id == chat_id).group_by(Message.role)
-        )
-        results = (await db.exec(statement)).all()
-        return {role: count for role, count in results}
-
     async def list_messages(
         self,
         db: AsyncSession,
         chat_id: UUID,
+        user_id: str,
         limit: int,
         cursor: str | None = None,
     ) -> tuple[list[Message], str | None]:
-        statement = select(Message).where(Message.chat_id == chat_id)
+        statement = (
+            select(Message)
+            .join(Chat, Message.chat_id == Chat.id)
+            .where(and_(Message.chat_id == chat_id, Chat.user_id == user_id))
+        )
         if cursor:
             cursor_created_at, cursor_id = self._decode_cursor(cursor)
             statement = statement.where(
@@ -90,6 +87,10 @@ class Chats:
             )
         statement = statement.order_by(Message.created_at.desc(), Message.id.desc()).limit(limit + 1)
         results = (await db.exec(statement)).all()
+
+        if not results and cursor is None:
+            raise InvalidChatError(chat_id)
+
         next_cursor = None
         if len(results) > limit:
             last = results.pop()
@@ -105,4 +106,3 @@ class Chats:
                 {"chat_id": chat_id, "role": "assistant", "content": assistant},
             ],
         )
-        await db.commit()

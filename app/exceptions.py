@@ -63,9 +63,8 @@ class CircuitOpenError(ServiceError):
 
 
 class ChatHistoryLimitError(ServiceError):
-    def __init__(self, max_human: int, max_assistant: int):
-        self.max_human = max_human
-        self.max_assistant = max_assistant
+    def __init__(self, max_messages: int):
+        self.max_messages = max_messages
         super().__init__("Chat history limit reached")
 
 
@@ -80,14 +79,6 @@ class AuthenticationError(ServiceError):
     """Base for authentication failures — maps to 401."""
 
     pass
-
-
-class ChatOwnershipError(ServiceError):
-    """Raised when a user accesses a chat they don't own — maps to 404."""
-
-    def __init__(self, chat_id):
-        self.chat_id = chat_id
-        super().__init__(f"Chat '{chat_id}' not found")
 
 
 class DatabaseNotInitializedError(ServiceError):

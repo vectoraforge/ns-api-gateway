@@ -9,7 +9,6 @@ from app.exceptions import (
     AnalysisError,
     AuthenticationError,
     ChatHistoryLimitError,
-    ChatOwnershipError,
     CircuitOpenError,
     DatabaseNotInitializedError,
     InvalidChatError,
@@ -114,10 +113,6 @@ async def auth_error_handler(_: Request, exc: AuthenticationError) -> JSONRespon
     )
 
 
-async def chat_ownership_error_handler(_: Request, exc: ChatOwnershipError) -> JSONResponse:
-    return JSONResponse(status_code=404, content=ErrorResponse(code="not_found").model_dump())
-
-
 async def database_not_initialized_handler(_: Request, exc: DatabaseNotInitializedError) -> JSONResponse:
     logger.error("Database not initialized: %s", exc, exc_info=True)
     return JSONResponse(status_code=500, content=ErrorResponse(code="internal_error").model_dump())
@@ -153,7 +148,6 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(MessageTooLargeError, message_too_large_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(AuthenticationError, auth_error_handler)
-    app.add_exception_handler(ChatOwnershipError, chat_ownership_error_handler)
     app.add_exception_handler(DatabaseNotInitializedError, database_not_initialized_handler)
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(Exception, generic_error_handler)
