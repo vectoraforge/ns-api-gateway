@@ -71,8 +71,7 @@ def integration_client(db_session):
         examples={"en": ["example"]},
         llm=mock_llm,
         policy=policy,
-        history_max_human_messages=50,
-        history_max_assistant_messages=50,
+        history_max_messages=50,
         message_max_chars=4096,
         chats=Chats(),
     )
@@ -87,10 +86,11 @@ def integration_client(db_session):
 
 
 async def create_chat(db_session: AsyncSession, user_id: str) -> UUID:
-    """Insert a chat row directly and return its ID."""
+    """Insert a chat row with messages directly and return its ID."""
     chats = Chats()
     chat_id = uuid4()
-    await chats.create_chat(db_session, chat_id, user_id)
+    await chats.create_chat_with_messages(db_session, chat_id, user_id, "test question", "test answer")
+    await db_session.commit()
     return chat_id
 
 
