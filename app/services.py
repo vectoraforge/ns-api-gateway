@@ -5,7 +5,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chats import Chats
-from app.exceptions import ChatHistoryLimitError, UnsupportedLanguageError
+from app.exceptions import ChatHistoryLimitError, UnsupportedLanguageError, InvalidChatError
 from app.resilience import ResiliencePolicy
 from app.schema import ChatResponse, ChatResponseLLM, ExamplesResponse
 
@@ -39,13 +39,15 @@ class ChatService:
         return list(self.examples.keys())
 
     async def _invoke(self, chain, params: dict):
-        return await self.policy.invoke(lambda: chain.ainvoke(params))
+        return
 
     async def chat(self, db: AsyncSession, text: str, user_id: str,
                    lang: str | None = None,
                    chat_id: UUID | None = None) -> ChatResponse:
         if chat_id:
             history = await self.chats.load_history(db, chat_id, user_id, limit=self.history_max_messages * 2)
+            if not history:
+                raise InvalidChatError("Invalid chat")
             if len(history) >= self.history_max_messages * 2:
                 raise ChatHistoryLimitError(max_messages=self.history_max_messages)
         else:
@@ -59,10 +61,11 @@ class ChatService:
             if lang else ""
         )
 
-        response = await self._invoke(
-            self.chain,
-            {"lang_directive": lang_directive, "phrase": text, "history": history},
-        )
+        response = await self.policy.invoke(lambda: self.chain.ainvoke({
+            "lang_directive": lang_directive,
+            "phrase": text,
+            "history": history
+        }))
 
         assistant_payload = str(response.model_dump())
 

@@ -8,10 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import AppConfig
 from app.dependencies import get_config, get_db, get_service, get_user_id
 from app.exceptions import InvalidCursorError, PageSizeLimitError
-from app.schema import (ChatMessage,
-                         ChatMessagesResponse,
-                         ChatRequest,
-                         ChatResponse)
+from app.schema import ChatMessage, ChatMessagesResponse, ChatRequest, ChatResponse
 from app.services import ChatService
 
 logger = logging.getLogger(__name__)
