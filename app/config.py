@@ -23,9 +23,8 @@ class DatabaseConfig(BaseModel):
 
     @property
     def url(self) -> str:
-        return (
-            f"postgresql+asyncpg://{self.user}:{self.password.get_secret_value()}@{self.host}:{self.port}/{self.name}"
-        )
+        return (f"postgresql+asyncpg://{self.user}:{self.password.get_secret_value()}"
+                f"@{self.host}:{self.port}/{self.name}")
 
 
 class ResilienceConfig(BaseModel):
@@ -42,9 +41,8 @@ class ResilienceConfig(BaseModel):
 
 class JWTConfig(BaseModel):
     project_id: str
-    jwks_url: str = Field(
-        default="https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
-    )
+    jwks_url: str = Field(default="https://www.googleapis.com/service_accounts/v1/jwk/"
+                                  "securetoken@system.gserviceaccount.com")
     leeway_seconds: int = Field(default=30, ge=0)
     jwks_cache_ttl_seconds: float = Field(default=3600.0, gt=0)
 

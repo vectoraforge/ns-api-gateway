@@ -59,27 +59,21 @@ def client(mock_config, mock_examples, mock_chats, mock_db):
     register_exception_handlers(app)
 
     mock_llm = MagicMock()
-    policy = ResiliencePolicy(
-        ResilienceConfig(
-            pool_size=1,
-            queue_size=1,
-            queue_retry_after_seconds=1,
-            timeout_seconds=1,
-            retry_max_attempts=1,
-            retry_backoff_base_seconds=0,
-            retry_backoff_max_seconds=0,
-            circuit_breaker_failure_threshold=3,
-            circuit_breaker_reset_seconds=60,
-        )
-    )
-    service = ChatService(
-        prompt="Test prompt {lang_directive}: {phrase}",
-        examples=mock_examples,
-        llm=mock_llm,
-        policy=policy,
-        history_max_messages=50,
-        chats=mock_chats,
-    )
+    policy = ResiliencePolicy(ResilienceConfig(pool_size=1,
+                                              queue_size=1,
+                                              queue_retry_after_seconds=1,
+                                              timeout_seconds=1,
+                                              retry_max_attempts=1,
+                                              retry_backoff_base_seconds=0,
+                                              retry_backoff_max_seconds=0,
+                                              circuit_breaker_failure_threshold=3,
+                                              circuit_breaker_reset_seconds=60))
+    service = ChatService(prompt="Test prompt {lang_directive}: {phrase}",
+                          examples=mock_examples,
+                          llm=mock_llm,
+                          policy=policy,
+                          history_max_messages=50,
+                          chats=mock_chats)
 
     app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_config] = lambda: mock_config

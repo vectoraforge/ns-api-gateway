@@ -5,20 +5,18 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
-from app.exceptions import (
-    AnalysisError,
-    AuthenticationError,
-    ChatHistoryLimitError,
-    CircuitOpenError,
-    DatabaseNotInitializedError,
-    InvalidChatError,
-    InvalidCursorError,
-    PageSizeLimitError,
-    PermanentLLMError,
-    QueueFullError,
-    TransientLLMError,
-    UnsupportedLanguageError,
-)
+from app.exceptions import (AnalysisError,
+                            AuthenticationError,
+                            ChatHistoryLimitError,
+                            CircuitOpenError,
+                            DatabaseNotInitializedError,
+                            InvalidChatError,
+                            InvalidCursorError,
+                            PageSizeLimitError,
+                            PermanentLLMError,
+                            QueueFullError,
+                            TransientLLMError,
+                            UnsupportedLanguageError)
 from app.schema import ErrorResponse
 
 logger = logging.getLogger(__name__)
@@ -75,19 +73,15 @@ async def page_size_limit_handler(_: Request, exc: PageSizeLimitError) -> JSONRe
 
 
 async def queue_full_handler(_: Request, exc: QueueFullError) -> JSONResponse:
-    return JSONResponse(
-        status_code=503,
-        content=ErrorResponse(code="service_unavailable").model_dump(),
-        headers={"Retry-After": str(exc.retry_after_seconds)},
-    )
+    return JSONResponse(status_code=503,
+                        content=ErrorResponse(code="service_unavailable").model_dump(),
+                        headers={"Retry-After": str(exc.retry_after_seconds)})
 
 
 async def circuit_open_handler(_: Request, exc: CircuitOpenError) -> JSONResponse:
-    return JSONResponse(
-        status_code=503,
-        content=ErrorResponse(code="service_unavailable").model_dump(),
-        headers={"Retry-After": str(exc.retry_after_seconds)},
-    )
+    return JSONResponse(status_code=503,
+                        content=ErrorResponse(code="service_unavailable").model_dump(),
+                        headers={"Retry-After": str(exc.retry_after_seconds)})
 
 
 async def chat_history_limit_handler(_: Request, exc: ChatHistoryLimitError) -> JSONResponse:
@@ -101,11 +95,9 @@ async def validation_error_handler(_: Request, exc: RequestValidationError) -> J
 
 async def auth_error_handler(_: Request, exc: AuthenticationError) -> JSONResponse:
     logger.warning("Authentication failure: %s", exc)
-    return JSONResponse(
-        status_code=401,
-        content=ErrorResponse(code="unauthorized").model_dump(),
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+    return JSONResponse(status_code=401,
+                        content=ErrorResponse(code="unauthorized").model_dump(),
+                        headers={"WWW-Authenticate": "Bearer"})
 
 
 async def database_not_initialized_handler(_: Request, exc: DatabaseNotInitializedError) -> JSONResponse:
@@ -117,11 +109,9 @@ async def http_exception_handler(_: Request, exc: StarletteHTTPException) -> JSO
     status = _STATUS_REMAP.get(exc.status_code, exc.status_code)
     if status not in _CODE_MAP:
         status = 500
-    return JSONResponse(
-        status_code=status,
-        content=ErrorResponse(code=_CODE_MAP[status]).model_dump(),
-        headers=getattr(exc, "headers", None),
-    )
+    return JSONResponse(status_code=status,
+                        content=ErrorResponse(code=_CODE_MAP[status]).model_dump(),
+                        headers=getattr(exc, "headers", None))
 
 
 async def generic_error_handler(_: Request, exc: Exception) -> JSONResponse:

@@ -53,27 +53,21 @@ def integration_client(db_session):
     mock_config.messages_max_page_size = 100
 
     mock_llm = MagicMock()
-    policy = ResiliencePolicy(
-        ResilienceConfig(
-            pool_size=1,
-            queue_size=1,
-            queue_retry_after_seconds=1,
-            timeout_seconds=5,
-            retry_max_attempts=1,
-            retry_backoff_base_seconds=0,
-            retry_backoff_max_seconds=0,
-            circuit_breaker_failure_threshold=3,
-            circuit_breaker_reset_seconds=60,
-        )
-    )
-    service = ChatService(
-        prompt="Test prompt",
-        examples={"en": ["example"]},
-        llm=mock_llm,
-        policy=policy,
-        history_max_messages=50,
-        chats=Chats(),
-    )
+    policy = ResiliencePolicy(ResilienceConfig(pool_size=1,
+                                              queue_size=1,
+                                              queue_retry_after_seconds=1,
+                                              timeout_seconds=5,
+                                              retry_max_attempts=1,
+                                              retry_backoff_base_seconds=0,
+                                              retry_backoff_max_seconds=0,
+                                              circuit_breaker_failure_threshold=3,
+                                              circuit_breaker_reset_seconds=60))
+    service = ChatService(prompt="Test prompt",
+                          examples={"en": ["example"]},
+                          llm=mock_llm,
+                          policy=policy,
+                          history_max_messages=50,
+                          chats=Chats())
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_config] = lambda: mock_config

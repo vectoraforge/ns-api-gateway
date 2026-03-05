@@ -16,9 +16,7 @@ class TestCrossUserIsolation:
         """Negative: request user (test-user via DI) cannot read other-user's chat."""
         chat_id = await create_chat(db_session, OTHER_USER)
         try:
-            response = integration_client.get(
-                f"/chats/{chat_id}/messages",
-            )
+            response = integration_client.get(f"/chats/{chat_id}/messages")
             assert response.status_code == 404
             body = response.json()
             assert body["code"] == "not_found"
@@ -30,9 +28,7 @@ class TestCrossUserIsolation:
         """Negative: request user (test-user via DI) cannot delete other-user's chat."""
         chat_id = await create_chat(db_session, OTHER_USER)
         try:
-            response = integration_client.delete(
-                f"/chats/{chat_id}",
-            )
+            response = integration_client.delete(f"/chats/{chat_id}")
             assert response.status_code == 404
             body = response.json()
             assert body["code"] == "not_found"
@@ -44,10 +40,8 @@ class TestCrossUserIsolation:
         """Negative: request user (test-user via DI) cannot post to other-user's chat."""
         chat_id = await create_chat(db_session, OTHER_USER)
         try:
-            response = integration_client.post(
-                "/chats",
-                json={"text": "Hello", "chat_id": str(chat_id)},
-            )
+            response = integration_client.post("/chats",
+                                               json={"text": "Hello", "chat_id": str(chat_id)})
             assert response.status_code == 404
             body = response.json()
             assert body["code"] == "not_found"
@@ -59,9 +53,7 @@ class TestCrossUserIsolation:
         """Positive: request user (test-user via DI) can read their own chat."""
         chat_id = await create_chat(db_session, TEST_OWNER)
         try:
-            response = integration_client.get(
-                f"/chats/{chat_id}/messages",
-            )
+            response = integration_client.get(f"/chats/{chat_id}/messages")
             assert response.status_code == 200
             assert len(response.json()["messages"]) > 0
         finally:
@@ -72,9 +64,7 @@ class TestCrossUserIsolation:
         """Positive: request user (test-user via DI) can delete their own chat."""
         chat_id = await create_chat(db_session, TEST_OWNER)
         # No cleanup needed -- delete succeeds
-        response = integration_client.delete(
-            f"/chats/{chat_id}",
-        )
+        response = integration_client.delete(f"/chats/{chat_id}")
         assert response.status_code == 204
 
     @pytest.mark.asyncio
@@ -82,9 +72,7 @@ class TestCrossUserIsolation:
         """CURS-01 integration: malformed cursor returns 400 before decode attempt."""
         chat_id = await create_chat(db_session, TEST_OWNER)
         try:
-            response = integration_client.get(
-                f"/chats/{chat_id}/messages?cursor=not-valid-cursor!!!",
-            )
+            response = integration_client.get(f"/chats/{chat_id}/messages?cursor=not-valid-cursor!!!")
             assert response.status_code == 400
             body = response.json()
             assert body["code"] == "invalid_request"

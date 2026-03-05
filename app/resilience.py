@@ -8,13 +8,11 @@ from app.config import ResilienceConfig
 from app.exceptions import CircuitOpenError, PermanentLLMError, QueueFullError, TransientLLMError
 
 try:
-    from openai import (
-        APIConnectionError,
-        APIStatusError,
-        APITimeoutError,
-        InternalServerError,
-        RateLimitError,
-    )
+    from openai import (APIConnectionError,
+                        APIStatusError,
+                        APITimeoutError,
+                        InternalServerError,
+                        RateLimitError)
 except ImportError:  # pragma: no cover - openai is a runtime dependency
     APIConnectionError = APITimeoutError = RateLimitError = InternalServerError = APIStatusError = ()
 
@@ -109,15 +107,11 @@ class LLMExecutionGate:
 
 class ResiliencePolicy:
     def __init__(self, config: ResilienceConfig):
-        self._circuit_breaker = CircuitBreaker(
-            failure_threshold=config.circuit_breaker_failure_threshold,
-            reset_seconds=config.circuit_breaker_reset_seconds,
-        )
-        self._gate = LLMExecutionGate(
-            max_concurrency=config.pool_size,
-            max_queue=config.queue_size,
-            retry_after_seconds=config.queue_retry_after_seconds,
-        )
+        self._circuit_breaker = CircuitBreaker(failure_threshold=config.circuit_breaker_failure_threshold,
+                                               reset_seconds=config.circuit_breaker_reset_seconds)
+        self._gate = LLMExecutionGate(max_concurrency=config.pool_size,
+                                      max_queue=config.queue_size,
+                                      retry_after_seconds=config.queue_retry_after_seconds)
         self._timeout_seconds = config.timeout_seconds
         self._retry_max_attempts = config.retry_max_attempts
         self._retry_backoff_base = config.retry_backoff_base_seconds
@@ -142,10 +136,8 @@ class ResiliencePolicy:
                     if _is_transient_error(e):
                         raise TransientLLMError(str(e)) from e
                     raise PermanentLLMError(str(e)) from e
-                backoff = min(
-                    self._retry_backoff_max,
-                    self._retry_backoff_base * (2 ** (attempt - 1)),
-                )
+                backoff = min(self._retry_backoff_max,
+                              self._retry_backoff_base * (2 ** (attempt - 1)))
                 if backoff > 0:
                     await asyncio.sleep(backoff)
         raise TransientLLMError("LLM request failed after all retries")

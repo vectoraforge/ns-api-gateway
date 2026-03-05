@@ -4,13 +4,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
-ErrorCode = Literal[
-    "invalid_request",
-    "unauthorized",
-    "not_found",
-    "service_unavailable",
-    "internal_error",
-]
+ErrorCode = Literal["invalid_request",
+                    "unauthorized",
+                    "not_found",
+                    "service_unavailable",
+                    "internal_error"]
 
 
 class ErrorResponse(BaseModel):

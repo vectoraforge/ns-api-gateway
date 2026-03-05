@@ -3,18 +3,14 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from app.exceptions import (
-    AnalysisError,
-    InvalidChatError,
-    ServiceError,
-    UnsupportedLanguageError,
-)
-from app.schema import (
-    ChatRequest,
-    ChatResponse,
-    ExamplesResponse,
-    Issue,
-)
+from app.exceptions import (AnalysisError,
+                             InvalidChatError,
+                             ServiceError,
+                             UnsupportedLanguageError)
+from app.schema import (ChatRequest,
+                         ChatResponse,
+                         ExamplesResponse,
+                         Issue)
 
 
 class TestChatRequest:
@@ -62,22 +58,19 @@ class TestIssue:
 class TestChatResponse:
     def test_valid_response(self):
         cid = uuid4()
-        response = ChatResponse(
-            text="Test phrase", chat_id=cid, issues=[], suggestions=[], response="Good"
-        )
+        response = ChatResponse(text="Test phrase", chat_id=cid, issues=[], suggestions=[],
+                                response="Good")
         assert response.text == "Test phrase"
         assert response.chat_id == cid
         assert response.response == "Good"
 
     def test_response_with_issues_and_suggestions(self):
         issue = Issue(text_part="going to home", explanation="Remove 'to'")
-        response = ChatResponse(
-            text="Test",
-            chat_id=uuid4(),
-            issues=[issue],
-            suggestions=["I am going home."],
-            response="Needs work",
-        )
+        response = ChatResponse(text="Test",
+                                chat_id=uuid4(),
+                                issues=[issue],
+                                suggestions=["I am going home."],
+                                response="Needs work")
         assert len(response.issues) == 1
         assert len(response.suggestions) == 1
         assert response.suggestions[0] == "I am going home."

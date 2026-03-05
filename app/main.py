@@ -21,11 +21,9 @@ logger = logging.getLogger(__name__)
 
 
 def setup_logging(log_level: str):
-    logging.basicConfig(
-        level=getattr(logging, log_level, logging.INFO),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)],
-    )
+    logging.basicConfig(level=getattr(logging, log_level, logging.INFO),
+                        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                        handlers=[logging.StreamHandler(sys.stdout)])
 
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -39,28 +37,25 @@ async def lifespan(app: FastAPI):
     init_engine(config.db.url, config.db.pool_size)
     chats = Chats()
 
-    llm = init_chat_model(
-        model=config.model.name, temperature=config.model.temperature, max_tokens=config.model.max_tokens
-    )
+    llm = init_chat_model(model=config.model.name,
+                          temperature=config.model.temperature,
+                          max_tokens=config.model.max_tokens)
     policy = ResiliencePolicy(config.model.resilience)
 
     app.state.config = config
-    app.state.verifier = JWTVerifier(
-        jwks_url=config.jwt.jwks_url,
-        audience=config.jwt.audience,
-        issuer=config.jwt.issuer,
-        leeway=config.jwt.leeway_seconds,
-        cache_ttl_seconds=config.jwt.jwks_cache_ttl_seconds,
-    )
+    app.state.verifier = JWTVerifier(jwks_url=config.jwt.jwks_url,
+                                     audience=config.jwt.audience,
+                                     issuer=config.jwt.issuer,
+                                     leeway=config.jwt.leeway_seconds,
+                                     cache_ttl_seconds=config.jwt.jwks_cache_ttl_seconds)
     logger.info(f"Firebase project ID: {config.jwt.project_id}")
-    app.state.service = ChatService(
-        prompt=config.prompt,
-        examples=config.examples,
-        llm=llm,
-        policy=policy,
-        history_max_messages=config.history_max_messages,
-        chats=chats,
-    )
+    app.state.service = ChatService(prompt=config.prompt,
+                                    examples=config.examples,
+                                    llm=llm,
+                                    policy=policy,
+                                    history_max_messages=config.history_max_messages,
+                                    message_max_chars=config.message_max_chars,
+                                    chats=chats)
 
     logger.info("Starting API Gateway")
     logger.info(f"Using LLM model: {config.model.name}")
@@ -71,19 +66,17 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down API Gateway")
 
 
-app = FastAPI(
-    title="SpeakNative API Gateway",
-    description="API Gateway for linguistic analysis of phrases",
-    version=version("sn-api-gateway"),
-    lifespan=lifespan,
-    responses={
-        400: {"model": ErrorResponse, "description": "Invalid request"},
-        401: {"model": ErrorResponse, "description": "Unauthorized"},
-        404: {"model": ErrorResponse, "description": "Not found"},
-        500: {"model": ErrorResponse, "description": "Internal error"},
-        503: {"model": ErrorResponse, "description": "Service unavailable"},
-    },
-)
+app = FastAPI(title="SpeakNative API Gateway",
+              description="API Gateway for linguistic analysis of phrases",
+              version=version("sn-api-gateway"),
+              lifespan=lifespan,
+              responses={
+                  400: {"model": ErrorResponse, "description": "Invalid request"},
+                  401: {"model": ErrorResponse, "description": "Unauthorized"},
+                  404: {"model": ErrorResponse, "description": "Not found"},
+                  500: {"model": ErrorResponse, "description": "Internal error"},
+                  503: {"model": ErrorResponse, "description": "Service unavailable"},
+              })
 
 app.include_router(root_router)
 app.include_router(chats_router)
@@ -95,12 +88,10 @@ register_exception_handlers(app)
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
-    schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
-    )
+    schema = get_openapi(title=app.title,
+                         version=app.version,
+                         description=app.description,
+                         routes=app.routes)
     for path_item in schema.get("paths", {}).values():
         for operation in path_item.values():
             if isinstance(operation, dict):

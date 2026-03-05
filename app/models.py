@@ -19,8 +19,6 @@ class Message(SQLModel, table=True):
     chat_id: UUID = Field(foreign_key="chats.id")
     role: str
     content: str
-    created_at: datetime | None = Field(
-        default=None,
-        sa_column_kwargs={"server_default": "now()"},
-        primary_key=True,
-    )
+    created_at: datetime | None = Field(default=None,
+                                        sa_column_kwargs={"server_default": "now()"},
+                                        primary_key=True)

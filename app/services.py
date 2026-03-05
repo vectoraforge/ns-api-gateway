@@ -11,15 +11,13 @@ from app.schema import ChatResponse, ChatResponseLLM, ExamplesResponse
 
 
 class ChatService:
-    def __init__(
-        self,
-        prompt: str,
-        examples: dict[str, list[str]],
-        llm: BaseChatModel,
-        policy: ResiliencePolicy,
-        history_max_messages: int,
-        chats: Chats,
-    ):
+    def __init__(self,
+                 prompt: str,
+                 examples: dict[str, list[str]],
+                 llm: BaseChatModel,
+                 policy: ResiliencePolicy,
+                 history_max_messages: int,
+                 chats: Chats):
         self.prompt = prompt
         self.examples = examples
         self.llm = llm
@@ -43,14 +41,9 @@ class ChatService:
     async def _invoke(self, chain, params: dict):
         return await self.policy.invoke(lambda: chain.ainvoke(params))
 
-    async def chat(
-        self,
-        db: AsyncSession,
-        text: str,
-        user_id: str,
-        lang: str | None = None,
-        chat_id: UUID | None = None,
-    ) -> ChatResponse:
+    async def chat(self, db: AsyncSession, text: str, user_id: str,
+                   lang: str | None = None,
+                   chat_id: UUID | None = None) -> ChatResponse:
         if chat_id:
             history = await self.chats.load_history(db, chat_id, user_id, limit=self.history_max_messages * 2)
             if len(history) >= self.history_max_messages * 2:
@@ -75,9 +68,8 @@ class ChatService:
 
         human_content = f"Analyze this phrase: {text}"
         if not history:
-            await self.chats.create_chat_with_messages(
-                db, chat_id, user_id, human_content, assistant_payload
-            )
+            await self.chats.create_chat_with_messages(db, chat_id, user_id,
+                                                       human_content, assistant_payload)
         else:
             await self.chats.save_messages(db, chat_id, human_content, assistant_payload)
 

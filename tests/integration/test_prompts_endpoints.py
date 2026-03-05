@@ -8,20 +8,16 @@ from app.schema import ChatResponse
 class TestPostChatsEndpoint:
     def test_create_chat_success(self, client, service_instance):
         chat_id = uuid4()
-        mock_response = ChatResponse(
-            text="I am going to home.",
-            chat_id=chat_id,
-            issues=[],
-            suggestions=[],
-            response="Test",
-        )
+        mock_response = ChatResponse(text="I am going to home.",
+                                     chat_id=chat_id,
+                                     issues=[],
+                                     suggestions=[],
+                                     response="Test")
 
         service_instance.chat = AsyncMock(return_value=mock_response)
 
-        response = client.post(
-            "/chats",
-            json={"text": "I am going to home.", "lang": "en"},
-        )
+        response = client.post("/chats",
+                               json={"text": "I am going to home.", "lang": "en"})
 
         assert response.status_code == 200
         data = response.json()
@@ -35,20 +31,16 @@ class TestPostChatsEndpoint:
 
     def test_with_chat_id(self, client, service_instance, mock_db):
         chat_id = uuid4()
-        mock_response = ChatResponse(
-            text="Follow up",
-            chat_id=chat_id,
-            issues=[],
-            suggestions=[],
-            response="Good",
-        )
+        mock_response = ChatResponse(text="Follow up",
+                                     chat_id=chat_id,
+                                     issues=[],
+                                     suggestions=[],
+                                     response="Good")
 
         service_instance.chat = AsyncMock(return_value=mock_response)
 
-        response = client.post(
-            "/chats",
-            json={"text": "Follow up", "chat_id": str(chat_id)},
-        )
+        response = client.post("/chats",
+                               json={"text": "Follow up", "chat_id": str(chat_id)})
 
         assert response.status_code == 200
         service_instance.chat.assert_called_once_with(mock_db, "Follow up", "test-user", lang=None, chat_id=chat_id)
@@ -56,10 +48,8 @@ class TestPostChatsEndpoint:
     def test_unsupported_language(self, client, service_instance):
         service_instance.chat = AsyncMock(side_effect=UnsupportedLanguageError("fr", ["en", "es"]))
 
-        response = client.post(
-            "/chats",
-            json={"text": "Test", "lang": "fr"},
-        )
+        response = client.post("/chats",
+                               json={"text": "Test", "lang": "fr"})
 
         assert response.status_code == 400
         assert response.json()["code"] == "invalid_request"
@@ -68,80 +58,64 @@ class TestPostChatsEndpoint:
         chat_id = uuid4()
         service_instance.chat = AsyncMock(side_effect=InvalidChatError(chat_id))
 
-        response = client.post(
-            "/chats",
-            json={"text": "Test", "chat_id": str(chat_id)},
-        )
+        response = client.post("/chats",
+                               json={"text": "Test", "chat_id": str(chat_id)})
 
         assert response.status_code == 404
 
     def test_service_error(self, client, service_instance):
         service_instance.chat = AsyncMock(side_effect=AnalysisError("LLM failed"))
 
-        response = client.post(
-            "/chats",
-            json={"text": "Test", "lang": "en"},
-        )
+        response = client.post("/chats",
+                               json={"text": "Test", "lang": "en"})
 
         assert response.status_code == 500
         assert response.json()["code"] == "internal_error"
 
     def test_missing_text(self, client):
-        response = client.post(
-            "/chats",
-            json={"lang": "en"},
-        )
+        response = client.post("/chats",
+                               json={"lang": "en"})
 
         assert response.status_code == 400
         assert response.json()["code"] == "invalid_request"
 
     def test_empty_text(self, client, service_instance):
         chat_id = uuid4()
-        mock_response = ChatResponse(
-            text="",
-            chat_id=chat_id,
-            issues=[],
-            suggestions=[],
-            response="Empty",
-        )
+        mock_response = ChatResponse(text="",
+                                     chat_id=chat_id,
+                                     issues=[],
+                                     suggestions=[],
+                                     response="Empty")
 
         service_instance.chat = AsyncMock(return_value=mock_response)
 
-        response = client.post(
-            "/chats",
-            json={"text": "", "lang": "en"},
-        )
+        response = client.post("/chats",
+                               json={"text": "", "lang": "en"})
 
         assert response.status_code == 200
 
     def test_spanish(self, client, service_instance):
         chat_id = uuid4()
-        mock_response = ChatResponse(
-            text="Yo soy va a casa.",
-            chat_id=chat_id,
-            issues=[],
-            suggestions=[],
-            response="Test",
-        )
+        mock_response = ChatResponse(text="Yo soy va a casa.",
+                                     chat_id=chat_id,
+                                     issues=[],
+                                     suggestions=[],
+                                     response="Test")
 
         service_instance.chat = AsyncMock(return_value=mock_response)
 
-        response = client.post(
-            "/chats",
-            json={"text": "Yo soy va a casa.", "lang": "es"},
-        )
+        response = client.post("/chats",
+                               json={"text": "Yo soy va a casa.", "lang": "es"})
 
         assert response.status_code == 200
 
     def test_continuation_success(self, client, service_instance):
         chat_id = uuid4()
-        mock_response = ChatResponse(
-            text="Why is that wrong?",
-            chat_id=chat_id,
-            issues=[],
-            suggestions=[],
-            response="Looks good",
-        )
+        mock_response = ChatResponse(text="Why is that wrong?",
+                                     chat_id=chat_id,
+                                     issues=[],
+                                     suggestions=[],
+                                     response="Looks good")
         service_instance.chat = AsyncMock(return_value=mock_response)
         response = client.post("/chats", json={"text": "Why is that wrong?", "chat_id": str(chat_id)})
         assert response.status_code == 200

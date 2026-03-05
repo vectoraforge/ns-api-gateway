@@ -8,13 +8,11 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from app.exceptions import AuthenticationError
-from tests.jwt_helpers import (
-    PRIVATE_KEY_PEM,
-    TEST_ISSUER,
-    TEST_PROJECT_ID,
-    make_test_verifier,
-    make_token,
-)
+from tests.jwt_helpers import (PRIVATE_KEY_PEM,
+                                TEST_ISSUER,
+                                TEST_PROJECT_ID,
+                                make_test_verifier,
+                                make_token)
 
 
 @pytest.fixture
@@ -72,11 +70,9 @@ class TestSignatureVerification:
     def test_rejects_token_signed_with_different_key(self, verifier):
         """Token signed with an unknown private key must be rejected."""
         other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        other_pem = other_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
+        other_pem = other_key.private_bytes(encoding=serialization.Encoding.PEM,
+                                            format=serialization.PrivateFormat.PKCS8,
+                                            encryption_algorithm=serialization.NoEncryption())
         token = make_token("user1", private_key=other_pem)
         with pytest.raises(AuthenticationError):
             verifier.verify(token)

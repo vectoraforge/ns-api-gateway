@@ -5,13 +5,11 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.config import ResilienceConfig
-from app.exceptions import (
-    ChatHistoryLimitError,
-    InvalidChatError,
-    PermanentLLMError,
-    TransientLLMError,
-    UnsupportedLanguageError,
-)
+from app.exceptions import (ChatHistoryLimitError,
+                             InvalidChatError,
+                             PermanentLLMError,
+                             TransientLLMError,
+                             UnsupportedLanguageError)
 from app.resilience import ResiliencePolicy
 from app.schema import ChatResponse, ChatResponseLLM, ExamplesResponse, Issue
 from app.services import ChatService
@@ -41,27 +39,21 @@ def mock_chats():
 
 @pytest.fixture
 def service(examples, mock_chats):
-    policy = ResiliencePolicy(
-        ResilienceConfig(
-            pool_size=1,
-            queue_size=1,
-            queue_retry_after_seconds=1,
-            timeout_seconds=1,
-            retry_max_attempts=1,
-            retry_backoff_base_seconds=0,
-            retry_backoff_max_seconds=0,
-            circuit_breaker_failure_threshold=3,
-            circuit_breaker_reset_seconds=60,
-        )
-    )
-    svc = ChatService(
-        prompt="{lang_directive} Analyze phrase: {phrase}",
-        examples=examples,
-        llm=MagicMock(),
-        policy=policy,
-        history_max_messages=50,
-        chats=mock_chats,
-    )
+    policy = ResiliencePolicy(ResilienceConfig(pool_size=1,
+                                              queue_size=1,
+                                              queue_retry_after_seconds=1,
+                                              timeout_seconds=1,
+                                              retry_max_attempts=1,
+                                              retry_backoff_base_seconds=0,
+                                              retry_backoff_max_seconds=0,
+                                              circuit_breaker_failure_threshold=3,
+                                              circuit_breaker_reset_seconds=60))
+    svc = ChatService(prompt="{lang_directive} Analyze phrase: {phrase}",
+                      examples=examples,
+                      llm=MagicMock(),
+                      policy=policy,
+                      history_max_messages=50,
+                      chats=mock_chats)
     svc.chain = MagicMock()
     return svc
 
@@ -69,11 +61,9 @@ def service(examples, mock_chats):
 class TestChat:
     @pytest.mark.asyncio
     async def test_new_chat_success(self, service, mock_chats, mock_db):
-        llm_response = ChatResponseLLM(
-            issues=[Issue(text_part="going to home", explanation="Should be 'going home'")],
-            suggestions=["I am going home."],
-            response="Minor grammar issue",
-        )
+        llm_response = ChatResponseLLM(issues=[Issue(text_part="going to home", explanation="Should be 'going home'")],
+                                        suggestions=["I am going home."],
+                                        response="Minor grammar issue")
 
         service.chain = AsyncMock()
         service.chain.ainvoke.return_value = llm_response

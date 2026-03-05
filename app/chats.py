@@ -23,9 +23,8 @@ class Chats:
         created_at_raw, message_id_raw = raw.split("|", 1)
         return datetime.fromisoformat(created_at_raw), int(message_id_raw)
 
-    async def create_chat_with_messages(
-        self, db: AsyncSession, chat_id: UUID, user_id: str, human: str, assistant: str
-    ) -> None:
+    async def create_chat_with_messages(self, db: AsyncSession, chat_id: UUID,
+                                        user_id: str, human: str, assistant: str) -> None:
         db.add(Chat(id=chat_id, user_id=user_id))
         await db.execute(
             insert(Message),
@@ -36,15 +35,13 @@ class Chats:
         )
 
     async def delete_chat(self, db: AsyncSession, chat_id: UUID, user_id: str) -> None:
-        result = await db.execute(
-            delete(Chat).where(and_(Chat.id == chat_id, Chat.user_id == user_id))
-        )
+        result = await db.execute(delete(Chat).where(and_(Chat.id == chat_id,
+                                                          Chat.user_id == user_id)))
         if result.rowcount == 0:
             raise InvalidChatError(chat_id)
 
-    async def load_history(
-        self, db: AsyncSession, chat_id: UUID, user_id: str, limit: int | None = None
-    ) -> list[HumanMessage | AIMessage]:
+    async def load_history(self, db: AsyncSession, chat_id: UUID, user_id: str,
+                           limit: int | None = None) -> list[HumanMessage | AIMessage]:
         statement = (
             select(Message.role, Message.content)
             .join(Chat, Message.chat_id == Chat.id)
@@ -64,14 +61,9 @@ class Chats:
                 messages.append(AIMessage(content=content))
         return messages
 
-    async def list_messages(
-        self,
-        db: AsyncSession,
-        chat_id: UUID,
-        user_id: str,
-        limit: int,
-        cursor: str | None = None,
-    ) -> tuple[list[Message], str | None]:
+    async def list_messages(self, db: AsyncSession, chat_id: UUID, user_id: str,
+                            limit: int,
+                            cursor: str | None = None) -> tuple[list[Message], str | None]:
         statement = (
             select(Message)
             .join(Chat, Message.chat_id == Chat.id)
@@ -79,12 +71,9 @@ class Chats:
         )
         if cursor:
             cursor_created_at, cursor_id = self._decode_cursor(cursor)
-            statement = statement.where(
-                or_(
-                    Message.created_at < cursor_created_at,
-                    and_(Message.created_at == cursor_created_at, Message.id < cursor_id),
-                )
-            )
+            statement = statement.where(or_(Message.created_at < cursor_created_at,
+                                            and_(Message.created_at == cursor_created_at,
+                                                 Message.id < cursor_id)))
         statement = statement.order_by(Message.created_at.desc(), Message.id.desc()).limit(limit + 1)
         results = (await db.exec(statement)).all()
 
@@ -99,10 +88,6 @@ class Chats:
         return results, next_cursor
 
     async def save_messages(self, db: AsyncSession, chat_id: UUID, human: str, assistant: str) -> None:
-        await db.execute(
-            insert(Message),
-            [
-                {"chat_id": chat_id, "role": "human", "content": human},
-                {"chat_id": chat_id, "role": "assistant", "content": assistant},
-            ],
-        )
+        await db.execute(insert(Message),
+                         [{"chat_id": chat_id, "role": "human", "content": human},
+                          {"chat_id": chat_id, "role": "assistant", "content": assistant}])

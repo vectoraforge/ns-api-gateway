@@ -15,31 +15,24 @@ TEST_ISSUER = f"https://securetoken.google.com/{TEST_PROJECT_ID}"
 _private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 _public_key = _private_key.public_key()
 
-PRIVATE_KEY_PEM = _private_key.private_bytes(
-    encoding=serialization.Encoding.PEM,
-    format=serialization.PrivateFormat.PKCS8,
-    encryption_algorithm=serialization.NoEncryption(),
-)
+PRIVATE_KEY_PEM = _private_key.private_bytes(encoding=serialization.Encoding.PEM,
+                                             format=serialization.PrivateFormat.PKCS8,
+                                             encryption_algorithm=serialization.NoEncryption())
 
-PUBLIC_KEY_PEM = _public_key.public_bytes(
-    encoding=serialization.Encoding.PEM,
-    format=serialization.PublicFormat.SubjectPublicKeyInfo,
-)
+PUBLIC_KEY_PEM = _public_key.public_bytes(encoding=serialization.Encoding.PEM,
+                                          format=serialization.PublicFormat.SubjectPublicKeyInfo)
 
 
-def make_token(
-    sub: str = "test-user",
-    *,
-    aud: str = TEST_PROJECT_ID,
-    iss: str = TEST_ISSUER,
-    exp: float | None = None,
-    iat: float | None = None,
-    email_verified: bool = True,
-    extra_claims: dict | None = None,
-    algorithm: str = "RS256",
-    private_key: bytes = PRIVATE_KEY_PEM,
-    headers: dict | None = None,
-) -> str:
+def make_token(sub: str = "test-user", *,
+               aud: str = TEST_PROJECT_ID,
+               iss: str = TEST_ISSUER,
+               exp: float | None = None,
+               iat: float | None = None,
+               email_verified: bool = True,
+               extra_claims: dict | None = None,
+               algorithm: str = "RS256",
+               private_key: bytes = PRIVATE_KEY_PEM,
+               headers: dict | None = None) -> str:
     """Create a signed JWT for testing."""
     now = time.time()
     payload = {
@@ -69,15 +62,13 @@ class _FixedKeyVerifier:
 
     def verify(self, token: str) -> str:
         try:
-            payload = jwt.decode(
-                token,
-                self._public_key,
-                algorithms=["RS256"],
-                audience=self._audience,
-                issuer=self._issuer,
-                leeway=self._leeway,
-                options={"require": ["exp", "iat", "aud", "iss", "sub"]},
-            )
+            payload = jwt.decode(token,
+                                 self._public_key,
+                                 algorithms=["RS256"],
+                                 audience=self._audience,
+                                 issuer=self._issuer,
+                                 leeway=self._leeway,
+                                 options={"require": ["exp", "iat", "aud", "iss", "sub"]})
         except jwt.ExpiredSignatureError:
             raise AuthenticationError("Token expired") from None
         except jwt.InvalidAudienceError:

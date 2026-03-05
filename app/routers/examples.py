@@ -8,8 +8,6 @@ router = APIRouter()
 
 
 @router.get("/examples", response_model=ExamplesResponse)
-async def get_examples(
-    lang: str = Query(..., description="Language code (e.g., 'en', 'es')"),
-    service: ChatService = Depends(get_service),
-) -> ExamplesResponse:
+async def get_examples(lang: str = Query(..., description="Language code (e.g., 'en', 'es')"),
+                       service: ChatService = Depends(get_service)) -> ExamplesResponse:
     return service.get_examples(lang)

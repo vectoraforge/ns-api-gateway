@@ -62,9 +62,7 @@ class TestOpenAPISchema:
             for method, op in methods.items():
                 if isinstance(op, dict):
                     responses = op.get("responses", {})
-                    assert "422" not in responses, (
-                        f"422 found in {method.upper()} {path}"
-                    )
+                    assert "422" not in responses, (f"422 found in {method.upper()} {path}")
 
     def test_openapi_schema_contains_error_response(self):
         """ErrorResponse model must appear in the schema components."""

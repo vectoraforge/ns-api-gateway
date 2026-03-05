@@ -49,15 +49,11 @@ en:
     examples_path = _write_temp(examples_content, ".yaml")
 
     try:
-        with patch.dict(
-            os.environ,
-            {
-                "CONFIG_DIR": config_path,
-                "PROMPT_PATH": prompt_path,
-                "EXAMPLES_PATH": examples_path,
-            },
-            clear=False,
-        ):
+        with patch.dict(os.environ,
+                        {"CONFIG_DIR": config_path,
+                         "PROMPT_PATH": prompt_path,
+                         "EXAMPLES_PATH": examples_path},
+                        clear=False):
             config = MainConfig()
             assert config.app.model.name == "gpt-4"
             assert config.app.model.temperature == 0.5
