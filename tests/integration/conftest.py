@@ -72,7 +72,6 @@ def integration_client(db_session):
         llm=mock_llm,
         policy=policy,
         history_max_messages=50,
-        message_max_chars=4096,
         chats=Chats(),
     )
 

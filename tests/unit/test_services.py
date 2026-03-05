@@ -60,7 +60,6 @@ def service(examples, mock_chats):
         llm=MagicMock(),
         policy=policy,
         history_max_messages=50,
-        message_max_chars=4096,
         chats=mock_chats,
     )
     svc.chain = MagicMock()

@@ -13,7 +13,6 @@ from app.exceptions import (
     DatabaseNotInitializedError,
     InvalidChatError,
     InvalidCursorError,
-    MessageTooLargeError,
     PageSizeLimitError,
     PermanentLLMError,
     QueueFullError,
@@ -95,10 +94,6 @@ async def chat_history_limit_handler(_: Request, exc: ChatHistoryLimitError) -> 
     return JSONResponse(status_code=400, content=ErrorResponse(code="invalid_request").model_dump())
 
 
-async def message_too_large_handler(_: Request, exc: MessageTooLargeError) -> JSONResponse:
-    return JSONResponse(status_code=400, content=ErrorResponse(code="invalid_request").model_dump())
-
-
 async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
     logger.error("Validation error: %s", exc)
     return JSONResponse(status_code=400, content=ErrorResponse(code="invalid_request").model_dump())
@@ -145,7 +140,6 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(QueueFullError, queue_full_handler)
     app.add_exception_handler(CircuitOpenError, circuit_open_handler)
     app.add_exception_handler(ChatHistoryLimitError, chat_history_limit_handler)
-    app.add_exception_handler(MessageTooLargeError, message_too_large_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(AuthenticationError, auth_error_handler)
     app.add_exception_handler(DatabaseNotInitializedError, database_not_initialized_handler)

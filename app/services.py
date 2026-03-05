@@ -5,7 +5,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chats import Chats
-from app.exceptions import ChatHistoryLimitError, MessageTooLargeError, UnsupportedLanguageError
+from app.exceptions import ChatHistoryLimitError, UnsupportedLanguageError
 from app.resilience import ResiliencePolicy
 from app.schema import ChatResponse, ChatResponseLLM, ExamplesResponse
 
@@ -18,7 +18,6 @@ class ChatService:
         llm: BaseChatModel,
         policy: ResiliencePolicy,
         history_max_messages: int,
-        message_max_chars: int,
         chats: Chats,
     ):
         self.prompt = prompt
@@ -26,7 +25,6 @@ class ChatService:
         self.llm = llm
         self.policy = policy
         self.history_max_messages = history_max_messages
-        self.message_max_chars = message_max_chars
         self.chats = chats
         structured_llm = self.llm.with_structured_output(ChatResponseLLM, method="json_schema", strict=True)
         prompt_template = ChatPromptTemplate.from_messages(
@@ -42,10 +40,6 @@ class ChatService:
     def supported_languages(self) -> list[str]:
         return list(self.examples.keys())
 
-    def _ensure_message_size(self, content: str, role: str) -> None:
-        if len(content) > self.message_max_chars:
-            raise MessageTooLargeError(role=role, limit=self.message_max_chars)
-
     async def _invoke(self, chain, params: dict):
         return await self.policy.invoke(lambda: chain.ainvoke(params))
 
@@ -57,8 +51,6 @@ class ChatService:
         lang: str | None = None,
         chat_id: UUID | None = None,
     ) -> ChatResponse:
-        self._ensure_message_size(text, "user")
-
         if chat_id:
             history = await self.chats.load_history(db, chat_id, user_id, limit=self.history_max_messages * 2)
             if len(history) >= self.history_max_messages * 2:
@@ -80,7 +72,6 @@ class ChatService:
         )
 
         assistant_payload = str(response.model_dump())
-        self._ensure_message_size(assistant_payload, "assistant")
 
         human_content = f"Analyze this phrase: {text}"
         if not history:

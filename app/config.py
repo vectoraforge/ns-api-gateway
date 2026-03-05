@@ -75,7 +75,6 @@ class AppConfig(BaseConfig):
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
     jwt: JWTConfig
     history_max_messages: int = Field(default=50, ge=1)
-    message_max_chars: int = Field(default=4096, ge=1)
     messages_max_page_size: int = Field(default=100, ge=1)
 
     prompt: str | None = None

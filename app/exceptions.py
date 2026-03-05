@@ -68,13 +68,6 @@ class ChatHistoryLimitError(ServiceError):
         super().__init__("Chat history limit reached")
 
 
-class MessageTooLargeError(ServiceError):
-    def __init__(self, role: str, limit: int):
-        self.role = role
-        self.limit = limit
-        super().__init__(f"{role} message exceeds {limit} characters")
-
-
 class AuthenticationError(ServiceError):
     """Base for authentication failures — maps to 401."""
 

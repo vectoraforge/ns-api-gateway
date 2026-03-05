@@ -59,7 +59,6 @@ async def lifespan(app: FastAPI):
         llm=llm,
         policy=policy,
         history_max_messages=config.history_max_messages,
-        message_max_chars=config.message_max_chars,
         chats=chats,
     )
 
