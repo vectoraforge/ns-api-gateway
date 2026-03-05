@@ -7,14 +7,11 @@ from typing import Any
 from app.config import ResilienceConfig
 from app.exceptions import CircuitOpenError, PermanentLLMError, QueueFullError, TransientLLMError
 
-try:
-    from openai import (APIConnectionError,
-                        APIStatusError,
-                        APITimeoutError,
-                        InternalServerError,
-                        RateLimitError)
-except ImportError:  # pragma: no cover - openai is a runtime dependency
-    APIConnectionError = APITimeoutError = RateLimitError = InternalServerError = APIStatusError = ()
+from openai import (APIConnectionError,
+                    APIStatusError,
+                    APITimeoutError,
+                    InternalServerError,
+                    RateLimitError)
 
 
 def _extract_status_code(exc: Exception) -> int | None:
