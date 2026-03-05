@@ -83,21 +83,3 @@ app.include_router(chats_router)
 app.include_router(examples_router)
 app.include_router(health_router)
 register_exception_handlers(app)
-
-
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-    schema = get_openapi(title=app.title,
-                         version=app.version,
-                         description=app.description,
-                         routes=app.routes)
-    for path_item in schema.get("paths", {}).values():
-        for operation in path_item.values():
-            if isinstance(operation, dict):
-                operation.get("responses", {}).pop("422", None)
-    app.openapi_schema = schema
-    return app.openapi_schema
-
-
-app.openapi = custom_openapi
