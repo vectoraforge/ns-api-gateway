@@ -1,5 +1,5 @@
 from collections.abc import AsyncGenerator
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -7,14 +7,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.chats import Chats
 from app.config import ResilienceConfig
-from app.dependencies import get_config, get_db, get_service, get_user_id
+from app.database.chats import ChatsDB
+from app.database.models import Chat, Role
+from app.dependencies import get_chat_service, get_config, get_db, get_user_id
 from app.errors import register_exception_handlers
 from app.resilience import ResiliencePolicy
 from app.routers import chats_router
-from app.services import ChatService
-from tests.jwt_helpers import make_token
+from app.services.chats import ChatService
 
 TEST_DB_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/nativespeaker"
 
@@ -34,11 +34,6 @@ async def db_session(db_engine) -> AsyncGenerator[AsyncSession, None]:
         await session.rollback()
 
 
-def auth_token(user_id: str) -> str:
-    """Create a Bearer token for integration tests."""
-    return make_token(user_id)
-
-
 @pytest.fixture
 def integration_client(db_session):
     """TestClient wired to real DB session, no LLM."""
@@ -50,47 +45,48 @@ def integration_client(db_session):
         yield db_session
 
     mock_config = MagicMock()
+    mock_config.prompt = "Test prompt for {lang}"
+    mock_config.examples = {"en": ["example"]}
+    mock_config.history_max_messages = 50
     mock_config.messages_max_page_size = 100
+    mock_config.chat_list_limit = 50
 
-    mock_llm = MagicMock()
+    chain = AsyncMock()
     policy = ResiliencePolicy(ResilienceConfig(pool_size=1,
-                                              queue_size=1,
-                                              queue_retry_after_seconds=1,
-                                              timeout_seconds=5,
-                                              retry_max_attempts=1,
-                                              retry_backoff_base_seconds=0,
-                                              retry_backoff_max_seconds=0,
-                                              circuit_breaker_failure_threshold=3,
-                                              circuit_breaker_reset_seconds=60))
-    service = ChatService(prompt="Test prompt",
-                          examples={"en": ["example"]},
-                          llm=mock_llm,
+                                               queue_size=1,
+                                               queue_retry_after_seconds=1,
+                                               timeout_seconds=5,
+                                               retry_max_attempts=1,
+                                               retry_backoff_base_seconds=0,
+                                               retry_backoff_max_seconds=0,
+                                               circuit_breaker_failure_threshold=3,
+                                               circuit_breaker_reset_seconds=60))
+    service = ChatService(chain=chain,
                           policy=policy,
-                          history_max_messages=50,
-                          chats=Chats())
+                          config=mock_config,
+                          db=db_session)
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_config] = lambda: mock_config
     app.dependency_overrides[get_user_id] = lambda: "test-user"
-    app.dependency_overrides[get_service] = lambda: service
+    app.dependency_overrides[get_chat_service] = lambda: service
 
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client
 
 
 async def create_chat(db_session: AsyncSession, user_id: str) -> UUID:
-    """Insert a chat row with messages directly and return its ID."""
-    chats = Chats()
+    """Insert a chat row with an AI message directly and return its ID."""
+    chats_db = ChatsDB(db_session)
     chat_id = uuid4()
-    await chats.create_chat_with_messages(db_session, chat_id, user_id, "test question", "test answer")
+    await chats_db.create(chat_id, "test phrase", user_id)
+    await chats_db.save_message(chat_id, Role.ai, "test answer")
     await db_session.commit()
     return chat_id
 
 
 async def cleanup_chat(db_session: AsyncSession, chat_id: UUID) -> None:
     """Delete a chat row (messages cascade via FK)."""
-    from app.models import Chat
-
     chat = await db_session.get(Chat, chat_id)
     if chat:
         await db_session.delete(chat)
