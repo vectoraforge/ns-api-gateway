@@ -74,6 +74,7 @@ class AppConfig(BaseConfig):
     jwt: JWTConfig
     history_max_messages: int = Field(default=50, ge=1)
     messages_max_page_size: int = Field(default=100, ge=1)
+    chat_list_limit: int = Field(default=50, ge=1)
 
     prompt: str | None = None
     examples: dict[str, list[str]] = {}

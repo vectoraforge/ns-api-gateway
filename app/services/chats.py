@@ -1,6 +1,7 @@
 from uuid import UUID, uuid4
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,29 +43,29 @@ class ChatService:
         return
 
     async def chat(self, db: AsyncSession, text: str, user_id: str,
-                   lang: str | None = None,
-                   chat_id: UUID | None = None) -> ChatResponse:
+                   chat_id: UUID | None = None,
+                   lang: str | None = None) -> ChatResponse:
+        if lang not in self.supported_languages:
+            raise UnsupportedLanguageError(lang=lang, supported=self.supported_languages)
+
         if chat_id:
-            history = await self.chats.load_history(db, chat_id, user_id, limit=self.history_max_messages * 2)
+            history = await self.chats.load_history(db, chat_id, user_id)
             if not history:
-                raise InvalidChatError("Invalid chat")
+                raise InvalidChatError(chat_id)
             if len(history) >= self.history_max_messages * 2:
                 raise ChatHistoryLimitError(max_messages=self.history_max_messages)
         else:
-            if lang not in self.examples:
-                raise UnsupportedLanguageError(lang=lang, supported=self.supported_languages)
             chat_id = uuid4()
             history = []
 
-        lang_directive = (
-            f"You are a linguistic assistant for advanced non-native speakers of {lang}."
-            if lang else ""
-        )
-
         response = await self.policy.invoke(lambda: self.chain.ainvoke({
-            "lang_directive": lang_directive,
+            "lang": lang or "various languages",
             "phrase": text,
-            "history": history
+            "history": [
+                HumanMessage(content) if role == "human" else AIMessage(content)
+                for role, content in reversed(history)
+            ]
+
         }))
 
         assistant_payload = str(response.model_dump())
@@ -77,6 +78,11 @@ class ChatService:
             await self.chats.save_messages(db, chat_id, human_content, assistant_payload)
 
         return ChatResponse(text=text, chat_id=chat_id, **response.model_dump())
+
+    async def delete(self, db: AsyncSession, chat_id: UUID, user_id: str) -> None:
+        result = self.chats.delete(db, chat_id, user_id)
+        if result.rowscount == 0:
+            raise InvalidChatError(chat_id)
 
     def get_examples(self, lang: str) -> ExamplesResponse:
         examples = self.examples.get(lang, [])
