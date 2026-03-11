@@ -4,18 +4,16 @@ from contextlib import asynccontextmanager
 from importlib.metadata import version
 
 from fastapi import FastAPI
-from fastapi.openapi.utils import get_openapi
 from langchain.chat_models import init_chat_model
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.auth import JWTVerifier
-from app.chats import Chats
 from app.config import MainConfig
-from app.database import engine, init_engine
 from app.errors import register_exception_handlers
 from app.resilience import ResiliencePolicy
 from app.routers import chats_router, examples_router, health_router, root_router
 from app.schema import ErrorResponse
-from app.services import ChatService
+from app.services.chats import create_chain
 
 logger = logging.getLogger(__name__)
 
@@ -34,35 +32,29 @@ async def lifespan(app: FastAPI):
     config = MainConfig().app
     setup_logging(log_level=config.log_level)
 
-    init_engine(config.db.url, config.db.pool_size)
-    chats = Chats()
-
-    llm = init_chat_model(model=config.model.name,
-                          temperature=config.model.temperature,
-                          max_tokens=config.model.max_tokens)
-    policy = ResiliencePolicy(config.model.resilience)
+    db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)
 
     app.state.config = config
+    app.state.session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     app.state.verifier = JWTVerifier(jwks_url=config.jwt.jwks_url,
                                      audience=config.jwt.audience,
                                      issuer=config.jwt.issuer,
                                      leeway=config.jwt.leeway_seconds,
                                      cache_ttl_seconds=config.jwt.jwks_cache_ttl_seconds)
     logger.info(f"Firebase project ID: {config.jwt.project_id}")
-    app.state.service = ChatService(prompt=config.prompt,
-                                    examples=config.examples,
-                                    llm=llm,
-                                    policy=policy,
-                                    history_max_messages=config.history_max_messages,
-                                    message_max_chars=config.message_max_chars,
-                                    chats=chats)
+    app.state.policy = ResiliencePolicy(config.model.resilience)
+
+    llm = init_chat_model(model=config.model.name,
+                          temperature=config.model.temperature,
+                          max_tokens=config.model.max_tokens)
+    app.state.chain = create_chain(llm, config.prompt)
 
     logger.info("Starting API Gateway")
     logger.info(f"Using LLM model: {config.model.name}")
     logger.info(f"Max LLM concurrency: {config.model.resilience.pool_size}")
     logger.info(f"Supported languages: {', '.join(config.examples.keys())}")
     yield
-    await engine.dispose()
+    await db_engine.dispose()
     logger.info("Shutting down API Gateway")
 
 
