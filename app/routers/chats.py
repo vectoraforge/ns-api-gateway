@@ -3,34 +3,51 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Response
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import AppConfig
-from app.dependencies import get_config, get_db, get_service, get_user_id
+from app.dependencies import get_chat_service, get_config, get_user_id
 from app.exceptions import InvalidCursorError, PageSizeLimitError
-from app.schema import ChatMessage, ChatMessagesResponse, ChatRequest, ChatResponse
-from app.services import ChatService
+from app.schema import ChatListItem, ChatMessagesResponse, ChatRequest, ChatResponse, FollowupRequest
+from app.services.chats import ChatService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 @router.post("/chats", response_model=ChatResponse)
-async def create_or_continue_chat(body: ChatRequest,
-                                  db: AsyncSession = Depends(get_db),
-                                  user_id: str = Depends(get_user_id),
-                                  service: ChatService = Depends(get_service)) -> ChatResponse:
-    return await service.chat(db, body.text, user_id, lang=body.lang, chat_id=body.chat_id)
+async def create_chat(body: ChatRequest,
+                      user_id: str = Depends(get_user_id),
+                      service: ChatService = Depends(get_chat_service)) -> ChatResponse:
+    return await service.create_chat(phrase=body.phrase,
+                                     user_id=user_id,
+                                     comment=body.comment,
+                                     lang=body.lang)
 
 
-@router.get("/chats/{chat_id}/messages", response_model=ChatMessagesResponse)
-async def list_chat_messages(chat_id: UUID,
-                             limit: int = Query(50, ge=1),
-                             cursor: str | None = Query(None),
-                             db: AsyncSession = Depends(get_db),
-                             user_id: str = Depends(get_user_id),
-                             service: ChatService = Depends(get_service),
-                             config: AppConfig = Depends(get_config)) -> ChatMessagesResponse:
+@router.post("/chats/{chat_id}", response_model=ChatResponse)
+async def followup_chat(chat_id: UUID,
+                        body: FollowupRequest,
+                        user_id: str = Depends(get_user_id),
+                        service: ChatService = Depends(get_chat_service)) -> ChatResponse:
+    return await service.followup(chat_id=chat_id,
+                                  content=body.content,
+                                  user_id=user_id)
+
+
+@router.get("/chats")
+async def list_chats(user_id: str = Depends(get_user_id),
+                     service: ChatService = Depends(get_chat_service)):
+    chats = await service.get_chat_list(user_id)
+    return [ChatListItem(id=c.id, phrase=c.phrase, created_at=c.created_at) for c in chats]
+
+
+@router.get("/chats/{chat_id}", response_model=ChatMessagesResponse)
+async def get_chat_messages(chat_id: UUID,
+                            limit: int = Query(50, ge=1),
+                            cursor: str | None = Query(None),
+                            user_id: str = Depends(get_user_id),
+                            service: ChatService = Depends(get_chat_service),
+                            config: AppConfig = Depends(get_config)) -> ChatMessagesResponse:
     if limit > config.messages_max_page_size:
         raise PageSizeLimitError(config.messages_max_page_size)
 
@@ -43,20 +60,15 @@ async def list_chat_messages(chat_id: UUID,
         except Exception:
             raise InvalidCursorError()
 
-    messages, next_cursor = await service.chats.list_messages(db, chat_id, user_id, limit=limit, cursor=cursor)
-
-    items = [ChatMessage(id=message.id,
-                         role=message.role,
-                         content=message.content,
-                         created_at=message.created_at)
-             for message in messages]
-    return ChatMessagesResponse(messages=items, next_cursor=next_cursor)
+    return await service.get_messages(chat_id=chat_id,
+                                      user_id=user_id,
+                                      limit=limit,
+                                      cursor=cursor)
 
 
 @router.delete("/chats/{chat_id}", status_code=204)
 async def delete_chat(chat_id: UUID,
-                      db: AsyncSession = Depends(get_db),
                       user_id: str = Depends(get_user_id),
-                      service: ChatService = Depends(get_service)) -> Response:
-    await service.chats.delete_chat(db, chat_id, user_id)
+                      service: ChatService = Depends(get_chat_service)) -> Response:
+    await service.delete_chat(chat_id, user_id)
     return Response(status_code=204)

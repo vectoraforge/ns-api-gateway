@@ -9,7 +9,7 @@ from app.database.chats import ChatsDB
 from app.database.models import Chat, Role
 from app.exceptions import ChatHistoryLimitError, InvalidChatError, UnsupportedLanguageError
 from app.resilience import ResiliencePolicy
-from app.schema import ChatResponse, ChatResponseLLM, ExamplesResponse
+from app.schema import ChatMessagesResponse, ChatResponse, ChatResponseLLM, ExamplesResponse, MessageResponse
 
 
 def create_chain(llm, prompt: str):
@@ -106,6 +106,39 @@ class ChatService:
                 history.append(HumanMessage(content=f"<comment>{content}</comment>"))
 
         return history
+
+    async def get_messages(self,
+                           chat_id: UUID,
+                           user_id: str,
+                           limit: int,
+                           cursor: str | None = None) -> ChatMessagesResponse:
+        chat, messages, next_cursor = await self.chats_db.get_messages(chat_id=chat_id,
+                                                                       user_id=user_id,
+                                                                       limit=limit,
+                                                                       cursor=cursor)
+        if chat is None:
+            raise InvalidChatError(chat_id)
+
+        items = [MessageResponse(id=m.id,
+                                 role=m.role,
+                                 content=m.content,
+                                 created_at=m.created_at)
+                 for m in messages]
+        return ChatMessagesResponse(id=chat.id,
+                                    phrase=chat.phrase,
+                                    comment=chat.comment,
+                                    lang=chat.lang,
+                                    created_at=chat.created_at,
+                                    messages=items,
+                                    next_cursor=next_cursor)
+
+    async def get_chat_list(self, user_id: str) -> list[Chat]:
+        return await self.chats_db.list_chats(user_id, self.config.chat_list_limit)
+
+    async def delete_chat(self, chat_id: UUID, user_id: str) -> None:
+        rowcount = await self.chats_db.delete(chat_id, user_id)
+        if rowcount == 0:
+            raise InvalidChatError(chat_id)
 
     def get_examples(self, lang: str) -> ExamplesResponse:
         examples = self.examples.get(lang, [])

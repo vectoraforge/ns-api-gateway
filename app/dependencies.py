@@ -1,33 +1,36 @@
 from collections.abc import AsyncGenerator
 
 from fastapi import Header, Request
+from fastapi.params import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import TokenVerifier
 from app.config import AppConfig
-from app.database import session_factory
-from app.exceptions import AuthenticationError, DatabaseNotInitializedError
-from app.services import ChatService
-
-
-def get_service(request: Request) -> ChatService:
-    return request.app.state.service
+from app.exceptions import AuthenticationError
+from app.services.chats import ChatService
 
 
 def get_config(request: Request) -> AppConfig:
     return request.app.state.config
 
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    if session_factory is None:
-        raise DatabaseNotInitializedError()
-    async with session_factory() as session:
+async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
+    async with request.app.state.session_factory() as session:
         try:
             yield session
             await session.commit()
         except Exception:
             await session.rollback()
             raise
+
+
+def get_chat_service(request: Request,
+                     db: AsyncSession = Depends(get_db),
+                     config: AppConfig = Depends(get_config)) -> ChatService:
+    return ChatService(chain=request.app.state.chain,
+                       policy=request.app.state.policy,
+                       config=config,
+                       db=db)
 
 
 def get_user_id(request: Request, authorization: str | None = Header(None)) -> str:
