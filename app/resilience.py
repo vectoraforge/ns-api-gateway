@@ -114,7 +114,7 @@ class ResiliencePolicy:
         self._retry_backoff_base = config.retry_backoff_base_seconds
         self._retry_backoff_max = config.retry_backoff_max_seconds
 
-    async def invoke(self, operation: Callable[[], Awaitable]) -> Any:
+    async def ainvoke(self, operation: Callable[[], Awaitable]) -> Any:
         for attempt in range(1, self._retry_max_attempts + 1):
             await self._circuit_breaker.before_call()
             try:

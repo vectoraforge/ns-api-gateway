@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import TokenVerifier
 from app.config import AppConfig
 from app.exceptions import AuthenticationError
-from app.services.chats import ChatService
+from app.service import ChatService
 
 
 def get_config(request: Request) -> AppConfig:

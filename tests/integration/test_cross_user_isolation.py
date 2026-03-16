@@ -9,7 +9,7 @@ TEST_OWNER = "test-user"
 OTHER_USER = "other-user"
 
 
-@pytest.mark.db
+@pytest.mark.session
 class TestCrossUserIsolation:
     @pytest.mark.asyncio
     async def test_cannot_read_other_user_chat(self, integration_client, db_session):

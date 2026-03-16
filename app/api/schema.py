@@ -20,6 +20,13 @@ class Issue(BaseModel):
     explanation: str = Field(..., description="Explanation of why this is an issue")
 
 
+class ChatResponseLLM(BaseModel):
+    """LLM structured output schema."""
+    response: str
+    issues: list[Issue] = Field(default_factory=list)
+    suggestions: list[str] = Field(default_factory=list)
+
+
 class ChatRequest(BaseModel):
     """New chat request."""
     phrase: str = Field(..., max_length=4096)
@@ -27,42 +34,24 @@ class ChatRequest(BaseModel):
     lang: str | None = Field(default=None)
 
 
-class FollowupRequest(BaseModel):
+class ChatResponse(BaseModel):
+    """API response for new chat."""
+    chat_id: UUID
+    title: str
+    created_at: datetime
+    lang: str | None = None
+
+
+class MessageRequest(BaseModel):
     """Followup message in existing chat."""
     content: str = Field(..., max_length=4096)
 
 
-class ChatResponse(BaseModel):
+class MessageResponse(BaseModel):
     """API response for both new chat and followup."""
     chat_id: UUID
-    issues: list[Issue] = Field(default_factory=list)
-    suggestions: list[str] = Field(default_factory=list)
-    response: str
-
-
-class MessageResponse(BaseModel):
-    """Single message in a chat history listing."""
-    id: UUID
     role: str
     content: str
-    created_at: datetime
-
-
-class ChatMessagesResponse(BaseModel):
-    """Chat detail with paginated messages."""
-    id: UUID
-    phrase: str
-    comment: str | None
-    lang: str | None
-    created_at: datetime
-    messages: list[MessageResponse]
-    next_cursor: str | None = None
-
-
-class ChatListItem(BaseModel):
-    """Item in the chat list."""
-    id: UUID
-    phrase: str
     created_at: datetime
 
 

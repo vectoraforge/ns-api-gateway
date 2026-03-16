@@ -6,11 +6,11 @@ import pytest
 
 from app.config import ResilienceConfig
 from app.database.chats import ChatsDB
-from app.database.models import Chat, Role
+from app.models import Chat, Role
 from app.exceptions import ChatHistoryLimitError, InvalidChatError, PermanentLLMError, UnsupportedLanguageError
 from app.resilience import ResiliencePolicy
-from app.schema import ChatResponse, ChatResponseLLM, ExamplesResponse, Issue
-from app.services.chats import ChatService
+from app.api.schema import MessageResponse, ChatResponseLLM, ExamplesResponse, Issue
+from app.service import ChatService
 
 
 @pytest.fixture
@@ -74,7 +74,7 @@ class TestCreateChat:
                                            user_id="user-1",
                                            lang="en")
 
-        assert isinstance(result, ChatResponse)
+        assert isinstance(result, MessageResponse)
         assert result.chat_id is not None
         assert len(result.issues) == 1
         assert result.issues[0].text_part == "going to home"
@@ -114,7 +114,7 @@ class TestCreateChat:
         result = await service.create_chat(phrase="Hola mundo",
                                            user_id="user-1")
 
-        assert isinstance(result, ChatResponse)
+        assert isinstance(result, MessageResponse)
         invoke_args = service.chain.ainvoke.call_args[0][0]
         assert invoke_args["lang"] == "various languages (autodetect)"
 
@@ -158,9 +158,9 @@ class TestFollowup:
         llm_response = ChatResponseLLM(issues=[], suggestions=[], response="Good point")
         service.chain.ainvoke.return_value = llm_response
 
-        result = await service.followup(chat_id, "why?", "user-1")
+        result = await service.send_chat_message(chat_id, "why?", "user-1")
 
-        assert isinstance(result, ChatResponse)
+        assert isinstance(result, MessageResponse)
         assert result.chat_id == chat_id
         assert result.response == "Good point"
         assert mock_chats_db.save_message.call_count == 2
@@ -178,7 +178,7 @@ class TestFollowup:
         mock_chats_db.get_history.return_value = (None, [])
 
         with pytest.raises(InvalidChatError) as exc_info:
-            await service.followup(chat_id, "test", "user-1")
+            await service.send_chat_message(chat_id, "test", "user-1")
 
         assert exc_info.value.chat_id == chat_id
 
@@ -190,7 +190,7 @@ class TestFollowup:
         mock_chats_db.get_history.return_value = (chat, db_messages)
 
         with pytest.raises(ChatHistoryLimitError) as exc_info:
-            await service.followup(chat_id, "another message", "user-1")
+            await service.send_chat_message(chat_id, "another message", "user-1")
 
         assert exc_info.value.max_messages == 50
 
@@ -208,7 +208,7 @@ class TestFollowup:
         service.chain.ainvoke.side_effect = original_exc
 
         with pytest.raises(PermanentLLMError) as exc_info:
-            await service.followup(chat_id, "why?", "user-1")
+            await service.send_chat_message(chat_id, "why?", "user-1")
 
         assert exc_info.value.__cause__ is original_exc
         mock_chats_db.save_message.assert_not_called()

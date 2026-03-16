@@ -4,8 +4,8 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.dependencies import get_user_id
-from app.errors import register_exception_handlers
+from app.api.dependencies import get_user_id
+from app.api.errors import register_exception_handlers
 from app.exceptions import (AuthenticationError,
                             ChatHistoryLimitError,
                             CircuitOpenError,

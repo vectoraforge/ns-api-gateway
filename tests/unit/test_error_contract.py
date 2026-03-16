@@ -3,8 +3,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.errors import register_exception_handlers
-from app.main import app as real_app
+from app.api.errors import register_exception_handlers
+from app.api.main import app as real_app
 
 
 CONTRACT_CODES = {"invalid_request", "unauthorized", "not_found", "service_unavailable", "internal_error"}

@@ -17,7 +17,7 @@ from app.exceptions import (AnalysisError,
                             QueueFullError,
                             TransientLLMError,
                             UnsupportedLanguageError)
-from app.schema import ErrorResponse
+from app.api.schema import ErrorResponse
 
 logger = logging.getLogger(__name__)
 

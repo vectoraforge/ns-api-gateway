@@ -6,11 +6,11 @@ from fastapi.testclient import TestClient
 
 from app.config import ResilienceConfig
 from app.database.chats import ChatsDB
-from app.dependencies import get_chat_service, get_config, get_db, get_user_id
-from app.errors import register_exception_handlers
+from app.api.dependencies import get_chat_service, get_config, get_db, get_user_id
+from app.api.errors import register_exception_handlers
 from app.resilience import ResiliencePolicy
 from app.routers import chats_router, examples_router, health_router, root_router
-from app.services.chats import ChatService
+from app.service import ChatService
 
 
 @pytest.fixture

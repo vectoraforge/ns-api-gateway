@@ -9,12 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import ResilienceConfig
 from app.database.chats import ChatsDB
-from app.database.models import Chat, Role
-from app.dependencies import get_chat_service, get_config, get_db, get_user_id
-from app.errors import register_exception_handlers
+from app.models import Chat, Role
+from app.api.dependencies import get_chat_service, get_config, get_db, get_user_id
+from app.api.errors import register_exception_handlers
 from app.resilience import ResiliencePolicy
 from app.routers import chats_router
-from app.services.chats import ChatService
+from app.service import ChatService
 
 TEST_DB_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/nativespeaker"
 

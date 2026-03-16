@@ -10,7 +10,7 @@ class TestRealLLM:
     def real_client(self):
         from fastapi.testclient import TestClient
 
-        from app.main import app
+        from app.api.main import app
 
         with TestClient(app) as client:
             header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode("utf-8")).rstrip(b"=")

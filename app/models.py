@@ -3,7 +3,7 @@ from enum import StrEnum
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel, field_serializer, field_validator
-from sqlalchemy.dialects.mssql import JSON
+from sqlalchemy.types import JSON
 from sqlmodel import Field, Relationship, SQLModel
 
 from app.api.schema import Issue
