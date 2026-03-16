@@ -6,7 +6,6 @@ from fastapi.testclient import TestClient
 from app.api.errors import register_exception_handlers
 from app.api.main import app as real_app
 
-
 CONTRACT_CODES = {"invalid_request", "unauthorized", "not_found", "service_unavailable", "internal_error"}
 CONTRACT_STATUSES = {400, 401, 404, 500, 503}
 

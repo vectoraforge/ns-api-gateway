@@ -81,16 +81,16 @@ class AppConfig(BaseConfig):
 
 
 class MainConfig(BaseConfig):
-    config_dir: Path = Field(default="config/config.yaml")
-    prompt_path: Path = Field(default="config/prompt.txt")
-    examples_path: Path = Field(default="config/examples.yaml")
+    config_dir: Path = Field(default=Path("config/config.yaml"))
+    prompt_path: Path = Field(default=Path("config/prompt.txt"))
+    examples_path: Path = Field(default=Path("config/examples.yaml"))
 
     app: AppConfig | None = None
 
     @model_validator(mode="after")
     def load_config(self):
         yaml_data = yaml.safe_load(self.config_dir.read_text())
-        app_config = AppConfig(_env_prefix="__NONE__", **yaml_data)
+        app_config = AppConfig(**yaml_data)
         app_config.prompt = self.prompt_path.read_text()
         app_config.examples = yaml.safe_load(self.examples_path.read_text())
         self.app = app_config

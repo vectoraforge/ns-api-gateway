@@ -4,10 +4,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.config import ResilienceConfig
-from app.database.chats import ChatsDB
 from app.api.dependencies import get_chat_service, get_config, get_db, get_user_id
 from app.api.errors import register_exception_handlers
+from app.config import ResilienceConfig
+from app.database import ChatsDB
 from app.resilience import ResiliencePolicy
 from app.routers import chats_router, examples_router, health_router, root_router
 from app.service import ChatService
@@ -31,10 +31,9 @@ def mock_config():
 @pytest.fixture
 def mock_chats_db():
     db = AsyncMock(spec=ChatsDB)
-    db.create = AsyncMock()
-    db.save_message = AsyncMock()
-    db.get_history = AsyncMock(return_value=(None, []))
-    db.get_messages = AsyncMock(return_value=(None, [], None))
+    db.create_chat = MagicMock()
+    db.get_chat = AsyncMock(return_value=None)
+    db.get_messages = AsyncMock(return_value=[])
     db.delete = AsyncMock(return_value=1)
     db.list_chats = AsyncMock(return_value=[])
     return db

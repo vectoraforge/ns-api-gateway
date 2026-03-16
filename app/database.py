@@ -1,13 +1,11 @@
-import base64
 from uuid import UUID
 
 from sqlalchemy import delete
+from sqlalchemy.orm import selectinload
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.models import Chat, Message, Role
-
-MessageList = list[tuple[Role, str]]
+from app.models import Chat, Message
 
 
 class ChatsDB:
@@ -21,6 +19,7 @@ class ChatsDB:
     async def get_chat(self, chat_id: UUID, user_id: str) -> Chat | None:
         statement = (
             select(Chat)
+            .options(selectinload(Chat.messages))  # type: ignore[invalid-argument-type]
             .where(col(Chat.id) == chat_id, col(Chat.user_id) == user_id)
         )
         return (await self.session.exec(statement)).first()

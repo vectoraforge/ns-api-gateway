@@ -1,47 +1,41 @@
+from datetime import datetime
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
-from app.exceptions import (AnalysisError,
-                             InvalidChatError,
-                             ServiceError,
-                             UnsupportedLanguageError)
-from app.api.schema import (ChatRequest,
-                            MessageResponse,
-                            ExamplesResponse,
-                            Issue)
+from app.api.schema import ChatRequest, ChatResponse, ExamplesResponse, Issue, MessageRequest, MessageResponse
+from app.exceptions import AnalysisError, InvalidChatError, ServiceError, UnsupportedLanguageError
 
 
 class TestChatRequest:
     def test_valid_request(self):
-        request = ChatRequest(text="Hello world", lang="en")
-        assert request.text == "Hello world"
+        request = ChatRequest(phrase="Hello world", lang="en")
+        assert request.phrase == "Hello world"
         assert request.lang == "en"
 
-    def test_missing_lang_without_chat_id_raises(self):
-        with pytest.raises(ValidationError):
-            ChatRequest(text="Hello world")
+    def test_with_comment(self):
+        request = ChatRequest(phrase="Hello world", comment="Is this natural?", lang="en")
+        assert request.comment == "Is this natural?"
 
-    def test_missing_text(self):
+    def test_lang_optional(self):
+        request = ChatRequest(phrase="Hello world")
+        assert request.lang is None
+
+    def test_missing_phrase(self):
         with pytest.raises(ValidationError) as exc_info:
             ChatRequest(lang="en")
-        assert "text" in str(exc_info.value)
+        assert "phrase" in str(exc_info.value)
 
-    def test_with_chat_id(self):
-        cid = uuid4()
-        request = ChatRequest(text="Hello", chat_id=cid)
-        assert request.chat_id == cid
 
-    def test_lang_optional_with_chat_id(self):
-        cid = uuid4()
-        request = ChatRequest(text="Hello", chat_id=cid)
-        assert request.lang is None
-        assert request.chat_id == cid
+class TestMessageRequest:
+    def test_valid_request(self):
+        request = MessageRequest(content="Why is that wrong?")
+        assert request.content == "Why is that wrong?"
 
-    def test_chat_id_defaults_to_none(self):
-        request = ChatRequest(text="Hello", lang="en")
-        assert request.chat_id is None
+    def test_missing_content(self):
+        with pytest.raises(ValidationError):
+            MessageRequest()
 
 
 class TestIssue:
@@ -55,25 +49,34 @@ class TestIssue:
             Issue(text_part="going to home")
 
 
+class TestMessageResponse:
+    def test_valid_response(self):
+        cid = uuid4()
+        now = datetime.now()
+        response = MessageResponse(chat_id=cid, role="ai",
+                                   content='{"response": "Good"}',
+                                   created_at=now)
+        assert response.chat_id == cid
+        assert response.role == "ai"
+        assert response.content == '{"response": "Good"}'
+        assert response.created_at == now
+
+
 class TestChatResponse:
     def test_valid_response(self):
         cid = uuid4()
-        response = MessageResponse(text="Test phrase", chat_id=cid, issues=[], suggestions=[],
-                                   response="Good")
-        assert response.text == "Test phrase"
+        now = datetime.now()
+        response = ChatResponse(chat_id=cid, title="Test phrase",
+                                created_at=now, lang="en")
         assert response.chat_id == cid
-        assert response.response == "Good"
+        assert response.title == "Test phrase"
+        assert response.lang == "en"
 
-    def test_response_with_issues_and_suggestions(self):
-        issue = Issue(text_part="going to home", explanation="Remove 'to'")
-        response = MessageResponse(text="Test",
-                                   chat_id=uuid4(),
-                                   issues=[issue],
-                                   suggestions=["I am going home."],
-                                   response="Needs work")
-        assert len(response.issues) == 1
-        assert len(response.suggestions) == 1
-        assert response.suggestions[0] == "I am going home."
+    def test_lang_optional(self):
+        cid = uuid4()
+        response = ChatResponse(chat_id=cid, title="Test",
+                                created_at=datetime.now())
+        assert response.lang is None
 
 
 class TestExamplesResponse:

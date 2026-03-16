@@ -55,6 +55,7 @@ en:
                          "EXAMPLES_PATH": examples_path},
                         clear=False):
             config = MainConfig()
+            assert config.app is not None
             assert config.app.model.name == "gpt-4"
             assert config.app.model.temperature == 0.5
             assert config.app.prompt == prompt_content

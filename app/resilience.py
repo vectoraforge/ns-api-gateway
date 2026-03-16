@@ -4,14 +4,10 @@ from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
+from openai import APIConnectionError, APIStatusError, APITimeoutError, InternalServerError, RateLimitError
+
 from app.config import ResilienceConfig
 from app.exceptions import CircuitOpenError, PermanentLLMError, QueueFullError, TransientLLMError
-
-from openai import (APIConnectionError,
-                    APIStatusError,
-                    APITimeoutError,
-                    InternalServerError,
-                    RateLimitError)
 
 
 def _extract_status_code(exc: Exception) -> int | None:

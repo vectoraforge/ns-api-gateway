@@ -6,17 +6,19 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.dependencies import get_user_id
 from app.api.errors import register_exception_handlers
-from app.exceptions import (AuthenticationError,
-                            ChatHistoryLimitError,
-                            CircuitOpenError,
-                            DatabaseNotInitializedError,
-                            InvalidChatError,
-                            InvalidCursorError,
-                            PageSizeLimitError,
-                            PermanentLLMError,
-                            QueueFullError,
-                            TransientLLMError,
-                            UnsupportedLanguageError)
+from app.exceptions import (
+    AuthenticationError,
+    ChatHistoryLimitError,
+    CircuitOpenError,
+    DatabaseNotInitializedError,
+    InvalidChatError,
+    InvalidCursorError,
+    PageSizeLimitError,
+    PermanentLLMError,
+    QueueFullError,
+    TransientLLMError,
+    UnsupportedLanguageError,
+)
 from tests.jwt_helpers import make_test_verifier, make_token
 
 CASES = [

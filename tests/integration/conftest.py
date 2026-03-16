@@ -7,11 +7,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.config import ResilienceConfig
-from app.database.chats import ChatsDB
-from app.models import Chat, Role
 from app.api.dependencies import get_chat_service, get_config, get_db, get_user_id
 from app.api.errors import register_exception_handlers
+from app.config import ResilienceConfig
+from app.models import AIContent, Chat, HumanContent, Message, Role
 from app.resilience import ResiliencePolicy
 from app.routers import chats_router
 from app.service import ChatService
@@ -76,11 +75,16 @@ def integration_client(db_session):
 
 
 async def create_chat(db_session: AsyncSession, user_id: str) -> UUID:
-    """Insert a chat row with an AI message directly and return its ID."""
-    chats_db = ChatsDB(db_session)
+    """Insert a chat with a human+AI message pair directly and return its ID."""
     chat_id = uuid4()
-    await chats_db.create(chat_id, "test phrase", user_id)
-    await chats_db.save_message(chat_id, Role.ai, "test answer")
+    chat = Chat(id=chat_id, user_id=user_id, title="test phrase")
+    human_msg = Message(chat_id=chat_id, role=Role.human,
+                        content=HumanContent(phrase="test phrase"))
+    ai_msg = Message(chat_id=chat_id, role=Role.ai,
+                     content=AIContent(response="test answer", issues=[], suggestions=[]))
+    chat.messages.append(human_msg)
+    chat.messages.append(ai_msg)
+    db_session.add(chat)
     await db_session.commit()
     return chat_id
 

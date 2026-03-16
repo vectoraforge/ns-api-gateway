@@ -2,128 +2,92 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 from app.exceptions import AnalysisError, InvalidChatError, UnsupportedLanguageError
-from app.api.schema import MessageResponse
+from app.models import AIContent, Message, Role
 
 
 class TestPostChatsEndpoint:
     def test_create_chat_success(self, client, service_instance):
-        chat_id = uuid4()
-        mock_response = MessageResponse(text="I am going to home.",
-                                        chat_id=chat_id,
-                                        issues=[],
-                                        suggestions=[],
-                                        response="Test")
-
-        service_instance.chat = AsyncMock(return_value=mock_response)
+        ai_message = Message(chat_id=uuid4(), role=Role.ai,
+                             content=AIContent(response="Test", issues=[], suggestions=[]))
+        service_instance.create_chat = AsyncMock(return_value=ai_message)
 
         response = client.post("/chats",
-                               json={"text": "I am going to home.", "lang": "en"})
+                               json={"phrase": "I am going to home.", "lang": "en"})
 
         assert response.status_code == 200
         data = response.json()
-        assert data["text"] == "I am going to home."
-        assert data["chat_id"] == str(chat_id)
+        assert "chat_id" in data
+        assert data["role"] == "ai"
+        assert "content" in data
 
-    def test_missing_lang_returns_400(self, client):
-        response = client.post("/chats", json={"text": "Test phrase"})
+    def test_missing_phrase_returns_400(self, client):
+        response = client.post("/chats", json={"lang": "en"})
         assert response.status_code == 400
         assert response.json()["code"] == "invalid_request"
 
-    def test_with_chat_id(self, client, service_instance, mock_db):
+    def test_followup_success(self, client, service_instance):
         chat_id = uuid4()
-        mock_response = MessageResponse(text="Follow up",
-                                        chat_id=chat_id,
-                                        issues=[],
-                                        suggestions=[],
-                                        response="Good")
+        ai_message = Message(chat_id=chat_id, role=Role.ai,
+                             content=AIContent(response="Good point", issues=[], suggestions=[]))
+        service_instance.send_message = AsyncMock(return_value=ai_message)
 
-        service_instance.chat = AsyncMock(return_value=mock_response)
-
-        response = client.post("/chats",
-                               json={"text": "Follow up", "chat_id": str(chat_id)})
+        response = client.post(f"/chats/{chat_id}",
+                               json={"content": "Why is that wrong?"})
 
         assert response.status_code == 200
-        service_instance.chat.assert_called_once_with(mock_db, "Follow up", "test-user", lang=None, chat_id=chat_id)
+        data = response.json()
+        assert data["chat_id"] == str(chat_id)
+        assert data["role"] == "ai"
 
     def test_unsupported_language(self, client, service_instance):
-        service_instance.chat = AsyncMock(side_effect=UnsupportedLanguageError("fr", ["en", "es"]))
+        service_instance.create_chat = AsyncMock(
+            side_effect=UnsupportedLanguageError("fr", ["en", "es"]))
 
         response = client.post("/chats",
-                               json={"text": "Test", "lang": "fr"})
+                               json={"phrase": "Test", "lang": "fr"})
 
         assert response.status_code == 400
         assert response.json()["code"] == "invalid_request"
 
     def test_invalid_chat(self, client, service_instance):
         chat_id = uuid4()
-        service_instance.chat = AsyncMock(side_effect=InvalidChatError(chat_id))
+        service_instance.send_message = AsyncMock(
+            side_effect=InvalidChatError(chat_id))
 
-        response = client.post("/chats",
-                               json={"text": "Test", "chat_id": str(chat_id)})
+        response = client.post(f"/chats/{chat_id}",
+                               json={"content": "Test"})
 
         assert response.status_code == 404
 
     def test_service_error(self, client, service_instance):
-        service_instance.chat = AsyncMock(side_effect=AnalysisError("LLM failed"))
+        service_instance.create_chat = AsyncMock(
+            side_effect=AnalysisError("LLM failed"))
 
         response = client.post("/chats",
-                               json={"text": "Test", "lang": "en"})
+                               json={"phrase": "Test", "lang": "en"})
 
         assert response.status_code == 500
         assert response.json()["code"] == "internal_error"
 
-    def test_missing_text(self, client):
-        response = client.post("/chats",
-                               json={"lang": "en"})
-
-        assert response.status_code == 400
-        assert response.json()["code"] == "invalid_request"
-
-    def test_empty_text(self, client, service_instance):
-        chat_id = uuid4()
-        mock_response = MessageResponse(text="",
-                                        chat_id=chat_id,
-                                        issues=[],
-                                        suggestions=[],
-                                        response="Empty")
-
-        service_instance.chat = AsyncMock(return_value=mock_response)
+    def test_empty_phrase(self, client, service_instance):
+        ai_message = Message(chat_id=uuid4(), role=Role.ai,
+                             content=AIContent(response="Empty", issues=[], suggestions=[]))
+        service_instance.create_chat = AsyncMock(return_value=ai_message)
 
         response = client.post("/chats",
-                               json={"text": "", "lang": "en"})
+                               json={"phrase": "", "lang": "en"})
 
         assert response.status_code == 200
 
     def test_spanish(self, client, service_instance):
-        chat_id = uuid4()
-        mock_response = MessageResponse(text="Yo soy va a casa.",
-                                        chat_id=chat_id,
-                                        issues=[],
-                                        suggestions=[],
-                                        response="Test")
-
-        service_instance.chat = AsyncMock(return_value=mock_response)
+        ai_message = Message(chat_id=uuid4(), role=Role.ai,
+                             content=AIContent(response="Test", issues=[], suggestions=[]))
+        service_instance.create_chat = AsyncMock(return_value=ai_message)
 
         response = client.post("/chats",
-                               json={"text": "Yo soy va a casa.", "lang": "es"})
+                               json={"phrase": "Yo soy va a casa.", "lang": "es"})
 
         assert response.status_code == 200
-
-    def test_continuation_success(self, client, service_instance):
-        chat_id = uuid4()
-        mock_response = MessageResponse(text="Why is that wrong?",
-                                        chat_id=chat_id,
-                                        issues=[],
-                                        suggestions=[],
-                                        response="Looks good")
-        service_instance.chat = AsyncMock(return_value=mock_response)
-        response = client.post("/chats", json={"text": "Why is that wrong?", "chat_id": str(chat_id)})
-        assert response.status_code == 200
-        data = response.json()
-        assert data["chat_id"] == str(chat_id)
-        assert data["text"] == "Why is that wrong?"
-        assert "suggestions" in data
-        assert "response" in data
 
 
 class TestExamplesEndpoint:
@@ -144,7 +108,8 @@ class TestExamplesEndpoint:
         assert data["lang"] == "es"
 
     def test_examples_unsupported_language(self, client, service_instance):
-        service_instance.get_examples = MagicMock(side_effect=UnsupportedLanguageError("fr", ["en", "es"]))
+        service_instance.get_examples = MagicMock(
+            side_effect=UnsupportedLanguageError("fr", ["en", "es"]))
 
         response = client.get("/examples?lang=fr")
 
@@ -160,16 +125,8 @@ class TestExamplesEndpoint:
 
 class TestRemovedRoutes:
     def test_post_prompts_analyze_returns_404(self, client):
-        response = client.post("/prompts/analyze", json={"text": "Test", "lang": "en"})
+        response = client.post("/prompts/analyze", json={"phrase": "Test", "lang": "en"})
         assert response.status_code == 404
-
-    def test_post_chat_messages_returns_400(self, client):
-        """POST to /chats/{id}/messages returns 400 -- path exists for GET,
-        so Starlette returns 405 which remaps to 400 via error contract."""
-        chat_id = uuid4()
-        response = client.post(f"/chats/{chat_id}/messages", json={"text": "Hello"})
-        assert response.status_code == 400
-        assert response.json()["code"] == "invalid_request"
 
     def test_get_prompts_examples_returns_404(self, client):
         response = client.get("/prompts/examples?lang=en")

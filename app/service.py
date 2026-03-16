@@ -1,19 +1,18 @@
-import json
 from uuid import UUID, uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
+from app.api.schema import ExamplesResponse
 from app.config import AppConfig
-from app.database.chats import ChatsDB
-from app.models import Chat, Role, Message, HumanContent, AIContent
+from app.database import ChatsDB
 from app.exceptions import ChatHistoryLimitError, InvalidChatError, UnsupportedLanguageError
+from app.models import AIContent, Chat, HumanContent, Message, Role
 from app.resilience import ResiliencePolicy
-from app.api.schema import ChatResponseLLM, MessageResponse, ExamplesResponse
 
 
 def create_chain(llm, prompt: str):
-    structured_llm = llm.with_structured_output(ChatResponseLLM, method="json_schema", strict=True)
+    structured_llm = llm.with_structured_output(AIContent, method="json_schema", strict=True)
     prompt_template = ChatPromptTemplate.from_messages([("system", prompt),
                                                         MessagesPlaceholder("history"),
                                                         ("human", "{content}")])
@@ -37,18 +36,18 @@ class ChatService:
     async def ask_llm(self, chat: Chat, message: Message) -> Message:
         lang_directive = chat.lang or "various languages (autodetect)"
         history = []
-        for message in chat.messages:
-            if message.role == Role.human:
-                history.append(HumanMessage(content=message.content))
+        for history_msg in chat.messages:
+            if history_msg.role == Role.human:
+                history.append(HumanMessage(content=history_msg.content.model_dump_json()))
             else:
-                history.append(AIMessage(content=message.content))
+                history.append(AIMessage(content=history_msg.content.model_dump_json()))
 
         llm_response = await self.policy.ainvoke(
             lambda: self.chain.ainvoke({"history": history,
-                                        "content": message.content,
+                                        "content": message.content.model_dump_json(),
                                         "lang": lang_directive})
         )
-        return Message(chat_id=chat.id, role=Role.ai, content=AIContent(**llm_response))
+        return Message(chat_id=chat.id, role=Role.ai, content=llm_response)
 
     async def create_chat(self,
                           user_id: str,
@@ -81,7 +80,7 @@ class ChatService:
             raise ChatHistoryLimitError(self.config.history_max_messages)
 
         human_message = Message(chat_id=chat.id, role=Role.human,
-                                content=HumanContent(comment=content))
+                                content=HumanContent(phrase=content))
         ai_message = await self.ask_llm(chat=chat, message=human_message)
 
         chat.messages.append(human_message)

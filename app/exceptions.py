@@ -1,6 +1,7 @@
+
+
 class ServiceError(Exception):
     """Base exception for service layer errors"""
-
     pass
 
 
@@ -15,21 +16,18 @@ class UnsupportedLanguageError(ServiceError):
 
 class AnalysisError(ServiceError):
     """Raised when phrase analysis fails"""
-
     pass
 
 
 class TransientLLMError(AnalysisError):
     """Raised when all retry attempts failed due to a transient LLM error.
     __cause__ holds the original exception from the last failed attempt."""
-
     pass
 
 
 class PermanentLLMError(AnalysisError):
     """Raised when the LLM call failed with a non-transient error (no retry possible).
     __cause__ holds the original exception."""
-
     pass
 
 
@@ -70,7 +68,6 @@ class ChatHistoryLimitError(ServiceError):
 
 class AuthenticationError(ServiceError):
     """Base for authentication failures — maps to 401."""
-
     pass
 
 

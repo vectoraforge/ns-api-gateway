@@ -9,14 +9,14 @@ TEST_OWNER = "test-user"
 OTHER_USER = "other-user"
 
 
-@pytest.mark.session
+@pytest.mark.db
 class TestCrossUserIsolation:
     @pytest.mark.asyncio
     async def test_cannot_read_other_user_chat(self, integration_client, db_session):
         """Negative: request user (test-user via DI) cannot read other-user's chat."""
         chat_id = await create_chat(db_session, OTHER_USER)
         try:
-            response = integration_client.get(f"/chats/{chat_id}/messages")
+            response = integration_client.get(f"/chats/{chat_id}")
             assert response.status_code == 404
             body = response.json()
             assert body["code"] == "not_found"
@@ -40,8 +40,8 @@ class TestCrossUserIsolation:
         """Negative: request user (test-user via DI) cannot post to other-user's chat."""
         chat_id = await create_chat(db_session, OTHER_USER)
         try:
-            response = integration_client.post("/chats",
-                                               json={"text": "Hello", "chat_id": str(chat_id)})
+            response = integration_client.post(f"/chats/{chat_id}",
+                                               json={"content": "Hello"})
             assert response.status_code == 404
             body = response.json()
             assert body["code"] == "not_found"
@@ -53,9 +53,11 @@ class TestCrossUserIsolation:
         """Positive: request user (test-user via DI) can read their own chat."""
         chat_id = await create_chat(db_session, TEST_OWNER)
         try:
-            response = integration_client.get(f"/chats/{chat_id}/messages")
+            response = integration_client.get(f"/chats/{chat_id}")
             assert response.status_code == 200
-            assert len(response.json()["messages"]) > 0
+            data = response.json()
+            assert isinstance(data, list)
+            assert len(data) > 0
         finally:
             await cleanup_chat(db_session, chat_id)
 
@@ -66,15 +68,3 @@ class TestCrossUserIsolation:
         # No cleanup needed -- delete succeeds
         response = integration_client.delete(f"/chats/{chat_id}")
         assert response.status_code == 204
-
-    @pytest.mark.asyncio
-    async def test_malformed_cursor_returns_400(self, integration_client, db_session):
-        """CURS-01 integration: malformed cursor returns 400 before decode attempt."""
-        chat_id = await create_chat(db_session, TEST_OWNER)
-        try:
-            response = integration_client.get(f"/chats/{chat_id}/messages?cursor=not-valid-cursor!!!")
-            assert response.status_code == 400
-            body = response.json()
-            assert body["code"] == "invalid_request"
-        finally:
-            await cleanup_chat(db_session, chat_id)

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID, uuid7
 
@@ -21,8 +21,8 @@ class HumanContent(BaseModel):
 
 class AIContent(BaseModel):
     response: str
-    issues: list[Issue] = []
-    suggestions: list[str] = []
+    issues: list[Issue] | None = None
+    suggestions: list[str] | None = None
 
 
 class Message(SQLModel, table=True):
@@ -32,17 +32,18 @@ class Message(SQLModel, table=True):
     chat_id: UUID = Field(foreign_key="chats.id")
     role: Role
     content: HumanContent | AIContent = Field(sa_type=JSON)
-    created_at: datetime | None = Field(default=None,
-                                        sa_column_kwargs={"server_default": "now()"})
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("content", mode="before")
     @classmethod
-    def parse_content(cls, v, info):
-        if isinstance(v, BaseModel):
-            return v
+    def parse_content(cls, value, info):
+        if isinstance(value, BaseModel):
+            return value
         match info.data.get("role"):
-            case Role.human: return HumanContent(**v)
-            case Role.ai: return AIContent(**v)
+            case Role.human:
+                return HumanContent(**value)
+            case Role.ai:
+                return AIContent(**value)
         return None
 
     @field_serializer("content")
@@ -57,7 +58,7 @@ class Chat(SQLModel, table=True):
     user_id: str = Field(..., index=True)
     title: str
     lang: str | None = None
-    created_at: datetime | None = Field(default=None, sa_column_kwargs={"server_default": "now()"})
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     messages: list[Message] = Relationship()
 

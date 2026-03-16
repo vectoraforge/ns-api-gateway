@@ -5,19 +5,21 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
-from app.exceptions import (AnalysisError,
-                            AuthenticationError,
-                            ChatHistoryLimitError,
-                            CircuitOpenError,
-                            DatabaseNotInitializedError,
-                            InvalidChatError,
-                            InvalidCursorError,
-                            PageSizeLimitError,
-                            PermanentLLMError,
-                            QueueFullError,
-                            TransientLLMError,
-                            UnsupportedLanguageError)
 from app.api.schema import ErrorResponse
+from app.exceptions import (
+    AnalysisError,
+    AuthenticationError,
+    ChatHistoryLimitError,
+    CircuitOpenError,
+    DatabaseNotInitializedError,
+    InvalidChatError,
+    InvalidCursorError,
+    PageSizeLimitError,
+    PermanentLLMError,
+    QueueFullError,
+    TransientLLMError,
+    UnsupportedLanguageError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,74 +45,77 @@ _CODE_MAP: dict[int, str] = {
 }
 
 
-async def unsupported_language_handler(_: Request, exc: UnsupportedLanguageError) -> JSONResponse:
+async def unsupported_language_handler(_: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=400, content=ErrorResponse(code="invalid_request").model_dump())
 
 
-async def transient_llm_error_handler(_: Request, exc: TransientLLMError) -> JSONResponse:
+async def transient_llm_error_handler(_: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=503, content=ErrorResponse(code="service_unavailable").model_dump())
 
 
-async def permanent_llm_error_handler(_: Request, exc: PermanentLLMError) -> JSONResponse:
+async def permanent_llm_error_handler(_: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=503, content=ErrorResponse(code="service_unavailable").model_dump())
 
 
-async def analysis_error_handler(_: Request, exc: AnalysisError) -> JSONResponse:
+async def analysis_error_handler(_: Request, exc: Exception) -> JSONResponse:
     logger.error("Analysis failed: %s", exc)
     return JSONResponse(status_code=500, content=ErrorResponse(code="internal_error").model_dump())
 
 
-async def invalid_chat_handler(_: Request, exc: InvalidChatError) -> JSONResponse:
+async def invalid_chat_handler(_: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=404, content=ErrorResponse(code="not_found").model_dump())
 
 
-async def invalid_cursor_error_handler(_: Request, exc: InvalidCursorError) -> JSONResponse:
+async def invalid_cursor_error_handler(_: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=400, content=ErrorResponse(code="invalid_request").model_dump())
 
 
-async def page_size_limit_handler(_: Request, exc: PageSizeLimitError) -> JSONResponse:
+async def page_size_limit_handler(_: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=400, content=ErrorResponse(code="invalid_request").model_dump())
 
 
-async def queue_full_handler(_: Request, exc: QueueFullError) -> JSONResponse:
+async def queue_full_handler(_: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, QueueFullError)
     return JSONResponse(status_code=503,
                         content=ErrorResponse(code="service_unavailable").model_dump(),
                         headers={"Retry-After": str(exc.retry_after_seconds)})
 
 
-async def circuit_open_handler(_: Request, exc: CircuitOpenError) -> JSONResponse:
+async def circuit_open_handler(_: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, CircuitOpenError)
     return JSONResponse(status_code=503,
                         content=ErrorResponse(code="service_unavailable").model_dump(),
                         headers={"Retry-After": str(exc.retry_after_seconds)})
 
 
-async def chat_history_limit_handler(_: Request, exc: ChatHistoryLimitError) -> JSONResponse:
+async def chat_history_limit_handler(_: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=400, content=ErrorResponse(code="invalid_request").model_dump())
 
 
-async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+async def validation_error_handler(_: Request, exc: Exception) -> JSONResponse:
     logger.error("Validation error: %s", exc)
     return JSONResponse(status_code=400, content=ErrorResponse(code="invalid_request").model_dump())
 
 
-async def auth_error_handler(_: Request, exc: AuthenticationError) -> JSONResponse:
+async def auth_error_handler(_: Request, exc: Exception) -> JSONResponse:
     logger.warning("Authentication failure: %s", exc)
     return JSONResponse(status_code=401,
                         content=ErrorResponse(code="unauthorized").model_dump(),
                         headers={"WWW-Authenticate": "Bearer"})
 
 
-async def database_not_initialized_handler(_: Request, exc: DatabaseNotInitializedError) -> JSONResponse:
+async def database_not_initialized_handler(_: Request, exc: Exception) -> JSONResponse:
     logger.error("Database not initialized: %s", exc, exc_info=True)
     return JSONResponse(status_code=500, content=ErrorResponse(code="internal_error").model_dump())
 
 
-async def http_exception_handler(_: Request, exc: StarletteHTTPException) -> JSONResponse:
+async def http_exception_handler(_: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, StarletteHTTPException)
     status = _STATUS_REMAP.get(exc.status_code, exc.status_code)
     if status not in _CODE_MAP:
         status = 500
     return JSONResponse(status_code=status,
-                        content=ErrorResponse(code=_CODE_MAP[status]).model_dump(),
+                        content=ErrorResponse(code=_CODE_MAP[status]).model_dump(),  # type: ignore[invalid-argument-type]
                         headers=getattr(exc, "headers", None))
 
 

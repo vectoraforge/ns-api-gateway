@@ -1,15 +1,14 @@
-import json
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 
+from app.api.schema import ChatResponseLLM, ExamplesResponse, Issue
 from app.config import ResilienceConfig
-from app.database.chats import ChatsDB
-from app.models import Chat, Role
+from app.database import ChatsDB
 from app.exceptions import ChatHistoryLimitError, InvalidChatError, PermanentLLMError, UnsupportedLanguageError
+from app.models import AIContent, Chat, HumanContent, Message, Role
 from app.resilience import ResiliencePolicy
-from app.api.schema import MessageResponse, ChatResponseLLM, ExamplesResponse, Issue
 from app.service import ChatService
 
 
@@ -28,10 +27,9 @@ def mock_config():
 @pytest.fixture
 def mock_chats_db():
     db = AsyncMock(spec=ChatsDB)
-    db.create = AsyncMock()
-    db.save_message = AsyncMock()
-    db.get_history = AsyncMock(return_value=(None, []))
-    db.get_messages = AsyncMock(return_value=(None, [], None))
+    db.create_chat = MagicMock()
+    db.get_chat = AsyncMock(return_value=None)
+    db.get_messages = AsyncMock(return_value=[])
     db.delete = AsyncMock(return_value=1)
     db.list_chats = AsyncMock(return_value=[])
     return db
@@ -74,21 +72,17 @@ class TestCreateChat:
                                            user_id="user-1",
                                            lang="en")
 
-        assert isinstance(result, MessageResponse)
-        assert result.chat_id is not None
-        assert len(result.issues) == 1
-        assert result.issues[0].text_part == "going to home"
-        assert result.suggestions == ["I am going home."]
-        assert result.response == "Minor grammar issue"
-        mock_chats_db.create.assert_called_once()
-        call_args = mock_chats_db.create.call_args
-        assert call_args[0][1] == "I am going to home"  # phrase
-        assert call_args[0][2] == "user-1"  # user_id
-        mock_chats_db.save_message.assert_called_once()
-        save_call = mock_chats_db.save_message.call_args
-        assert save_call[0][1] == Role.ai
-        saved_content = json.loads(save_call[0][2])
-        assert saved_content["response"] == "Minor grammar issue"
+        assert isinstance(result, Message)
+        assert result.role == Role.ai
+        assert result.content.response == "Minor grammar issue"
+        assert len(result.content.issues) == 1
+        assert result.content.issues[0].text_part == "going to home"
+        assert result.content.suggestions == ["I am going home."]
+        mock_chats_db.create_chat.assert_called_once()
+        chat_arg = mock_chats_db.create_chat.call_args[0][0]
+        assert isinstance(chat_arg, Chat)
+        assert chat_arg.title == "I am going to home"
+        assert len(chat_arg.messages) == 2
 
     @pytest.mark.asyncio
     async def test_new_chat_with_comment(self, service, mock_chats_db):
@@ -97,14 +91,16 @@ class TestCreateChat:
                                         response="Looks good")
         service.chain.ainvoke.return_value = llm_response
 
-        await service.create_chat(phrase="I am going to home",
-                                  user_id="user-1",
-                                  comment="Is this too formal?",
-                                  lang="en")
+        result = await service.create_chat(phrase="I am going to home",
+                                           user_id="user-1",
+                                           comment="Is this too formal?",
+                                           lang="en")
 
-        mock_chats_db.create.assert_called_once()
-        call_args = mock_chats_db.create.call_args
-        assert call_args[0][3] == "Is this too formal?"  # comment
+        assert isinstance(result, Message)
+        mock_chats_db.create_chat.assert_called_once()
+        chat_arg = mock_chats_db.create_chat.call_args[0][0]
+        human_msg = [m for m in chat_arg.messages if m.role == Role.human][0]
+        assert human_msg.content.comment == "Is this too formal?"
 
     @pytest.mark.asyncio
     async def test_new_chat_autodetect_lang(self, service, mock_chats_db):
@@ -114,7 +110,7 @@ class TestCreateChat:
         result = await service.create_chat(phrase="Hola mundo",
                                            user_id="user-1")
 
-        assert isinstance(result, MessageResponse)
+        assert isinstance(result, Message)
         invoke_args = service.chain.ainvoke.call_args[0][0]
         assert invoke_args["lang"] == "various languages (autodetect)"
 
@@ -140,7 +136,7 @@ class TestCreateChat:
 
         assert "LLM API error" in str(exc_info.value)
         assert exc_info.value.__cause__ is original_exc
-        mock_chats_db.create.assert_not_called()
+        mock_chats_db.create_chat.assert_not_called()
 
 
 class TestFollowup:
@@ -148,70 +144,70 @@ class TestFollowup:
     @pytest.mark.asyncio
     async def test_followup_success(self, service, mock_chats_db):
         chat_id = uuid4()
-        chat = Chat(id=chat_id, phrase="hello", user_id="user-1")
-        db_messages = [(Role.ai,
-                        json.dumps({"response": "hi",
-                                    "issues": [],
-                                    "suggestions": []}))]
-        mock_chats_db.get_history.return_value = (chat, db_messages)
+        chat = Chat(id=chat_id, title="hello", user_id="user-1")
+        chat.messages = [
+            Message(chat_id=chat_id, role=Role.human,
+                    content=HumanContent(phrase="hello")),
+            Message(chat_id=chat_id, role=Role.ai,
+                    content=AIContent(response="hi", issues=[], suggestions=[]))
+        ]
+        mock_chats_db.get_chat.return_value = chat
 
         llm_response = ChatResponseLLM(issues=[], suggestions=[], response="Good point")
         service.chain.ainvoke.return_value = llm_response
 
-        result = await service.send_chat_message(chat_id, "why?", "user-1")
+        result = await service.send_message(chat_id, "user-1", "why?")
 
-        assert isinstance(result, MessageResponse)
+        assert isinstance(result, Message)
         assert result.chat_id == chat_id
-        assert result.response == "Good point"
-        assert mock_chats_db.save_message.call_count == 2
-        human_call = mock_chats_db.save_message.call_args_list[0]
-        assert human_call[0][1] == Role.human
-        assert human_call[0][2] == "why?"
-        ai_call = mock_chats_db.save_message.call_args_list[1]
-        assert ai_call[0][1] == Role.ai
-        saved = json.loads(ai_call[0][2])
-        assert saved["response"] == "Good point"
+        assert result.content.response == "Good point"
+        assert len(chat.messages) == 4  # original 2 + new human + new ai
 
     @pytest.mark.asyncio
     async def test_followup_invalid_chat(self, service, mock_chats_db):
         chat_id = uuid4()
-        mock_chats_db.get_history.return_value = (None, [])
+        mock_chats_db.get_chat.return_value = None
 
         with pytest.raises(InvalidChatError) as exc_info:
-            await service.send_chat_message(chat_id, "test", "user-1")
+            await service.send_message(chat_id, "user-1", "test")
 
         assert exc_info.value.chat_id == chat_id
 
     @pytest.mark.asyncio
     async def test_followup_capacity_exceeded(self, service, mock_chats_db):
         chat_id = uuid4()
-        chat = Chat(id=chat_id, phrase="hello", user_id="user-1")
-        db_messages = [(Role.ai, "response")] * 50
-        mock_chats_db.get_history.return_value = (chat, db_messages)
+        chat = Chat(id=chat_id, title="hello", user_id="user-1")
+        chat.messages = [
+            Message(chat_id=chat_id, role=Role.ai,
+                    content=AIContent(response="r", issues=[], suggestions=[]))
+            for _ in range(50)
+        ]
+        mock_chats_db.get_chat.return_value = chat
 
         with pytest.raises(ChatHistoryLimitError) as exc_info:
-            await service.send_chat_message(chat_id, "another message", "user-1")
+            await service.send_message(chat_id, "user-1", "another message")
 
         assert exc_info.value.max_messages == 50
 
     @pytest.mark.asyncio
     async def test_followup_llm_error(self, service, mock_chats_db):
         chat_id = uuid4()
-        chat = Chat(id=chat_id, phrase="hello", user_id="user-1")
-        db_messages = [(Role.ai,
-                        json.dumps({"response": "hi",
-                                    "issues": [],
-                                    "suggestions": []}))]
-        mock_chats_db.get_history.return_value = (chat, db_messages)
+        chat = Chat(id=chat_id, title="hello", user_id="user-1")
+        chat.messages = [
+            Message(chat_id=chat_id, role=Role.human,
+                    content=HumanContent(phrase="hello")),
+            Message(chat_id=chat_id, role=Role.ai,
+                    content=AIContent(response="hi", issues=[], suggestions=[]))
+        ]
+        mock_chats_db.get_chat.return_value = chat
 
         original_exc = Exception("LLM failed")
         service.chain.ainvoke.side_effect = original_exc
 
         with pytest.raises(PermanentLLMError) as exc_info:
-            await service.send_chat_message(chat_id, "why?", "user-1")
+            await service.send_message(chat_id, "user-1", "why?")
 
         assert exc_info.value.__cause__ is original_exc
-        mock_chats_db.save_message.assert_not_called()
 
 
 class TestDeleteChat:

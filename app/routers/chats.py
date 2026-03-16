@@ -1,12 +1,11 @@
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Response
 
 from app.api.dependencies import get_chat_service, get_user_id
-from app.api.schema import ChatListItem, ChatMessagesResponse, ChatRequest, MessageResponse, MessageRequest
+from app.api.schema import ChatRequest, ChatResponse, MessageRequest, MessageResponse
 from app.service import ChatService
-from app.api.schema import ChatResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -45,10 +44,10 @@ async def list_chats(user_id: str = Depends(get_user_id),
             for chat in chats]
 
 
-@router.get("/chats/{chat_id}", response_model=ChatMessagesResponse)
+@router.get("/chats/{chat_id}", response_model=list[MessageResponse])
 async def get_chat_messages(chat_id: UUID,
                             user_id: str = Depends(get_user_id),
-                            service: ChatService = Depends(get_chat_service)) -> ChatMessagesResponse:
+                            service: ChatService = Depends(get_chat_service)) -> list[MessageResponse]:
     messages = await service.get_messages(chat_id=chat_id, user_id=user_id)
     return [
         MessageResponse(chat_id=message.chat_id, role=message.role,

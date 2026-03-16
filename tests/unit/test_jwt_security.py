@@ -8,11 +8,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from app.exceptions import AuthenticationError
-from tests.jwt_helpers import (PRIVATE_KEY_PEM,
-                                TEST_ISSUER,
-                                TEST_PROJECT_ID,
-                                make_test_verifier,
-                                make_token)
+from tests.jwt_helpers import PRIVATE_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_test_verifier, make_token
 
 
 @pytest.fixture
@@ -31,7 +27,7 @@ class TestAlgorithmSecurity:
             "iat": time.time(),
             "email_verified": True,
         }
-        token = pyjwt.encode(payload, None, algorithm="none")
+        token = pyjwt.encode(payload, None, algorithm="none")  # type: ignore[invalid-argument-type]
         with pytest.raises(AuthenticationError):
             verifier.verify(token)
 
