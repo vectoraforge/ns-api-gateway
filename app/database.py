@@ -1,0 +1,55 @@
+import base64
+from uuid import UUID
+
+from sqlalchemy import delete
+from sqlmodel import col, select
+from sqlmodel.ext.asyncio.session import AsyncSession
+
+from app.models import Chat, Message, Role
+
+MessageList = list[tuple[Role, str]]
+
+
+class ChatsDB:
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    def create_chat(self, obj: Chat):
+        self.session.add(obj)
+
+    async def get_chat(self, chat_id: UUID, user_id: str) -> Chat | None:
+        statement = (
+            select(Chat)
+            .where(col(Chat.id) == chat_id, col(Chat.user_id) == user_id)
+        )
+        return (await self.session.exec(statement)).first()
+
+    async def list_chats(self,
+                         user_id: str,
+                         limit: int) -> list[Chat]:
+        statement = (
+            select(Chat)
+            .where(col(Chat.user_id) == user_id)
+            .order_by(col(Chat.created_at).desc())
+            .limit(limit)
+        )
+        return list((await self.session.exec(statement)).all())
+
+    async def get_messages(self,
+                           chat_id: UUID,
+                           user_id: str) -> list[Message]:
+        statement = (
+            select(Message)
+            .join(Chat, col(Message.chat_id) == col(Chat.id))
+            .where(col(Chat.id) == chat_id, col(Chat.user_id) == user_id)
+            .order_by(col(Message.id).desc())
+        )
+        return list((await self.session.exec(statement)).all())
+
+    async def delete(self,
+                     chat_id: UUID,
+                     user_id: str) -> int:
+        statement = delete(Chat).where(col(Chat.id) == chat_id, col(Chat.user_id) == user_id)
+        result = await self.session.exec(statement)
+        return result.rowcount()

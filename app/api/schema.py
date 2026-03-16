@@ -20,13 +20,6 @@ class Issue(BaseModel):
     explanation: str = Field(..., description="Explanation of why this is an issue")
 
 
-class ChatResponseLLM(BaseModel):
-    """LLM structured output schema."""
-    issues: list[Issue] = Field(default_factory=list)
-    suggestions: list[str] = Field(default_factory=list)
-    response: str
-
-
 class ChatRequest(BaseModel):
     """New chat request."""
     phrase: str = Field(..., max_length=4096)
@@ -49,7 +42,7 @@ class ChatResponse(BaseModel):
 
 class MessageResponse(BaseModel):
     """Single message in a chat history listing."""
-    id: int
+    id: UUID
     role: str
     content: str
     created_at: datetime
