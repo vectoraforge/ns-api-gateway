@@ -7,6 +7,11 @@ from pydantic import ValidationError
 
 from app.config import MainConfig, ModelConfig
 
+# pytest-dotenv loads .env which sets CONFIG_DIR, PROMPT_PATH, EXAMPLES_PATH.
+# With env_nested_delimiter="_", pydantic-settings misinterprets EXAMPLES_PATH
+# as examples->path. Remove these env vars for MainConfig tests.
+_DOTENV_KEYS = ["CONFIG_DIR", "PROMPT_PATH", "EXAMPLES_PATH"]
+
 
 def _write_temp(content: str, suffix: str) -> str:
     handle, path = tempfile.mkstemp(suffix=suffix)
@@ -48,13 +53,13 @@ en:
     prompt_path = _write_temp(prompt_content, ".txt")
     examples_path = _write_temp(examples_content, ".yaml")
 
+    env_clean = {k: v for k, v in os.environ.items() if k not in _DOTENV_KEYS}
     try:
-        with patch.dict(os.environ,
-                        {"CONFIG_DIR": config_path,
-                         "PROMPT_PATH": prompt_path,
-                         "EXAMPLES_PATH": examples_path},
-                        clear=False):
-            config = MainConfig()
+        with patch.dict(os.environ, env_clean, clear=True):
+            config = MainConfig(config_dir=config_path,
+                                prompt_path=prompt_path,
+                                examples_path=examples_path,
+                                _env_file=None)
             assert config.app is not None
             assert config.app.model.name == "gpt-4"
             assert config.app.model.temperature == 0.5
@@ -67,6 +72,7 @@ en:
 
 
 def test_main_config_missing_file():
-    with patch.dict(os.environ, {"CONFIG_DIR": "/nonexistent/path.yaml"}, clear=False):
+    env_clean = {k: v for k, v in os.environ.items() if k not in _DOTENV_KEYS}
+    with patch.dict(os.environ, env_clean, clear=True):
         with pytest.raises(FileNotFoundError):
-            MainConfig()
+            MainConfig(config_dir="/nonexistent/path.yaml", _env_file=None)
