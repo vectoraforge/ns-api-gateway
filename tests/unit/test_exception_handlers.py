@@ -19,7 +19,7 @@ from app.exceptions import (
     TransientLLMError,
     UnsupportedLanguageError,
 )
-from tests.jwt_helpers import make_test_verifier, make_token
+from tests.unit.conftest import make_test_verifier, make_token
 
 CASES = [
     ("missing_token", AuthenticationError("Missing Bearer token"), 401),

@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from app.exceptions import AuthenticationError
-from tests.jwt_helpers import PRIVATE_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_test_verifier, make_token
+from tests.unit.conftest import PRIVATE_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_test_verifier, make_token
 
 
 @pytest.fixture
