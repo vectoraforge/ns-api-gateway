@@ -47,15 +47,18 @@ def test_user_id():
     return os.environ["FIREBASE_TEST_USER_ID"]
 
 
-DB_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://postgres:postgres@localhost:5432/nativespeaker",
-)
+def _db_url() -> str:
+    user = os.environ.get("DB_USER", "postgres")
+    password = os.environ.get("DB_PASSWORD", "postgres")
+    host = os.environ.get("DB_HOST", "localhost")
+    port = os.environ.get("DB_PORT", "5432")
+    name = os.environ.get("DB_NAME", "nativespeaker")
+    return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{name}"
 
 
 @pytest.fixture(scope="module")
 def db_engine():
-    engine = create_async_engine(DB_URL, pool_size=2, max_overflow=0)
+    engine = create_async_engine(_db_url(), pool_size=2, max_overflow=0)
     yield engine
     engine.sync_engine.dispose()
 
