@@ -1,5 +1,6 @@
 import os
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -56,9 +57,9 @@ en:
     env_clean = {k: v for k, v in os.environ.items() if k not in _DOTENV_KEYS}
     try:
         with patch.dict(os.environ, env_clean, clear=True):
-            config = MainConfig(config_dir=config_path,
-                                prompt_path=prompt_path,
-                                examples_path=examples_path,
+            config = MainConfig(config_dir=Path(config_path),
+                                prompt_path=Path(prompt_path),
+                                examples_path=Path(examples_path),
                                 _env_file=None)
             assert config.app is not None
             assert config.app.model.name == "gpt-4"
@@ -75,4 +76,4 @@ def test_main_config_missing_file():
     env_clean = {k: v for k, v in os.environ.items() if k not in _DOTENV_KEYS}
     with patch.dict(os.environ, env_clean, clear=True):
         with pytest.raises(FileNotFoundError):
-            MainConfig(config_dir="/nonexistent/path.yaml", _env_file=None)
+            MainConfig(config_dir=Path("/nonexistent/path.yaml"), _env_file=None)
