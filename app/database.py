@@ -51,4 +51,4 @@ class ChatsDB:
                      user_id: str) -> int:
         statement = delete(Chat).where(col(Chat.id) == chat_id, col(Chat.user_id) == user_id)
         result = await self.session.exec(statement)
-        return result.rowcount()
+        return result.rowcount

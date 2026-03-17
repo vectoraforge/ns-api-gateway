@@ -15,7 +15,7 @@ CREATE INDEX ix_chats_user_id ON chats (user_id);
 
 CREATE TABLE messages (
     id UUID PRIMARY KEY,
-    chat_id UUID NOT NULL REFERENCES chats (id),
+    chat_id UUID NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
     role TEXT NOT NULL,
     content JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()

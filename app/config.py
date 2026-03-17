@@ -76,22 +76,25 @@ class AppConfig(BaseConfig):
     messages_max_page_size: int = Field(default=100, ge=1)
     chat_list_limit: int = Field(default=50, ge=1)
 
-    prompt: str | None = None
-    examples: dict[str, list[str]] = {}
+    prompt: str
+    examples: dict[str, list[str]]
 
 
 class MainConfig(BaseConfig):
-    config_dir: Path = Field(default=Path("config/config.yaml"))
-    prompt_path: Path = Field(default=Path("config/prompt.txt"))
-    examples_path: Path = Field(default=Path("config/examples.yaml"))
+    config_dir: Path = Field(default=Path("config/"))
+    config_filename: str = Field(default="config.yaml")
+    prompt_filename: str = Field(default="prompt.txt")
+    examples_filename: str = Field(default="examples.yaml")
 
-    app: AppConfig | None = None
+    app_config: AppConfig | None = None
 
     @model_validator(mode="after")
     def load_config(self):
-        yaml_data = yaml.safe_load(self.config_dir.read_text())
-        app_config = AppConfig(**yaml_data)
-        app_config.prompt = self.prompt_path.read_text()
-        app_config.examples = yaml.safe_load(self.examples_path.read_text())
-        self.app = app_config
+        config_path = self.config_dir / self.config_filename
+        prompt_path = self.config_dir / self.prompt_filename
+        examples_path = self.config_dir / self.examples_filename
+        yaml_data = yaml.safe_load(config_path.read_text())
+        self.app_config = AppConfig(**yaml_data,
+                                    prompt=prompt_path.read_text(),
+                                    examples=yaml.safe_load(examples_path.read_text()))
         return self

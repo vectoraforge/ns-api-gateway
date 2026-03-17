@@ -3,10 +3,23 @@ from enum import StrEnum
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel, field_serializer, field_validator
-from sqlalchemy.types import JSON
+from sqlalchemy import DateTime, Text, TypeDecorator, event
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 
 from app.api.schema import Issue
+
+
+class PydanticJSONB(TypeDecorator):
+    """JSONB column that auto-serialises Pydantic models on write."""
+
+    impl = JSONB
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if isinstance(value, BaseModel):
+            return value.model_dump()
+        return value
 
 
 class Role(StrEnum):
@@ -33,10 +46,11 @@ class Message(BaseTable, table=True):
     __tablename__ = "messages"
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
-    chat_id: UUID = Field(foreign_key="chats.id")
-    role: Role
-    content: HumanContent | AIContent = Field(sa_type=JSON)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    chat_id: UUID = Field(foreign_key="chats.id", ondelete="CASCADE")
+    role: Role = Field(sa_type=Text())
+    content: HumanContent | AIContent = Field(sa_type=PydanticJSONB)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
+                                 sa_type=DateTime(timezone=True))
 
     @field_validator("content", mode="before")
     @classmethod
@@ -55,16 +69,29 @@ class Message(BaseTable, table=True):
         return v.model_dump()
 
 
+@event.listens_for(Message, "load")
+def _reconstitute_content(target, context):
+    """Parse raw dict back into the correct Pydantic content model after DB load."""
+    raw = target.content
+    if isinstance(raw, dict):
+        match target.role:
+            case Role.human:
+                target.content = HumanContent(**raw)
+            case Role.ai:
+                target.content = AIContent(**raw)
+
+
 class Chat(BaseTable, table=True):
     __tablename__ = "chats"
 
     id: UUID = Field(primary_key=True)
-    user_id: str = Field(..., index=True)
-    title: str
-    lang: str | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    user_id: str = Field(..., index=True, sa_type=Text())
+    title: str = Field(sa_type=Text())
+    lang: str | None = Field(default=None, sa_type=Text())
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
+                                 sa_type=DateTime(timezone=True))
 
-    messages: list[Message] = Relationship()
+    messages: list[Message] = Relationship(cascade_delete=True, passive_deletes=True)
 
     @property
     def ai_messages(self):

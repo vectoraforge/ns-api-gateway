@@ -1,3 +1,4 @@
+import asyncio
 import os
 from uuid import uuid4
 
@@ -5,6 +6,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlmodel import SQLModel
 
 from app.api.main import app
 from app.models import AIContent, Chat, HumanContent, Message, Role
@@ -34,7 +36,7 @@ def firebase_token():
 
 
 @pytest.fixture(scope="module")
-def real_client(firebase_token):
+def real_client(firebase_token, ensure_tables):
     """TestClient wired to the real app with Firebase auth and lifespan."""
     with TestClient(app) as client:
         client.headers["Authorization"] = f"Bearer {firebase_token}"
@@ -56,19 +58,26 @@ def _db_url() -> str:
     return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{name}"
 
 
-@pytest.fixture(scope="module")
-def db_engine():
-    engine = create_async_engine(_db_url(), pool_size=2, max_overflow=0)
-    yield engine
-    engine.sync_engine.dispose()
+@pytest.fixture(scope="session")
+def ensure_tables():
+    """Create all SQLModel tables (CREATE TABLE IF NOT EXISTS) once per session."""
+    async def _create():
+        engine = create_async_engine(_db_url(), pool_size=1, max_overflow=0)
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+        await engine.dispose()
+
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(_create())
 
 
 @pytest.fixture
-async def db_session(db_engine):
-    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+async def db_session(ensure_tables):
+    engine = create_async_engine(_db_url(), pool_size=2, max_overflow=0)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
         yield session
         await session.rollback()
+    await engine.dispose()
 
 
 async def create_chat(session: AsyncSession, user_id: str):

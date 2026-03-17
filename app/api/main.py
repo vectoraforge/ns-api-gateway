@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from langchain.chat_models import init_chat_model
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from app.auth import JWTVerifier
 from app.config import MainConfig
@@ -30,13 +31,14 @@ def setup_logging(log_level: str):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    config = MainConfig().app
+    config = MainConfig().app_config
     setup_logging(log_level=config.log_level)
 
     db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)
 
     app.state.config = config
-    app.state.session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    app.state.session_factory = async_sessionmaker(db_engine, class_=SQLModelAsyncSession,
+                                                       expire_on_commit=False)
     app.state.verifier = JWTVerifier(jwks_url=config.jwt.jwks_url,
                                      audience=config.jwt.audience,
                                      issuer=config.jwt.issuer,
