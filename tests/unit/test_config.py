@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -8,17 +9,10 @@ from pydantic import ValidationError
 
 from app.config import MainConfig, ModelConfig
 
-# pytest-dotenv loads .env which sets CONFIG_DIR, PROMPT_PATH, EXAMPLES_PATH.
-# With env_nested_delimiter="_", pydantic-settings misinterprets EXAMPLES_PATH
-# as examples->path. Remove these env vars for MainConfig tests.
-_DOTENV_KEYS = ["CONFIG_DIR", "PROMPT_PATH", "EXAMPLES_PATH"]
-
-
-def _write_temp(content: str, suffix: str) -> str:
-    handle, path = tempfile.mkstemp(suffix=suffix)
-    with os.fdopen(handle, "w") as file:
-        file.write(content)
-    return path
+# pytest-dotenv loads .env which sets CONFIG_DIR.
+# With env_nested_delimiter="_", pydantic-settings can misinterpret env vars.
+# Remove these env vars for MainConfig tests.
+_DOTENV_KEYS = ["CONFIG_DIR"]
 
 
 def test_model_config_defaults():
@@ -50,30 +44,26 @@ en:
   - "Example 1"
 """
 
-    config_path = _write_temp(yaml_content, ".yaml")
-    prompt_path = _write_temp(prompt_content, ".txt")
-    examples_path = _write_temp(examples_content, ".yaml")
-
-    env_clean = {k: v for k, v in os.environ.items() if k not in _DOTENV_KEYS}
+    tmp_dir = tempfile.mkdtemp()
     try:
+        Path(tmp_dir, "config.yaml").write_text(yaml_content)
+        Path(tmp_dir, "prompt.txt").write_text(prompt_content)
+        Path(tmp_dir, "examples.yaml").write_text(examples_content)
+
+        env_clean = {k: v for k, v in os.environ.items() if k not in _DOTENV_KEYS}
         with patch.dict(os.environ, env_clean, clear=True):
-            config = MainConfig(config_dir=Path(config_path),
-                                prompt_path=Path(prompt_path),
-                                examples_path=Path(examples_path),
-                                _env_file=None)
-            assert config.app is not None
-            assert config.app.model.name == "gpt-4"
-            assert config.app.model.temperature == 0.5
-            assert config.app.prompt == prompt_content
-            assert config.app.examples["en"] == ["Example 1"]
+            config = MainConfig(config_dir=Path(tmp_dir), _env_file=None)
+            assert config.app_config is not None
+            assert config.app_config.model.name == "gpt-4"
+            assert config.app_config.model.temperature == 0.5
+            assert config.app_config.prompt == prompt_content
+            assert config.app_config.examples["en"] == ["Example 1"]
     finally:
-        os.unlink(config_path)
-        os.unlink(prompt_path)
-        os.unlink(examples_path)
+        shutil.rmtree(tmp_dir)
 
 
 def test_main_config_missing_file():
     env_clean = {k: v for k, v in os.environ.items() if k not in _DOTENV_KEYS}
     with patch.dict(os.environ, env_clean, clear=True):
         with pytest.raises(FileNotFoundError):
-            MainConfig(config_dir=Path("/nonexistent/path.yaml"), _env_file=None)
+            MainConfig(config_dir=Path("/nonexistent/"), _env_file=None)
