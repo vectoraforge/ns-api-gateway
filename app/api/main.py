@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from importlib.metadata import version
 
 from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
 from langchain.chat_models import init_chat_model
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -69,6 +70,23 @@ app = FastAPI(title="SpeakNative API Gateway",
                   500: {"model": ErrorResponse, "description": "Internal error"},
                   503: {"model": ErrorResponse, "description": "Service unavailable"},
               })
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(title=app.title,
+                         version=app.version,
+                         description=app.description,
+                         routes=app.routes)
+    for path_data in schema.get("paths", {}).values():
+        for operation in path_data.values():
+            if isinstance(operation, dict):
+                operation.get("responses", {}).pop("422", None)
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = custom_openapi  # type: ignore[method-assign]
 
 app.include_router(root_router)
 app.include_router(chats_router)
