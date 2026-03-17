@@ -25,7 +25,11 @@ class AIContent(BaseModel):
     suggestions: list[str] | None = None
 
 
-class Message(SQLModel, table=True):
+class BaseTable(SQLModel):
+    pass
+
+
+class Message(BaseTable, table=True):
     __tablename__ = "messages"
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
@@ -51,7 +55,7 @@ class Message(SQLModel, table=True):
         return v.model_dump()
 
 
-class Chat(SQLModel, table=True):
+class Chat(BaseTable, table=True):
     __tablename__ = "chats"
 
     id: UUID = Field(primary_key=True)

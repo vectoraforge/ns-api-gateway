@@ -26,6 +26,7 @@ dev = [
     "httpx >=0.28",
     "ruff >=0.15.2",
     "ty >=0.0.17",
+    "pogo-migrate>=0.4.2",
 ]
 
 [build-system]
@@ -49,7 +50,12 @@ markers = [
 
 [tool.ruff]
 line-length = 120
-target-version = "py312"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "UP"]
+
+[tool.pogo]
+migrations = './migrations'
+database_config = 'postgres://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}'
+schema = 'api'
