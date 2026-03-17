@@ -2,8 +2,9 @@ import pytest
 
 from tests.e2e.conftest import cleanup_chat, create_chat
 
+pytestmark = pytest.mark.e2e
 
-@pytest.mark.db
+
 class TestListChats:
     @pytest.mark.asyncio
     async def test_list_chats(self, real_client, db_session, test_user_id):
@@ -22,7 +23,6 @@ class TestListChats:
             await cleanup_chat(db_session, chat_id)
 
 
-@pytest.mark.db
 class TestGetChatMessages:
     @pytest.mark.asyncio
     async def test_get_messages(self, real_client, db_session, test_user_id):
@@ -42,7 +42,6 @@ class TestGetChatMessages:
             await cleanup_chat(db_session, chat_id)
 
 
-@pytest.mark.db
 class TestDeleteChat:
     @pytest.mark.asyncio
     async def test_delete_chat(self, real_client, db_session, test_user_id):

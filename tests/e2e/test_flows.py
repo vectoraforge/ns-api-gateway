@@ -1,8 +1,8 @@
 import pytest
 
+pytestmark = pytest.mark.e2e
 
-@pytest.mark.db
-@pytest.mark.llm
+
 class TestChatLifecycle:
     def test_full_chat_lifecycle(self, real_client):
         """Full lifecycle: create -> followup -> read messages -> list chats -> delete."""

@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.api.main import app
 from app.models import AIContent, Chat, HumanContent, Message, Role
 
+pytestmark = pytest.mark.e2e
+
 
 @pytest.fixture(scope="session")
 def firebase_token():

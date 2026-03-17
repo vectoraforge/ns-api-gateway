@@ -2,10 +2,11 @@ import pytest
 
 from tests.e2e.conftest import cleanup_chat, create_chat
 
+pytestmark = pytest.mark.e2e
+
 OTHER_USER = "other-user-not-in-firebase"
 
 
-@pytest.mark.db
 class TestCrossUserIsolation:
     @pytest.mark.asyncio
     async def test_cannot_read_other_user_chat(self, real_client, db_session):

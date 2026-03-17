@@ -1,7 +1,8 @@
 import pytest
 
+pytestmark = pytest.mark.e2e
 
-@pytest.mark.db
+
 class TestExamplesEndpoint:
     def test_examples_english(self, real_client):
         response = real_client.get("/examples?lang=en")

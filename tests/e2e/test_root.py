@@ -1,7 +1,8 @@
 import pytest
 
+pytestmark = pytest.mark.e2e
 
-@pytest.mark.db
+
 class TestRootEndpoint:
     def test_root_returns_app_info(self, real_client):
         response = real_client.get("/")

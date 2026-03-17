@@ -1,8 +1,8 @@
 import pytest
 
+pytestmark = pytest.mark.e2e
 
-@pytest.mark.db
-@pytest.mark.llm
+
 class TestCreateChat:
     def test_create_chat_english(self, real_client):
         response = real_client.post("/chats",
@@ -42,8 +42,6 @@ class TestCreateChat:
         assert "content" in data
 
 
-@pytest.mark.db
-@pytest.mark.llm
 class TestFollowup:
     def test_followup_message(self, real_client):
         # First create a chat to get chat_id
