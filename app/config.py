@@ -19,12 +19,14 @@ class DatabaseConfig(BaseModel):
     user: str = Field(default="postgres")
     password: SecretStr = Field(default=SecretStr("postgres"))
     name: str = Field(default="nativespeaker")
+    schema: str = Field(default="public")
     pool_size: int = Field(default=5, ge=1)
 
     @property
     def url(self) -> str:
         return (f"postgresql+asyncpg://{self.user}:{self.password.get_secret_value()}"
-                f"@{self.host}:{self.port}/{self.name}")
+                f"@{self.host}:{self.port}/{self.name}"
+                f"?options=-csearch_path={self.schema}")
 
 
 class ResilienceConfig(BaseModel):
@@ -41,6 +43,7 @@ class ResilienceConfig(BaseModel):
 
 class JWTConfig(BaseModel):
     project_id: str
+    api_key: str = Field(default="")
     jwks_url: str = Field(default="https://www.googleapis.com/service_accounts/v1/jwk/"
                                   "securetoken@system.gserviceaccount.com")
     leeway_seconds: int = Field(default=30, ge=0)
