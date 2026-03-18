@@ -27,10 +27,11 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
 def get_chat_service(request: Request,
                      db: AsyncSession = Depends(get_db),
                      config: AppConfig = Depends(get_config)) -> ChatService:
-    return ChatService(chain=request.app.state.chain,
-                       policy=request.app.state.policy,
-                       config=config,
-                       db=db)
+    return ChatService(db=db,
+                       llm_service=request.app.state.llm_service,
+                       examples=config.examples,
+                       chats_limit=config.chats_limit,
+                       messages_limit=config.messages_limit)
 
 
 def get_user_id(request: Request, authorization: str | None = Header(None)) -> str:

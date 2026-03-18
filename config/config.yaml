@@ -1,21 +1,18 @@
 log_level: INFO
 history_max_messages: 50
-messages_max_page_size: 100
 model:
   name: gpt-4o-mini
   temperature: 0.3
   max_tokens: 1000
-  resilience:
-    pool_size: 5
-    queue_size: 25
-    queue_retry_after_seconds: 2
-    timeout_seconds: 30
-    retry_max_attempts: 3
-    retry_backoff_base_seconds: 0.5
-    retry_backoff_max_seconds: 4
-    circuit_breaker_failure_threshold: 5
-    circuit_breaker_reset_seconds: 60
+resilience:
+  pool_size: 5
+  queue_size: 25
+  queue_retry_after_seconds: 2
+  timeout_seconds: 30
+  retry_max_attempts: 3
+  retry_backoff_base_seconds: 0.5
+  retry_backoff_max_seconds: 4
+  circuit_breaker_failure_threshold: 5
+  circuit_breaker_reset_seconds: 60
 jwt:
-  project_id: native-speaker-488021
-  api_key: ""  # Set via JWT_API_KEY env var; used by e2e tests
   jwks_cache_ttl_seconds: 3600

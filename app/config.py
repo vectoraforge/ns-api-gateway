@@ -10,23 +10,27 @@ LogLevel = StrEnum("LogLevel", {k: k for k in logging.getLevelNamesMapping()})
 
 
 class BaseConfig(BaseSettings):
-    model_config = SettingsConfigDict(env_nested_delimiter="_")
+    model_config = SettingsConfigDict(env_nested_delimiter="_",
+                                      env_nested_max_split=1)
 
 
 class DatabaseConfig(BaseModel):
-    host: str = Field(default="localhost")
-    port: int = Field(default=5432)
-    user: str = Field(default="postgres")
-    password: SecretStr = Field(default=SecretStr("postgres"))
-    name: str = Field(default="nativespeaker")
-    schema: str = Field(default="public")
-    pool_size: int = Field(default=5, ge=1)
+    host: str = Field(description="Database server hostname")
+    port: int = Field(description="Database server port")
+    user: str = Field(description="Database user")
+    password: SecretStr = Field(description="Database password")
+    name: str = Field(description="Database name")
+    schema: str = Field(description="PostgreSQL search_path schema")
+    pool_size: int = Field(default=5, ge=1, description="Connection pool size")
 
     @property
     def url(self) -> str:
         return (f"postgresql+asyncpg://{self.user}:{self.password.get_secret_value()}"
-                f"@{self.host}:{self.port}/{self.name}"
-                f"?options=-csearch_path={self.schema}")
+                f"@{self.host}:{self.port}/{self.name}")
+
+    @property
+    def connect_args(self) -> dict:
+        return {"server_settings": {"search_path": self.schema}}
 
 
 class ResilienceConfig(BaseModel):
@@ -42,24 +46,16 @@ class ResilienceConfig(BaseModel):
 
 
 class JWTConfig(BaseModel):
-    project_id: str
-    api_key: str = Field(default="")
+    project_id: str = Field(description="GCP project ID")
+    api_key: str = Field(description="GCP API key")
     jwks_url: str = Field(default="https://www.googleapis.com/service_accounts/v1/jwk/"
                                   "securetoken@system.gserviceaccount.com")
-    leeway_seconds: int = Field(default=30, ge=0)
-    jwks_cache_ttl_seconds: float = Field(default=3600.0, gt=0)
+    leeway_seconds: int = Field(default=30, ge=0, description="Expiration timeout")
+    jwks_cache_ttl_seconds: float = Field(default=3600.0, gt=0, description="JWKS cache TTL")
 
-    # Derived from project_id — not in YAML
-    audience: str = ""
-    issuer: str = ""
-
-    @model_validator(mode="after")
-    def derive_audience_and_issuer(self) -> "JWTConfig":
-        if not self.audience:
-            self.audience = self.project_id
-        if not self.issuer:
-            self.issuer = f"https://securetoken.google.com/{self.project_id}"
-        return self
+    @property
+    def issuer(self) -> str:
+        return  f"https://securetoken.google.com/{self.project_id}"
 
 
 class ModelConfig(BaseModel):
@@ -73,11 +69,12 @@ class AppConfig(BaseConfig):
     log_level: LogLevel = Field(default=LogLevel.INFO)  # type: ignore
 
     model: ModelConfig = Field(default_factory=ModelConfig)
+    resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
-    jwt: JWTConfig
-    history_max_messages: int = Field(default=50, ge=1)
-    messages_max_page_size: int = Field(default=100, ge=1)
-    chat_list_limit: int = Field(default=50, ge=1)
+    jwt: JWTConfig = Field(default_factory=JWTConfig)
+
+    chats_limit: int = Field(default=50, ge=1)
+    messages_limit: int = Field(default=50, ge=1)
 
     prompt: str
     examples: dict[str, list[str]]

@@ -4,9 +4,11 @@ from uuid import uuid4
 
 import httpx
 import pytest
+import pytest_asyncio
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
+from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from app.api.main import app
 from app.config import MainConfig
@@ -25,8 +27,9 @@ def _app_config():
 def ensure_tables(_app_config):
     """Create all SQLModel tables (CREATE TABLE IF NOT EXISTS) once per session."""
     async def _create():
-        engine = create_async_engine(_app_config.db.url, pool_size=1, max_overflow=0)
-        async with engine.begin() as conn:
+        engine = create_async_engine(_app_config.db.url, pool_size=1, max_overflow=0,
+                                            connect_args=_app_config.db.connect_args)
+        async with engine.begin() as conn:  # type: ignore[arg-type]
             await conn.run_sync(SQLModel.metadata.create_all)
         await engine.dispose()
 
@@ -69,16 +72,7 @@ def test_user_id():
     return os.environ["FIREBASE_TEST_USER_ID"]
 
 
-@pytest.fixture
-async def db_session(real_client):
-    """Async DB session from the app's own session factory -- no second engine."""
-    factory = real_client.app.state.session_factory
-    async with factory() as session:
-        yield session
-        await session.rollback()
-
-
-async def create_chat(session: AsyncSession, user_id: str):
+async def create_chat(factory, user_id: str):
     """Insert a chat with human+AI message pair, return chat_id."""
     chat_id = uuid4()
     chat = Chat(id=chat_id, user_id=user_id, title="test phrase")
@@ -88,14 +82,30 @@ async def create_chat(session: AsyncSession, user_id: str):
                  content=AIContent(response="test answer", issues=[], suggestions=[]))
     chat.messages.append(human)
     chat.messages.append(ai)
-    session.add(chat)
-    await session.commit()
+    async with factory() as session:
+        session.add(chat)
+        await session.commit()
     return chat_id
 
 
-async def cleanup_chat(session: AsyncSession, chat_id):
+async def cleanup_chat(factory, chat_id):
     """Delete a chat row (messages cascade via FK)."""
-    chat = await session.get(Chat, chat_id)
-    if chat:
-        await session.delete(chat)
-        await session.commit()
+    async with factory() as session:
+        chat = await session.get(Chat, chat_id)
+        if chat:
+            await session.delete(chat)
+            await session.commit()
+
+
+@pytest_asyncio.fixture
+async def test_db_factory(_app_config, ensure_tables):
+    """Async session factory for test setup/teardown, independent of app engine."""
+    engine = create_async_engine(
+        _app_config.db.url, pool_size=1, max_overflow=0,
+        connect_args=_app_config.db.connect_args,
+    )
+    factory = async_sessionmaker(
+        engine, class_=SQLModelAsyncSession, expire_on_commit=False,
+    )
+    yield factory
+    await engine.dispose()

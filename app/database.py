@@ -2,6 +2,7 @@ from uuid import UUID
 
 from sqlalchemy import delete
 from sqlalchemy.orm import selectinload
+from sqlalchemy.sql.functions import count
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -24,14 +25,18 @@ class ChatsDB:
         )
         return (await self.session.exec(statement)).first()
 
-    async def list_chats(self,
-                         user_id: str,
-                         limit: int) -> list[Chat]:
+    async def count_chats(self, user_id: str) -> list[Chat]:
+        statement = (
+            count('*')
+            .where(col(Chat.user_id) == user_id)
+        )
+        return (await self.session.exec(statement)).scalar_one()
+
+    async def list_chats(self, user_id: str) -> list[Chat]:
         statement = (
             select(Chat)
             .where(col(Chat.user_id) == user_id)
             .order_by(col(Chat.created_at).desc())
-            .limit(limit)
         )
         return list((await self.session.exec(statement)).all())
 
@@ -51,4 +56,4 @@ class ChatsDB:
                      user_id: str) -> int:
         statement = delete(Chat).where(col(Chat.id) == chat_id, col(Chat.user_id) == user_id)
         result = await self.session.exec(statement)
-        return result.rowcount
+        return result.rowcount()

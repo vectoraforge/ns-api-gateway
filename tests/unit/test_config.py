@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from app.config import MainConfig, ModelConfig
+from app.config import MainConfig, ModelConfig, ResilienceConfig
 
 # pytest-dotenv loads .env which sets CONFIG_DIR.
 # With env_nested_delimiter="_", pydantic-settings can misinterpret env vars.
@@ -20,8 +20,12 @@ def test_model_config_defaults():
     assert config.name == "gpt-4o-mini"
     assert config.temperature == 0.3
     assert config.max_tokens == 1000
-    assert config.resilience.queue_size == 25
-    assert config.resilience.timeout_seconds == 30.0
+
+
+def test_resilence_config_defaults():
+    config = ResilienceConfig()
+    assert config.queue_size == 25
+    assert config.timeout_seconds == 30.0
 
 
 def test_model_config_invalid_temperature():

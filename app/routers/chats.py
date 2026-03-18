@@ -38,7 +38,7 @@ async def send_message(chat_id: UUID,
 @router.get("/chats", response_model=list[ChatResponse])
 async def list_chats(user_id: str = Depends(get_user_id),
                      service: ChatService = Depends(get_chat_service)):
-    chats = await service.get_chat_list(user_id)
+    chats = await service.list_chats(user_id)
     return [ChatResponse(chat_id=chat.id, title=chat.title,
                          created_at=chat.created_at, lang=chat.lang)
             for chat in chats]

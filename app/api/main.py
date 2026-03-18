@@ -5,17 +5,15 @@ from importlib.metadata import version
 
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
-from langchain.chat_models import init_chat_model
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from app.auth import JWTVerifier
 from app.config import MainConfig
 from app.api.errors import register_exception_handlers
-from app.resilience import ResiliencePolicy
 from app.routers import chats_router, examples_router, health_router, root_router
 from app.api.schema import ErrorResponse
-from app.service import create_chain
+from app.service import LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -34,23 +32,22 @@ async def lifespan(app: FastAPI):
     config = MainConfig().app_config
     setup_logging(log_level=config.log_level)
 
-    db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)
+    db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0,
+                                        connect_args=config.db.connect_args)
 
     app.state.config = config
     app.state.session_factory = async_sessionmaker(db_engine, class_=SQLModelAsyncSession,
                                                        expire_on_commit=False)
     app.state.verifier = JWTVerifier(jwks_url=config.jwt.jwks_url,
-                                     audience=config.jwt.audience,
+                                     audience=config.jwt.project_id,
                                      issuer=config.jwt.issuer,
                                      leeway=config.jwt.leeway_seconds,
                                      cache_ttl_seconds=config.jwt.jwks_cache_ttl_seconds)
     logger.info(f"Firebase project ID: {config.jwt.project_id}")
-    app.state.policy = ResiliencePolicy(config.model.resilience)
 
-    llm = init_chat_model(model=config.model.name,
-                          temperature=config.model.temperature,
-                          max_tokens=config.model.max_tokens)
-    app.state.chain = create_chain(llm, config.prompt)
+    app.state.llm_service = LLMService(model_config=config.model,
+                                       resilence_config=config.resilience,
+                                       system_prompt=config.prompt)
 
     logger.info("Starting API Gateway")
     logger.info(f"Using LLM model: {config.model.name}")

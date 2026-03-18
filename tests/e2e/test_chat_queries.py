@@ -7,8 +7,8 @@ pytestmark = pytest.mark.e2e
 
 class TestListChats:
     @pytest.mark.asyncio
-    async def test_list_chats(self, real_client, db_session, test_user_id):
-        chat_id = await create_chat(db_session, test_user_id)
+    async def test_list_chats(self, real_client, test_user_id, test_db_factory):
+        chat_id = await create_chat(test_db_factory, test_user_id)
         try:
             response = real_client.get("/chats")
             assert response.status_code == 200
@@ -20,13 +20,13 @@ class TestListChats:
             assert "title" in chat
             assert "created_at" in chat
         finally:
-            await cleanup_chat(db_session, chat_id)
+            await cleanup_chat(test_db_factory, chat_id)
 
 
 class TestGetChatMessages:
     @pytest.mark.asyncio
-    async def test_get_messages(self, real_client, db_session, test_user_id):
-        chat_id = await create_chat(db_session, test_user_id)
+    async def test_get_messages(self, real_client, test_user_id, test_db_factory):
+        chat_id = await create_chat(test_db_factory, test_user_id)
         try:
             response = real_client.get(f"/chats/{chat_id}")
             assert response.status_code == 200
@@ -39,12 +39,12 @@ class TestGetChatMessages:
             assert "content" in msg
             assert "created_at" in msg
         finally:
-            await cleanup_chat(db_session, chat_id)
+            await cleanup_chat(test_db_factory, chat_id)
 
 
 class TestDeleteChat:
     @pytest.mark.asyncio
-    async def test_delete_chat(self, real_client, db_session, test_user_id):
-        chat_id = await create_chat(db_session, test_user_id)
+    async def test_delete_chat(self, real_client, test_user_id, test_db_factory):
+        chat_id = await create_chat(test_db_factory, test_user_id)
         response = real_client.delete(f"/chats/{chat_id}")
         assert response.status_code == 204
