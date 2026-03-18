@@ -5,19 +5,39 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlmodel import SQLModel
 
 from app.api.main import app
+from app.config import MainConfig
 from app.models import AIContent, Chat, HumanContent, Message, Role
 
 pytestmark = pytest.mark.e2e
 
 
 @pytest.fixture(scope="session")
-def firebase_token():
+def _app_config():
+    """Load app config once -- single source of truth for DB URL, Firebase keys, etc."""
+    return MainConfig().app_config
+
+
+@pytest.fixture(scope="session")
+def ensure_tables(_app_config):
+    """Create all SQLModel tables (CREATE TABLE IF NOT EXISTS) once per session."""
+    async def _create():
+        engine = create_async_engine(_app_config.db.url, pool_size=1, max_overflow=0)
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+        await engine.dispose()
+
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(_create())
+
+
+@pytest.fixture(scope="session")
+def firebase_token(_app_config):
     """Obtain a real Firebase ID token via REST API for the dedicated test user."""
-    api_key = os.environ["FIREBASE_API_KEY"]
+    api_key = _app_config.jwt.api_key
+    assert api_key, "JWT_API_KEY env var required for e2e tests"
     email = os.environ["FIREBASE_TEST_EMAIL"]
     password = os.environ["FIREBASE_TEST_PASSWORD"]
     resp = httpx.post(
@@ -49,35 +69,13 @@ def test_user_id():
     return os.environ["FIREBASE_TEST_USER_ID"]
 
 
-def _db_url() -> str:
-    user = os.environ.get("DB_USER", "postgres")
-    password = os.environ.get("DB_PASSWORD", "postgres")
-    host = os.environ.get("DB_HOST", "localhost")
-    port = os.environ.get("DB_PORT", "5432")
-    name = os.environ.get("DB_NAME", "nativespeaker")
-    return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{name}"
-
-
-@pytest.fixture(scope="session")
-def ensure_tables():
-    """Create all SQLModel tables (CREATE TABLE IF NOT EXISTS) once per session."""
-    async def _create():
-        engine = create_async_engine(_db_url(), pool_size=1, max_overflow=0)
-        async with engine.begin() as conn:
-            await conn.run_sync(SQLModel.metadata.create_all)
-        await engine.dispose()
-
-    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(_create())
-
-
 @pytest.fixture
-async def db_session(ensure_tables):
-    engine = create_async_engine(_db_url(), pool_size=2, max_overflow=0)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
+async def db_session(real_client):
+    """Async DB session from the app's own session factory -- no second engine."""
+    factory = real_client.app.state.session_factory
     async with factory() as session:
         yield session
         await session.rollback()
-    await engine.dispose()
 
 
 async def create_chat(session: AsyncSession, user_id: str):
