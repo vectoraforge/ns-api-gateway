@@ -62,7 +62,6 @@ class ModelConfig(BaseModel):
     name: str = Field(default="gpt-4o-mini")
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
     max_tokens: int = Field(default=1000, ge=1)
-    resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
 
 
 class AppConfig(BaseConfig):

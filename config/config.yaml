@@ -1,5 +1,4 @@
 log_level: INFO
-history_max_messages: 50
 model:
   name: gpt-4o-mini
   temperature: 0.3
@@ -16,3 +15,5 @@ resilience:
   circuit_breaker_reset_seconds: 60
 jwt:
   jwks_cache_ttl_seconds: 3600
+chats_limit: 50
+messages_limit: 50

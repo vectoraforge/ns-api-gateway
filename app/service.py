@@ -29,7 +29,7 @@ class LLMService:
         self.chain = self.create_chain(prompt=system_prompt)
 
     @staticmethod
-    def create_chain(self, prompt: str) -> RunnableSerializable[dict, dict[str, Any] | BaseModel]:
+    def create_chain(prompt: str) -> RunnableSerializable[dict, dict[str, Any] | BaseModel]:
         json_parser = JsonOutputParser()
         prompt_template = ChatPromptTemplate.from_messages([("system", prompt),
                                                             MessagesPlaceholder("history"),

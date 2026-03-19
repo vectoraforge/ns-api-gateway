@@ -25,7 +25,7 @@ class ChatsDB:
         )
         return (await self.session.exec(statement)).first()
 
-    async def count_chats(self, user_id: str) -> list[Chat]:
+    async def count_chats(self, user_id: str) -> int:
         statement = (
             count('*')
             .where(col(Chat.user_id) == user_id)

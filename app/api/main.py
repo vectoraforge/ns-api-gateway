@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting API Gateway")
     logger.info(f"Using LLM model: {config.model.name}")
-    logger.info(f"Max LLM concurrency: {config.model.resilience.pool_size}")
+    logger.info(f"Max LLM concurrency: {config.resilience.pool_size}")
     logger.info(f"Supported languages: {', '.join(config.examples.keys())}")
     yield
     await db_engine.dispose()
