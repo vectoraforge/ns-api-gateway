@@ -28,13 +28,11 @@ class LLMService:
         self.policy = ResiliencePolicy(resilence_config)
         self.chain = self.create_chain(prompt=system_prompt)
 
-    @staticmethod
-    def create_chain(prompt: str) -> RunnableSerializable[dict, dict[str, Any] | BaseModel]:
-        json_parser = JsonOutputParser()
+    def create_chain(self, prompt: str) -> RunnableSerializable[dict, dict[str, Any] | BaseModel]:
         prompt_template = ChatPromptTemplate.from_messages([("system", prompt),
                                                             MessagesPlaceholder("history"),
                                                             ("human", "{content}")])
-        return prompt_template | json_parser
+        return prompt_template | self.llm | JsonOutputParser()
 
     async def ainvoke(self, history: list[HumanMessage | AIMessage], content: str, lang: str) -> dict:
         return await self.policy.ainvoke(
