@@ -1,10 +1,17 @@
 import logging
+from typing import Literal
+
+ErrorCode = Literal["invalid_request",
+                    "unauthorized",
+                    "not_found",
+                    "service_unavailable",
+                    "internal_error"]
 
 
 class ServiceError(Exception):
     """Base exception for service layer errors."""
     status_code: int = 500
-    error_code: str = "internal_error"
+    error_code: ErrorCode = "internal_error"
     log_level: int | None = None
 
     def extra_headers(self) -> dict[str, str] | None:
