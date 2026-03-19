@@ -6,20 +6,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
 from app.api.schema import ErrorResponse
-from app.exceptions import (
-    AnalysisError,
-    AuthenticationError,
-    ChatHistoryLimitError,
-    CircuitOpenError,
-    DatabaseNotInitializedError,
-    InvalidChatError,
-    InvalidCursorError,
-    PageSizeLimitError,
-    PermanentLLMError,
-    QueueFullError,
-    TransientLLMError,
-    UnsupportedLanguageError,
-)
+from app.exceptions import ServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -45,68 +32,19 @@ _CODE_MAP: dict[int, str] = {
 }
 
 
-async def unsupported_language_handler(_: Request, exc: Exception) -> JSONResponse:
-    return JSONResponse(status_code=400, content=ErrorResponse(code="invalid_request").model_dump())
-
-
-async def transient_llm_error_handler(_: Request, exc: Exception) -> JSONResponse:
-    return JSONResponse(status_code=503, content=ErrorResponse(code="service_unavailable").model_dump())
-
-
-async def permanent_llm_error_handler(_: Request, exc: Exception) -> JSONResponse:
-    return JSONResponse(status_code=503, content=ErrorResponse(code="service_unavailable").model_dump())
-
-
-async def analysis_error_handler(_: Request, exc: Exception) -> JSONResponse:
-    logger.error("Analysis failed: %s", exc)
-    return JSONResponse(status_code=500, content=ErrorResponse(code="internal_error").model_dump())
-
-
-async def invalid_chat_handler(_: Request, exc: Exception) -> JSONResponse:
-    return JSONResponse(status_code=404, content=ErrorResponse(code="not_found").model_dump())
-
-
-async def invalid_cursor_error_handler(_: Request, exc: Exception) -> JSONResponse:
-    return JSONResponse(status_code=400, content=ErrorResponse(code="invalid_request").model_dump())
-
-
-async def page_size_limit_handler(_: Request, exc: Exception) -> JSONResponse:
-    return JSONResponse(status_code=400, content=ErrorResponse(code="invalid_request").model_dump())
-
-
-async def queue_full_handler(_: Request, exc: Exception) -> JSONResponse:
-    assert isinstance(exc, QueueFullError)
-    return JSONResponse(status_code=503,
-                        content=ErrorResponse(code="service_unavailable").model_dump(),
-                        headers={"Retry-After": str(exc.retry_after_seconds)})
-
-
-async def circuit_open_handler(_: Request, exc: Exception) -> JSONResponse:
-    assert isinstance(exc, CircuitOpenError)
-    return JSONResponse(status_code=503,
-                        content=ErrorResponse(code="service_unavailable").model_dump(),
-                        headers={"Retry-After": str(exc.retry_after_seconds)})
-
-
-async def chat_history_limit_handler(_: Request, exc: Exception) -> JSONResponse:
-    return JSONResponse(status_code=400, content=ErrorResponse(code="invalid_request").model_dump())
+async def service_error_handler(_: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, ServiceError)
+    if exc.log_level is not None:
+        logger.log(exc.log_level, "%s: %s", type(exc).__name__, exc,
+                   exc_info=(exc.log_level >= logging.ERROR))
+    return JSONResponse(status_code=exc.status_code,
+                        content=ErrorResponse(code=exc.error_code).model_dump(),
+                        headers=exc.extra_headers())
 
 
 async def validation_error_handler(_: Request, exc: Exception) -> JSONResponse:
     logger.error("Validation error: %s", exc)
     return JSONResponse(status_code=400, content=ErrorResponse(code="invalid_request").model_dump())
-
-
-async def auth_error_handler(_: Request, exc: Exception) -> JSONResponse:
-    logger.warning("Authentication failure: %s", exc)
-    return JSONResponse(status_code=401,
-                        content=ErrorResponse(code="unauthorized").model_dump(),
-                        headers={"WWW-Authenticate": "Bearer"})
-
-
-async def database_not_initialized_handler(_: Request, exc: Exception) -> JSONResponse:
-    logger.error("Database not initialized: %s", exc, exc_info=True)
-    return JSONResponse(status_code=500, content=ErrorResponse(code="internal_error").model_dump())
 
 
 async def http_exception_handler(_: Request, exc: Exception) -> JSONResponse:
@@ -125,18 +63,7 @@ async def generic_error_handler(_: Request, exc: Exception) -> JSONResponse:
 
 
 def register_exception_handlers(app: FastAPI) -> None:
-    app.add_exception_handler(UnsupportedLanguageError, unsupported_language_handler)
-    app.add_exception_handler(TransientLLMError, transient_llm_error_handler)
-    app.add_exception_handler(PermanentLLMError, permanent_llm_error_handler)
-    app.add_exception_handler(AnalysisError, analysis_error_handler)
-    app.add_exception_handler(InvalidChatError, invalid_chat_handler)
-    app.add_exception_handler(InvalidCursorError, invalid_cursor_error_handler)
-    app.add_exception_handler(PageSizeLimitError, page_size_limit_handler)
-    app.add_exception_handler(QueueFullError, queue_full_handler)
-    app.add_exception_handler(CircuitOpenError, circuit_open_handler)
-    app.add_exception_handler(ChatHistoryLimitError, chat_history_limit_handler)
+    app.add_exception_handler(ServiceError, service_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
-    app.add_exception_handler(AuthenticationError, auth_error_handler)
-    app.add_exception_handler(DatabaseNotInitializedError, database_not_initialized_handler)
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(Exception, generic_error_handler)
