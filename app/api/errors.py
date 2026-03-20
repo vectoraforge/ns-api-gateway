@@ -1,5 +1,6 @@
 import logging
 
+import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -8,7 +9,15 @@ from starlette.responses import JSONResponse
 from app.api.schema import ErrorResponse
 from app.exceptions import ServiceError
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
+
+_LEVEL_TO_METHOD = {
+    logging.DEBUG: "debug",
+    logging.INFO: "info",
+    logging.WARNING: "warning",
+    logging.ERROR: "error",
+    logging.CRITICAL: "critical",
+}
 
 _STATUS_REMAP: dict[int, int] = {
     405: 400,
@@ -36,7 +45,9 @@ _CODE_MAP: dict[int, str] = {
 async def service_error_handler(_: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, ServiceError)
     if exc.log_level is not None:
-        logger.log(exc.log_level, "%s: %s", type(exc).__name__, exc,
+        method_name = _LEVEL_TO_METHOD.get(exc.log_level, "error")
+        log_method = getattr(logger, method_name)
+        log_method(str(exc), error_type=type(exc).__name__,
                    exc_info=(exc.log_level >= logging.ERROR))
     return JSONResponse(status_code=exc.status_code,
                         content=ErrorResponse(code=exc.error_code).model_dump(),
@@ -44,7 +55,7 @@ async def service_error_handler(_: Request, exc: Exception) -> JSONResponse:
 
 
 async def validation_error_handler(_: Request, exc: Exception) -> JSONResponse:
-    logger.error("Validation error: %s", exc)
+    logger.error("Validation error", exc_info=exc)
     return JSONResponse(status_code=422, content=ErrorResponse(code="validation_error").model_dump())
 
 
@@ -59,7 +70,7 @@ async def http_exception_handler(_: Request, exc: Exception) -> JSONResponse:
 
 
 async def generic_error_handler(_: Request, exc: Exception) -> JSONResponse:
-    logger.error("Unhandled exception: %s", exc, exc_info=True)
+    logger.error("Unhandled exception", exc_info=exc)
     return JSONResponse(status_code=500, content=ErrorResponse(code="internal_error").model_dump())
 
 

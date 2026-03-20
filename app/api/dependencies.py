@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 
+import structlog
 from fastapi import Header, Request
 from fastapi.params import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,4 +42,6 @@ def get_user_id(request: Request, authorization: str | None = Header(None)) -> s
     if not token:
         raise AuthenticationError("Missing Bearer token")
     verifier: TokenVerifier = request.app.state.verifier
-    return verifier.verify(token)
+    user_id = verifier.verify(token)
+    structlog.contextvars.bind_contextvars(user_id=user_id)
+    return user_id

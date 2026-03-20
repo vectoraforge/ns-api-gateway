@@ -1,8 +1,7 @@
-import logging
-import sys
 from contextlib import asynccontextmanager
 from importlib.metadata import version
 
+import structlog
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
@@ -11,25 +10,17 @@ from app.api.errors import register_exception_handlers
 from app.api.schema import ErrorResponse
 from app.auth import JWTVerifier
 from app.config import MainConfig
+from app.logging import RequestLoggingMiddleware, setup_logging
 from app.routers import chats_router, examples_router, health_router, root_router
 from app.services import LLMService
 
-logger = logging.getLogger(__name__)
-
-
-def setup_logging(log_level: str):
-    logging.basicConfig(level=getattr(logging, log_level, logging.INFO),
-                        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                        handlers=[logging.StreamHandler(sys.stdout)])
-
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+logger = structlog.get_logger()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config = MainConfig().app_config
-    setup_logging(log_level=config.log_level)
+    setup_logging(log_level=config.log_level, json_log_path=config.json_log_path)
 
     db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0,
                                         connect_args=config.db.connect_args)
@@ -42,19 +33,15 @@ async def lifespan(app: FastAPI):
                                      issuer=config.jwt.issuer,
                                      leeway=config.jwt.leeway_seconds,
                                      cache_ttl_seconds=config.jwt.jwks_cache_ttl_seconds)
-    logger.info(f"Firebase project ID: {config.jwt.project_id}")
-
     app.state.llm_service = LLMService(model_config=config.model,
                                        resilence_config=config.resilience,
                                        system_prompt=config.prompt)
 
-    logger.info("Starting API Gateway")
-    logger.info(f"Using LLM model: {config.model.name}")
-    logger.info(f"Max LLM concurrency: {config.resilience.pool_size}")
-    logger.info(f"Supported languages: {', '.join(config.examples.keys())}")
+    logger.info("started", model=config.model.name, concurrency=config.resilience.pool_size,
+                languages=list(config.examples.keys()))
     yield
     await db_engine.dispose()
-    logger.info("Shutting down API Gateway")
+    logger.info("shutdown")
 
 
 app = FastAPI(title="SpeakNative API Gateway",
@@ -75,3 +62,4 @@ app.include_router(chats_router)
 app.include_router(examples_router)
 app.include_router(health_router)
 register_exception_handlers(app)
+app.add_middleware(RequestLoggingMiddleware)

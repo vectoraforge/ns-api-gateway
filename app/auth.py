@@ -1,12 +1,9 @@
-import logging
 from typing import Protocol
 
 import jwt
 from jwt import PyJWKClient
 
 from app.exceptions import AuthenticationError
-
-logger = logging.getLogger(__name__)
 
 
 class TokenVerifier(Protocol):
@@ -44,7 +41,6 @@ class JWTVerifier:
                                  leeway=self._leeway,
                                  options={"require": ["exp", "iat", "aud", "iss", "sub"]})
         except Exception as exc:
-            logger.warning("Authentication failure: %s", exc)
             raise AuthenticationError(f"Token verification failed: {exc}") from None
 
         sub = payload.get("sub")
