@@ -7,14 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import TokenVerifier
 from app.config import AppConfig
 from app.exceptions import AuthenticationError
-from app.service import ChatService
+from app.services import ChatService
 
 
 def get_config(request: Request) -> AppConfig:
     return request.app.state.config
 
 
-async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
+async def get_db(request: Request) -> AsyncGenerator[AsyncSession]:
     async with request.app.state.session_factory() as session:
         try:
             yield session

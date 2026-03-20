@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Response
 
 from app.api.dependencies import get_chat_service, get_user_id
 from app.api.schema import ChatRequest, ChatResponse, MessageRequest, MessageResponse
-from app.service import ChatService
+from app.services import ChatService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

@@ -7,12 +7,12 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
+from app.api.errors import register_exception_handlers
+from app.api.schema import ErrorResponse
 from app.auth import JWTVerifier
 from app.config import MainConfig
-from app.api.errors import register_exception_handlers
 from app.routers import chats_router, examples_router, health_router, root_router
-from app.api.schema import ErrorResponse
-from app.service import LLMService
+from app.services import LLMService
 
 logger = logging.getLogger(__name__)
 

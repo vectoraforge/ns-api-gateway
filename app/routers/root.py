@@ -3,7 +3,7 @@ from importlib.metadata import version
 from fastapi import APIRouter, Depends
 
 from app.api.dependencies import get_chat_service
-from app.service import ChatService
+from app.services import ChatService
 
 router = APIRouter()
 

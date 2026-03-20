@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.api.dependencies import get_chat_service
 from app.api.schema import ExamplesResponse
-from app.service import ChatService
+from app.services import ChatService
 
 router = APIRouter()
 

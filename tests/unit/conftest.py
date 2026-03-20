@@ -13,7 +13,7 @@ from app.api.errors import register_exception_handlers
 from app.database import ChatsDB
 from app.exceptions import AuthenticationError
 from app.routers import chats_router, examples_router, health_router, root_router
-from app.service import ChatService
+from app.services import ChatService
 
 # ---------------------------------------------------------------------------
 # JWT test infrastructure -- ephemeral RSA keypair and token factory
