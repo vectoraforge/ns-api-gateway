@@ -122,6 +122,12 @@ class AuthenticationError(ServiceError):
         return {"WWW-Authenticate": "Bearer"}
 
 
+class WebhookVerificationError(ServiceError):
+    """JWS signature verification failed on incoming webhook."""
+    status_code = 400
+    error_code = "validation_error"
+
+
 class DatabaseNotInitializedError(ServiceError):
     """Raised when DB session factory is not initialized -- maps to 500."""
     status_code = 500

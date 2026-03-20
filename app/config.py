@@ -58,6 +58,15 @@ class JWTConfig(BaseModel):
         return  f"https://securetoken.google.com/{self.project_id}"
 
 
+class AppleConfig(BaseModel):
+    environment: str = Field(default="sandbox", description="Apple environment: sandbox or production")
+    bundle_id: str = Field(description="App bundle identifier")
+    app_apple_id: int | None = Field(default=None, description="Numeric Apple ID (required for production)")
+    enable_online_checks: bool = Field(default=True, description="Enable OCSP certificate checks")
+    cert_dir: str = Field(default="certs/", description="Directory containing Apple root CA certificates")
+    product_id_to_tier: dict[str, str] = Field(description="Maps Apple product IDs to PlanTier values")
+
+
 class ModelConfig(BaseModel):
     name: str = Field(default="gpt-4o-mini")
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
@@ -72,6 +81,7 @@ class AppConfig(BaseConfig):
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
     jwt: JWTConfig = Field(default_factory=JWTConfig)
+    apple: AppleConfig = Field(default_factory=AppleConfig)
 
     chats_limit: int = Field(default=50, ge=1)
     messages_limit: int = Field(default=50, ge=1)

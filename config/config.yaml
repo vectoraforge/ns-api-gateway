@@ -17,3 +17,12 @@ jwt:
   jwks_cache_ttl_seconds: 3600
 chats_limit: 50
 messages_limit: 50
+apple:
+  environment: sandbox
+  bundle_id: com.example.speaknative
+  enable_online_checks: true
+  cert_dir: certs/
+  product_id_to_tier:
+    com.example.speaknative.silver: silver
+    com.example.speaknative.gold: gold
+    com.example.speaknative.platinum: platinum
