@@ -84,9 +84,9 @@ def test_handler(handler_client, name, exc, expected_status):
 
 def test_validation_error_handler(handler_client):
     response = handler_client.post("/validate-body", json={})
-    assert response.status_code == 400
+    assert response.status_code == 422
     body = response.json()
-    assert body["code"] == "invalid_request"
+    assert body["code"] == "validation_error"
 
 
 @pytest.fixture(scope="module")

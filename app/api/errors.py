@@ -17,7 +17,7 @@ _STATUS_REMAP: dict[int, int] = {
     410: 404,
     413: 400,
     415: 400,
-    422: 400,
+
     429: 503,
     502: 503,
     504: 503,
@@ -27,6 +27,7 @@ _CODE_MAP: dict[int, str] = {
     400: "invalid_request",
     401: "unauthorized",
     404: "not_found",
+    422: "validation_error",
     503: "service_unavailable",
     500: "internal_error",
 }
@@ -44,7 +45,7 @@ async def service_error_handler(_: Request, exc: Exception) -> JSONResponse:
 
 async def validation_error_handler(_: Request, exc: Exception) -> JSONResponse:
     logger.error("Validation error: %s", exc)
-    return JSONResponse(status_code=400, content=ErrorResponse(code="invalid_request").model_dump())
+    return JSONResponse(status_code=422, content=ErrorResponse(code="validation_error").model_dump())
 
 
 async def http_exception_handler(_: Request, exc: Exception) -> JSONResponse:

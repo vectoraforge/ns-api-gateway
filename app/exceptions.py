@@ -2,6 +2,7 @@ import logging
 from typing import Literal
 
 ErrorCode = Literal["invalid_request",
+                    "validation_error",
                     "unauthorized",
                     "not_found",
                     "service_unavailable",

@@ -6,8 +6,8 @@ from fastapi.testclient import TestClient
 from app.api.errors import register_exception_handlers
 from app.api.main import app as real_app
 
-CONTRACT_CODES = {"invalid_request", "unauthorized", "not_found", "service_unavailable", "internal_error"}
-CONTRACT_STATUSES = {400, 401, 404, 500, 503}
+CONTRACT_CODES = {"invalid_request", "validation_error", "unauthorized", "not_found", "service_unavailable", "internal_error"}
+CONTRACT_STATUSES = {400, 401, 404, 422, 500, 503}
 
 
 @pytest.fixture(scope="module")
@@ -54,14 +54,14 @@ class TestStatusCodeRemapping:
 class TestOpenAPISchema:
     """ERR-04: ErrorResponse in OpenAPI, no 422."""
 
-    def test_openapi_schema_has_no_422(self):
-        """No route in the OpenAPI schema should have a 422 response."""
+    def test_openapi_schema_has_422(self):
+        """Every route with a request body should have a 422 response."""
         schema = real_app.openapi()
         for path, methods in schema.get("paths", {}).items():
             for method, op in methods.items():
-                if isinstance(op, dict):
+                if isinstance(op, dict) and "requestBody" in op:
                     responses = op.get("responses", {})
-                    assert "422" not in responses, (f"422 found in {method.upper()} {path}")
+                    assert "422" in responses, (f"422 missing in {method.upper()} {path}")
 
     def test_openapi_schema_contains_error_response(self):
         """ErrorResponse model must appear in the schema components."""
