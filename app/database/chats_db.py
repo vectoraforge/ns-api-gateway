@@ -1,7 +1,7 @@
 from uuid import UUID
 
 from sqlalchemy.orm import selectinload
-from sqlmodel import col, select, func, delete
+from sqlmodel import col, delete, func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.models import Chat, Message
