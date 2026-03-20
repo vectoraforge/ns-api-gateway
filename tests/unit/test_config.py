@@ -41,6 +41,10 @@ model:
   temperature: 0.5
 jwt:
   project_id: test-project
+apple:
+  bundle_id: com.example.test
+  product_id_to_tier:
+    com.example.test.gold: gold
 """
     prompt_content = "Analyze {lang} phrase: {phrase}"
     examples_content = """
