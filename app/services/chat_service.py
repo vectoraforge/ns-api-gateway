@@ -7,7 +7,7 @@ from app.api.schema import ExamplesResponse
 from app.database import ChatsDB
 from app.exceptions import ChatHistoryLimitError, InvalidChatError, UnsupportedLanguageError
 from app.models import AIContent, Chat, HumanContent, Message, Role
-from app.services.llm_service import LLMService
+from .llm_service import LLMService
 
 
 class ChatService:
