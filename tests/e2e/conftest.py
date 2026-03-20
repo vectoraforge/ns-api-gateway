@@ -5,7 +5,7 @@ from uuid import uuid4
 import httpx
 import pytest
 import pytest_asyncio
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
@@ -13,8 +13,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from app.api.main import app
 from app.config import MainConfig
 from app.models import AIContent, Chat, HumanContent, Message, Role
-
-pytestmark = pytest.mark.e2e
 
 
 @pytest.fixture(scope="session")
@@ -58,10 +56,18 @@ def firebase_token(_app_config):
     return token
 
 
-@pytest.fixture(scope="module")
-def real_client(firebase_token, ensure_tables):
-    """TestClient wired to the real app with Firebase auth and lifespan."""
-    with TestClient(app) as client:
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def _app_lifespan(ensure_tables):
+    """Start app lifespan (config, DB engine, verifier, LLM service)."""
+    async with app.router.lifespan_context(app):
+        yield app
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def async_client(_app_lifespan, firebase_token):
+    """Async HTTP client wired to the real app with Firebase auth."""
+    transport = ASGITransport(app=_app_lifespan)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
         client.headers["Authorization"] = f"Bearer {firebase_token}"
         yield client
 
@@ -70,6 +76,32 @@ def real_client(firebase_token, ensure_tables):
 def test_user_id():
     """The Firebase test user's UID -- matches the 'sub' claim in the token."""
     return os.environ["FIREBASE_TEST_USER_ID"]
+
+
+@pytest_asyncio.fixture(loop_scope="module", autouse=True)
+async def _db_transaction(_app_lifespan):
+    """Wrap each test in a transaction that rolls back on completion."""
+    original_factory = _app_lifespan.state.session_factory
+
+    # async_sessionmaker stores bind in its kw dict
+    engine = original_factory.kw["bind"]
+
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+
+        test_factory = async_sessionmaker(
+            bind=connection,
+            class_=SQLModelAsyncSession,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
+
+        _app_lifespan.state.session_factory = test_factory
+        try:
+            yield test_factory
+        finally:
+            _app_lifespan.state.session_factory = original_factory
+            await transaction.rollback()
 
 
 async def create_chat(factory, user_id: str):
@@ -86,26 +118,3 @@ async def create_chat(factory, user_id: str):
         session.add(chat)
         await session.commit()
     return chat_id
-
-
-async def cleanup_chat(factory, chat_id):
-    """Delete a chat row (messages cascade via FK)."""
-    async with factory() as session:
-        chat = await session.get(Chat, chat_id)
-        if chat:
-            await session.delete(chat)
-            await session.commit()
-
-
-@pytest_asyncio.fixture
-async def test_db_factory(_app_config, ensure_tables):
-    """Async session factory for test setup/teardown, independent of app engine."""
-    engine = create_async_engine(
-        _app_config.db.url, pool_size=1, max_overflow=0,
-        connect_args=_app_config.db.connect_args,
-    )
-    factory = async_sessionmaker(
-        engine, class_=SQLModelAsyncSession, expire_on_commit=False,
-    )
-    yield factory
-    await engine.dispose()
