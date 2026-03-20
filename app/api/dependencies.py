@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import TokenVerifier
 from app.config import AppConfig
 from app.exceptions import AuthenticationError
-from app.services import ChatService
+from app.models import User
+from app.services import ChatService, UserService
 
 
 def get_config(request: Request) -> AppConfig:
@@ -35,13 +36,19 @@ def get_chat_service(request: Request,
                        messages_limit=config.messages_limit)
 
 
-def get_user_id(request: Request, authorization: str | None = Header(None)) -> str:
+async def get_current_user(request: Request,
+                           authorization: str | None = Header(None),
+                           db: AsyncSession = Depends(get_db)) -> User:
     if not authorization or not authorization.startswith("Bearer "):
         raise AuthenticationError("Missing Bearer token")
     token = authorization.split(" ", 1)[1].strip()
     if not token:
         raise AuthenticationError("Missing Bearer token")
     verifier: TokenVerifier = request.app.state.verifier
-    user_id = verifier.verify(token)
-    structlog.contextvars.bind_contextvars(user_id=user_id)
-    return user_id
+    identity = verifier.verify(token)
+    user_service = UserService(db)
+    user = await user_service.get_or_create(identity)
+    if not user.active:
+        raise AuthenticationError("Authentication failed")
+    structlog.contextvars.bind_contextvars(user_id=str(user.id))
+    return user

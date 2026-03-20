@@ -43,7 +43,7 @@ class ChatService:
         return Message(chat_id=chat.id, role=Role.ai, content=AIContent.model_validate(llm_response))
 
     async def create_chat(self,
-                          user_id: str,
+                          user_id: UUID,
                           phrase: str,
                           comment: str | None = None,
                           lang: str | None = None) -> Message:
@@ -67,7 +67,7 @@ class ChatService:
 
     async def send_message(self,
                            chat_id: UUID,
-                           user_id: str,
+                           user_id: UUID,
                            content: str) -> Message:
         chat = await self.chats_db.get_chat(chat_id, user_id)
         if chat is None:
@@ -87,17 +87,17 @@ class ChatService:
 
     async def get_messages(self,
                            chat_id: UUID,
-                           user_id: str) -> list[Message]:
+                           user_id: UUID) -> list[Message]:
         messages = await self.chats_db.get_messages(chat_id=chat_id, user_id=user_id)
         if not messages:
             raise InvalidChatError(chat_id)
 
         return messages
 
-    async def list_chats(self, user_id: str) -> list[Chat]:
+    async def list_chats(self, user_id: UUID) -> list[Chat]:
         return await self.chats_db.list_chats(user_id)
 
-    async def delete_chat(self, chat_id: UUID, user_id: str) -> None:
+    async def delete_chat(self, chat_id: UUID, user_id: UUID) -> None:
         chats_deleted = await self.chats_db.delete(chat_id, user_id)
         if chats_deleted == 0:
             raise InvalidChatError(chat_id)
