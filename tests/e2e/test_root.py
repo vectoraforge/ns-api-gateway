@@ -3,9 +3,10 @@ import pytest
 pytestmark = pytest.mark.e2e
 
 
+@pytest.mark.asyncio(loop_scope="module")
 class TestRootEndpoint:
-    def test_root_returns_app_info(self, real_client):
-        response = real_client.get("/")
+    async def test_root_returns_app_info(self, async_client):
+        response = await async_client.get("/")
         assert response.status_code == 200
         data = response.json()
         assert data["name"] == "SpeakNative API Gateway"
