@@ -27,6 +27,13 @@ class Role(StrEnum):
     ai = "ai"
 
 
+class PlanTier(StrEnum):
+    free = "free"
+    silver = "silver"
+    gold = "gold"
+    platinum = "platinum"
+
+
 class HumanContent(BaseModel):
     phrase: str
     comment: str | None = None
@@ -81,17 +88,31 @@ def _reconstitute_content(target, context):
                 target.content = AIContent(**raw)
 
 
+class User(BaseTable, table=True):
+    __tablename__ = "users"
+
+    id: UUID = Field(default_factory=uuid7, primary_key=True)
+    jwt_sub: str = Field(unique=True, index=True, sa_type=Text())
+    email: str = Field(sa_type=Text())
+    name: str | None = Field(default=None, sa_type=Text())
+    plan: PlanTier = Field(default=PlanTier.free, sa_type=Text())
+    active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
+                                 sa_type=DateTime(timezone=True))
+
+
 class Chat(BaseTable, table=True):
     __tablename__ = "chats"
 
     id: UUID = Field(primary_key=True)
-    user_id: str = Field(..., index=True, sa_type=Text())
+    user_id: UUID = Field(foreign_key="users.id", index=True)
     title: str = Field(sa_type=Text())
     lang: str | None = Field(default=None, sa_type=Text())
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
                                  sa_type=DateTime(timezone=True))
 
     messages: list[Message] = Relationship(cascade_delete=True, passive_deletes=True)
+    user: "User" = Relationship()
 
     @property
     def ai_messages(self):
