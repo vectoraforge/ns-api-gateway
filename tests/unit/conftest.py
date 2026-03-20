@@ -8,14 +8,14 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.dependencies import get_chat_service, get_current_user, get_db
+from app.api.dependencies import get_chat_service, get_current_user, get_db, get_subscription_service
 from app.api.errors import register_exception_handlers
 from app.auth import UserIdentity
 from app.database import ChatsDB
 from app.exceptions import AuthenticationError
 from app.models import PlanTier, User
-from app.routers import chats_router, examples_router, health_router, root_router, users_router
-from app.services import ChatService
+from app.routers import chats_router, examples_router, health_router, root_router, users_router, webhooks_router
+from app.services import ChatService, SubscriptionService
 
 # ---------------------------------------------------------------------------
 # JWT test infrastructure -- ephemeral RSA keypair and token factory
@@ -173,3 +173,23 @@ def client(mock_chats_db):
 def service_instance(client):
     """The ChatService instance injected via DI overrides."""
     return client.app.dependency_overrides[get_chat_service]()
+
+
+@pytest.fixture
+def mock_subscription_service():
+    service = AsyncMock(spec=SubscriptionService)
+    service.process_apple_notification = AsyncMock(return_value=None)
+    return service
+
+
+@pytest.fixture
+def webhook_client(mock_subscription_service):
+    app = FastAPI()
+    app.include_router(webhooks_router)
+    register_exception_handlers(app)
+
+    app.dependency_overrides[get_db] = lambda: MagicMock()
+    app.dependency_overrides[get_subscription_service] = lambda: mock_subscription_service
+
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        yield test_client
