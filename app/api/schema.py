@@ -46,3 +46,10 @@ class MessageResponse(BaseModel):
 class ExamplesResponse(BaseModel):
     lang: str = Field(..., description="Language code")
     examples: list[str] = Field(..., description="List of example phrases")
+
+
+class UserProfileResponse(BaseModel):
+    email: str
+    name: str | None = None
+    plan: str
+    created_at: datetime

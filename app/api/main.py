@@ -11,7 +11,7 @@ from app.api.schema import ErrorResponse
 from app.auth import JWTVerifier
 from app.config import MainConfig
 from app.logging import RequestLoggingMiddleware, setup_logging
-from app.routers import chats_router, examples_router, health_router, root_router
+from app.routers import chats_router, examples_router, health_router, root_router, users_router
 from app.services import LLMService
 
 logger = structlog.get_logger()
@@ -61,5 +61,6 @@ app.include_router(root_router)
 app.include_router(chats_router)
 app.include_router(examples_router)
 app.include_router(health_router)
+app.include_router(users_router)
 register_exception_handlers(app)
 app.add_middleware(RequestLoggingMiddleware)

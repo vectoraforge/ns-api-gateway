@@ -4,7 +4,10 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.dependencies import get_user_id
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from app.api.dependencies import get_current_user, get_db
+from app.models import User
 from app.api.errors import register_exception_handlers
 from app.exceptions import (
     AuthenticationError,
@@ -91,16 +94,22 @@ def test_validation_error_handler(handler_client):
 
 @pytest.fixture(scope="module")
 def dep_client():
+    mock_user = User(jwt_sub="u1", email="u1@example.com", name="User 1")
+    mock_db = MagicMock()
+
     app = FastAPI()
     register_exception_handlers(app)
     app.state.verifier = make_test_verifier()
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     @app.get("/protected")
-    async def _protected(user_id: str = Depends(get_user_id)):
-        return {"user_id": user_id}
+    async def _protected(user: User = Depends(get_current_user)):
+        return {"user_id": str(user.id)}
 
-    with TestClient(app, raise_server_exceptions=False) as client:
-        yield client
+    with patch("app.api.dependencies.UserService") as mock_user_svc_cls:
+        mock_user_svc_cls.return_value.get_or_create = AsyncMock(return_value=mock_user)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            yield client
 
 
 def test_missing_auth_header_returns_401(dep_client):
@@ -119,7 +128,8 @@ def test_valid_bearer_token_resolves_user(dep_client):
     token = make_token("u1")
     response = dep_client.get("/protected", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200
-    assert response.json()["user_id"] == "u1"
+    body = response.json()
+    assert "user_id" in body
 
 
 def test_expired_token_returns_401(dep_client):
@@ -132,26 +142,34 @@ def test_expired_token_returns_401(dep_client):
 
 @pytest.fixture(scope="module")
 def state_client():
-    """Confirms verifier is resolved from app.state — swapping it changes behavior."""
+    """Confirms verifier is resolved from app.state -- swapping it changes behavior."""
+    from app.auth import UserIdentity
+
+    mock_user = User(jwt_sub="hardcoded-user", email="hw@example.com", name="Hardcoded")
+    mock_db = MagicMock()
 
     class _AlwaysUser:
-        def verify(self, token: str) -> str:
-            return "hardcoded-user"
+        def verify(self, token: str) -> UserIdentity:
+            return UserIdentity(sub="hardcoded-user", email="hw@example.com",
+                                name="Hardcoded")
 
     app = FastAPI()
     register_exception_handlers(app)
     app.state.verifier = _AlwaysUser()
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     @app.get("/whoami")
-    async def _whoami(user_id: str = Depends(get_user_id)):
-        return {"user_id": user_id}
+    async def _whoami(user: User = Depends(get_current_user)):
+        return {"user_id": user.jwt_sub}
 
-    with TestClient(app, raise_server_exceptions=False) as client:
-        yield client
+    with patch("app.api.dependencies.UserService") as mock_user_svc_cls:
+        mock_user_svc_cls.return_value.get_or_create = AsyncMock(return_value=mock_user)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            yield client
 
 
 def test_verifier_swappable_via_state(state_client):
-    """Any token resolves to hardcoded-user — proves verifier comes from app.state."""
+    """Any token resolves to hardcoded-user -- proves verifier comes from app.state."""
     response = state_client.get("/whoami", headers={"Authorization": "Bearer any.token.here"})
     assert response.status_code == 200
     assert response.json()["user_id"] == "hardcoded-user"

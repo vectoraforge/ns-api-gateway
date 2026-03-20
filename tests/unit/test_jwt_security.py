@@ -84,7 +84,7 @@ class TestTokenExpiry:
         """Token expired <30s ago should still be accepted (leeway=30)."""
         token = make_token("user1", exp=time.time() - 10)
         result = verifier.verify(token)
-        assert result == "user1"
+        assert result.sub == "user1"
 
     def test_rejects_token_past_leeway(self, verifier):
         """Token expired >30s ago must be rejected."""
@@ -164,20 +164,20 @@ class TestCrossUserIsolation:
     def test_different_sub_returns_different_user(self, verifier):
         token_a = make_token("user-a")
         token_b = make_token("user-b")
-        assert verifier.verify(token_a) == "user-a"
-        assert verifier.verify(token_b) == "user-b"
+        assert verifier.verify(token_a).sub == "user-a"
+        assert verifier.verify(token_b).sub == "user-b"
 
     def test_sub_is_returned_as_string(self, verifier):
         token = make_token("12345")
-        assert verifier.verify(token) == "12345"
+        assert verifier.verify(token).sub == "12345"
 
 
 class TestValidToken:
     def test_accepts_valid_token(self, verifier):
         token = make_token("user1")
-        assert verifier.verify(token) == "user1"
+        assert verifier.verify(token).sub == "user1"
 
     def test_accepts_token_with_extra_claims(self, verifier):
-        """Extra claims are ignored — token is still valid."""
+        """Extra claims are ignored -- token is still valid."""
         token = make_token("user1", extra_claims={"custom": "value", "firebase": {"sign_in_provider": "google.com"}})
-        assert verifier.verify(token) == "user1"
+        assert verifier.verify(token).sub == "user1"

@@ -8,10 +8,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.dependencies import get_chat_service, get_db, get_user_id
+from app.api.dependencies import get_chat_service, get_current_user, get_db
 from app.api.errors import register_exception_handlers
+from app.auth import UserIdentity
 from app.database import ChatsDB
 from app.exceptions import AuthenticationError
+from app.models import User
 from app.routers import chats_router, examples_router, health_router, root_router
 from app.services import ChatService
 
@@ -68,7 +70,7 @@ class _FixedKeyVerifier:
         self._leeway = 30
         self._public_key = PUBLIC_KEY_PEM
 
-    def verify(self, token: str) -> str:
+    def verify(self, token: str) -> UserIdentity:
         try:
             payload = pyjwt.decode(token,
                                    self._public_key,
@@ -96,7 +98,9 @@ class _FixedKeyVerifier:
         if not sub:
             raise AuthenticationError("Missing sub claim")
 
-        return str(sub)
+        return UserIdentity(sub=str(sub),
+                            email=payload.get("email", ""),
+                            name=payload.get("name"))
 
 
 def make_test_verifier() -> _FixedKeyVerifier:
@@ -147,8 +151,9 @@ def client(mock_chats_db):
                       chats_limit=50)
     svc.chats_db = mock_chats_db
 
+    test_user = User(jwt_sub="test-user", email="test@example.com", name="Test User")
     app.dependency_overrides[get_db] = lambda: MagicMock()
-    app.dependency_overrides[get_user_id] = lambda: "test-user"
+    app.dependency_overrides[get_current_user] = lambda: test_user
     app.dependency_overrides[get_chat_service] = lambda: svc
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
