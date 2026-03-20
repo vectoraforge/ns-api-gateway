@@ -1,20 +1,23 @@
 [project]
 name = "sn-api-gateway"
-version = "1.0.0"
+version = "1.4.0"
 requires-python = ">=3.14"
 dependencies = [
-    "fastapi >=0.129",
-    "uvicorn[standard] >=0.41",
+    "fastapi==0.135.1",
+    "uvicorn[standard]==0.42.0",
     "pydantic >=2.12",
     "pydantic-settings >=2.13",
     "pyyaml >=6.0",
-    "langchain >=1.2",
-    "langchain-openai >=1.1",
-    "langchain-core >=1.2",
+    "langchain==1.2.13",
+    "langchain-openai==1.1.11",
+    "langchain-core==1.2.20",
     "openai >=2.21",
     "asyncpg >=0.30",
     "sqlmodel >=0.0.22",
     "greenlet >=3.0",
+    "PyJWT[crypto]>=2.9.0",
+    "ruff==0.15.7",
+    "ty==0.0.24",
 ]
 
 [dependency-groups]
