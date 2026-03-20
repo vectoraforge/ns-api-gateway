@@ -12,7 +12,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from app.api.main import app
 from app.config import MainConfig
-from app.models import AIContent, Chat, HumanContent, Message, Role
+from app.models import AIContent, Chat, HumanContent, Message, Role, User
 
 
 @pytest.fixture(scope="session")
@@ -105,16 +105,29 @@ async def _db_transaction(_app_lifespan):
 
 
 async def create_chat(factory, user_id: str):
-    """Insert a chat with human+AI message pair, return chat_id."""
-    chat_id = uuid4()
-    chat = Chat(id=chat_id, user_id=user_id, title="test phrase")
-    human = Message(chat_id=chat_id, role=Role.human,
-                    content=HumanContent(phrase="test phrase"))
-    ai = Message(chat_id=chat_id, role=Role.ai,
-                 content=AIContent(response="test answer", issues=[], suggestions=[]))
-    chat.messages.append(human)
-    chat.messages.append(ai)
+    """Insert a chat with human+AI message pair, return chat_id.
+
+    Creates a User record for the given Firebase UID if one doesn't exist,
+    then creates a Chat referencing the user's UUID primary key.
+    """
     async with factory() as session:
+        # Ensure user exists (JIT-like provisioning for test data)
+        from sqlmodel import select
+        result = await session.exec(select(User).where(User.jwt_sub == user_id))
+        user = result.first()
+        if user is None:
+            user = User(jwt_sub=user_id, email=f"{user_id}@test.example.com")
+            session.add(user)
+            await session.flush()
+
+        chat_id = uuid4()
+        chat = Chat(id=chat_id, user_id=user.id, title="test phrase")
+        human = Message(chat_id=chat_id, role=Role.human,
+                        content=HumanContent(phrase="test phrase"))
+        ai = Message(chat_id=chat_id, role=Role.ai,
+                     content=AIContent(response="test answer", issues=[], suggestions=[]))
+        chat.messages.append(human)
+        chat.messages.append(ai)
         session.add(chat)
         await session.commit()
     return chat_id
