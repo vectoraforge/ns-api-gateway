@@ -18,6 +18,7 @@ dependencies = [
     "PyJWT[crypto]>=2.9.0",
     "ruff==0.15.7",
     "ty==0.0.24",
+    "structlog>=25.5",
 ]
 
 [dependency-groups]

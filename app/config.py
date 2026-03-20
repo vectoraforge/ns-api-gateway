@@ -66,6 +66,7 @@ class ModelConfig(BaseModel):
 
 class AppConfig(BaseConfig):
     log_level: LogLevel = Field(default=LogLevel.INFO)  # type: ignore
+    json_log_path: str | None = Field(default=None, description="Path for JSON log file output")
 
     model: ModelConfig = Field(default_factory=ModelConfig)
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
