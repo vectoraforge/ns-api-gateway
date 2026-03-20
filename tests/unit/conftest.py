@@ -13,8 +13,8 @@ from app.api.errors import register_exception_handlers
 from app.auth import UserIdentity
 from app.database import ChatsDB
 from app.exceptions import AuthenticationError
-from app.models import User
-from app.routers import chats_router, examples_router, health_router, root_router
+from app.models import PlanTier, User
+from app.routers import chats_router, examples_router, health_router, root_router, users_router
 from app.services import ChatService
 
 # ---------------------------------------------------------------------------
@@ -108,6 +108,15 @@ def make_test_verifier() -> _FixedKeyVerifier:
     return _FixedKeyVerifier()
 
 
+TEST_USER = User(
+    jwt_sub="test-user",
+    email="test@example.com",
+    name="Test User",
+    plan=PlanTier.free,
+    active=True,
+)
+
+
 @pytest.fixture
 def mock_chats_db():
     db = AsyncMock(spec=ChatsDB)
@@ -140,6 +149,7 @@ def client(mock_chats_db):
     app.include_router(chats_router)
     app.include_router(examples_router)
     app.include_router(health_router)
+    app.include_router(users_router)
     register_exception_handlers(app)
 
     llm_service = AsyncMock()
@@ -151,9 +161,8 @@ def client(mock_chats_db):
                       chats_limit=50)
     svc.chats_db = mock_chats_db
 
-    test_user = User(jwt_sub="test-user", email="test@example.com", name="Test User")
     app.dependency_overrides[get_db] = lambda: MagicMock()
-    app.dependency_overrides[get_current_user] = lambda: test_user
+    app.dependency_overrides[get_current_user] = lambda: TEST_USER
     app.dependency_overrides[get_chat_service] = lambda: svc
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
