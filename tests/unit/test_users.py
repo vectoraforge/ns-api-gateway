@@ -97,7 +97,7 @@ class TestUserIdentity:
     def test_user_identity_frozen(self):
         identity = UserIdentity(sub="abc123", email="test@example.com")
         with pytest.raises(AttributeError):
-            identity.sub = "changed"
+            identity.sub = "changed"  # type: ignore[misc]
 
 
 class TestUserModel:
