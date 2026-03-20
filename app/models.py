@@ -3,7 +3,7 @@ from enum import StrEnum
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel, field_serializer, field_validator
-from sqlalchemy import DateTime, Text, TypeDecorator, event
+from sqlalchemy import DateTime, Index, Text, TypeDecorator, event, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 
@@ -32,6 +32,18 @@ class PlanTier(StrEnum):
     silver = "silver"
     gold = "gold"
     platinum = "platinum"
+
+
+class SubscriptionProvider(StrEnum):
+    apple = "apple"
+
+
+class SubscriptionStatus(StrEnum):
+    active = "active"
+    grace_period = "grace_period"
+    billing_retry = "billing_retry"
+    expired = "expired"
+    revoked = "revoked"
 
 
 class HumanContent(BaseModel):
@@ -97,6 +109,42 @@ class User(BaseTable, table=True):
     name: str | None = Field(default=None, sa_type=Text())
     plan: PlanTier = Field(default=PlanTier.free, sa_type=Text())
     active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
+                                 sa_type=DateTime(timezone=True))
+
+
+class Subscription(BaseTable, table=True):
+    __tablename__ = "subscriptions"
+    __table_args__ = (
+        Index(
+            "ix_subscriptions_user_provider_active",
+            "user_id", "provider",
+            unique=True,
+            postgresql_where=text("status NOT IN ('expired', 'revoked')")
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid7, primary_key=True)
+    user_id: UUID = Field(foreign_key="users.id", index=True)
+    provider: SubscriptionProvider = Field(sa_type=Text())
+    external_id: str = Field(sa_type=Text())
+    plan: PlanTier = Field(sa_type=Text())
+    status: SubscriptionStatus = Field(sa_type=Text())
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
+                                 sa_type=DateTime(timezone=True))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
+                                 sa_type=DateTime(timezone=True))
+
+
+class SubscriptionEvent(BaseTable, table=True):
+    __tablename__ = "subscription_events"
+
+    id: UUID = Field(default_factory=uuid7, primary_key=True)
+    subscription_id: UUID = Field(foreign_key="subscriptions.id", index=True)
+    event_type: str = Field(sa_type=Text())
+    notification_uuid: str = Field(unique=True, sa_type=Text())
+    old_tier: str | None = Field(default=None, sa_type=Text())
+    new_tier: str | None = Field(default=None, sa_type=Text())
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
                                  sa_type=DateTime(timezone=True))
 
