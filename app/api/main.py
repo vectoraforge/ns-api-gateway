@@ -6,13 +6,16 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
+import firebase_admin
+from firebase_admin import credentials
+
 from app.api.errors import register_exception_handlers
 from app.api.schema import ErrorResponse
 from app.auth import JWTVerifier
 from app.config import MainConfig
 from app.logging import RequestLoggingMiddleware, setup_logging
-from app.routers import chats_router, examples_router, health_router, root_router, users_router
-from app.services import LLMService
+from app.routers import chats_router, examples_router, health_router, root_router, users_router, webhooks_router
+from app.services import FirebaseService, LLMService, create_apple_verifier
 
 logger = structlog.get_logger()
 
@@ -36,6 +39,12 @@ async def lifespan(app: FastAPI):
     app.state.llm_service = LLMService(model_config=config.model,
                                        resilence_config=config.resilience,
                                        system_prompt=config.prompt)
+
+    cred = credentials.ApplicationDefault()
+    firebase_admin.initialize_app(cred)
+    app.state.firebase_service = FirebaseService()
+
+    app.state.apple_verifier = create_apple_verifier(config.apple)
 
     logger.info("started", model=config.model.name, concurrency=config.resilience.pool_size,
                 languages=list(config.examples.keys()))
@@ -62,5 +71,6 @@ app.include_router(chats_router)
 app.include_router(examples_router)
 app.include_router(health_router)
 app.include_router(users_router)
+app.include_router(webhooks_router)
 register_exception_handlers(app)
 app.add_middleware(RequestLoggingMiddleware)

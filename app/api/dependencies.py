@@ -9,7 +9,7 @@ from app.auth import TokenVerifier
 from app.config import AppConfig
 from app.exceptions import AuthenticationError
 from app.models import User
-from app.services import ChatService, UserService
+from app.services import ChatService, SubscriptionService, UserService
 
 
 def get_config(request: Request) -> AppConfig:
@@ -34,6 +34,17 @@ def get_chat_service(request: Request,
                        examples=config.examples,
                        chats_limit=config.chats_limit,
                        messages_limit=config.messages_limit)
+
+
+def get_subscription_service(request: Request,
+                             db: AsyncSession = Depends(get_db),
+                             config: AppConfig = Depends(get_config)) -> SubscriptionService:
+    return SubscriptionService(
+        db=db,
+        verifier=request.app.state.apple_verifier,
+        firebase_service=request.app.state.firebase_service,
+        product_id_to_tier=config.apple.product_id_to_tier,
+    )
 
 
 async def get_current_user(request: Request,
