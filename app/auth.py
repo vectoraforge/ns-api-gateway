@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Protocol
 
 import jwt
@@ -6,8 +7,15 @@ from jwt import PyJWKClient
 from app.exceptions import AuthenticationError
 
 
+@dataclass(frozen=True, slots=True)
+class UserIdentity:
+    sub: str
+    email: str
+    name: str | None = None
+
+
 class TokenVerifier(Protocol):
-    def verify(self, token: str) -> str:
+    def verify(self, token: str) -> UserIdentity:
         """Decode token and return user identity. Raise AuthenticationError on failure."""
         ...
 
@@ -30,7 +38,7 @@ class JWTVerifier:
         # Warm up JWKS cache — crashes startup if endpoint unreachable (fail-fast)
         self._jwks_client.get_signing_keys()
 
-    def verify(self, token: str) -> str:
+    def verify(self, token: str) -> UserIdentity:
         try:
             signing_key = self._jwks_client.get_signing_key_from_jwt(token)
             payload = jwt.decode(token,
@@ -46,4 +54,8 @@ class JWTVerifier:
         sub = payload.get("sub")
         if not sub:
             raise AuthenticationError("Missing sub claim")
-        return str(sub)
+        return UserIdentity(
+            sub=str(sub),
+            email=payload.get("email", ""),
+            name=payload.get("name"),
+        )
