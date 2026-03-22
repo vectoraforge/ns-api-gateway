@@ -1,0 +1,56 @@
+replicaCount: 1
+namespace: native-speaker
+
+image:
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8000
+
+container:
+  port: 8000
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+probes:
+  readiness:
+    path: /health/ready
+    port: 8000
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  liveness:
+    path: /health/ready
+    port: 8000
+    initialDelaySeconds: 10
+    periodSeconds: 30
+
+gateway:
+  name: eg-gateway
+
+jwt:
+  issuer: ""
+  jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
+
+rateLimits:
+  burst:
+    free: 5
+    silver: 50
+    gold: 100
+    platinum: 1000
+    unit: Minute
+  monthly:
+    free: 150
+    silver: 1500
+    gold: 3000
+    platinum: 30000
+
+env: []
