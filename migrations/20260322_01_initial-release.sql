@@ -1,14 +1,25 @@
--- initial release
+-- initial release with plans, users, subscriptions, and usage
 -- depends:
 
 -- migrate: apply
+
+CREATE TABLE plans (
+    tier TEXT PRIMARY KEY,
+    monthly_quota INTEGER NOT NULL
+);
+
+INSERT INTO plans (tier, monthly_quota) VALUES
+    ('free', 150),
+    ('silver', 1500),
+    ('gold', 3000),
+    ('platinum', 30000);
 
 CREATE TABLE users (
     id UUID PRIMARY KEY,
     jwt_sub TEXT NOT NULL UNIQUE,
     email TEXT NOT NULL,
     name TEXT,
-    plan TEXT NOT NULL DEFAULT 'free',
+    plan TEXT NOT NULL DEFAULT 'free' REFERENCES plans (tier),
     active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -38,7 +49,7 @@ CREATE TABLE subscriptions (
     user_id UUID NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
     provider TEXT NOT NULL,
     external_id TEXT NOT NULL,
-    plan TEXT NOT NULL DEFAULT 'free',
+    plan TEXT NOT NULL DEFAULT 'free' REFERENCES plans (tier),
     status TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -62,10 +73,22 @@ CREATE TABLE subscription_events (
 
 CREATE INDEX ix_subscription_events_subscription_id ON subscription_events (subscription_id);
 
+CREATE TABLE usage_monthly (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    month TEXT NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (user_id, month)
+);
+
+CREATE INDEX ix_usage_monthly_user_month ON usage_monthly (user_id, month);
+
 -- migrate: rollback
 
 DROP TABLE IF EXISTS subscription_events;
 DROP TABLE IF EXISTS subscriptions;
 DROP TABLE IF EXISTS messages;
 DROP TABLE IF EXISTS chats;
+DROP TABLE IF EXISTS usage_monthly;
 DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS plans;

@@ -107,7 +107,9 @@ class User(BaseTable, table=True):
     jwt_sub: str = Field(unique=True, index=True, sa_type=Text())
     email: str = Field(sa_type=Text())
     name: str | None = Field(default=None, sa_type=Text())
-    plan: PlanTier = Field(default=PlanTier.free, sa_type=Text())
+    plan: PlanTier = Field(default=PlanTier.free,
+                           sa_type=Text(),
+                           foreign_key="plans.tier")
     active: bool = Field(default=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
                                  sa_type=DateTime(timezone=True))
@@ -128,7 +130,8 @@ class Subscription(BaseTable, table=True):
     user_id: UUID = Field(foreign_key="users.id", index=True)
     provider: SubscriptionProvider = Field(sa_type=Text())
     external_id: str = Field(sa_type=Text())
-    plan: PlanTier = Field(sa_type=Text())
+    plan: PlanTier = Field(sa_type=Text(),
+                           foreign_key="plans.tier")
     status: SubscriptionStatus = Field(sa_type=Text())
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
                                  sa_type=DateTime(timezone=True))
