@@ -53,15 +53,16 @@ async def lifespan(app: FastAPI):
     logger.info("shutdown")
 
 
-app = FastAPI(title="SpeakNative API Gateway",
+app = FastAPI(title="NativeSpeaker API Gateway",
               description="API Gateway for linguistic analysis of phrases",
-              version=version("sn-api-gateway"),
+              version=version("ns-api-gateway"),
               lifespan=lifespan,
               responses={
                   400: {"model": ErrorResponse, "description": "Invalid request"},
                   401: {"model": ErrorResponse, "description": "Unauthorized"},
                   404: {"model": ErrorResponse, "description": "Not found"},
                   422: {"model": ErrorResponse, "description": "Validation error"},
+                  429: {"model": ErrorResponse, "description": "Rate limited"},
                   500: {"model": ErrorResponse, "description": "Internal error"},
                   503: {"model": ErrorResponse, "description": "Service unavailable"},
               })
