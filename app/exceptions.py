@@ -6,7 +6,8 @@ ErrorCode = Literal["invalid_request",
                     "unauthorized",
                     "not_found",
                     "service_unavailable",
-                    "internal_error"]
+                    "internal_error",
+                    "rate_limited"]
 
 
 class ServiceError(Exception):
@@ -101,6 +102,11 @@ class CircuitOpenError(ServiceError):
 
     def extra_headers(self) -> dict[str, str]:
         return {"Retry-After": str(self.retry_after_seconds)}
+
+
+class QuotaExceededError(ServiceError):
+    status_code = 429
+    error_code = "rate_limited"
 
 
 class ChatHistoryLimitError(ServiceError):

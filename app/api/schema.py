@@ -53,3 +53,6 @@ class UserProfileResponse(BaseModel):
     name: str | None = None
     plan: str
     created_at: datetime
+    requests_used: int
+    monthly_limit: int
+    resets_at: datetime

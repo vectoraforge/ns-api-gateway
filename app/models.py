@@ -3,7 +3,7 @@ from enum import StrEnum
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel, field_serializer, field_validator
-from sqlalchemy import DateTime, Index, Text, TypeDecorator, event, text
+from sqlalchemy import DateTime, Index, Text, TypeDecorator, UniqueConstraint, event, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 
@@ -147,6 +147,25 @@ class SubscriptionEvent(BaseTable, table=True):
     new_tier: str | None = Field(default=None, sa_type=Text())
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
                                  sa_type=DateTime(timezone=True))
+
+
+class Plan(BaseTable, table=True):
+    __tablename__ = "plans"
+
+    tier: str = Field(primary_key=True, sa_type=Text())
+    monthly_quota: int = Field()
+
+
+class UsageMonthly(BaseTable, table=True):
+    __tablename__ = "usage_monthly"
+    __table_args__ = (
+        UniqueConstraint("user_id", "month"),
+    )
+
+    id: UUID = Field(default_factory=uuid7, primary_key=True)
+    user_id: UUID = Field(foreign_key="users.id", index=True)
+    month: str = Field(sa_type=Text())
+    used: int = Field(default=0)
 
 
 class Chat(BaseTable, table=True):

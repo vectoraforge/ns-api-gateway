@@ -27,7 +27,6 @@ _STATUS_REMAP: dict[int, int] = {
     413: 400,
     415: 400,
 
-    429: 503,
     502: 503,
     504: 503,
 }
@@ -37,6 +36,7 @@ _CODE_MAP: dict[int, str] = {
     401: "unauthorized",
     404: "not_found",
     422: "validation_error",
+    429: "rate_limited",
     503: "service_unavailable",
     500: "internal_error",
 }
