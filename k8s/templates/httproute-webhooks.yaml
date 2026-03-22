@@ -1,0 +1,19 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "ns-api-gateway.fullname" . }}-webhook-routes
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "ns-api-gateway.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+  - name: {{ .Values.gateway.name }}
+  rules:
+  - matches:
+    - path:
+        type: Exact
+        value: /webhooks/apple
+      method: POST
+    backendRefs:
+    - name: {{ include "ns-api-gateway.fullname" . }}
+      port: {{ .Values.service.port }}

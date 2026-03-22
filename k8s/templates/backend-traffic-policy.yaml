@@ -1,0 +1,53 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: {{ include "ns-api-gateway.fullname" . }}-rate-limit
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "ns-api-gateway.labels" . | nindent 4 }}
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: {{ include "ns-api-gateway.fullname" . }}-llm-routes
+  rateLimit:
+    local:
+      rules:
+      - clientSelectors:
+        - headers:
+          - name: x-user-plan
+            value: free
+        limit:
+          requests: {{ .Values.rateLimits.burst.free }}
+          unit: {{ .Values.rateLimits.burst.unit }}
+      - clientSelectors:
+        - headers:
+          - name: x-user-plan
+            value: silver
+        limit:
+          requests: {{ .Values.rateLimits.burst.silver }}
+          unit: {{ .Values.rateLimits.burst.unit }}
+      - clientSelectors:
+        - headers:
+          - name: x-user-plan
+            value: gold
+        limit:
+          requests: {{ .Values.rateLimits.burst.gold }}
+          unit: {{ .Values.rateLimits.burst.unit }}
+      - clientSelectors:
+        - headers:
+          - name: x-user-plan
+            value: platinum
+        limit:
+          requests: {{ .Values.rateLimits.burst.platinum }}
+          unit: {{ .Values.rateLimits.burst.unit }}
+  responseOverride:
+  - match:
+      statusCodes:
+      - type: Value
+        value: 429
+    response:
+      contentType: application/json
+      body:
+        type: Inline
+        inline: '{"code":"rate_limited"}'
