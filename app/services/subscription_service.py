@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -10,7 +11,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.config import AppleConfig
-from app.database import SubscriptionDB
+from app.database import SubscriptionDB, UsageDB
 from app.exceptions import WebhookVerificationError
 from app.models import PlanTier, SubscriptionProvider, SubscriptionStatus, User
 from app.services.firebase_service import FirebaseService
@@ -63,6 +64,7 @@ class SubscriptionService:
                  product_id_to_tier: dict[str, str]):
         self.db = db
         self.subscriptions_db = SubscriptionDB(db)
+        self.usage_db = UsageDB(db)
         self.verifier = verifier
         self.firebase_service = firebase_service
         self.product_id_to_tier = product_id_to_tier
@@ -156,8 +158,11 @@ class SubscriptionService:
                 user_id=subscription.user_id, plan=plan_tier
             )
 
-        # Firebase sync (SUBS-06, SUBS-07) -- only if tier changed
+        # Usage reset + Firebase sync -- only if tier changed
         if old_tier != plan_tier:
+            month = datetime.now(UTC).strftime("%Y-%m")
+            await self.usage_db.reset_usage(subscription.user_id, month)
+
             result = await self.db.exec(
                 select(User).where(User.id == subscription.user_id)
             )
