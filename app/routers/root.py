@@ -11,7 +11,7 @@ router = APIRouter()
 @router.get("/")
 async def root(service: ChatService = Depends(get_chat_service)):
     return {
-        "name": "SpeakNative API Gateway",
-        "version": version("sn-api-gateway"),
+        "name": "NativeSpeaker API Gateway",
+        "version": version("ns-api-gateway"),
         "supported_languages": service.supported_languages,
     }
