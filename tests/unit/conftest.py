@@ -1,5 +1,5 @@
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import jwt as pyjwt
 import pytest
@@ -130,7 +130,17 @@ def mock_chats_db():
 
 
 @pytest.fixture
-def service(mock_chats_db):
+def mock_usage_db():
+    db = AsyncMock()
+    db.try_increment = AsyncMock(return_value=True)
+    db.get_usage = AsyncMock(return_value=0)
+    db.get_monthly_limit = AsyncMock(return_value=150)
+    db.reset_usage = AsyncMock(return_value=None)
+    return db
+
+
+@pytest.fixture
+def service(mock_chats_db, mock_usage_db):
     llm_service = AsyncMock()
     svc = ChatService(db=MagicMock(),
                       llm_service=llm_service,
@@ -139,34 +149,39 @@ def service(mock_chats_db):
                       messages_limit=50,
                       chats_limit=50)
     svc.chats_db = mock_chats_db
+    svc.usage_db = mock_usage_db
     return svc
 
 
 @pytest.fixture
-def client(mock_chats_db):
-    app = FastAPI()
-    app.include_router(root_router)
-    app.include_router(chats_router)
-    app.include_router(examples_router)
-    app.include_router(health_router)
-    app.include_router(users_router)
-    register_exception_handlers(app)
+def client(mock_chats_db, mock_usage_db):
+    with patch("app.routers.users.UsageDB") as MockUsageDB:
+        MockUsageDB.return_value = mock_usage_db
 
-    llm_service = AsyncMock()
-    svc = ChatService(db=MagicMock(),
-                      llm_service=llm_service,
-                      examples={"en": ["Example 1", "Example 2"],
-                                "es": ["Ejemplo 1"]},
-                      messages_limit=50,
-                      chats_limit=50)
-    svc.chats_db = mock_chats_db
+        app = FastAPI()
+        app.include_router(root_router)
+        app.include_router(chats_router)
+        app.include_router(examples_router)
+        app.include_router(health_router)
+        app.include_router(users_router)
+        register_exception_handlers(app)
 
-    app.dependency_overrides[get_db] = lambda: MagicMock()
-    app.dependency_overrides[get_current_user] = lambda: TEST_USER
-    app.dependency_overrides[get_chat_service] = lambda: svc
+        llm_service = AsyncMock()
+        svc = ChatService(db=MagicMock(),
+                          llm_service=llm_service,
+                          examples={"en": ["Example 1", "Example 2"],
+                                    "es": ["Ejemplo 1"]},
+                          messages_limit=50,
+                          chats_limit=50)
+        svc.chats_db = mock_chats_db
+        svc.usage_db = mock_usage_db
 
-    with TestClient(app, raise_server_exceptions=False) as test_client:
-        yield test_client
+        app.dependency_overrides[get_db] = lambda: MagicMock()
+        app.dependency_overrides[get_current_user] = lambda: TEST_USER
+        app.dependency_overrides[get_chat_service] = lambda: svc
+
+        with TestClient(app, raise_server_exceptions=False) as test_client:
+            yield test_client
 
 
 @pytest.fixture

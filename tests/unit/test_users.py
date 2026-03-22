@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -43,17 +43,24 @@ class TestGetUsersMe:
             active=True,
         )
 
-        app = FastAPI()
-        app.include_router(users_router)
-        register_exception_handlers(app)
-        app.dependency_overrides[get_current_user] = lambda: nameless_user
+        with patch("app.routers.users.UsageDB") as MockUsageDB:
+            mock_instance = MagicMock()
+            mock_instance.get_usage = AsyncMock(return_value=0)
+            mock_instance.get_monthly_limit = AsyncMock(return_value=150)
+            MockUsageDB.return_value = mock_instance
 
-        with TestClient(app, raise_server_exceptions=False) as test_client:
-            response = test_client.get("/users/me")
-            assert response.status_code == 200
-            data = response.json()
-            assert data["name"] is None
-            assert data["email"] == "nameless@example.com"
+            app = FastAPI()
+            app.include_router(users_router)
+            register_exception_handlers(app)
+            app.dependency_overrides[get_current_user] = lambda: nameless_user
+            app.dependency_overrides[get_db] = lambda: MagicMock()
+
+            with TestClient(app, raise_server_exceptions=False) as test_client:
+                response = test_client.get("/users/me")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["name"] is None
+                assert data["email"] == "nameless@example.com"
 
 
 class TestInactiveUser:
@@ -134,3 +141,41 @@ class TestUserIsolation:
         """There is no GET /users/{id} endpoint -- only /users/me."""
         response = client.get("/users/some-other-id")
         assert response.status_code in (404, 405)
+
+
+class TestUsersMeUsage:
+    """ENVOY-05: GET /users/me returns usage data."""
+
+    def test_response_includes_usage_fields(self, client):
+        """Response includes requests_used, monthly_limit, resets_at."""
+        with patch("app.routers.users.UsageDB") as MockUsageDB:
+            mock_instance = MagicMock()
+            mock_instance.get_usage = AsyncMock(return_value=42)
+            mock_instance.get_monthly_limit = AsyncMock(return_value=150)
+            MockUsageDB.return_value = mock_instance
+
+            response = client.get("/users/me")
+            assert response.status_code == 200
+            data = response.json()
+            assert "requests_used" in data
+            assert "monthly_limit" in data
+            assert "resets_at" in data
+            assert data["requests_used"] == 42
+            assert data["monthly_limit"] == 150
+
+    def test_resets_at_is_first_of_next_month(self, client):
+        """resets_at is the first day of the next calendar month."""
+        with patch("app.routers.users.UsageDB") as MockUsageDB:
+            mock_instance = MagicMock()
+            mock_instance.get_usage = AsyncMock(return_value=0)
+            mock_instance.get_monthly_limit = AsyncMock(return_value=150)
+            MockUsageDB.return_value = mock_instance
+
+            response = client.get("/users/me")
+            assert response.status_code == 200
+            data = response.json()
+            resets_at = data["resets_at"]
+            assert "T00:00:00" in resets_at
+            from datetime import datetime
+            dt = datetime.fromisoformat(resets_at)
+            assert dt.day == 1
