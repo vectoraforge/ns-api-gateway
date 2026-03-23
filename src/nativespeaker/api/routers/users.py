@@ -27,7 +27,7 @@ async def get_me(user: User = Depends(get_current_user),
 
     return UserProfileResponse(email=user.email,
                                name=user.name,
-                               plan=user.plan,
+                               subscription_plan=user.subscription_plan,
                                created_at=user.created_at,
                                requests_used=requests_used,
                                monthly_limit=monthly_limit,

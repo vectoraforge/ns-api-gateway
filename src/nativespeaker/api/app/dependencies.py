@@ -43,7 +43,7 @@ def get_subscription_service(request: Request,
         db=db,
         verifier=request.app.state.apple_verifier,
         firebase_service=request.app.state.firebase_service,
-        product_id_to_tier=config.apple.product_id_to_tier,
+        product_id_to_plan=config.apple.product_id_to_plan,
     )
 
 
