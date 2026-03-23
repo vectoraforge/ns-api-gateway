@@ -22,12 +22,12 @@ class PydanticJSONB(TypeDecorator):
         return value
 
 
-class Role(StrEnum):
+class ChatRole(StrEnum):
     human = "human"
     ai = "ai"
 
 
-class Tier(StrEnum):
+class SubscriptionPlan(StrEnum):
     free = "free"
     silver = "silver"
     gold = "gold"
@@ -62,12 +62,12 @@ class BaseTable(SQLModel):
 
 
 class Message(BaseTable, table=True):
-    __tablename__ = "core.messages"
+    __tablename__ = "messages"
     __table_args__ = {"schema": "core"}
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
     chat_id: UUID = Field(foreign_key="core.chats.id", ondelete="CASCADE")
-    role: Role = Field()
+    role: ChatRole = Field()
     content: HumanContent | AIContent = Field(sa_type=PydanticJSONB)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -77,9 +77,9 @@ class Message(BaseTable, table=True):
         if isinstance(value, BaseModel):
             return value
         match info.data.get("role"):
-            case Role.human:
+            case ChatRole.human:
                 return HumanContent(**value)
-            case Role.ai:
+            case ChatRole.ai:
                 return AIContent(**value)
         return None
 
@@ -94,9 +94,9 @@ def _reconstitute_content(target, context):
     raw = target.content
     if isinstance(raw, dict):
         match target.role:
-            case Role.human:
+            case ChatRole.human:
                 target.content = HumanContent(**raw)
-            case Role.ai:
+            case ChatRole.ai:
                 target.content = AIContent(**raw)
 
 
@@ -108,7 +108,7 @@ class User(BaseTable, table=True):
     jwt_sub: str = Field(unique=True, index=True, )
     email: str = Field()
     name: str | None = Field(default=None, )
-    plan: str = Field(default="free", foreign_key="core.plans.tier")
+    subscription_plan: SubscriptionPlan = Field(default=SubscriptionPlan.free)
     active: bool = Field(default=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -129,7 +129,7 @@ class Subscription(BaseTable, table=True):
     user_id: UUID = Field(foreign_key="core.users.id", index=True)
     provider: SubscriptionProvider = Field()
     external_id: str = Field()
-    plan: str = Field(foreign_key="core.plans.tier")
+    plan: SubscriptionPlan = Field()
     status: SubscriptionStatus = Field()
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -143,17 +143,9 @@ class SubscriptionEvent(BaseTable, table=True):
     subscription_id: UUID = Field(foreign_key="core.subscriptions.id", index=True)
     event_type: str = Field()
     notification_uuid: str = Field(unique=True)
-    old_tier: str | None = Field(default=None)
-    new_tier: str | None = Field(default=None)
+    old_plan: SubscriptionPlan | None = Field(default=None)
+    new_plan: SubscriptionPlan | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-
-
-class Plan(BaseTable, table=True):
-    __tablename__ = "plans"
-    __table_args__ = {"schema": "core"}
-
-    tier: str = Field(primary_key=True)
-    monthly_quota: int = Field()
 
 
 class UsageMonthly(BaseTable, table=True):
@@ -185,8 +177,8 @@ class Chat(BaseTable, table=True):
 
     @property
     def ai_messages(self):
-        return list(filter(lambda m: m.role == Role.ai, self.messages))
+        return list(filter(lambda m: m.role == ChatRole.ai, self.messages))
 
     @property
     def human_messages(self):
-        return list(filter(lambda m: m.role == Role.human, self.messages))
+        return list(filter(lambda m: m.role == ChatRole.human, self.messages))
