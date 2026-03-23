@@ -33,7 +33,8 @@ def get_chat_service(request: Request,
                        llm_service=request.app.state.llm_service,
                        examples=config.examples,
                        chats_limit=config.chats_limit,
-                       messages_limit=config.messages_limit)
+                       messages_limit=config.messages_limit,
+                       quotas=config.quotas)
 
 
 def get_subscription_service(request: Request,

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nativespeaker.api.schema import ExamplesResponse
 from nativespeaker.api.database import ChatsDB, UsageDB
 from nativespeaker.api.exceptions import ChatHistoryLimitError, InvalidChatError, QuotaExceededError, UnsupportedLanguageError
-from nativespeaker.api.models import AIContent, Chat, ChatRole, HumanContent, Message
+from nativespeaker.api.models import AIContent, Chat, ChatRole, HumanContent, Message, SubscriptionPlan, User
 from nativespeaker.api.services.llm import LLMService
 
 
@@ -18,13 +18,15 @@ class ChatService:
                  llm_service: LLMService,
                  examples: dict[str, list[str]],
                  messages_limit: int,
-                 chats_limit) -> None:
+                 chats_limit: int,
+                 quotas: dict[SubscriptionPlan, int]) -> None:
         self.llm_service = llm_service
         self.chats_db = ChatsDB(db)
         self.usage_db = UsageDB(db)
         self.examples = examples
         self.messages_limit = messages_limit
         self.chats_limit = chats_limit
+        self.quotas = quotas
 
     @property
     def supported_languages(self) -> list[str]:
@@ -45,22 +47,23 @@ class ChatService:
         return Message(chat_id=chat.id, role=ChatRole.ai, content=AIContent.model_validate(llm_response))
 
     async def create_chat(self,
-                          user_id: UUID,
+                          user: User,
                           phrase: str,
                           comment: str | None = None,
                           lang: str | None = None) -> Message:
         if lang and lang not in self.supported_languages:
             raise UnsupportedLanguageError(lang, self.supported_languages)
 
-        chats_count = await self.chats_db.count_chats(user_id)
+        chats_count = await self.chats_db.count_chats(user.id)
         if chats_count >= self.chats_limit:
             raise ChatHistoryLimitError(self.chats_limit)
 
         month = datetime.now(UTC).strftime("%Y-%m")
-        if not await self.usage_db.try_increment(user_id, month):
+        monthly_quota = self.quotas[user.subscription_plan]
+        if not await self.usage_db.try_increment(user.id, month, monthly_quota):
             raise QuotaExceededError("Monthly quota exceeded")
 
-        chat = Chat(id=uuid4(), user_id=user_id, title=phrase, lang=lang)
+        chat = Chat(id=uuid4(), user_id=user.id, title=phrase, lang=lang)
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
                                 content=HumanContent(phrase=phrase, comment=comment))
         ai_message = await self.ask_llm(chat, human_message)
@@ -73,9 +76,9 @@ class ChatService:
 
     async def send_message(self,
                            chat_id: UUID,
-                           user_id: UUID,
+                           user: User,
                            content: str) -> Message:
-        chat = await self.chats_db.get_chat(chat_id, user_id)
+        chat = await self.chats_db.get_chat(chat_id, user.id)
         if chat is None:
             raise InvalidChatError(chat_id)
 
@@ -83,7 +86,8 @@ class ChatService:
             raise ChatHistoryLimitError(self.messages_limit)
 
         month = datetime.now(UTC).strftime("%Y-%m")
-        if not await self.usage_db.try_increment(user_id, month):
+        monthly_quota = self.quotas[user.subscription_plan]
+        if not await self.usage_db.try_increment(user.id, month, monthly_quota):
             raise QuotaExceededError("Monthly quota exceeded")
 
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
