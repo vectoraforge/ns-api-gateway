@@ -6,14 +6,13 @@ import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.app.main import app
 from nativespeaker.api.config import MainConfig
-from nativespeaker.api.models import AIContent, Chat, HumanContent, Message, Role, User
+from nativespeaker.api.models import AIContent, Chat, ChatRole, HumanContent, Message, User
 
 
 @pytest.fixture(scope="session")
@@ -24,16 +23,11 @@ def _app_config():
 
 @pytest.fixture(scope="session")
 def ensure_tables(_app_config):
-    """Create all SQLModel tables and seed plans data once per session."""
+    """Create all SQLModel tables once per session."""
     async def _create():
         engine = create_async_engine(_app_config.db.url, pool_size=1, max_overflow=0)
         async with engine.begin() as conn:  # type: ignore[arg-type]
             await conn.run_sync(SQLModel.metadata.create_all)
-            await conn.execute(text(
-                "INSERT INTO plans (tier, monthly_quota) VALUES "
-                "('free', 150), ('silver', 1500), ('gold', 3000), ('platinum', 30000) "
-                "ON CONFLICT (tier) DO NOTHING"
-            ))
         await engine.dispose()
 
     asyncio.get_event_loop_policy().new_event_loop().run_until_complete(_create())
@@ -127,9 +121,9 @@ async def create_chat(factory, user_id: str):
 
         chat_id = uuid4()
         chat = Chat(id=chat_id, user_id=user.id, title="test phrase")
-        human = Message(chat_id=chat_id, role=Role.human,
+        human = Message(chat_id=chat_id, role=ChatRole.human,
                         content=HumanContent(phrase="test phrase"))
-        ai = Message(chat_id=chat_id, role=Role.ai,
+        ai = Message(chat_id=chat_id, role=ChatRole.ai,
                      content=AIContent(response="test answer", issues=[], suggestions=[]))
         chat.messages.append(human)
         chat.messages.append(ai)

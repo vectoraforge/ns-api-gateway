@@ -4,7 +4,7 @@ import pytest
 
 from nativespeaker.api.schema import ExamplesResponse, Issue
 from nativespeaker.api.exceptions import ChatHistoryLimitError, InvalidChatError, PermanentLLMError, UnsupportedLanguageError
-from nativespeaker.api.models import AIContent, Chat, HumanContent, Message, Role
+from nativespeaker.api.models import AIContent, Chat, ChatRole, HumanContent, Message
 
 
 class TestCreateChat:
@@ -24,7 +24,7 @@ class TestCreateChat:
                                            lang="en")
 
         assert isinstance(result, Message)
-        assert result.role == Role.ai
+        assert result.role == ChatRole.ai
         assert result.content.response == "Minor grammar issue"
         assert len(result.content.issues) == 1
         assert result.content.issues[0].text_part == "going to home"
@@ -50,7 +50,7 @@ class TestCreateChat:
         assert isinstance(result, Message)
         mock_chats_db.create_chat.assert_called_once()
         chat_arg = mock_chats_db.create_chat.call_args[0][0]
-        human_msg = [m for m in chat_arg.messages if m.role == Role.human][0]
+        human_msg = [m for m in chat_arg.messages if m.role == ChatRole.human][0]
         assert human_msg.content.comment == "Is this too formal?"
 
     @pytest.mark.asyncio
@@ -104,9 +104,9 @@ class TestFollowup:
         chat_id = uuid4()
         chat = Chat(id=chat_id, title="hello", user_id="user-1")
         chat.messages = [
-            Message(chat_id=chat_id, role=Role.human,
+            Message(chat_id=chat_id, role=ChatRole.human,
                     content=HumanContent(phrase="hello")),
-            Message(chat_id=chat_id, role=Role.ai,
+            Message(chat_id=chat_id, role=ChatRole.ai,
                     content=AIContent(response="hi", issues=[], suggestions=[]))
         ]
         mock_chats_db.get_chat.return_value = chat
@@ -136,7 +136,7 @@ class TestFollowup:
         chat_id = uuid4()
         chat = Chat(id=chat_id, title="hello", user_id="user-1")
         chat.messages = [
-            Message(chat_id=chat_id, role=Role.ai,
+            Message(chat_id=chat_id, role=ChatRole.ai,
                     content=AIContent(response="r", issues=[], suggestions=[]))
             for _ in range(50)
         ]
@@ -152,9 +152,9 @@ class TestFollowup:
         chat_id = uuid4()
         chat = Chat(id=chat_id, title="hello", user_id="user-1")
         chat.messages = [
-            Message(chat_id=chat_id, role=Role.human,
+            Message(chat_id=chat_id, role=ChatRole.human,
                     content=HumanContent(phrase="hello")),
-            Message(chat_id=chat_id, role=Role.ai,
+            Message(chat_id=chat_id, role=ChatRole.ai,
                     content=AIContent(response="hi", issues=[], suggestions=[]))
         ]
         mock_chats_db.get_chat.return_value = chat

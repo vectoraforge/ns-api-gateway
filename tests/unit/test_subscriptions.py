@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import pytest
 
-from nativespeaker.api.models import Tier, Subscription, SubscriptionStatus
+from nativespeaker.api.models import SubscriptionPlan, Subscription, SubscriptionStatus
 from nativespeaker.api.services import FirebaseService, SubscriptionService
 
 
@@ -34,7 +34,7 @@ def _make_mock_payload(*,
     return payload
 
 
-PRODUCT_TO_TIER = {
+PRODUCT_TO_PLAN = {
     "com.example.nativespeaker.silver": "silver",
     "com.example.nativespeaker.gold": "gold",
     "com.example.nativespeaker.platinum": "platinum",
@@ -67,7 +67,7 @@ def subscription_service(mock_db_session, mock_verifier, mock_firebase, mock_sub
         db=mock_db_session,
         verifier=mock_verifier,
         firebase_service=mock_firebase,
-        product_id_to_tier=PRODUCT_TO_TIER,
+        product_id_to_plan=PRODUCT_TO_PLAN,
     )
     svc.subscriptions_db = mock_subscriptions_db
     return svc
@@ -86,7 +86,7 @@ class TestSubscriptionLifecycle:
             "com.example.nativespeaker.gold",
         )
         assert status == SubscriptionStatus.active
-        assert tier == Tier.gold
+        assert tier == SubscriptionPlan.gold
 
     def test_map_did_renew(self, subscription_service):
         """DID_RENEW -> active, same tier."""
@@ -97,7 +97,7 @@ class TestSubscriptionLifecycle:
             "com.example.nativespeaker.gold",
         )
         assert status == SubscriptionStatus.active
-        assert tier == Tier.gold
+        assert tier == SubscriptionPlan.gold
 
     def test_map_grace_period(self, subscription_service):
         """DID_FAIL_TO_RENEW + GRACE_PERIOD -> grace_period, keeps tier."""
@@ -109,7 +109,7 @@ class TestSubscriptionLifecycle:
             "com.example.nativespeaker.silver",
         )
         assert status == SubscriptionStatus.grace_period
-        assert tier == Tier.silver
+        assert tier == SubscriptionPlan.silver
 
     def test_map_billing_retry(self, subscription_service):
         """DID_FAIL_TO_RENEW (no grace) -> billing_retry, keeps tier."""
@@ -120,7 +120,7 @@ class TestSubscriptionLifecycle:
             "com.example.nativespeaker.gold",
         )
         assert status == SubscriptionStatus.billing_retry
-        assert tier == Tier.gold
+        assert tier == SubscriptionPlan.gold
 
     def test_map_expired(self, subscription_service):
         """EXPIRED -> expired, falls to free."""
@@ -132,7 +132,7 @@ class TestSubscriptionLifecycle:
             "com.example.nativespeaker.gold",
         )
         assert status == SubscriptionStatus.expired
-        assert tier == Tier.free
+        assert tier == SubscriptionPlan.free
 
     def test_map_revoked(self, subscription_service):
         """REVOKE -> revoked, falls to free."""
@@ -143,7 +143,7 @@ class TestSubscriptionLifecycle:
             "com.example.nativespeaker.gold",
         )
         assert status == SubscriptionStatus.revoked
-        assert tier == Tier.free
+        assert tier == SubscriptionPlan.free
 
     def test_map_upgrade(self, subscription_service):
         """DID_CHANGE_RENEWAL_PREF + UPGRADE -> active, new tier."""
@@ -155,7 +155,7 @@ class TestSubscriptionLifecycle:
             "com.example.nativespeaker.platinum",
         )
         assert status == SubscriptionStatus.active
-        assert tier == Tier.platinum
+        assert tier == SubscriptionPlan.platinum
 
     def test_map_downgrade_deferred(self, subscription_service):
         """DID_CHANGE_RENEWAL_PREF + DOWNGRADE -> None (deferred, no immediate change)."""
@@ -176,7 +176,7 @@ class TestSubscriptionLifecycle:
             NotificationTypeV2.SUBSCRIBED, None,
             "com.unknown.product",
         )
-        assert tier == Tier.free
+        assert tier == SubscriptionPlan.free
 
     async def test_ignored_notification_types(self, subscription_service,
                                                 mock_verifier, mock_subscriptions_db):
@@ -210,7 +210,7 @@ class TestIdempotency:
         existing_sub = MagicMock(spec=Subscription)
         existing_sub.id = uuid4()
         existing_sub.user_id = uuid4()
-        existing_sub.plan = Tier.gold
+        existing_sub.plan = SubscriptionPlan.gold
         mock_subscriptions_db.get_subscription_by_external_id.return_value = existing_sub
         # insert_event_idempotent returns False -> duplicate
         mock_subscriptions_db.insert_event_idempotent.return_value = False
@@ -243,7 +243,7 @@ class TestPlanTierUpdate:
         existing_sub = MagicMock(spec=Subscription)
         existing_sub.id = uuid4()
         existing_sub.user_id = user_id
-        existing_sub.plan = Tier.gold
+        existing_sub.plan = SubscriptionPlan.gold
         mock_subscriptions_db.get_subscription_by_external_id.return_value = existing_sub
         mock_subscriptions_db.insert_event_idempotent.return_value = True
 
@@ -251,7 +251,7 @@ class TestPlanTierUpdate:
         await subscription_service.process_apple_notification("signed.payload")
 
         mock_subscriptions_db.update_user_plan.assert_called_once_with(
-            user_id=user_id, plan=Tier.gold
+            user_id=user_id, plan=SubscriptionPlan.gold
         )
 
 
@@ -277,7 +277,7 @@ class TestFirebaseSync:
         existing_sub = MagicMock(spec=Subscription)
         existing_sub.id = uuid4()
         existing_sub.user_id = user_id
-        existing_sub.plan = Tier.free  # Was free, now gold -> tier changed
+        existing_sub.plan = SubscriptionPlan.free  # Was free, now gold -> tier changed
         mock_subscriptions_db.get_subscription_by_external_id.return_value = existing_sub
         mock_subscriptions_db.insert_event_idempotent.return_value = True
 
@@ -290,7 +290,7 @@ class TestFirebaseSync:
         await subscription_service.process_apple_notification("signed.payload")
 
         mock_firebase.set_plan_claim.assert_called_once_with(
-            "firebase-uid-456", Tier.gold
+            "firebase-uid-456", SubscriptionPlan.gold
         )
 
     async def test_uses_to_thread(self):
@@ -330,7 +330,7 @@ class TestFirebaseSync:
         existing_sub = MagicMock(spec=Subscription)
         existing_sub.id = uuid4()
         existing_sub.user_id = uuid4()
-        existing_sub.plan = Tier.gold  # Same tier -> no change
+        existing_sub.plan = SubscriptionPlan.gold  # Same tier -> no change
         mock_subscriptions_db.get_subscription_by_external_id.return_value = existing_sub
         mock_subscriptions_db.insert_event_idempotent.return_value = True
 

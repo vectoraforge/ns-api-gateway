@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from nativespeaker.api.app.dependencies import get_current_user, get_db
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth import UserIdentity
-from nativespeaker.api.models import Tier, User
+from nativespeaker.api.models import SubscriptionPlan, User
 from nativespeaker.api.routers import users_router
 
 
@@ -20,7 +20,7 @@ class TestGetUsersMe:
         data = response.json()
         assert data["email"] == "test@example.com"
         assert data["name"] == "Test User"
-        assert data["plan"] == "free"
+        assert data["subscription_plan"] == "free"
         assert "created_at" in data
 
     def test_profile_excludes_internal_id(self, client):
@@ -38,7 +38,7 @@ class TestGetUsersMe:
             jwt_sub="nameless-user",
             email="nameless@example.com",
             name=None,
-            plan=Tier.free,
+            subscription_plan=SubscriptionPlan.free,
             active=True,
         )
 
@@ -111,7 +111,7 @@ class TestUserModel:
 
     def test_default_plan_is_free(self):
         user = User(jwt_sub="test", email="test@example.com")
-        assert user.plan == Tier.free
+        assert user.subscription_plan == SubscriptionPlan.free
 
     def test_default_active_is_true(self):
         user = User(jwt_sub="test", email="test@example.com")
@@ -121,8 +121,8 @@ class TestUserModel:
         user = User(jwt_sub="test", email="test@example.com")
         assert user.id is not None
 
-    def test_plan_tier_values(self):
-        assert list(Tier) == [Tier.free, Tier.silver, Tier.gold, Tier.platinum]
+    def test_subscription_plan_values(self):
+        assert list(SubscriptionPlan) == [SubscriptionPlan.free, SubscriptionPlan.silver, SubscriptionPlan.gold, SubscriptionPlan.platinum]
 
 
 class TestUserIsolation:
