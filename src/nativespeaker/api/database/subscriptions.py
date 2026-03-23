@@ -6,7 +6,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.models import (
-    PlanTier,
+    Tier,
     Subscription,
     SubscriptionEvent,
     SubscriptionProvider,
@@ -35,7 +35,7 @@ class SubscriptionDB:
                                   user_id: UUID,
                                   provider: SubscriptionProvider,
                                   external_id: str,
-                                  plan: PlanTier,
+                                  plan: Tier,
                                   status: SubscriptionStatus) -> Subscription:
         subscription = Subscription(
             user_id=user_id,
@@ -50,7 +50,7 @@ class SubscriptionDB:
 
     async def update_subscription(self,
                                   subscription: Subscription,
-                                  plan: PlanTier,
+                                  plan: Tier,
                                   status: SubscriptionStatus) -> None:
         subscription.plan = plan
         subscription.status = status
@@ -79,7 +79,7 @@ class SubscriptionDB:
         result = await self.session.exec(stmt)
         return result.rowcount > 0
 
-    async def update_user_plan(self, user_id: UUID, plan: PlanTier) -> None:
+    async def update_user_plan(self, user_id: UUID, plan: Tier) -> None:
         result = await self.session.exec(
             select(User).where(User.id == user_id)
         )

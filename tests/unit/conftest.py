@@ -13,7 +13,7 @@ from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth import UserIdentity
 from nativespeaker.api.database import ChatsDB
 from nativespeaker.api.exceptions import AuthenticationError
-from nativespeaker.api.models import PlanTier, User
+from nativespeaker.api.models import Tier, User
 from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router, users_router, webhooks_router
 from nativespeaker.api.services import ChatService, SubscriptionService
 
@@ -112,7 +112,7 @@ TEST_USER = User(
     jwt_sub="test-user",
     email="test@example.com",
     name="Test User",
-    plan=PlanTier.free,
+    plan=Tier.free,
     active=True,
 )
 

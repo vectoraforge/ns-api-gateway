@@ -20,17 +20,12 @@ class DatabaseConfig(BaseModel):
     user: str = Field(description="Database user")
     password: SecretStr = Field(description="Database password")
     name: str = Field(description="Database name")
-    schema: str = Field(description="PostgreSQL search_path schema")
     pool_size: int = Field(default=5, ge=1, description="Connection pool size")
 
     @property
     def url(self) -> str:
         return (f"postgresql+asyncpg://{self.user}:{self.password.get_secret_value()}"
                 f"@{self.host}:{self.port}/{self.name}")
-
-    @property
-    def connect_args(self) -> dict:
-        return {"server_settings": {"search_path": self.schema}}
 
 
 class ResilienceConfig(BaseModel):

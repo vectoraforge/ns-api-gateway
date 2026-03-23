@@ -26,8 +26,7 @@ def _app_config():
 def ensure_tables(_app_config):
     """Create all SQLModel tables and seed plans data once per session."""
     async def _create():
-        engine = create_async_engine(_app_config.db.url, pool_size=1, max_overflow=0,
-                                            connect_args=_app_config.db.connect_args)
+        engine = create_async_engine(_app_config.db.url, pool_size=1, max_overflow=0)
         async with engine.begin() as conn:  # type: ignore[arg-type]
             await conn.run_sync(SQLModel.metadata.create_all)
             await conn.execute(text(

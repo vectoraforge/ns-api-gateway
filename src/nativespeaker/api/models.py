@@ -3,7 +3,7 @@ from enum import StrEnum
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel, field_serializer, field_validator
-from sqlalchemy import DateTime, Index, Text, TypeDecorator, UniqueConstraint, event, text
+from sqlalchemy import Index, TypeDecorator, UniqueConstraint, event, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 
@@ -27,7 +27,7 @@ class Role(StrEnum):
     ai = "ai"
 
 
-class PlanTier(StrEnum):
+class Tier(StrEnum):
     free = "free"
     silver = "silver"
     gold = "gold"
@@ -63,13 +63,13 @@ class BaseTable(SQLModel):
 
 class Message(BaseTable, table=True):
     __tablename__ = "core.messages"
+    __table_args__ = {"schema": "core"}
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
-    chat_id: UUID = Field(foreign_key="chats.id", ondelete="CASCADE")
-    role: Role = Field(sa_type=Text())
+    chat_id: UUID = Field(foreign_key="core.chats.id", ondelete="CASCADE")
+    role: Role = Field()
     content: HumanContent | AIContent = Field(sa_type=PydanticJSONB)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
-                                 sa_type=DateTime(timezone=True))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("content", mode="before")
     @classmethod
@@ -101,22 +101,20 @@ def _reconstitute_content(target, context):
 
 
 class User(BaseTable, table=True):
-    __tablename__ = "core.users"
+    __tablename__ = "users"
+    __table_args__ = {"schema": "core"}
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
-    jwt_sub: str = Field(unique=True, index=True, sa_type=Text())
-    email: str = Field(sa_type=Text())
-    name: str | None = Field(default=None, sa_type=Text())
-    plan: PlanTier = Field(default=PlanTier.free,
-                           sa_type=Text(),
-                           foreign_key="plans.tier")
+    jwt_sub: str = Field(unique=True, index=True, )
+    email: str = Field()
+    name: str | None = Field(default=None, )
+    plan: str = Field(default="free", foreign_key="core.plans.tier")
     active: bool = Field(default=True)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
-                                 sa_type=DateTime(timezone=True))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class Subscription(BaseTable, table=True):
-    __tablename__ = "core.subscriptions"
+    __tablename__ = "subscriptions"
     __table_args__ = (
         Index(
             "ix_subscriptions_user_provider_active",
@@ -124,62 +122,63 @@ class Subscription(BaseTable, table=True):
             unique=True,
             postgresql_where=text("status NOT IN ('expired', 'revoked')")
         ),
+        {"schema": "core"}
     )
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
-    user_id: UUID = Field(foreign_key="users.id", index=True)
-    provider: SubscriptionProvider = Field(sa_type=Text())
-    external_id: str = Field(sa_type=Text())
-    plan: PlanTier = Field(sa_type=Text(),
-                           foreign_key="plans.tier")
-    status: SubscriptionStatus = Field(sa_type=Text())
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
-                                 sa_type=DateTime(timezone=True))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
-                                 sa_type=DateTime(timezone=True))
+    user_id: UUID = Field(foreign_key="core.users.id", index=True)
+    provider: SubscriptionProvider = Field()
+    external_id: str = Field()
+    plan: str = Field(foreign_key="core.plans.tier")
+    status: SubscriptionStatus = Field()
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class SubscriptionEvent(BaseTable, table=True):
-    __tablename__ = "core.subscription_events"
+    __tablename__ = "subscription_events"
+    __table_args__ = {"schema": "core"}
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
-    subscription_id: UUID = Field(foreign_key="subscriptions.id", index=True)
-    event_type: str = Field(sa_type=Text())
-    notification_uuid: str = Field(unique=True, sa_type=Text())
-    old_tier: str | None = Field(default=None, sa_type=Text())
-    new_tier: str | None = Field(default=None, sa_type=Text())
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
-                                 sa_type=DateTime(timezone=True))
+    subscription_id: UUID = Field(foreign_key="core.subscriptions.id", index=True)
+    event_type: str = Field()
+    notification_uuid: str = Field(unique=True)
+    old_tier: str | None = Field(default=None)
+    new_tier: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class Plan(BaseTable, table=True):
-    __tablename__ = "core.plans"
+    __tablename__ = "plans"
+    __table_args__ = {"schema": "core"}
 
-    tier: str = Field(primary_key=True, sa_type=Text())
+    tier: str = Field(primary_key=True)
     monthly_quota: int = Field()
 
 
 class UsageMonthly(BaseTable, table=True):
-    __tablename__ = "core.usage_monthly"
+    __tablename__ = "usage_monthly"
     __table_args__ = (
         UniqueConstraint("user_id", "month"),
+        {"schema": "core"}
     )
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
-    user_id: UUID = Field(foreign_key="users.id", index=True)
-    month: str = Field(sa_type=Text())
+    user_id: UUID = Field(foreign_key="core.users.id", index=True)
+    month: str = Field()
     used: int = Field(default=0)
 
 
 class Chat(BaseTable, table=True):
-    __tablename__ = "core.chats"
+    __tablename__ = "chats"
+    __table_args__ = {"schema": "core"}
+
 
     id: UUID = Field(primary_key=True)
-    user_id: UUID = Field(foreign_key="users.id", index=True)
-    title: str = Field(sa_type=Text())
-    lang: str | None = Field(default=None, sa_type=Text())
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC),
-                                 sa_type=DateTime(timezone=True))
+    user_id: UUID = Field(foreign_key="core.users.id", index=True)
+    title: str = Field()
+    lang: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     messages: list[Message] = Relationship(cascade_delete=True, passive_deletes=True)
     user: "User" = Relationship()

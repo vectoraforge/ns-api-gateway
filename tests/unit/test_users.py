@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from nativespeaker.api.app.dependencies import get_current_user, get_db
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth import UserIdentity
-from nativespeaker.api.models import PlanTier, User
+from nativespeaker.api.models import Tier, User
 from nativespeaker.api.routers import users_router
 
 
@@ -38,7 +38,7 @@ class TestGetUsersMe:
             jwt_sub="nameless-user",
             email="nameless@example.com",
             name=None,
-            plan=PlanTier.free,
+            plan=Tier.free,
             active=True,
         )
 
@@ -67,7 +67,7 @@ class TestInactiveUser:
 
     def test_inactive_user_rejected(self):
         """Inactive user receives the same 401 as invalid token -- no 'inactive' message."""
-        from exceptions import AuthenticationError
+        from nativespeaker.api.exceptions import AuthenticationError
 
         async def mock_get_current_user():
             raise AuthenticationError("Authentication failed")
@@ -111,7 +111,7 @@ class TestUserModel:
 
     def test_default_plan_is_free(self):
         user = User(jwt_sub="test", email="test@example.com")
-        assert user.plan == PlanTier.free
+        assert user.plan == Tier.free
 
     def test_default_active_is_true(self):
         user = User(jwt_sub="test", email="test@example.com")
@@ -122,7 +122,7 @@ class TestUserModel:
         assert user.id is not None
 
     def test_plan_tier_values(self):
-        assert list(PlanTier) == [PlanTier.free, PlanTier.silver, PlanTier.gold, PlanTier.platinum]
+        assert list(Tier) == [Tier.free, Tier.silver, Tier.gold, Tier.platinum]
 
 
 class TestUserIsolation:

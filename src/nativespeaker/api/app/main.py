@@ -25,8 +25,7 @@ async def lifespan(app: FastAPI):
     config = MainConfig().app_config
     setup_logging(log_level=config.log_level, json_log_path=config.json_log_path)
 
-    db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0,
-                                        connect_args=config.db.connect_args)
+    db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)
 
     app.state.config = config
     app.state.session_factory = async_sessionmaker(db_engine, class_=SQLModelAsyncSession,

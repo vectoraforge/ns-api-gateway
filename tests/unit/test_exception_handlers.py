@@ -143,7 +143,7 @@ def test_expired_token_returns_401(dep_client):
 @pytest.fixture(scope="module")
 def state_client():
     """Confirms verifier is resolved from app.state -- swapping it changes behavior."""
-    from auth import UserIdentity
+    from nativespeaker.api.auth import UserIdentity
 
     mock_user = User(jwt_sub="hardcoded-user", email="hw@example.com", name="Hardcoded")
     mock_db = MagicMock()

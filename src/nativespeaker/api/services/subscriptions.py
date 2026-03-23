@@ -13,7 +13,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from nativespeaker.api.config import AppleConfig
 from nativespeaker.api.database import SubscriptionDB, UsageDB
 from nativespeaker.api.exceptions import WebhookVerificationError
-from nativespeaker.api.models import PlanTier, SubscriptionProvider, SubscriptionStatus, User
+from nativespeaker.api.models import Tier, SubscriptionProvider, SubscriptionStatus, User
 from nativespeaker.api.services.firebase import FirebaseService
 
 logger = structlog.get_logger()
@@ -174,10 +174,10 @@ class SubscriptionService:
     def _map_lifecycle_event(self,
                              notification_type: str,
                              subtype: str | None,
-                             product_id: str) -> tuple[SubscriptionStatus | None, PlanTier]:
+                             product_id: str) -> tuple[SubscriptionStatus | None, Tier]:
         """Map Apple notification type/subtype to subscription status and plan tier."""
-        tier_str = self.product_id_to_tier.get(product_id, PlanTier.free)
-        tier = PlanTier(tier_str) if tier_str in PlanTier.__members__ else PlanTier.free
+        tier_str = self.product_id_to_tier.get(product_id, Tier.free)
+        tier = Tier(tier_str) if tier_str in Tier.__members__ else Tier.free
 
         match notification_type:
             case NotificationTypeV2.SUBSCRIBED:
@@ -189,9 +189,9 @@ class SubscriptionService:
                     return SubscriptionStatus.grace_period, tier
                 return SubscriptionStatus.billing_retry, tier
             case NotificationTypeV2.EXPIRED:
-                return SubscriptionStatus.expired, PlanTier.free
+                return SubscriptionStatus.expired, Tier.free
             case NotificationTypeV2.REVOKE:
-                return SubscriptionStatus.revoked, PlanTier.free
+                return SubscriptionStatus.revoked, Tier.free
             case NotificationTypeV2.DID_CHANGE_RENEWAL_PREF:
                 if subtype == Subtype.UPGRADE:
                     return SubscriptionStatus.active, tier
