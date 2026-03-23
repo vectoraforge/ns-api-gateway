@@ -14,7 +14,7 @@ router = APIRouter()
 async def create_chat(body: ChatRequest,
                       user: User = Depends(get_current_user),
                       service: ChatService = Depends(get_chat_service)) -> MessageResponse:
-    ai_message = await service.create_chat(user_id=user.id, phrase=body.phrase,
+    ai_message = await service.create_chat(user=user, phrase=body.phrase,
                                            comment=body.comment, lang=body.lang)
     return MessageResponse(chat_id=ai_message.chat_id, role=ai_message.role,
                            content=ai_message.content.model_dump_json(),
@@ -26,7 +26,7 @@ async def send_message(chat_id: UUID,
                        body: MessageRequest,
                        user: User = Depends(get_current_user),
                        service: ChatService = Depends(get_chat_service)) -> MessageResponse:
-    ai_message = await service.send_message(chat_id=chat_id, user_id=user.id,
+    ai_message = await service.send_message(chat_id=chat_id, user=user,
                                             content=body.content)
     return MessageResponse(chat_id=ai_message.chat_id, role=ai_message.role,
                            content=ai_message.content.model_dump_json(),
