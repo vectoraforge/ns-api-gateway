@@ -2,10 +2,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Response
 
-from app.api.dependencies import get_chat_service, get_current_user
-from app.api.schema import ChatRequest, ChatResponse, MessageRequest, MessageResponse
-from app.models import User
-from app.services import ChatService
+from nativespeaker.api.app.dependencies import get_chat_service, get_current_user
+from nativespeaker.api.schema import ChatRequest, ChatResponse, MessageRequest, MessageResponse
+from nativespeaker.api.models import User
+from nativespeaker.api.services import ChatService
 
 router = APIRouter()
 

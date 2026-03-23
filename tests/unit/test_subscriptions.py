@@ -3,9 +3,8 @@ from uuid import uuid4
 
 import pytest
 
-from app.models import PlanTier, Subscription, SubscriptionProvider, SubscriptionStatus
-from app.services.firebase_service import FirebaseService
-from app.services.subscription_service import SubscriptionService
+from nativespeaker.api.models import PlanTier, Subscription, SubscriptionStatus
+from nativespeaker.api.services import FirebaseService, SubscriptionService
 
 
 # --- Helpers for building mock Apple payloads ---

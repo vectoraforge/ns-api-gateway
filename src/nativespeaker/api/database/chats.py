@@ -4,7 +4,7 @@ from sqlalchemy.orm import selectinload
 from sqlmodel import col, delete, func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.models import Chat, Message
+from nativespeaker.api.models import Chat, Message
 
 
 class ChatsDB:

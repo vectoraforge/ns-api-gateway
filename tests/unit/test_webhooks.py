@@ -1,8 +1,6 @@
-from unittest.mock import AsyncMock
-
 import pytest
 
-from app.exceptions import WebhookVerificationError
+from nativespeaker.api.exceptions import WebhookVerificationError
 
 
 class TestAppleWebhook:

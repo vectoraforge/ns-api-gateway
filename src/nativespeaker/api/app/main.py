@@ -9,13 +9,13 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 import firebase_admin
 from firebase_admin import credentials
 
-from app.api.errors import register_exception_handlers
-from app.api.schema import ErrorResponse
-from app.auth import JWTVerifier
-from app.config import MainConfig
-from app.logs import RequestLoggingMiddleware, setup_logging
-from app.routers import chats_router, examples_router, health_router, root_router, users_router, webhooks_router
-from app.services import FirebaseService, LLMService, create_apple_verifier
+from nativespeaker.api.app.errors import register_exception_handlers
+from nativespeaker.api.schema import ErrorResponse
+from nativespeaker.api.auth import JWTVerifier
+from nativespeaker.api.config import MainConfig
+from nativespeaker.api.logs import RequestLoggingMiddleware, setup_logging
+from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router, users_router, webhooks_router
+from nativespeaker.api.services import FirebaseService, LLMService, create_apple_verifier
 
 logger = structlog.get_logger()
 

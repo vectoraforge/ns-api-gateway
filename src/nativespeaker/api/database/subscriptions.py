@@ -5,7 +5,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.models import (
+from nativespeaker.api.models import (
     PlanTier,
     Subscription,
     SubscriptionEvent,

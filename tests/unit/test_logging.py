@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from structlog.testing import capture_logs
 
-from app.logs import RequestLoggingMiddleware, setup_logging
+from nativespeaker.api.logs import RequestLoggingMiddleware, setup_logging
 
 
 @pytest.fixture(autouse=True)

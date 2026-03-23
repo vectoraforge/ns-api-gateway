@@ -1,8 +1,8 @@
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.auth import UserIdentity
-from app.database import UsersDB
-from app.models import User
+from nativespeaker.api.auth import UserIdentity
+from nativespeaker.api.database import UsersDB
+from nativespeaker.api.models import User
 
 
 class UserService:

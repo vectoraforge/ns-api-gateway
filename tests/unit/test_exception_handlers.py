@@ -6,10 +6,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.api.dependencies import get_current_user, get_db
-from app.models import User
-from app.api.errors import register_exception_handlers
-from app.exceptions import (
+from nativespeaker.api.app.dependencies import get_current_user, get_db
+from nativespeaker.api.models import User
+from nativespeaker.api.app.errors import register_exception_handlers
+from nativespeaker.api.exceptions import (
     AuthenticationError,
     ChatHistoryLimitError,
     CircuitOpenError,
@@ -106,7 +106,7 @@ def dep_client():
     async def _protected(user: User = Depends(get_current_user)):
         return {"user_id": str(user.id)}
 
-    with patch("app.api.dependencies.UserService") as mock_user_svc_cls:
+    with patch("app.app.dependencies.UserService") as mock_user_svc_cls:
         mock_user_svc_cls.return_value.get_or_create = AsyncMock(return_value=mock_user)
         with TestClient(app, raise_server_exceptions=False) as client:
             yield client
@@ -143,7 +143,7 @@ def test_expired_token_returns_401(dep_client):
 @pytest.fixture(scope="module")
 def state_client():
     """Confirms verifier is resolved from app.state -- swapping it changes behavior."""
-    from app.auth import UserIdentity
+    from auth import UserIdentity
 
     mock_user = User(jwt_sub="hardcoded-user", email="hw@example.com", name="Hardcoded")
     mock_db = MagicMock()
@@ -162,7 +162,7 @@ def state_client():
     async def _whoami(user: User = Depends(get_current_user)):
         return {"user_id": user.jwt_sub}
 
-    with patch("app.api.dependencies.UserService") as mock_user_svc_cls:
+    with patch("app.app.dependencies.UserService") as mock_user_svc_cls:
         mock_user_svc_cls.return_value.get_or_create = AsyncMock(return_value=mock_user)
         with TestClient(app, raise_server_exceptions=False) as client:
             yield client

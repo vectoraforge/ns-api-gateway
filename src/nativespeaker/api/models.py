@@ -7,7 +7,7 @@ from sqlalchemy import DateTime, Index, Text, TypeDecorator, UniqueConstraint, e
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 
-from app.api.schema import Issue
+from nativespeaker.api.schema import Issue
 
 
 class PydanticJSONB(TypeDecorator):
@@ -62,7 +62,7 @@ class BaseTable(SQLModel):
 
 
 class Message(BaseTable, table=True):
-    __tablename__ = "messages"
+    __tablename__ = "core.messages"
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
     chat_id: UUID = Field(foreign_key="chats.id", ondelete="CASCADE")
@@ -101,7 +101,7 @@ def _reconstitute_content(target, context):
 
 
 class User(BaseTable, table=True):
-    __tablename__ = "users"
+    __tablename__ = "core.users"
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
     jwt_sub: str = Field(unique=True, index=True, sa_type=Text())
@@ -116,7 +116,7 @@ class User(BaseTable, table=True):
 
 
 class Subscription(BaseTable, table=True):
-    __tablename__ = "subscriptions"
+    __tablename__ = "core.subscriptions"
     __table_args__ = (
         Index(
             "ix_subscriptions_user_provider_active",
@@ -140,7 +140,7 @@ class Subscription(BaseTable, table=True):
 
 
 class SubscriptionEvent(BaseTable, table=True):
-    __tablename__ = "subscription_events"
+    __tablename__ = "core.subscription_events"
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
     subscription_id: UUID = Field(foreign_key="subscriptions.id", index=True)
@@ -153,14 +153,14 @@ class SubscriptionEvent(BaseTable, table=True):
 
 
 class Plan(BaseTable, table=True):
-    __tablename__ = "plans"
+    __tablename__ = "core.plans"
 
     tier: str = Field(primary_key=True, sa_type=Text())
     monthly_quota: int = Field()
 
 
 class UsageMonthly(BaseTable, table=True):
-    __tablename__ = "usage_monthly"
+    __tablename__ = "core.usage_monthly"
     __table_args__ = (
         UniqueConstraint("user_id", "month"),
     )
@@ -172,7 +172,7 @@ class UsageMonthly(BaseTable, table=True):
 
 
 class Chat(BaseTable, table=True):
-    __tablename__ = "chats"
+    __tablename__ = "core.chats"
 
     id: UUID = Field(primary_key=True)
     user_id: UUID = Field(foreign_key="users.id", index=True)

@@ -2,9 +2,9 @@ from uuid import uuid4
 
 import pytest
 
-from app.api.schema import ExamplesResponse, Issue
-from app.exceptions import ChatHistoryLimitError, InvalidChatError, PermanentLLMError, UnsupportedLanguageError
-from app.models import AIContent, Chat, HumanContent, Message, Role
+from nativespeaker.api.schema import ExamplesResponse, Issue
+from nativespeaker.api.exceptions import ChatHistoryLimitError, InvalidChatError, PermanentLLMError, UnsupportedLanguageError
+from nativespeaker.api.models import AIContent, Chat, HumanContent, Message, Role
 
 
 class TestCreateChat:

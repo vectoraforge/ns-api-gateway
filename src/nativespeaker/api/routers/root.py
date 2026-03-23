@@ -2,8 +2,8 @@ from importlib.metadata import version
 
 from fastapi import APIRouter, Depends
 
-from app.api.dependencies import get_chat_service
-from app.services import ChatService
+from nativespeaker.api.app.dependencies import get_chat_service
+from nativespeaker.api.services import ChatService
 
 router = APIRouter()
 

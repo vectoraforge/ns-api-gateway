@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, Query
 
-from app.api.dependencies import get_chat_service
-from app.api.schema import ExamplesResponse
-from app.services import ChatService
+from nativespeaker.api.app.dependencies import get_chat_service
+from nativespeaker.api.schema import ExamplesResponse
+from nativespeaker.api.services import ChatService
 
 router = APIRouter()
 

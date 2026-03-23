@@ -5,11 +5,11 @@ from fastapi import Header, Request
 from fastapi.params import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import TokenVerifier
-from app.config import AppConfig
-from app.exceptions import AuthenticationError
-from app.models import User
-from app.services import ChatService, SubscriptionService, UserService
+from nativespeaker.api.auth import TokenVerifier
+from nativespeaker.api.config import AppConfig
+from nativespeaker.api.exceptions import AuthenticationError
+from nativespeaker.api.models import User
+from nativespeaker.api.services import ChatService, SubscriptionService, UserService
 
 
 def get_config(request: Request) -> AppConfig:

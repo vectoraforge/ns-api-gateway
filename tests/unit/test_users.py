@@ -4,12 +4,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.dependencies import get_current_user, get_db
-from app.api.errors import register_exception_handlers
-from app.auth import UserIdentity
-from app.models import PlanTier, User
-from app.routers import users_router
-from tests.unit.conftest import TEST_USER
+from nativespeaker.api.app.dependencies import get_current_user, get_db
+from nativespeaker.api.app.errors import register_exception_handlers
+from nativespeaker.api.auth import UserIdentity
+from nativespeaker.api.models import PlanTier, User
+from nativespeaker.api.routers import users_router
 
 
 class TestGetUsersMe:
@@ -68,7 +67,7 @@ class TestInactiveUser:
 
     def test_inactive_user_rejected(self):
         """Inactive user receives the same 401 as invalid token -- no 'inactive' message."""
-        from app.exceptions import AuthenticationError
+        from exceptions import AuthenticationError
 
         async def mock_get_current_user():
             raise AuthenticationError("Authentication failed")

@@ -1,10 +1,10 @@
 """Tests for monthly quota enforcement via UsageDB and ChatService integration."""
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
-from app.exceptions import QuotaExceededError
-from app.models import Chat, HumanContent, Message, Role
-from tests.unit.conftest import TEST_USER
+from nativespeaker.api.exceptions import QuotaExceededError
+from nativespeaker.api.models import Chat
+from unit.conftest import TEST_USER
 
 
 class TestQuotaExceededError:

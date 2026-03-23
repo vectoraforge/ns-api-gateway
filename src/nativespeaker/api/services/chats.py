@@ -4,11 +4,11 @@ from uuid import UUID, uuid4
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.schema import ExamplesResponse
-from app.database import ChatsDB, UsageDB
-from app.exceptions import ChatHistoryLimitError, InvalidChatError, QuotaExceededError, UnsupportedLanguageError
-from app.models import AIContent, Chat, HumanContent, Message, Role
-from .llm_service import LLMService
+from nativespeaker.api.schema import ExamplesResponse
+from nativespeaker.api.database import ChatsDB, UsageDB
+from nativespeaker.api.exceptions import ChatHistoryLimitError, InvalidChatError, QuotaExceededError, UnsupportedLanguageError
+from nativespeaker.api.models import AIContent, Chat, HumanContent, Message, Role
+from nativespeaker.api.services.llm import LLMService
 
 
 class ChatService:

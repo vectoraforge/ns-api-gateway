@@ -7,8 +7,8 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableSerializable
 from pydantic import BaseModel
 
-from app.config import ModelConfig, ResilienceConfig
-from app.resilience import ResiliencePolicy
+from nativespeaker.api.config import ModelConfig, ResilienceConfig
+from nativespeaker.api.resilience import ResiliencePolicy
 
 
 class LLMService:

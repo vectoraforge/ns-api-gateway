@@ -11,9 +11,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from app.api.main import app
-from app.config import MainConfig
-from app.models import AIContent, Chat, HumanContent, Message, Role, User
+from nativespeaker.api.app.main import app
+from nativespeaker.api.config import MainConfig
+from nativespeaker.api.models import AIContent, Chat, HumanContent, Message, Role, User
 
 
 @pytest.fixture(scope="session")

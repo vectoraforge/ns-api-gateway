@@ -6,8 +6,8 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
-from app.api.schema import ErrorResponse
-from app.exceptions import ServiceError
+from nativespeaker.api.schema import ErrorResponse
+from nativespeaker.api.exceptions import ServiceError
 
 logger = structlog.get_logger()
 

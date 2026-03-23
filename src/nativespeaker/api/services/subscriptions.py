@@ -10,11 +10,11 @@ from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier, Verif
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.config import AppleConfig
-from app.database import SubscriptionDB, UsageDB
-from app.exceptions import WebhookVerificationError
-from app.models import PlanTier, SubscriptionProvider, SubscriptionStatus, User
-from app.services.firebase_service import FirebaseService
+from nativespeaker.api.config import AppleConfig
+from nativespeaker.api.database import SubscriptionDB, UsageDB
+from nativespeaker.api.exceptions import WebhookVerificationError
+from nativespeaker.api.models import PlanTier, SubscriptionProvider, SubscriptionStatus, User
+from nativespeaker.api.services.firebase import FirebaseService
 
 logger = structlog.get_logger()
 

@@ -4,8 +4,8 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from app.api.schema import ChatRequest, ChatResponse, ExamplesResponse, Issue, MessageRequest, MessageResponse
-from app.exceptions import AnalysisError, InvalidChatError, ServiceError, UnsupportedLanguageError
+from nativespeaker.api.schema import ChatRequest, ChatResponse, ExamplesResponse, Issue, MessageRequest, MessageResponse
+from nativespeaker.api.exceptions import AnalysisError, InvalidChatError, ServiceError, UnsupportedLanguageError
 
 
 class TestChatRequest:

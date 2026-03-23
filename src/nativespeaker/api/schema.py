@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.exceptions import ErrorCode
+from nativespeaker.api.exceptions import ErrorCode
 
 
 class ErrorResponse(BaseModel):

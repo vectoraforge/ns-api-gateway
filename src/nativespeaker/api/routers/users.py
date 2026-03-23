@@ -3,10 +3,10 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_current_user, get_db
-from app.api.schema import UserProfileResponse
-from app.database import UsageDB
-from app.models import User
+from nativespeaker.api.app.dependencies import get_current_user, get_db
+from nativespeaker.api.schema import UserProfileResponse
+from nativespeaker.api.database import UsageDB
+from nativespeaker.api.models import User
 
 router = APIRouter()
 

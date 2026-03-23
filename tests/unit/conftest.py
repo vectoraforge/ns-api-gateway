@@ -8,14 +8,14 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.dependencies import get_chat_service, get_current_user, get_db, get_subscription_service
-from app.api.errors import register_exception_handlers
-from app.auth import UserIdentity
-from app.database import ChatsDB
-from app.exceptions import AuthenticationError
-from app.models import PlanTier, User
-from app.routers import chats_router, examples_router, health_router, root_router, users_router, webhooks_router
-from app.services import ChatService, SubscriptionService
+from nativespeaker.api.app.dependencies import get_chat_service, get_current_user, get_db, get_subscription_service
+from nativespeaker.api.app.errors import register_exception_handlers
+from nativespeaker.api.auth import UserIdentity
+from nativespeaker.api.database import ChatsDB
+from nativespeaker.api.exceptions import AuthenticationError
+from nativespeaker.api.models import PlanTier, User
+from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router, users_router, webhooks_router
+from nativespeaker.api.services import ChatService, SubscriptionService
 
 # ---------------------------------------------------------------------------
 # JWT test infrastructure -- ephemeral RSA keypair and token factory

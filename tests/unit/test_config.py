@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from app.config import MainConfig, ModelConfig, ResilienceConfig
+from nativespeaker.api.config import MainConfig, ModelConfig, ResilienceConfig
 
 # pytest-dotenv loads .env which sets CONFIG_DIR.
 # With env_nested_delimiter="_", pydantic-settings can misinterpret env vars.

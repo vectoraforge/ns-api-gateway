@@ -2,8 +2,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.auth import UserIdentity
-from app.models import User
+from nativespeaker.api.auth import UserIdentity
+from nativespeaker.api.models import User
 
 
 class UsersDB:
