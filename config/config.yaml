@@ -21,7 +21,13 @@ apple:
   environment: sandbox
   bundle_id: com.example.nativespeaker
   enable_online_checks: true
-  product_id_to_tier:
+  product_id_to_plan:
     com.example.nativespeaker.silver: silver
     com.example.nativespeaker.gold: gold
     com.example.nativespeaker.platinum: platinum
+quotas:
+  tiers:
+    free: 10
+    silver: 50
+    gold: 200
+    platinum: 1000

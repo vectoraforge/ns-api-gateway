@@ -6,6 +6,8 @@ import yaml
 from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from nativespeaker.api.models import SubscriptionPlan
+
 LogLevel = StrEnum("LogLevel", {k: k for k in logging.getLevelNamesMapping()})
 
 
@@ -53,13 +55,24 @@ class JWTConfig(BaseModel):
         return  f"https://securetoken.google.com/{self.project_id}"
 
 
+class QuotaConfig(BaseModel):
+    tiers: dict[SubscriptionPlan, int]
+
+    @model_validator(mode='after')
+    def check_all_tiers(self):
+        missing = set(SubscriptionPlan) - self.tiers.keys()
+        if missing:
+            raise ValueError(f'Missing quota for: {missing}')
+        return self
+
+
 class AppleConfig(BaseModel):
     environment: str = Field(default="sandbox", description="Apple environment: sandbox or production")
     bundle_id: str = Field(description="App bundle identifier")
     app_apple_id: int | None = Field(default=None, description="Numeric Apple ID (required for production)")
     enable_online_checks: bool = Field(default=True, description="Enable OCSP certificate checks")
     certs_dir: str = Field(..., description="Directory containing Apple root CA certificates")
-    product_id_to_tier: dict[str, str] = Field(description="Maps Apple product IDs to PlanTier values")
+    product_id_to_plan: dict[str, SubscriptionPlan] = Field(description="Maps Apple product IDs to SubscriptionPlan values")
 
 
 class ModelConfig(BaseModel):
@@ -77,6 +90,7 @@ class AppConfig(BaseConfig):
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
     jwt: JWTConfig = Field(default_factory=JWTConfig)
     apple: AppleConfig = Field(default_factory=AppleConfig)
+    quotas: QuotaConfig
 
     chats_limit: int = Field(default=50, ge=1)
     messages_limit: int = Field(default=50, ge=1)
