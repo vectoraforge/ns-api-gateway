@@ -13,7 +13,7 @@ from app.api.errors import register_exception_handlers
 from app.api.schema import ErrorResponse
 from app.auth import JWTVerifier
 from app.config import MainConfig
-from app.logging import RequestLoggingMiddleware, setup_logging
+from app.logs import RequestLoggingMiddleware, setup_logging
 from app.routers import chats_router, examples_router, health_router, root_router, users_router, webhooks_router
 from app.services import FirebaseService, LLMService, create_apple_verifier
 
@@ -49,6 +49,7 @@ async def lifespan(app: FastAPI):
     logger.info("started", model=config.model.name, concurrency=config.resilience.pool_size,
                 languages=list(config.examples.keys()))
     yield
+    firebase_admin.delete_app(firebase_admin.get_app())
     await db_engine.dispose()
     logger.info("shutdown")
 

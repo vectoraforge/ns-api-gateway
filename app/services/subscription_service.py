@@ -32,7 +32,6 @@ _IGNORED_TYPES = {
 def _load_apple_root_certificates(cert_dir: str) -> list[bytes]:
     """Load Apple root CA certificates from directory as DER bytes."""
     cert_files = [
-        "AppleComputerRootCertificate.cer",
         "AppleIncRootCertificate.cer",
         "AppleRootCA-G2.cer",
         "AppleRootCA-G3.cer",
@@ -47,7 +46,7 @@ def create_apple_verifier(config: AppleConfig) -> SignedDataVerifier:
                    if config.environment == "production"
                    else Environment.SANDBOX)
     return SignedDataVerifier(
-        root_certificates=_load_apple_root_certificates(config.cert_dir),
+        root_certificates=_load_apple_root_certificates(config.certs_dir),
         enable_online_checks=config.enable_online_checks,
         environment=environment,
         bundle_id=config.bundle_id,

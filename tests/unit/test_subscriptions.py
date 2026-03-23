@@ -12,7 +12,7 @@ from app.services.subscription_service import SubscriptionService
 
 def _make_mock_transaction(*,
                            original_transaction_id: str = "txn_001",
-                           product_id: str = "com.example.speaknative.gold",
+                           product_id: str = "com.example.nativespeaker.gold",
                            app_account_token: str | None = None):
     txn = MagicMock()
     txn.originalTransactionId = original_transaction_id
@@ -36,9 +36,9 @@ def _make_mock_payload(*,
 
 
 PRODUCT_TO_TIER = {
-    "com.example.speaknative.silver": "silver",
-    "com.example.speaknative.gold": "gold",
-    "com.example.speaknative.platinum": "platinum",
+    "com.example.nativespeaker.silver": "silver",
+    "com.example.nativespeaker.gold": "gold",
+    "com.example.nativespeaker.platinum": "platinum",
 }
 
 
@@ -84,7 +84,7 @@ class TestSubscriptionLifecycle:
 
         status, tier = subscription_service._map_lifecycle_event(
             NotificationTypeV2.SUBSCRIBED, Subtype.INITIAL_BUY,
-            "com.example.speaknative.gold",
+            "com.example.nativespeaker.gold",
         )
         assert status == SubscriptionStatus.active
         assert tier == PlanTier.gold
@@ -95,7 +95,7 @@ class TestSubscriptionLifecycle:
 
         status, tier = subscription_service._map_lifecycle_event(
             NotificationTypeV2.DID_RENEW, None,
-            "com.example.speaknative.gold",
+            "com.example.nativespeaker.gold",
         )
         assert status == SubscriptionStatus.active
         assert tier == PlanTier.gold
@@ -107,7 +107,7 @@ class TestSubscriptionLifecycle:
 
         status, tier = subscription_service._map_lifecycle_event(
             NotificationTypeV2.DID_FAIL_TO_RENEW, Subtype.GRACE_PERIOD,
-            "com.example.speaknative.silver",
+            "com.example.nativespeaker.silver",
         )
         assert status == SubscriptionStatus.grace_period
         assert tier == PlanTier.silver
@@ -118,7 +118,7 @@ class TestSubscriptionLifecycle:
 
         status, tier = subscription_service._map_lifecycle_event(
             NotificationTypeV2.DID_FAIL_TO_RENEW, None,
-            "com.example.speaknative.gold",
+            "com.example.nativespeaker.gold",
         )
         assert status == SubscriptionStatus.billing_retry
         assert tier == PlanTier.gold
@@ -130,7 +130,7 @@ class TestSubscriptionLifecycle:
 
         status, tier = subscription_service._map_lifecycle_event(
             NotificationTypeV2.EXPIRED, Subtype.VOLUNTARY,
-            "com.example.speaknative.gold",
+            "com.example.nativespeaker.gold",
         )
         assert status == SubscriptionStatus.expired
         assert tier == PlanTier.free
@@ -141,7 +141,7 @@ class TestSubscriptionLifecycle:
 
         status, tier = subscription_service._map_lifecycle_event(
             NotificationTypeV2.REVOKE, None,
-            "com.example.speaknative.gold",
+            "com.example.nativespeaker.gold",
         )
         assert status == SubscriptionStatus.revoked
         assert tier == PlanTier.free
@@ -153,7 +153,7 @@ class TestSubscriptionLifecycle:
 
         status, tier = subscription_service._map_lifecycle_event(
             NotificationTypeV2.DID_CHANGE_RENEWAL_PREF, Subtype.UPGRADE,
-            "com.example.speaknative.platinum",
+            "com.example.nativespeaker.platinum",
         )
         assert status == SubscriptionStatus.active
         assert tier == PlanTier.platinum
@@ -165,7 +165,7 @@ class TestSubscriptionLifecycle:
 
         status, tier = subscription_service._map_lifecycle_event(
             NotificationTypeV2.DID_CHANGE_RENEWAL_PREF, Subtype.DOWNGRADE,
-            "com.example.speaknative.silver",
+            "com.example.nativespeaker.silver",
         )
         assert status is None
 
@@ -237,7 +237,7 @@ class TestPlanTierUpdate:
         )
         mock_verifier.verify_and_decode_notification.return_value = payload
         mock_verifier.verify_and_decode_signed_transaction.return_value = _make_mock_transaction(
-            product_id="com.example.speaknative.gold"
+            product_id="com.example.nativespeaker.gold"
         )
 
         user_id = uuid4()
@@ -271,7 +271,7 @@ class TestFirebaseSync:
         )
         mock_verifier.verify_and_decode_notification.return_value = payload
         mock_verifier.verify_and_decode_signed_transaction.return_value = _make_mock_transaction(
-            product_id="com.example.speaknative.gold"
+            product_id="com.example.nativespeaker.gold"
         )
 
         user_id = uuid4()
@@ -325,7 +325,7 @@ class TestFirebaseSync:
         )
         mock_verifier.verify_and_decode_notification.return_value = payload
         mock_verifier.verify_and_decode_signed_transaction.return_value = _make_mock_transaction(
-            product_id="com.example.speaknative.gold"
+            product_id="com.example.nativespeaker.gold"
         )
 
         existing_sub = MagicMock(spec=Subscription)

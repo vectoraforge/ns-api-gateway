@@ -9,7 +9,7 @@ class TestRootEndpoint:
         response = await async_client.get("/")
         assert response.status_code == 200
         data = response.json()
-        assert data["name"] == "SpeakNative API Gateway"
+        assert data["name"] == "NativeSpeaker API Gateway"
         assert "version" in data
         assert isinstance(data["supported_languages"], list)
         assert len(data["supported_languages"]) > 0

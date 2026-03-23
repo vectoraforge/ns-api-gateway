@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from structlog.testing import capture_logs
 
-from app.logging import RequestLoggingMiddleware, setup_logging
+from app.logs import RequestLoggingMiddleware, setup_logging
 
 
 @pytest.fixture(autouse=True)

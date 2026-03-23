@@ -1,7 +1,7 @@
-# SpeakNative API Gateway - Project Specification
+# NativeSpeaker API Gateway - Project Specification
 
 ## Overview
-SpeakNative API Gateway is a FastAPI service that analyzes non-native phrasing and suggests more natural alternatives. It supports multi-language prompts and maintains per-user chat history to allow follow-up questions. The service uses OpenAI via LangChain, stores chats/messages in Postgres, and exposes a small REST API.
+NativeSpeaker API Gateway is a FastAPI service that analyzes non-native phrasing and suggests more natural alternatives. It supports multi-language prompts and maintains per-user chat history to allow follow-up questions. The service uses OpenAI via LangChain, stores chats/messages in Postgres, and exposes a small REST API.
 
 ## Goals
 - Provide phrase analysis that identifies issues, suggests corrected alternatives, and summarizes naturalness.
@@ -30,7 +30,7 @@ Returns service metadata.
 Response:
 ```json
 {
-  "name": "SpeakNative API Gateway",
+  "name": "NativeSpeaker API Gateway",
   "version": "1.0.0",
   "supported_languages": ["en", "es"]
 }

@@ -19,10 +19,9 @@ chats_limit: 50
 messages_limit: 50
 apple:
   environment: sandbox
-  bundle_id: com.example.speaknative
+  bundle_id: com.example.nativespeaker
   enable_online_checks: true
-  cert_dir: certs/
   product_id_to_tier:
-    com.example.speaknative.silver: silver
-    com.example.speaknative.gold: gold
-    com.example.speaknative.platinum: platinum
+    com.example.nativespeaker.silver: silver
+    com.example.nativespeaker.gold: gold
+    com.example.nativespeaker.platinum: platinum

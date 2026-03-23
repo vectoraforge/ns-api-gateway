@@ -1,4 +1,4 @@
-# SpeakNative API Gateway
+# NativeSpeaker API Gateway
 
 API Gateway for linguistic analysis of phrases to identify non-native patterns and suggest natural alternatives.
 

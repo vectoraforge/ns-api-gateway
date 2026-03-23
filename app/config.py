@@ -63,7 +63,7 @@ class AppleConfig(BaseModel):
     bundle_id: str = Field(description="App bundle identifier")
     app_apple_id: int | None = Field(default=None, description="Numeric Apple ID (required for production)")
     enable_online_checks: bool = Field(default=True, description="Enable OCSP certificate checks")
-    cert_dir: str = Field(default="certs/", description="Directory containing Apple root CA certificates")
+    certs_dir: str = Field(..., description="Directory containing Apple root CA certificates")
     product_id_to_tier: dict[str, str] = Field(description="Maps Apple product IDs to PlanTier values")
 
 
