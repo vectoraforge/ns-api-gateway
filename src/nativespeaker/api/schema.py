@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 from uuid import UUID
 
@@ -51,7 +53,7 @@ class ExamplesResponse(BaseModel):
 class UserProfileResponse(BaseModel):
     email: str
     name: str | None = None
-    plan: str
+    subscription_plan: SubscriptionPlan
     created_at: datetime
     requests_used: int
     monthly_limit: int

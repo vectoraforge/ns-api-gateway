@@ -182,3 +182,10 @@ class Chat(BaseTable, table=True):
     @property
     def human_messages(self):
         return list(filter(lambda m: m.role == ChatRole.human, self.messages))
+
+
+# Resolve forward reference: schema.py uses `from __future__ import annotations`
+# so SubscriptionPlan in UserProfileResponse is a deferred string until model_rebuild().
+# We rebuild here where SubscriptionPlan is defined, passing it as an explicit namespace.
+from nativespeaker.api.schema import UserProfileResponse  # noqa: E402
+UserProfileResponse.model_rebuild(_types_namespace={'SubscriptionPlan': SubscriptionPlan})
