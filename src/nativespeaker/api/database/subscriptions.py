@@ -6,7 +6,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.models import (
-    Tier,
+    SubscriptionPlan,
     Subscription,
     SubscriptionEvent,
     SubscriptionProvider,
@@ -35,7 +35,7 @@ class SubscriptionDB:
                                   user_id: UUID,
                                   provider: SubscriptionProvider,
                                   external_id: str,
-                                  plan: Tier,
+                                  plan: SubscriptionPlan,
                                   status: SubscriptionStatus) -> Subscription:
         subscription = Subscription(
             user_id=user_id,
@@ -50,7 +50,7 @@ class SubscriptionDB:
 
     async def update_subscription(self,
                                   subscription: Subscription,
-                                  plan: Tier,
+                                  plan: SubscriptionPlan,
                                   status: SubscriptionStatus) -> None:
         subscription.plan = plan
         subscription.status = status
@@ -62,8 +62,8 @@ class SubscriptionDB:
                                       subscription_id: UUID,
                                       event_type: str,
                                       notification_uuid: str,
-                                      old_tier: str | None,
-                                      new_tier: str | None) -> bool:
+                                      old_plan: SubscriptionPlan | None,
+                                      new_plan: SubscriptionPlan | None) -> bool:
         """Insert subscription event if not duplicate. Returns True if inserted, False if duplicate."""
         stmt = (
             pg_insert(SubscriptionEvent)
@@ -71,19 +71,19 @@ class SubscriptionDB:
                 subscription_id=subscription_id,
                 event_type=event_type,
                 notification_uuid=notification_uuid,
-                old_tier=old_tier,
-                new_tier=new_tier,
+                old_plan=old_plan,
+                new_plan=new_plan,
             )
             .on_conflict_do_nothing(index_elements=["notification_uuid"])
         )
         result = await self.session.exec(stmt)
         return result.rowcount > 0
 
-    async def update_user_plan(self, user_id: UUID, plan: Tier) -> None:
+    async def update_user_plan(self, user_id: UUID, plan: SubscriptionPlan) -> None:
         result = await self.session.exec(
             select(User).where(User.id == user_id)
         )
         user = result.one()
-        user.plan = plan
+        user.subscription_plan = plan
         self.session.add(user)
         await self.session.flush()

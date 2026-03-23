@@ -13,7 +13,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from nativespeaker.api.config import AppleConfig
 from nativespeaker.api.database import SubscriptionDB, UsageDB
 from nativespeaker.api.exceptions import WebhookVerificationError
-from nativespeaker.api.models import Tier, SubscriptionProvider, SubscriptionStatus, User
+from nativespeaker.api.models import SubscriptionPlan, SubscriptionProvider, SubscriptionStatus, User
 from nativespeaker.api.services.firebase import FirebaseService
 
 logger = structlog.get_logger()
@@ -60,13 +60,13 @@ class SubscriptionService:
                  db: AsyncSession,
                  verifier: SignedDataVerifier,
                  firebase_service: FirebaseService,
-                 product_id_to_tier: dict[str, str]):
+                 product_id_to_plan: dict[str, SubscriptionPlan]):
         self.db = db
         self.subscriptions_db = SubscriptionDB(db)
         self.usage_db = UsageDB(db)
         self.verifier = verifier
         self.firebase_service = firebase_service
-        self.product_id_to_tier = product_id_to_tier
+        self.product_id_to_plan = product_id_to_plan
 
     async def process_apple_notification(self, signed_payload: str) -> None:
         """Verify, decode, and process an Apple Store Server Notification V2."""
@@ -96,7 +96,7 @@ class SubscriptionService:
         original_transaction_id = transaction.originalTransactionId
         product_id = transaction.productId
 
-        status, plan_tier = self._map_lifecycle_event(
+        status, plan = self._map_lifecycle_event(
             notification_type, subtype, product_id
         )
         if status is None:
@@ -110,7 +110,7 @@ class SubscriptionService:
             provider=SubscriptionProvider.apple,
         )
 
-        old_tier = subscription.plan if subscription else None
+        old_plan = subscription.plan if subscription else None
 
         if subscription is None:
             app_account_token = transaction.appAccountToken
@@ -124,26 +124,26 @@ class SubscriptionService:
                 user_id=UUID(app_account_token),
                 provider=SubscriptionProvider.apple,
                 external_id=original_transaction_id,
-                plan=plan_tier,
+                plan=plan,
                 status=status,
             )
             await self.subscriptions_db.insert_event_idempotent(
                 subscription_id=subscription.id,
                 event_type=notification_type,
                 notification_uuid=notification_uuid,
-                old_tier=None,
-                new_tier=plan_tier,
+                old_plan=None,
+                new_plan=plan,
             )
             await self.subscriptions_db.update_user_plan(
-                user_id=subscription.user_id, plan=plan_tier
+                user_id=subscription.user_id, plan=plan
             )
         else:
             inserted = await self.subscriptions_db.insert_event_idempotent(
                 subscription_id=subscription.id,
                 event_type=notification_type,
                 notification_uuid=notification_uuid,
-                old_tier=old_tier,
-                new_tier=plan_tier,
+                old_plan=old_plan,
+                new_plan=plan,
             )
             if not inserted:
                 logger.info("apple_notification_duplicate",
@@ -151,14 +151,14 @@ class SubscriptionService:
                 return
 
             await self.subscriptions_db.update_subscription(
-                subscription=subscription, plan=plan_tier, status=status
+                subscription=subscription, plan=plan, status=status
             )
             await self.subscriptions_db.update_user_plan(
-                user_id=subscription.user_id, plan=plan_tier
+                user_id=subscription.user_id, plan=plan
             )
 
-        # Usage reset + Firebase sync -- only if tier changed
-        if old_tier != plan_tier:
+        # Usage reset + Firebase sync -- only if plan changed
+        if old_plan != plan:
             month = datetime.now(UTC).strftime("%Y-%m")
             await self.usage_db.reset_usage(subscription.user_id, month)
 
@@ -168,34 +168,33 @@ class SubscriptionService:
             user = result.first()
             if user:
                 await self.firebase_service.set_plan_claim(
-                    user.jwt_sub, plan_tier
+                    user.jwt_sub, plan
                 )
 
     def _map_lifecycle_event(self,
                              notification_type: str,
                              subtype: str | None,
-                             product_id: str) -> tuple[SubscriptionStatus | None, Tier]:
-        """Map Apple notification type/subtype to subscription status and plan tier."""
-        tier_str = self.product_id_to_tier.get(product_id, Tier.free)
-        tier = Tier(tier_str) if tier_str in Tier.__members__ else Tier.free
+                             product_id: str) -> tuple[SubscriptionStatus | None, SubscriptionPlan]:
+        """Map Apple notification type/subtype to subscription status and plan."""
+        plan = self.product_id_to_plan.get(product_id, SubscriptionPlan.free)
 
         match notification_type:
             case NotificationTypeV2.SUBSCRIBED:
-                return SubscriptionStatus.active, tier
+                return SubscriptionStatus.active, plan
             case NotificationTypeV2.DID_RENEW:
-                return SubscriptionStatus.active, tier
+                return SubscriptionStatus.active, plan
             case NotificationTypeV2.DID_FAIL_TO_RENEW:
                 if subtype == Subtype.GRACE_PERIOD:
-                    return SubscriptionStatus.grace_period, tier
-                return SubscriptionStatus.billing_retry, tier
+                    return SubscriptionStatus.grace_period, plan
+                return SubscriptionStatus.billing_retry, plan
             case NotificationTypeV2.EXPIRED:
-                return SubscriptionStatus.expired, Tier.free
+                return SubscriptionStatus.expired, SubscriptionPlan.free
             case NotificationTypeV2.REVOKE:
-                return SubscriptionStatus.revoked, Tier.free
+                return SubscriptionStatus.revoked, SubscriptionPlan.free
             case NotificationTypeV2.DID_CHANGE_RENEWAL_PREF:
                 if subtype == Subtype.UPGRADE:
-                    return SubscriptionStatus.active, tier
+                    return SubscriptionStatus.active, plan
                 # DOWNGRADE -- deferred to next renewal
-                return None, tier
+                return None, plan
             case _:
-                return SubscriptionStatus.active, tier
+                return SubscriptionStatus.active, plan
