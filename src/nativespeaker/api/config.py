@@ -55,17 +55,6 @@ class JWTConfig(BaseModel):
         return  f"https://securetoken.google.com/{self.project_id}"
 
 
-class QuotaConfig(BaseModel):
-    tiers: dict[SubscriptionPlan, int]
-
-    @model_validator(mode='after')
-    def check_all_tiers(self):
-        missing = set(SubscriptionPlan) - self.tiers.keys()
-        if missing:
-            raise ValueError(f'Missing quota for: {missing}')
-        return self
-
-
 class AppleConfig(BaseModel):
     environment: str = Field(default="sandbox", description="Apple environment: sandbox or production")
     bundle_id: str = Field(description="App bundle identifier")
@@ -90,7 +79,7 @@ class AppConfig(BaseConfig):
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
     jwt: JWTConfig = Field(default_factory=JWTConfig)
     apple: AppleConfig = Field(default_factory=AppleConfig)
-    quotas: QuotaConfig
+    quotas: dict[SubscriptionPlan, int]
 
     chats_limit: int = Field(default=50, ge=1)
     messages_limit: int = Field(default=50, ge=1)
