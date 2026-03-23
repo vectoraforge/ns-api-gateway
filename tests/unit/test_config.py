@@ -46,11 +46,10 @@ apple:
   product_id_to_plan:
     com.example.test.gold: gold
 quotas:
-  tiers:
-    free: 10
-    silver: 50
-    gold: 200
-    platinum: 1000
+  free: 10
+  silver: 50
+  gold: 200
+  platinum: 1000
 """
     prompt_content = "Analyze {lang} phrase: {phrase}"
     examples_content = """

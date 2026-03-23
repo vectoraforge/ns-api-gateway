@@ -5,6 +5,7 @@ import pytest
 from nativespeaker.api.schema import ExamplesResponse, Issue
 from nativespeaker.api.exceptions import ChatHistoryLimitError, InvalidChatError, PermanentLLMError, UnsupportedLanguageError
 from nativespeaker.api.models import AIContent, Chat, ChatRole, HumanContent, Message
+from unit.conftest import TEST_USER
 
 
 class TestCreateChat:
@@ -20,7 +21,7 @@ class TestCreateChat:
         service.llm_service.ainvoke.return_value = llm_response
 
         result = await service.create_chat(phrase="I am going to home",
-                                           user_id="user-1",
+                                           user=TEST_USER,
                                            lang="en")
 
         assert isinstance(result, Message)
@@ -43,7 +44,7 @@ class TestCreateChat:
         service.llm_service.ainvoke.return_value = llm_response
 
         result = await service.create_chat(phrase="I am going to home",
-                                           user_id="user-1",
+                                           user=TEST_USER,
                                            comment="Is this too formal?",
                                            lang="en")
 
@@ -59,7 +60,7 @@ class TestCreateChat:
         service.llm_service.ainvoke.return_value = llm_response
 
         result = await service.create_chat(phrase="Hola mundo",
-                                           user_id="user-1")
+                                           user=TEST_USER)
 
         assert isinstance(result, Message)
         invoke_kwargs = service.llm_service.ainvoke.call_args.kwargs
@@ -69,7 +70,7 @@ class TestCreateChat:
     async def test_new_chat_unsupported_language(self, service):
         with pytest.raises(UnsupportedLanguageError) as exc_info:
             await service.create_chat(phrase="Bonjour",
-                                      user_id="user-1",
+                                      user=TEST_USER,
                                       lang="fr")
 
         assert exc_info.value.lang == "fr"
@@ -79,7 +80,7 @@ class TestCreateChat:
     async def test_new_chat_chats_limit_exceeded(self, service, mock_chats_db):
         mock_chats_db.count_chats.return_value = 50
         with pytest.raises(ChatHistoryLimitError) as exc_info:
-            await service.create_chat(phrase="Test", user_id="user-1", lang="en")
+            await service.create_chat(phrase="Test", user=TEST_USER, lang="en")
         assert exc_info.value.max_messages == 50
 
     @pytest.mark.asyncio
@@ -89,7 +90,7 @@ class TestCreateChat:
 
         with pytest.raises(PermanentLLMError) as exc_info:
             await service.create_chat(phrase="Test phrase",
-                                      user_id="user-1",
+                                      user=TEST_USER,
                                       lang="en")
 
         assert "LLM API error" in str(exc_info.value)
@@ -102,7 +103,7 @@ class TestFollowup:
     @pytest.mark.asyncio
     async def test_followup_success(self, service, mock_chats_db):
         chat_id = uuid4()
-        chat = Chat(id=chat_id, title="hello", user_id="user-1")
+        chat = Chat(id=chat_id, title="hello", user_id=TEST_USER.id)
         chat.messages = [
             Message(chat_id=chat_id, role=ChatRole.human,
                     content=HumanContent(phrase="hello")),
@@ -114,7 +115,7 @@ class TestFollowup:
         llm_response = AIContent(response="Good point", issues=[], suggestions=[])
         service.llm_service.ainvoke.return_value = llm_response
 
-        result = await service.send_message(chat_id, "user-1", "why?")
+        result = await service.send_message(chat_id, user=TEST_USER, content="why?")
 
         assert isinstance(result, Message)
         assert result.chat_id == chat_id
@@ -127,14 +128,14 @@ class TestFollowup:
         mock_chats_db.get_chat.return_value = None
 
         with pytest.raises(InvalidChatError) as exc_info:
-            await service.send_message(chat_id, "user-1", "test")
+            await service.send_message(chat_id, user=TEST_USER, content="test")
 
         assert exc_info.value.chat_id == chat_id
 
     @pytest.mark.asyncio
     async def test_followup_capacity_exceeded(self, service, mock_chats_db):
         chat_id = uuid4()
-        chat = Chat(id=chat_id, title="hello", user_id="user-1")
+        chat = Chat(id=chat_id, title="hello", user_id=TEST_USER.id)
         chat.messages = [
             Message(chat_id=chat_id, role=ChatRole.ai,
                     content=AIContent(response="r", issues=[], suggestions=[]))
@@ -143,14 +144,14 @@ class TestFollowup:
         mock_chats_db.get_chat.return_value = chat
 
         with pytest.raises(ChatHistoryLimitError) as exc_info:
-            await service.send_message(chat_id, "user-1", "another message")
+            await service.send_message(chat_id, user=TEST_USER, content="another message")
 
         assert exc_info.value.max_messages == 50
 
     @pytest.mark.asyncio
     async def test_followup_llm_error(self, service, mock_chats_db):
         chat_id = uuid4()
-        chat = Chat(id=chat_id, title="hello", user_id="user-1")
+        chat = Chat(id=chat_id, title="hello", user_id=TEST_USER.id)
         chat.messages = [
             Message(chat_id=chat_id, role=ChatRole.human,
                     content=HumanContent(phrase="hello")),
@@ -163,7 +164,7 @@ class TestFollowup:
         service.llm_service.ainvoke.side_effect = llm_exc
 
         with pytest.raises(PermanentLLMError) as exc_info:
-            await service.send_message(chat_id, "user-1", "why?")
+            await service.send_message(chat_id, user=TEST_USER, content="why?")
 
         assert exc_info.value is llm_exc
 

@@ -29,14 +29,14 @@ class TestChatServiceQuota:
         """create_chat raises QuotaExceededError when try_increment returns False."""
         service.usage_db.try_increment = AsyncMock(return_value=False)
         with pytest.raises(QuotaExceededError):
-            await service.create_chat(user_id=TEST_USER.id, phrase="test phrase")
+            await service.create_chat(user=TEST_USER, phrase="test phrase")
 
     @pytest.mark.asyncio
     async def test_create_chat_llm_not_called_when_quota_exceeded(self, service):
         """LLM is not invoked when quota is exceeded."""
         service.usage_db.try_increment = AsyncMock(return_value=False)
         with pytest.raises(QuotaExceededError):
-            await service.create_chat(user_id=TEST_USER.id, phrase="test phrase")
+            await service.create_chat(user=TEST_USER, phrase="test phrase")
         service.llm_service.ainvoke.assert_not_called()
 
     @pytest.mark.asyncio
@@ -48,7 +48,7 @@ class TestChatServiceQuota:
         service.usage_db.try_increment = AsyncMock(return_value=False)
         with pytest.raises(QuotaExceededError):
             await service.send_message(chat_id=mock_chat.id,
-                                       user_id=TEST_USER.id,
+                                       user=TEST_USER,
                                        content="test")
 
     @pytest.mark.asyncio
@@ -58,6 +58,6 @@ class TestChatServiceQuota:
         service.llm_service.ainvoke = AsyncMock(
             return_value={"response": "ok", "issues": [], "suggestions": []}
         )
-        result = await service.create_chat(user_id=TEST_USER.id, phrase="test phrase")
+        result = await service.create_chat(user=TEST_USER, phrase="test phrase")
         assert result is not None
         service.usage_db.try_increment.assert_called_once()

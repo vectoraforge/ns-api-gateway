@@ -6,6 +6,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import nativespeaker.api.app.dependencies as deps_module
 from nativespeaker.api.app.dependencies import get_current_user, get_db
 from nativespeaker.api.models import User
 from nativespeaker.api.app.errors import register_exception_handlers
@@ -106,7 +107,7 @@ def dep_client():
     async def _protected(user: User = Depends(get_current_user)):
         return {"user_id": str(user.id)}
 
-    with patch("app.app.dependencies.UserService") as mock_user_svc_cls:
+    with patch.object(deps_module, "UserService") as mock_user_svc_cls:
         mock_user_svc_cls.return_value.get_or_create = AsyncMock(return_value=mock_user)
         with TestClient(app, raise_server_exceptions=False) as client:
             yield client
@@ -162,7 +163,7 @@ def state_client():
     async def _whoami(user: User = Depends(get_current_user)):
         return {"user_id": user.jwt_sub}
 
-    with patch("app.app.dependencies.UserService") as mock_user_svc_cls:
+    with patch.object(deps_module, "UserService") as mock_user_svc_cls:
         mock_user_svc_cls.return_value.get_or_create = AsyncMock(return_value=mock_user)
         with TestClient(app, raise_server_exceptions=False) as client:
             yield client
