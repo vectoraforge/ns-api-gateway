@@ -1,6 +1,6 @@
 import pytest
 
-from tests.e2e.conftest import create_chat
+from e2e.conftest import create_chat
 
 pytestmark = pytest.mark.e2e
 

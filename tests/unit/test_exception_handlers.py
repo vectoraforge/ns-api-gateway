@@ -22,7 +22,7 @@ from nativespeaker.api.exceptions import (
     TransientLLMError,
     UnsupportedLanguageError,
 )
-from tests.unit.conftest import make_test_verifier, make_token
+from unit.conftest import make_test_verifier, make_token
 
 CASES = [
     ("missing_token", AuthenticationError("Missing Bearer token"), 401),
