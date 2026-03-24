@@ -1,4 +1,3 @@
-import asyncio
 import os
 from uuid import uuid4
 
@@ -6,8 +5,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.app.main import app
@@ -19,18 +17,6 @@ from nativespeaker.api.models import AIContent, Chat, ChatRole, HumanContent, Me
 def _app_config():
     """Load app config once -- single source of truth for DB URL, Firebase keys, etc."""
     return MainConfig().app_config
-
-
-@pytest.fixture(scope="session")
-def ensure_tables(_app_config):
-    """Create all SQLModel tables once per session."""
-    async def _create():
-        engine = create_async_engine(_app_config.db.url, pool_size=1, max_overflow=0)
-        async with engine.begin() as conn:  # type: ignore[arg-type]
-            await conn.run_sync(SQLModel.metadata.create_all)
-        await engine.dispose()
-
-    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(_create())
 
 
 @pytest.fixture(scope="session")
@@ -56,7 +42,7 @@ def firebase_token(_app_config):
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
-async def _app_lifespan(ensure_tables):
+async def _app_lifespan():
     """Start app lifespan (config, DB engine, verifier, LLM service)."""
     async with app.router.lifespan_context(app):
         yield app
