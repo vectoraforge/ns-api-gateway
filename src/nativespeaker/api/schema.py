@@ -1,11 +1,10 @@
-from __future__ import annotations
-
 from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from nativespeaker.api.exceptions import ErrorCode
+from nativespeaker.api.models.subscriptions import SubscriptionPlan
 
 
 class ErrorResponse(BaseModel):

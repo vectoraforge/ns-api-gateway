@@ -1,0 +1,33 @@
+from datetime import datetime, UTC
+from uuid import UUID, uuid7
+
+from sqlalchemy import UniqueConstraint
+from sqlmodel import SQLModel, Field
+
+from nativespeaker.api.models.subscriptions import SubscriptionPlan
+
+
+class User(SQLModel, table=True):
+    __tablename__ = "users"
+    __table_args__ = {"schema": "core"}
+
+    id: UUID = Field(default_factory=uuid7, primary_key=True)
+    jwt_sub: str = Field(unique=True, index=True, )
+    email: str = Field()
+    name: str | None = Field(default=None, )
+    subscription_plan: SubscriptionPlan = Field(default=SubscriptionPlan.free)
+    active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class UsageMonthly(SQLModel, table=True):
+    __tablename__ = "usage_monthly"
+    __table_args__ = (
+        UniqueConstraint("user_id", "month"),
+        {"schema": "core"}
+    )
+
+    id: UUID = Field(default_factory=uuid7, primary_key=True)
+    user_id: UUID = Field(foreign_key="core.users.id", index=True)
+    month: str = Field()
+    used: int = Field(default=0)
