@@ -297,7 +297,7 @@ class TestFirebaseSync:
         """SUBS-07: FirebaseService.set_plan_claim uses asyncio.to_thread."""
         firebase_service = FirebaseService()
 
-        with patch("app.services.firebase_service.asyncio.to_thread",
+        with patch("nativespeaker.api.services.firebase.asyncio.to_thread",
                     new_callable=AsyncMock) as mock_to_thread:
             await firebase_service.set_plan_claim("uid-123", "gold")
             mock_to_thread.assert_called_once()
@@ -306,7 +306,7 @@ class TestFirebaseSync:
         """SUBS-07: Firebase sync failure is swallowed (best-effort)."""
         firebase_service = FirebaseService()
 
-        with patch("app.services.firebase_service.asyncio.to_thread",
+        with patch("nativespeaker.api.services.firebase.asyncio.to_thread",
                     side_effect=Exception("Firebase down")):
             # Should NOT raise -- just log warning
             await firebase_service.set_plan_claim("uid-123", "gold")
