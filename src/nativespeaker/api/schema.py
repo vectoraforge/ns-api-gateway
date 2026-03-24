@@ -11,11 +11,6 @@ class ErrorResponse(BaseModel):
     code: ErrorCode
 
 
-class Issue(BaseModel):
-    text_part: str = Field(..., description="The problematic part of the phrase")
-    explanation: str = Field(..., description="Explanation of why this is an issue")
-
-
 class ChatRequest(BaseModel):
     """New chat request."""
     phrase: str = Field(..., max_length=4096)

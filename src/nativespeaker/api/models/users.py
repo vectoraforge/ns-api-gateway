@@ -1,10 +1,13 @@
 from datetime import datetime, UTC
+from typing import Any
 from uuid import UUID, uuid7
 
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import UniqueConstraint, DateTime
 from sqlmodel import SQLModel, Field
 
-from nativespeaker.api.models.subscriptions import SubscriptionPlan
+from nativespeaker.api.models.subscriptions import SubscriptionPlan, SubscriptionPlanType
+
+DateTimeType: Any = DateTime(timezone=True)
 
 
 class User(SQLModel, table=True):
@@ -15,9 +18,9 @@ class User(SQLModel, table=True):
     jwt_sub: str = Field(unique=True, index=True, )
     email: str = Field()
     name: str | None = Field(default=None, )
-    subscription_plan: SubscriptionPlan = Field(default=SubscriptionPlan.free)
+    subscription_plan: SubscriptionPlan = Field(sa_type=SubscriptionPlanType, default=SubscriptionPlan.free)
     active: bool = Field(default=True)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
 
 
 class UsageMonthly(SQLModel, table=True):

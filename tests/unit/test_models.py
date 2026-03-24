@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -52,7 +52,7 @@ class TestIssue:
 class TestMessageResponse:
     def test_valid_response(self):
         cid = uuid4()
-        now = datetime.now()
+        now = datetime.now(UTC)
         response = MessageResponse(chat_id=cid, role="ai",
                                    content='{"response": "Good"}',
                                    created_at=now)
@@ -65,7 +65,7 @@ class TestMessageResponse:
 class TestChatResponse:
     def test_valid_response(self):
         cid = uuid4()
-        now = datetime.now()
+        now = datetime.now(UTC)
         response = ChatResponse(chat_id=cid, title="Test phrase",
                                 created_at=now, lang="en")
         assert response.chat_id == cid
@@ -75,7 +75,7 @@ class TestChatResponse:
     def test_lang_optional(self):
         cid = uuid4()
         response = ChatResponse(chat_id=cid, title="Test",
-                                created_at=datetime.now())
+                                created_at=datetime.now(UTC))
         assert response.lang is None
 
 

@@ -1,10 +1,13 @@
 from typing import Annotated
 
-from pydantic import BaseModel, Tag, Discriminator, TypeAdapter
+from pydantic import BaseModel, Field, Tag, Discriminator, TypeAdapter
 from sqlalchemy import TypeDecorator
 from sqlalchemy.dialects.postgresql import JSONB
 
-from nativespeaker.api.schema import Issue
+
+class Issue(BaseModel):
+    text_part: str = Field(..., description="The problematic part of the phrase")
+    explanation: str = Field(..., description="Explanation of why this is an issue")
 
 
 class HumanContent(BaseModel):

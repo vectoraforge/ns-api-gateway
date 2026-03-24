@@ -1,8 +1,9 @@
 from datetime import datetime, UTC
 from enum import StrEnum
+from typing import Any
 from uuid import UUID, uuid7
 
-from sqlalchemy import Index, text
+from sqlalchemy import Enum, Index, text, DateTime
 from sqlmodel import SQLModel, Field
 
 
@@ -25,6 +26,12 @@ class SubscriptionStatus(StrEnum):
     revoked = "revoked"
 
 
+SubscriptionPlanType: Any = Enum(SubscriptionPlan, name='subscription_plan', schema='core')
+SubscriptionProviderType: Any = Enum(SubscriptionProvider, name='subscription_provider', schema='core')
+SubscriptionStatusType: Any = Enum(SubscriptionStatus, name='subscription_status', schema='core')
+DateTimeType: Any = DateTime(timezone=True)
+
+
 class Subscription(SQLModel, table=True):
     __tablename__ = "subscriptions"
     __table_args__ = (
@@ -39,12 +46,12 @@ class Subscription(SQLModel, table=True):
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
     user_id: UUID = Field(foreign_key="core.users.id", index=True)
-    provider: SubscriptionProvider = Field()
+    provider: SubscriptionProvider = Field(sa_type=SubscriptionProviderType)
     external_id: str = Field()
-    plan: SubscriptionPlan = Field()
-    status: SubscriptionStatus = Field()
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    plan: SubscriptionPlan = Field(sa_type=SubscriptionPlanType)
+    status: SubscriptionStatus = Field(sa_type=SubscriptionStatusType)
+    created_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
 
 
 class SubscriptionEvent(SQLModel, table=True):
@@ -55,6 +62,6 @@ class SubscriptionEvent(SQLModel, table=True):
     subscription_id: UUID = Field(foreign_key="core.subscriptions.id", index=True)
     event_type: str = Field()
     notification_uuid: str = Field(unique=True)
-    old_plan: SubscriptionPlan | None = Field(default=None)
-    new_plan: SubscriptionPlan | None = Field(default=None)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    old_plan: SubscriptionPlan | None = Field(sa_type=SubscriptionPlanType, default=None)
+    new_plan: SubscriptionPlan | None = Field(sa_type=SubscriptionPlanType, default=None)
+    created_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
