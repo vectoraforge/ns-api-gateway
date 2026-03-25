@@ -17,7 +17,7 @@ async def create_chat(body: ChatRequest,
     ai_message = await service.create_chat(user=user, phrase=body.phrase,
                                            comment=body.comment, lang=body.lang)
     return MessageResponse(chat_id=ai_message.chat_id, role=ai_message.role,
-                           content=ai_message.content.model_dump_json(),
+                           content=ai_message.content,
                            created_at=ai_message.created_at)
 
 
@@ -29,7 +29,7 @@ async def send_message(chat_id: UUID,
     ai_message = await service.send_message(chat_id=chat_id, user=user,
                                             content=body.content)
     return MessageResponse(chat_id=ai_message.chat_id, role=ai_message.role,
-                           content=ai_message.content.model_dump_json(),
+                           content=ai_message.content,
                            created_at=ai_message.created_at)
 
 
@@ -49,7 +49,7 @@ async def get_chat_messages(chat_id: UUID,
     messages = await service.get_messages(chat_id=chat_id, user_id=user.id)
     return [
         MessageResponse(chat_id=message.chat_id, role=message.role,
-                        content=message.content.model_dump_json(),
+                        content=message.content,
                         created_at=message.created_at)
         for message in messages
     ]

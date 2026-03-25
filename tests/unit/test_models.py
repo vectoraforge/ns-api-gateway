@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
+from nativespeaker.api.models import AIContent
 from nativespeaker.api.schema import ChatRequest, ChatResponse, ExamplesResponse, MessageRequest, MessageResponse
 from nativespeaker.api.models.content import Issue
 from nativespeaker.api.exceptions import AnalysisError, InvalidChatError, ServiceError, UnsupportedLanguageError
@@ -55,11 +56,11 @@ class TestMessageResponse:
         cid = uuid4()
         now = datetime.now(UTC)
         response = MessageResponse(chat_id=cid, role="ai",
-                                   content='{"response": "Good"}',
+                                   content=AIContent(response="Good"),
                                    created_at=now)
         assert response.chat_id == cid
         assert response.role == "ai"
-        assert response.content == '{"response": "Good"}'
+        assert response.content == AIContent(response="Good")
         assert response.created_at == now
 
 

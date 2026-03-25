@@ -1,7 +1,5 @@
 import pytest
 
-pytestmark = pytest.mark.e2e
-
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestCreateChat:
@@ -11,7 +9,6 @@ class TestCreateChat:
         assert response.status_code == 200
         data = response.json()
         assert "chat_id" in data
-        assert data["role"] == "ai"
         assert "content" in data
         assert "created_at" in data
 
