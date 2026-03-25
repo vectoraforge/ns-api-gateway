@@ -345,3 +345,105 @@ class TestFirebaseSync:
 
         # Firebase should NOT be called because tier did not change
         mock_firebase.set_plan_claim.assert_not_called()
+
+
+class TestNewSubscription:
+    """New subscription flow -- no existing subscription in DB."""
+
+    @pytest.mark.asyncio
+    async def test_creates_subscription_for_new_user(self,
+                                                     subscription_service,
+                                                     mock_verifier,
+                                                     mock_db_session,
+                                                     mock_subscriptions_db):
+        """SUBSCRIBED with no existing sub creates new subscription."""
+        from appstoreserverlibrary.models.NotificationTypeV2 import NotificationTypeV2
+
+        user_id = uuid4()
+        payload = _make_mock_payload(
+            notification_type=NotificationTypeV2.SUBSCRIBED,
+            notification_uuid="new-sub-uuid",
+        )
+        mock_verifier.verify_and_decode_notification.return_value = payload
+        mock_verifier.verify_and_decode_signed_transaction.return_value = (
+            _make_mock_transaction(
+                product_id="com.example.nativespeaker.gold",
+                app_account_token=str(user_id),
+            )
+        )
+
+        mock_subscriptions_db.get_subscription_by_external_id.return_value = None
+        new_sub = MagicMock()
+        new_sub.id = uuid4()
+        new_sub.user_id = user_id
+        mock_subscriptions_db.create_subscription.return_value = new_sub
+
+        # Mock the db.exec chain for Firebase sync (old_plan=None != plan=gold)
+        mock_user = MagicMock()
+        mock_user.jwt_sub = "firebase-uid-new"
+        mock_result = MagicMock()
+        mock_result.first.return_value = mock_user
+        mock_db_session.exec = AsyncMock(return_value=mock_result)
+
+        await subscription_service.process_apple_notification("signed.payload")
+
+        mock_subscriptions_db.create_subscription.assert_called_once()
+        mock_subscriptions_db.update_user_plan.assert_called_once_with(
+            user_id=user_id, plan=SubscriptionPlan.gold
+        )
+
+
+class TestMissingAppAccountToken:
+    """Missing appAccountToken in new subscription -- cannot identify user."""
+
+    @pytest.mark.asyncio
+    async def test_missing_app_account_token_returns_early(self,
+                                                           subscription_service,
+                                                           mock_verifier,
+                                                           mock_subscriptions_db):
+        """No appAccountToken means we can't associate with a user -- early return."""
+        from appstoreserverlibrary.models.NotificationTypeV2 import NotificationTypeV2
+
+        payload = _make_mock_payload(
+            notification_type=NotificationTypeV2.SUBSCRIBED,
+            notification_uuid="no-token-uuid",
+        )
+        mock_verifier.verify_and_decode_notification.return_value = payload
+        txn = _make_mock_transaction(
+            product_id="com.example.nativespeaker.gold",
+            app_account_token=None,
+        )
+        txn.appAccountToken = None
+        mock_verifier.verify_and_decode_signed_transaction.return_value = txn
+
+        mock_subscriptions_db.get_subscription_by_external_id.return_value = None
+
+        await subscription_service.process_apple_notification("signed.payload")
+
+        mock_subscriptions_db.create_subscription.assert_not_called()
+        mock_subscriptions_db.update_user_plan.assert_not_called()
+
+
+class TestMissingTransactionData:
+    """Notification without transaction data -- early return."""
+
+    @pytest.mark.asyncio
+    async def test_no_transaction_data_returns_early(self,
+                                                     subscription_service,
+                                                     mock_verifier,
+                                                     mock_subscriptions_db):
+        """Notification with empty signedTransactionInfo returns early."""
+        from appstoreserverlibrary.models.NotificationTypeV2 import NotificationTypeV2
+
+        payload = _make_mock_payload(
+            notification_type=NotificationTypeV2.DID_RENEW,
+            notification_uuid="no-txn-uuid",
+            signed_transaction=None,
+        )
+        payload.data.signedTransactionInfo = None
+        mock_verifier.verify_and_decode_notification.return_value = payload
+
+        await subscription_service.process_apple_notification("signed.payload")
+
+        mock_verifier.verify_and_decode_signed_transaction.assert_not_called()
+        mock_subscriptions_db.get_subscription_by_external_id.assert_not_called()

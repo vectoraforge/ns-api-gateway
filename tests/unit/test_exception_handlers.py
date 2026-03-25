@@ -100,7 +100,7 @@ def dep_client():
 
     app = FastAPI()
     register_exception_handlers(app)
-    app.state.verifier = make_test_verifier()
+    app.state.jwt_verifier = make_test_verifier()
     app.dependency_overrides[get_db] = lambda: mock_db
 
     @app.get("/protected")
@@ -156,7 +156,7 @@ def state_client():
 
     app = FastAPI()
     register_exception_handlers(app)
-    app.state.verifier = _AlwaysUser()
+    app.state.jwt_verifier = _AlwaysUser()
     app.dependency_overrides[get_db] = lambda: mock_db
 
     @app.get("/whoami")
@@ -174,3 +174,25 @@ def test_verifier_swappable_via_state(state_client):
     response = state_client.get("/whoami", headers={"Authorization": "Bearer any.token.here"})
     assert response.status_code == 200
     assert response.json()["user_id"] == "hardcoded-user"
+
+
+class TestRetryAfterHeaders:
+    """Verify Retry-After header on 503 errors."""
+
+    def test_queue_full_has_retry_after(self, handler_client):
+        """QueueFullError(30) response includes Retry-After: 30."""
+        response = handler_client.get("/raise/queue_full")
+        assert response.status_code == 503
+        assert response.headers.get("retry-after") == "30"
+
+    def test_circuit_open_has_retry_after(self, handler_client):
+        """CircuitOpenError(60) response includes Retry-After: 60."""
+        response = handler_client.get("/raise/circuit_open")
+        assert response.status_code == 503
+        assert response.headers.get("retry-after") == "60"
+
+    def test_transient_llm_no_retry_after(self, handler_client):
+        """TransientLLMError does NOT include Retry-After (no extra_headers on base)."""
+        response = handler_client.get("/raise/transient_llm")
+        assert response.status_code == 503
+        assert "retry-after" not in response.headers
