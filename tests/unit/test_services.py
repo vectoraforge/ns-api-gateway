@@ -2,7 +2,8 @@ from uuid import uuid4
 
 import pytest
 
-from nativespeaker.api.schema import ExamplesResponse, Issue
+from nativespeaker.api.schema import ExamplesResponse
+from nativespeaker.api.models.content import Issue
 from nativespeaker.api.exceptions import ChatHistoryLimitError, InvalidChatError, PermanentLLMError, UnsupportedLanguageError
 from nativespeaker.api.models import AIContent, Chat, ChatRole, HumanContent, Message
 from unit.conftest import TEST_USER
