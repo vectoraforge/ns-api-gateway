@@ -1,13 +1,12 @@
-from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nativespeaker.api.schema import ExamplesResponse
-from nativespeaker.api.database import ChatsDB, UsageDB
-from nativespeaker.api.exceptions import ChatHistoryLimitError, InvalidChatError, QuotaExceededError, UnsupportedLanguageError
-from nativespeaker.api.models import AIContent, Chat, ChatRole, HumanContent, Message, SubscriptionPlan, User
+from nativespeaker.api.database import ChatsDB
+from nativespeaker.api.exceptions import ChatHistoryLimitError, InvalidChatError, UnsupportedLanguageError
+from nativespeaker.api.models import AIContent, Chat, ChatRole, HumanContent, Message, User
 from nativespeaker.api.services.llm import LLMService
 
 
@@ -18,15 +17,12 @@ class ChatService:
                  llm_service: LLMService,
                  examples: dict[str, list[str]],
                  messages_limit: int,
-                 chats_limit: int,
-                 quotas: dict[SubscriptionPlan, int]) -> None:
+                 chats_limit: int) -> None:
         self.llm_service = llm_service
         self.chats_db = ChatsDB(db)
-        self.usage_db = UsageDB(db)
         self.examples = examples
         self.messages_limit = messages_limit
         self.chats_limit = chats_limit
-        self.quotas = quotas
 
     @property
     def supported_languages(self) -> list[str]:
@@ -58,11 +54,6 @@ class ChatService:
         if chats_count >= self.chats_limit:
             raise ChatHistoryLimitError(self.chats_limit)
 
-        month = datetime.now(UTC).strftime("%Y-%m")
-        monthly_quota = self.quotas[user.subscription_plan]
-        if not await self.usage_db.try_increment(user.id, month, monthly_quota):
-            raise QuotaExceededError("Monthly quota exceeded")
-
         chat = Chat(id=uuid4(), user_id=user.id, title=phrase, lang=lang)
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
                                 content=HumanContent(phrase=phrase, comment=comment))
@@ -84,11 +75,6 @@ class ChatService:
 
         if len(chat.ai_messages) + 1 > self.messages_limit:
             raise ChatHistoryLimitError(self.messages_limit)
-
-        month = datetime.now(UTC).strftime("%Y-%m")
-        monthly_quota = self.quotas[user.subscription_plan]
-        if not await self.usage_db.try_increment(user.id, month, monthly_quota):
-            raise QuotaExceededError("Monthly quota exceeded")
 
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
                                 content=HumanContent(phrase=content))

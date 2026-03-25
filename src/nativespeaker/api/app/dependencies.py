@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 
 import structlog
 from fastapi import Header, Request
@@ -7,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from nativespeaker.api.auth import TokenVerifier
 from nativespeaker.api.config import AppConfig
-from nativespeaker.api.exceptions import AuthenticationError
+from nativespeaker.api.database import UsageDB
+from nativespeaker.api.exceptions import AuthenticationError, QuotaExceededError
 from nativespeaker.api.models import User
 from nativespeaker.api.services import ChatService, SubscriptionService, UserService
 
@@ -33,8 +35,7 @@ def get_chat_service(request: Request,
                        llm_service=request.app.state.llm_service,
                        examples=config.examples,
                        chats_limit=config.chats_limit,
-                       messages_limit=config.messages_limit,
-                       quotas=config.quotas)
+                       messages_limit=config.messages_limit)
 
 
 def get_subscription_service(request: Request,
@@ -64,3 +65,14 @@ async def get_current_user(request: Request,
         raise AuthenticationError("Authentication failed")
     structlog.contextvars.bind_contextvars(user_id=str(user.id))
     return user
+
+
+async def require_quota(user: User = Depends(get_current_user),
+                        db: AsyncSession = Depends(get_db),
+                        config: AppConfig = Depends(get_config)) -> None:
+    """Atomically increment usage counter; raise 429 if monthly quota exhausted."""
+    month = datetime.now(UTC).strftime("%Y-%m")
+    monthly_quota = config.quotas[user.subscription_plan]
+    usage_db = UsageDB(db)
+    if not await usage_db.try_increment(user.id, month, monthly_quota):
+        raise QuotaExceededError("Monthly quota exceeded")
