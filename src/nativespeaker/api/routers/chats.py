@@ -10,10 +10,9 @@ from nativespeaker.api.services import ChatService
 router = APIRouter()
 
 
-@router.post("/chats", response_model=MessageResponse)
+@router.post("/chats", response_model=MessageResponse, dependencies=[Depends(require_quota)])
 async def create_chat(body: ChatRequest,
                       user: User = Depends(get_current_user),
-                      _quota: None = Depends(require_quota),
                       service: ChatService = Depends(get_chat_service)) -> MessageResponse:
     ai_message = await service.create_chat(user=user, phrase=body.phrase,
                                            comment=body.comment, lang=body.lang)
@@ -22,11 +21,10 @@ async def create_chat(body: ChatRequest,
                            created_at=ai_message.created_at)
 
 
-@router.post("/chats/{chat_id}", response_model=MessageResponse)
+@router.post("/chats/{chat_id}", response_model=MessageResponse, dependencies=[Depends(require_quota)])
 async def send_message(chat_id: UUID,
                        body: MessageRequest,
                        user: User = Depends(get_current_user),
-                       _quota: None = Depends(require_quota),
                        service: ChatService = Depends(get_chat_service)) -> MessageResponse:
     ai_message = await service.send_message(chat_id=chat_id, user=user,
                                             content=body.content)
