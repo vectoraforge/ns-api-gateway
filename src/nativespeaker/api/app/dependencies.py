@@ -56,7 +56,7 @@ async def get_current_user(request: Request,
     token = authorization.split(" ", 1)[1].strip()
     if not token:
         raise AuthenticationError("Missing Bearer token")
-    verifier: TokenVerifier = request.app.state.verifier
+    verifier: TokenVerifier = request.app.state.jwt_verifier
     identity = verifier.verify(token)
     user_service = UserService(db)
     user = await user_service.get_or_create(identity)

@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from nativespeaker.api.config import MainConfig, ModelConfig, ResilienceConfig
+from nativespeaker.api.config import EnvironmentConfig, ModelConfig, ResilienceConfig
 
 # pytest-dotenv loads .env which sets CONFIG_DIR.
 # With env_nested_delimiter="_", pydantic-settings can misinterpret env vars.
@@ -65,7 +65,7 @@ en:
 
         env_clean = {k: v for k, v in os.environ.items() if k not in _DOTENV_KEYS}
         with patch.dict(os.environ, env_clean, clear=True):
-            config = MainConfig(config_dir=Path(tmp_dir), _env_file=None)
+            config = EnvironmentConfig(config_dir=Path(tmp_dir), _env_file=None)
             assert config.app_config is not None
             assert config.app_config.model.name == "gpt-4"
             assert config.app_config.model.temperature == 0.5
@@ -79,4 +79,4 @@ def test_main_config_missing_file():
     env_clean = {k: v for k, v in os.environ.items() if k not in _DOTENV_KEYS}
     with patch.dict(os.environ, env_clean, clear=True):
         with pytest.raises(FileNotFoundError):
-            MainConfig(config_dir=Path("/nonexistent/"), _env_file=None)
+            EnvironmentConfig(config_dir=Path("/nonexistent/"), _env_file=None)

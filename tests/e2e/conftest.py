@@ -9,14 +9,14 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.app.main import app
-from nativespeaker.api.config import MainConfig
+from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.models import AIContent, Chat, ChatRole, HumanContent, Message, User
 
 
 @pytest.fixture(scope="session")
 def _app_config():
     """Load app config once -- single source of truth for DB URL, Firebase keys, etc."""
-    return MainConfig().app_config
+    return EnvironmentConfig().app_config
 
 
 @pytest.fixture(scope="session")

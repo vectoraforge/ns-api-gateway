@@ -88,7 +88,7 @@ class AppConfig(BaseConfig):
     examples: dict[str, list[str]]
 
 
-class MainConfig(BaseConfig):
+class EnvironmentConfig(BaseConfig):
     config_dir: Path = Field(default=Path("config/"))
     config_filename: str = Field(default="config.yaml")
     prompt_filename: str = Field(default="prompt.txt")
