@@ -4,7 +4,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from nativespeaker.api.models import AIContent
+from nativespeaker.api.models import AIContent, HumanContent
 from nativespeaker.api.schema import ChatRequest, ChatResponse, ExamplesResponse, MessageRequest, MessageResponse
 from nativespeaker.api.models.content import Issue
 from nativespeaker.api.exceptions import AnalysisError, InvalidChatError, ServiceError, UnsupportedLanguageError
@@ -62,6 +62,44 @@ class TestMessageResponse:
         assert response.role == "ai"
         assert response.content == AIContent(response="Good")
         assert response.created_at == now
+
+    def test_ai_content_serialization(self):
+        cid = uuid4()
+        now = datetime.now(UTC)
+        response = MessageResponse(
+            chat_id=cid, role="ai",
+            content=AIContent(
+                response="Looks good",
+                issues=[Issue(text_part="going to home", explanation="Drop 'to'")],
+                suggestions=["going home"]),
+            created_at=now)
+        dumped = response.model_dump()
+        assert dumped["content"]["response"] == "Looks good"
+        assert len(dumped["content"]["issues"]) == 1
+        assert dumped["content"]["issues"][0]["text_part"] == "going to home"
+        assert dumped["content"]["suggestions"] == ["going home"]
+
+    def test_human_content_serialization(self):
+        cid = uuid4()
+        now = datetime.now(UTC)
+        response = MessageResponse(
+            chat_id=cid, role="human",
+            content=HumanContent(phrase="Hello", comment="Test"),
+            created_at=now)
+        dumped = response.model_dump()
+        assert dumped["content"]["phrase"] == "Hello"
+        assert dumped["content"]["comment"] == "Test"
+
+    def test_content_never_empty(self):
+        cid = uuid4()
+        now = datetime.now(UTC)
+        response = MessageResponse(
+            chat_id=cid, role="ai",
+            content=AIContent(response="Ok"),
+            created_at=now)
+        dumped = response.model_dump()
+        assert dumped["content"] != {}
+        assert "response" in dumped["content"]
 
 
 class TestChatResponse:
