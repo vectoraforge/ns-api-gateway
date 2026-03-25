@@ -4,7 +4,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from nativespeaker.api.exceptions import ErrorCode
-from nativespeaker.api.models.content import AIContent
+from nativespeaker.api.models.content import AIContent, HumanContent
 from nativespeaker.api.models.subscriptions import SubscriptionPlan
 
 
@@ -36,7 +36,7 @@ class MessageResponse(BaseModel):
     """API response for both new chat and followup."""
     chat_id: UUID
     role: str
-    content: BaseModel
+    content: HumanContent | AIContent
     created_at: datetime
 
 
