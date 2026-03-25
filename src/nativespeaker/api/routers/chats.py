@@ -10,6 +10,28 @@ from nativespeaker.api.services import ChatService
 router = APIRouter()
 
 
+@router.get("/chats", response_model=list[ChatResponse])
+async def list_chats(user: User = Depends(get_current_user),
+                     service: ChatService = Depends(get_chat_service)):
+    chats = await service.list_chats(user.id)
+    return [ChatResponse(chat_id=chat.id, title=chat.title,
+                         created_at=chat.created_at, lang=chat.lang)
+            for chat in chats]
+
+
+@router.get("/chats/{chat_id}", response_model=list[MessageResponse])
+async def get_chat_messages(chat_id: UUID,
+                            user: User = Depends(get_current_user),
+                            service: ChatService = Depends(get_chat_service)) -> list[MessageResponse]:
+    messages = await service.get_messages(chat_id=chat_id, user_id=user.id)
+    return [
+        MessageResponse(chat_id=message.chat_id, role=message.role,
+                        content=message.content,
+                        created_at=message.created_at)
+        for message in messages
+    ]
+
+
 @router.post("/chats", response_model=MessageResponse, dependencies=[Depends(require_quota)])
 async def create_chat(body: ChatRequest,
                       user: User = Depends(get_current_user),
@@ -31,28 +53,6 @@ async def send_message(chat_id: UUID,
     return MessageResponse(chat_id=ai_message.chat_id, role=ai_message.role,
                            content=ai_message.content,
                            created_at=ai_message.created_at)
-
-
-@router.get("/chats", response_model=list[ChatResponse])
-async def list_chats(user: User = Depends(get_current_user),
-                     service: ChatService = Depends(get_chat_service)):
-    chats = await service.list_chats(user.id)
-    return [ChatResponse(chat_id=chat.id, title=chat.title,
-                         created_at=chat.created_at, lang=chat.lang)
-            for chat in chats]
-
-
-@router.get("/chats/{chat_id}", response_model=list[MessageResponse])
-async def get_chat_messages(chat_id: UUID,
-                            user: User = Depends(get_current_user),
-                            service: ChatService = Depends(get_chat_service)) -> list[MessageResponse]:
-    messages = await service.get_messages(chat_id=chat_id, user_id=user.id)
-    return [
-        MessageResponse(chat_id=message.chat_id, role=message.role,
-                        content=message.content,
-                        created_at=message.created_at)
-        for message in messages
-    ]
 
 
 @router.delete("/chats/{chat_id}", status_code=204)
