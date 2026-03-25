@@ -2,6 +2,7 @@ import logging
 import sys
 import time
 import uuid
+import typing
 from collections.abc import Callable
 
 import structlog
@@ -14,36 +15,31 @@ logger = structlog.get_logger()
 
 
 def setup_logging(log_level: str,
-                  json_log_path: str | None = None) -> None:
+                  log_stream: typing.TextIO = sys.stderr) -> None:
     """Configure structlog + stdlib logging pipeline."""
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,
         structlog.stdlib.ExtraAdder(),
-        structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.StackInfoRenderer(),
     ]
 
     structlog.configure(
-        processors=[
-            *shared_processors,
-            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
-        ],
+        processors=[*shared_processors,
+                    structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
         logger_factory=structlog.stdlib.LoggerFactory(),
-        wrapper_class=structlog.make_filtering_bound_logger(
-            getattr(logging, log_level, logging.INFO)
-        ),
+        wrapper_class=structlog.make_filtering_bound_logger(log_level.upper()),
         cache_logger_on_first_use=True,
     )
 
-    # Console handler (always active)
-    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler = logging.StreamHandler(log_stream)
     console_handler.setFormatter(
         structlog.stdlib.ProcessorFormatter(
             foreign_pre_chain=shared_processors,
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-                structlog.dev.ConsoleRenderer(),
+                structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S", utc=True),
+                structlog.dev.ConsoleRenderer(exception_formatter=structlog.dev.plain_traceback),
             ],
         )
     )
@@ -51,22 +47,7 @@ def setup_logging(log_level: str,
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(console_handler)
-    root.setLevel(getattr(logging, log_level, logging.INFO))
-
-    # Optional JSON file handler
-    if json_log_path:
-        file_handler = logging.FileHandler(json_log_path)
-        file_handler.setFormatter(
-            structlog.stdlib.ProcessorFormatter(
-                foreign_pre_chain=shared_processors,
-                processors=[
-                    structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-                    structlog.processors.format_exc_info,
-                    structlog.processors.JSONRenderer(),
-                ],
-            )
-        )
-        root.addHandler(file_handler)
+    root.setLevel(log_level.upper())
 
     # Suppress noisy third-party loggers
     for name in ("httpx", "httpcore", "sqlalchemy.engine"):

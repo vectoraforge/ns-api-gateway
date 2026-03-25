@@ -28,15 +28,6 @@ def test_console_output_always_active():
     assert isinstance(root.handlers[0], logging.StreamHandler)
 
 
-def test_json_file_output_when_path_set(tmp_path):
-    json_path = str(tmp_path / "test.json")
-    setup_logging(log_level="INFO", json_log_path=json_path)
-    root = logging.getLogger()
-    assert len(root.handlers) == 2
-    assert isinstance(root.handlers[0], logging.StreamHandler)
-    assert isinstance(root.handlers[1], logging.FileHandler)
-
-
 def test_request_id_bound_in_context():
     structlog.contextvars.clear_contextvars()
     structlog.contextvars.bind_contextvars(request_id="test-req-123")
