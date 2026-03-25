@@ -10,6 +10,9 @@ class TestCreateChat:
         data = response.json()
         assert "chat_id" in data
         assert "content" in data
+        assert isinstance(data["content"], dict)
+        assert "response" in data["content"]
+        assert data["content"] != {}
         assert "created_at" in data
 
     async def test_create_chat_spanish(self, async_client):
@@ -20,6 +23,8 @@ class TestCreateChat:
         assert "chat_id" in data
         assert data["role"] == "ai"
         assert "content" in data
+        assert "response" in data["content"]
+        assert data["content"] != {}
 
     async def test_create_chat_autodetect_lang(self, async_client):
         response = await async_client.post("/chats",
@@ -38,6 +43,8 @@ class TestCreateChat:
         data = response.json()
         assert "chat_id" in data
         assert "content" in data
+        assert "response" in data["content"]
+        assert data["content"] != {}
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -57,4 +64,6 @@ class TestFollowup:
         assert data["chat_id"] == chat_id
         assert data["role"] == "ai"
         assert "content" in data
+        assert "response" in data["content"]
+        assert data["content"] != {}
         assert "created_at" in data
