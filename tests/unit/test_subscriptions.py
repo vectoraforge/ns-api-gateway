@@ -178,6 +178,7 @@ class TestSubscriptionLifecycle:
         )
         assert tier == SubscriptionPlan.free
 
+    @pytest.mark.asyncio
     async def test_ignored_notification_types(self, subscription_service,
                                                 mock_verifier, mock_subscriptions_db):
         """TEST, CONSUMPTION_REQUEST, etc. are ignored -- no DB calls."""
@@ -195,6 +196,7 @@ class TestSubscriptionLifecycle:
 class TestIdempotency:
     """SUBS-04: Duplicate notifications safely ignored."""
 
+    @pytest.mark.asyncio
     async def test_duplicate_notification_ignored(self, subscription_service,
                                                     mock_verifier, mock_subscriptions_db):
         """Second notification with same UUID is silently skipped."""
@@ -224,6 +226,7 @@ class TestIdempotency:
 class TestPlanTierUpdate:
     """SUBS-05: User plan tier stored in local DB."""
 
+    @pytest.mark.asyncio
     async def test_plan_updated_on_subscription_change(self, subscription_service,
                                                         mock_verifier, mock_db_session,
                                                         mock_subscriptions_db):
@@ -258,6 +261,7 @@ class TestPlanTierUpdate:
 class TestFirebaseSync:
     """SUBS-06, SUBS-07: Firebase claim sync."""
 
+    @pytest.mark.asyncio
     async def test_firebase_sync_on_tier_change(self, subscription_service,
                                                  mock_verifier, mock_firebase,
                                                  mock_db_session, mock_subscriptions_db):
@@ -293,6 +297,7 @@ class TestFirebaseSync:
             "firebase-uid-456", SubscriptionPlan.gold
         )
 
+    @pytest.mark.asyncio
     async def test_uses_to_thread(self):
         """SUBS-07: FirebaseService.set_plan_claim uses asyncio.to_thread."""
         firebase_service = FirebaseService()
@@ -302,6 +307,7 @@ class TestFirebaseSync:
             await firebase_service.set_plan_claim("uid-123", "gold")
             mock_to_thread.assert_called_once()
 
+    @pytest.mark.asyncio
     async def test_firebase_failure_does_not_raise(self):
         """SUBS-07: Firebase sync failure is swallowed (best-effort)."""
         firebase_service = FirebaseService()
@@ -311,6 +317,7 @@ class TestFirebaseSync:
             # Should NOT raise -- just log warning
             await firebase_service.set_plan_claim("uid-123", "gold")
 
+    @pytest.mark.asyncio
     async def test_no_firebase_sync_when_tier_unchanged(self, subscription_service,
                                                          mock_verifier, mock_firebase,
                                                          mock_db_session,
