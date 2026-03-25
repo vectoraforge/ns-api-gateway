@@ -1,9 +1,11 @@
-"""Tests for monthly quota enforcement via UsageDB and ChatService integration."""
+"""Tests for monthly quota enforcement via require_quota dependency and QuotaExceededError contract."""
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import nativespeaker.api.app.dependencies as dep_module
+from nativespeaker.api.app.dependencies import require_quota
 from nativespeaker.api.exceptions import QuotaExceededError
-from nativespeaker.api.models import Chat
+from nativespeaker.api.models import SubscriptionPlan
 from unit.conftest import TEST_USER
 
 
@@ -21,43 +23,81 @@ class TestQuotaExceededError:
         assert str(err) == "Monthly quota exceeded"
 
 
-class TestChatServiceQuota:
-    """ChatService raises QuotaExceededError when monthly quota is exhausted."""
+class TestRequireQuota:
+    """require_quota dependency raises QuotaExceededError when quota exhausted, passes silently otherwise."""
+
+    @pytest.fixture
+    def mock_config(self):
+        config = MagicMock()
+        config.quotas = {SubscriptionPlan.free: 10,
+                         SubscriptionPlan.silver: 50,
+                         SubscriptionPlan.gold: 200,
+                         SubscriptionPlan.platinum: 1000}
+        return config
+
+    @pytest.fixture
+    def mock_db(self):
+        return MagicMock()
 
     @pytest.mark.asyncio
-    async def test_create_chat_quota_exceeded(self, service):
-        """create_chat raises QuotaExceededError when try_increment returns False."""
-        service.usage_db.try_increment = AsyncMock(return_value=False)
-        with pytest.raises(QuotaExceededError):
-            await service.create_chat(user=TEST_USER, phrase="test phrase")
+    async def test_require_quota_raises_when_exhausted(self, mock_db, mock_config):
+        """require_quota raises QuotaExceededError when try_increment returns False."""
+        mock_usage = AsyncMock()
+        mock_usage.try_increment = AsyncMock(return_value=False)
+        with patch.object(dep_module, "UsageDB", return_value=mock_usage):
+            with pytest.raises(QuotaExceededError):
+                await require_quota(user=TEST_USER, db=mock_db, config=mock_config)
 
     @pytest.mark.asyncio
-    async def test_create_chat_llm_not_called_when_quota_exceeded(self, service):
-        """LLM is not invoked when quota is exceeded."""
-        service.usage_db.try_increment = AsyncMock(return_value=False)
-        with pytest.raises(QuotaExceededError):
-            await service.create_chat(user=TEST_USER, phrase="test phrase")
-        service.llm_service.ainvoke.assert_not_called()
+    async def test_require_quota_passes_when_under_limit(self, mock_db, mock_config):
+        """require_quota completes silently when under quota."""
+        mock_usage = AsyncMock()
+        mock_usage.try_increment = AsyncMock(return_value=True)
+        with patch.object(dep_module, "UsageDB", return_value=mock_usage):
+            result = await require_quota(user=TEST_USER, db=mock_db, config=mock_config)
+        assert result is None
 
     @pytest.mark.asyncio
-    async def test_send_message_quota_exceeded(self, service, mock_chats_db):
-        """send_message raises QuotaExceededError when try_increment returns False."""
-        mock_chat = Chat(id=TEST_USER.id, user_id=TEST_USER.id, title="test", lang="en")
-        mock_chat.messages = []
-        mock_chats_db.get_chat = AsyncMock(return_value=mock_chat)
-        service.usage_db.try_increment = AsyncMock(return_value=False)
-        with pytest.raises(QuotaExceededError):
-            await service.send_message(chat_id=mock_chat.id,
-                                       user=TEST_USER,
-                                       content="test")
+    async def test_require_quota_calls_try_increment_with_correct_args(self, mock_db, mock_config):
+        """require_quota passes user_id, current month, and monthly_quota to try_increment."""
+        mock_usage = AsyncMock()
+        mock_usage.try_increment = AsyncMock(return_value=True)
+        with patch.object(dep_module, "UsageDB", return_value=mock_usage):
+            await require_quota(user=TEST_USER, db=mock_db, config=mock_config)
+        mock_usage.try_increment.assert_called_once()
+        call_args = mock_usage.try_increment.call_args
+        assert call_args.args[0] == TEST_USER.id  # user_id
+        assert isinstance(call_args.args[1], str)  # month string like "2026-03"
+        assert call_args.args[2] == 10  # free tier quota
 
     @pytest.mark.asyncio
-    async def test_create_chat_allowed_when_under_quota(self, service):
-        """create_chat proceeds when try_increment returns True."""
-        service.usage_db.try_increment = AsyncMock(return_value=True)
-        service.llm_service.ainvoke = AsyncMock(
-            return_value={"response": "ok", "issues": [], "suggestions": []}
-        )
-        result = await service.create_chat(user=TEST_USER, phrase="test phrase")
-        assert result is not None
-        service.usage_db.try_increment.assert_called_once()
+    async def test_require_quota_creates_usage_db_with_session(self, mock_db, mock_config):
+        """require_quota creates UsageDB with the injected db session."""
+        mock_usage = AsyncMock()
+        mock_usage.try_increment = AsyncMock(return_value=True)
+        with patch.object(dep_module, "UsageDB", return_value=mock_usage) as MockUsageDB:
+            await require_quota(user=TEST_USER, db=mock_db, config=mock_config)
+        MockUsageDB.assert_called_once_with(mock_db)
+
+
+class TestQuotaViaHTTP:
+    """HTTP-level quota enforcement -- POST /chats returns 429 when require_quota raises."""
+
+    def test_create_chat_returns_429_when_quota_exhausted(self, client):
+        """POST /chats returns 429 when require_quota override raises QuotaExceededError."""
+        client.app.dependency_overrides[require_quota] = _raise_quota_exceeded
+        response = client.post("/chats", json={"phrase": "test phrase"})
+        assert response.status_code == 429
+        assert response.json()["code"] == "rate_limited"
+
+    def test_send_message_returns_429_when_quota_exhausted(self, client):
+        """POST /chats/{id} returns 429 when require_quota override raises QuotaExceededError."""
+        import uuid
+        client.app.dependency_overrides[require_quota] = _raise_quota_exceeded
+        response = client.post(f"/chats/{uuid.uuid4()}", json={"content": "test"})
+        assert response.status_code == 429
+        assert response.json()["code"] == "rate_limited"
+
+
+def _raise_quota_exceeded():
+    raise QuotaExceededError("Monthly quota exceeded")
