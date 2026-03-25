@@ -1,5 +1,5 @@
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import jwt as pyjwt
 import pytest
@@ -8,13 +8,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from nativespeaker.api.app.dependencies import get_chat_service, get_config, get_current_user, get_db, get_subscription_service
+from nativespeaker.api.app.dependencies import get_chat_service, get_config, get_current_user, get_db, get_subscription_service, require_quota
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth import UserIdentity
 from nativespeaker.api.database import ChatsDB
 from nativespeaker.api.exceptions import AuthenticationError
 from nativespeaker.api.models import SubscriptionPlan, User
-import nativespeaker.api.routers.users as users_module
 from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router, users_router, webhooks_router
 from nativespeaker.api.services import ChatService, SubscriptionService
 
@@ -140,65 +139,51 @@ def mock_usage_db():
 
 
 @pytest.fixture
-def service(mock_chats_db, mock_usage_db):
+def service(mock_chats_db):
     llm_service = AsyncMock()
-    quotas = {SubscriptionPlan.free: 10,
-              SubscriptionPlan.silver: 50,
-              SubscriptionPlan.gold: 200,
-              SubscriptionPlan.platinum: 1000}
     svc = ChatService(db=MagicMock(),
                       llm_service=llm_service,
                       examples={"en": ["Example 1", "Example 2"],
                                 "es": ["Ejemplo 1"]},
                       messages_limit=50,
-                      chats_limit=50,
-                      quotas=quotas)
+                      chats_limit=50)
     svc.chats_db = mock_chats_db
-    svc.usage_db = mock_usage_db
     return svc
 
 
 @pytest.fixture
-def client(mock_chats_db, mock_usage_db):
-    with patch.object(users_module, "UsageDB") as MockUsageDB:
-        MockUsageDB.return_value = mock_usage_db
+def client(mock_chats_db):
+    mock_config = MagicMock()
+    mock_config.quotas = {SubscriptionPlan.free: 10,
+                          SubscriptionPlan.silver: 50,
+                          SubscriptionPlan.gold: 200,
+                          SubscriptionPlan.platinum: 1000}
 
-        mock_config = MagicMock()
-        mock_config.quotas = {SubscriptionPlan.free: 10,
-                              SubscriptionPlan.silver: 50,
-                              SubscriptionPlan.gold: 200,
-                              SubscriptionPlan.platinum: 1000}
+    app = FastAPI()
+    app.include_router(root_router)
+    app.include_router(chats_router)
+    app.include_router(examples_router)
+    app.include_router(health_router)
+    app.include_router(users_router)
+    register_exception_handlers(app)
 
-        app = FastAPI()
-        app.include_router(root_router)
-        app.include_router(chats_router)
-        app.include_router(examples_router)
-        app.include_router(health_router)
-        app.include_router(users_router)
-        register_exception_handlers(app)
+    llm_service = AsyncMock()
+    svc = ChatService(db=MagicMock(),
+                      llm_service=llm_service,
+                      examples={"en": ["Example 1", "Example 2"],
+                                "es": ["Ejemplo 1"]},
+                      messages_limit=50,
+                      chats_limit=50)
+    svc.chats_db = mock_chats_db
 
-        quotas = {SubscriptionPlan.free: 10,
-                  SubscriptionPlan.silver: 50,
-                  SubscriptionPlan.gold: 200,
-                  SubscriptionPlan.platinum: 1000}
-        llm_service = AsyncMock()
-        svc = ChatService(db=MagicMock(),
-                          llm_service=llm_service,
-                          examples={"en": ["Example 1", "Example 2"],
-                                    "es": ["Ejemplo 1"]},
-                          messages_limit=50,
-                          chats_limit=50,
-                          quotas=quotas)
-        svc.chats_db = mock_chats_db
-        svc.usage_db = mock_usage_db
+    app.dependency_overrides[get_db] = lambda: MagicMock()
+    app.dependency_overrides[get_current_user] = lambda: TEST_USER
+    app.dependency_overrides[get_chat_service] = lambda: svc
+    app.dependency_overrides[get_config] = lambda: mock_config
+    app.dependency_overrides[require_quota] = lambda: None
 
-        app.dependency_overrides[get_db] = lambda: MagicMock()
-        app.dependency_overrides[get_current_user] = lambda: TEST_USER
-        app.dependency_overrides[get_chat_service] = lambda: svc
-        app.dependency_overrides[get_config] = lambda: mock_config
-
-        with TestClient(app, raise_server_exceptions=False) as test_client:
-            yield test_client
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        yield test_client
 
 
 @pytest.fixture
