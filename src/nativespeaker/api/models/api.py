@@ -4,7 +4,6 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from nativespeaker.api.exceptions import ErrorCode
-from nativespeaker.api.models.content import AIContent, HumanContent
 from nativespeaker.api.models.subscriptions import SubscriptionPlan
 
 
@@ -15,7 +14,7 @@ class ErrorResponse(BaseModel):
 class ChatRequest(BaseModel):
     """New chat request."""
     phrase: str = Field(..., max_length=4096)
-    comment: str | None = Field(default=None, max_length=4096)
+    context: str | None = Field(default=None, max_length=4096)
     lang: str | None = Field(default=None)
 
 
@@ -29,14 +28,14 @@ class ChatResponse(BaseModel):
 
 class MessageRequest(BaseModel):
     """Followup message in existing chat."""
-    content: str = Field(..., max_length=4096)
+    question: str = Field(..., max_length=4096)
 
 
 class MessageResponse(BaseModel):
     """API response for both new chat and followup."""
     chat_id: UUID
     role: str
-    content: HumanContent | AIContent
+    content: dict
     created_at: datetime
 
 
