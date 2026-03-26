@@ -10,13 +10,13 @@ from unit.conftest import TEST_USER
 
 
 class TestQuotaExceededError:
-    """Error contract: QuotaExceededError returns 429 with rate_limited code."""
+    """Error contract: QuotaExceededError returns 429 with quota_exceeded code."""
 
     def test_status_code(self):
         assert QuotaExceededError.status_code == 429
 
     def test_error_code(self):
-        assert QuotaExceededError.error_code == "rate_limited"
+        assert QuotaExceededError.error_code == "quota_exceeded"
 
     def test_message(self):
         err = QuotaExceededError("Monthly quota exceeded")
@@ -88,15 +88,15 @@ class TestQuotaViaHTTP:
         client.app.dependency_overrides[require_quota] = _raise_quota_exceeded
         response = client.post("/chats", json={"phrase": "test phrase"})
         assert response.status_code == 429
-        assert response.json()["code"] == "rate_limited"
+        assert response.json()["code"] == "quota_exceeded"
 
     def test_send_message_returns_429_when_quota_exhausted(self, client):
         """POST /chats/{id} returns 429 when require_quota override raises QuotaExceededError."""
         import uuid
         client.app.dependency_overrides[require_quota] = _raise_quota_exceeded
-        response = client.post(f"/chats/{uuid.uuid4()}", json={"content": "test"})
+        response = client.post(f"/chats/{uuid.uuid4()}", json={"message": "test"})
         assert response.status_code == 429
-        assert response.json()["code"] == "rate_limited"
+        assert response.json()["code"] == "quota_exceeded"
 
 
 def _raise_quota_exceeded():

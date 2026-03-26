@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.app.main import app as real_app
 
-CONTRACT_CODES = {"invalid_request", "validation_error", "unauthorized", "not_found", "service_unavailable", "internal_error", "rate_limited", "out_of_scope"}
+CONTRACT_CODES = {"invalid_request", "validation_error", "unauthorized", "not_found", "service_unavailable", "internal_error", "quota_exceeded", "out_of_scope"}
 CONTRACT_STATUSES = {400, 401, 404, 422, 429, 500, 503}
 
 
