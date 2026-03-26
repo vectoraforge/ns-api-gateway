@@ -54,7 +54,7 @@ class TestCreateChat:
         mock_chats_db.create_chat.assert_called_once()
         chat_arg = mock_chats_db.create_chat.call_args[0][0]
         human_msg = [m for m in chat_arg.messages if m.role == ChatRole.human][0]
-        assert human_msg.message["context"] == "Is this too formal?"
+        assert human_msg.content["context"] == "Is this too formal?"
 
     @pytest.mark.asyncio
     async def test_new_chat_autodetect_lang(self, service, mock_chats_db):

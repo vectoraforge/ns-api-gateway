@@ -13,7 +13,7 @@ class TestAppleWebhook:
             json={"signedPayload": "valid.jws.token"},
         )
         assert response.status_code == 200
-        assert response.message == b""
+        assert response.content == b""
         mock_subscription_service.process_apple_notification.assert_called_once_with(
             "valid.jws.token"
         )
