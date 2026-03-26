@@ -1,12 +1,20 @@
 from uuid import UUID, uuid4
 
+import orjson
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nativespeaker.api.schema import ExamplesResponse
 from nativespeaker.api.database import ChatsDB
-from nativespeaker.api.exceptions import ChatHistoryLimitError, InvalidChatError, UnsupportedLanguageError
-from nativespeaker.api.models import AIContent, Chat, ChatRole, HumanContent, Message, User
+from nativespeaker.api.exceptions import (
+    AnalysisError,
+    ChatHistoryLimitError,
+    InvalidChatError,
+    OutOfScopeError,
+    UnsupportedLanguageError,
+)
+from nativespeaker.api.models import Chat, ChatRole, Message, User
+from nativespeaker.api.models.api import ExamplesResponse
+from nativespeaker.api.models.llm import AnalyzeInput, AnalyzeResponse, FollowUpInput, FollowUpResponse
 from nativespeaker.api.services.llm import LLMService
 
 
@@ -33,19 +41,31 @@ class ChatService:
         history = []
         for history_msg in chat.messages:
             if history_msg.role == ChatRole.human:
-                history.append(HumanMessage(content=history_msg.content.model_dump_json()))
+                history.append(HumanMessage(content=orjson.dumps(history_msg.content).decode()))
             else:
-                history.append(AIMessage(content=history_msg.content.model_dump_json()))
+                history.append(AIMessage(content=orjson.dumps(history_msg.content).decode()))
 
-        llm_response = await self.llm_service.ainvoke(history=history,
-                                                      content=message.content.model_dump_json(),
-                                                      lang=lang_directive)
-        return Message(chat_id=chat.id, role=ChatRole.ai, content=AIContent.model_validate(llm_response))
+        llm_response = await self.llm_service.ainvoke(
+            history=history,
+            content=orjson.dumps(message.content).decode(),
+            lang=lang_directive)
+
+        resolved_mode = llm_response.get("resolved_mode")
+        if resolved_mode == "reject":
+            raise OutOfScopeError()
+        elif resolved_mode == "analyze":
+            AnalyzeResponse.model_validate(llm_response)
+        elif resolved_mode == "follow_up":
+            FollowUpResponse.model_validate(llm_response)
+        else:
+            raise AnalysisError(f"Unexpected resolved_mode: {resolved_mode}")
+
+        return Message(chat_id=chat.id, role=ChatRole.ai, content=llm_response)
 
     async def create_chat(self,
                           user: User,
                           phrase: str,
-                          comment: str | None = None,
+                          context: str | None = None,
                           lang: str | None = None) -> Message:
         if lang and lang not in self.supported_languages:
             raise UnsupportedLanguageError(lang, self.supported_languages)
@@ -55,8 +75,9 @@ class ChatService:
             raise ChatHistoryLimitError(self.chats_limit)
 
         chat = Chat(id=uuid4(), user_id=user.id, title=phrase, lang=lang)
+        input_model = AnalyzeInput(phrase=phrase, context=context)
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
-                                content=HumanContent(phrase=phrase, comment=comment))
+                                content=input_model.model_dump(exclude_none=True))
         ai_message = await self.ask_llm(chat, human_message)
 
         chat.messages.append(human_message)
@@ -68,7 +89,7 @@ class ChatService:
     async def send_message(self,
                            chat_id: UUID,
                            user: User,
-                           content: str) -> Message:
+                           question: str) -> Message:
         chat = await self.chats_db.get_chat(chat_id, user.id)
         if chat is None:
             raise InvalidChatError(chat_id)
@@ -76,8 +97,9 @@ class ChatService:
         if len(chat.ai_messages) + 1 > self.messages_limit:
             raise ChatHistoryLimitError(self.messages_limit)
 
+        input_model = FollowUpInput(question=question)
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
-                                content=HumanContent(phrase=content))
+                                content=input_model.model_dump(exclude_none=True))
         ai_message = await self.ask_llm(chat=chat, message=human_message)
 
         chat.messages.append(human_message)
