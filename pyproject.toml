@@ -8,6 +8,7 @@ dependencies = [
     "pydantic >=2.12",
     "pydantic-settings >=2.13",
     "pyyaml >=6.0",
+    "orjson>=3.11",
     "langchain==1.2.13",
     "langchain-openai==1.1.11",
     "langchain-core==1.2.20",

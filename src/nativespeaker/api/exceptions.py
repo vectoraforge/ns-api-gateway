@@ -7,7 +7,8 @@ ErrorCode = Literal["invalid_request",
                     "not_found",
                     "service_unavailable",
                     "internal_error",
-                    "rate_limited"]
+                    "rate_limited",
+                    "out_of_scope"]
 
 
 class ServiceError(Exception):
@@ -116,6 +117,14 @@ class ChatHistoryLimitError(ServiceError):
     def __init__(self, max_messages: int):
         self.max_messages = max_messages
         super().__init__("Chat history limit reached")
+
+
+class OutOfScopeError(ServiceError):
+    status_code = 400
+    error_code = "out_of_scope"
+
+    def __init__(self):
+        super().__init__("The request is outside the scope of linguistic analysis")
 
 
 class AuthenticationError(ServiceError):
