@@ -36,7 +36,7 @@ _CODE_MAP: dict[int, str] = {
     401: "unauthorized",
     404: "not_found",
     422: "validation_error",
-    429: "rate_limited",
+    429: "quota_exceeded",
     503: "service_unavailable",
     500: "internal_error",
 }

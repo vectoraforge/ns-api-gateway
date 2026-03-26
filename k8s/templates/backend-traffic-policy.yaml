@@ -50,4 +50,4 @@ spec:
       contentType: application/json
       body:
         type: Inline
-        inline: '{"code":"rate_limited"}'
+        inline: '{"code":"quota_exceeded"}'
