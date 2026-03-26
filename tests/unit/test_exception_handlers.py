@@ -17,6 +17,7 @@ from nativespeaker.api.exceptions import (
     DatabaseNotInitializedError,
     InvalidChatError,
     InvalidCursorError,
+    OutOfScopeError,
     PageSizeLimitError,
     PermanentLLMError,
     QueueFullError,
@@ -37,6 +38,7 @@ CASES = [
     ("queue_full", QueueFullError(30), 503),
     ("circuit_open", CircuitOpenError(60), 503),
     ("history_limit", ChatHistoryLimitError(max_messages=50), 400),
+    ("out_of_scope", OutOfScopeError(), 400),
     ("generic_exception", Exception("boom"), 500),
     ("starlette_http", StarletteHTTPException(status_code=404, detail="not found"), 404),
     ("transient_llm", TransientLLMError("upstream timeout"), 503),
@@ -83,6 +85,7 @@ def test_handler(handler_client, name, exc, expected_status):
         "not_found",
         "service_unavailable",
         "internal_error",
+        "out_of_scope",
     }
 
 

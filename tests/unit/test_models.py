@@ -4,9 +4,14 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from nativespeaker.api.models import AIContent, HumanContent
-from nativespeaker.api.schema import ChatRequest, ChatResponse, ExamplesResponse, MessageRequest, MessageResponse
-from nativespeaker.api.models.content import Issue
+from nativespeaker.api.models.llm import (
+    Issue, AnalyzeInput, FollowUpInput,
+    AnalyzeResponse, FollowUpResponse, RejectResponse,
+)
+from nativespeaker.api.models.api import (
+    ChatRequest, ChatResponse, ExamplesResponse,
+    MessageRequest, MessageResponse,
+)
 from nativespeaker.api.exceptions import AnalysisError, InvalidChatError, ServiceError, UnsupportedLanguageError
 
 
@@ -16,9 +21,9 @@ class TestChatRequest:
         assert request.phrase == "Hello world"
         assert request.lang == "en"
 
-    def test_with_comment(self):
-        request = ChatRequest(phrase="Hello world", comment="Is this natural?", lang="en")
-        assert request.comment == "Is this natural?"
+    def test_with_context(self):
+        request = ChatRequest(phrase="Hello world", context="Is this natural?", lang="en")
+        assert request.context == "Is this natural?"
 
     def test_lang_optional(self):
         request = ChatRequest(phrase="Hello world")
@@ -32,10 +37,10 @@ class TestChatRequest:
 
 class TestMessageRequest:
     def test_valid_request(self):
-        request = MessageRequest(content="Why is that wrong?")
-        assert request.content == "Why is that wrong?"
+        request = MessageRequest(question="Why is that wrong?")
+        assert request.question == "Why is that wrong?"
 
-    def test_missing_content(self):
+    def test_missing_question(self):
         with pytest.raises(ValidationError):
             MessageRequest()
 
@@ -56,11 +61,11 @@ class TestMessageResponse:
         cid = uuid4()
         now = datetime.now(UTC)
         response = MessageResponse(chat_id=cid, role="ai",
-                                   content=AIContent(response="Good"),
+                                   content={"response": "Good"},
                                    created_at=now)
         assert response.chat_id == cid
         assert response.role == "ai"
-        assert response.content == AIContent(response="Good")
+        assert response.content == {"response": "Good"}
         assert response.created_at == now
 
     def test_ai_content_serialization(self):
@@ -68,10 +73,9 @@ class TestMessageResponse:
         now = datetime.now(UTC)
         response = MessageResponse(
             chat_id=cid, role="ai",
-            content=AIContent(
-                response="Looks good",
-                issues=[Issue(text_part="going to home", explanation="Drop 'to'")],
-                suggestions=["going home"]),
+            content={"response": "Looks good",
+                     "issues": [{"text_part": "going to home", "explanation": "Drop 'to'"}],
+                     "suggestions": ["going home"]},
             created_at=now)
         dumped = response.model_dump()
         assert dumped["content"]["response"] == "Looks good"
@@ -84,18 +88,18 @@ class TestMessageResponse:
         now = datetime.now(UTC)
         response = MessageResponse(
             chat_id=cid, role="human",
-            content=HumanContent(phrase="Hello", comment="Test"),
+            content={"phrase": "Hello", "context": "Test"},
             created_at=now)
         dumped = response.model_dump()
         assert dumped["content"]["phrase"] == "Hello"
-        assert dumped["content"]["comment"] == "Test"
+        assert dumped["content"]["context"] == "Test"
 
     def test_content_never_empty(self):
         cid = uuid4()
         now = datetime.now(UTC)
         response = MessageResponse(
             chat_id=cid, role="ai",
-            content=AIContent(response="Ok"),
+            content={"response": "Ok"},
             created_at=now)
         dumped = response.model_dump()
         assert dumped["content"] != {}
@@ -124,6 +128,62 @@ class TestExamplesResponse:
         response = ExamplesResponse(lang="en", examples=["Example 1", "Example 2"])
         assert response.lang == "en"
         assert len(response.examples) == 2
+
+
+class TestAnalyzeInput:
+    def test_with_context(self):
+        ai = AnalyzeInput(phrase="hello", context="greeting")
+        dumped = ai.model_dump(exclude_none=True)
+        assert dumped == {"mode": "analyze", "phrase": "hello", "context": "greeting"}
+
+    def test_without_context(self):
+        ai = AnalyzeInput(phrase="hello")
+        dumped = ai.model_dump(exclude_none=True)
+        assert dumped == {"mode": "analyze", "phrase": "hello"}
+        assert "context" not in dumped
+
+
+class TestFollowUpInput:
+    def test_valid(self):
+        fi = FollowUpInput(question="why?")
+        dumped = fi.model_dump(exclude_none=True)
+        assert dumped == {"mode": "follow_up", "question": "why?"}
+
+
+class TestAnalyzeResponse:
+    def test_valid(self):
+        ar = AnalyzeResponse(resolved_mode="analyze", response="ok",
+                             issues=[Issue(text_part="x", explanation="y")],
+                             suggestions=["fix"])
+        assert ar.response == "ok"
+        assert len(ar.issues) == 1
+        assert ar.suggestions == ["fix"]
+
+    def test_empty_issues_and_suggestions(self):
+        ar = AnalyzeResponse(resolved_mode="analyze", response="ok",
+                             issues=[], suggestions=[])
+        assert ar.issues == []
+        assert ar.suggestions == []
+
+    def test_issues_required(self):
+        with pytest.raises(ValidationError):
+            AnalyzeResponse(resolved_mode="analyze", response="ok", suggestions=[])
+
+    def test_suggestions_required(self):
+        with pytest.raises(ValidationError):
+            AnalyzeResponse(resolved_mode="analyze", response="ok", issues=[])
+
+
+class TestFollowUpResponse:
+    def test_valid(self):
+        fr = FollowUpResponse(resolved_mode="follow_up", response="because...")
+        assert fr.response == "because..."
+
+
+class TestRejectResponse:
+    def test_valid(self):
+        rr = RejectResponse(resolved_mode="reject", response="out of scope")
+        assert rr.response == "out of scope"
 
 
 class TestExceptions:
