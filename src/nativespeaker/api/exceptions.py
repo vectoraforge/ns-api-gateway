@@ -7,7 +7,7 @@ ErrorCode = Literal["invalid_request",
                     "not_found",
                     "service_unavailable",
                     "internal_error",
-                    "rate_limited",
+                    "quota_exceeded",
                     "out_of_scope"]
 
 
@@ -107,7 +107,7 @@ class CircuitOpenError(ServiceError):
 
 class QuotaExceededError(ServiceError):
     status_code = 429
-    error_code = "rate_limited"
+    error_code = "quota_exceeded"
 
 
 class ChatHistoryLimitError(ServiceError):
