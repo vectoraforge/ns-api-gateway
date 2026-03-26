@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Response
 
 from nativespeaker.api.app.dependencies import get_chat_service, get_current_user, require_quota
-from nativespeaker.api.schema import ChatRequest, ChatResponse, MessageRequest, MessageResponse
+from nativespeaker.api.models.api import ChatRequest, ChatResponse, MessageRequest, MessageResponse
 from nativespeaker.api.models import User
 from nativespeaker.api.services import ChatService
 
@@ -37,7 +37,7 @@ async def create_chat(body: ChatRequest,
                       user: User = Depends(get_current_user),
                       service: ChatService = Depends(get_chat_service)) -> MessageResponse:
     ai_message = await service.create_chat(user=user, phrase=body.phrase,
-                                           comment=body.comment, lang=body.lang)
+                                           context=body.context, lang=body.lang)
     return MessageResponse(chat_id=ai_message.chat_id, role=ai_message.role,
                            content=ai_message.content,
                            created_at=ai_message.created_at)
@@ -49,7 +49,7 @@ async def send_message(chat_id: UUID,
                        user: User = Depends(get_current_user),
                        service: ChatService = Depends(get_chat_service)) -> MessageResponse:
     ai_message = await service.send_message(chat_id=chat_id, user=user,
-                                            content=body.content)
+                                            question=body.question)
     return MessageResponse(chat_id=ai_message.chat_id, role=ai_message.role,
                            content=ai_message.content,
                            created_at=ai_message.created_at)
