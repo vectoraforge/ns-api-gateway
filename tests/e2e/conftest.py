@@ -10,7 +10,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.app.main import app
 from nativespeaker.api.config import EnvironmentConfig
-from nativespeaker.api.models import AIContent, Chat, ChatRole, HumanContent, Message, User
+from nativespeaker.api.models import Chat, ChatRole, Message, User
 
 
 @pytest.fixture(scope="session")
@@ -108,9 +108,11 @@ async def create_chat(factory, user_id: str):
         chat_id = uuid4()
         chat = Chat(id=chat_id, user_id=user.id, title="test phrase")
         human = Message(chat_id=chat_id, role=ChatRole.human,
-                        content=HumanContent(phrase="test phrase"))
+                        content={"mode": "analyze", "phrase": "test phrase"})
         ai = Message(chat_id=chat_id, role=ChatRole.ai,
-                     content=AIContent(response="test answer", issues=[], suggestions=[]))
+                     content={"resolved_mode": "analyze",
+                              "response": "test answer",
+                              "issues": [], "suggestions": []})
         chat.messages.append(human)
         chat.messages.append(ai)
         session.add(chat)

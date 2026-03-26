@@ -34,10 +34,10 @@ class TestCreateChat:
         assert "chat_id" in data
         assert data["role"] == "ai"
 
-    async def test_create_chat_with_comment(self, async_client):
+    async def test_create_chat_with_context(self, async_client):
         response = await async_client.post("/chats",
                                            json={"phrase": "I am going to home.",
-                                                  "comment": "Is this too informal?",
+                                                  "context": "Is this too informal?",
                                                   "lang": "en"})
         assert response.status_code == 200
         data = response.json()
@@ -58,7 +58,7 @@ class TestFollowup:
 
         # Send followup
         followup_resp = await async_client.post(f"/chats/{chat_id}",
-                                                json={"content": "Can you explain more?"})
+                                                json={"question": "Can you explain more?"})
         assert followup_resp.status_code == 200
         data = followup_resp.json()
         assert data["chat_id"] == chat_id

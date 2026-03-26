@@ -18,7 +18,7 @@ class TestChatLifecycle:
 
         # Step 2: Send a followup message via LLM
         followup_resp = await async_client.post(f"/chats/{chat_id}",
-                                                json={"content": "Why is that incorrect?"})
+                                                json={"question": "Why is that incorrect?"})
         assert followup_resp.status_code == 200
         followup_data = followup_resp.json()
         assert followup_data["chat_id"] == chat_id

@@ -21,7 +21,7 @@ class TestErrorCases:
     async def test_followup_nonexistent_chat_returns_404(self, async_client):
         """POST /chats/{id} for nonexistent chat returns 404."""
         response = await async_client.post(f"/chats/{uuid4()}",
-                                           json={"content": "hello"})
+                                           json={"question": "hello"})
         assert response.status_code == 404
         assert response.json()["code"] == "not_found"
 
