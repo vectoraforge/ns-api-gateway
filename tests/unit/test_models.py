@@ -37,8 +37,8 @@ class TestChatRequest:
 
 class TestMessageRequest:
     def test_valid_request(self):
-        request = MessageRequest(question="Why is that wrong?")
-        assert request.question == "Why is that wrong?"
+        request = MessageRequest(message="Why is that wrong?")
+        assert request.message == "Why is that wrong?"
 
     def test_missing_question(self):
         with pytest.raises(ValidationError):
@@ -145,9 +145,9 @@ class TestAnalyzeInput:
 
 class TestFollowUpInput:
     def test_valid(self):
-        fi = FollowUpInput(question="why?")
+        fi = FollowUpInput(message="why?")
         dumped = fi.model_dump(exclude_none=True)
-        assert dumped == {"mode": "follow_up", "question": "why?"}
+        assert dumped == {"mode": "follow_up", "message": "why?"}
 
 
 class TestAnalyzeResponse:

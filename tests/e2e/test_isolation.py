@@ -24,7 +24,7 @@ class TestCrossUserIsolation:
     async def test_cannot_post_to_other_user_chat(self, async_client, _db_transaction):
         chat_id = await create_chat(_db_transaction, OTHER_USER)
         response = await async_client.post(f"/chats/{chat_id}",
-                                           json={"content": "Hello"})
+                                           json={"message": "Hello"})
         assert response.status_code == 404
         assert response.json()["code"] == "not_found"
 

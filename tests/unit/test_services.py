@@ -54,7 +54,7 @@ class TestCreateChat:
         mock_chats_db.create_chat.assert_called_once()
         chat_arg = mock_chats_db.create_chat.call_args[0][0]
         human_msg = [m for m in chat_arg.messages if m.role == ChatRole.human][0]
-        assert human_msg.content["context"] == "Is this too formal?"
+        assert human_msg.message["context"] == "Is this too formal?"
 
     @pytest.mark.asyncio
     async def test_new_chat_autodetect_lang(self, service, mock_chats_db):
@@ -120,7 +120,7 @@ class TestFollowup:
                         "issues": [], "suggestions": []}
         service.llm_service.ainvoke.return_value = llm_response
 
-        result = await service.send_message(chat_id, user=TEST_USER, question="why?")
+        result = await service.send_message(chat_id, user=TEST_USER, message="why?")
 
         assert isinstance(result, Message)
         assert result.chat_id == chat_id
@@ -133,7 +133,7 @@ class TestFollowup:
         mock_chats_db.get_chat.return_value = None
 
         with pytest.raises(InvalidChatError) as exc_info:
-            await service.send_message(chat_id, user=TEST_USER, question="test")
+            await service.send_message(chat_id, user=TEST_USER, message="test")
 
         assert exc_info.value.chat_id == chat_id
 
@@ -150,7 +150,7 @@ class TestFollowup:
         mock_chats_db.get_chat.return_value = chat
 
         with pytest.raises(ChatHistoryLimitError) as exc_info:
-            await service.send_message(chat_id, user=TEST_USER, question="another message")
+            await service.send_message(chat_id, user=TEST_USER, message="another message")
 
         assert exc_info.value.max_messages == 50
 
@@ -171,7 +171,7 @@ class TestFollowup:
         service.llm_service.ainvoke.side_effect = llm_exc
 
         with pytest.raises(PermanentLLMError) as exc_info:
-            await service.send_message(chat_id, user=TEST_USER, question="why?")
+            await service.send_message(chat_id, user=TEST_USER, message="why?")
 
         assert exc_info.value is llm_exc
 

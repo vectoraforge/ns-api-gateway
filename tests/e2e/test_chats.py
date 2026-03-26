@@ -58,7 +58,7 @@ class TestFollowup:
 
         # Send followup
         followup_resp = await async_client.post(f"/chats/{chat_id}",
-                                                json={"question": "Can you explain more?"})
+                                                json={"message": "Can you explain more?"})
         assert followup_resp.status_code == 200
         data = followup_resp.json()
         assert data["chat_id"] == chat_id

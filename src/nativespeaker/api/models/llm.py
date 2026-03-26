@@ -16,7 +16,7 @@ class AnalyzeInput(BaseModel):
 
 class FollowUpInput(BaseModel):
     mode: Literal["follow_up"] = "follow_up"
-    question: str
+    message: str
 
 
 class AnalyzeResponse(BaseModel):

@@ -28,7 +28,7 @@ class ChatResponse(BaseModel):
 
 class MessageRequest(BaseModel):
     """Followup message in existing chat."""
-    question: str = Field(..., max_length=4096)
+    message: str = Field(..., max_length=4096)
 
 
 class MessageResponse(BaseModel):

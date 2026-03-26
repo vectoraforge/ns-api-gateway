@@ -49,7 +49,7 @@ async def send_message(chat_id: UUID,
                        user: User = Depends(get_current_user),
                        service: ChatService = Depends(get_chat_service)) -> MessageResponse:
     ai_message = await service.send_message(chat_id=chat_id, user=user,
-                                            question=body.question)
+                                            message=body.message)
     return MessageResponse(chat_id=ai_message.chat_id, role=ai_message.role,
                            content=ai_message.content,
                            created_at=ai_message.created_at)

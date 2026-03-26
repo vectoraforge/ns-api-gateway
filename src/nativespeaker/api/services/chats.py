@@ -89,7 +89,7 @@ class ChatService:
     async def send_message(self,
                            chat_id: UUID,
                            user: User,
-                           question: str) -> Message:
+                           message: str) -> Message:
         chat = await self.chats_db.get_chat(chat_id, user.id)
         if chat is None:
             raise InvalidChatError(chat_id)
@@ -97,7 +97,7 @@ class ChatService:
         if len(chat.ai_messages) + 1 > self.messages_limit:
             raise ChatHistoryLimitError(self.messages_limit)
 
-        input_model = FollowUpInput(question=question)
+        input_model = FollowUpInput(message=message)
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
                                 content=input_model.model_dump(exclude_none=True))
         ai_message = await self.ask_llm(chat=chat, message=human_message)
