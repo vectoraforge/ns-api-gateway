@@ -7,7 +7,10 @@ from nativespeaker.api.services import SubscriptionService
 router = APIRouter(tags=["webhooks"])
 
 
-@router.post("/webhooks/apple", status_code=200)
+@router.post("/webhooks/apple",
+             status_code=200,
+             summary="Apple subscription webhook",
+             description="Receives Apple App Store Server Notifications v2 for subscription lifecycle events.")
 async def apple_webhook(request: Request,
                          service: SubscriptionService = Depends(get_subscription_service)) -> Response:
     body = await request.json()

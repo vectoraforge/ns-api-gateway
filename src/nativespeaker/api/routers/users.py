@@ -9,10 +9,13 @@ from nativespeaker.api.models.api import UserProfileResponse
 from nativespeaker.api.database import UsageDB
 from nativespeaker.api.models import User
 
-router = APIRouter()
+router = APIRouter(tags=["users"])
 
 
-@router.get("/users/me", response_model=UserProfileResponse)
+@router.get("/users/me",
+            response_model=UserProfileResponse,
+            summary="Get current user profile",
+            description="Returns the authenticated user's profile, subscription plan, and current month's usage.")
 async def get_me(user: User = Depends(get_current_user),
                  db: AsyncSession = Depends(get_db),
                  config: AppConfig = Depends(get_config)) -> UserProfileResponse:
