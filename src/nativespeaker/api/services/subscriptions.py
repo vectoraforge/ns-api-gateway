@@ -79,12 +79,20 @@ class SubscriptionService:
         subtype = payload.subtype
         notification_uuid = payload.notificationUUID
 
+        if notification_type is None or notification_uuid is None:
+            logger.warning("apple_notification_incomplete",
+                           type=notification_type, uuid=notification_uuid)
+            return
+
         if notification_type in _IGNORED_TYPES:
             logger.info("apple_notification_ignored",
                         type=notification_type, uuid=notification_uuid)
             return
 
-        signed_transaction = payload.data.signedTransactionInfo
+        # `data` is absent on notifications that carry `summary` or
+        # `externalPurchaseToken` instead -- the three fields are mutually exclusive.
+        data = payload.data
+        signed_transaction = data.signedTransactionInfo if data else None
         if not signed_transaction:
             logger.warning("apple_notification_no_transaction",
                            type=notification_type, uuid=notification_uuid)
@@ -95,6 +103,11 @@ class SubscriptionService:
         )
         original_transaction_id = transaction.originalTransactionId
         product_id = transaction.productId
+
+        if original_transaction_id is None or product_id is None:
+            logger.warning("apple_notification_incomplete_transaction",
+                           type=notification_type, uuid=notification_uuid)
+            return
 
         status, plan = self._map_lifecycle_event(
             notification_type, subtype, product_id

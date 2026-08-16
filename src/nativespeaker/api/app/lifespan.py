@@ -18,6 +18,8 @@ logger = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config = EnvironmentConfig().app_config
+    if config is None:
+        raise RuntimeError("Configuration failed to load")
     app.state.config = config
 
     # Setup logging

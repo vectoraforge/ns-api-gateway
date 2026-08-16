@@ -2,7 +2,7 @@ from uuid import UUID, uuid4
 
 import orjson
 from langchain_core.messages import AIMessage, HumanMessage
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.database import ChatsDB
 from nativespeaker.api.exceptions import (

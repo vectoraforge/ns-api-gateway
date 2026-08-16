@@ -2,9 +2,8 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 
 import structlog
-from fastapi import Header, Request
-from fastapi.params import Depends
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import Depends, Header, Request
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth import TokenVerifier
 from nativespeaker.api.config import AppConfig
