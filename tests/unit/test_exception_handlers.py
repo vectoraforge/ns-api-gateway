@@ -1,14 +1,13 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import nativespeaker.api.app.dependencies as deps_module
 from nativespeaker.api.app.dependencies import get_current_user, get_db
-from nativespeaker.api.models import User
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.exceptions import (
     AuthenticationError,
@@ -24,6 +23,7 @@ from nativespeaker.api.exceptions import (
     TransientLLMError,
     UnsupportedLanguageError,
 )
+from nativespeaker.api.models import User
 from unit.conftest import make_test_verifier, make_token
 
 CASES = [

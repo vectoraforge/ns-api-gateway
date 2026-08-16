@@ -8,14 +8,28 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from nativespeaker.api.app.dependencies import get_chat_service, get_config, get_current_user, get_db, get_subscription_service, require_quota
+import nativespeaker.api.routers.users as users_module
+from nativespeaker.api.app.dependencies import (
+    get_chat_service,
+    get_config,
+    get_current_user,
+    get_db,
+    get_subscription_service,
+    require_quota,
+)
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth import UserIdentity
 from nativespeaker.api.database import ChatsDB
 from nativespeaker.api.exceptions import AuthenticationError
 from nativespeaker.api.models import SubscriptionPlan, User
-import nativespeaker.api.routers.users as users_module
-from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router, users_router, webhooks_router
+from nativespeaker.api.routers import (
+    chats_router,
+    examples_router,
+    health_router,
+    root_router,
+    users_router,
+    webhooks_router,
+)
 from nativespeaker.api.services import ChatService, SubscriptionService
 
 # ---------------------------------------------------------------------------

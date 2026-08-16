@@ -131,7 +131,8 @@ class TestUserModel:
         assert user.id is not None
 
     def test_subscription_plan_values(self):
-        assert list(SubscriptionPlan) == [SubscriptionPlan.free, SubscriptionPlan.silver, SubscriptionPlan.gold, SubscriptionPlan.platinum]
+        assert list(SubscriptionPlan) == [SubscriptionPlan.free, SubscriptionPlan.silver,
+                                          SubscriptionPlan.gold, SubscriptionPlan.platinum]
 
 
 class TestUserIsolation:

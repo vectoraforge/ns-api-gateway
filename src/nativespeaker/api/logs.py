@@ -1,8 +1,8 @@
 import logging
 import sys
 import time
-import uuid
 import typing
+import uuid
 from collections.abc import Callable
 
 import structlog

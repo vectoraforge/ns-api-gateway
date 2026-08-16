@@ -4,15 +4,22 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from nativespeaker.api.models.llm import (
-    Issue, AnalyzeInput, FollowUpInput,
-    AnalyzeResponse, FollowUpResponse, RejectResponse,
-)
-from nativespeaker.api.models.api import (
-    ChatRequest, ChatResponse, ExamplesResponse,
-    MessageRequest, MessageResponse,
-)
 from nativespeaker.api.exceptions import AnalysisError, InvalidChatError, ServiceError, UnsupportedLanguageError
+from nativespeaker.api.models.api import (
+    ChatRequest,
+    ChatResponse,
+    ExamplesResponse,
+    MessageRequest,
+    MessageResponse,
+)
+from nativespeaker.api.models.llm import (
+    AnalyzeInput,
+    AnalyzeResponse,
+    FollowUpInput,
+    FollowUpResponse,
+    Issue,
+    RejectResponse,
+)
 
 
 class TestChatRequest:

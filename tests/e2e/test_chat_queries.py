@@ -8,7 +8,7 @@ pytestmark = pytest.mark.e2e
 @pytest.mark.asyncio(loop_scope="module")
 class TestListChats:
     async def test_list_chats(self, async_client, test_user_id, _db_transaction):
-        chat_id = await create_chat(_db_transaction, test_user_id)
+        await create_chat(_db_transaction, test_user_id)
         response = await async_client.get("/chats")
         assert response.status_code == 200
         data = response.json()

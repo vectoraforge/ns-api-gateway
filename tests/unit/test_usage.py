@@ -1,6 +1,7 @@
 """Tests for monthly quota enforcement via require_quota dependency and QuotaExceededError contract."""
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 import nativespeaker.api.app.dependencies as dep_module
 from nativespeaker.api.app.dependencies import require_quota

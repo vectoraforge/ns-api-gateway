@@ -3,8 +3,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Response
 
 from nativespeaker.api.app.dependencies import get_chat_service, get_current_user, require_quota
-from nativespeaker.api.models.api import ChatRequest, ChatResponse, MessageRequest, MessageResponse
 from nativespeaker.api.models import User
+from nativespeaker.api.models.api import ChatRequest, ChatResponse, MessageRequest, MessageResponse
 from nativespeaker.api.services import ChatService
 
 router = APIRouter(tags=["chats"])
@@ -42,7 +42,8 @@ async def get_chat_messages(chat_id: UUID,
              response_model=MessageResponse,
              dependencies=[Depends(require_quota)],
              summary="Start new analysis",
-             description="Analyzes a phrase and creates a new chat session with the AI response. Consumes one request from the user's monthly quota.",
+             description="Analyzes a phrase and creates a new chat session with the AI response. "
+                         "Consumes one request from the user's monthly quota.",
              response_description="AI analysis message")
 async def create_chat(body: ChatRequest,
                       user: User = Depends(get_current_user),
@@ -58,7 +59,8 @@ async def create_chat(body: ChatRequest,
              response_model=MessageResponse,
              dependencies=[Depends(require_quota)],
              summary="Send follow-up message",
-             description="Sends a follow-up message in an existing chat session. Consumes one request from the user's monthly quota.",
+             description="Sends a follow-up message in an existing chat session. "
+                         "Consumes one request from the user's monthly quota.",
              response_description="AI follow-up message")
 async def send_message(chat_id: UUID,
                        body: MessageRequest,

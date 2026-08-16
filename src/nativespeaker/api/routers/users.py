@@ -5,9 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from nativespeaker.api.app.dependencies import get_config, get_current_user, get_db
 from nativespeaker.api.config import AppConfig
-from nativespeaker.api.models.api import UserProfileResponse
 from nativespeaker.api.database import UsageDB
 from nativespeaker.api.models import User
+from nativespeaker.api.models.api import UserProfileResponse
 
 router = APIRouter(tags=["users"])
 

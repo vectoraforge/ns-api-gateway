@@ -1,16 +1,16 @@
 from contextlib import asynccontextmanager
 
-import structlog
 import firebase_admin
+import structlog
 from fastapi import FastAPI
 from firebase_admin import credentials
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth import JWTVerifier
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.logs import setup_logging
-from nativespeaker.api.services import LLMService, FirebaseService, create_apple_verifier
+from nativespeaker.api.services import FirebaseService, LLMService, create_apple_verifier
 
 logger = structlog.get_logger()
 

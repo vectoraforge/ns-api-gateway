@@ -1,5 +1,3 @@
-import pytest
-
 from nativespeaker.api.exceptions import WebhookVerificationError
 
 

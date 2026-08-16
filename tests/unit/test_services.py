@@ -2,12 +2,15 @@ from uuid import uuid4
 
 import pytest
 
-from nativespeaker.api.models.api import ExamplesResponse
 from nativespeaker.api.exceptions import (
-    ChatHistoryLimitError, InvalidChatError, OutOfScopeError,
-    PermanentLLMError, UnsupportedLanguageError,
+    ChatHistoryLimitError,
+    InvalidChatError,
+    OutOfScopeError,
+    PermanentLLMError,
+    UnsupportedLanguageError,
 )
 from nativespeaker.api.models import Chat, ChatRole, Message
+from nativespeaker.api.models.api import ExamplesResponse
 from unit.conftest import TEST_USER
 
 

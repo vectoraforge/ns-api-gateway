@@ -6,9 +6,9 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.models import (
-    SubscriptionPlan,
     Subscription,
     SubscriptionEvent,
+    SubscriptionPlan,
     SubscriptionProvider,
     SubscriptionStatus,
     User,

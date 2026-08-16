@@ -5,9 +5,16 @@ from fastapi import FastAPI
 
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.app.lifespan import lifespan
-from nativespeaker.api.models.api import ErrorResponse
 from nativespeaker.api.logs import RequestLoggingMiddleware
-from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router, users_router, webhooks_router
+from nativespeaker.api.models.api import ErrorResponse
+from nativespeaker.api.routers import (
+              chats_router,
+              examples_router,
+              health_router,
+              root_router,
+              users_router,
+              webhooks_router,
+)
 
 logger = structlog.get_logger()
 

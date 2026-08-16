@@ -1,7 +1,8 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import nativespeaker.api.app.dependencies as deps_module
 from nativespeaker.api.app.dependencies import get_current_user, get_db

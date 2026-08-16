@@ -61,7 +61,8 @@ class AppleConfig(BaseModel):
     app_apple_id: int | None = Field(default=None, description="Numeric Apple ID (required for production)")
     enable_online_checks: bool = Field(default=True, description="Enable OCSP certificate checks")
     certs_dir: str = Field(..., description="Directory containing Apple root CA certificates")
-    product_id_to_plan: dict[str, SubscriptionPlan] = Field(description="Maps Apple product IDs to SubscriptionPlan values")
+    product_id_to_plan: dict[str, SubscriptionPlan] = Field(
+        description="Maps Apple product IDs to SubscriptionPlan values")
 
 
 class ModelConfig(BaseModel):
