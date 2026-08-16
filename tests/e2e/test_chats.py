@@ -1,5 +1,7 @@
 import pytest
 
+pytestmark = pytest.mark.e2e
+
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestCreateChat:
