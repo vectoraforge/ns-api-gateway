@@ -23,7 +23,7 @@ def _make_mock_payload(*,
                        notification_type: str,
                        subtype: str | None = None,
                        notification_uuid: str = "uuid-001",
-                       signed_transaction: str = "signed.txn.info"):
+                       signed_transaction: str | None = "signed.txn.info"):
     payload = MagicMock()
     payload.notificationType = notification_type
     payload.subtype = subtype
@@ -34,9 +34,9 @@ def _make_mock_payload(*,
 
 
 PRODUCT_TO_PLAN = {
-    "com.example.nativespeaker.silver": "silver",
-    "com.example.nativespeaker.gold": "gold",
-    "com.example.nativespeaker.platinum": "platinum",
+    "com.example.nativespeaker.silver": SubscriptionPlan.silver,
+    "com.example.nativespeaker.gold": SubscriptionPlan.gold,
+    "com.example.nativespeaker.platinum": SubscriptionPlan.platinum,
 }
 
 
@@ -303,7 +303,7 @@ class TestFirebaseSync:
 
         with patch("nativespeaker.api.services.firebase.asyncio.to_thread",
                     new_callable=AsyncMock) as mock_to_thread:
-            await firebase_service.set_plan_claim("uid-123", "gold")
+            await firebase_service.set_plan_claim("uid-123", SubscriptionPlan.gold)
             mock_to_thread.assert_called_once()
 
     @pytest.mark.asyncio
@@ -314,7 +314,7 @@ class TestFirebaseSync:
         with patch("nativespeaker.api.services.firebase.asyncio.to_thread",
                     side_effect=Exception("Firebase down")):
             # Should NOT raise -- just log warning
-            await firebase_service.set_plan_claim("uid-123", "gold")
+            await firebase_service.set_plan_claim("uid-123", SubscriptionPlan.gold)
 
     @pytest.mark.asyncio
     async def test_no_firebase_sync_when_tier_unchanged(self, subscription_service,

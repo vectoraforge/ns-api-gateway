@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid7
 
 from sqlalchemy import DateTime, Enum
@@ -15,8 +15,8 @@ class ChatRole(StrEnum):
     ai = "ai"
 
 
-ChatRoleType: Any = Enum(ChatRole, name='chat_role', schema='core')
-DateTimeType: Any = DateTime(timezone=True)
+ChatRoleType = cast(Any, Enum(ChatRole, name='chat_role', schema='core'))
+DateTimeType = cast(Any, DateTime(timezone=True))
 
 
 class Message(SQLModel, table=True):

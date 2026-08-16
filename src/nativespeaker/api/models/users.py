@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid7
 
 from sqlalchemy import DateTime, UniqueConstraint
@@ -7,7 +7,7 @@ from sqlmodel import Field, SQLModel
 
 from nativespeaker.api.models.subscriptions import SubscriptionPlan, SubscriptionPlanType
 
-DateTimeType: Any = DateTime(timezone=True)
+DateTimeType = cast(Any, DateTime(timezone=True))
 
 
 class User(SQLModel, table=True):

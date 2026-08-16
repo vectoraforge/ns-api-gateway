@@ -39,7 +39,9 @@ def test_request_id_bound_in_context():
 def _logging_app():
     """Minimal FastAPI app with RequestLoggingMiddleware for testing."""
     app = FastAPI()
-    app.add_middleware(RequestLoggingMiddleware)
+    # See app/main.py: ty cannot match BaseHTTPMiddleware subclasses against
+    # Starlette's _MiddlewareFactory ParamSpec protocol.
+    app.add_middleware(RequestLoggingMiddleware)  # ty: ignore[invalid-argument-type]
 
     @app.get("/test")
     async def test_route():

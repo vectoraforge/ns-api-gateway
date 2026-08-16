@@ -2,7 +2,7 @@ from uuid import UUID, uuid7
 
 from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlmodel import select
+from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.models.users import UsageMonthly
@@ -26,11 +26,11 @@ class UsageDB:
 
         result = await self.session.exec(
             update(UsageMonthly)
-            .where(UsageMonthly.user_id == user_id,
-                   UsageMonthly.month == month,
-                   UsageMonthly.used < monthly_quota)
-            .values(used=UsageMonthly.used + 1)
-            .returning(UsageMonthly.used)
+            .where(col(UsageMonthly.user_id) == user_id,
+                   col(UsageMonthly.month) == month,
+                   col(UsageMonthly.used) < monthly_quota)
+            .values(used=col(UsageMonthly.used) + 1)
+            .returning(col(UsageMonthly.used))
         )
         return result.first() is not None
 
@@ -47,6 +47,6 @@ class UsageDB:
         """Zero out usage counter (called on plan change)."""
         await self.session.exec(
             update(UsageMonthly)
-            .where(UsageMonthly.user_id == user_id, UsageMonthly.month == month)
+            .where(col(UsageMonthly.user_id) == user_id, col(UsageMonthly.month) == month)
             .values(used=0)
         )

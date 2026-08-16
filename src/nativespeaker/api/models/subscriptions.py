@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid7
 
 from sqlalchemy import DateTime, Enum, Index, text
@@ -26,10 +26,10 @@ class SubscriptionStatus(StrEnum):
     revoked = "revoked"
 
 
-SubscriptionPlanType: Any = Enum(SubscriptionPlan, name='subscription_plan', schema='core')
-SubscriptionProviderType: Any = Enum(SubscriptionProvider, name='subscription_provider', schema='core')
-SubscriptionStatusType: Any = Enum(SubscriptionStatus, name='subscription_status', schema='core')
-DateTimeType: Any = DateTime(timezone=True)
+SubscriptionPlanType = cast(Any, Enum(SubscriptionPlan, name='subscription_plan', schema='core'))
+SubscriptionProviderType = cast(Any, Enum(SubscriptionProvider, name='subscription_provider', schema='core'))
+SubscriptionStatusType = cast(Any, Enum(SubscriptionStatus, name='subscription_status', schema='core'))
+DateTimeType = cast(Any, DateTime(timezone=True))
 
 
 class Subscription(SQLModel, table=True):

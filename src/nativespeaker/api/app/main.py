@@ -39,4 +39,6 @@ app.include_router(health_router)
 app.include_router(users_router)
 app.include_router(webhooks_router)
 register_exception_handlers(app)
-app.add_middleware(RequestLoggingMiddleware)
+# ty cannot match a BaseHTTPMiddleware subclass against Starlette's
+# _MiddlewareFactory ParamSpec protocol; this is the documented usage.
+app.add_middleware(RequestLoggingMiddleware)  # ty: ignore[invalid-argument-type]

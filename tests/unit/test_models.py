@@ -60,7 +60,8 @@ class TestIssue:
 
     def test_issue_missing_fields(self):
         with pytest.raises(ValidationError):
-            Issue(text_part="going to home")
+            # Omitting the required field is the point of this test.
+            Issue(text_part="going to home")  # ty: ignore[missing-argument]
 
 
 class TestMessageResponse:
@@ -174,11 +175,15 @@ class TestAnalyzeResponse:
 
     def test_issues_required(self):
         with pytest.raises(ValidationError):
-            AnalyzeResponse(resolved_mode="analyze", response="ok", suggestions=[])
+            # Omitting the required field is the point of this test.
+            AnalyzeResponse(resolved_mode="analyze", response="ok",
+                            suggestions=[])  # ty: ignore[missing-argument]
 
     def test_suggestions_required(self):
         with pytest.raises(ValidationError):
-            AnalyzeResponse(resolved_mode="analyze", response="ok", issues=[])
+            # Omitting the required field is the point of this test.
+            AnalyzeResponse(resolved_mode="analyze", response="ok",
+                            issues=[])  # ty: ignore[missing-argument]
 
 
 class TestFollowUpResponse:

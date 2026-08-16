@@ -73,7 +73,10 @@ en:
 
         env_clean = {k: v for k, v in os.environ.items() if k not in _DOTENV_KEYS}
         with patch.dict(os.environ, env_clean, clear=True):
-            config = EnvironmentConfig(config_dir=Path(tmp_dir), _env_file=None)
+            # _env_file is declared on BaseSettings.__init__, but ty sees only the
+            # __init__ synthesised from the model fields.
+            config = EnvironmentConfig(config_dir=Path(tmp_dir),
+                                       _env_file=None)  # ty: ignore[unknown-argument]
             assert config.app_config is not None
             assert config.app_config.model.name == "gpt-4"
             assert config.app_config.model.temperature == 0.5
@@ -87,4 +90,6 @@ def test_main_config_missing_file():
     env_clean = {k: v for k, v in os.environ.items() if k not in _DOTENV_KEYS}
     with patch.dict(os.environ, env_clean, clear=True):
         with pytest.raises(FileNotFoundError):
-            EnvironmentConfig(config_dir=Path("/nonexistent/"), _env_file=None)
+            # See above: _env_file is invisible to ty's synthesised __init__.
+            EnvironmentConfig(config_dir=Path("/nonexistent/"),
+                              _env_file=None)  # ty: ignore[unknown-argument]
