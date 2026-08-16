@@ -39,10 +39,18 @@ log_level: INFO
 model:
   name: "gpt-4"
   temperature: 0.5
+db:
+  host: localhost
+  port: 5432
+  user: test-user
+  password: test-password
+  name: test-db
 jwt:
   project_id: test-project
+  api_key: test-api-key
 apple:
   bundle_id: com.example.test
+  certs_dir: /tmp/certs
   product_id_to_plan:
     com.example.test.gold: gold
 quotas:
