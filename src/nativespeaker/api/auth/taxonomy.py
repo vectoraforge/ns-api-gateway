@@ -389,18 +389,33 @@ def register_client_class(result: AuthEventResult,
         if known.http_status != status:
             raise UnsurfacedResultError(f"{client_class} already carries a different status")
     else:
-        # A brand-new operation-specific class is permitted only where its remediation is
-        # genuinely distinct from every class already declared.
         if remediation is None:
             raise UnsurfacedResultError(f"{client_class} needs its own distinct remediation")
-        existing = ({entry.action for entry in REMEDIATIONS.values()}
-                    | {entry.action for entry in _ENDPOINT_REMEDIATIONS.values()})
-        if remediation.action in existing:
-            raise UnsurfacedResultError(f"{client_class} duplicates an existing remediation")
-        if remediation.http_status != status:
-            raise UnsurfacedResultError(f"{client_class} carries a different status")
-        _ENDPOINT_REMEDIATIONS[client_class] = remediation
+        register_endpoint_class(client_class, remediation, status)
     RESULT_TO_CLASS[result] = client_class
+
+
+def register_endpoint_class(client_class: ErrorCode, remediation: Remediation,
+                            status: int) -> Remediation:
+    """Declare an operation-specific class whose internal result is chosen per rejection rather
+    than by a fixed result-to-class entry. A brand-new class is permitted only where its
+    remediation is genuinely distinct from every class already declared; re-declaring an
+    identical one is idempotent, so import order cannot matter."""
+    # [impl->req~shared-error-classes-govern-all-routes~1]
+    known = (REMEDIATIONS[ClientErrorClass(client_class)] if client_class in set(ClientErrorClass)
+             else _ENDPOINT_REMEDIATIONS.get(client_class))
+    if known is not None:
+        if known != remediation:
+            raise UnsurfacedResultError(f"{client_class} already carries its own remediation")
+        return known
+    existing = ({entry.action for entry in REMEDIATIONS.values()}
+                | {entry.action for entry in _ENDPOINT_REMEDIATIONS.values()})
+    if remediation.action in existing:
+        raise UnsurfacedResultError(f"{client_class} duplicates an existing remediation")
+    if remediation.http_status != status:
+        raise UnsurfacedResultError(f"{client_class} carries a different status")
+    _ENDPOINT_REMEDIATIONS[client_class] = remediation
+    return remediation
 
 
 class ClassNotEmittableError(RuntimeError):

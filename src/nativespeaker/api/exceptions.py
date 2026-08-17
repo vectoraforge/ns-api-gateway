@@ -22,7 +22,9 @@ ErrorCode = Literal["invalid_request",
                     "device_grant_exhausted",
                     "account_already_claimed",
                     "verification_temporarily_unavailable",
-                    "registration_temporarily_unavailable"]
+                    "registration_temporarily_unavailable",
+                    # Operation-specific auth classes
+                    "create_flow_mismatch"]
 
 
 class ServiceError(Exception):

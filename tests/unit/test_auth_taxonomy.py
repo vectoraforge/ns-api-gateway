@@ -125,9 +125,9 @@ class TestTheClassesGovernEveryRoute:
         try:
             # An endpoint-specific class is allowed where its remediation is genuinely its own.
             register_client_class(AuthEventResult.revocation_unconfirmed,
-                                  "create_flow_mismatch", 409,  # type: ignore[invalid-argument-type]
+                                  "a_hypothetical_endpoint_class", 409,  # type: ignore[invalid-argument-type]
                                   remediation=distinct)
-            assert remediation_for("create_flow_mismatch") is distinct
+            assert remediation_for("a_hypothetical_endpoint_class") is distinct
             # Re-using an existing remediation under a new name is not a distinct case.
             with pytest.raises(UnsurfacedResultError):
                 register_client_class(AuthEventResult.policy_rejected, "another_name", 409,  # type: ignore[invalid-argument-type]
