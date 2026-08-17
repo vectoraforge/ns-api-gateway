@@ -5,8 +5,10 @@ a plan column on `core.users`: a user's allowance comes from the tier their effe
 points at, and the counter that spends it hangs off that same grant.
 """
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import update
@@ -16,6 +18,13 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.entitlement import AccessGrantStatus
 from nativespeaker.api.models.users import AccessGrant, AccessTier, UserMonthlyUsage
+from nativespeaker.api.quota.grants import (
+    EntitlementReport,
+    GrantRow,
+    TooManyActiveGrantsError,
+    effective_tier,
+    entitlement_report,
+)
 from nativespeaker.api.quota.usage import (
     NewUsageRow,
     derived_allowance,
@@ -24,6 +33,15 @@ from nativespeaker.api.quota.usage import (
     period_of,
     require_usage_row,
 )
+
+__all__ = [
+    "EffectiveGrant",
+    "GrantsDB",
+    "QuotaStoreDB",
+    "TooManyActiveGrantsError",
+    "UsageDB",
+    "current_period",
+]
 
 
 def current_period(now: datetime | None = None) -> str:
@@ -39,17 +57,49 @@ class EffectiveGrant:
     monthly_credits: int
 
 
-class TooManyActiveGrantsError(RuntimeError):
-    """More than one active grant was found for one user: an invariant violation, not a choice
-    between them."""
-
-
 class GrantsDB:
     """Reads the effective access grant. Read paths own no repair: nothing here mutates grant
     state, and no path selects a grant by `status` alone."""
 
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    async def grant_rows(self,
+                         user_id: UUID,
+                         now: datetime,
+                         *,
+                         for_update: bool = False) -> list[GrantRow]:
+        """The user's candidate grant rows under the shared effective-grant predicate, joined to
+        their `core.access_tiers` row.
+
+        `core.access_grants` is the single entitlement table read here — subscription-backed and
+        non-subscription access alike — and the predicate is the whole conjunction, never
+        `status` alone. The subscription table is not consulted: the deferrable foreign key
+        already guarantees an active subscription-backed grant is product-entitled.
+        """
+        # [impl->req~quota-access-grants-single-entitlement-table~1]
+        # [impl->req~quota-effective-tier-step-01~1]
+        # [impl->req~quota-effective-tier-step-05~1]
+        # [impl->req~schema-user-monthly-usage-allowance-derived-from-tier~1]
+        # [impl->req~schema-access-tiers-monthly-credits-allowance~1]
+        statement = (
+            select(AccessGrant, AccessTier.monthly_credits)
+            .join(AccessTier, col(AccessTier.id) == col(AccessGrant.tier_id))
+            .where(col(AccessGrant.user_id) == user_id,
+                   col(AccessGrant.status) == AccessGrantStatus.active,
+                   col(AccessGrant.starts_at) <= now,
+                   (col(AccessGrant.ends_at).is_(None)) | (col(AccessGrant.ends_at) > now)))
+        if for_update:
+            # 1. lock the grant row itself `FOR UPDATE`; the tier row is configuration and is
+            #    not locked with it.
+            # [impl->req~quota-rollover-step-01~1]
+            statement = statement.with_for_update(of=AccessGrant)
+        result = await self.session.exec(statement)
+        return [GrantRow(grant_id=grant.id, user_id=grant.user_id, tier_id=grant.tier_id,
+                         source=grant.source, status=grant.status, starts_at=grant.starts_at,
+                         ends_at=grant.ends_at, subscription_id=grant.subscription_id,
+                         tier_monthly_credits=derived_allowance(grant.tier_id, monthly_credits))
+                for grant, monthly_credits in result.all()]
 
     async def effective_grant(self,
                               user_id: UUID,
@@ -61,25 +111,31 @@ class GrantsDB:
         The allowance comes from that join and from nothing else: it is a property of the tier
         the grant points at, never a stored column on the usage row.
         """
-        # [impl->req~schema-user-monthly-usage-allowance-derived-from-tier~1]
-        # [impl->req~schema-access-tiers-monthly-credits-allowance~1]
+        # [impl->req~quota-shared-effective-grant-predicate~1]
         moment = now or datetime.now(UTC)
-        result = await self.session.exec(
-            select(AccessGrant.id, AccessGrant.tier_id, AccessTier.monthly_credits)
-            .join(AccessTier, col(AccessTier.id) == col(AccessGrant.tier_id))
-            .where(col(AccessGrant.user_id) == user_id,
-                   col(AccessGrant.status) == AccessGrantStatus.active,
-                   col(AccessGrant.starts_at) <= moment,
-                   (col(AccessGrant.ends_at).is_(None)) | (col(AccessGrant.ends_at) > moment))
-        )
-        rows = result.all()
-        if not rows:
+        tier = effective_tier(await self.grant_rows(user_id, moment), moment)
+        if tier.grant is None:
+            # [impl->req~quota-no-grant-zero-allowance~1]
             return None
-        if len(rows) > 1:
-            raise TooManyActiveGrantsError(f"{user_id} has {len(rows)} active access grants")
-        grant_id, tier_id, monthly_credits = rows[0]
-        return EffectiveGrant(grant_id=grant_id, tier_id=tier_id,
-                              monthly_credits=derived_allowance(tier_id, monthly_credits))
+        return EffectiveGrant(grant_id=tier.grant.grant_id, tier_id=tier.grant.tier_id,
+                              monthly_credits=tier.allowance)
+
+    async def entitlement(self,
+                          user_id: UUID,
+                          now: datetime | None = None) -> EntitlementReport:
+        """The reported entitlement values, derived from one captured evaluation time. Strictly
+        read-only: no lock, no rollover write, and no grant flip."""
+        # [impl->req~quota-report-single-effective-grant~1]
+        # [impl->req~quota-auth-sync-no-grant-defaults~1]
+        moment = now or datetime.now(UTC)
+        rows = await self.grant_rows(user_id, moment)
+        stored: tuple[str, int] | None = None
+        grant = effective_tier(rows, moment).grant
+        if grant is not None:
+            stored = await UsageDB(self.session).stored_usage(grant.grant_id)
+        return entitlement_report(rows, now=moment,
+                                  stored_period=stored[0] if stored else None,
+                                  stored_used=stored[1] if stored else 0)
 
 
 class UsageDB:
@@ -150,6 +206,26 @@ class UsageDB:
         )
         return result.first() is not None
 
+    async def stored_usage(self, grant_id: UUID,
+                           *, for_update: bool = False) -> tuple[str, int] | None:
+        """This grant's stored `(monthly_period, monthly_used)`, or `None` when the row is
+        missing. `core.user_monthly_usage` is keyed by `grant_id` — the grant whose credits are
+        being consumed — and carries no allowance of its own.
+        """
+        # [impl->req~quota-usage-model-owned-by-schema-file~1]
+        statement = (
+            select(UserMonthlyUsage.monthly_period, UserMonthlyUsage.monthly_used)
+            .where(col(UserMonthlyUsage.grant_id) == grant_id))
+        if for_update:
+            # 2. the usage row is locked second, after its grant.
+            # [impl->req~quota-rollover-step-02~1]
+            statement = statement.with_for_update()
+        result = await self.session.exec(statement)
+        row = result.first()
+        if row is None:
+            return None
+        return (row[0], row[1])
+
     async def get_usage(self, grant_id: UUID, period: str) -> int:
         """This grant's consumption in the given period. A stored row for another period counts
         as zero for this one."""
@@ -169,3 +245,40 @@ class UsageDB:
                    col(UserMonthlyUsage.monthly_period) == period)
             .values(monthly_used=0, updated_at=datetime.now(UTC))
         )
+
+
+class QuotaStoreDB:
+    """The four statements the lazy monthly rollover sequence takes, in the order it takes them:
+    the grant row locked `FOR UPDATE`, its usage row locked second, the month's reset, and the
+    increment. Nothing else runs inside those locks."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+        self.grants = GrantsDB(session)
+        self.usage = UsageDB(session)
+
+    async def locked_grant_rows(self, user_id: UUID, now: datetime) -> Sequence[GrantRow]:
+        # [impl->req~quota-rollover-step-01~1]
+        return await self.grants.grant_rows(user_id, now, for_update=True)
+
+    async def locked_usage_row(self, grant_id: UUID) -> tuple[str, int] | None:
+        # [impl->req~quota-rollover-step-02~1]
+        return await self.usage.stored_usage(grant_id, for_update=True)
+
+    async def write_rollover(self, grant_id: UUID, values: Mapping[str, Any]) -> None:
+        """The monthly reset, written in place on the row this transaction already holds."""
+        # [impl->req~quota-rollover-step-04~1]
+        await self.session.exec(
+            update(UserMonthlyUsage)
+            .where(col(UserMonthlyUsage.grant_id) == grant_id)
+            .values(**dict(values)))
+
+    async def increment_usage(self, grant_id: UUID, period: str) -> None:
+        """Consume usage by incrementing `monthly_used`."""
+        # [impl->req~quota-rollover-step-08~1]
+        await self.session.exec(
+            update(UserMonthlyUsage)
+            .where(col(UserMonthlyUsage.grant_id) == grant_id,
+                   col(UserMonthlyUsage.monthly_period) == period)
+            .values(monthly_used=col(UserMonthlyUsage.monthly_used) + 1,
+                    updated_at=datetime.now(UTC)))

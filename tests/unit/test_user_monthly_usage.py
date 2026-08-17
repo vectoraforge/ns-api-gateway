@@ -7,17 +7,18 @@ ones it must never issue — are checked directly.
 
 from datetime import UTC, datetime, timedelta, timezone
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 from uuid import uuid7
 
 import pytest
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-import nativespeaker.api.app.dependencies as dep_module
 from nativespeaker.api.app.dependencies import require_quota
+from nativespeaker.api.auth.entitlement import AccessGrantSource, AccessGrantStatus
 from nativespeaker.api.database.usage import GrantsDB, UsageDB, current_period
 from nativespeaker.api.exceptions import QuotaExceededError
+from nativespeaker.api.models.users import AccessGrant
 from nativespeaker.api.quota.usage import (
     MissingUsageRowError,
     UsageRowError,
@@ -35,6 +36,7 @@ from nativespeaker.api.quota.usage import (
     rolled_over,
     usage_state,
 )
+from unit.conftest import quota_request
 
 
 class FakeResult:
@@ -164,8 +166,12 @@ async def test_the_reset_happens_on_the_first_quota_checked_request_of_the_new_m
 # [utest->req~schema-user-monthly-usage-allowance-derived-from-tier~1]
 @pytest.mark.asyncio
 async def test_the_allowance_comes_from_the_grant_joined_to_its_tier():
-    grant_id, user_id = uuid7(), uuid7()
-    session = FakeSession(FakeResult(rows=[(grant_id, "gold", 200)]))
+    user_id = uuid7()
+    row = AccessGrant(user_id=user_id, tier_id="gold",
+                      source=AccessGrantSource.registered_account_grant,
+                      status=AccessGrantStatus.active,
+                      starts_at=datetime(2026, 1, 1, tzinfo=UTC))
+    session = FakeSession(FakeResult(rows=[(row, 200)]))
     grant = await GrantsDB(db(session)).effective_grant(user_id)
     assert grant is not None
     assert (grant.tier_id, grant.monthly_credits) == ("gold", 200)
@@ -274,15 +280,15 @@ def test_a_usage_row_allocates_no_grant_and_no_introductory_entitlement():
 # [utest->req~schema-user-monthly-usage-grants-no-access~1]
 @pytest.mark.asyncio
 async def test_quota_refuses_a_user_without_a_grant_before_reading_any_counter():
-    grants = MagicMock()
-    grants.effective_grant = AsyncMock(return_value=None)
-    session = FakeSession()
+    """The grant read is the only statement a grantless user's quota check issues: no counter
+    is read, and none is created."""
+    session = FakeSession(FakeResult(rows=[]))
     user = MagicMock()
     user.id = uuid7()
-    with patch.object(dep_module, "GrantsDB", return_value=grants):
-        with pytest.raises(QuotaExceededError):
-            await require_quota(user=user, db=db(session))
-    assert session.statements == []
+    with pytest.raises(QuotaExceededError):
+        await require_quota(quota_request(), user=user, db=db(session))
+    assert len(session.statements) == 1
+    assert "core.user_monthly_usage" not in session.sql()[0]
 
 
 # [utest->req~schema-user-monthly-usage-stays-with-grant~1]

@@ -1,12 +1,16 @@
 import time
+from collections.abc import Sequence
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid7
+from uuid import UUID, uuid7
 
 import jwt as pyjwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 import nativespeaker.api.routers.users as users_module
@@ -20,10 +24,18 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth import UserIdentity
+from nativespeaker.api.auth.entitlement import AccessGrantSource, AccessGrantStatus
 from nativespeaker.api.database import ChatsDB
 from nativespeaker.api.database.usage import EffectiveGrant
 from nativespeaker.api.exceptions import AuthenticationError
 from nativespeaker.api.models import SubscriptionPlan, User
+from nativespeaker.api.quota.grants import GrantRow
+from nativespeaker.api.quota.rollover import (
+    QUOTA_ADMISSION_ENTRY,
+    QUOTA_ADMISSION_KEY_POLICY,
+)
+from nativespeaker.api.ratelimit.limiter import LimitDecision
+from nativespeaker.api.ratelimit.ordering import AdmissionLedger
 from nativespeaker.api.routers import (
     chats_router,
     examples_router,
@@ -238,3 +250,98 @@ def webhook_client(mock_subscription_service):
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client
+
+
+# ---------------------------------------------------------------------------
+# Quota enforcement helpers -- the effective-grant rows, the admission request,
+# and the store the lazy monthly rollover sequence takes its statements against
+# ---------------------------------------------------------------------------
+
+
+def grant_row(*,
+              grant_id: UUID | None = None,
+              user_id: UUID | None = None,
+              tier_id: str = "free",
+              source: AccessGrantSource = AccessGrantSource.anonymous_device_grant,
+              status: AccessGrantStatus = AccessGrantStatus.active,
+              starts_at: datetime | None = None,
+              ends_at: datetime | None = None,
+              subscription_id: UUID | None = None,
+              monthly_credits: int | None = 10) -> GrantRow:
+    """One `core.access_grants` row as the enforcement paths read it."""
+    return GrantRow(grant_id=grant_id or uuid7(),
+                    user_id=user_id or uuid7(),
+                    tier_id=tier_id,
+                    source=source,
+                    status=status,
+                    starts_at=starts_at or datetime(2026, 1, 1, tzinfo=UTC),
+                    ends_at=ends_at,
+                    subscription_id=subscription_id,
+                    tier_monthly_credits=monthly_credits)
+
+
+class FakeRateLimiter:
+    """A `quota_checked_request` verdict, without the `limits` storage behind it."""
+
+    def __init__(self, *, allowed: bool = True, retry_after_seconds: int | None = 30):
+        self.allowed = allowed
+        self.retry_after_seconds = retry_after_seconds
+        self.consumed: list[tuple[str, str]] = []
+
+    def consume(self, name: str, key: str, *, cost: int | None = None) -> LimitDecision:
+        self.consumed.append((name, key))
+        return LimitDecision(allowed=self.allowed, limiter=name, charged=True,
+                             retry_after_seconds=None if self.allowed
+                             else self.retry_after_seconds)
+
+
+def quota_request(*, method: str = "POST", path: str = "/chats",
+                  limiter: FakeRateLimiter | None = None) -> Request:
+    """A request carrying only what `require_quota` reads from it."""
+    state = SimpleNamespace(rate_limiter=limiter or FakeRateLimiter())
+    return cast(Request, SimpleNamespace(method=method,
+                                         url=SimpleNamespace(path=path),
+                                         app=SimpleNamespace(state=state)))
+
+
+class FakeQuotaStore:
+    """Records the four statements the rollover sequence takes."""
+
+    def __init__(self,
+                 rows: Sequence[GrantRow] = (),
+                 usage: tuple[str, int] | None = ("2026-03", 0),
+                 *,
+                 increment_error: Exception | None = None):
+        self.rows = list(rows)
+        self.usage = usage
+        self.increment_error = increment_error
+        self.grant_reads: list[tuple[UUID, datetime]] = []
+        self.usage_reads: list[UUID] = []
+        self.rollovers: list[tuple[UUID, dict]] = []
+        self.increments: list[tuple[UUID, str]] = []
+
+    async def locked_grant_rows(self, user_id: UUID, now: datetime) -> Sequence[GrantRow]:
+        self.grant_reads.append((user_id, now))
+        return self.rows
+
+    async def locked_usage_row(self, grant_id: UUID) -> tuple[str, int] | None:
+        self.usage_reads.append(grant_id)
+        return self.usage
+
+    async def write_rollover(self, grant_id: UUID, values) -> None:
+        self.rollovers.append((grant_id, dict(values)))
+
+    async def increment_usage(self, grant_id: UUID, period: str) -> None:
+        self.increments.append((grant_id, period))
+        if self.increment_error is not None:
+            raise self.increment_error
+
+
+def admitted_ledger(*, method: str = "POST", path: str = "/chats",
+                    allowed: bool = True) -> AdmissionLedger:
+    """A ledger that has taken the request as far as quota admission."""
+    ledger = AdmissionLedger(method, path)
+    ledger.verify_jwt()
+    ledger.admit_barrier()
+    ledger.evaluate(QUOTA_ADMISSION_ENTRY, QUOTA_ADMISSION_KEY_POLICY, allowed=allowed)
+    return ledger
