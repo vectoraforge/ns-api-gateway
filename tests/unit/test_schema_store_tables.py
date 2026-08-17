@@ -13,7 +13,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5, uuid7
 
 import pytest
 
-from nativespeaker.api.auth.audit import REDACTED, AuthEventResult
+from nativespeaker.api.auth.audit import REDACTED, AuthEventResult, redact
 from nativespeaker.api.auth.entitlement import AccessGrantSource, AccessGrantStatus
 from nativespeaker.api.auth.grant_schema import GrantSchemaError
 from nativespeaker.api.auth.invariants import AttributionTokens, InvariantError, StoreProvider
@@ -634,6 +634,9 @@ def test_token_values_are_redacted_from_routine_logs():
     for name in ("identity_value", "app_account_token", "resolved_token_value",
                  "obfuscated_external_account_id"):
         assert redacted[name] == REDACTED
+    # The project's one redaction-before-write path is what does it, so a token value carried into
+    # any structured detail or audit row is redacted whether or not it passes through the helper.
+    assert redact(payload) == redacted
 
 
 # [utest->req~schema-store-purchase-tokens-resolution-key~1]
@@ -960,7 +963,9 @@ def test_the_tier_transition_columns_are_null_when_no_tier_moved():
     assert event_tier_transition(old_tier_id="silver", new_tier_id="gold") == ("silver", "gold")
     assert event_tier_transition(old_tier_id="silver", new_tier_id="silver") == (None, None)
     assert event_tier_transition(old_tier_id=None, new_tier_id=None) == (None, None)
-    with pytest.raises(SubscriptionSchemaError):
-        event_tier_transition(old_tier_id="silver", new_tier_id=None)
+    # The columns are independently nullable, so a one-sided move is a row the schema allows and
+    # the live ingestion path writes: the first observation for a new subscription has no old tier.
+    assert event_tier_transition(old_tier_id=None, new_tier_id="gold") == (None, "gold")
+    assert event_tier_transition(old_tier_id="silver", new_tier_id=None) == ("silver", None)
     for column in ("old_tier_id", "new_tier_id"):
         assert EVENTS.columns[column] == "TEXT REFERENCES core.access_tiers (id)"

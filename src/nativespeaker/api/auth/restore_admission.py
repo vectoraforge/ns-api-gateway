@@ -523,7 +523,13 @@ def provider_call_budget_rejection(attempt: AuthAttempt,
                                    metrics: RateLimitMetrics,
                                    mutations_performed: Iterable[str] = ()) -> AdmissionRejection:
     """Reject a restore request whose provider-call budget had no unit: `429`, no mutation, no
-    `audit.auth_events` row, counted on the provider-call budget rejection counter."""
+    `audit.auth_events` row, counted on the provider-call budget rejection counter.
+
+    The rejection is counted once, and the acquisition is where it is counted: the refused
+    acquisition in `consume_provider_call_unit` already bumps
+    `provider_budget_rejections` and the exhausted limiter, so this step counts nothing a second
+    time. Pass the same `metrics` into the acquisition.
+    """
     # [impl->req~restore-admission-provider-call-budget-accounting~1]
     # [impl->req~restore-coalescing-global-provider-budgets~1]
     if decision.allowed:
@@ -532,7 +538,6 @@ def provider_call_budget_rejection(attempt: AuthAttempt,
     if performed:
         raise RestoreAdmissionError(f"a budget rejection performs no mutation, but did {performed}")
     assert_budget_exhaustion_is_admission()
-    metrics.provider_budget_rejected(decision.limiter)
     rejection = restore_admission_rejection(attempt, telemetry, decision, metrics=metrics)
     if rejection.audit_rows:
         raise RestoreAdmissionError("a provider-call budget rejection writes no audit row")
@@ -628,6 +633,16 @@ def assert_observation_only(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     return payload
 
 
+def shared_observation(payload: Any) -> Any:
+    """The payload as it may be shared with the group. A structured payload passes through
+    `assert_observation_only`; a bare store-state value carries no fields at all and so borrows
+    nothing from any caller."""
+    # [impl->req~restore-coalescing-shares-only-provider-observation~1]
+    if isinstance(payload, Mapping):
+        assert_observation_only(payload)
+    return payload
+
+
 def assert_follower_completes_own_work(*,
                                        follower: ProofVerifiedParticipant,
                                        calling_subject_user_id: Any,
@@ -697,6 +712,7 @@ class RestoreCoalescer:
         # [impl->req~restore-coalescing-join-requires-verified-proof~1]
         # [impl->req~restore-coalescing-shared-outcome-single-budget-unit~1]
         # [impl->req~restore-coalescing-reuse-only-while-fresh~1]
+        # [impl->req~restore-coalescing-shares-only-provider-observation~1]
         if not joining.proof_verified:
             raise CoalescingError("a request joins only after its own restore_proof verified")
         call = LIVE_VERIFICATION_CALLS[joining.provider]
@@ -708,13 +724,17 @@ class RestoreCoalescer:
             # single shared attempt debits the budget once, not once per waiter.
             # [impl->req~restore-coalescing-shared-outcome-single-budget-unit~1]
             units = budget() if budget is not None else 1
-            return await dispatch()
+            # What the group shares is the raw provider observation. Checking it here, before the
+            # leader's return value is cached and handed to any follower, is what keeps a payload
+            # carrying another caller's account, proof or request context from ever being shared.
+            # [impl->req~restore-coalescing-shares-only-provider-observation~1]
+            return shared_observation(await dispatch())
 
         outcome = await self._coalescer.lookup(call, joining.key, leader,
                                                verified_key=joining.key)
         if not outcome.dispatched and units:
             raise RestoreAdmissionError("a waiter consumes no budget unit of its own")
-        return RestoreVerification(observation=outcome.observation,
+        return RestoreVerification(observation=shared_observation(outcome.observation),
                                    dispatched=outcome.dispatched,
                                    budget_units=units)
 

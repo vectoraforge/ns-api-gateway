@@ -34,7 +34,7 @@ class SubscriptionDB:
         return result.first()
 
     async def create_subscription(self,
-                                  user_id: UUID,
+                                  user_id: UUID | None,
                                   provider: SubscriptionProvider,
                                   external_id: str,
                                   plan: SubscriptionPlan,

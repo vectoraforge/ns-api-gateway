@@ -56,7 +56,11 @@ from nativespeaker.api.ratelimit.config import (
 )
 from nativespeaker.api.ratelimit.keys import KeyComponent
 from nativespeaker.api.ratelimit.limiter import LimitDecision, RateLimiter
-from nativespeaker.api.ratelimit.ordering import AdmissionLedger, ExpensiveStep
+from nativespeaker.api.ratelimit.ordering import (
+    AdmissionLedger,
+    AdmissionOrderError,
+    ExpensiveStep,
+)
 from nativespeaker.api.ratelimit.providers import (
     CoalescingError,
     ProviderDampingConfig,
@@ -265,6 +269,40 @@ def test_the_keyed_limits_run_before_proof_verification_and_the_provider_call():
     assert_admission_order(ledger.evaluated, ledger.expensive_steps)
 
 
+# [utest->req~restore-admission-order-request-rate-first~1]
+def test_a_refused_request_rate_limit_stops_the_attempt_before_proof_verification():
+    """The point of running the request-rate limits first is that a junk request never forces the
+    expensive work behind them: a refused verdict leaves the ledger refused, and proof
+    verification, coalescing and the provider call all refuse to run."""
+    for refused_subject, refused_user in ((False, True), (True, False)):
+        ledger = admitted_ledger()
+        audit = RestoreAttemptAudit()
+        restore_request_rate_admission(ledger, audit, subject_allowed=refused_subject,
+                                       user_allowed=refused_user)
+        assert ledger.refused is True
+        restore_keyed_limits_admission(ledger)
+        verified: list[str] = []
+        with pytest.raises(AdmissionOrderError, match="only for an admitted request"):
+            verify_restore_proof(ledger, lambda: verified.append("verified") or VERIFIED)
+        assert verified == []
+        with pytest.raises(AdmissionOrderError, match="only for an admitted request"):
+            ledger.expensive_step(ExpensiveStep.live_store_verification)
+        # And no restore-attempt audit row was forced along the way.
+        assert audit.rows == ()
+
+
+# [utest->req~restore-admission-order-limits-before-proof-verification~1]
+def test_a_refused_keyed_limit_stops_the_attempt_before_proof_verification():
+    ledger = admitted_ledger()
+    restore_request_rate_admission(ledger, RestoreAttemptAudit())
+    assert ledger.refused is False
+    failed, _total = proof_fingerprint_entries()
+    restore_keyed_limits_admission(ledger, allowed={failed: False})
+    assert ledger.refused is True
+    with pytest.raises(AdmissionOrderError, match="only for an admitted request"):
+        verify_restore_proof(ledger, lambda: VERIFIED)
+
+
 # [utest->req~restore-admission-order-limits-before-proof-verification~1]
 def test_the_keyed_limits_refuse_to_run_after_proof_verification():
     ledger = admitted_ledger()
@@ -350,7 +388,9 @@ def test_an_exhausted_budget_makes_no_call_and_rejects_as_admission_control():
                                                metrics=metrics)
     assert rejection.error.status_code == 429
     assert rejection.audit_rows == 0 and audit.rows == ()
-    assert metrics.counters()["provider_budget_rejections"] == 2
+    # One rejection is counted once, at the acquisition that was refused.
+    assert metrics.counters()["provider_budget_rejections"] == 1
+    assert metrics.exhausted(entry) == 1
     with pytest.raises(RestoreAdmissionError, match="exactly one acquired unit"):
         dispatch_under_budget(second, lambda: "active")
 
@@ -561,6 +601,30 @@ def test_only_the_raw_store_state_observation_is_shared():
 
 
 # [utest->req~restore-coalescing-shares-only-provider-observation~1]
+async def test_a_dispatch_payload_carrying_an_account_is_never_shared_with_a_follower():
+    """The sharing point itself refuses a payload that derives from the leader's account, so no
+    follower can receive it."""
+    coalescer = RestoreCoalescer(shipped_damping())
+    joining = participant(VERIFIED, APPLE, EXTERNAL_ID)
+
+    async def leaks_the_leaders_account():
+        return {"provider": str(APPLE), "external_id": EXTERNAL_ID, "store_state": "active",
+                "user_id": "the-leaders-account"}
+
+    with pytest.raises(CoalescingError, match="user_id"):
+        await coalescer.verify(joining, leaks_the_leaders_account, budget=lambda: 1)
+
+    async def observation_only():
+        return {"provider": str(APPLE), "external_id": EXTERNAL_ID, "store_state": "active"}
+
+    shared = await coalescer.verify(joining, observation_only, budget=lambda: 1)
+    follower = await coalescer.verify(joining, observation_only, budget=lambda: 0)
+    assert follower.dispatched is False
+    assert follower.observation == shared.observation
+    assert "user_id" not in follower.observation
+
+
+# [utest->req~restore-coalescing-shares-only-provider-observation~1]
 def test_every_follower_completes_its_own_authorization_and_processing():
     joining = participant(VERIFIED, APPLE, EXTERNAL_ID)
     observation = {"provider": str(APPLE), "external_id": EXTERNAL_ID, "store_state": "active"}
@@ -624,7 +688,7 @@ def test_a_provider_call_budget_rejection_is_a_429_on_its_own_counter():
     dispatch_under_budget(first, lambda: "active")
     second = ProviderCallBudget(provider=StoreProvider.google_play)
     refused = consume_provider_call_unit(backend, second, "deployment",
-                                         endpoint_admission_passed=True)
+                                         endpoint_admission_passed=True, metrics=metrics)
     rejection = provider_call_budget_rejection(restore_attempt(), SecurityTelemetry(), refused,
                                                metrics=metrics)
     assert rejection.error.status_code == 429

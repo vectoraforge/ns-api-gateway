@@ -380,12 +380,17 @@ def restore_admission_rejection_is_audited(rejection: AdmissionRejection) -> boo
 
 @dataclass(frozen=True, slots=True)
 class RestoreAuditContext:
-    """The non-secret context a restore attempt's one row carries."""
+    """The non-secret context a restore attempt's one row carries.
+
+    `expired_grants` names every grant the mutation expired together with the reason code it
+    carried, so no expiry made to clear the one-active-grant index is a silent side effect.
+    """
     subscription_id: UUID | None = None
     access_grant_id: UUID | None = None
     store_purchase_id: UUID | None = None
     source_user_id: UUID | None = None
     destination_user_id: UUID | None = None
+    expired_grants: tuple[Mapping[str, Any], ...] = ()
     proof_fingerprints: tuple[str, ...] = ()
     store_state_verification: str | None = None
 
@@ -440,6 +445,9 @@ class RestoreAttemptAudit:
                                    subscription_id=held.subscription_id,
                                    access_grant_id=held.access_grant_id,
                                    store_purchase_id=held.store_purchase_id,
+                                   # [impl->req~restore-grant-mutation-ordering~1]
+                                   expired_grants=[dict(expiry)
+                                                   for expiry in held.expired_grants],
                                    proof_fingerprints=list(held.proof_fingerprints),
                                    store_state_verification=held.store_state_verification))
         self._rows.append(event)

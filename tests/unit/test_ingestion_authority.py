@@ -88,6 +88,20 @@ class TestActsOnlyOnLinkedAccount:
         assert target.user_id == owner
         assert target.resolved_by == "canonical_subscription_user_id"
 
+    def test_the_current_owner_wins_over_a_token_minted_for_another_account(self):
+        """After an adoption the token still names the account it was minted for at purchase; the
+        account the store subscription is *already linked to* is the canonical row's owner, and
+        ingestion acts on that one."""
+        # [utest->req~restore-ingestion-acts-only-on-linked-account~1]
+        original, current = uuid7(), uuid7()
+        target = ingestion_target_user(provider=APPLE, echoed_token="tok",
+                                       tokens=tokens_for(original, "tok"),
+                                       canonical_user_id=current)
+        assert target.user_id == current
+        assert target.resolved_by == "canonical_subscription_user_id"
+        with pytest.raises(IngestionAuthorityError):
+            assert_acts_on_linked_account(target, original)
+
     def test_no_other_account_is_reachable(self):
         # [utest->req~restore-ingestion-acts-only-on-linked-account~1]
         owner, intruder = uuid7(), uuid7()

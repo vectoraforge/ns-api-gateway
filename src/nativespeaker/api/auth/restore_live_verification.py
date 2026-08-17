@@ -7,7 +7,7 @@ inputs derived only from server-verified restore material. Its outcome is record
 payload — and the locked phase consumes that record and nothing else.
 """
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -641,6 +641,56 @@ def google_entitled_state_required(response: GoogleSubscriptionStateResponse,
         raise RestoreRejection(AuthEventResult.restore_store_state_unverified,
                                f"Google reports {response.state}, which is not entitlement")
     return confirm_currently_entitled(response.state)
+
+
+# --- Provider dispatch for the one live verification call ---------------------------------------
+
+# The two store APIs live verification is made through, named as the provider's own server-side
+# API rather than as a generic outbound call.
+APP_STORE_SERVER_API: str = "app_store_server_api"
+PLAY_DEVELOPER_API: str = "play_developer_api"
+
+
+@dataclass(frozen=True, slots=True)
+class LiveVerificationSurface:
+    """Which of the two store APIs a provider's live verification runs through: the API itself,
+    the current endpoint on it, the call that builds the one outbound request, and the check that
+    reads an entitled state out of the response."""
+    provider: StoreProvider
+    api: str
+    api_surface: str
+    call: Callable[..., ProviderCallDescriptor]
+    entitled_state_required: Callable[..., SubscriptionStatus]
+
+
+# Apple-provider attempts verify through Apple's App Store Server API; `google_play`-provider
+# attempts through the Google Play Developer API. There is no third way to verify live state, and
+# no attempt verifies through the other store's API.
+LIVE_VERIFICATION_BY_PROVIDER: dict[StoreProvider, LiveVerificationSurface] = {
+    StoreProvider.apple: LiveVerificationSurface(
+        provider=StoreProvider.apple,
+        api=APP_STORE_SERVER_API,
+        api_surface=APPLE_API_SURFACE,
+        call=apple_live_verification_call,
+        entitled_state_required=apple_entitled_state_required),
+    StoreProvider.google_play: LiveVerificationSurface(
+        provider=StoreProvider.google_play,
+        api=PLAY_DEVELOPER_API,
+        api_surface=GOOGLE_API_SURFACE,
+        call=google_live_verification_call,
+        entitled_state_required=google_entitled_state_required),
+}
+
+
+def live_verification_surface(provider: StoreProvider) -> LiveVerificationSurface:
+    """The provider's own server-side API this attempt's live store-state verification is made
+    through: Apple's App Store Server API for Apple-provider attempts, the Google Play Developer
+    API for `google_play`-provider attempts."""
+    # [impl->req~restore-pre-transaction-precondition-01-live-store-state-verification~1]
+    surface = LIVE_VERIFICATION_BY_PROVIDER.get(provider)
+    if surface is None:
+        raise LiveVerificationError(f"{provider} has no live store-state verification API")
+    return surface
 
 
 # --- Audit rules ------------------------------------------------------------------------------------

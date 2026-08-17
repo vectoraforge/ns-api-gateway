@@ -56,6 +56,13 @@ from nativespeaker.api.auth.restore_flow import (
     SubscriptionRow,
     VerifiedTransaction,
 )
+from nativespeaker.api.auth.restore_live_verification import (
+    APP_STORE_SERVER_API,
+    APPLE_API_SURFACE,
+    GOOGLE_API_SURFACE,
+    PLAY_DEVELOPER_API,
+    live_verification_surface,
+)
 from nativespeaker.api.auth.restore_operation import RestoreGrantMutations, RestorePhase
 from nativespeaker.api.auth.restore_phases import (
     LiveStoreVerification,
@@ -215,6 +222,21 @@ def test_the_creation_path_takes_its_entitlement_from_the_live_verification():
     assert stale.value.result is AuthEventResult.restore_store_state_unverified
 
 
+# [utest->req~restore-adoption-entry-product-entitled-and-live-verified~1]
+def test_the_creation_path_still_requires_the_live_verified_state_to_be_entitled():
+    """The row is created at the live-verified state, so that state is what has to be
+    product-entitled: a non-entitled one creates nothing."""
+    for status in (SubscriptionStatus.expired, SubscriptionStatus.revoked,
+                   SubscriptionStatus.billing_retry):
+        with pytest.raises(RestoreRejection) as refused:
+            entry_product_entitled_and_live_verified(
+                pre_transaction=CurrentSubscriptionState(row=None),
+                locked=CurrentSubscriptionState(row=None),
+                verification=verification(subscription_id=None, absent=True, status=status),
+                recheck_passed=True, adoption_with_creation=True)
+        assert refused.value.result is AuthEventResult.restore_subscription_not_entitled
+
+
 # [utest->req~restore-adoption-no-user-facing-notification~1]
 def test_a_successful_adoption_notifies_nobody():
     assert adoption_notifications() == ADOPTION_REPORTING_ROUTE
@@ -291,6 +313,30 @@ def test_precondition_one_notes_the_absent_row_and_rejects_a_non_entitled_or_fai
         assert raised.value.result is AuthEventResult.restore_store_state_unverified
 
 
+# [utest->req~restore-pre-transaction-precondition-01-live-store-state-verification~1]
+def test_precondition_one_verifies_through_the_attempts_own_provider_api():
+    """An Apple attempt resolves Apple's App Store Server API, a `google_play` attempt the Google
+    Play Developer API, and neither reaches the other store's API."""
+    apple_ledger = PreTransactionLedger()
+    pre_transaction_precondition_01_live_store_state_verification(
+        VERIFIED, state(), ledger=apple_ledger,
+        lookup=lambda provider, external: "active", now=NOW)
+    assert f"01_live_verification_api:{APP_STORE_SERVER_API}" in apple_ledger.steps
+    assert live_verification_surface(StoreProvider.apple).api_surface == APPLE_API_SURFACE
+
+    google_verified = VerifiedTransaction(provider=StoreProvider.google_play,
+                                          external_id=EXTERNAL_ID,
+                                          carried_purchase_uuid=TOKEN)
+    google_ledger = PreTransactionLedger()
+    pre_transaction_precondition_01_live_store_state_verification(
+        google_verified, CurrentSubscriptionState(row=None), ledger=google_ledger,
+        lookup=lambda provider, external: "active", now=NOW)
+    assert f"01_live_verification_api:{PLAY_DEVELOPER_API}" in google_ledger.steps
+    assert live_verification_surface(StoreProvider.google_play).api_surface == GOOGLE_API_SURFACE
+    assert (live_verification_surface(StoreProvider.apple).call
+            is not live_verification_surface(StoreProvider.google_play).call)
+
+
 # [utest->req~restore-locked-precondition-02-still-unclaimed~1]
 def test_the_subscription_must_still_be_unclaimed_under_locked_state():
     assert locked_precondition_02_still_unclaimed(
@@ -305,11 +351,19 @@ def test_the_subscription_must_still_be_unclaimed_under_locked_state():
             locked(subscription=state(user_id=DESTINATION)), ledger=locked_ledger(),
             destination_user_id=DESTINATION)
     assert diverged.value.result is AuthEventResult.restore_branch_inconsistent
+    # A binding naming the destination while the row is unclaimed reconciles with no single
+    # outcome — it is a divergence, not the different-account conflict, which the lifetime
+    # binding rule reserves for a binding that names somebody else.
     with pytest.raises(RestoreRejection) as bound:
         locked_precondition_02_still_unclaimed(
             locked(subscription=state(bound=DESTINATION)), ledger=locked_ledger(),
             destination_user_id=DESTINATION)
-    assert bound.value.result is AuthEventResult.store_transaction_already_linked
+    assert bound.value.result is AuthEventResult.restore_branch_inconsistent
+    with pytest.raises(RestoreRejection) as elsewhere:
+        locked_precondition_02_still_unclaimed(
+            locked(subscription=state(bound=OTHER)), ledger=locked_ledger(),
+            destination_user_id=DESTINATION)
+    assert elsewhere.value.result is AuthEventResult.store_transaction_already_linked
 
 
 # [utest->req~restore-locked-precondition-02-still-unclaimed~1]

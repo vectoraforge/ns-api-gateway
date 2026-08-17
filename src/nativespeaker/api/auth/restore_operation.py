@@ -307,13 +307,21 @@ def assert_phase_work(phase: RestorePhase,
 # --- Audit placement per phase --------------------------------------------------------------------
 
 # Pre-transaction rejections: each writes the attempt's one row in a rejection transaction of its
-# own while performing no restore mutation.
+# own while performing no restore mutation. The five the placement rule names are illustrative,
+# not exhaustive — any rejection the entry conditions or steps 1 to 8 produce is placed here, so
+# the branch determination's `store_transaction_already_linked` and `restore_source_user_inactive`
+# and the entry conditions' `restore_destination_anonymous` and `blocked_user` belong to the set
+# as much as the five examples do.
 PRE_TRANSACTION_REJECTIONS: frozenset[AuthEventResult] = frozenset({
     AuthEventResult.invalid_restore_proof,
     AuthEventResult.restore_subscription_unlinked,
     AuthEventResult.restore_purchase_uuid_mismatch,
     AuthEventResult.restore_subscription_not_entitled,
     AuthEventResult.restore_store_state_unverified,
+    AuthEventResult.store_transaction_already_linked,
+    AuthEventResult.restore_source_user_inactive,
+    AuthEventResult.restore_destination_anonymous,
+    AuthEventResult.blocked_user,
 })
 
 # What "perform no mutation" excludes in a pre-transaction rejection step: the restore mutations,
@@ -396,6 +404,19 @@ class RestoreOrderingError(RestoreContractError):
     """A restore grant write was about to break the mutation ordering."""
 
 
+@dataclass(frozen=True, slots=True)
+class GrantExpiry:
+    """One expiry the mutation made, and the reason code it carried into the audit row's mutation
+    details."""
+    grant_id: UUID
+    reason: str
+
+    def as_detail(self) -> dict[str, Any]:
+        """The non-secret shape the audit row's mutation details carry."""
+        # [impl->req~restore-grant-mutation-ordering~1]
+        return {"access_grant_id": self.grant_id, "reason": self.reason}
+
+
 @dataclass(slots=True)
 class RestoreGrantMutations:
     """One restore mutation transaction's grant writes, in the order it made them.
@@ -409,9 +430,16 @@ class RestoreGrantMutations:
     validated: bool = False
     statements: list[str] = field(default_factory=list)
     expired: list[UUID] = field(default_factory=list)
+    expiries: list[GrantExpiry] = field(default_factory=list)
     activated: UUID | None = None
     committed: bool = False
     rolled_back: bool = False
+
+    def expiry_details(self) -> list[dict[str, Any]]:
+        """Every expiry this transaction made, named with its reason code, for the attempt's one
+        `audit.auth_events` row to carry: no expiry is a silent side effect."""
+        # [impl->req~restore-grant-mutation-ordering~1]
+        return [expiry.as_detail() for expiry in self.expiries]
 
     def validate(self) -> None:
         """Product entitlement, ownership and linkage validation — where
@@ -439,6 +467,7 @@ class RestoreGrantMutations:
                 f"{ONE_ACTIVE_GRANT_INDEX} is per-statement: expiries precede activation")
         self.statements.append(f"expire_grant:{reason}")
         self.expired.append(grant_id)
+        self.expiries.append(GrantExpiry(grant_id=grant_id, reason=reason))
 
     def activate(self, grant_id: UUID, *, stale_grant_ids: Sequence[UUID] = ()) -> None:
         """Make the subscription-backed grant active. Every superseded or stale row of the same
@@ -462,6 +491,7 @@ class RestoreGrantMutations:
         if not ownership_writes_succeeded:
             self.rolled_back = True
             self.expired.clear()
+            self.expiries.clear()
             self.statements.clear()
             self.activated = None
             raise RestoreOrderingError("an earlier expiry rolls back with the failed transaction")

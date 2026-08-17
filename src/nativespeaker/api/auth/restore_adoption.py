@@ -32,6 +32,7 @@ from nativespeaker.api.auth.restore_flow import (
     assert_purchase_row_immutable,
     internal_purchase_uuid,
 )
+from nativespeaker.api.auth.restore_live_verification import live_verification_surface
 from nativespeaker.api.auth.restore_operation import (
     RestoreGrantMutations,
     RestorePhase,
@@ -47,6 +48,7 @@ from nativespeaker.api.auth.restore_phases import (
     step_16_resolve_outcome_and_divergence,
     step_17_live_verification_freshness,
 )
+from nativespeaker.api.auth.restore_proof_policy import bind_store_transaction
 from nativespeaker.api.auth.restore_same_account import PurchaseRowInsert
 from nativespeaker.api.models import SubscriptionStatus
 from nativespeaker.api.quota.usage import assert_stays_with_grant
@@ -166,6 +168,9 @@ def entry_product_entitled_and_live_verified(*,
     if adoption_with_creation:
         if pre_transaction.row is not None:
             raise AdoptionError("adoption-with-creation resolves to no pre-transaction row")
+        # No canonical row existed pre-transaction, so the live-verified state is what has to be
+        # product-entitled: it is the state the row is created at.
+        assert_product_entitled(None, live_verified_status=verification.status)
         return verification.status
     assert_product_entitled(pre_transaction.status)
     assert_product_entitled(locked.status)
@@ -289,8 +294,23 @@ def pre_transaction_precondition_01_live_store_state_verification(
     # [impl->req~restore-pre-transaction-precondition-01-live-store-state-verification~1]
     if branch is not RestoreBranch.adoption:
         raise AdoptionError("this precondition belongs to the adoption branch")
+    # The confirmation is made through the provider's own server-side API — Apple's App Store
+    # Server API for an Apple attempt, the Google Play Developer API for a `google_play` one — so
+    # the surface is selected from the attempt's provider before the call, and a provider with no
+    # such API never reaches one.
+    surface = live_verification_surface(verified.provider)
+    ledger.record(f"01_live_verification_api:{surface.api}")
+
+    def through_the_providers_own_api(
+            provider: StoreProvider, external_id: str) -> SubscriptionStatus | str | None:
+        if provider is not surface.provider:
+            raise AdoptionError(
+                f"{provider} is not verified through {surface.api}")
+        return lookup(provider, external_id)
+
     recorded = step_08_live_store_state_verification(
-        verified, subscription, branch=branch, ledger=ledger, lookup=lookup, now=now,
+        verified, subscription, branch=branch, ledger=ledger,
+        lookup=through_the_providers_own_api, now=now,
         backend_held_credentials=backend_held_credentials, input_sources=input_sources)
     if recorded is None:
         raise AdoptionError("adoption records a live store-state verification outcome")
@@ -330,8 +350,17 @@ def locked_precondition_02_still_unclaimed(state: LockedState,
         raise AdoptionError(f"{outcome} is no adoption outcome under locked state")
     bound = state.subscription.restore_bound_user_id
     if bound is not None:
-        raise RestoreRejection(AuthEventResult.store_transaction_already_linked,
-                               "the lifetime store-transaction binding is already set")
+        # The different-account decision belongs to the lifetime binding rule, which is where a
+        # binding naming another account rejects as `store_transaction_already_linked`; this
+        # precondition does not fork a second comparison.
+        bind_store_transaction(restore_bound_user_id=bound,
+                               destination_user_id=destination_user_id)
+        # A binding that names the destination while the canonical row is still unclaimed is a
+        # locked state that cannot be reconciled with a single outcome, not a different-account
+        # conflict.
+        raise RestoreRejection(
+            AuthEventResult.restore_branch_inconsistent,
+            "an unclaimed row bound to the destination reconciles with no single outcome")
     return True
 
 

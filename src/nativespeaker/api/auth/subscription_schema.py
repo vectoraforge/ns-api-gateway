@@ -358,13 +358,15 @@ def event_tier_transition(*,
                           new_tier_id: str | None) -> tuple[str | None, str | None]:
     """`old_tier_id` and `new_tier_id` record the tier transition the observation recorded, both
     referencing `core.access_tiers`, and are NULL when the notification implies no tier
-    transition."""
+    transition.
+
+    The two columns are independently nullable, so a one-sided move is a legitimate row: the first
+    observation for a newly created subscription moves from no tier to one, and an observation that
+    leaves the subscription with no tier moves the other way.
+    """
     # [impl->req~schema-subscription-events-tier-transition~1]
     if old_tier_id == new_tier_id:
         return None, None
-    if old_tier_id is None or new_tier_id is None:
-        raise SubscriptionSchemaError(
-            "a recorded tier transition names the tier it moved from and the tier it moved to")
     return old_tier_id, new_tier_id
 
 
@@ -853,10 +855,14 @@ def redacted_token_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     # [impl->req~schema-store-purchase-tokens-redacted-from-logs~1]
     if TOKEN_SECRET_STORE_MACHINERY:
         raise SubscriptionSchemaError("a non-secret token uses no secret-store machinery")
+    # The redaction itself is `audit.redact`, the one redaction-before-write path: every name a
+    # token value travels under is a secret fragment there, so this does not patch names
+    # afterwards — it checks that nothing got through.
     redacted = dict(redact(dict(payload)))
-    for name in TOKEN_LOG_FIELDS:
-        if name in redacted:
-            redacted[name] = REDACTED
+    leaked = sorted(name for name in TOKEN_LOG_FIELDS
+                    if name in redacted and redacted[name] != REDACTED)
+    if leaked:
+        raise SubscriptionSchemaError(f"{leaked} carries a token value into a routine log")
     return redacted
 
 

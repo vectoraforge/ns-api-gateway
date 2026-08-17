@@ -532,12 +532,15 @@ class TestNewSubscription:
         )
 
     @pytest.mark.asyncio
-    async def test_an_echoed_token_that_resolves_to_nobody_attributes_nothing(
+    async def test_an_echoed_token_that_resolves_to_nobody_leaves_the_row_unclaimed(
             self, subscription_service, mock_verifier, mock_subscriptions_db,
             mock_purchase_tokens_db):
         """The echoed value is purchase evidence, never a user id: a token with no binding leaves
-        the subscription unclaimed rather than attributing it to the value itself."""
+        the subscription unclaimed — the canonical row created unowned, with no grant — rather
+        than attributing it to the value itself."""
         # [utest->req~restore-echoed-uuid-is-evidence-not-identity~1]
+        # [utest->req~schema-subscriptions-user-id-null-unclaimed~1]
+        # [utest->req~restore-ingestion-unmatched-token-leaves-unclaimed~1]
         from appstoreserverlibrary.models.NotificationTypeV2 import NotificationTypeV2
 
         mock_verifier.verify_and_decode_notification.return_value = _make_mock_payload(
@@ -546,22 +549,30 @@ class TestNewSubscription:
             product_id="com.example.nativespeaker.gold", app_account_token=str(uuid4()))
         mock_purchase_tokens_db.owner_of.return_value = None
         mock_subscriptions_db.get_subscription_by_external_id.return_value = None
+        unclaimed = MagicMock()
+        unclaimed.id = uuid4()
+        unclaimed.user_id = None
+        mock_subscriptions_db.create_subscription.return_value = unclaimed
 
         await subscription_service.process_apple_notification("signed.payload")
 
-        mock_subscriptions_db.create_subscription.assert_not_called()
+        mock_subscriptions_db.create_subscription.assert_called_once()
+        assert mock_subscriptions_db.create_subscription.call_args.kwargs["user_id"] is None
+        # Unowned means no subscription-backed grant and no tier move: restore's adoption is what
+        # first links the row and creates its grant.
         mock_subscriptions_db.update_user_plan.assert_not_called()
 
 
 class TestMissingAppAccountToken:
-    """Missing appAccountToken in new subscription -- cannot identify user."""
+    """Missing appAccountToken in a new subscription -- nobody to attribute it to."""
 
     @pytest.mark.asyncio
-    async def test_missing_app_account_token_returns_early(self,
-                                                           subscription_service,
-                                                           mock_verifier,
-                                                           mock_subscriptions_db):
-        """No appAccountToken means we can't associate with a user -- early return."""
+    async def test_missing_app_account_token_records_an_unclaimed_row(self,
+                                                                      subscription_service,
+                                                                      mock_verifier,
+                                                                      mock_subscriptions_db):
+        """No appAccountToken means we cannot associate it with a user, which is exactly the
+        unclaimed case: the canonical row is recorded unowned for restore to adopt."""
         from appstoreserverlibrary.models.NotificationTypeV2 import NotificationTypeV2
 
         payload = _make_mock_payload(
@@ -577,10 +588,17 @@ class TestMissingAppAccountToken:
         mock_verifier.verify_and_decode_signed_transaction.return_value = txn
 
         mock_subscriptions_db.get_subscription_by_external_id.return_value = None
+        unclaimed = MagicMock()
+        unclaimed.id = uuid4()
+        unclaimed.user_id = None
+        mock_subscriptions_db.create_subscription.return_value = unclaimed
 
         await subscription_service.process_apple_notification("signed.payload")
 
-        mock_subscriptions_db.create_subscription.assert_not_called()
+        # A verified purchase carrying no echoed token at all is unattributed the same way: the
+        # canonical row is created unclaimed, with no grant.
+        # [utest->req~schema-subscriptions-user-id-null-unclaimed~1]
+        assert mock_subscriptions_db.create_subscription.call_args.kwargs["user_id"] is None
         mock_subscriptions_db.update_user_plan.assert_not_called()
 
 

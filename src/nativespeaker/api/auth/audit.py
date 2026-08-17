@@ -359,6 +359,11 @@ SECRET_DETAIL_FRAGMENTS: frozenset[str] = frozenset({
     "device_id", "device_identifier", "identifier_for_vendor", "challenge_id", "nonce",
     "credential", "api_key", "verdict", "integrity", "devicecheck", "device_check",
     "recall_state", "purchase_token",
+    # The purchase-attribution token value, under every name it travels as: the
+    # `core.store_purchase_tokens.identity_value` column and Google Play's obfuscated external
+    # account ID. Token values are redacted from routine logs, analytics and error reporting.
+    # [impl->req~schema-store-purchase-tokens-redacted-from-logs~1]
+    "identity_value", "obfuscated_external_account_id",
 })
 
 # Short names too ambiguous to match as a fragment: `sub` is the raw token subject, while
@@ -459,13 +464,14 @@ def movement_details(*,
                      subscription_id: Any = None,
                      access_grant_id: Any = None,
                      store_purchase_id: Any = None,
+                     expired_grants: Any = None,
                      proof_fingerprints: Any = None,
                      store_state_verification: Any = None) -> dict[str, Any]:
     """The movement context `restore_subscription` and `upgrade_anonymous_to_registered` fold
     into `details`: source and destination users and identities where known, the touched
-    subscription, access grant and store-purchase rows where applicable, the movement
-    classification, non-secret proof fingerprints, and the live store-state verification
-    outcome for a cross-account restore."""
+    subscription, access grant and store-purchase rows where applicable, the grants the mutation
+    expired and why, the movement classification, non-secret proof fingerprints, and the live
+    store-state verification outcome for a cross-account restore."""
     # [impl->req~shared-auth-events-movement-details~1]
     # [impl->req~schema-auth-events-movement-context-details~1]
     return {"resolved": {"source_user_id": source_user_id,
@@ -475,6 +481,10 @@ def movement_details(*,
             "mutation": {"subscription_id": subscription_id,
                          "access_grant_id": access_grant_id,
                          "store_purchase_id": store_purchase_id,
+                         # Every expiry the mutation made, with the reason code it carried, so no
+                         # expiry is a silent side effect of the movement.
+                         # [impl->req~restore-grant-mutation-ordering~1]
+                         "expired_grants": list(expired_grants or ()),
                          "movement_classification": movement_classification},
             "verification": {"proof_fingerprints": proof_fingerprints,
                              "store_state_verification": store_state_verification}}

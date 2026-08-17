@@ -45,7 +45,11 @@ class Subscription(SQLModel, table=True):
     )
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
-    user_id: UUID = Field(foreign_key="core.users.id", index=True)
+    # NULL for an unclaimed subscription: verified ingestion whose echoed attribution token
+    # resolves to no binding records the canonical row unowned, with no subscription-backed
+    # grant, and restore's adoption is what first links it.
+    # [impl->req~schema-subscriptions-user-id-null-unclaimed~1]
+    user_id: UUID | None = Field(default=None, foreign_key="core.users.id", index=True)
     provider: SubscriptionProvider = Field(sa_type=SubscriptionProviderType)
     external_id: str = Field()
     plan: SubscriptionPlan = Field(sa_type=SubscriptionPlanType)

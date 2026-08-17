@@ -9,11 +9,13 @@ from nativespeaker.api.auth.restore import (
     MovementClassification,
     RestoreAttemptAudit,
     RestoreBranch,
+    registration_remediation_routes,
 )
 from nativespeaker.api.auth.restore_failures import (
     BRANCH_ADDITIONAL_REJECTIONS,
     RESTORE_ALREADY_ENTITLED,
     RESTORE_CLASS_REMEDIATIONS,
+    RESTORE_DESTINATION_ANONYMOUS,
     RESTORE_NOT_FOUND,
     RESTORE_PROOF_REJECTED,
     RESTORE_RESULT_CLASSES,
@@ -24,6 +26,7 @@ from nativespeaker.api.auth.restore_failures import (
     SURFACE_GATE_CLASS,
     RestoreFailureError,
     RestoreRejectionCondition,
+    anonymous_destination_next_routes,
     assert_admission_control_ahead,
     assert_class_membership,
     assert_mapping_exhaustive,
@@ -230,6 +233,11 @@ def test_the_anonymous_destination_keeps_its_own_operation_specific_rejection():
         "restore_destination_anonymous")
     assert restore_client_class(
         AuthEventResult.restore_destination_anonymous) not in RESTORE_RESULT_CLASSES.values()
+    # The rejection defers to Registered Destination for where the client goes next: both
+    # canonical registration routes, not a shorter copy of the list.
+    assert anonymous_destination_next_routes() == registration_remediation_routes()
+    assert ("POST", "/auth/create-user") in anonymous_destination_next_routes()
+    assert RESTORE_CLASS_REMEDIATIONS[RESTORE_DESTINATION_ANONYMOUS].next_route is None
 
 
 # [utest->req~restore-client-error-mapping-classes~1]

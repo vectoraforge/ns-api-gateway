@@ -22,7 +22,11 @@ from nativespeaker.api.auth.restore_flow import (
     SubscriptionRow,
     VerifiedTransaction,
 )
-from nativespeaker.api.auth.restore_operation import RestoreGrantMutations, RestorePhase
+from nativespeaker.api.auth.restore_operation import (
+    RESTORE_EXPIRY_REASON,
+    RestoreGrantMutations,
+    RestorePhase,
+)
 from nativespeaker.api.auth.restore_phases import (
     LIVE_VERIFICATION_STEPS,
     LOCK_ORDER,
@@ -676,6 +680,33 @@ class TestStep15OwnerGrantAgreement:
             mutation_transaction=locked_transaction)
         assert classification is MovementClassification.unclassified
 
+    def test_an_unclaimed_row_whose_grant_names_a_user_is_a_divergence(self):
+        """Both `user_id` values are compared directly, NULLs included: a NULL canonical owner
+        against a grant that names an account is the asymmetric divergence, and it must not pass
+        into the adoption branch."""
+        # [utest->req~restore-locked-step-15-owner-grant-agreement~1]
+        state = locked(row=subscription(user_id=None), grant_user_id=OTHER)
+        with pytest.raises(RestoreRejection) as refused:
+            step_15_owner_grant_agreement(state, ledger=LockedPhaseLedger())
+        assert refused.value.result \
+            is AuthEventResult.restore_subscription_grant_owner_mismatch
+
+    def test_an_owned_row_with_a_locked_grant_row_carrying_no_owner_is_a_divergence(self):
+        # [utest->req~restore-locked-step-15-owner-grant-agreement~1]
+        state = LockedState(subscription=CurrentSubscriptionState(subscription(user_id=OTHER)),
+                            purchase_row=None, grant_user_id=None, grant_id=uuid7(),
+                            destination_active=True, destination_registered=True,
+                            identity_linked=True)
+        with pytest.raises(RestoreRejection) as refused:
+            step_15_owner_grant_agreement(state, ledger=LockedPhaseLedger())
+        assert refused.value.result \
+            is AuthEventResult.restore_subscription_grant_owner_mismatch
+
+    def test_no_locked_grant_row_leaves_nothing_to_compare(self):
+        # [utest->req~restore-locked-step-15-owner-grant-agreement~1]
+        state = locked(row=subscription(user_id=DESTINATION))
+        assert step_15_owner_grant_agreement(state, ledger=LockedPhaseLedger()) == DESTINATION
+
     def test_it_runs_before_the_source_check_and_before_any_mutation(self):
         # [utest->req~restore-locked-step-15-owner-grant-agreement~1]
         state = locked(row=subscription(user_id=DESTINATION), grant_user_id=DESTINATION)
@@ -863,6 +894,31 @@ class TestStep19WriteAuditRow:
                                     branch=RestoreBranch.adoption,
                                     transaction=transaction,
                                     mutation_transaction=object())
+
+    def test_an_expiry_reaches_the_audit_row_with_its_reason_code(self):
+        """No expiry is a silent side effect: the grant the mutation expired and the reason code
+        it carried are both in the attempt's one row."""
+        # [utest->req~restore-grant-mutation-ordering~1]
+        # [utest->req~restore-locked-step-19-write-audit-row~1]
+        transaction = object()
+        stale, grant = uuid7(), uuid7()
+        mutations = RestoreGrantMutations()
+        ledger = LockedPhaseLedger()
+        outcome = step_18_branch_mutation_and_binding(
+            locked(row=subscription(user_id=DESTINATION)), ledger=ledger,
+            branch=RestoreBranch.same_account, destination_user_id=DESTINATION,
+            grant_id=grant, mutations=mutations, stale_grant_ids=[stale])
+        assert outcome.expired_grants == (
+            {"access_grant_id": stale, "reason": RESTORE_EXPIRY_REASON},)
+        step_19_write_audit_row(
+            ledger=ledger, phase=RestorePhase.locked_mutation,
+            result=AuthEventResult.succeeded, branch=RestoreBranch.same_account,
+            transaction=transaction, mutation_transaction=transaction, mutations=mutations,
+            context=RestoreAuditContext(destination_user_id=DESTINATION,
+                                        access_grant_id=grant))
+        mutation_details = ledger.audit.rows[0].details["mutation"]
+        assert mutation_details["expired_grants"] == [
+            {"access_grant_id": stale, "reason": RESTORE_EXPIRY_REASON}]
 
     def test_adoption_records_its_own_classification(self):
         # [utest->req~restore-locked-step-19-write-audit-row~1]

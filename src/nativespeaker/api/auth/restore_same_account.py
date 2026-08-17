@@ -268,7 +268,13 @@ def mutation_02_settle_grant_status(*,
                             status=AccessGrantStatus.active,
                             tier_id=grant.tier_id,
                             ends_at=grant.ends_at)
-    period = paid_period or PaidPeriod(tier_id=grant.tier_id, ends_at=grant.ends_at)
+    if paid_period is None:
+        # Reactivation re-derives the entitlement and expiry fields from the subscription's
+        # current paid period. Falling back to the expired row's own fields would leave an active
+        # grant carrying a stale tier and an expiry already in the past.
+        raise SameAccountError(
+            "reactivation re-derives its fields from the subscription's current paid period")
+    period = paid_period
     mutations.activate(grant.grant_id)
     return SettledGrant(settlement=GrantSettlement.reactivated,
                         grant_id=grant.grant_id,

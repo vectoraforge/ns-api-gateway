@@ -123,13 +123,20 @@ def ingestion_target_user(*,
     `core.store_purchase_tokens` by `(provider, identity_value)`, or the current `user_id` on the
     canonical row. No other account is reachable: the notification never nominates a user, and a
     token that resolves to nobody does not fall back to any account.
+
+    Where the canonical row names an owner, that owner is the account the store subscription is
+    *already linked to*, so it wins over the echoed token: after an adoption the token still names
+    the account it was minted for at purchase, while the canonical row names the current owner, and
+    settling entitlement on the token's account would move a subscription-backed grant to a
+    different user — which no path does. The token resolves the link only while the row is
+    unclaimed.
     """
     # [impl->req~restore-ingestion-acts-only-on-linked-account~1]
+    if canonical_user_id is not None:
+        return LinkedAccount(user_id=canonical_user_id, resolved_by=LINK_SOURCES[1])
     resolved = tokens.owner_of(provider, echoed_token) if echoed_token else None
     if resolved is not None:
         return LinkedAccount(user_id=resolved, resolved_by=LINK_SOURCES[0])
-    if canonical_user_id is not None:
-        return LinkedAccount(user_id=canonical_user_id, resolved_by=LINK_SOURCES[1])
     return LinkedAccount(user_id=None, resolved_by=None)
 
 

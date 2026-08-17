@@ -8,14 +8,14 @@ branch-specific mutation, and the attempt's single audit row.
 """
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
 from nativespeaker.api.auth.audit import AttemptPhase, AuthEventResult
-from nativespeaker.api.auth.invariants import StoreProvider
+from nativespeaker.api.auth.invariants import InvariantError, StoreProvider, assert_owner_agreement
 from nativespeaker.api.auth.locks import LockingPath, LockLedger
 from nativespeaker.api.auth.proof_restore import StoreVerifier
 from nativespeaker.api.auth.restore import (
@@ -342,13 +342,11 @@ def step_08_live_store_state_verification(
     except Exception:
         raise RestoreRejection(AuthEventResult.restore_store_state_unverified,
                                "the live store-state verification failed or timed out") from None
-    if observed is None or str(observed) in NON_ENTITLED_LIVE_STATES:
-        raise RestoreRejection(AuthEventResult.restore_store_state_unverified,
-                               f"live store state {observed} is not entitlement")
-    status = SubscriptionStatus(str(observed))
-    if not is_product_entitled(status):
-        raise RestoreRejection(AuthEventResult.restore_store_state_unverified,
-                               f"live store state {status} is not product-entitled")
+    # What counts as currently entitled at the store has one implementation, in the live
+    # verification module. It is imported here rather than at module scope because that module
+    # reads this one's ledger and freshness recheck.
+    from nativespeaker.api.auth.restore_live_verification import confirm_currently_entitled
+    status = confirm_currently_entitled(observed)
     row = subscription.row
     return LiveStoreVerification(provider=verified.provider,
                                  external_id=verified.external_id,
@@ -646,10 +644,18 @@ def step_15_owner_grant_agreement(state: LockedState,
     ledger.record("15_owner_grant_agreement")
     owner = state.subscription.user_id
     grant_owner = state.grant_user_id
-    if owner is not None and grant_owner is not None and owner != grant_owner:
-        raise RestoreRejection(
-            AuthEventResult.restore_subscription_grant_owner_mismatch,
-            "the canonical row and its subscription-backed grant name different owners")
+    if state.grant_id is not None or grant_owner is not None:
+        # A subscription-backed grant row was locked, so both `user_id` values are read from the
+        # locked rows and compared directly, NULLs included: an unclaimed canonical row whose
+        # grant names a user diverges exactly as two different users do. The comparison itself
+        # belongs to the shared owner-agreement invariant, so it is taken from there.
+        try:
+            assert_owner_agreement(grant_user_id=grant_owner, subscription_user_id=owner)
+        except InvariantError:
+            raise RestoreRejection(
+                AuthEventResult.restore_subscription_grant_owner_mismatch,
+                "the canonical row and its subscription-backed grant name different owners"
+            ) from None
     return owner
 
 
@@ -737,10 +743,12 @@ def step_17_live_verification_freshness(verification: LiveStoreVerification | No
 
 @dataclass(frozen=True, slots=True)
 class BranchMutation:
-    """What the branch-specific mutation settled: the grant it left active and the binding it set."""
+    """What the branch-specific mutation settled: the grant it left active, the grants it expired
+    with their reason codes, and the binding it set."""
     branch: RestoreBranch
     grant_id: UUID | None
     restore_bound_user_id: UUID
+    expired_grants: tuple[Mapping[str, Any], ...] = ()
 
 
 def step_18_branch_mutation_and_binding(state: LockedState,
@@ -773,7 +781,8 @@ def step_18_branch_mutation_and_binding(state: LockedState,
         raise RestorePhaseError("the lifetime binding is never changed once set")
     mutations.commit()
     return BranchMutation(branch=branch, grant_id=grant_id,
-                          restore_bound_user_id=bound or destination_user_id)
+                          restore_bound_user_id=bound or destination_user_id,
+                          expired_grants=tuple(mutations.expiry_details()))
 
 
 def step_19_write_audit_row(*,
@@ -783,6 +792,7 @@ def step_19_write_audit_row(*,
                             branch: RestoreBranch | None,
                             transaction: object,
                             mutation_transaction: object | None = None,
+                            mutations: RestoreGrantMutations | None = None,
                             context: RestoreAuditContext | None = None) -> MovementClassification:
     """19. Write one `audit.auth_events` row for every attempt.
 
@@ -798,6 +808,12 @@ def step_19_write_audit_row(*,
             "a locked-phase row is written in the same transaction as the mutation")
     if phase is RestorePhase.pre_transaction and mutation_transaction is not None:
         raise RestorePhaseError("a pre-transaction rejection performs no restore mutation")
+    if mutations is not None and mutations.expiries:
+        # Every expiry the mutation made reaches the row's mutation details with the reason code
+        # it carried, so no expiry is a silent side effect of the restore.
+        # [impl->req~restore-grant-mutation-ordering~1]
+        context = replace(context or RestoreAuditContext(),
+                          expired_grants=tuple(mutations.expiry_details()))
     attempt_phase = (AttemptPhase.success if result is AuthEventResult.succeeded
                      else AttemptPhase.business)
     ledger.audit.record(phase=attempt_phase,

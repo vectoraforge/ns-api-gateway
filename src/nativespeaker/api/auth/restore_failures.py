@@ -30,6 +30,7 @@ from nativespeaker.api.auth.restore import (
     RestoreBranch,
     RestoreContractError,
     movement_classification_for,
+    registration_remediation_routes,
 )
 from nativespeaker.api.auth.restore_operation import RestorePhase, audit_placement
 from nativespeaker.api.auth.schema_invariants import assert_no_never_written_column
@@ -301,15 +302,25 @@ RESTORE_CLASS_REMEDIATIONS: dict[ErrorCode, Remediation] = {
     RESTORE_TEMPORARILY_UNAVAILABLE: Remediation(
         action="user_initiated_retry_later_then_support_if_persistent", http_status=503,
         transient=True),
-    # Complete registration — the in-place upgrade, or registered create-user — then retry restore.
+    # Complete registration, then retry restore. Which routes complete it is owned by Registered
+    # Destination — `registration_remediation_routes()` — and there are two of them, so this entry
+    # names none of its own rather than forking a second, shorter list.
     # [impl->req~restore-client-error-mapping-classes~1]
     RESTORE_DESTINATION_ANONYMOUS: Remediation(
-        action="complete_registration_then_retry_restore", http_status=403,
-        next_route="/auth/upgrade-anonymous"),
+        action="complete_registration_then_retry_restore", http_status=403),
 }
 
 for _class, _remediation in RESTORE_CLASS_REMEDIATIONS.items():
     register_endpoint_class(_class, _remediation, _remediation.http_status)
+
+
+def anonymous_destination_next_routes() -> tuple[tuple[str, str], ...]:
+    """Where a client sent the anonymous-destination rejection goes next. The rejection keeps its
+    distinct operation-specific class, and its remediation routes are read from the owner under
+    Registered Destination — the in-place `POST /auth/upgrade-anonymous` flip, or registered
+    `POST /auth/create-user` where no existing anonymous user is being upgraded."""
+    # [impl->req~restore-client-error-mapping-classes~1]
+    return registration_remediation_routes()
 
 
 # The restore-specific table: every restore internal result past the shared gates maps to exactly

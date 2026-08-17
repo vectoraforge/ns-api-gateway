@@ -61,9 +61,11 @@ def purchase(*, purchase_user_id: UUID | None = DESTINATION,
 
 def grant(*, status: AccessGrantStatus = AccessGrantStatus.active,
           user_id: UUID = DESTINATION,
-          grant_id: UUID | None = None) -> SubscriptionGrant:
+          grant_id: UUID | None = None,
+          tier_id: str = "gold",
+          ends_at: datetime | None = None) -> SubscriptionGrant:
     return SubscriptionGrant(grant_id=grant_id or uuid7(), user_id=user_id, status=status,
-                             subscription_id=SUBSCRIPTION_ID, tier_id="gold")
+                             subscription_id=SUBSCRIPTION_ID, tier_id=tier_id, ends_at=ends_at)
 
 
 def validated() -> RestoreGrantMutations:
@@ -232,6 +234,18 @@ def test_an_entitled_expired_grant_is_reactivated_on_the_same_row():
     assert settled.status is AccessGrantStatus.active
     assert (settled.tier_id, settled.ends_at) == ("platinum", period.ends_at)
     assert mutations.activated == existing.grant_id
+
+
+# [utest->req~restore-same-account-mutation-02-settle-grant-status~1]
+def test_reactivation_without_the_current_paid_period_is_refused():
+    """Entitlement-derived and expiry fields are re-derived from the subscription's current paid
+    period; the expired row's own stale tier and past expiry are never reused."""
+    with pytest.raises(SameAccountError):
+        mutation_02_settle_grant_status(
+            status=SubscriptionStatus.active,
+            grant=grant(status=AccessGrantStatus.expired, tier_id="bronze",
+                        ends_at=datetime(2020, 1, 1, tzinfo=UTC)),
+            mutations=validated())
 
 
 # [utest->req~restore-same-account-mutation-02-settle-grant-status~1]

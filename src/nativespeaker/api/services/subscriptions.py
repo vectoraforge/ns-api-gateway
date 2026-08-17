@@ -8,6 +8,11 @@ from appstoreserverlibrary.models.Subtype import Subtype
 from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier, VerificationException
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from nativespeaker.api.auth.ingestion_authority import (
+    LINK_SOURCES,
+    LinkedAccount,
+    unmatched_token_outcome,
+)
 from nativespeaker.api.auth.invariants import StoreProvider
 from nativespeaker.api.config import AppleConfig
 from nativespeaker.api.database import StorePurchaseTokensDB, SubscriptionDB
@@ -177,14 +182,24 @@ class SubscriptionService:
             echoed = transaction.appAccountToken
             owner = (await self.purchase_tokens_db.owner_of(StoreProvider.apple, str(echoed))
                      if echoed else None)
-            if owner is None:
-                logger.error("apple_notification_unattributed",
-                             transaction_id=original_transaction_id,
-                             uuid=notification_uuid)
-                return
+            # A token that is absent or resolves to no binding leaves the store subscription
+            # unclaimed: the canonical row is still created, unowned with `user_id` NULL and with
+            # no subscription-backed grant and no usage row, exactly as an unattributed verified
+            # purchase is recorded. An account claims it later by presenting the transaction to
+            # `POST /auth/restore-subscription`, whose adoption is what links it.
+            # [impl->req~schema-subscriptions-user-id-null-unclaimed~1]
+            # [impl->req~restore-ingestion-unmatched-token-leaves-unclaimed~1]
+            claimed = unmatched_token_outcome(
+                LinkedAccount(user_id=owner,
+                              resolved_by=LINK_SOURCES[0] if owner is not None else None))
+            attributed_to = claimed if isinstance(claimed, UUID) else None
+            if attributed_to is None:
+                logger.info("apple_notification_unattributed",
+                            transaction_id=original_transaction_id,
+                            uuid=notification_uuid)
 
             subscription = await self.subscriptions_db.create_subscription(
-                user_id=owner,
+                user_id=attributed_to,
                 provider=SubscriptionProvider.apple,
                 external_id=original_transaction_id,
                 plan=plan,
@@ -205,8 +220,12 @@ class SubscriptionService:
             if not first_delivery:
                 logger.info("apple_notification_duplicate", uuid=notification_uuid)
                 return
+            if attributed_to is None:
+                # No owner, so no grant to point at a tier and nothing to sync: the row waits for
+                # restore's adoption.
+                return
             await self.subscriptions_db.update_user_plan(
-                user_id=subscription.user_id, plan=plan
+                user_id=attributed_to, plan=plan
             )
         else:
             # [impl->req~restore-apple-redelivery-idempotent~1]
@@ -228,6 +247,10 @@ class SubscriptionService:
             await self._settle_grant_for_status_change(subscription.id,
                                                        old_status=old_status,
                                                        new_status=status)
+            # An unclaimed row backs no grant, so there is no tier to move.
+            # [impl->req~schema-subscriptions-user-id-null-unclaimed~1]
+            if subscription.user_id is None:
+                return
             await self.subscriptions_db.update_user_plan(
                 user_id=subscription.user_id, plan=plan
             )
@@ -237,7 +260,7 @@ class SubscriptionService:
         # amount already consumed for `monthly_period`. Remaining is recomputed from the new
         # tier's allowance and floors at zero, and the counter resets only at the lazy monthly
         # rollover.
-        if old_plan != plan:
+        if old_plan != plan and subscription.user_id is not None:
             subject = await self.subscriptions_db.external_subject(subscription.user_id)
             if subject:
                 await self.firebase_service.set_plan_claim(subject, plan)

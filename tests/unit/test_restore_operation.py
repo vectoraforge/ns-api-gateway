@@ -1,6 +1,7 @@
 """Restore's purpose, its common entry conditions, the two-phase split, audit placement per
 phase, and the grant-mutation ordering that keeps the one-active-grant index satisfied."""
 
+from datetime import UTC, datetime
 from uuid import UUID, uuid7
 
 import pytest
@@ -45,6 +46,12 @@ from nativespeaker.api.auth.restore_operation import (
     restore_entry_conditions,
     restore_purpose,
     two_server_determined_branches,
+)
+from nativespeaker.api.auth.restore_phases import (
+    PreTransactionLedger,
+    step_05_determine_branch,
+    step_07_adoption_entitlement_short_circuit,
+    step_08_live_store_state_verification,
 )
 from nativespeaker.api.models import SubscriptionStatus
 
@@ -309,6 +316,52 @@ class TestAuditPlacementPerPhase:
         with pytest.raises(RestoreContractError):
             audit_placement(phase=RestorePhase.pre_transaction,
                             result=AuthEventResult.restore_branch_inconsistent)
+
+    def test_every_pre_transaction_rejection_is_placed_in_its_own_transaction(self):
+        """The five results the placement rule names are examples, not the whole set: every
+        rejection the entry conditions and steps 1 to 8 produce writes its row in the
+        pre-transaction rejection transaction."""
+        # [utest->req~restore-audit-placement-per-phase~1]
+        raised: set[AuthEventResult] = set()
+
+        def collect(call):
+            with pytest.raises(RestoreRejection) as refused:
+                call()
+            raised.add(refused.value.result)
+
+        # The entry conditions: an anonymous destination, and a destination that is not active.
+        collect(lambda: entry_destination(context(), identity_rows=identity_rows(registered=False)))
+        collect(lambda: entry_destination(context(), identity_rows=identity_rows(),
+                                          destination_active=False))
+        collect(lambda: entry_proof_supplied(DevicePlatform.ios, {}))
+        # Step 5: a store transaction linked to a different account, and one whose linked source
+        # account is inactive.
+        for source_user_active in (True, False):
+            collect(lambda active=source_user_active: step_05_determine_branch(
+                CurrentSubscriptionState(subscription(user_id=OTHER)),
+                destination_user_id=DESTINATION, ledger=PreTransactionLedger(),
+                source_user_active=active))
+        # Step 7: an obviously non-entitled current state, short-circuited before any provider call.
+        collect(lambda: step_07_adoption_entitlement_short_circuit(
+            CurrentSubscriptionState(subscription(status=SubscriptionStatus.expired)),
+            branch=RestoreBranch.adoption, ledger=PreTransactionLedger()))
+        # Step 8: a live store state that is not entitlement.
+        collect(lambda: step_08_live_store_state_verification(
+            VERIFIED, CurrentSubscriptionState(subscription(user_id=None)),
+            branch=RestoreBranch.adoption, ledger=PreTransactionLedger(),
+            lookup=lambda provider, external_id: "expired", now=datetime.now(UTC)))
+
+        assert raised >= {AuthEventResult.restore_destination_anonymous,
+                          AuthEventResult.blocked_user,
+                          AuthEventResult.store_transaction_already_linked,
+                          AuthEventResult.restore_source_user_inactive,
+                          AuthEventResult.invalid_restore_proof,
+                          AuthEventResult.restore_subscription_not_entitled,
+                          AuthEventResult.restore_store_state_unverified}
+        for result in raised:
+            placement = audit_placement(phase=RestorePhase.pre_transaction, result=result)
+            assert placement.own_transaction is True
+            assert placement.beside_mutation is False
 
     def test_a_missing_row_is_the_creation_path_not_a_rejection(self):
         # [utest->req~restore-audit-placement-per-phase~1]
