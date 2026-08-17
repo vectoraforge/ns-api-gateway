@@ -1,0 +1,181 @@
+# ns-api-gateway
+
+## What This Is
+
+A FastAPI-based linguistic analysis API service that accepts text phrases and returns structured analysis results via an LLM backend (OpenAI). Features user management with JIT provisioning, Apple Store subscription integration (free/silver/gold/platinum tiers), config-driven quota enforcement via FastAPI dependency, native PostgreSQL enum types for all domain enums, Envoy Gateway rate limiting by plan tier, structured logging, real RS256 JWT authentication with JWKS key rotation, an opaque 5-code error contract, LLM content models aligned with the prompt schema, and a complete E2E + security test suite against real infrastructure.
+
+## Core Value
+
+The analysis pipeline must work reliably — correct LLM invocation, proper resilience under load, and safe per-user data isolation.
+
+## Requirements
+
+### Validated
+
+- ✓ Phrase analysis via `POST /chats` — existing (unified in v1.3)
+- ✓ Multi-turn chat sessions with persistent message history — existing
+- ✓ Cursor-based pagination for message listing — existing
+- ✓ JWT user ownership enforcement on chat endpoints — existing
+- ✓ LLM resilience: circuit breaker, concurrency gate, retry with backoff — existing
+- ✓ Chat delete endpoint — existing
+- ✓ Language-specific examples via `GET /examples` — existing (moved in v1.3)
+- ✓ Health readiness probe — existing
+- ✓ YAML-based configuration with Pydantic validation — existing
+- ✓ Typed exception hierarchy replacing bare `Exception` in database and service layers — v1.1
+- ✓ JWT auth structured for real signature verification (TokenVerifier protocol, pluggable via app.state) — v1.1
+- ✓ Retry logic preserves original exception chain with granular error types (TransientLLMError/PermanentLLMError) — v1.1
+- ✓ Cross-user access boundary tests (user A cannot access user B's chats, real PostgreSQL) — v1.1
+- ✓ Cursor pagination validation before decode (InvalidCursorError at route entry) — v1.1
+- ✓ Circuit breaker designed for multi-instance awareness (in-memory limitation documented, Redis path noted) — v1.1
+- ✓ Dead code removed (unreachable `get_chat()`/`delete_chat()`) and config bugs fixed — v1.2
+- ✓ Schema-guaranteed LLM responses via `with_structured_output(strict=True)` — v1.2
+- ✓ PEP8 compliance enforced by ruff (E/W/F/I/UP, line-length=120) — v1.2
+- ✓ Resilience concerns extracted into `ResiliencePolicy` facade — v1.2
+- ✓ Health endpoint simplified to unconditional 200/up (ReadinessCache removed) — v1.2
+- ✓ Real RS256 JWT verification via PyJWKClient JWKS with startup warm-up — v1.3
+- ✓ Opaque error contract: 5 status codes, 5 fixed error codes, ErrorResponse in OpenAPI — v1.3
+- ✓ Centralized FastAPI DI in `app/dependencies.py` with `Depends()`-only routes — v1.3
+- ✓ `BaseChatModel` type annotation on ChatService (provider-agnostic) — v1.3
+- ✓ Test infrastructure on `dependency_overrides` with `service_instance` fixture — v1.3
+- ✓ Unified `POST /chats` endpoint; old `/prompts/analyze` and `/chats/{id}/messages` removed — v1.3
+- ✓ `alternatives` → `suggestions` field rename in response schema — v1.3
+- ✓ Error handling simplified: HTTP metadata on exception classes, single data-driven handler — v1.4
+- ✓ Single-query data access per request handler (ownership folded into JOINs) — v1.4
+- ✓ Dead code removed (`get_chat_owned`, `get_message_counts`, `_ensure_history_capacity`, `ChatOwnershipError`) — v1.4
+- ✓ Chat model refactored: separate schemas, session-in-init DB, chain-based DI, per-operation endpoints — v1.4
+- ✓ E2E test suite: real PostgreSQL + OpenAI + Firebase auth, all endpoints covered, cross-user isolation — v1.4
+- ✓ Transaction-based test isolation with auto-rollback (no manual cleanup) — v1.5
+- ✓ Service/database packages with re-export pattern (services/, database/) — v1.5
+- ✓ Structured logging via structlog with dual-output pipeline and request correlation — v1.5
+- ✓ JIT user provisioning from JWT with race-safe ON CONFLICT upsert — v1.5
+- ✓ `GET /users/me` returns profile with email, name, plan tier, and usage data — v1.5
+- ✓ Apple Store subscription lifecycle processing via POST /webhooks/apple — v1.5
+- ✓ JWS signature verification for Apple notifications — v1.5
+- ✓ Idempotent webhook processing (notificationUUID dedup) — v1.5
+- ✓ Plan tier storage (free/silver/gold/platinum) as authoritative source — v1.5
+- ✓ Firebase custom claim sync for JWT propagation (async, best-effort) — v1.5
+- ✓ Atomic quota enforcement via INSERT ON CONFLICT + conditional UPDATE — v1.5
+- ✓ Envoy Gateway rate limiting by plan tier (SecurityPolicy + BackendTrafficPolicy) — v1.5
+- ✓ Helm chart with separate HTTPRoutes per auth level — v1.5
+- ✓ Project renamed from sn-api-gateway to ns-api-gateway — v1.5
+- ✓ Single merged migration with FK constraints (users.plan, subscriptions.plan → plans.tier) — v1.5
+- ✓ Config-driven quotas replacing `core.plans` table; native PG enum types for all StrEnums — v1.6
+- ✓ All database layer uses ORM constructs (zero raw `text()` SQL) — v1.6
+- ✓ Comprehensive E2E and security test coverage (auth edge cases, Retry-After headers, subscription paths) — v1.6
+- ✓ Quota enforcement centralized in `require_quota` FastAPI dependency (ChatService single-responsibility) — v1.6
+- ✓ Pydantic content models aligned with LLM prompt schema; `models/llm.py` for validation, `models/api.py` for API schemas — v1.6
+- ✓ `Message.content` stored as plain `dict` with `sa_type=JSONB` (no Pydantic model wrapping at persistence layer) — v1.6
+- ✓ `OutOfScopeError` exception for LLM reject responses with `resolved_mode` dispatch — v1.6
+- ✓ Error contract fully consistent: `quota_exceeded` propagated across handler, tests, and k8s config — v1.6
+
+### Active
+
+None — planning next milestone.
+
+### Out of Scope
+
+- LangChain/OpenAI provider abstraction — no multi-provider requirement yet
+- Message content encryption-at-rest — defer to infrastructure layer
+- Load/stress tests — not a current priority
+- Application-level rate limiting (slowapi) — Envoy Gateway owns rate limiting
+- CORS middleware / security headers — Envoy Gateway handles at infrastructure level
+- Trusted host validation — Envoy Gateway perimeter control
+- Redis-backed circuit breaker — single-instance deployment; migration path documented in code
+- CI linting gate — ruff enforced locally; CI gate can be added later
+- Token creation endpoint — this service is not an identity provider
+- Per-request Firebase claim reads — adds 100-300ms latency; JWT already carries the plan claim
+- New HTTP status codes or error codes — contract locked at 5 codes (400/401/404/429/500)
+- Multi-provider identity support — Firebase only; no requirement for other IdPs
+- Payment refund processing — Apple handles refunds; app reacts to revocation notifications
+- User registration endpoint — JIT provisioning from JWT; Firebase handles account creation
+- Admin user management — own profile only (`GET /users/me`); no admin listing or management
+
+## Current State
+
+Shipped v1.6. All milestones through v1.6 complete. 46,702 LOC Python across 33 phases.
+
+## Context
+
+Tech stack: Python 3.12, FastAPI, LangChain, SQLAlchemy async, Pydantic v2, PyJWT, structlog, orjson, ruff. Infrastructure: Envoy Gateway (rate limiting, JWT extraction), Kubernetes via Helm chart, PostgreSQL with native enum types.
+
+Endpoints:
+- `POST /chats` — new analysis (context + question + lang)
+- `POST /chats/{id}` — followup (message)
+- `GET /chats` — list user's chats
+- `GET /chats/{id}` — chat detail with messages
+- `DELETE /chats/{id}` — delete chat
+- `GET /users/me` — user profile + plan tier + usage
+- `POST /webhooks/apple` — Apple subscription notifications
+- `GET /examples` — language-specific examples
+- `GET /health/ready` — health probe
+- `GET /` — API root
+
+Known areas for future work:
+- Proactive quota warnings via `X-RateLimit-Remaining` header
+- Grace period transparency in `GET /users/me`
+- Webhook retry reconciliation via App Store Server API polling
+- Startup exhaustiveness check for quota config (QUOTA-06)
+
+## Constraints
+
+- **Tech stack**: Python 3.12, FastAPI, LangChain, SQLAlchemy async — no stack changes
+- **Auth**: PyJWT with Firebase JWKS — TokenVerifier protocol remains pluggable
+- **Error contract**: Exactly 5 status codes (400/401/404/429/500), 5 opaque error codes — no new codes without contract review
+- **Rate limiting**: Envoy Gateway owns rate limiting; PostgreSQL quota is authoritative
+
+## Key Decisions
+
+| Decision | Rationale | Outcome |
+|----------|-----------|--------:|
+| JWT structure without a real provider | Need the skeleton in place even if verification is stubbed | ✓ Good — TokenVerifier protocol implemented, easy to swap |
+| Cross-user access tests against real DB | Only way to catch ownership bugs before production | ✓ Good — 6 integration tests passing |
+| Defer LangChain abstraction | No multi-provider requirement; premature | — Pending |
+| `app.state.verifier` resolved at request-time | Enables zero-code swapping of auth providers in tests and startup | ✓ Good |
+| Typed LLM errors with `__cause__` | Callers can distinguish transient vs permanent without inspecting internals | ✓ Good |
+| CORS, rate limiting, security headers → Envoy Gateway | Avoids redundant app-level middleware | ✓ Good |
+| `with_structured_output(strict=True, method='json_schema')` | Constrained decoding eliminates fragile parsing | ✓ Good |
+| ResiliencePolicy composes existing CB/gate without modifying them | Facade pattern; composition over modification | ✓ Good |
+| Health endpoint unconditional 200/up | If lifespan fails, FastAPI never serves — probing backends is redundant | ✓ Good |
+| PyJWT 2.11.0 over python-jose | python-jose is abandoned; PyJWT is actively maintained | ✓ Good |
+| JWTVerifier uses PyJWKClient with JWKS warm-up | Production-grade key rotation with fail-fast startup | ✓ Good |
+| ErrorResponse with Pydantic Literal codes | Typos cause ValidationError at construction, not runtime 500 | ✓ Good |
+| HTTP metadata on exception classes | Single handler reads class attrs; eliminates 12 boilerplate handlers | ✓ Good |
+| All dependencies in app/dependencies.py | Single import source; routes never touch Request | ✓ Good |
+| BaseChatModel annotation on ChatService | Provider-agnostic; no vendor lock-in in service layer | ✓ Good |
+| Unified POST /chats with optional chat_id | Single entry point for all chat operations; cleaner API surface | ✓ Good |
+| Session-in-init DB pattern (ChatsDB) | Clean lifecycle; session scoped to instance | ✓ Good |
+| JIT user provisioning via `get_or_create` with ON CONFLICT | Race-safe; no separate registration step | ✓ Good |
+| `UserIdentity` frozen dataclass from `TokenVerifier` | Immutable auth data; clean separation from DB model | ✓ Good |
+| `UserProfileResponse` omits `id`, `jwt_sub`, `active` | Security: internal fields not exposed to client | ✓ Good |
+| Atomic `try_increment` via INSERT ON CONFLICT + conditional UPDATE | Race-safe quota enforcement without app-level locks | ✓ Good |
+| Envoy Gateway local rate limiting (no Redis) | Matches single-cluster deployment; PostgreSQL is authoritative quota | ✓ Good |
+| Separate HTTPRoutes for app/llm/webhooks/health | Per-route policy attachment; webhooks exempt from rate limiting | ✓ Good |
+| Firebase claim sync is best-effort | Exceptions caught and logged as warning; webhook still returns 200 | ✓ Good |
+| structlog with ProcessorFormatter dual-output pipeline | Console for dev, JSON for prod; contextvars for request correlation | ✓ Good |
+| 429 not remapped by _STATUS_REMAP | QuotaExceededError flows through as native 429 | ✓ Good |
+| Bare `dict[SubscriptionPlan, int]` for quotas over QuotaConfig wrapper | Simpler config model; no extra abstraction needed | ✓ Good — v1.6 |
+| `UsageDB.try_increment` accepts `monthly_quota: int` parameter | Decouples DB layer from plans table entirely | ✓ Good — v1.6 |
+| Plain dict for `Message.content` with `sa_type=JSONB` | No Pydantic model wrapping at persistence layer; flexible schema | ✓ Good — v1.6 |
+| LLM validation models in `models/llm.py`, API schemas in `models/api.py` | Separate concerns; LLM contract vs API contract | ✓ Good — v1.6 |
+| `require_quota` FastAPI dependency for quota enforcement | ChatService single-responsibility; quota is cross-cutting concern | ✓ Good — v1.6 |
+| `OutOfScopeError` for LLM reject responses | Clean error contract for out-of-scope input; dispatches on `resolved_mode` | ✓ Good — v1.6 |
+
+## Evolution
+
+This document evolves at phase transitions and milestone boundaries.
+
+**After each phase transition** (via `/gsd:transition`):
+1. Requirements invalidated? → Move to Out of Scope with reason
+2. Requirements validated? → Move to Validated with phase reference
+3. New requirements emerged? → Add to Active
+4. Decisions to log? → Add to Key Decisions
+5. "What This Is" still accurate? → Update if drifted
+
+**After each milestone** (via `/gsd:complete-milestone`):
+1. Full review of all sections
+2. Core Value check — still the right priority?
+3. Audit Out of Scope — reasons still valid?
+4. Update Context with current state
+
+---
+*Last updated: 2026-03-26 after v1.6 milestone*
