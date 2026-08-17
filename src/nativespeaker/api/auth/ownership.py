@@ -45,13 +45,18 @@ def ownership_violations(metadata: Any) -> list[str]:
             if any(target.rsplit(".", 1)[0].endswith("external_identities") for target in targets):
                 violations.append(
                     f"{name}.{column.name} owns rows by an external identity, not {USER_OWNERSHIP_KEY}")
+            # Chats, messages, subscription billing records, store purchases, access grants and
+            # introductory allocation state always belong to internal `core.users.id`; monthly
+            # usage counters belong to `core.access_grants.id`.
             # [impl->req~shared-ownership-key-users-id~1]
+            # [impl->req~schema-invariant-01~1]
             if column.name.endswith(_OWNER_COLUMN_SUFFIX) and targets:
                 if name in GRANT_OWNED_TABLES:
                     violations.append(f"{name}.{column.name} must be owned by {GRANT_OWNERSHIP_KEY}")
                 elif targets != {USER_OWNERSHIP_KEY}:
                     violations.append(
                         f"{name}.{column.name} must reference {USER_OWNERSHIP_KEY}, got {sorted(targets)}")
+        # [impl->req~schema-invariant-01~1]
         if name in GRANT_OWNED_TABLES:
             grant_owned = any(GRANT_OWNERSHIP_KEY in {fk.target_fullname for fk in column.foreign_keys}
                               for column in table.columns)

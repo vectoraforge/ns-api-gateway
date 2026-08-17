@@ -230,6 +230,7 @@ class TestAdministrativeOperations:
 class TestAccountCreation:
 
     # [utest->req~schema-external-identities-user-and-identity-one-transaction~1]
+    # [utest->req~schema-invariant-07~1]
     def test_both_rows_are_written_in_one_transaction(self):
         transaction = object()
         user_id = uuid4()
@@ -242,6 +243,7 @@ class TestAccountCreation:
                            identity_transaction=object())
 
     # [utest->req~schema-external-identities-user-and-identity-one-transaction~1]
+    # [utest->req~schema-invariant-07~1]
     def test_unique_user_id_caps_a_user_at_one_identity_row(self):
         transaction = object()
         user_id = uuid4()
@@ -251,10 +253,12 @@ class TestAccountCreation:
                            existing_identity_for_user=anon_row(user_id=user_id))
 
     # [utest->req~schema-external-identities-user-and-identity-one-transaction~1]
+    # [utest->req~schema-invariant-07~1]
     def test_no_constraint_trigger_or_healer_enforces_the_pairing(self):
         assert PAIRING_ENFORCEMENT_MECHANISMS == frozenset()
 
     # [utest->req~schema-external-identities-orphan-user-internal-error~1]
+    # [utest->req~schema-invariant-07~1]
     def test_an_orphan_user_row_is_an_internal_error_that_repairs_nothing(self):
         user_id = uuid4()
         row = anon_row(user_id=user_id)

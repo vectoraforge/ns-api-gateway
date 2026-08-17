@@ -234,9 +234,14 @@ class AuthBarrier:
         the movement context for every attempt, rejected ones included: nothing is resolved yet
         at the barrier, so the context is the all-`NULL` one with the route's own unresolved
         classification rather than an omitted section."""
+        # The row carries the result the barrier produced — `invalid_external_jwt` under the
+        # actor-`NULL` shape, or `preauth_identity_not_allowed`, `historical_identity` or
+        # `blocked_user` with the actor the verified token or resolved identity supplied — and
+        # `operation` set to the operation route metadata matched before the barrier ran.
         # [impl->req~shared-upgrade-movement-context-required~1]
         # [impl->req~shared-restore-movement-classification~1]
         # [impl->req~shared-movement-single-audit-row~1]
+        # [impl->req~schema-auth-events-barrier-rejection-row~1]
         if attempt.operation in MOVEMENT_OPERATIONS:
             context = unresolved_movement_context(attempt.operation, result, self._clock())
             return movement_event(AttemptPhase.barrier, context, actor=actor, details=details)

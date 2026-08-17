@@ -51,7 +51,7 @@ CROSS_CUTTING_INVARIANTS: tuple[Invariant, ...] = (
     Invariant(3, "a historical identity is rejected at per-request resolution"),
     # [impl->req~shared-invariant-04~2]
     Invariant(4, "the entitlement-only grant row and its paired anti-abuse row",
-              owner="req~schema-invariant-08~1"),
+              owner="req~schema-invariant-08~2"),
     Invariant(5, "per-device free-credit anti-abuse is a device-check state, never a credential"),
     Invariant(6, "the three distinct free-grant failure classes"),
     Invariant(7, "global per-provider-account uniqueness of registered free-credit claims"),
@@ -127,8 +127,10 @@ def assert_grant_creator(creator: GrantCreator | str, source: AccessGrantSource)
 
 # --- 2. Enum typing of authorization-relevant categorical fields ------------------------------
 
-# The categorical fields authorization depends on, and the schema-typed enum each is stored as.
-# The rule itself is `req~schema-invariant-03~1`.
+# The categorical fields authorization depends on, and the schema-typed enum each is stored as:
+# external-identity `provider`, grant `source`, grant `status`, and audit `actor_provider` when
+# present are stored as schema-typed enums, never as free text.
+# [impl->req~schema-invariant-03~1]
 ENUM_TYPED_FIELDS: dict[str, type[StrEnum]] = {
     "core.external_identities.provider": IdentityProvider,
     "core.access_grants.source": AccessGrantSource,
@@ -159,7 +161,7 @@ def rejected_at_resolution(outcome: ResolutionOutcome) -> AuthEventResult | None
 # --- 4/5. The entitlement-only grant row -------------------------------------------------------
 
 # The two free-credit sources whose grants pair with a `core.access_grants_anti_abuse` row. The
-# pairing rule itself is `req~schema-invariant-08~1`.
+# pairing rule itself is `req~schema-invariant-08~2`.
 ANTI_ABUSE_ELIGIBLE_SOURCES: frozenset[AccessGrantSource] = frozenset({
     AccessGrantSource.anonymous_device_grant,
     AccessGrantSource.registered_account_grant,
@@ -216,6 +218,7 @@ def assert_grant_columns_entitlement_only(columns: Iterable[str]) -> None:
     """`core.access_grants` carries entitlement state only: no device-check state is stored as an
     anti-abuse column on it."""
     # [impl->req~shared-invariant-05~1]
+    # [impl->req~schema-invariant-08~2]
     offending = sorted(set(columns) & FORBIDDEN_GRANT_COLUMNS)
     if offending:
         raise InvariantError(f"{offending} are not entitlement state on core.access_grants")
@@ -292,7 +295,10 @@ def _conflict(result: AuthEventResult) -> tuple[AuthEventResult, ClientErrorClas
 # Each gate's conflict, with its internal result and its client-visible class. A duplicate
 # registered gate is not the same thing as a per-device anonymous-grant block: the two are
 # enforced by different mechanisms, audit differently, and surface as different classes.
+# A registered-gate conflict surfaces as `idp_account_already_claimed` and the client-visible
+# class `account_already_claimed`; a web-gate conflict surfaces as `device_grant_exhausted`.
 # [impl->req~shared-invariant-07~1]
+# [impl->req~schema-invariant-10~1]
 GATE_CONFLICTS: dict[GateConsumptionKind, tuple[AuthEventResult, ClientErrorClass]] = {
     GateConsumptionKind.registered_account_grant: _conflict(
         AuthEventResult.idp_account_already_claimed),
@@ -333,8 +339,10 @@ class ProviderAccountGates:
                 hash_key_version: int | None = None) -> None:
         """Record that this provider account consumed this gate. The same Google or Apple
         provider account cannot back two successful registered free-credit claims, whatever
-        Firebase account, external identity, internal user, reinstall or device asks."""
+        Firebase account, external identity, internal user, reinstall or device asks. The two
+        consumption kinds are distinct rows: the same account may hold one of each."""
         # [impl->req~shared-invariant-07~1]
+        # [impl->req~schema-invariant-10~1]
         key = (account.provider, account.provider_uid, kind)
         if key in self._consumed:
             result, client_class = GATE_CONFLICTS[kind]
@@ -358,8 +366,10 @@ class ProviderAccountGates:
 def assert_owner_agreement(*, grant_user_id: UUID | None, subscription_user_id: UUID | None) -> None:
     """Active subscription-backed grants and canonical subscriptions share one current owner at
     commit. The rule is `req~schema-invariant-11~1`, enforced by the deferrable composite foreign
-    key; this is the read-side check the locked paths make against the same condition."""
+    key; this is the read-side check the locked paths make against the same condition. Neither
+    row reaches that agreement by rewriting a grant's `user_id`."""
     # [impl->req~shared-invariant-08~2]
+    # [impl->req~schema-invariant-11~1]
     if grant_user_id != subscription_user_id:
         raise InvariantError("a subscription-backed grant and its subscription share one owner")
 
@@ -427,6 +437,7 @@ class AttributionTokens:
         store provider and that token, so a token already bound to one user is never rebound to
         another: verified-purchase ingestion resolving through it must find one owner or none."""
         # [impl->req~shared-invariant-10~1]
+        # [impl->req~schema-invariant-16~1]
         if (user_id, provider) in self._by_user:
             raise InvariantError("a user mints one lifetime attribution token per store")
         owner = self._by_token.get((provider, identity_value))
@@ -445,6 +456,7 @@ class AttributionTokens:
         """Verified-purchase ingestion: the owning user is resolved by matching the store-echoed
         token through this binding alone. An unresolved token attributes to nobody."""
         # [impl->req~shared-invariant-10~1]
+        # [impl->req~schema-invariant-15~1]
         assert_attribution_source(AttributionSource.store_echoed_token)
         return self._by_token.get((provider, identity_value))
 

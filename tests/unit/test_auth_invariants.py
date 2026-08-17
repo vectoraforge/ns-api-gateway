@@ -68,7 +68,7 @@ class TestScope:
     def test_referenced_invariants_name_their_normative_home(self):
         assert len(CROSS_CUTTING_INVARIANTS) == 12
         assert normative_home(2) == "req~schema-invariant-03~1"
-        assert normative_home(4) == "req~schema-invariant-08~1"
+        assert normative_home(4) == "req~schema-invariant-08~2"
         assert normative_home(8) == "req~schema-invariant-11~1"
         assert normative_home(9) == "req~schema-invariant-14~1"
         assert normative_home(1) is None

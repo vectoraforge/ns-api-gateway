@@ -292,7 +292,10 @@ def create_account(*, user_id: UUID, identity: ExternalIdentityRow, user_transac
     either insert fails the whole transaction rolls back and no account exists. `UNIQUE (user_id)`
     caps a user at one identity row, and because identity rows are never removed, creation is the
     only point at which the pairing could break."""
+    # The transaction is the whole of the enforcement: no cross-table constraint, trigger,
+    # deferrable foreign key or scheduled healer backs it, and none is to be added.
     # [impl->req~schema-external-identities-user-and-identity-one-transaction~1]
+    # [impl->req~schema-invariant-07~1]
     if user_transaction is not identity_transaction:
         raise IdentityError("the user row and its identity row are written in one transaction")
     if PAIRING_ENFORCEMENT_MECHANISMS:
@@ -309,6 +312,7 @@ def resolve_owner(row: ExternalIdentityRow | None, *, user_id: UUID) -> UUID:
     one is an unresolvable owner and an internal error: the read path fails closed, and no path
     invents an identity row, reassigns the account, or repairs it in the background."""
     # [impl->req~schema-external-identities-orphan-user-internal-error~1]
+    # [impl->req~schema-invariant-07~1]
     if row is None:
         return _orphan(user_id)
     return row.user_id

@@ -11,6 +11,14 @@ from typing import Any
 
 from sqlalchemy import text
 
+# Normal application flows append rows and never update or delete them, so appending is the
+# only statement this module owns. Controlled DBA or support repair may still update a row when
+# operationally necessary, which is why no trigger, permission boundary or other enforcement
+# mechanism exists to prevent every audit row update.
+# [impl->req~schema-auth-events-purpose~1]
+NORMAL_FLOW_STATEMENTS: tuple[str, ...] = ("INSERT",)
+AUDIT_UPDATE_ENFORCEMENT_MECHANISMS: frozenset[str] = frozenset()
+
 INSERT_AUTH_EVENT = text("""
     INSERT INTO audit.auth_events (
         id, challenge_row_id, operation, result, actor_issuer, actor_subject_hash,
