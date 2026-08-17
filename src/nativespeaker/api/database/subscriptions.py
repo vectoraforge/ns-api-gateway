@@ -84,8 +84,10 @@ class SubscriptionDB:
         """Point the user's subscription-backed access grant at the tier the plan names.
 
         A plan is not a column on `core.users`: entitlement is a `core.access_grants` row, and
-        a plan change is a change of that grant's tier. Returns the grant id so the caller can
-        reset the usage counter that hangs off it, or `None` where no subscription-backed grant
+        a plan change is a change of that grant's tier — and of nothing else. The grant's
+        monthly counter is left exactly as it is, so `monthly_used` keeps meaning the amount
+        already consumed for its period; the tier move only changes what remaining is computed
+        against. Returns the moved grant's id, or `None` where no subscription-backed grant
         exists to move.
         """
         # [impl->req~schema-users-no-plan-fields~1]

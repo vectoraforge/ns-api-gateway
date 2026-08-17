@@ -3,6 +3,7 @@ and identity state the completion transaction writes, the profile rules that com
 the endpoint's own rejection classes."""
 
 from collections.abc import Sequence
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid7
@@ -96,19 +97,32 @@ class FakeAccounts:
     async def resolve(self, session, issuer, subject) -> ResolutionOutcome:
         return self.outcome
 
+    def _snapshot(self):
+        return (dict(self.users), deepcopy(self.identities), deepcopy(self.attribution),
+                dict(self.reserved))
+
+    def _restore(self, snapshot) -> None:
+        self.users, self.identities, self.attribution, self.reserved = snapshot
+
     async def insert_account(self, session, *, user, identity, tokens) -> None:
         self.sessions.append(session)
-        if self.raises is not None:
-            raise self.raises
-        key = (identity.issuer, str(identity.provider), identity.provider_uid or "")
-        if identity.provider_uid is not None and key in self.reserved:
-            raise provider_account_conflict(AuthOperation.create_user)
-        self.identities.link(identity)
-        if identity.provider_uid is not None:
-            self.reserved[key] = user.id
+        # The rows land in the transaction before the constraint that may reject them, exactly
+        # as the real inserts do, and the session's savepoint is what takes them back out again.
+        session.on_rollback(self._restore_to(self._snapshot()))
         self.users[user.id] = user
+        self.identities.link(identity)
         for store, value in tokens.items():
             self.attribution.mint(user.id, StoreProvider(store), value)
+        key = (identity.issuer, str(identity.provider), identity.provider_uid or "")
+        if identity.provider_uid is not None:
+            if key in self.reserved:
+                raise provider_account_conflict(AuthOperation.create_user)
+            self.reserved[key] = user.id
+        if self.raises is not None:
+            raise self.raises
+
+    def _restore_to(self, snapshot):
+        return lambda: self._restore(snapshot)
 
 
 class FakeLookup:
@@ -232,11 +246,15 @@ class TestDeclarationAndLookup:
     # [utest->req~users-create-user-step-02~1]
     async def test_an_unselectable_admin_client_fails_closed_before_any_write(self):
         flow = Flow(admin=None)
-        with pytest.raises(ProviderLookupFailedError) as raised:
+        with pytest.raises(CreateUserRejection) as raised:
             await flow.complete("anonymous")
         assert raised.value.result is AuthEventResult.firebase_lookup_unavailable
+        assert raised.value.error_code == ClientErrorClass.verification_temporarily_unavailable
         assert flow.lookup.calls == 0
         assert flow.accounts.users == {}
+        # The rejection is taken on the claimed row: it consumes the challenge and owes its row.
+        assert flow.row().state is ChallengeState.consumed
+        assert flow.audited() == [AuthEventResult.firebase_lookup_unavailable]
 
     # [utest->req~users-create-user-step-03~1]
     @pytest.mark.parametrize(("provider_data", "expected"), [
@@ -299,11 +317,18 @@ class TestDeclarationAndLookup:
         assert other.value.cause is ProviderNotLinkedCause.supported_provider_mismatch
 
     # [utest->req~users-create-user-step-04~1]
-    def test_a_missing_uid_is_a_malformed_lookup_result_and_persists_nothing(self):
+    async def test_a_missing_uid_is_a_malformed_lookup_result_and_persists_nothing(self):
         blank = AdminLookupResult(provider_data=entries("google.com", ""))
-        with pytest.raises(ProviderLookupFailedError) as raised:
+        with pytest.raises(CreateUserRejection) as raised:
             confirm_declaration(IdentityProvider.google, blank)
         assert raised.value.result is AuthEventResult.firebase_lookup_unavailable
+        # Through the endpoint it is a consuming rejection with its own audit row.
+        flow = Flow(lookup=FakeLookup(blank))
+        with pytest.raises(CreateUserRejection):
+            await flow.complete("google", variant=IdentityProvider.google)
+        assert flow.accounts.users == {}
+        assert flow.row().state is ChallengeState.consumed
+        assert flow.audited() == [AuthEventResult.firebase_lookup_unavailable]
 
     # [utest->req~users-create-user-step-04~1]
     def test_an_anonymous_creation_stores_no_provider_uid(self):
@@ -367,8 +392,15 @@ class TestCompletionTransaction:
             await flow.complete("google", variant=IdentityProvider.google)
         assert raised.value.result is AuthEventResult.provider_account_already_linked
         assert raised.value.error_code == ClientErrorClass.operation_not_allowed
+        # The user, identity and attribution rows the mutation had already written are rolled
+        # back: no user, identity, grant, profile mutation or attribution token survives.
         assert accounts.users == {}
         assert accounts.identities.find(TEST_ISSUER, flow.context.subject) is None
+        assert accounts.attribution.token_for(uuid7(), StoreProvider.apple) is None
+        assert flow.h.factory.log.count("rollback_to_savepoint") == 1
+        # The consumption and the rejected audit row survive that rollback.
+        assert flow.row().state is ChallengeState.consumed
+        assert flow.audited() == [AuthEventResult.provider_account_already_linked]
 
     # [utest->req~users-create-user-step-09~1]
     async def test_one_random_attribution_token_per_store_is_minted_once(self):
@@ -480,7 +512,10 @@ class TestRaceArbitration:
         assert raised.value.result is AuthEventResult.identity_already_linked
         assert raised.value.error_code == ClientErrorClass.identity_already_linked
         assert raised.value.status_code == 409
+        # Every business mutation the loser had already written rolls back.
         assert accounts.users == {}
+        assert accounts.identities.find(TEST_ISSUER, flow.context.subject) is None
+        assert flow.h.factory.log.count("rollback_to_savepoint") == 1
 
     # [utest->req~users-create-user-race-arbitration~1]
     async def test_the_losers_consumption_and_rejected_audit_row_survive(self):
@@ -631,13 +666,16 @@ class TestFailureRules:
         assert failure is LookupFailure.user_not_found
         lookup = FakeLookup(failures=[_lookup_error(LookupFailure.user_not_found)] * 3)
         flow = Flow(lookup=lookup)
-        with pytest.raises(ProviderLookupFailedError) as raised:
+        with pytest.raises(CreateUserRejection) as raised:
             await flow.complete("anonymous")
         assert raised.value.result is AuthEventResult.firebase_user_unresolved
-        assert raised.value.client_class == ClientErrorClass.auth_required
+        assert raised.value.error_code == ClientErrorClass.auth_required
         # It consumes no retry budget: the single attempt is not retried.
         assert lookup.calls == 1
         assert flow.accounts.users == {}
+        # It is audited as the distinct result, and the rejection consumes the challenge.
+        assert flow.audited() == [AuthEventResult.firebase_user_unresolved]
+        assert flow.row().state is ChallengeState.consumed
 
     # [utest->req~users-create-user-lookup-unavailable~1]
     @pytest.mark.parametrize("failure", [LookupFailure.transient, LookupFailure.infrastructure,
@@ -646,13 +684,15 @@ class TestFailureRules:
     async def test_an_indeterminate_lookup_surfaces_after_the_retry_budget(self, failure):
         lookup = FakeLookup(failures=[_lookup_error(failure)] * 3)
         flow = Flow(lookup=lookup)
-        with pytest.raises(ProviderLookupFailedError) as raised:
+        with pytest.raises(CreateUserRejection) as raised:
             await flow.complete("anonymous")
         assert raised.value.result is AuthEventResult.firebase_lookup_unavailable
-        assert raised.value.client_class == \
+        assert raised.value.error_code == \
             ClientErrorClass.verification_temporarily_unavailable
         assert lookup.calls == 3
         assert flow.accounts.users == {}
+        assert flow.audited() == [AuthEventResult.firebase_lookup_unavailable]
+        assert flow.row().state is ChallengeState.consumed
 
     # [utest->req~users-create-user-lookup-unavailable~1]
     async def test_an_issuer_mismatch_is_rejected_before_the_lookup(self):

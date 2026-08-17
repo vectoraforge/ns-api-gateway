@@ -292,12 +292,17 @@ class UpgradeRejection(ChallengeRejection):
     def __init__(self, result: AuthEventResult, *,
                  cause: ProviderNotLinkedCause | None = None,
                  divergence: TransitionDivergence | None = None,
-                 detail: str | None = None):
+                 detail: str | None = None,
+                 audit_details: Mapping[str, Any] | None = None):
         reason = detail or (cause.value if cause else None) or (
             divergence.value if divergence else None)
         super().__init__(result, detail=reason)
         self.cause = cause
         self.divergence = divergence
+        # The movement context this rejection resolved, folded into its single audit row by the
+        # shared writer. It stays `None` only where the attempt resolved nothing at all.
+        # [impl->req~users-upgrade-audit-row-requirements~1]
+        self.audit_details = dict(audit_details) if audit_details is not None else None
         # [impl->req~users-upgrade-error-class-mapping~1]
         self.error_code = upgrade_client_class(result)
         audited_upgrade_result(result, self.error_code)
@@ -880,14 +885,39 @@ class UpgradeEndpoint:
         # retry therefore needs a freshly prepared challenge.
         # [impl->req~users-upgrade-rejection-consumes-challenge~1]
         assert_pre_consumption_checks_first(challenge)
-        identity_id = entry_linked_identity(identity)
-        entry_no_restore_proof(body)
-        declared = self.declared_provider(challenge, body)
-        lookup = await self.mandatory_lookup(identity)
+        try:
+            identity_id = entry_linked_identity(identity)
+            entry_no_restore_proof(body)
+            declared = self.declared_provider(challenge, body)
+            lookup = await self.mandatory_lookup(identity)
+        except UpgradeRejection as rejection:
+            # This endpoint runs on a linked identity, so the barrier context already carries
+            # the user and the identity row the movement moves: a rejection here records them
+            # rather than the all-`NULL` pre-resolution context.
+            # [impl->req~users-upgrade-audit-row-requirements~1]
+            raise self.resolved_rejection(rejection, challenge,
+                                          user_id=identity.user_id,
+                                          external_identity_id=identity.external_identity_id,
+                                          provider=identity.provider) from None
         # The provider fields this completion may write come from this read point alone.
         assert_may_write_provider_fields(ProviderDataReadPoint.upgrade_anonymous_completion)
         return ConfirmedUpgrade(declared=declared, lookup=lookup, identity_id=identity_id,
                                 lookups=self.lookups)
+
+    def resolved_rejection(self, rejection: UpgradeRejection, challenge: ChallengeRow, *,
+                           user_id: UUID | None,
+                           external_identity_id: UUID | None,
+                           provider: IdentityProvider | None) -> UpgradeRejection:
+        """Give a rejection the movement context the attempt had already resolved when it was
+        taken: the same identity row as source and destination, the resolved user, the stored
+        provider, and the non-secret challenge row id. Fields the attempt could not resolve stay
+        `NULL`, and the shared writer folds the result into the attempt's single audit row."""
+        # [impl->req~users-upgrade-audit-row-requirements~1]
+        rejection.audit_details = upgrade_attempt_audit(
+            result=rejection.result, occurred_at=self._clock(),
+            user_id=user_id, external_identity_id=external_identity_id,
+            challenge_row_id=challenge.id, current_identity_provider=provider)
+        return rejection
 
     def declared_provider(self, challenge: ChallengeRow,
                           body: Mapping[str, Any] | None) -> IdentityProvider:
@@ -938,15 +968,46 @@ class UpgradeEndpoint:
         # [impl->req~users-upgrade-step-04~1]
         assert_upgrade_transaction(session)
         issuer, subject = context_pair(identity)
-        rows = resolved_and_locked(await self._identities.lock_identity(session, issuer, subject),
-                                   issuer=issuer, subject=subject, session=session)
-        return UpgradeLiveState(rows=assert_rows_active(rows))
+        try:
+            rows = resolved_and_locked(
+                await self._identities.lock_identity(session, issuer, subject),
+                issuer=issuer, subject=subject, session=session)
+        except UpgradeRejection as rejection:
+            # Nothing was resolved: the barrier context is all this rejection knows.
+            # [impl->req~users-upgrade-audit-row-requirements~1]
+            raise self.resolved_rejection(rejection, challenge, user_id=identity.user_id,
+                                          external_identity_id=identity.external_identity_id,
+                                          provider=identity.provider) from None
+        try:
+            return UpgradeLiveState(rows=assert_rows_active(rows))
+        except UpgradeRejection as rejection:
+            # The step-06 inactive-identity and inactive-user rejections are taken on rows this
+            # transaction has already resolved and locked, so both ends are known.
+            # [impl->req~users-upgrade-audit-row-requirements~1]
+            raise self.resolved_rejection(rejection, challenge, user_id=rows.user.id,
+                                          external_identity_id=rows.identity.id,
+                                          provider=rows.identity.provider) from None
 
     async def mutate(self, session: Any, identity: VerifiedIdentityContext,
                      challenge: ChallengeRow, proof: ConfirmedUpgrade,
                      live: UpgradeLiveState) -> UpgradedAccount:
         """Mutation rules 7 to 14, all inside that one transaction."""
         assert_pre_consumption_checks_first(challenge)
+        rows = live.rows
+        try:
+            return await self._mutate(session, identity, challenge, proof, live)
+        except UpgradeRejection as rejection:
+            # Every rejection from here on is taken with the identity row and its user locked:
+            # the conflict, the transition divergence and the live-classification rejections all
+            # record the resolved movement context rather than an all-`NULL` one.
+            # [impl->req~users-upgrade-audit-row-requirements~1]
+            raise self.resolved_rejection(rejection, challenge, user_id=rows.user.id,
+                                          external_identity_id=rows.identity.id,
+                                          provider=rows.identity.provider) from None
+
+    async def _mutate(self, session: Any, identity: VerifiedIdentityContext,
+                      challenge: ChallengeRow, proof: ConfirmedUpgrade,
+                      live: UpgradeLiveState) -> UpgradedAccount:
         rows = live.rows
         before = await self._identities.preserved_state(session, rows.user.id)
 

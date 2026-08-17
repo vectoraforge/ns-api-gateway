@@ -307,6 +307,11 @@ class TestFirebaseSync:
         mock_firebase.set_plan_claim.assert_called_once_with(
             "firebase-uid-456", SubscriptionPlan.gold
         )
+        # A tier move changes the grant's tier and nothing else: `monthly_used` still means
+        # the amount already consumed for its period, so no counter is rewritten mid-period.
+        # [utest->req~schema-user-monthly-usage-monthly-used-field~1]
+        written = " ".join(str(call) for call in mock_db_session.exec.call_args_list)
+        assert "user_monthly_usage" not in written
 
     @pytest.mark.asyncio
     async def test_uses_to_thread(self):

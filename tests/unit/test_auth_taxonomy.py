@@ -151,7 +151,7 @@ class TestTheClassesGovernEveryRoute:
                                   AuthEventResult.verification_temporarily_unavailable)
         # An unmapped internal result fails closed instead of leaking.
         with pytest.raises(UnsurfacedResultError):
-            surface(AuthEventResult.native_claim_write_failed)
+            surface(AuthEventResult.restore_store_state_unverified)
         # The response body carries the class and nothing else.
         assert client_response("challenge_required").body == {"code": "challenge_required"}
 

@@ -246,13 +246,29 @@ async def test_grant_creation_writes_the_usage_row_in_the_same_transaction():
     assert other.statements == []
 
 
+# The one creation point also serves a grant that supersedes another: the superseded grant's
+# period and counter cross over unchanged — no reset, no clamping, no prorating.
+# [utest->req~schema-user-monthly-usage-row-initializes-usage-only~1]
+@pytest.mark.asyncio
+async def test_a_superseding_grant_carries_the_counter_across_unchanged():
+    session = FakeSession()
+    row = await UsageDB(db(session)).create_for_grant(uuid7(), transaction=session,
+                                                      carried=("2026-03", 7))
+    assert (row.monthly_period, row.monthly_used) == ("2026-03", 7)
+    fresh = new_usage_row(uuid7(), now=datetime(2026, 8, 16, tzinfo=UTC),
+                          grant_transaction=None, usage_transaction=None)
+    assert (fresh.monthly_period, fresh.monthly_used) == ("2026-08", 0)
+
+
 # --- The row is not entitlement, and does not travel -------------------------------------------
 
 # [utest->req~schema-user-monthly-usage-grants-no-access~1]
-def test_a_usage_row_is_not_access():
-    assert_grants_no_access(has_usage_row=True, has_active_grant=True)
-    with pytest.raises(UsageRowError):
-        assert_grants_no_access(has_usage_row=True, has_active_grant=False)
+def test_a_usage_row_allocates_no_grant_and_no_introductory_entitlement():
+    # Creating the row allocates nothing else — no grant row, no introductory entitlement.
+    assert_grants_no_access()
+    for allocated in (["core.access_grants"], ["introductory_entitlement"]):
+        with pytest.raises(UsageRowError):
+            assert_grants_no_access(allocated)
 
 
 # [utest->req~schema-user-monthly-usage-grants-no-access~1]

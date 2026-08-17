@@ -19,7 +19,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from nativespeaker.api.auth.audit import SubjectHasher
+from nativespeaker.api.auth.audit import AuthEventResult, SubjectHasher
 from nativespeaker.api.auth.derived_identifiers import actor_subject_preimage
 from nativespeaker.api.auth.operations import (
     CHALLENGE_BEARING_OPERATIONS,
@@ -284,6 +284,26 @@ class ConsumeOutcome(StrEnum):
     consumed = "consumed"
     already_consumed_by_this_attempt = "already_consumed_by_this_attempt"
     lost = "lost"
+
+
+# The audited internal result each non-claiming outcome of that one conditional update takes.
+# One mapping, read by the shared completion procedure and by anything that guards a vendor
+# call behind the claim, so a row the update did not find is never audited as expired.
+# [impl->req~shared-single-use-already-used-branch~1]
+CLAIM_FAILURE_RESULTS: dict[ClaimOutcome, AuthEventResult] = {
+    ClaimOutcome.expired: AuthEventResult.challenge_expired,
+    ClaimOutcome.not_found: AuthEventResult.challenge_not_found,
+    ClaimOutcome.already_used: AuthEventResult.challenge_consumed,
+}
+
+
+def claim_failure_result(outcome: ClaimOutcome) -> AuthEventResult:
+    """The result an attempt that did not claim the row is audited as."""
+    # [impl->req~shared-single-use-already-used-branch~1]
+    result = CLAIM_FAILURE_RESULTS.get(outcome)
+    if result is None:
+        raise ChallengeError(f"{outcome} claimed the row: it is no failure")
+    return result
 
 
 class ChallengeStore(Protocol):

@@ -50,11 +50,13 @@ from nativespeaker.api.auth.challenges import (
     authoritative_binding,
     challenge_expires_at,
     challenge_ids_equal,
+    claim_failure_result,
     new_challenge_id,
     preauth_binding,
     preauth_subject_matches,
     variants_equal,
 )
+from nativespeaker.api.auth.derived_identifiers import actor_subject_preimage
 from nativespeaker.api.auth.flow import OperationMismatchError, assert_challenge_bearing
 from nativespeaker.api.auth.modes import CHALLENGE_QUERY_PARAM, CHALLENGE_QUERY_VALUE
 from nativespeaker.api.auth.movement import movement_audit_details, unresolved_movement_context
@@ -450,10 +452,7 @@ class SharedChallengeService:
             # [impl->req~shared-challenge-required-remediation~1]
             # [impl->req~shared-completion-loser-no-work~1]
             # [impl->req~shared-claimed-challenge-is-dead~1]
-            result = (AuthEventResult.challenge_expired if outcome is ClaimOutcome.expired
-                      else AuthEventResult.challenge_not_found
-                      if outcome is ClaimOutcome.not_found
-                      else AuthEventResult.challenge_consumed)
+            result = claim_failure_result(outcome)
             raise await self._reject(attempt, AttemptPhase.business, result, context, row=row)
 
         # The claim branch: this attempt claimed the challenge exactly once and now proceeds
@@ -540,20 +539,27 @@ class SharedChallengeService:
         result: Any = None
         async with self._open_session() as session:
             try:
-                # 11. re-verify the shared historical and blocked state to close the race the
-                # barrier opened, and reject a pre-auth-bound `create_user` subject that has
-                # become actively linked, before any endpoint-required state is re-resolved.
-                # [impl->req~shared-completion-step-11~1]
-                await self._reconfirm_shared_state(context, row)
-                # 11. re-resolve all endpoint-required state and confirm the live state still
-                # satisfies the endpoint's rules.
-                # [impl->req~shared-completion-step-11~1]
-                live = await endpoint.confirm_live_state(session, context, row)
-                # 13. mutate only if the live state still satisfies those rules.
-                # [impl->req~shared-completion-step-13~1]
-                result = await endpoint.mutate(session, context, row, proof, live)
+                # The endpoint's business mutation runs inside its own savepoint, so a rejection
+                # rolls back every write it had already made while the consumption and the
+                # rejected audit row that follow still commit with the outer transaction.
+                # [impl->req~shared-claimed-challenge-is-dead~1]
+                # [impl->req~shared-completion-step-12~1]
+                async with self._business_boundary(session):
+                    # 11. re-verify the shared historical and blocked state to close the race the
+                    # barrier opened, and reject a pre-auth-bound `create_user` subject that has
+                    # become actively linked, before any endpoint-required state is re-resolved.
+                    # [impl->req~shared-completion-step-11~1]
+                    await self._reconfirm_shared_state(context, row)
+                    # 11. re-resolve all endpoint-required state and confirm the live state still
+                    # satisfies the endpoint's rules.
+                    # [impl->req~shared-completion-step-11~1]
+                    live = await endpoint.confirm_live_state(session, context, row)
+                    # 13. mutate only if the live state still satisfies those rules.
+                    # [impl->req~shared-completion-step-13~1]
+                    result = await endpoint.mutate(session, context, row, proof, live)
             except ChallengeRejection as exc:
                 rejection = exc
+                result = None
 
             # 12. consume the challenge exactly once for the claim-holding attempt, atomically
             # with the audit record and any successful mutation, on success and rejection alike.
@@ -567,8 +573,12 @@ class SharedChallengeService:
                 rejection = ChallengeRejection(AuthEventResult.challenge_consumed)
 
             if rejection is not None:
+                # A rejected movement attempt carries whatever movement context it had
+                # already resolved when it was taken.
+                # [impl->req~shared-upgrade-movement-context-required~1]
                 event = self._event(AttemptPhase.business, rejection.result, attempt, context,
-                                    row=row, detail=rejection.detail)
+                                    row=row, detail=rejection.detail,
+                                    movement=getattr(rejection, "audit_details", None))
                 await self._audit.record_rejection(attempt, event, rejection, session=session)
             else:
                 # A successful account movement resolved both ends of its own context, so the
@@ -621,10 +631,27 @@ class SharedChallengeService:
         # [impl->req~shared-completion-step-12~1]
         async with self._open_session() as session:
             await self._store.consume(session, row.challenge_id, claim_attempt_id)
+            # [impl->req~shared-upgrade-movement-context-required~1]
             event = self._event(AttemptPhase.business, rejection.result, attempt, context,
-                                row=row, detail=rejection.detail)
+                                row=row, detail=rejection.detail,
+                                movement=getattr(rejection, "audit_details", None))
             await self._audit.record_rejection(attempt, event, rejection, session=session)
             await session.commit()
+
+    @asynccontextmanager
+    async def _business_boundary(self, session: Any) -> AsyncIterator[Any]:
+        """The rollback boundary around the endpoint's business mutation: a savepoint inside the
+        one consuming transaction. A rejection raised after the mutation has written rows rolls
+        those writes back, and the challenge consumption and the rejected audit row — written
+        after this boundary closes — survive it, because single-use applies to rejected attempts.
+        A session with no savepoint support fails closed rather than committing a partial
+        mutation alongside its own rejection."""
+        # [impl->req~shared-claimed-challenge-is-dead~1]
+        begin_nested = getattr(session, "begin_nested", None)
+        if begin_nested is None:
+            raise ChallengeError("the consuming transaction needs a savepoint to roll back into")
+        async with begin_nested():
+            yield session
 
     @asynccontextmanager
     async def _open_session(self) -> AsyncIterator[Any]:
@@ -670,9 +697,15 @@ class SharedChallengeService:
             raise await self._reject(attempt, AttemptPhase.barrier, result, context)
 
     def _actor(self, context: VerifiedIdentityContext | None) -> AuthActor:
+        """The same actor derivation the barrier uses: the keyed hasher over the
+        `actor_subject_hash` family's domain-separated, canonicalized preimage, so both event
+        producers write the one family's digest and the pre-auth binding stays comparable."""
+        # [impl->req~proof-family-actor-subject-hash~1]
+        # [impl->req~shared-auth-events-actor-subject-hash~1]
         if context is None:
             return NO_ACTOR
-        subject_hash, key_version = self._subject_hasher(context.subject)
+        subject_hash, key_version = self._subject_hasher(
+            actor_subject_preimage(context.issuer, context.subject))
         return AuthActor(issuer=context.issuer,
                          subject_hash=subject_hash,
                          subject_hash_key_version=key_version,
@@ -690,19 +723,18 @@ class SharedChallengeService:
         details: dict[str, Any] = {"route": attempt.route}
         if detail:
             details["reason"] = detail
-        if attempt.operation in MOVEMENT_OPERATIONS and result is not AuthEventResult.succeeded:
+        if attempt.operation in MOVEMENT_OPERATIONS:
             # An account-movement attempt owes the movement context on its single row whatever
-            # its outcome. The shared procedures resolve none of it, so a rejection here carries
-            # the all-`NULL` context with the route's unresolved classification; the movement
-            # endpoint supplies the resolved context on the paths that have one.
+            # its outcome. The movement endpoint supplies the context it resolved — on success
+            # from the completed movement, on a rejection from the rows the attempt had already
+            # resolved and locked. Only an attempt that resolved nothing falls back to the
+            # all-`NULL` context with the route's unresolved classification.
             # [impl->req~shared-upgrade-movement-context-required~1]
             # [impl->req~shared-restore-movement-classification~1]
-            unresolved = unresolved_movement_context(
-                attempt.operation, result, self._clock(),
-                challenge_row_id=row.id if row is not None else None)
-            details = {**movement_audit_details(unresolved), **details}
-        elif attempt.operation in MOVEMENT_OPERATIONS and movement is not None:
-            # [impl->req~shared-upgrade-movement-context-required~1]
+            if movement is None:
+                movement = movement_audit_details(unresolved_movement_context(
+                    attempt.operation, result, self._clock(),
+                    challenge_row_id=row.id if row is not None else None))
             details = {**movement, **details}
         return terminal_event(phase, result, operation=attempt.operation,
                               actor=self._actor(context),

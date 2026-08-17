@@ -1,5 +1,6 @@
 """The three free-grant proof adapters, and the native claim sequence they run inside."""
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid7
 
@@ -7,6 +8,16 @@ import pytest
 from pydantic import SecretStr
 
 from nativespeaker.api.auth.audit import AuthEventResult
+from nativespeaker.api.auth.challenges import (
+    CHALLENGE_PURGE_JOBS,
+    ChallengeError,
+    ChallengeRow,
+    ChallengeState,
+    ClaimOutcome,
+    IdentityBinding,
+    advance_state,
+    challenge_retention_deadline,
+)
 from nativespeaker.api.auth.external_identities import NativeClaimPlatform
 from nativespeaker.api.auth.invariants import DevicePlatform, InvariantError, ProofUse
 from nativespeaker.api.auth.operations import AuthOperation
@@ -16,8 +27,8 @@ from nativespeaker.api.auth.proof_adapters import (
     TURNSTILE_TEST_SITEKEYS,
     AndroidClaimMaterial,
     AppleCredentials,
-    ChallengeClaimOutcome,
     ClaimBranch,
+    ClaimRejection,
     ClaimState,
     DeviceCheckAdapter,
     DeviceCheckBit,
@@ -43,6 +54,7 @@ from nativespeaker.api.auth.proof_adapters import (
     TurnstileEnvironment,
     TurnstileMisconfigured,
     TurnstileUnavailable,
+    VendorBudget,
     anonymous_device_grant_row,
     anonymous_grant_gate_layer,
     assert_action_cdata_not_matched,
@@ -58,7 +70,6 @@ from nativespeaker.api.auth.proof_adapters import (
     claim_challenge_before_vendor,
     claim_challenge_ttl,
     claim_state_for,
-    consume_claimed_challenge,
     consume_siteverify_budget,
     devicecheck_bit_for,
     devicecheck_role,
@@ -76,6 +87,7 @@ from nativespeaker.api.auth.proof_adapters import (
     web_gate_requirements,
 )
 from nativespeaker.api.auth.proof_material import ProofMaterialError
+from nativespeaker.api.auth.taxonomy import surface
 from nativespeaker.api.ratelimit.config import (
     TURNSTILE_ENTRY,
     RateLimitEntry,
@@ -88,14 +100,44 @@ from nativespeaker.api.ratelimit.keys import (
     GatewayResolvedAddress,
 )
 from nativespeaker.api.ratelimit.limiter import RateLimiter
-from nativespeaker.api.ratelimit.ordering import DeviceBitCall, DeviceBitWriteError
+from nativespeaker.api.ratelimit.ordering import (
+    DEVICE_BIT_BUDGET,
+    AdmissionLedger,
+    DeviceBitCall,
+    DeviceBitWriteError,
+    anonymous_grant_admission,
+)
+from nativespeaker.api.ratelimit.providers import (
+    EndpointLimitsBypassed,
+    ProviderCall,
+    ProviderDampingConfig,
+    ProviderDampingEntry,
+)
 
 APPLE = AppleCredentials(team_id="TEAM123456", key_id="KEY1", private_key=SecretStr("pem"))
 GOOGLE = GoogleCredentials(package_name="com.nativespeaker.app",
                            service_account_email="svc@example.iam.gserviceaccount.com",
                            private_key=SecretStr("pem"))
+NOW = datetime(2026, 8, 16, 12, 0, tzinfo=UTC)
 IOS_MATERIAL = IosClaimMaterial(query_token="q-token", update_token="u-token")
 ANDROID_MATERIAL = AndroidClaimMaterial(integrity_token="integrity-token")
+
+# The enumerated release the checked-in policy classes, as the decoded verdict reports it. The
+# adapter derives the key from this block alone — never from the client-supplied material.
+ENUMERATED_RELEASE = ReleaseKey(package_name="com.nativespeaker.app",
+                                signing_certificate_digest="sha256:abcdef",
+                                release="1.4.0")
+APP_INTEGRITY = {"packageName": ENUMERATED_RELEASE.package_name,
+                 "certificateSha256Digest": [ENUMERATED_RELEASE.signing_certificate_digest],
+                 "release": ENUMERATED_RELEASE.release}
+RECALL_POLICY = ReleasePolicyRegistry({ENUMERATED_RELEASE:
+                                       ReleaseRecallPolicy.device_recall_required})
+
+
+def android_adapter(transport: Any,
+                    release_policy: ReleasePolicyRegistry | None = None) -> PlayIntegrityAdapter:
+    return PlayIntegrityAdapter(GOOGLE, transport,
+                                release_policy=release_policy or RECALL_POLICY)
 
 
 class FakeDeviceCheck:
@@ -134,7 +176,8 @@ class FakePlayIntegrity:
 
     def __init__(self, *, verdict: Any = None, decode_error: Exception | None = None,
                  write_error: Exception | None = None, acknowledgment: Any = None):
-        self.verdict = ({"deviceRecall": {"anonymous_device_grant_recall": False,
+        self.verdict = ({"appIntegrity": APP_INTEGRITY,
+                         "deviceRecall": {"anonymous_device_grant_recall": False,
                                           "registered_account_grant_recall": False}}
                         if verdict is None else verdict)
         self.decode_error = decode_error
@@ -193,7 +236,8 @@ def limiter(limit: str = "10/minute") -> RateLimiter:
 
 def run_ios_claim(adapter: DeviceCheckAdapter, *, eligible: bool = True,
                   operation: AuthOperation = AuthOperation.claim_anonymous_grant,
-                  material: IosClaimMaterial = IOS_MATERIAL) -> tuple[Any, list[str]]:
+                  material: IosClaimMaterial = IOS_MATERIAL,
+                  ledger: NativeClaimLedger | None = None) -> tuple[Any, list[str]]:
     inserted: list[str] = []
 
     def insert() -> Any:
@@ -202,7 +246,8 @@ def run_ios_claim(adapter: DeviceCheckAdapter, *, eligible: bool = True,
         return grant_id
 
     outcome = native_claim(adapter, operation, material,
-                           database_eligibility=lambda: eligible, insert_grant=insert)
+                           database_eligibility=lambda: eligible, insert_grant=insert,
+                           ledger=ledger)
     return outcome, inserted
 
 
@@ -263,7 +308,7 @@ def test_android_uses_a_distinct_recall_state_per_operation():
     registered = recall_state_for(AuthOperation.claim_registered_grant)
     assert anonymous is not registered
     transport = FakePlayIntegrity()
-    adapter = PlayIntegrityAdapter(GOOGLE, transport)
+    adapter = android_adapter(transport)
     native_claim(adapter, AuthOperation.claim_anonymous_grant, ANDROID_MATERIAL,
                  database_eligibility=lambda: True, insert_grant=uuid7)
     assert transport.writes[0]["state"] is anonymous
@@ -327,7 +372,7 @@ def test_withheld_update_material_fails_before_any_vendor_call_and_before_any_gr
 # [utest->req~proof-native-claim-verify-vendor-material~1]
 def test_android_carries_one_token_for_both_recall_calls():
     transport = FakePlayIntegrity()
-    adapter = PlayIntegrityAdapter(GOOGLE, transport)
+    adapter = android_adapter(transport)
     native_claim(adapter, AuthOperation.claim_anonymous_grant, ANDROID_MATERIAL,
                  database_eligibility=lambda: True, insert_grant=uuid7)
     assert transport.decodes == ["integrity-token"]
@@ -356,8 +401,12 @@ def test_a_read_failure_fails_closed_and_an_already_claimed_device_is_exhausted(
 def test_database_eligibility_runs_after_the_read_and_before_the_write():
     transport = FakeDeviceCheck()
     adapter = DeviceCheckAdapter(APPLE, transport)
-    with pytest.raises(ProofAdapterError):
+    # An ineligible caller is a denial with a client-visible class, never an internal error.
+    with pytest.raises(ClaimRejection) as denied:
         run_ios_claim(adapter, eligible=False)
+    assert denied.value.result is AuthEventResult.policy_rejected
+    assert denied.value.error_code == surface(AuthEventResult.policy_rejected)[0]
+    assert denied.value.status_code != 500
     assert transport.queries and transport.updates == []
 
 
@@ -560,6 +609,19 @@ def test_apple_failures_audit_as_unavailable_or_write_failed_and_create_no_grant
     assert failed.value.error_code == "verification_temporarily_unavailable"
 
 
+# Both results are readable out of the one shared registry, so a renderer that goes through
+# `taxonomy.surface` — the shared barrier and the shared procedures both do — resolves them.
+# [utest->req~proof-devicecheck-vendor-failure-audit-codes~1]
+def test_the_two_claim_results_surface_through_the_shared_registry():
+    for result in (AuthEventResult.native_claim_unavailable,
+                   AuthEventResult.native_claim_write_failed):
+        client_class, status = surface(result)
+        assert client_class == "verification_temporarily_unavailable"
+        assert status == ClaimRejection(result).status_code
+    # The already-claimed result is the grants domain's registration, not a second copy here.
+    assert surface(AuthEventResult.native_claim_already_claimed)[0] == "device_grant_exhausted"
+
+
 # --- The Android proof adapter --------------------------------------------------------------------
 
 
@@ -575,7 +637,7 @@ def test_play_integrity_is_anti_abuse_state_and_never_a_challenge_bound_proof():
 # [utest->req~proof-android-verdict-mandatory~1]
 def test_a_play_integrity_verdict_is_mandatory_on_every_android_claim():
     transport = FakePlayIntegrity()
-    adapter = PlayIntegrityAdapter(GOOGLE, transport)
+    adapter = android_adapter(transport)
     for operation in (AuthOperation.claim_anonymous_grant, AuthOperation.claim_registered_grant):
         with pytest.raises(ProofRejected):
             adapter.verify_material(operation, AndroidClaimMaterial(integrity_token=None),
@@ -603,6 +665,36 @@ def test_an_unenumerated_release_is_rejected_and_omission_never_picks_no_recall(
                                          client_omitted_material=True)
 
 
+# The deciding path consults the checked-in policy: a full registered claim against an
+# unenumerated release is rejected outright, before any vendor write.
+# [utest->req~proof-android-release-policy-enumeration~1]
+def test_a_registered_claim_from_an_unenumerated_release_is_rejected_before_any_write():
+    transport = FakePlayIntegrity()
+    empty_policy = ReleasePolicyRegistry()
+    with pytest.raises(ProofRejected):
+        native_claim(android_adapter(transport, empty_policy),
+                     AuthOperation.claim_registered_grant, ANDROID_MATERIAL,
+                     database_eligibility=lambda: True, insert_grant=uuid7)
+    assert transport.writes == []
+    # The key comes from the decoded verdict, never from the client-supplied material.
+    lying = AndroidClaimMaterial(integrity_token="integrity-token",
+                                 package_name="com.attacker.app",
+                                 signing_certificate_digest="sha256:whatever",
+                                 release="9.9.9")
+    adapter = android_adapter(transport)
+    assert adapter.release_key(transport.verdict) == ENUMERATED_RELEASE
+    native_claim(adapter, AuthOperation.claim_registered_grant, lying,
+                 database_eligibility=lambda: True, insert_grant=uuid7)
+    # A release the policy classes `no_device_recall` needs no recall state in the verdict.
+    no_recall = ReleasePolicyRegistry({ENUMERATED_RELEASE: ReleaseRecallPolicy.no_device_recall})
+    bare = FakePlayIntegrity(verdict={"appIntegrity": APP_INTEGRITY})
+    native_claim(android_adapter(bare, no_recall), AuthOperation.claim_registered_grant,
+                 ANDROID_MATERIAL, database_eligibility=lambda: True, insert_grant=uuid7)
+    # The anonymous claim always requires it, whatever the release policy says.
+    assert android_adapter(bare, no_recall).recall_required(
+        AuthOperation.claim_anonymous_grant, bare.verdict) is True
+
+
 # [utest->req~proof-android-single-token-untrusted~1]
 def test_no_client_supplied_android_assertion_is_a_fact():
     assert_untrusted_client_assertions(["challenge_id"])
@@ -614,18 +706,19 @@ def test_no_client_supplied_android_assertion_is_a_fact():
 
 # [utest->req~proof-android-recall-from-decoded-verdict~1]
 def test_a_verdict_without_device_recall_is_proof_rejected():
-    transport = FakePlayIntegrity(verdict={"appIntegrity": {"verdict": "PLAY_RECOGNIZED"}})
-    adapter = PlayIntegrityAdapter(GOOGLE, transport)
+    transport = FakePlayIntegrity(verdict={"appIntegrity": APP_INTEGRITY})
+    adapter = android_adapter(transport)
     with pytest.raises(ProofRejected) as rejected:
         native_claim(adapter, AuthOperation.claim_anonymous_grant, ANDROID_MATERIAL,
                      database_eligibility=lambda: True, insert_grant=uuid7)
     assert rejected.value.error_code == "proof_rejected"
     assert transport.writes == []
     claimed = FakePlayIntegrity(
-        verdict={"deviceRecall": {"anonymous_device_grant_recall": True,
+        verdict={"appIntegrity": APP_INTEGRITY,
+                 "deviceRecall": {"anonymous_device_grant_recall": True,
                                   "registered_account_grant_recall": False}})
     with pytest.raises(DeviceGrantExhausted):
-        native_claim(PlayIntegrityAdapter(GOOGLE, claimed), AuthOperation.claim_anonymous_grant,
+        native_claim(android_adapter(claimed), AuthOperation.claim_anonymous_grant,
                      ANDROID_MATERIAL, database_eligibility=lambda: True, insert_grant=uuid7)
 
 
@@ -634,12 +727,12 @@ def test_google_must_confirm_the_recall_write_before_any_grant():
     for acknowledgment in ({"confirmed": False}, {}, "ok"):
         transport = FakePlayIntegrity(acknowledgment=acknowledgment)
         with pytest.raises(NativeClaimWriteFailed):
-            native_claim(PlayIntegrityAdapter(GOOGLE, transport),
+            native_claim(android_adapter(transport),
                          AuthOperation.claim_anonymous_grant, ANDROID_MATERIAL,
                          database_eligibility=lambda: True, insert_grant=uuid7)
     timed_out = FakePlayIntegrity(write_error=TimeoutError("google"))
     with pytest.raises(NativeClaimWriteFailed):
-        native_claim(PlayIntegrityAdapter(GOOGLE, timed_out), AuthOperation.claim_anonymous_grant,
+        native_claim(android_adapter(timed_out), AuthOperation.claim_anonymous_grant,
                      ANDROID_MATERIAL, database_eligibility=lambda: True, insert_grant=uuid7)
 
 
@@ -790,7 +883,8 @@ def test_siteverify_runs_under_its_named_fail_closed_budget():
     with pytest.raises(TurnstileUnavailable):
         turnstile_siteverify(config, "token", transport, address=address, limiter=exhausted)
     assert transport.calls == []
-    with pytest.raises(ProofAdapterError):
+    # The second-layer rule is the shared charging path's, and it refuses a bypass.
+    with pytest.raises(EndpointLimitsBypassed):
         consume_siteverify_budget(limiter(), "global", endpoint_admission_passed=False)
 
 
@@ -811,39 +905,115 @@ def test_no_vendor_evidence_age_is_measured_and_only_the_challenge_ttl_bounds_an
         assert_completion_unbounded_by_clock(1.0, attempts=4)
 
 
+# The mechanics are the shared service's; this endpoint's own rule is that no vendor call may
+# precede the claim, and that the shared outcome keeps its own audited result.
 # [utest->req~proof-claim-challenge-mechanics~1]
 def test_the_challenge_is_validated_and_claimed_before_any_vendor_call():
     calls: list[str] = []
 
-    def claim() -> ChallengeClaimOutcome:
+    def claim() -> ClaimOutcome:
         calls.append("claim")
-        return ChallengeClaimOutcome.claimed
+        return ClaimOutcome.claimed
 
-    good = claim_challenge_before_vendor(exists=True, operation_matches=True,
-                                         caller_context_matches=True, claim=claim)
+    good = claim_challenge_before_vendor(claim)
     assert good.vendor_calls_allowed and calls == ["claim"]
-    missing = claim_challenge_before_vendor(exists=False, operation_matches=True,
-                                            caller_context_matches=True, claim=claim)
-    assert missing.result is AuthEventResult.challenge_not_found
-    assert not missing.vendor_calls_allowed and calls == ["claim"]
-    wrong_operation = claim_challenge_before_vendor(exists=True, operation_matches=False,
-                                                    caller_context_matches=True, claim=claim)
-    assert wrong_operation.result is AuthEventResult.challenge_operation_mismatch
-    lost = claim_challenge_before_vendor(
-        exists=True, operation_matches=True, caller_context_matches=True,
-        claim=lambda: ChallengeClaimOutcome.lost_the_claim)
-    assert not lost.vendor_calls_allowed
+    # Each non-claiming outcome keeps its own result: a row the conditional update did not find
+    # is `challenge_not_found`, not `challenge_expired`.
+    for outcome, result in ((ClaimOutcome.not_found, AuthEventResult.challenge_not_found),
+                            (ClaimOutcome.expired, AuthEventResult.challenge_expired),
+                            (ClaimOutcome.already_used, AuthEventResult.challenge_consumed)):
+        attempt = claim_challenge_before_vendor(lambda outcome=outcome: outcome)
+        assert attempt.result is result
+        assert not attempt.vendor_calls_allowed
+    # A duplicate that loses the claim spends no vendor call, and no vendor call precedes one.
     with pytest.raises(ProofAdapterError):
-        claim_challenge_before_vendor(exists=True, operation_matches=True,
-                                      caller_context_matches=True, claim=claim,
-                                      vendor_calls_made=1)
-    assert consume_claimed_challenge(in_final_transaction=True) == "consumed"
-    with pytest.raises(ProofAdapterError):
-        consume_claimed_challenge(in_final_transaction=False)
-    with pytest.raises(ProofAdapterError):
-        consume_claimed_challenge(in_final_transaction=True, deleted=True)
-    with pytest.raises(ProofAdapterError):
-        consume_claimed_challenge(in_final_transaction=True, returned_to_issued=True)
+        claim_challenge_before_vendor(claim, vendor_calls_made=1)
+    assert calls == ["claim"]
+
+
+# The lifecycle half of the requirement is the shared challenge module's, and this endpoint
+# neither adds a purge job nor a recovery scan of its own.
+# [utest->req~proof-claim-challenge-mechanics~1]
+def test_the_claimed_row_lifecycle_is_the_shared_ones():
+    assert CHALLENGE_PURGE_JOBS == frozenset()
+    row = ChallengeRow(challenge_id="x" * 22, operation=AuthOperation.claim_anonymous_grant,
+                       operation_variant=None,
+                       binding=IdentityBinding(bound_external_identity_id=uuid7()),
+                       expires_at=NOW, state=ChallengeState.claimed, id=uuid7(),
+                       claim_attempt_id=uuid7())
+    assert challenge_retention_deadline(row) is None
+    assert advance_state(ChallengeState.claimed, ChallengeState.consumed) is \
+        ChallengeState.consumed
+    with pytest.raises(ChallengeError):
+        advance_state(ChallengeState.claimed, ChallengeState.issued)
+
+
+def device_bit_limiter(limit: str = "10/minute") -> RateLimiter:
+    entries = {DEVICE_BIT_BUDGET[call]: RateLimitEntry(limit=limit, key="deployment")
+               for call in DeviceBitCall}
+    config = RateLimitsConfig(enabled=True, storage_uri="memory://",
+                              strategy=Strategy.moving_window,
+                              default=RateLimitEntry(limit="120/minute", key="ip"),
+                              entries=entries)
+    return RateLimiter(config)
+
+
+def device_bit_damping() -> ProviderDampingConfig:
+    entry = ProviderDampingEntry(attempt_timeout_seconds=2.0, total_budget_seconds=6.0,
+                                 max_attempts=1, retry_budget=1)
+    return ProviderDampingConfig(calls=dict.fromkeys(ProviderCall, entry))
+
+
+def claimed_admission() -> AdmissionLedger:
+    ledger = AdmissionLedger("POST", "/auth/claim-anonymous-grant")
+    ledger.verify_jwt()
+    ledger.admit_barrier()
+    anonymous_grant_admission(ledger, "complete")
+    ledger.claim_challenge(["claim_anonymous_grant_ip", "claim_anonymous_grant"])
+    return ledger
+
+
+# Every device-bit vendor call is charged immediately before it is dispatched, in the
+# read-then-write order the admission ledger enforces.
+# [utest->req~proof-native-claim-vendor-write-gate~1]
+def test_each_device_bit_vendor_call_charges_its_own_budget():
+    limits = device_bit_limiter()
+    admission = claimed_admission()
+    budget = VendorBudget(limiter=limits, damping=device_bit_damping(), key="deployment",
+                          admission=admission)
+    transport = FakeDeviceCheck()
+    run_ios_claim(DeviceCheckAdapter(APPLE, transport), ledger=NativeClaimLedger(budget))
+    assert admission.budgets_checked == ["adapter_devicecheck_read", "adapter_devicecheck_write"]
+    assert admission.device_bit_calls == [DeviceBitCall.devicecheck_read,
+                                          DeviceBitCall.devicecheck_write]
+    assert admission.confirmed_write() is not None
+    # Android charges the Device Recall pair on the same claim path.
+    android = FakePlayIntegrity()
+    android_admission = claimed_admission()
+    native_claim(android_adapter(android), AuthOperation.claim_anonymous_grant, ANDROID_MATERIAL,
+                 database_eligibility=lambda: True, insert_grant=uuid7,
+                 ledger=NativeClaimLedger(VendorBudget(limiter=device_bit_limiter(),
+                                                       damping=device_bit_damping(),
+                                                       key="deployment",
+                                                       admission=android_admission)))
+    assert android_admission.budgets_checked == [
+        "adapter_play_integrity_device_recall_read", "adapter_play_integrity_device_recall_write"]
+
+
+# An exhausted device-bit budget refuses the call it guards with that budget's own result, so a
+# vendor outage cannot fan out unbounded.
+# [utest->req~proof-native-claim-vendor-write-gate~1]
+def test_an_exhausted_device_bit_budget_refuses_the_call_it_guards():
+    limits = device_bit_limiter("1/minute")
+    limits.consume(DEVICE_BIT_BUDGET[DeviceBitCall.devicecheck_read], "deployment")
+    transport = FakeDeviceCheck()
+    budget = VendorBudget(limiter=limits, damping=device_bit_damping(), key="deployment")
+    with pytest.raises(ClaimRejection) as exhausted:
+        run_ios_claim(DeviceCheckAdapter(APPLE, transport), ledger=NativeClaimLedger(budget))
+    assert exhausted.value.result is AuthEventResult.devicecheck_read_budget_exhausted
+    assert exhausted.value.error_code == "verification_temporarily_unavailable"
+    # The dispatch never happened: the unit is taken before the outbound call, not after.
+    assert transport.queries == [] and transport.updates == []
 
 
 def test_a_grant_row_needs_the_shared_confirmed_write_guard():

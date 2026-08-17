@@ -6,6 +6,7 @@ import hashlib
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid7
 
 import pytest
@@ -107,10 +108,34 @@ class FakeClock:
 
 
 class FakeSession:
+    """The consuming transaction, with the savepoint the business mutation runs inside. A store
+    that writes through this session registers an undo with `on_rollback`, and a rollback of the
+    savepoint runs the undos registered since it opened — the same thing `ROLLBACK TO SAVEPOINT`
+    does to the rows the mutation had already written."""
+
     def __init__(self, log: list[str], commit_failures: list[BaseException] | None = None) -> None:
         self.log = log
         self.committed = False
         self.commit_failures = commit_failures if commit_failures is not None else []
+        self.undo: list[Any] = []
+
+    def on_rollback(self, undo) -> None:
+        self.undo.append(undo)
+
+    @asynccontextmanager
+    async def begin_nested(self):
+        mark = len(self.undo)
+        self.log.append("savepoint")
+        try:
+            yield self
+        except BaseException:
+            for undo in reversed(self.undo[mark:]):
+                undo()
+            del self.undo[mark:]
+            self.log.append("rollback_to_savepoint")
+            raise
+        else:
+            self.log.append("release_savepoint")
 
     async def commit(self) -> None:
         if self.commit_failures:
@@ -1395,7 +1420,7 @@ class TestCompletionSteps:
             assert surface(result)[0] == str(result)
         # An internal result with no mapped class never reaches the client.
         with pytest.raises(UnsurfacedResultError):
-            surface(AuthEventResult.native_claim_write_failed)
+            surface(AuthEventResult.restore_store_state_unverified)
 
         # An endpoint may add its own post-barrier case, but never redefine a shared one.
         try:

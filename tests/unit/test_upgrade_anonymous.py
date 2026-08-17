@@ -1067,3 +1067,23 @@ class TestFailures:
             assert flow.audited() == [expected]
             assert flow.details()["mutation"]["movement_classification"] == "upgrade"
             assert "challenge_id" not in str(flow.details())
+            # Both ends of the movement are the one locked identity row and its user, on the
+            # rejections as well as on the success: nothing known is recorded as NULL.
+            resolved = flow.details()["resolved"]
+            assert resolved["source_user_id"] == flow.user.id
+            assert resolved["destination_user_id"] == flow.user.id
+            assert resolved["source_external_identity_id"] == flow.identity.id
+            assert resolved["destination_external_identity_id"] == flow.identity.id
+            assert resolved["challenge_row_id"] == flow.row().id
+
+    # [utest->req~users-upgrade-audit-row-requirements~1]
+    async def test_a_step_06_rejection_records_the_rows_it_locked(self):
+        for flow in (Flow(state=IdentityState.historical),
+                     Flow(user=UpgradeUser(id=uuid7(), active=False))):
+            with pytest.raises(UpgradeRejection):
+                await flow.complete("google")
+            resolved = flow.details()["resolved"]
+            assert resolved["source_user_id"] == flow.user.id
+            assert resolved["source_external_identity_id"] == flow.identity.id
+            assert flow.details()["mutation"]["current_identity_provider"] == \
+                str(flow.identity.provider)

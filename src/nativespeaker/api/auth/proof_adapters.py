@@ -21,6 +21,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, SecretStr
 
 from nativespeaker.api.auth.audit import AuthEventResult
+from nativespeaker.api.auth.challenges import ClaimOutcome, claim_failure_result
 from nativespeaker.api.auth.entitlement import AccessGrantSource
 from nativespeaker.api.auth.external_identities import NativeClaimPlatform
 from nativespeaker.api.auth.invariants import DevicePlatform, ProofUse, assert_device_check_proof_use
@@ -28,7 +29,14 @@ from nativespeaker.api.auth.operations import AuthOperation
 from nativespeaker.api.auth.proof_endpoints import ClaimBranch, ProofArtifact
 from nativespeaker.api.auth.proof_material import assert_anti_abuse_row_prohibitions
 from nativespeaker.api.auth.schema_invariants import anti_abuse_evidence
-from nativespeaker.api.auth.taxonomy import RESULT_TO_CLASS, remediation_for, surface
+from nativespeaker.api.auth.taxonomy import (
+    REMEDIATIONS,
+    RESULT_TO_CLASS,
+    ClientErrorClass,
+    register_client_class,
+    remediation_for,
+    surface,
+)
 from nativespeaker.api.exceptions import ErrorCode, ServiceError
 from nativespeaker.api.ratelimit.config import TURNSTILE_ENTRY
 from nativespeaker.api.ratelimit.keys import (
@@ -38,11 +46,21 @@ from nativespeaker.api.ratelimit.keys import (
 )
 from nativespeaker.api.ratelimit.limiter import LimitDecision, RateLimiter
 from nativespeaker.api.ratelimit.ordering import (
+    AdmissionLedger,
     DeviceBitCall,
     DeviceBitWrite,
     assert_grant_row_permitted,
 )
-from nativespeaker.api.ratelimit.providers import ProviderCall, budget_entry_for
+from nativespeaker.api.ratelimit.providers import (
+    DEVICE_BIT_PROVIDER_CALLS,
+    AttemptPlan,
+    ProviderCall,
+    ProviderDampingConfig,
+    attempt_plan,
+    budget_entry_for,
+    consume_budget_unit,
+    device_bit_write,
+)
 
 
 class ProofAdapterError(RuntimeError):
@@ -60,34 +78,35 @@ DEVICE_BIT_WRITE_CALL: dict[DevicePlatform, DeviceBitCall] = {
 # --- Rejections ---------------------------------------------------------------------------------
 
 
-# The native claim path's own post-barrier results, and the shared class each one surfaces as.
-# A vendor read that cannot be trusted and a vendor write that cannot be confirmed are
-# verification-capacity failures, distinct from a client-supplied proof failure; an
-# already-claimed device closes the free-grant path. The shared registry stays untouched: these
-# are this adapter's own cases, added under the extension rule and never redefining a shared
-# class or remapping a result the shared contract owns.
+# The native claim path's own post-barrier results, registered through the taxonomy's declared
+# extension point. A vendor read that cannot be trusted and a vendor write that cannot be
+# confirmed are verification-capacity failures, distinct from a client-supplied proof failure;
+# the already-claimed device state is the grants domain's own registration in `invariants.py`.
+# There is no second result-to-class registry here: every class is read back out of
+# `taxonomy.surface`, so a renderer that goes through the shared registry sees the same mapping.
 # [impl->req~proof-devicecheck-vendor-failure-audit-codes~1]
 # [impl->req~proof-native-claim-vendor-read~1]
-CLAIM_RESULT_CLASS: dict[AuthEventResult, ErrorCode] = {
-    AuthEventResult.native_claim_unavailable: "verification_temporarily_unavailable",
-    AuthEventResult.native_claim_write_failed: "verification_temporarily_unavailable",
-    AuthEventResult.native_claim_already_claimed: "device_grant_exhausted",
+_CLAIM_PATH_CLASSES: dict[AuthEventResult, ClientErrorClass] = {
+    AuthEventResult.native_claim_unavailable:
+        ClientErrorClass.verification_temporarily_unavailable,
+    AuthEventResult.native_claim_write_failed:
+        ClientErrorClass.verification_temporarily_unavailable,
+    # A device-bit budget guarding one of those vendor calls is exhausted: the same
+    # verification-capacity class, and never a durable denial of the grant.
+    # [impl->req~proof-native-claim-vendor-write-gate~1]
+    AuthEventResult.devicecheck_read_budget_exhausted:
+        ClientErrorClass.verification_temporarily_unavailable,
+    AuthEventResult.devicecheck_write_budget_exhausted:
+        ClientErrorClass.verification_temporarily_unavailable,
+    AuthEventResult.device_recall_read_budget_exhausted:
+        ClientErrorClass.verification_temporarily_unavailable,
+    AuthEventResult.device_recall_write_budget_exhausted:
+        ClientErrorClass.verification_temporarily_unavailable,
 }
 
-
-def claim_surface(result: AuthEventResult) -> tuple[ErrorCode, int]:
-    """The client-visible class and status one claim-path internal result surfaces as. Results
-    the shared contract owns keep the shared mapping; the rest surface through this adapter's
-    own cases, and no internal value is ever returned as its own class."""
-    # [impl->req~proof-devicecheck-vendor-failure-audit-codes~1]
-    if result in RESULT_TO_CLASS:
-        return surface(result)
-    client_class = CLAIM_RESULT_CLASS.get(result)
-    if client_class is None:
-        raise ProofAdapterError(f"{result} has no client-visible class on the claim path")
-    if str(result) == client_class:
-        raise ProofAdapterError(f"{result} must audit more specifically than {client_class}")
-    return client_class, remediation_for(client_class).http_status
+for _result, _class in _CLAIM_PATH_CLASSES.items():
+    if _result not in RESULT_TO_CLASS:
+        register_client_class(_result, _class.value, REMEDIATIONS[_class].http_status)
 
 
 class ClaimRejection(ServiceError):
@@ -95,7 +114,7 @@ class ClaimRejection(ServiceError):
     result surfaces as. The internal value never reaches the client."""
 
     def __init__(self, result: AuthEventResult, message: str = ""):
-        client_class, status = claim_surface(result)
+        client_class, status = surface(result)
         self.result = result
         self.error_code = client_class
         self.status_code = status
@@ -365,12 +384,96 @@ class NativeClaimStep(StrEnum):
 NATIVE_CLAIM_SEQUENCE: tuple[NativeClaimStep, ...] = tuple(NativeClaimStep)
 
 
-class NativeClaimLedger:
-    """One claim's step order. Every adapter call records its step here and the ledger refuses
-    the moment a step runs out of order, is skipped, or runs twice."""
+# The device-bit provider call each platform's read and write is metered by, and the internal
+# result an exhausted budget takes. The budget entries themselves are `ratelimit/providers.py`'s.
+DEVICE_BIT_BUDGET_EXHAUSTED: dict[ProviderCall, AuthEventResult] = {
+    ProviderCall.devicecheck_read: AuthEventResult.devicecheck_read_budget_exhausted,
+    ProviderCall.devicecheck_write: AuthEventResult.devicecheck_write_budget_exhausted,
+    ProviderCall.device_recall_read: AuthEventResult.device_recall_read_budget_exhausted,
+    ProviderCall.device_recall_write: AuthEventResult.device_recall_write_budget_exhausted,
+}
 
-    def __init__(self) -> None:
+
+@dataclass(frozen=True, slots=True)
+class VendorBudget:
+    """The second-layer damping a claim's outbound vendor calls run under: the shared counter
+    storage the unit is taken from, the configured per-call attempt plan, and the admission
+    ledger that records the read-write-insert order. All of it is `ratelimit/`'s; this is the
+    handle the claim carries so every dispatch can charge it."""
+    limiter: RateLimiter
+    damping: ProviderDampingConfig
+    key: str
+    idempotency_key: str = "native-claim"
+    endpoint_admission_passed: bool = True
+    admission: AdmissionLedger | None = None
+
+
+class NativeClaimLedger:
+    """One claim's step order, and the point every outbound vendor call goes through. Every
+    adapter call records its step here and the ledger refuses the moment a step runs out of
+    order, is skipped, or runs twice."""
+
+    def __init__(self, budget: VendorBudget | None = None) -> None:
         self.steps: list[NativeClaimStep] = []
+        self.budget = budget
+        self.provider_calls: list[ProviderCall] = []
+
+    def dispatch(self, call: ProviderCall, run: Callable[[AttemptPlan | None], Any]) -> Any:
+        """Dispatch one outbound vendor call under its own budget. The unit is checked and
+        consumed immediately before the dispatch, the admission ledger records the call in the
+        read-then-write order it enforces, and the per-attempt and connect timeouts, the attempt
+        cap and the idempotency key come from the configured plan. An exhausted budget refuses
+        the call with that budget's own internal result rather than letting a vendor outage fan
+        out unbounded."""
+        # [impl->req~proof-native-claim-vendor-write-gate~1]
+        # [impl->req~ratelimit-free-grant-device-bit-budget-ordering~1]
+        plan = self._charge(call)
+        outcome = run(plan)
+        self._record_call(call)
+        return outcome
+
+    def dispatch_write(self, call: ProviderCall,
+                       confirm: Callable[[AttemptPlan | None], bool]) -> DeviceBitWrite:
+        """The device-bit write, charged and then performed inline, returned as the vendor's
+        confirmation. `ratelimit/providers.device_bit_write` is what builds it, so the
+        load-bearing-write rule keeps one implementation."""
+        # [impl->req~proof-native-claim-vendor-write-gate~1]
+        plan = self._charge(call)
+        if self.budget is None:
+            write = DeviceBitWrite(call=DEVICE_BIT_PROVIDER_CALLS[call],
+                                   confirmed=bool(confirm(plan)))
+        else:
+            write = device_bit_write(self.budget.damping, call, dispatch=confirm,
+                                     idempotency_key=self.budget.idempotency_key,
+                                     endpoint_admission_passed=True, budget_unit_consumed=True)
+        self._record_call(call)
+        return write
+
+    def _charge(self, call: ProviderCall) -> AttemptPlan | None:
+        """One unit of this call's global provider budget, taken immediately before dispatch."""
+        # [impl->req~ratelimit-free-grant-device-bit-budget-ordering~1]
+        self.provider_calls.append(call)
+        if self.budget is None:
+            return None
+        bit = DEVICE_BIT_PROVIDER_CALLS.get(call)
+        decision = consume_budget_unit(
+            self.budget.limiter, call, self.budget.key,
+            endpoint_admission_passed=self.budget.endpoint_admission_passed)
+        if self.budget.admission is not None and bit is not None:
+            self.budget.admission.check_device_bit_budget(bit, allowed=decision.allowed)
+        if not decision.allowed:
+            result = DEVICE_BIT_BUDGET_EXHAUSTED.get(call)
+            if result is None:
+                raise NativeClaimUnavailable(f"{budget_entry_for(call)} is exhausted")
+            raise ClaimRejection(result, f"{budget_entry_for(call)} is exhausted")
+        return attempt_plan(self.budget.damping, call,
+                            idempotency_key=self.budget.idempotency_key,
+                            endpoint_admission_passed=True, budget_unit_consumed=True)
+
+    def _record_call(self, call: ProviderCall) -> None:
+        bit = DEVICE_BIT_PROVIDER_CALLS.get(call)
+        if self.budget is not None and self.budget.admission is not None and bit is not None:
+            self.budget.admission.vendor_device_bit_call(bit)
 
     # [impl->req~proof-native-claim-sequence-mandatory~1]
     def record(self, step: NativeClaimStep) -> None:
@@ -484,7 +587,13 @@ def native_claim(adapter: DeviceStateAdapter,
     # [impl->req~proof-native-claim-database-eligibility~1]
     ledger.record(NativeClaimStep.database_eligibility)
     if not database_eligibility():
-        raise ProofAdapterError("the per-user database eligibility checks failed")
+        # An ineligible caller is an ordinary per-user denial owned by the grants domain, not a
+        # contract violation: it audits under its own internal result and surfaces through the
+        # shared taxonomy, never as the `internal_error` a bare `RuntimeError` would produce.
+        # An eligibility check with a more specific result of its own raises that itself and
+        # this path propagates it untouched.
+        raise ClaimRejection(AuthEventResult.policy_rejected,
+                             "the per-user database eligibility checks failed")
 
     # [impl->req~proof-native-claim-vendor-write-gate~1]
     write = adapter.write_claimed(operation, material, ledger)
@@ -760,12 +869,18 @@ class DeviceCheckAdapter:
         ledger.record(NativeClaimStep.vendor_read)
         bit = devicecheck_bit_for(operation)
         assert_configured_credentials(self._credentials)
-        try:
-            payload = self._transport.query_two_bits(query_token=str(material.query_token),
-                                                     team_id=self.team_id,
-                                                     environment=self._environment)
-        except Exception as exc:
-            raise NativeClaimUnavailable(f"the DeviceCheck query failed: {exc}") from None
+
+        def query(_plan: AttemptPlan | None) -> Any:
+            try:
+                return self._transport.query_two_bits(query_token=str(material.query_token),
+                                                      team_id=self.team_id,
+                                                      environment=self._environment)
+            except Exception as exc:
+                raise NativeClaimUnavailable(f"the DeviceCheck query failed: {exc}") from None
+
+        # The read runs under its own budget unit, taken immediately before the dispatch.
+        # [impl->req~proof-native-claim-vendor-write-gate~1]
+        payload = ledger.dispatch(ProviderCall.devicecheck_read, query)
         if not isinstance(payload, Mapping):
             raise NativeClaimUnavailable("the DeviceCheck query returned a malformed payload")
         for name in (DeviceCheckBit.bit0, DeviceCheckBit.bit1):
@@ -800,17 +915,26 @@ class DeviceCheckAdapter:
         bits = {str(bit): True}
         if str(other_devicecheck_bit(bit)) in bits:
             raise ProofAdapterError("the same transaction must not modify the other bit")
-        try:
-            acknowledgment = self._transport.update_two_bits(
-                update_token=str(material.update_token), team_id=self.team_id,
-                environment=self._environment, bits=bits)
-        except Exception as exc:
-            raise NativeClaimWriteFailed(f"the DeviceCheck update failed: {exc}") from None
-        if not isinstance(acknowledgment, Mapping) or "acknowledged" not in acknowledgment:
-            raise NativeClaimWriteFailed("the DeviceCheck update result is ambiguous")
-        if acknowledgment["acknowledged"] is not True:
-            raise NativeClaimWriteFailed("Apple did not acknowledge the DeviceCheck update")
-        return DeviceBitWrite(call=DEVICE_BIT_WRITE_CALL[DevicePlatform.ios], confirmed=True)
+
+        def update(_plan: AttemptPlan | None) -> bool:
+            try:
+                acknowledgment = self._transport.update_two_bits(
+                    update_token=str(material.update_token), team_id=self.team_id,
+                    environment=self._environment, bits=bits)
+            except Exception as exc:
+                raise NativeClaimWriteFailed(f"the DeviceCheck update failed: {exc}") from None
+            if not isinstance(acknowledgment, Mapping) or "acknowledged" not in acknowledgment:
+                raise NativeClaimWriteFailed("the DeviceCheck update result is ambiguous")
+            if acknowledgment["acknowledged"] is not True:
+                raise NativeClaimWriteFailed("Apple did not acknowledge the DeviceCheck update")
+            return True
+
+        # Charged, dispatched inline and confirmed before any grant row exists.
+        # [impl->req~proof-native-claim-vendor-write-gate~1]
+        write = ledger.dispatch_write(ProviderCall.devicecheck_write, update)
+        if write.call is not DEVICE_BIT_WRITE_CALL[DevicePlatform.ios]:
+            raise ProofAdapterError("an iOS claim reports its write as the DeviceCheck write")
+        return write
 
 
 # --- The Android proof adapter ---------------------------------------------------------------------
@@ -934,17 +1058,53 @@ class PlayIntegrityAdapter:
             raise ProofRejected("the Play Integrity token is missing or malformed")
         untrusted_vendor_material({"play_integrity_token": material.integrity_token})
 
-    def _decoded_verdict(self, material: AndroidClaimMaterial) -> Mapping[str, Any]:
-        """The server-side decoded Play Integrity verdict."""
+    def _decoded_verdict(self, material: AndroidClaimMaterial,
+                         ledger: NativeClaimLedger) -> Mapping[str, Any]:
+        """The server-side decoded Play Integrity verdict, read under the Device Recall read
+        budget: it is the recall read."""
         # [impl->req~proof-android-recall-from-decoded-verdict~1]
-        try:
-            verdict = self._transport.decode_verdict(
-                integrity_token=str(material.integrity_token), credentials=self._credentials)
-        except Exception as exc:
-            raise NativeClaimUnavailable(f"the Play Integrity verdict failed: {exc}") from None
+        # [impl->req~proof-native-claim-vendor-write-gate~1]
+        def decode(_plan: AttemptPlan | None) -> Any:
+            try:
+                return self._transport.decode_verdict(
+                    integrity_token=str(material.integrity_token), credentials=self._credentials)
+            except Exception as exc:
+                raise NativeClaimUnavailable(
+                    f"the Play Integrity verdict failed: {exc}") from None
+
+        verdict = ledger.dispatch(ProviderCall.device_recall_read, decode)
         if not isinstance(verdict, Mapping):
             raise NativeClaimUnavailable("the Play Integrity verdict is malformed")
         return verdict
+
+    def release_key(self, verdict: Mapping[str, Any]) -> ReleaseKey:
+        """The release this claim came from, taken from the server-side decoded verdict's own
+        `appIntegrity` block — package name, signing-certificate digest and release — and never
+        from the client-supplied fields of `AndroidClaimMaterial`. A verdict that does not carry
+        all three names no enumerated release and is rejected outright."""
+        # [impl->req~proof-android-release-policy-enumeration~1]
+        # [impl->req~proof-android-single-token-untrusted~1]
+        integrity = verdict.get("appIntegrity")
+        if not isinstance(integrity, Mapping):
+            raise ProofRejected("the decoded verdict carries no appIntegrity block")
+        digest = integrity.get("certificateSha256Digest")
+        if isinstance(digest, Sequence) and not isinstance(digest, str | bytes):
+            digest = next(iter(digest), None)
+        package, release = integrity.get("packageName"), integrity.get("release")
+        if not all(isinstance(value, str) and value for value in (package, digest, release)):
+            raise ProofRejected("the decoded verdict names no enumerated release")
+        return ReleaseKey(package_name=str(package), signing_certificate_digest=str(digest),
+                          release=str(release))
+
+    def recall_required(self, operation: AuthOperation, verdict: Mapping[str, Any]) -> bool:
+        """Whether this claim must satisfy Device Recall. An unrecognized, unenumerated release
+        is rejected outright — before any vendor write — and the registered claim's requirement
+        is the checked-in policy's to state; the anonymous claim always requires it."""
+        # [impl->req~proof-android-release-policy-enumeration~1]
+        policy = self._release_policy.policy_for(self.release_key(verdict))
+        if operation is AuthOperation.claim_registered_grant:
+            return registered_claim_requires_recall(policy)
+        return True
 
     def read_claimed(self, operation: AuthOperation, material: AndroidClaimMaterial,
                      ledger: NativeClaimLedger) -> bool:
@@ -952,14 +1112,21 @@ class PlayIntegrityAdapter:
         verifies but whose decoded verdict lacks Device Recall is a vendor-material failure
         surfaced as `proof_rejected`: no attempt is made to distinguish a device that genuinely
         lacks Device Recall from a client that withheld material, and no client assertion
-        explaining the absence is trusted."""
+        explaining the absence is trusted. The decoded verdict is also what the checked-in
+        release policy is consulted with, so an unenumerated release fails here — before the
+        eligibility checks and before any vendor write."""
         # [impl->req~proof-native-claim-vendor-read~1]
         # [impl->req~proof-android-recall-from-decoded-verdict~1]
+        # [impl->req~proof-android-release-policy-enumeration~1]
         self._assert_mandatory(operation)
         ledger.require(NativeClaimStep.verify_vendor_material)
         ledger.record(NativeClaimStep.vendor_read)
         state = recall_state_for(operation)
-        verdict = self._decoded_verdict(material)
+        verdict = self._decoded_verdict(material, ledger)
+        if not self.recall_required(operation, verdict):
+            # This release is classed `no_device_recall`: the registered claim carries no recall
+            # state to consult, and the device has consumed no recall slot.
+            return False
         recall = verdict.get("deviceRecall")
         if not isinstance(recall, Mapping) or str(state) not in recall:
             raise ProofRejected("the decoded Play Integrity verdict carries no Device Recall")
@@ -977,17 +1144,25 @@ class PlayIntegrityAdapter:
         ledger.require(NativeClaimStep.database_eligibility)
         ledger.record(NativeClaimStep.vendor_write)
         state = recall_state_for(operation)
-        try:
-            acknowledgment = self._transport.write_recall(
-                integrity_token=str(material.integrity_token), credentials=self._credentials,
-                state=state, value=True)
-        except Exception as exc:
-            raise NativeClaimWriteFailed(f"the Device Recall write failed: {exc}") from None
-        if not isinstance(acknowledgment, Mapping) or "confirmed" not in acknowledgment:
-            raise NativeClaimWriteFailed("the Device Recall write result is ambiguous")
-        if acknowledgment["confirmed"] is not True:
-            raise NativeClaimWriteFailed("Google did not confirm the Device Recall write")
-        return DeviceBitWrite(call=DEVICE_BIT_WRITE_CALL[DevicePlatform.android], confirmed=True)
+
+        def write_recall(_plan: AttemptPlan | None) -> bool:
+            try:
+                acknowledgment = self._transport.write_recall(
+                    integrity_token=str(material.integrity_token), credentials=self._credentials,
+                    state=state, value=True)
+            except Exception as exc:
+                raise NativeClaimWriteFailed(f"the Device Recall write failed: {exc}") from None
+            if not isinstance(acknowledgment, Mapping) or "confirmed" not in acknowledgment:
+                raise NativeClaimWriteFailed("the Device Recall write result is ambiguous")
+            if acknowledgment["confirmed"] is not True:
+                raise NativeClaimWriteFailed("Google did not confirm the Device Recall write")
+            return True
+
+        # [impl->req~proof-native-claim-vendor-write-gate~1]
+        write = ledger.dispatch_write(ProviderCall.device_recall_write, write_recall)
+        if write.call is not DEVICE_BIT_WRITE_CALL[DevicePlatform.android]:
+            raise ProofAdapterError("an Android claim reports its write as the recall write")
+        return write
 
 
 # Platforms whose device-state gates are supported. Android's anonymous and registered gates are
@@ -1023,16 +1198,17 @@ class TurnstileEnvironment(StrEnum):
 
 class TurnstileDenied(ServiceError):
     """`siteverify` denied the token: invalid, expired, duplicate or replayed, or the hostname
-    did not match. Never treated as a pass."""
-    status_code = 403
-    error_code: ErrorCode = "verification_required"
+    did not match. Never treated as a pass. Its status is the shared class's own."""
+    error_code: ErrorCode = ClientErrorClass.verification_required.value
+    status_code = remediation_for(ClientErrorClass.verification_required.value).http_status
 
 
 class TurnstileUnavailable(ServiceError):
     """A dependency failure or a service misconfiguration. Fails closed and is recorded directly
     as the audit row's result."""
-    status_code = 503
-    error_code: ErrorCode = "verification_temporarily_unavailable"
+    error_code: ErrorCode = ClientErrorClass.verification_temporarily_unavailable.value
+    status_code = remediation_for(
+        ClientErrorClass.verification_temporarily_unavailable.value).http_status
     result: AuthEventResult = AuthEventResult.verification_temporarily_unavailable
 
 
@@ -1208,9 +1384,11 @@ def consume_siteverify_budget(limiter: RateLimiter | None, key: str, *,
         raise ProofAdapterError(f"siteverify is budgeted under {TURNSTILE_ENTRY}")
     if limiter is None:
         return None
-    if not endpoint_admission_passed:
-        raise ProofAdapterError("the endpoint's own admission checks pass before the adapter")
-    return limiter.consume(entry, key)
+    # The unit is taken by the one charging path, which also enforces the second-layer rule:
+    # this adapter keeps no copy of the endpoint-admission guard.
+    # [impl->req~ratelimit-adapter-limits-second-layer~1]
+    return consume_budget_unit(limiter, ProviderCall.turnstile_siteverify, key,
+                               endpoint_admission_passed=endpoint_admission_passed)
 
 
 def _classify_siteverify(config: TurnstileConfig,
@@ -1324,81 +1502,38 @@ def assert_completion_unbounded_by_clock(elapsed_seconds: float,
         raise ProofAdapterError("the completion is capped at three attempts per call")
 
 
-class ChallengeClaimOutcome(StrEnum):
-    """What the one atomic conditional update did for this attempt."""
-    claimed = "claimed"
-    rejected = "rejected"
-    lost_the_claim = "lost_the_claim"
-
-
 @dataclass(frozen=True, slots=True)
 class ChallengeClaim:
     """One claim attempt's result, and whether a vendor call may follow it."""
-    outcome: ChallengeClaimOutcome
+    outcome: ClaimOutcome
     vendor_calls_allowed: bool
     result: AuthEventResult | None = None
 
 
-# Nothing purges, scans or recovers challenge rows for this endpoint, a claimed row is never
-# returned to the issued state, and a consumed row is marked consumed rather than deleted.
-# [impl->req~proof-claim-challenge-mechanics~1]
-CHALLENGE_CLEANUP_JOBS: frozenset[str] = frozenset()
-CHALLENGE_RECOVERY_SCANS: frozenset[str] = frozenset()
-CONSUMED_CHALLENGES_DELETED: bool = False
+def claim_challenge_before_vendor(claim: Callable[[], ClaimOutcome],
+                                  *, vendor_calls_made: int = 0) -> ChallengeClaim:
+    """The thin guard this endpoint adds over the shared challenge mechanics: no vendor call may
+    precede the claim.
 
-
-def claim_challenge_before_vendor(*,
-                                  exists: bool,
-                                  operation_matches: bool,
-                                  caller_context_matches: bool,
-                                  claim: Callable[[], ChallengeClaimOutcome],
-                                  vendor_calls_made: int = 0) -> ChallengeClaim:
-    """Challenge mechanics: the server checks that the challenge exists and belongs to the
-    correct operation and caller context, then claims it with one atomic conditional update that
-    also enforces expiry from the row's own server timestamps — never from a purported
-    vendor-evidence age. Both the validation and the claim run before any vendor call, so a bad
-    challenge is recorded as such and the vendor adapter is never invoked, and a duplicate that
-    loses the claim spends no vendor call at all."""
+    The mechanics themselves are `procedures.SharedChallengeService.complete`'s — the exists,
+    operation-binding and caller-context checks, the one atomic conditional update that also
+    enforces expiry from the row's own server timestamps, the outcome-to-result mapping, and the
+    consumption in the attempt's final transaction. This function neither repeats nor reinterprets
+    them: it takes that conditional update's own `ClaimOutcome` and reads the shared mapping, so a
+    bad challenge is recorded as what it actually was — an unknown row is `challenge_not_found`,
+    never `challenge_expired` — the vendor adapter is never invoked, and a duplicate that loses
+    the claim spends no vendor call at all. The lifecycle facts the requirement also states — a
+    claimed row never returns to `issued`, a consumed row is marked consumed rather than deleted,
+    and no cleanup job or recovery scan exists — are `challenges.advance_state`,
+    `challenges.CHALLENGE_PURGE_JOBS` and `challenges.challenge_retention_deadline`'s.
+    """
     # [impl->req~proof-claim-challenge-mechanics~1]
     if vendor_calls_made:
         raise ProofAdapterError("the challenge is validated and claimed before any vendor call")
-    if not exists:
-        return ChallengeClaim(ChallengeClaimOutcome.rejected, False,
-                              AuthEventResult.challenge_not_found)
-    if not operation_matches:
-        return ChallengeClaim(ChallengeClaimOutcome.rejected, False,
-                              AuthEventResult.challenge_operation_mismatch)
-    if not caller_context_matches:
-        return ChallengeClaim(ChallengeClaimOutcome.rejected, False,
-                              AuthEventResult.challenge_identity_mismatch)
     outcome = claim()
-    match outcome:
-        case ChallengeClaimOutcome.claimed:
-            return ChallengeClaim(outcome, True)
-        case ChallengeClaimOutcome.lost_the_claim:
-            # A duplicate that loses the claim spends no vendor call at all.
-            return ChallengeClaim(outcome, False, AuthEventResult.challenge_consumed)
-        case _:
-            return ChallengeClaim(outcome, False, AuthEventResult.challenge_expired)
-
-
-def consume_claimed_challenge(*, in_final_transaction: bool,
-                              deleted: bool = False,
-                              returned_to_issued: bool = False) -> str:
-    """The claimed challenge is consumed atomically in the attempt's final database transaction.
-    A claimed row is never returned to the issued state and never reused; a consumed challenge is
-    marked consumed and never reusable, not deleted. No scheduled cleanup or recovery scan
-    exists: expired, claimed and consumed rows stay as historical rows."""
-    # [impl->req~proof-claim-challenge-mechanics~1]
-    if not in_final_transaction:
-        raise ProofAdapterError("the claimed challenge is consumed in the final transaction")
-    if returned_to_issued:
-        raise ProofAdapterError("a claimed row is never returned to the issued state")
-    if deleted or CONSUMED_CHALLENGES_DELETED:
-        raise ProofAdapterError("a consumed challenge is marked consumed, not deleted")
-    if CHALLENGE_CLEANUP_JOBS or CHALLENGE_RECOVERY_SCANS:
-        raise ProofAdapterError("no scheduled challenge cleanup or recovery scan exists")
-    return "consumed"
+    if outcome is ClaimOutcome.claimed:
+        return ChallengeClaim(outcome, True)
+    return ChallengeClaim(outcome, False, claim_failure_result(outcome))
 
 
 def vendor_failure_is_a_dependency_failure(error: Exception) -> AuthEventResult:

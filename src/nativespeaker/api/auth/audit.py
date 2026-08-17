@@ -143,13 +143,17 @@ RESULT_PRODUCERS: dict[AuthEventResult, frozenset[AuthOperation]] = {
     # account gate to the registered claim.
     AuthEventResult.proof_malformed: _CLAIMS,
     AuthEventResult.anti_abuse_already_claimed: _ANONYMOUS_CLAIM,
-    AuthEventResult.native_claim_already_claimed: _ANONYMOUS_CLAIM,
-    AuthEventResult.native_claim_unavailable: _ANONYMOUS_CLAIM,
-    AuthEventResult.native_claim_write_failed: _ANONYMOUS_CLAIM,
-    AuthEventResult.devicecheck_read_budget_exhausted: _ANONYMOUS_CLAIM,
-    AuthEventResult.devicecheck_write_budget_exhausted: _ANONYMOUS_CLAIM,
-    AuthEventResult.device_recall_read_budget_exhausted: _ANONYMOUS_CLAIM,
-    AuthEventResult.device_recall_write_budget_exhausted: _ANONYMOUS_CLAIM,
+    # The per-device gate is mandatory on both native claims — DeviceCheck on every iOS
+    # registered claim and Play Integrity on every Android one — so the vendor read, the vendor
+    # write and the already-claimed device state are producible by either free-credit claim, as
+    # are the four device-bit budget-exhaustion results guarding those same calls.
+    AuthEventResult.native_claim_already_claimed: _CLAIMS,
+    AuthEventResult.native_claim_unavailable: _CLAIMS,
+    AuthEventResult.native_claim_write_failed: _CLAIMS,
+    AuthEventResult.devicecheck_read_budget_exhausted: _CLAIMS,
+    AuthEventResult.devicecheck_write_budget_exhausted: _CLAIMS,
+    AuthEventResult.device_recall_read_budget_exhausted: _CLAIMS,
+    AuthEventResult.device_recall_write_budget_exhausted: _CLAIMS,
     AuthEventResult.idp_account_not_eligible: _REGISTERED_CLAIM,
     AuthEventResult.idp_account_already_claimed: _REGISTERED_CLAIM,
     AuthEventResult.registered_grant_destination_incompatible: _REGISTERED_CLAIM,

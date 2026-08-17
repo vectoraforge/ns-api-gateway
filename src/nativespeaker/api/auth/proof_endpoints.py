@@ -452,19 +452,25 @@ def web_anonymous_grant_gate(row: ExternalIdentityRow,
 
 def gate_lookup_unavailable(
         failure: ProviderLookupFailedError | None) -> ProviderLookupFailedError:
-    """A failed or indeterminate Admin lookup audits as `firebase_lookup_unavailable`, distinct
-    from the `verification_required` a client-supplied proof failure takes, and surfaces as
-    `verification_temporarily_unavailable`."""
+    """A failed or indeterminate Admin lookup keeps the internal result and client class the
+    identity file's own lookup-failure family assigned it, together with its retryability: the
+    indeterminate causes audit as `firebase_lookup_unavailable` and surface as
+    `verification_temporarily_unavailable`, and the non-retryable `user-not-found` at this
+    required web read audits as `firebase_user_unresolved` and surfaces as `auth_required`.
+    Neither is ever read as a client-supplied proof failure. A lookup that produced no failure
+    object at all — no `providerData` and no reason — is the default unavailable case."""
     # [impl->req~proof-web-gate-provider-data-classifier~1]
-    result = failure.result if failure is not None else GATE_UNAVAILABLE_RESULT
-    client_class = ClientErrorClass(surface(result)[0])
+    # [impl->req~grants-anon-failure-class-mapping~1]
+    if failure is not None:
+        if failure.client_class == GateDenied.error_code:
+            raise ProofApplicabilityError(
+                "a failed lookup is never a client-supplied proof failure")
+        return failure
+    client_class = ClientErrorClass(surface(GATE_UNAVAILABLE_RESULT)[0])
     if client_class is not ClientErrorClass.verification_temporarily_unavailable:
         raise ProofApplicabilityError(
             "an unavailable lookup surfaces as verification_temporarily_unavailable")
-    if client_class == GateDenied.error_code:
-        raise ProofApplicabilityError(
-            "an unavailable lookup is never a client-supplied proof failure")
-    return ProviderLookupFailedError(result, client_class, retryable=True)
+    return ProviderLookupFailedError(GATE_UNAVAILABLE_RESULT, client_class, retryable=True)
 
 
 def assert_gate_denial_scope(operation: AuthOperation) -> None:

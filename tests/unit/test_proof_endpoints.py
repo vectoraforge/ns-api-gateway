@@ -18,6 +18,7 @@ from nativespeaker.api.auth.external_identities import (
     ExternalIdentityRow,
     LookupFailure,
     ProviderLookupFailedError,
+    provider_from_lookup,
 )
 from nativespeaker.api.auth.integration import FirebaseIntegration, FirebaseIntegrations
 from nativespeaker.api.auth.invariants import (
@@ -417,13 +418,33 @@ class TestWebGateClassifier:
     # denial: it keeps the unavailable result and never becomes a client-proof failure.
     # [utest->req~proof-web-gate-provider-data-classifier~1]
     def test_no_lookup_failure_kind_becomes_a_classifier_denial(self):
-        for kind in (LookupFailure.transient, LookupFailure.infrastructure,
-                     LookupFailure.malformed_response, LookupFailure.indeterminate):
-            failure = ProviderLookupFailedError(
-                AuthEventResult.firebase_lookup_unavailable,
+        expected = {
+            LookupFailure.transient: AuthEventResult.firebase_lookup_unavailable,
+            LookupFailure.infrastructure: AuthEventResult.firebase_lookup_unavailable,
+            LookupFailure.malformed_response: AuthEventResult.firebase_lookup_unavailable,
+            LookupFailure.indeterminate: AuthEventResult.firebase_lookup_unavailable,
+            # The one non-retryable kind: the subject deleted at Firebase keeps its own
+            # `auth_required` mapping at this required web read, and is not an outage.
+            LookupFailure.user_not_found: AuthEventResult.firebase_user_unresolved,
+        }
+        classes = {
+            AuthEventResult.firebase_lookup_unavailable:
                 ClientErrorClass.verification_temporarily_unavailable,
-                retryable=kind is not LookupFailure.user_not_found)
+            AuthEventResult.firebase_user_unresolved: ClientErrorClass.auth_required,
+        }
+        for kind, result in expected.items():
+            # The failure is the identity file's own, derived from the kind rather than built
+            # here, so the mapping under test is the production one.
+            with pytest.raises(ProviderLookupFailedError) as built:
+                provider_from_lookup(None, failure=kind)
+            failure = built.value
             with pytest.raises(ProviderLookupFailedError) as raised:
                 web_anonymous_grant_gate(google_row(), None, lookup_failure=failure)
             assert not isinstance(raised.value, GateDenied)
-            assert raised.value.result is AuthEventResult.firebase_lookup_unavailable
+            assert raised.value.result is result
+            assert raised.value.client_class == classes[result]
+            assert raised.value.retryable is (kind is not LookupFailure.user_not_found)
+        # A lookup with no failure object at all is the default unavailable case.
+        with pytest.raises(ProviderLookupFailedError) as default:
+            web_anonymous_grant_gate(google_row(), None)
+        assert default.value.result is AuthEventResult.firebase_lookup_unavailable

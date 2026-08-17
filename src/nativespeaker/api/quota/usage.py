@@ -90,22 +90,29 @@ def assert_one_row_per_grant(grant_ids: Iterable[UUID]) -> None:
 def new_usage_row(grant_id: UUID,
                   *,
                   now: datetime | None = None,
+                  carried: tuple[str, int] | None = None,
                   grant_transaction: Any = None,
                   usage_transaction: Any = None) -> NewUsageRow:
     """The usage row of a newly created grant, written in the same transaction that creates the
     grant — by purchase ingestion, by the free-grant claims, and by restore's adoption of an
-    unclaimed subscription. It initializes mutable usage state only: the current accounting
-    month and a zero counter. It confers nothing: no access, no introductory entitlement, and no
-    allowance, which stays derived from the grant's tier.
+    unclaimed subscription. It initializes mutable usage state only, and nothing else: no
+    access, no introductory entitlement, and no allowance, which stays derived from the grant's
+    tier.
+
+    The usage state it starts from is the fresh shape by default — the current accounting month
+    and a zero counter — but a creator that supersedes an existing grant carries that grant's
+    `(monthly_period, monthly_used)` across instead, unchanged: no clamping, no reset, no
+    prorating. That is the one creation point either kind of creator uses.
     """
     # [impl->req~schema-user-monthly-usage-created-with-grant~1]
     # [impl->req~schema-user-monthly-usage-row-initializes-usage-only~1]
     if grant_transaction is not usage_transaction:
         raise UsageRowError(
             "the usage row is created in the same transaction as its grant")
+    period, used = carried if carried is not None else (period_of(now), 0)
     return NewUsageRow(grant_id=grant_id,
-                       monthly_period=assert_period(period_of(now)),
-                       monthly_used=0)
+                       monthly_period=assert_period(period),
+                       monthly_used=assert_monthly_used(used))
 
 
 def require_usage_row(stored_period: str | None, grant_id: UUID) -> str:
@@ -157,13 +164,21 @@ def assert_allowance_not_stored(columns: Iterable[str]) -> None:
         raise UsageRowError(f"{unknown} are not columns of core.user_monthly_usage")
 
 
-def assert_grants_no_access(*, has_usage_row: bool, has_active_grant: bool) -> None:
+# What creating a `core.user_monthly_usage` row allocates besides the counter: nothing. No
+# grant row, and no introductory entitlement — that is itself a grant, and this row is not one.
+USAGE_ROW_ALLOCATES: frozenset[str] = frozenset()
+
+
+def assert_grants_no_access(rows_allocated: Iterable[str] = ()) -> None:
     """A usage row does not by itself grant access, and it allocates no introductory
-    entitlement. Access is the grant; the row only counts what the grant allows."""
+    entitlement. Access is the grant; the row only counts what the grant allows. A row whose
+    grant is no longer active is ordinary committed state — a superseded anonymous grant keeps
+    both its expired grant row and its counter — so the decider is not the row's existence but
+    the effective-grant check the quota path makes before any counter is read."""
     # [impl->req~schema-user-monthly-usage-grants-no-access~1]
-    if has_usage_row and not has_active_grant:
-        raise UsageRowError(
-            "a core.user_monthly_usage row is not entitlement: access comes from the grant")
+    offending = sorted(set(rows_allocated) | USAGE_ROW_ALLOCATES)
+    if offending:
+        raise UsageRowError(f"creating a monthly usage row allocates no {offending}")
 
 
 def assert_stays_with_grant(*,

@@ -203,7 +203,21 @@ class AuthBarrier:
                                        registered_at=resolved.registered_at)
 
     def _actor(self, issuer: str, subject: str, resolved: ResolvedIdentity) -> AuthActor:
-        subject_hash, key_version = self._subject_hasher(subject)
+        """The actor columns. `actor_subject_hash` is the `actor_subject_hash` derivation
+        family's value — the keyed HMAC over that family's domain-separated, canonicalized
+        preimage, never over the bare subject — so the digest this row persists is the one the
+        family defines and the same construction the pre-auth challenge binding uses.
+        """
+        # [impl->req~proof-family-actor-subject-hash~1]
+        # [impl->req~proof-hmac-domain-separation~1]
+        # [impl->req~proof-hmac-input-canonicalization~1]
+        # [impl->req~shared-auth-events-actor-subject-hash~1]
+        # Imported here rather than at module scope: the derived-identifier module sits above
+        # this one in the import graph.
+        from nativespeaker.api.auth.derived_identifiers import (  # noqa: PLC0415
+            actor_subject_preimage,
+        )
+        subject_hash, key_version = self._subject_hasher(actor_subject_preimage(issuer, subject))
         return AuthActor(issuer=issuer,
                          subject_hash=subject_hash,
                          subject_hash_key_version=key_version,

@@ -352,9 +352,15 @@ def confirm_declaration(declared: IdentityProvider, lookup: AdminLookupResult) -
                  else ProviderNotLinkedCause.supported_provider_mismatch)
         raise CreateUserRejection(AuthEventResult.provider_not_linked, cause=cause,
                                   required_flow=required_flow_for(classified))
-    provider_uid = provider_uid_for(classified, lookup.provider_data)
+    # A missing or empty `uid` on the matching entry is a malformed lookup result. Taken on the
+    # claimed row, it rejects with no persistence through the shared lookup-failure handling and
+    # consumes the challenge like every other rejection at or after the mandatory lookup.
+    try:
+        provider_uid = provider_uid_for(classified, lookup.provider_data)
+    except ProviderLookupFailedError as failure:
+        raise lookup_rejection(failure) from None
     if classified in REGISTERED_PROVIDERS and not provider_uid:
-        raise lookup_unavailable()
+        raise lookup_rejection(lookup_unavailable())
     return ConfirmedCreation(provider=classified, provider_uid=provider_uid, lookup=lookup)
 
 
@@ -380,6 +386,22 @@ def lookup_failure(failure: LookupFailure) -> ProviderLookupFailedError:
     except ProviderLookupFailedError as error:
         return error
     raise CreateUserError("a failed lookup never yields a provider")
+
+
+def lookup_rejection(failure: ProviderLookupFailedError) -> CreateUserRejection:
+    """A failed mandatory lookup, taken on the claimed row: the distinct internal result the
+    shared lookup-failure handling assigned — `firebase_user_unresolved` for the subject deleted
+    at Firebase, `firebase_lookup_unavailable` for every indeterminate cause — audited as itself
+    and surfaced through the class that result maps to. It is a `ChallengeRejection`, so the
+    shared completion machinery consumes the challenge and writes the rejection's audit row
+    rather than letting an `IdentityError` escape the completion path."""
+    # [impl->req~users-create-user-firebase-user-not-found~1]
+    # [impl->req~users-create-user-lookup-unavailable~1]
+    # [impl->req~users-create-user-rejection-consumes-challenge~1]
+    rejection = CreateUserRejection(failure.result)
+    if rejection.error_code != failure.client_class:
+        raise CreateUserError(f"{failure.result} surfaces as {failure.client_class}")
+    return rejection
 
 
 async def firebase_admin_get_user(client: Any, subject: str) -> AdminLookupResult:
@@ -701,16 +723,22 @@ class CreateUserEndpoint:
         # [impl->req~users-create-user-step-02~1]
         if self.lookups:
             raise CreateUserError("exactly one getUser read is performed per completion")
-        client = issuer_selected_admin_client(self._integrations, identity.issuer)
-        self.lookups += 1
         # Firebase user-not-found is non-retryable and consumes no retry budget; a transient,
-        # infrastructure, malformed or otherwise indeterminate failure is retried inside this
-        # one logical read and then surfaces as `firebase_lookup_unavailable`. Neither persists
-        # anything, here or anywhere else.
+        # infrastructure, matched-integration selection, malformed or otherwise indeterminate
+        # failure is retried inside this one logical read and then surfaces as
+        # `firebase_lookup_unavailable`. Neither persists anything, here or anywhere else, and
+        # both are taken on the claimed row: the rejection consumes the challenge and is audited
+        # under its own distinct internal result.
         # [impl->req~users-create-user-firebase-user-not-found~1]
         # [impl->req~users-create-user-lookup-unavailable~1]
-        return await firebase_identity_lookup(lambda: self._lookup(client, identity.subject),
-                                              ledger=self._ledger, admit=self._admit)
+        # [impl->req~users-create-user-rejection-consumes-challenge~1]
+        try:
+            client = issuer_selected_admin_client(self._integrations, identity.issuer)
+            self.lookups += 1
+            return await firebase_identity_lookup(lambda: self._lookup(client, identity.subject),
+                                                  ledger=self._ledger, admit=self._admit)
+        except ProviderLookupFailedError as failure:
+            raise lookup_rejection(failure) from None
 
     async def confirm_live_state(self, session: Any, identity: VerifiedIdentityContext,
                                  challenge: ChallengeRow) -> CreateUserLiveState:

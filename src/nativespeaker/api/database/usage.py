@@ -91,15 +91,18 @@ class UsageDB:
                                grant_id: UUID,
                                *,
                                transaction: object,
+                               carried: tuple[str, int] | None = None,
                                now: datetime | None = None) -> NewUsageRow:
         """Create this grant's usage row in the transaction that creates the grant itself —
         purchase ingestion, either free-grant claim, or restore's adoption of an unclaimed
-        subscription. It initializes usage state only: the current accounting month and a zero
-        counter."""
+        subscription. It initializes usage state only. A fresh grant starts at the current
+        accounting month with a zero counter; a grant that supersedes another carries that
+        grant's `(monthly_period, monthly_used)` across unchanged, so no conversion path needs
+        an INSERT of its own."""
         # [impl->req~schema-user-monthly-usage-created-with-grant~1]
         # [impl->req~schema-user-monthly-usage-row-initializes-usage-only~1]
         stamp = now or datetime.now(UTC)
-        row = new_usage_row(grant_id, now=stamp,
+        row = new_usage_row(grant_id, now=stamp, carried=carried,
                             grant_transaction=transaction, usage_transaction=self.session)
         await self.session.exec(
             pg_insert(UserMonthlyUsage)

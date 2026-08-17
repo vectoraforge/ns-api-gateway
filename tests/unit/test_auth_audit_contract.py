@@ -23,9 +23,10 @@ from nativespeaker.api.auth.audit import (
     resolved_actor,
     terminal_event,
 )
+from nativespeaker.api.auth.derived_identifiers import DerivationError
 from nativespeaker.api.auth.operations import OPERATION_INVENTORY, AuthOperation, IdentityProvider
 from nativespeaker.api.auth.procedures import ChallengeRejection, SharedChallengeService
-from unit.conftest import make_token
+from unit.conftest import TEST_ISSUER, make_token
 from unit.test_auth_barrier import (
     FakeResolver,
     RecordingSink,
@@ -36,6 +37,7 @@ from unit.test_auth_barrier import (
 )
 from unit.test_auth_challenges import (
     Harness,
+    actor_subject_preimage,
     hasher,
     linked_context,
     preauth_context,
@@ -162,7 +164,8 @@ class TestFailClosedWriting:
         assert h.sink.sessions == [h.factory.sessions[-1]]
         assert h.sink.committed_at_insert == [False]
         assert h.factory.sessions[-1].committed is True
-        assert h.factory.log[-3:] == ["open", "commit", "close"]
+        # The mutation's savepoint releases into that same transaction: one commit, still.
+        assert h.factory.log[-5:] == ["open", "savepoint", "release_savepoint", "commit", "close"]
         assert [event["result"] for event in h.sink.events] == [AuthEventResult.succeeded]
 
     # [utest->req~shared-audit-fail-closed~1]
@@ -467,9 +470,14 @@ class TestTheWritePathBuildsTheRow:
             await h.service.prepare(AuthOperation.create_user, IdentityProvider.anonymous,
                                     linked_context(), h.endpoint(AuthOperation.create_user))
         row = h.sink.events[-1]
-        assert row["actor_issuer"] == linked_context().issuer
-        assert row["actor_subject_hash"] == hasher(linked_context().subject)[0]
-        assert row["actor_subject_hash_key_version"] == hasher(linked_context().subject)[1]
+        context = linked_context()
+        # The persisted digest is the `actor_subject_hash` family's own: the keyed HMAC over the
+        # domain-separated, canonicalized preimage, not over the bare subject.
+        preimage = actor_subject_preimage(context.issuer, context.subject)
+        assert row["actor_issuer"] == context.issuer
+        assert row["actor_subject_hash"] == hasher(preimage)[0]
+        assert row["actor_subject_hash_key_version"] == hasher(preimage)[1]
+        assert row["actor_subject_hash"] != hasher(context.subject)[0]
 
     # [utest->req~shared-audit-outcome-barrier-rejection~1]
     def test_a_barrier_rejection_row_is_built_with_its_actor_columns(self):
@@ -486,6 +494,24 @@ class TestTheWritePathBuildsTheRow:
         assert row["actor_issuer"] is not None
         assert len(row["actor_subject_hash"]) == 32
         assert row["actor_subject_hash_key_version"] is not None
+
+    # The persisted digest is domain-separated and canonicalized: the same `sub` under a
+    # different issuer is a different digest, and NFC/whitespace variation of the subject is not.
+    # [utest->req~proof-hmac-domain-separation~1]
+    # [utest->req~proof-hmac-input-canonicalization~1]
+    # [utest->req~proof-family-actor-subject-hash~1]
+    def test_the_barrier_digest_separates_issuers_and_canonicalizes_the_subject(self):
+        from unit.test_auth_barrier import subject_hasher
+        barrier_digest = subject_hasher(actor_subject_preimage(TEST_ISSUER, "sub-1"))[0]
+        other_issuer = subject_hasher(
+            actor_subject_preimage("https://securetoken.google.com/other", "sub-1"))[0]
+        assert barrier_digest != other_issuer
+        for variant in (" sub-1 ", "sub-1\n"):
+            assert subject_hasher(actor_subject_preimage(TEST_ISSUER, variant))[0] == \
+                barrier_digest
+        # A subject carrying the preimage's own separator cannot be canonicalized at all.
+        with pytest.raises(DerivationError):
+            actor_subject_preimage(TEST_ISSUER, "a:b")
 
     # [utest->req~shared-upgrade-movement-context-required~1]
     # [utest->req~shared-restore-movement-classification~1]

@@ -9,8 +9,7 @@ from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier, Verif
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.config import AppleConfig
-from nativespeaker.api.database import SubscriptionDB, UsageDB
-from nativespeaker.api.database.usage import current_period
+from nativespeaker.api.database import SubscriptionDB
 from nativespeaker.api.exceptions import WebhookVerificationError
 from nativespeaker.api.models import SubscriptionPlan, SubscriptionProvider, SubscriptionStatus
 from nativespeaker.api.services.firebase import FirebaseService
@@ -62,7 +61,6 @@ class SubscriptionService:
                  product_id_to_plan: dict[str, SubscriptionPlan]):
         self.db = db
         self.subscriptions_db = SubscriptionDB(db)
-        self.usage_db = UsageDB(db)
         self.verifier = verifier
         self.firebase_service = firebase_service
         self.product_id_to_plan = product_id_to_plan
@@ -146,7 +144,7 @@ class SubscriptionService:
                 old_plan=None,
                 new_plan=plan,
             )
-            grant_id = await self.subscriptions_db.update_user_plan(
+            await self.subscriptions_db.update_user_plan(
                 user_id=subscription.user_id, plan=plan
             )
         else:
@@ -165,16 +163,16 @@ class SubscriptionService:
             await self.subscriptions_db.update_subscription(
                 subscription=subscription, plan=plan, status=status
             )
-            grant_id = await self.subscriptions_db.update_user_plan(
+            await self.subscriptions_db.update_user_plan(
                 user_id=subscription.user_id, plan=plan
             )
 
-        # Usage reset + Firebase sync -- only if plan changed
+        # Firebase sync -- only if the plan changed. The monthly counter is not touched: a tier
+        # move changes the grant's tier and nothing else, so `monthly_used` keeps meaning the
+        # amount already consumed for `monthly_period`. Remaining is recomputed from the new
+        # tier's allowance and floors at zero, and the counter resets only at the lazy monthly
+        # rollover.
         if old_plan != plan:
-            # The counter that is reset is the one owned by the grant whose tier moved.
-            if grant_id is not None:
-                await self.usage_db.reset_usage(grant_id, current_period())
-
             subject = await self.subscriptions_db.external_subject(subscription.user_id)
             if subject:
                 await self.firebase_service.set_plan_claim(subject, plan)
