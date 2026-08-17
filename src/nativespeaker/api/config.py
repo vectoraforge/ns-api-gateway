@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from nativespeaker.api.models import SubscriptionPlan
 from nativespeaker.api.ratelimit.config import GatewayRateLimitsConfig, RateLimitsConfig
+from nativespeaker.api.ratelimit.providers import ProviderDampingConfig
 
 LogLevel = StrEnum("LogLevel", {k: k for k in logging.getLevelNamesMapping()})
 
@@ -101,6 +102,11 @@ class AppConfig(BaseConfig):
     # [impl->req~ratelimit-config-must-include-at-least~1]
     rate_limits: RateLimitsConfig
     gateway_rate_limits: GatewayRateLimitsConfig | None = None
+
+    # The adapters' configured backend-to-provider damping limits: connect and per-attempt
+    # timeouts, total budgets, attempt caps, retry budgets and coalesced-result freshness.
+    # [impl->req~ratelimit-adapter-damping-limits-configured~1]
+    provider_damping: ProviderDampingConfig | None = None
 
     chats_limit: int = Field(default=50, ge=1)
     messages_limit: int = Field(default=50, ge=1)

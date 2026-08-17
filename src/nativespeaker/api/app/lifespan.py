@@ -17,7 +17,15 @@ from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.database import AuthEventsDB, IdentityResolverDB
 from nativespeaker.api.logs import setup_logging
 from nativespeaker.api.models import User  # noqa: F401  (registers the mapped tables)
-from nativespeaker.api.ratelimit import RateLimiter, assert_rate_limit_config
+from nativespeaker.api.ratelimit import (
+    ProviderCoalescer,
+    RateLimitConfigError,
+    RateLimiter,
+    RateLimitMetrics,
+    SecurityTelemetry,
+    assert_provider_damping,
+    assert_rate_limit_config,
+)
 from nativespeaker.api.services import FirebaseService, LLMService, create_apple_verifier
 
 logger = structlog.get_logger()
@@ -49,6 +57,23 @@ async def lifespan(app: FastAPI):
     # [impl->req~ratelimit-config-turnstile-siteverify-entry~1]
     assert_rate_limit_config(config.rate_limits, raw=(environment.raw_config or {}).get("rate_limits"))
     app.state.rate_limiter = RateLimiter(config.rate_limits)
+
+    # Fail closed on adapter damping the configuration file does not declare: every outbound
+    # provider call carries its configured timeouts, attempt cap and retry budget before traffic
+    # reaches an adapter.
+    # [impl->req~ratelimit-adapter-damping-limits-configured~1]
+    if config.provider_damping is None:
+        raise RateLimitConfigError("provider_damping is not configured")
+    assert_provider_damping(config.provider_damping)
+    app.state.provider_damping = config.provider_damping
+
+    # The operational counters, the bounded aggregate rate-limit telemetry, and the coalescer
+    # that keeps concurrent identical provider lookups down to one outbound call.
+    # [impl->req~ratelimit-operational-counters~1]
+    app.state.rate_limit_metrics = RateLimitMetrics()
+    app.state.security_telemetry = SecurityTelemetry()
+    app.state.provider_coalescer = ProviderCoalescer(config.provider_damping,
+                                                     metrics=app.state.rate_limit_metrics)
 
     # Initialize database
     db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)

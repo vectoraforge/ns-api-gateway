@@ -84,6 +84,36 @@ class RateLimiter:
         # [impl->req~ratelimit-entry-cost~1]
         return self._evaluate(name, key, charge=True, cost=cost)
 
+    def consume(self, name: str, key: str, *, cost: int | None = None) -> LimitDecision:
+        """Atomically check and consume one unit of the entry.
+
+        The check and the consumption are one operation against the configured storage — the
+        `limits` strategy's own `hit` — so the unit is taken atomically across every backend
+        replica and no second replica can dispatch between a separate check and charge. This is
+        what a global provider-call budget meters an outbound attempt with.
+        """
+        # [impl->req~ratelimit-global-provider-call-budgets~1]
+        entry = self.entry(name)
+        # [impl->req~ratelimit-config-key-enabled~1]
+        if not self._config.enabled or not entry.enabled:
+            return LimitDecision(allowed=True, limiter=name)
+        charged_cost = entry.cost if cost is None else cost
+        try:
+            # Evaluated over the whole configured window set, one atomic hit per window.
+            # [impl->req~ratelimit-parse-many-multi-window-strings~1]
+            allowed = all([self._strategy.hit(window, key, cost=charged_cost)
+                           for window in entry.parsed])
+        except Exception:
+            # [impl->req~ratelimit-entry-failure-behavior~1]
+            # [impl->req~ratelimit-default-fail-closed-unless-configured~1]
+            open_ = entry.failure_mode is FailureMode.fail_open
+            return LimitDecision(allowed=open_, limiter=name, storage_failed=True)
+        if allowed:
+            return LimitDecision(allowed=True, limiter=name, charged=True)
+        return LimitDecision(allowed=False, limiter=name,
+                             retry_after_seconds=self._retry_after(entry, key),
+                             charged=True, exhausted=(name,))
+
     def _evaluate(self, name: str, key: str, *, charge: bool, cost: int | None) -> LimitDecision:
         entry = self.entry(name)
         # [impl->req~ratelimit-config-key-enabled~1]

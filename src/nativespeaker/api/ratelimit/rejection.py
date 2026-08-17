@@ -1,0 +1,367 @@
+"""What a rejection returns, what it records, and what it must not leave behind.
+
+Two rejections live here and they are not the same thing. An admission-control rejection is a
+`429` taken in the admission phase: it belongs to that phase wherever its check sits, so it
+touches no challenge and writes no `audit.auth_events` row, and the whole record of it is one
+bounded aggregate telemetry entry. Exhaustion of a verification-capacity budget is not that: it
+is a server-side condition that surfaces as `verification_temporarily_unavailable`, and for the
+four free-grant device-bit budgets it is durably audited, because those budgets are checked
+after the operation challenge has been claimed.
+"""
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from enum import StrEnum
+
+from nativespeaker.api.auth.audit import AuthAttempt, AuthEventResult
+from nativespeaker.api.auth.challenges import ChallengeState, advance_state
+from nativespeaker.api.auth.operations import AuthOperation
+from nativespeaker.api.auth.taxonomy import ClientErrorClass, ClientRejection, client_response
+from nativespeaker.api.exceptions import ErrorCode, ServiceError
+from nativespeaker.api.ratelimit.config import (
+    DEVICE_BIT_BUDGET_ENTRIES,
+    FIREBASE_LOOKUP_ENTRY_KEYS,
+    TURNSTILE_ENTRY,
+)
+from nativespeaker.api.ratelimit.limiter import LimitDecision
+
+# The one status an admission-control rejection carries.
+ADMISSION_REJECTION_STATUS = 429
+
+
+class AdmissionRejected(ServiceError):
+    """A rate-limit or admission-control rejection: `429 Too Many Requests`, carrying
+    `Retry-After` when the `limits` backend could compute a reset time and nothing else. The
+    body names the shared class alone and never the limiter that fired."""
+
+    # [impl->req~ratelimit-reject-429-with-retry-after~1]
+    status_code = ADMISSION_REJECTION_STATUS
+    error_code: ErrorCode = "quota_exceeded"
+
+    def __init__(self, limiter: str, retry_after_seconds: int | None = None):
+        self.limiter = limiter
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__("rate limited")
+
+    def extra_headers(self) -> dict[str, str] | None:
+        """`Retry-After` is included exactly when a reset time was computable; a limiter
+        rejection the backend could not compute a reset for carries no header rather than a
+        fabricated one."""
+        # [impl->req~ratelimit-reject-429-with-retry-after~1]
+        if self.retry_after_seconds is None:
+            return None
+        return {"Retry-After": str(self.retry_after_seconds)}
+
+
+def admission_rejection(decision: LimitDecision) -> AdmissionRejected:
+    """Turn a refusing limiter verdict into the rejection the client receives."""
+    # [impl->req~ratelimit-reject-429-with-retry-after~1]
+    if decision.allowed:
+        raise ValueError(f"{decision.limiter} admitted the request")
+    return AdmissionRejected(decision.limiter, decision.retry_after_seconds)
+
+
+# --- Budget exhaustion: a verification-capacity condition, never a `429` -----------------------
+
+# Every Firebase Admin lookup budget this file defines: the deployment-wide and client-IP
+# endpoint-layer entries at `create_user` completion, the upgrade route's entry, and the global
+# provider-call budget behind all of them.
+# [impl->req~ratelimit-firebase-budget-exhaustion-class~1]
+FIREBASE_LOOKUP_BUDGETS: tuple[str, ...] = (*FIREBASE_LOOKUP_ENTRY_KEYS, "adapter_firebase_lookup")
+
+# The four free-grant device-bit provider budgets, each with the internal result that names it,
+# one per budget entry in the order this file names them.
+# [impl->req~ratelimit-device-bit-budget-exhaustion-class~1]
+DEVICE_BIT_BUDGET_RESULTS: dict[str, AuthEventResult] = {
+    "adapter_devicecheck_read": AuthEventResult.devicecheck_read_budget_exhausted,
+    "adapter_devicecheck_write": AuthEventResult.devicecheck_write_budget_exhausted,
+    "adapter_play_integrity_device_recall_read":
+        AuthEventResult.device_recall_read_budget_exhausted,
+    "adapter_play_integrity_device_recall_write":
+        AuthEventResult.device_recall_write_budget_exhausted,
+}
+
+# Both families are server-side verification-capacity conditions and share one client class.
+VERIFICATION_CAPACITY_CLASS = ClientErrorClass.verification_temporarily_unavailable
+
+
+class BudgetExhaustionError(RuntimeError):
+    """An entry was treated as a verification-capacity budget that is not one, or a rejection
+    was about to leave the backend in the wrong class."""
+
+
+def budget_exhaustion_class(entry: str) -> ClientErrorClass:
+    """The client class an exhausted verification budget maps to."""
+    # [impl->req~ratelimit-firebase-budget-exhaustion-class~1]
+    # [impl->req~ratelimit-device-bit-budget-exhaustion-class~1]
+    if entry not in FIREBASE_LOOKUP_BUDGETS and entry not in DEVICE_BIT_BUDGET_RESULTS:
+        raise BudgetExhaustionError(f"{entry} is no verification-capacity budget")
+    remediation = client_response(VERIFICATION_CAPACITY_CLASS)
+    if remediation.status == ADMISSION_REJECTION_STATUS:
+        # A `429` would misrepresent a verification-backend outage as client misbehaviour and
+        # hide it from the audit taxonomy.
+        # [impl->req~ratelimit-device-bit-budget-exhaustion-class~1]
+        raise BudgetExhaustionError(f"{entry} exhaustion is never the generic admission 429")
+    return VERIFICATION_CAPACITY_CLASS
+
+
+# The free-credit grant claims. A fail-closed device-bit or web-gate lookup budget rejection
+# denies one of these and nothing else.
+# [impl->req~ratelimit-fail-closed-scoped-to-free-grant~1]
+FREE_GRANT_OPERATIONS: frozenset[AuthOperation] = frozenset({
+    AuthOperation.claim_anonymous_grant,
+    AuthOperation.claim_registered_grant,
+})
+
+# The budgets whose fail-closed behaviour that scope covers: the four device-bit budgets and the
+# web gate's Turnstile `siteverify` budget.
+FAIL_CLOSED_FREE_GRANT_BUDGETS: frozenset[str] = frozenset({
+    *DEVICE_BIT_BUDGET_ENTRIES, TURNSTILE_ENTRY})
+
+
+class FailClosedScopeError(RuntimeError):
+    """A free-grant fail-closed budget was about to deny something other than a free grant."""
+
+
+def budget_denies(entry: str, operation: AuthOperation) -> bool:
+    """Whether an exhausted fail-closed device-bit or web-gate lookup budget denies this
+    operation. Only the free-credit grant claims: never login, account creation, upgrade, sync,
+    subscription restore, or any paid entitlement path."""
+    # [impl->req~ratelimit-fail-closed-scoped-to-free-grant~1]
+    if entry not in FAIL_CLOSED_FREE_GRANT_BUDGETS:
+        raise FailClosedScopeError(f"{entry} is no free-grant fail-closed budget")
+    return operation in FREE_GRANT_OPERATIONS
+
+
+def assert_fail_closed_scope(entry: str, operation: AuthOperation) -> None:
+    """Fail closed against the free grant alone."""
+    # [impl->req~ratelimit-fail-closed-scoped-to-free-grant~1]
+    if not budget_denies(entry, operation):
+        raise FailClosedScopeError(f"{entry} never blocks {operation}")
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceBitBudgetRejection:
+    """An exhausted free-grant device-bit budget. The attempt is already on the audited attempt
+    path — the budget is checked after the operation challenge has been claimed — so it writes
+    its single `audit.auth_events` row, the internal result names the exhausted budget, and the
+    claimed challenge is consumed with the rejection rather than returned to the issued state.
+    No grant is issued and the read or write whose budget was unavailable is not performed."""
+    entry: str
+    result: AuthEventResult
+    client: ClientRejection
+    challenge_state: ChallengeState
+    audit_rows: int = 1
+    grant_issued: bool = False
+    vendor_call_performed: bool = False
+
+
+def device_bit_budget_rejection(entry: str,
+                                operation: AuthOperation,
+                                *,
+                                challenge_state: ChallengeState) -> DeviceBitBudgetRejection:
+    """Refuse a claim whose device-bit budget is exhausted."""
+    # [impl->req~ratelimit-device-bit-budget-exhaustion-class~1]
+    result = DEVICE_BIT_BUDGET_RESULTS.get(entry)
+    if result is None:
+        raise BudgetExhaustionError(f"{entry} is no free-grant device-bit budget")
+    # The rejection is scoped to the free grant it denies.
+    # [impl->req~ratelimit-fail-closed-scoped-to-free-grant~1]
+    assert_fail_closed_scope(entry, operation)
+    client_class = budget_exhaustion_class(entry)
+    if challenge_state is not ChallengeState.claimed:
+        raise BudgetExhaustionError(
+            "a device-bit budget is checked only after the challenge has been claimed")
+    # Consumed with the rejection: the claimed challenge is never returned to `issued`, and the
+    # client retries the whole claim with a fresh challenge and fresh vendor material.
+    consumed = advance_state(challenge_state, ChallengeState.consumed)
+    return DeviceBitBudgetRejection(entry=entry,
+                                    result=result,
+                                    client=client_response(client_class),
+                                    challenge_state=consumed)
+
+
+def _assert_budget_results_ordered() -> None:
+    """One internal result per budget entry, in the order this file names the budgets."""
+    # [impl->req~ratelimit-device-bit-budget-exhaustion-class~1]
+    if tuple(DEVICE_BIT_BUDGET_RESULTS) != DEVICE_BIT_BUDGET_ENTRIES:
+        raise BudgetExhaustionError("one result per device-bit budget entry, in that order")
+    if len(set(DEVICE_BIT_BUDGET_RESULTS.values())) != len(DEVICE_BIT_BUDGET_ENTRIES):
+        raise BudgetExhaustionError("each device-bit budget names its own result")
+
+
+_assert_budget_results_ordered()
+
+
+# --- Pre-admission telemetry ------------------------------------------------------------------
+
+
+class CoarseActor(StrEnum):
+    """The coarse actor data a telemetry record may carry. Bounded by construction: no subject,
+    no user id, no proof fingerprint, and no per-attempt detail of any kind."""
+    # [impl->req~ratelimit-pre-admission-aggregate-telemetry~1]
+    anonymous = "anonymous"
+    authenticated = "authenticated"
+    unresolved_address = "unresolved_address"
+
+
+@dataclass(frozen=True, slots=True)
+class RejectionTelemetry:
+    """One bounded aggregate record: the route, the name of the limiter that fired, and coarse
+    actor data. There is no field for raw proof material, a raw provider payload, or per-attempt
+    restore audit-event data, so no call site can store one."""
+    # [impl->req~ratelimit-pre-admission-aggregate-telemetry~1]
+    route: str
+    reason: str
+    actor: CoarseActor
+
+
+class SecurityTelemetry:
+    """The ordinary access and rate-limit telemetry a suppressed rejection appears in. It counts
+    records; it holds no database session and writes no row."""
+
+    def __init__(self) -> None:
+        self._counts: dict[tuple[str, str, str], int] = {}
+
+    def record(self, *, route: str, reason: str, actor: CoarseActor) -> RejectionTelemetry:
+        """Record one rejection as an aggregate. That is the whole record of a suppressed
+        attempt: no `audit.auth_events` row and no per-rejection database row of any kind."""
+        # [impl->req~ratelimit-pre-admission-aggregate-telemetry~1]
+        entry = RejectionTelemetry(route=route, reason=reason, actor=CoarseActor(actor))
+        key = (entry.route, entry.reason, str(entry.actor))
+        self._counts[key] = self._counts.get(key, 0) + 1
+        return entry
+
+    def value(self, *, route: str, reason: str, actor: CoarseActor) -> int:
+        return self._counts.get((route, reason, str(CoarseActor(actor))), 0)
+
+    def labels(self) -> list[tuple[str, str, str]]:
+        """Every label triple recorded. The label set is the aggregate's whole content."""
+        return sorted(self._counts)
+
+
+# --- The admission phase ----------------------------------------------------------------------
+
+
+class AdmissionPhaseError(RuntimeError):
+    """An admission-control rejection was about to behave like an on-path attempt."""
+
+
+@dataclass(frozen=True, slots=True)
+class AdmissionRejection:
+    """Everything an admission-control rejection leaves behind: the `429` the client receives
+    and one aggregate telemetry record. No audit row, no consumed challenge, no database row."""
+    error: AdmissionRejected
+    telemetry: RejectionTelemetry
+    challenge_state: ChallengeState | None
+    audit_rows: int = 0
+    database_rows: int = 0
+
+
+class AdmissionPhase:
+    """One request's admission phase, over the attempt the route already classified."""
+
+    def __init__(self,
+                 attempt: AuthAttempt,
+                 telemetry: SecurityTelemetry,
+                 *,
+                 challenge_state: ChallengeState | None = None):
+        self.attempt = attempt
+        self._telemetry = telemetry
+        self._challenge_state = challenge_state
+
+    def reject(self,
+               decision: LimitDecision,
+               *,
+               actor: CoarseActor = CoarseActor.anonymous) -> AdmissionRejection:
+        """Reject in the admission phase. The rejection belongs to that phase wherever in the
+        request path its check sits — on a canonical state-changing route as much as anywhere
+        else — so it consumes no operation challenge and creates no `audit.auth_events` row."""
+        # [impl->req~ratelimit-admission-rejections-off-audited-path~1]
+        if self.attempt.audited:
+            raise AdmissionPhaseError(
+                f"{self.attempt.route} already wrote an audit row for this attempt")
+        # It appears in the ordinary access and rate-limit telemetry carrying the name of the
+        # limiter that fired, and leaves nothing else behind.
+        # [impl->req~ratelimit-pre-admission-aggregate-telemetry~1]
+        record = self._telemetry.record(route=self.attempt.route,
+                                        reason=decision.limiter,
+                                        actor=actor)
+        rejection = AdmissionRejection(error=admission_rejection(decision),
+                                       telemetry=record,
+                                       # Untouched: the challenge stays in whatever state it was
+                                       # already in, and is neither claimed nor consumed here.
+                                       challenge_state=self._challenge_state)
+        assert_off_audited_path(rejection, self.attempt)
+        return rejection
+
+
+def assert_off_audited_path(rejection: AdmissionRejection, attempt: AuthAttempt) -> None:
+    """An admission-control rejection is never on the audited attempt path."""
+    # [impl->req~ratelimit-admission-rejections-off-audited-path~1]
+    if attempt.audited or rejection.audit_rows or rejection.database_rows:
+        raise AdmissionPhaseError("an admission-control rejection writes no audit row")
+    if rejection.challenge_state is ChallengeState.consumed:
+        raise AdmissionPhaseError("an admission-control rejection consumes no challenge")
+
+
+def assert_aggregate_only(payload: Mapping[str, object]) -> None:
+    """Aggregate telemetry stores route, reason and coarse actor data alone: never raw proof
+    material, raw provider payloads, or per-attempt restore audit-event data."""
+    # [impl->req~ratelimit-pre-admission-aggregate-telemetry~1]
+    permitted = {"route", "reason", "actor"}
+    extra = sorted(set(payload) - permitted)
+    if extra:
+        raise AdmissionPhaseError(f"aggregate telemetry stores no {extra}")
+
+
+# --- Operational counters ---------------------------------------------------------------------
+
+
+class RateLimitMetrics:
+    """The operational counters the backend exposes."""
+
+    # [impl->req~ratelimit-operational-counters~1]
+    COUNTERS: tuple[str, ...] = (
+        "allowed_requests",
+        "rejections_429",
+        "storage_failures",
+        "provider_budget_rejections",
+        "coalesced_provider_reuse",
+    )
+
+    def __init__(self) -> None:
+        self._counts: dict[str, int] = dict.fromkeys(self.COUNTERS, 0)
+        self._exhausted: dict[str, int] = {}
+
+    def _bump(self, name: str) -> None:
+        if name not in self._counts:
+            raise KeyError(f"{name} is no operational counter")
+        self._counts[name] += 1
+
+    def observe(self, decision: LimitDecision) -> None:
+        """Count one limiter verdict: an allowed request, a `429` rejection, and a backend
+        rate-limit storage failure independently of how that failure resolved."""
+        # [impl->req~ratelimit-operational-counters~1]
+        if decision.storage_failed:
+            self._bump("storage_failures")
+        self._bump("allowed_requests" if decision.allowed else "rejections_429")
+
+    def provider_budget_rejected(self, entry: str) -> None:
+        """Count one provider-call budget rejection. Where more than one applicable budget was
+        exhausted, every exhausted limiter is recorded, not only the primary reported one."""
+        # [impl->req~ratelimit-operational-counters~1]
+        self._bump("provider_budget_rejections")
+        self._exhausted[entry] = self._exhausted.get(entry, 0) + 1
+
+    def coalesced_reuse(self) -> None:
+        """Count one coalesced provider verification reuse: a follower or a fresh cached result
+        that spent no provider call of its own."""
+        # [impl->req~ratelimit-operational-counters~1]
+        self._bump("coalesced_provider_reuse")
+
+    def exhausted(self, entry: str) -> int:
+        return self._exhausted.get(entry, 0)
+
+    def counters(self) -> dict[str, int]:
+        return dict(self._counts)

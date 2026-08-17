@@ -43,6 +43,80 @@ gateway_rate_limits:
     key: "issuer+subject_hash"
     evaluate_after: "envoy_jwt_verification"
 
+# The backend-to-provider damping limits every adapter runs under, so provider outages, retries
+# and replay attempts cannot fan out unbounded calls. These are the second layer: they protect
+# the provider integrations and the backend's credentials, and never stand in for the endpoint
+# limits below.
+# [impl->req~ratelimit-adapter-damping-limits-configured~1]
+# [impl->req~ratelimit-adapter-limits-second-layer~1]
+provider_damping:
+  # A fixed per-attempt timeout on every completion-path provider call bounds the worst case of
+  # the steps after the operation challenge is claimed.
+  # [impl->req~ratelimit-provider-attempt-timeouts~1]
+  firebase_lookup:
+    connect_timeout_ms: 500
+    attempt_timeout_seconds: 5
+    total_budget_seconds: 10
+    max_attempts: 2
+    retry_budget: 1
+  devicecheck_read:
+    connect_timeout_ms: 500
+    attempt_timeout_seconds: 5
+    total_budget_seconds: 10
+    max_attempts: 2
+    retry_budget: 1
+  devicecheck_write:
+    connect_timeout_ms: 500
+    attempt_timeout_seconds: 5
+    total_budget_seconds: 10
+    max_attempts: 1
+    retry_budget: 1
+  play_integrity_verify:
+    connect_timeout_ms: 500
+    attempt_timeout_seconds: 5
+    total_budget_seconds: 10
+    max_attempts: 2
+    retry_budget: 1
+  device_recall_read:
+    connect_timeout_ms: 500
+    attempt_timeout_seconds: 5
+    total_budget_seconds: 10
+    max_attempts: 2
+    retry_budget: 1
+  device_recall_write:
+    connect_timeout_ms: 500
+    attempt_timeout_seconds: 5
+    total_budget_seconds: 10
+    max_attempts: 1
+    retry_budget: 1
+  # The web gate's Cloudflare `siteverify` call, budgeted fail-closed in its recommended shape.
+  # [impl->req~ratelimit-turnstile-siteverify-fail-closed-budget~1]
+  turnstile_siteverify:
+    connect_timeout_ms: 500
+    attempt_timeout_seconds: 2
+    total_budget_seconds: 3.5
+    max_attempts: 2
+    retry_budget: 2
+    retry_on: [connection_failure, http_429, http_5xx, cloudflare_internal_error]
+    failure_mode: fail_closed
+  # Live store-state verification carries no retry budget at all: exactly one outbound call per
+  # restore request, owned by 04-subscription-restore-and-entitlement-transfer.md.
+  # [impl->req~ratelimit-per-request-provider-retry-budget~1]
+  apple_live_store_verification:
+    connect_timeout_ms: 500
+    attempt_timeout_seconds: 8
+    total_budget_seconds: 8
+    max_attempts: 1
+    retry_budget: null
+    freshness_seconds: 60
+  google_play_live_store_verification:
+    connect_timeout_ms: 500
+    attempt_timeout_seconds: 8
+    total_budget_seconds: 8
+    max_attempts: 1
+    retry_budget: null
+    freshness_seconds: 60
+
 # Every backend rate limit and admission control. The recommended values shipped here are
 # initial deployment policy; this file remains the source of truth.
 # [impl->req~ratelimit-config-shape-and-defaults~1]
