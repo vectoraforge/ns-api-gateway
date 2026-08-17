@@ -44,6 +44,7 @@ from nativespeaker.api.ratelimit.config import (
     TURNSTILE_ENTRY,
 )
 from nativespeaker.api.ratelimit.limiter import LimitDecision
+from nativespeaker.api.ratelimit.ordering import ExpensiveStep
 
 # The one status an admission-control rejection carries.
 ADMISSION_REJECTION_STATUS = 429
@@ -403,11 +404,18 @@ def assert_aggregate_only(payload: Mapping[str, object]) -> None:
 GATEWAY_REGISTRATION_CLASS = ClientErrorClass.registration_temporarily_unavailable
 
 # Everything the route creates when it runs, and therefore everything a request rejected at the
-# gateway never creates: it reaches no backend code at all.
+# gateway never creates: it reaches no backend code at all. Each artifact is named with the
+# backend step that would create it, so the admission ledger — not a caller's recollection — is
+# what refuses it behind a gateway rejection.
 # [impl->req~sessions-rejected-request-never-reaches-backend~1]
-CREATE_USER_BACKEND_ARTIFACTS: frozenset[str] = frozenset({
-    "core.auth_challenges", "core.users", "core.external_identities", "audit.auth_events",
-    "firebase_admin_lookup"})
+CREATE_USER_ARTIFACT_STEPS: dict[str, ExpensiveStep] = {
+    "core.auth_challenges": ExpensiveStep.database_mutation,
+    "core.users": ExpensiveStep.database_mutation,
+    "core.external_identities": ExpensiveStep.database_mutation,
+    "audit.auth_events": ExpensiveStep.database_mutation,
+    "firebase_admin_lookup": ExpensiveStep.firebase_lookup,
+}
+CREATE_USER_BACKEND_ARTIFACTS: frozenset[str] = frozenset(CREATE_USER_ARTIFACT_STEPS)
 
 # What a gateway-rejected request leaves behind in the backend: nothing.
 # [impl->req~sessions-rejected-request-never-reaches-backend~1]
@@ -425,8 +433,8 @@ class GatewayRejectionError(RuntimeError):
     `429`, a body naming the exhausted bucket, or backend work behind a rejected request."""
 
 
-def gateway_registration_rejection(*,
-                                   retry_after_seconds: Sequence[int] = (),
+def gateway_registration_rejection(retry_after_seconds: Sequence[int],
+                                   *,
                                    ceiling: str | None = None) -> ClientRejection:
     """The rejection either `POST /auth/create-user` gateway ceiling returns.
 
@@ -434,15 +442,23 @@ def gateway_registration_rejection(*,
     429, a `Retry-After` header reflecting the limiting bucket's true wait, and the shared
     response shape naming the class. The response is identical and non-accusatory for the per-IP
     and the deployment-wide ceiling alike, and it never identifies which bucket was exhausted.
+
+    The wait is a required argument, and an empty one is refused. Unlike a backend limiter, whose
+    reset time may not be computable, these are fixed-window gateway ceilings: the wait until the
+    applicable window admits requests again always exists, so the header is unconditional and a
+    header-less rejection is not a shape this function can produce.
     """
     # [impl->req~sessions-create-user-limits-fail-closed~1]
     if ceiling is not None and ceiling not in CREATE_USER_GATEWAY_ENTRIES:
         raise GatewayRejectionError(f"{ceiling} is no create-user gateway ceiling")
-    rejection = client_response(GATEWAY_REGISTRATION_CLASS,
-                               retry_after_seconds=tuple(retry_after_seconds))
+    waits = tuple(retry_after_seconds)
+    if not waits:
+        raise GatewayRejectionError(
+            "a gateway ceiling's rejection carries the limiting bucket's true wait")
+    rejection = client_response(GATEWAY_REGISTRATION_CLASS, retry_after_seconds=waits)
     if rejection.status != ADMISSION_REJECTION_STATUS:
         raise GatewayRejectionError("a gateway ceiling rejects with HTTP 429")
-    if retry_after_seconds and "Retry-After" not in rejection.headers:
+    if "Retry-After" not in rejection.headers:
         raise GatewayRejectionError("the rejection carries the limiting bucket's true wait")
     disclosed = f"{sorted(rejection.body.items())}{sorted(rejection.headers.items())}"
     # Neither the bucket that fired nor the key it fired on appears anywhere in the response.

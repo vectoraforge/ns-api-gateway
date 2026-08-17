@@ -3,6 +3,7 @@ live `providerData` may still be read, the device check that gates only free cre
 administrative block and retirement that revoke refresh tokens, erasure's tombstone, and an
 upstream Firebase deletion the backend deliberately does not chase."""
 
+import inspect
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid7
@@ -11,6 +12,7 @@ import pytest
 
 from nativespeaker.api.auth.audit import AuthEventResult
 from nativespeaker.api.auth.barrier import ResolutionOutcome, barrier_result_for
+from nativespeaker.api.auth.derived_identifiers import confirm_registered_binding
 from nativespeaker.api.auth.external_identities import (
     BLOCK_EVASION_CONTROLS,
     BLOCK_NEVER_COVERS,
@@ -33,6 +35,7 @@ from nativespeaker.api.auth.external_identities import (
     STORED_PROVIDER_MIRRORS,
     TOMBSTONE_REMOVERS,
     AdministrativeAction,
+    BindingDivergenceError,
     ExternalIdentityRow,
     IdentityError,
     IdentityState,
@@ -132,13 +135,11 @@ class TestStoredProviderIsNotAMirror:
 
     # [utest->req~sessions-registered-grant-keys-on-stored-state~1]
     def test_registered_grant_eligibility_keys_on_stored_state_not_live_firebase(self):
-        # The account registered and has not used its one registered grant: eligible, and a live
-        # unlink does not change that.
+        # The account registered and has not used its one registered grant: eligible. Eligibility
+        # takes no live input at all, so a Firebase-side unlink cannot reach it.
         assert registered_grant_class_inputs(REGISTERED, registered_at=NOW,
                                              grant_history_exhausted=False) is True
-        assert registered_grant_class_inputs(REGISTERED, registered_at=NOW,
-                                             grant_history_exhausted=False,
-                                             live_provider=IdentityProvider.anonymous) is True
+        assert "live" not in inspect.signature(registered_grant_class_inputs).parameters
         # The account's own grant history is what closes it, and at most one is ever claimable.
         assert registered_grant_class_inputs(REGISTERED, registered_at=NOW,
                                              grant_history_exhausted=True) is False
@@ -147,6 +148,28 @@ class TestStoredProviderIsNotAMirror:
                                             grant_history_exhausted=False) is False
         # No downgrade happened: the stored row is exactly as it was.
         assert REGISTERED.provider is IdentityProvider.google
+
+    # [utest->req~sessions-registered-grant-keys-on-stored-state~1]
+    def test_the_claims_mandatory_confirmation_denies_only_the_grant_on_divergence(self):
+        """`claim_registered_grant` confirms the stored binding against live `providerData` on
+        every call. A result diverging on the provider or on the `provider_uid` is a conflict that
+        denies this free grant; the stored classification is left exactly as it was."""
+        confirming = [{"provider_id": "google.com", "uid": GOOGLE_UID}]
+        assert confirm_registered_binding(REGISTERED, confirming) is IdentityProvider.google
+
+        diverging = ([{"provider_id": "google.com", "uid": "some-other-google-account"}],
+                     [{"provider_id": "apple.com", "uid": GOOGLE_UID}],
+                     [])  # unlinked entirely: no live entry confirms the stored binding
+        for provider_data in diverging:
+            with pytest.raises(BindingDivergenceError) as conflict:
+                confirm_registered_binding(REGISTERED, provider_data)
+            assert conflict.value.result is AuthEventResult.provider_transition_not_allowed
+            # The row is untouched: the denial is of the grant, never a rewrite or a downgrade.
+            assert (REGISTERED.provider, REGISTERED.provider_uid) == (IdentityProvider.google,
+                                                                      GOOGLE_UID)
+            # And eligibility, which reads stored state only, is unchanged by the divergence.
+            assert registered_grant_class_inputs(REGISTERED, registered_at=NOW,
+                                                 grant_history_exhausted=False) is True
 
     # [utest->req~sessions-live-providerdata-only-at-grant-gates~1]
     def test_only_the_two_free_grant_gates_read_live_provider_data(self):

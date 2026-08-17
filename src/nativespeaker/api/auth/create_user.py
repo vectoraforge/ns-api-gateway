@@ -433,8 +433,18 @@ async def firebase_admin_get_user(client: Any, subject: str) -> AdminLookupResul
         record = await asyncio.to_thread(auth.get_user, subject, app=client)
     except Exception as cause:
         raise lookup_failure(classify_lookup_error(cause)) from cause
-    entries = tuple(getattr(record, "provider_data", ()) or ())
-    return AdminLookupResult(provider_data=entries,
+    # An absent or null `providerData` attribute is a malformed response, not an empty result.
+    # Defaulting it to `()` here would classify the account `anonymous` off a malformed Admin
+    # response and persist that classification, which is exactly what a failed or indeterminate
+    # lookup must never be read as.
+    # [impl->req~sessions-providerdata-lookup-failure~1]
+    entries = getattr(record, "provider_data", None)
+    if entries is None:
+        raise lookup_failure(LookupFailure.malformed_response)
+    # The record's shape is judged in one place, the procedure's own lookup-failure stage: a
+    # `providerData` that is not a sequence of readable entries stops the operation there.
+    provider_from_lookup(entries)
+    return AdminLookupResult(provider_data=tuple(entries),
                              email=getattr(record, "email", None),
                              email_verified=bool(getattr(record, "email_verified", False)))
 

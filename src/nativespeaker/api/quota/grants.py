@@ -390,6 +390,17 @@ def settle_subscription_grant(grant: GrantRow,
 RECONCILIATION_SWEEPS: frozenset[str] = frozenset()
 
 
+def settled_grant_status(new_status: SubscriptionStatus) -> AccessGrantStatus:
+    """How the status writer settles the grant it is taking out of entitlement: a revoked
+    subscription revokes its grant, and every other exit from the product-entitled set — expiry,
+    lapse, a failed renewal — expires it."""
+    # [impl->req~quota-status-writer-owns-grant-deactivation~1]
+    if is_product_entitled(new_status):
+        raise EntitlementError(f"{new_status} is product-entitled; its grant stays active")
+    return (AccessGrantStatus.revoked if new_status is SubscriptionStatus.revoked
+            else AccessGrantStatus.expired)
+
+
 def assert_status_writer_settled_grant(*,
                                        old_status: SubscriptionStatus,
                                        new_status: SubscriptionStatus,

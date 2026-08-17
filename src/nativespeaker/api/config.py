@@ -163,3 +163,28 @@ class EnvironmentConfig(BaseConfig):
                                     prompt=prompt_path.read_text(),
                                     examples=yaml.safe_load(examples_path.read_text()))
         return self
+
+
+class ConfigFileLocation(BaseConfig):
+    """Where the application configuration file lives, resolved the same way
+    `EnvironmentConfig` resolves it."""
+    config_dir: Path = Field(default=Path("config/"))
+    config_filename: str = Field(default="config.yaml")
+
+    @property
+    def path(self) -> Path:
+        return self.config_dir / self.config_filename
+
+
+def raw_config_file() -> dict:
+    """The application configuration file as written, read without validating it.
+
+    Route registration has to know which store integrations a deployment configured before the
+    validated configuration exists, so it reads the file directly. A missing or unreadable file
+    yields no configured integration, which registers no store route — the fail-closed answer.
+    """
+    try:
+        loaded = yaml.safe_load(ConfigFileLocation().path.read_text())
+    except OSError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}

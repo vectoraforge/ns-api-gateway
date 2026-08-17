@@ -530,9 +530,14 @@ def registered_grant_canonical_provider_account_id(row: ExternalIdentityRow) -> 
 def confirm_registered_binding(row: ExternalIdentityRow,
                                provider_data: Sequence[object]) -> IdentityProvider:
     """The registered claim's mandatory fail-closed Firebase Admin `providerData` confirmation of
-    the stored binding. A divergent result is a conflict that denies the free grant; it never
-    rewrites the stored binding, whose columns this read leaves exactly as it found them."""
+    the stored binding, performed on every call. A live result that does not confirm both the
+    stored `provider` and the stored `provider_uid` is a conflict that denies this free grant
+    alone; it never rewrites the stored classification, whose columns this read leaves exactly as
+    it found them, and no automatic registered-to-anonymous downgrade follows from it.
+
+    Eligibility itself is `registered_grant_class_inputs`, which keys on stored state only."""
     # [impl->req~proof-registered-grant-canonical-provider-account-id~1]
+    # [impl->req~sessions-registered-grant-keys-on-stored-state~1]
     before = (row.provider, row.provider_uid)
     live_provider = classify_provider(provider_data)
     confirm_stored_binding(row, live_provider=live_provider,

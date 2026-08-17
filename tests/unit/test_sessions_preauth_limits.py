@@ -10,12 +10,16 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from nativespeaker.api.auth.modes import RequestMode
 from nativespeaker.api.auth.taxonomy import ClientErrorClass
 from nativespeaker.api.ratelimit.config import (
     CREATE_USER_DEPLOYMENT_DEFAULT_LIMIT,
     CREATE_USER_GATEWAY_ENTRIES,
     CREATE_USER_GATEWAY_ROUTE,
     CREATE_USER_IP_DEFAULT_LIMIT,
+    CREATE_USER_PRIMARY_KEY_POLICY,
+    CREATE_USER_SECONDARY_ENTRY,
+    CREATE_USER_SECONDARY_KEY_POLICY,
     ClientAddressConfig,
     FailureMode,
     GatewayCounterScope,
@@ -47,7 +51,9 @@ from nativespeaker.api.ratelimit.keys import (
     trusted_proxy_chain,
 )
 from nativespeaker.api.ratelimit.limiter import RateLimiter
+from nativespeaker.api.ratelimit.ordering import AdmissionLedger, AdmissionOrderError
 from nativespeaker.api.ratelimit.rejection import (
+    CREATE_USER_ARTIFACT_STEPS,
     CREATE_USER_BACKEND_ARTIFACTS,
     GATEWAY_REGISTRATION_CLASS,
     GatewayRejectionError,
@@ -178,9 +184,8 @@ def test_both_ceilings_fail_closed_with_one_identical_registration_rejection():
     with pytest.raises(RateLimitConfigError):
         assert_create_user_gateway_limits(
             gateway_config(create_user_ip={"failure_mode": "fail_open"}))
-    per_ip = gateway_registration_rejection(retry_after_seconds=(42,), ceiling="create_user_ip")
-    deployment = gateway_registration_rejection(retry_after_seconds=(42,),
-                                                ceiling="create_user_deployment")
+    per_ip = gateway_registration_rejection((42,), ceiling="create_user_ip")
+    deployment = gateway_registration_rejection((42,), ceiling="create_user_deployment")
     # Identical and non-accusatory for both ceilings: same status, same body, same headers.
     assert per_ip == deployment
     assert per_ip.status == 429
@@ -191,7 +196,38 @@ def test_both_ceilings_fail_closed_with_one_identical_registration_rejection():
     disclosed = f"{per_ip.body}{per_ip.headers}"
     assert not [name for name in CREATE_USER_GATEWAY_ENTRIES if name in disclosed]
     with pytest.raises(GatewayRejectionError):
-        gateway_registration_rejection(ceiling="some_other_bucket")
+        gateway_registration_rejection((42,), ceiling="some_other_bucket")
+    # `Retry-After` is unconditional here: a fixed-window gateway ceiling always has a computable
+    # wait, so a rejection with no wait is not a shape this function can build.
+    with pytest.raises(GatewayRejectionError, match="true wait"):
+        gateway_registration_rejection(())
+    # When both ceilings apply, the wait is the longest known one.
+    both = gateway_registration_rejection((7, 42))
+    assert both.headers["Retry-After"] == "42"
+
+
+# [utest->req~sessions-rejected-request-never-reaches-backend~1]
+def test_a_rejected_request_takes_none_of_the_backend_steps_that_create_those_rows():
+    """Expressed on the ordering ledger the route actually runs on, so it is the ordering that is
+    checked and not a caller's own account of it: with a gateway ceiling refused, every backend
+    step that would create one of this route's artifacts raises."""
+    for artifact, step in CREATE_USER_ARTIFACT_STEPS.items():
+        for ceiling in CREATE_USER_GATEWAY_ENTRIES:
+            ledger = AdmissionLedger("POST", "/auth/create-user", mode=RequestMode.completion)
+            ledger.reject_at_gateway(ceiling)
+            with pytest.raises(AdmissionOrderError):
+                ledger.expensive_step(step)
+            assert ledger.expensive_steps == [], f"{artifact} was reached behind {ceiling}"
+        # Admitted, the same step is taken once the route's own configured entries have run.
+        admitted = AdmissionLedger("POST", "/auth/create-user", mode=RequestMode.completion)
+        admitted.verify_jwt()
+        for entry in admitted.applicable_entries():
+            admitted.evaluate(entry, (KeyComponent.ip,))
+        admitted.expensive_step(step)
+        assert admitted.expensive_steps == [step]
+    # A gateway ceiling is the only thing this records: nothing else may claim to be one.
+    with pytest.raises(AdmissionOrderError):
+        AdmissionLedger("POST", "/auth/create-user").reject_at_gateway("create_user")
 
 
 # [utest->req~sessions-rejected-request-never-reaches-backend~1]
@@ -231,12 +267,27 @@ def test_nothing_this_route_creates_is_deleted_on_a_schedule():
 # [utest->req~sessions-client-ip-primary-key-on-create-user~1]
 def test_the_client_ip_key_is_primary_and_no_fingerprint_keys_this_route():
     gateway = shipped_gateway()
-    assert parse_key_policy(gateway.create_user_ip.key)[0] is KeyComponent.ip
+    assert parse_key_policy(gateway.create_user_ip.key) == CREATE_USER_PRIMARY_KEY_POLICY
     # The verified subject may only ever be a secondary key, never the sole one.
     with pytest.raises(RateLimitConfigError):
         assert_create_user_gateway_limits(
             gateway_config(create_user_ip={"key": "issuer+subject_hash",
                                            "evaluate_after": "envoy_jwt_verification"}))
+    # Nor may it be fused into the per-IP counter. A per-(address, subject) bucket is not an IP
+    # ceiling at all: a fresh anonymous sign-in is free and mints a new subject on every call, so
+    # such a key never repeats and the 10-a-minute ceiling never trips.
+    for fused in ("ip+subject_hash", "ip+issuer+subject_hash", "issuer+subject_hash+ip"):
+        with pytest.raises(RateLimitConfigError, match="never fused into the per-IP key"):
+            assert_create_user_gateway_limits(
+                gateway_config(create_user_ip={"key": fused,
+                                               "evaluate_after": "envoy_jwt_verification"}))
+    # That optional secondary counter is a separate backend entry of its own, keyed on exactly
+    # the verified pair — the shape `req~ratelimit-create-user-key-policy~1` owns.
+    assert CREATE_USER_SECONDARY_KEY_POLICY == (KeyComponent.issuer, KeyComponent.subject_hash)
+    shipped = RateLimitsConfig(**yaml.safe_load(CONFIG_PATH.read_text())["rate_limits"])
+    secondary = shipped.entries.get(CREATE_USER_SECONDARY_ENTRY)
+    if secondary is not None:
+        assert secondary.policy == CREATE_USER_SECONDARY_KEY_POLICY
     # No device fingerprint is a key component at all.
     for offered in ("device_fingerprint", "device_id", "devicecheck"):
         with pytest.raises(DeviceCheckKeyComponentError):

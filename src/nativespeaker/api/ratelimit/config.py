@@ -442,15 +442,23 @@ def assert_create_user_gateway_limits(gateway: GatewayRateLimitsConfig | None) -
         # [impl->req~sessions-create-user-limits-fail-closed~1]
         if entry.failure_mode is not FailureMode.fail_closed:
             problems.append(f"{name} must fail closed")
-    # The client-IP key is the primary key for this pre-auth route, and never the verified
-    # subject alone; no device fingerprint is a key component anywhere.
+    # The client-IP key is the primary key for this pre-auth route: the per-IP ceiling counts by
+    # client address and by nothing else. Fusing the verified `issuer+subject_hash` into it would
+    # make every bucket per-(address, subject), and because a fresh anonymous sign-in is free and
+    # mints a new subject on each call, such a key never repeats and the ceiling never trips —
+    # the client IP would no longer be this limiter's primary key at all. The optional secondary
+    # subject counter is a separate entry, whose shape `req~ratelimit-create-user-key-policy~1`
+    # owns and `_check_named_keys` enforces; it is never fused in here.
     # [impl->req~sessions-client-ip-primary-key-on-create-user~1]
     # [impl->req~sessions-create-user-per-ip-limit~1]
     ip_policy = parse_key_policy(gateway.create_user_ip.key)
-    if ip_policy[:1] != CREATE_USER_PRIMARY_KEY_POLICY:
-        problems.append("create_user_ip keys on the canonical client IP first")
-    if set(ip_policy) & set(CREATE_USER_SECONDARY_KEY_POLICY) and len(ip_policy) < 2:
-        problems.append("the verified subject is never the sole create-user key")
+    if ip_policy != CREATE_USER_PRIMARY_KEY_POLICY:
+        problems.append("create_user_ip keys on the canonical client IP alone")
+    if set(ip_policy) & set(CREATE_USER_SECONDARY_KEY_POLICY):
+        problems.append(
+            f"the verified {'+'.join(CREATE_USER_SECONDARY_KEY_POLICY)} pair belongs to the "
+            f"separate optional {CREATE_USER_SECONDARY_ENTRY} counter, never fused into the "
+            "per-IP key")
     # The deployment-wide limit spans all source addresses, so it keys on the deployment.
     # [impl->req~sessions-create-user-deployment-wide-limit~1]
     if parse_key_policy(gateway.create_user_deployment.key) != (KeyComponent.deployment,):

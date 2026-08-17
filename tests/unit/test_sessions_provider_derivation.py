@@ -6,6 +6,8 @@ and every Admin read a stage names runs on the integration selected by issuer ma
 
 import re
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -19,6 +21,7 @@ from nativespeaker.api.auth.create_user import (
     ProviderNotLinkedCause,
     classify_admin_provider_data,
     confirm_declaration,
+    firebase_admin_get_user,
     lookup_failure,
 )
 from nativespeaker.api.auth.external_identities import (
@@ -213,6 +216,30 @@ class TestLookupFailure:
         for failure in LookupFailure:
             with pytest.raises(ProviderLookupFailedError):
                 provider_from_lookup([], failure=failure)
+
+    # [utest->req~sessions-providerdata-lookup-failure~1]
+    async def test_a_record_without_provider_data_is_a_failed_lookup_not_an_empty_result(self):
+        """The production read is the one that matters: a record whose `providerData` is absent,
+        null, or not a sequence of entries fails closed instead of being read as an empty result,
+        which would classify the account `anonymous` and persist that."""
+        import firebase_admin.auth as admin_auth  # noqa: PLC0415
+
+        for record in (SimpleNamespace(email=None, email_verified=False, provider_data=None),
+                       SimpleNamespace(email=None, email_verified=False),
+                       SimpleNamespace(email=None, email_verified=False,
+                                       provider_data="not-a-sequence"),
+                       None):
+            with (patch.object(admin_auth, "get_user", return_value=record),
+                  pytest.raises(ProviderLookupFailedError) as rejected):
+                await firebase_admin_get_user(ADMIN_CLIENT, "subject-1")
+            assert rejected.value.result is AuthEventResult.firebase_lookup_unavailable
+            assert rejected.value.retryable is True
+
+        # A successful, well-formed record still yields its entries — an empty tuple included.
+        well_formed = SimpleNamespace(email=None, email_verified=False, provider_data=())
+        with patch.object(admin_auth, "get_user", return_value=well_formed):
+            assert await firebase_admin_get_user(ADMIN_CLIENT,
+                                                "subject-1") == AdminLookupResult()
 
     # [utest->req~sessions-providerdata-lookup-failure~1]
     async def test_a_failed_lookup_persists_nothing_at_all(self):

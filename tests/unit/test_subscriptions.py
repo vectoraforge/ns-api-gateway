@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 
+from nativespeaker.api.auth.entitlement import AccessGrantStatus
 from nativespeaker.api.auth.integration import FirebaseIntegration, FirebaseIntegrations
 from nativespeaker.api.models import Subscription, SubscriptionPlan, SubscriptionStatus
 from nativespeaker.api.services import FirebaseService, SubscriptionService
@@ -203,6 +204,107 @@ class TestSubscriptionLifecycle:
 
         # Verify no DB operations were called
         mock_subscriptions_db.get_subscription_by_external_id.assert_not_called()
+
+
+class TestStatusWriterSettlesTheGrant:
+    """The notification handler is a subscription status writer, so it owns the obligation the
+    subscription-backed grant invariant places on one: a transition out of the product-entitled
+    set deactivates or replaces the active grant in the same transaction as the status change.
+    There is no reconciliation sweep to do it afterwards."""
+
+    @staticmethod
+    def _lapsing(mock_verifier, mock_subscriptions_db, *, notification_type,
+                 old_status=SubscriptionStatus.active, grant_id=None):
+        payload = _make_mock_payload(notification_type=notification_type,
+                                     notification_uuid=f"settle-{notification_type}")
+        mock_verifier.verify_and_decode_notification.return_value = payload
+        mock_verifier.verify_and_decode_signed_transaction.return_value = _make_mock_transaction()
+        existing = MagicMock(spec=Subscription)
+        existing.id = uuid4()
+        existing.user_id = uuid4()
+        existing.plan = SubscriptionPlan.gold
+        existing.status = old_status
+        mock_subscriptions_db.get_subscription_by_external_id.return_value = existing
+        mock_subscriptions_db.insert_event_idempotent.return_value = True
+        mock_subscriptions_db.active_subscription_grant_id.return_value = grant_id
+        return existing
+
+    # [utest->req~quota-status-writer-owns-grant-deactivation~1]
+    @pytest.mark.asyncio
+    async def test_an_expiry_notification_deactivates_the_active_grant(
+            self, subscription_service, mock_verifier, mock_subscriptions_db):
+        """`active` -> `expired` with an active subscription-backed grant: without this the
+        deferrable foreign key would fail the commit and the status would never persist."""
+        from appstoreserverlibrary.models.NotificationTypeV2 import NotificationTypeV2
+
+        grant_id = uuid4()
+        subscription = self._lapsing(mock_verifier, mock_subscriptions_db,
+                                     notification_type=NotificationTypeV2.EXPIRED,
+                                     grant_id=grant_id)
+
+        await subscription_service.process_apple_notification("signed.payload")
+
+        assert mock_subscriptions_db.update_subscription.await_args.kwargs["status"] is (
+            SubscriptionStatus.expired)
+        mock_subscriptions_db.active_subscription_grant_id.assert_awaited_once_with(
+            subscription.id)
+        mock_subscriptions_db.deactivate_grant.assert_awaited_once_with(
+            grant_id, AccessGrantStatus.expired)
+
+    # [utest->req~quota-status-writer-owns-grant-deactivation~1]
+    @pytest.mark.asyncio
+    async def test_a_revocation_revokes_the_grant_and_a_failed_renewal_expires_it(
+            self, subscription_service, mock_verifier, mock_subscriptions_db):
+        from appstoreserverlibrary.models.NotificationTypeV2 import NotificationTypeV2
+
+        grant_id = uuid4()
+        self._lapsing(mock_verifier, mock_subscriptions_db,
+                      notification_type=NotificationTypeV2.REVOKE, grant_id=grant_id)
+        await subscription_service.process_apple_notification("signed.payload")
+        mock_subscriptions_db.deactivate_grant.assert_awaited_once_with(
+            grant_id, AccessGrantStatus.revoked)
+
+        # `billing_retry` is not product-entitled either, so it settles the grant the same way.
+        mock_subscriptions_db.deactivate_grant.reset_mock()
+        self._lapsing(mock_verifier, mock_subscriptions_db,
+                      notification_type=NotificationTypeV2.DID_FAIL_TO_RENEW, grant_id=grant_id)
+        await subscription_service.process_apple_notification("signed.payload")
+        mock_subscriptions_db.deactivate_grant.assert_awaited_once_with(
+            grant_id, AccessGrantStatus.expired)
+
+    # [utest->req~quota-status-writer-owns-grant-deactivation~1]
+    @pytest.mark.asyncio
+    async def test_a_transition_inside_the_entitled_set_settles_nothing(
+            self, subscription_service, mock_verifier, mock_subscriptions_db):
+        """`active` -> `grace_period` keeps the subscription product-entitled, so the grant
+        stays exactly as it is."""
+        from appstoreserverlibrary.models.NotificationTypeV2 import NotificationTypeV2
+        from appstoreserverlibrary.models.Subtype import Subtype
+
+        self._lapsing(mock_verifier, mock_subscriptions_db,
+                      notification_type=NotificationTypeV2.DID_FAIL_TO_RENEW,
+                      grant_id=uuid4())
+        payload = mock_verifier.verify_and_decode_notification.return_value
+        payload.subtype = Subtype.GRACE_PERIOD
+
+        await subscription_service.process_apple_notification("signed.payload")
+
+        assert mock_subscriptions_db.update_subscription.await_args.kwargs["status"] is (
+            SubscriptionStatus.grace_period)
+        mock_subscriptions_db.deactivate_grant.assert_not_called()
+
+    # [utest->req~quota-status-writer-owns-grant-deactivation~1]
+    @pytest.mark.asyncio
+    async def test_a_lapse_with_no_active_grant_has_nothing_to_settle(
+            self, subscription_service, mock_verifier, mock_subscriptions_db):
+        from appstoreserverlibrary.models.NotificationTypeV2 import NotificationTypeV2
+
+        self._lapsing(mock_verifier, mock_subscriptions_db,
+                      notification_type=NotificationTypeV2.EXPIRED, grant_id=None)
+
+        await subscription_service.process_apple_notification("signed.payload")
+
+        mock_subscriptions_db.deactivate_grant.assert_not_called()
 
 
 class TestIdempotency:

@@ -28,10 +28,8 @@ from nativespeaker.api.quota.grants import (
 from nativespeaker.api.quota.usage import (
     NewUsageRow,
     derived_allowance,
-    needs_rollover,
     new_usage_row,
     period_of,
-    require_usage_row,
 )
 
 __all__ = [
@@ -167,45 +165,6 @@ class UsageDB:
         )
         return row
 
-    async def try_increment(self,
-                            grant_id: UUID,
-                            period: str,
-                            monthly_quota: int) -> bool:
-        """Atomically increment this grant's usage if under its allowance. Returns True if
-        allowed. A row whose stored period is not the current one is rolled over in place rather
-        than carried forward.
-
-        This path creates nothing: the row was written with the grant, so a grant without one is
-        a server-side data error and the request fails closed.
-        """
-        now = datetime.now(UTC)
-        stored = await self.session.exec(
-            select(UserMonthlyUsage.monthly_period)
-            .where(col(UserMonthlyUsage.grant_id) == grant_id)
-        )
-        # [impl->req~schema-user-monthly-usage-created-with-grant~1]
-        stored_period = require_usage_row(stored.first(), grant_id)
-        # The lazy monthly reset: the first quota-checked request of a new month advances
-        # `monthly_period` and zeroes `monthly_used` in place.
-        # [impl->req~schema-user-monthly-usage-lazy-monthly-reset~1]
-        if needs_rollover(stored_period, period):
-            await self.session.exec(
-                update(UserMonthlyUsage)
-                .where(col(UserMonthlyUsage.grant_id) == grant_id,
-                       col(UserMonthlyUsage.monthly_period) != period)
-                .values(monthly_period=period, monthly_used=0, updated_at=now)
-            )
-        # [impl->req~schema-user-monthly-usage-monthly-used-field~1]
-        result = await self.session.exec(
-            update(UserMonthlyUsage)
-            .where(col(UserMonthlyUsage.grant_id) == grant_id,
-                   col(UserMonthlyUsage.monthly_period) == period,
-                   col(UserMonthlyUsage.monthly_used) < monthly_quota)
-            .values(monthly_used=col(UserMonthlyUsage.monthly_used) + 1, updated_at=now)
-            .returning(col(UserMonthlyUsage.monthly_used))
-        )
-        return result.first() is not None
-
     async def stored_usage(self, grant_id: UUID,
                            *, for_update: bool = False) -> tuple[str, int] | None:
         """This grant's stored `(monthly_period, monthly_used)`, or `None` when the row is
@@ -262,23 +221,40 @@ class QuotaStoreDB:
         return await self.grants.grant_rows(user_id, now, for_update=True)
 
     async def locked_usage_row(self, grant_id: UUID) -> tuple[str, int] | None:
+        """The usage row, locked second. This path creates nothing: the row was written in the
+        transaction that created its grant, so a grant without one is a server-side data error
+        and the request fails closed rather than minting a counter."""
         # [impl->req~quota-rollover-step-02~1]
+        # [impl->req~schema-user-monthly-usage-created-with-grant~1]
         return await self.usage.stored_usage(grant_id, for_update=True)
 
     async def write_rollover(self, grant_id: UUID, values: Mapping[str, Any]) -> None:
-        """The monthly reset, written in place on the row this transaction already holds."""
+        """The lazy monthly reset, written in place on the row this transaction already holds:
+        the first quota-checked request of a new month advances `monthly_period` and zeroes
+        `monthly_used`, rather than carrying the old month's count forward."""
         # [impl->req~quota-rollover-step-04~1]
+        # [impl->req~schema-user-monthly-usage-lazy-monthly-reset~1]
         await self.session.exec(
             update(UserMonthlyUsage)
             .where(col(UserMonthlyUsage.grant_id) == grant_id)
             .values(**dict(values)))
 
     async def increment_usage(self, grant_id: UUID, period: str) -> None:
-        """Consume usage by incrementing `monthly_used`."""
+        """Consume usage by incrementing `monthly_used` — the consumption already recorded for
+        the stored `monthly_period`, and the only counter this path writes."""
         # [impl->req~quota-rollover-step-08~1]
+        # [impl->req~schema-user-monthly-usage-monthly-used-field~1]
         await self.session.exec(
             update(UserMonthlyUsage)
             .where(col(UserMonthlyUsage.grant_id) == grant_id,
                    col(UserMonthlyUsage.monthly_period) == period)
             .values(monthly_used=col(UserMonthlyUsage.monthly_used) + 1,
                     updated_at=datetime.now(UTC)))
+
+    async def commit(self) -> None:
+        """End the sequence's own transaction, releasing the grant and usage locks before the
+        handler runs. The rollover shares the grant-then-usage lock order with restore, never
+        restore's longer transaction shape: nothing external happens under these locks, so they
+        are not left open across the handler's outbound model call."""
+        # [impl->req~quota-rollover-lock-scope~1]
+        await self.session.commit()

@@ -20,6 +20,7 @@ from nativespeaker.api.auth.operations import (
     match_operation,
 )
 from nativespeaker.api.ratelimit.config import (
+    CREATE_USER_GATEWAY_ENTRIES,
     DEVICE_BIT_BUDGET_ENTRIES,
     FIREBASE_LOOKUP_ENTRY_KEYS,
     complete_entries,
@@ -160,6 +161,19 @@ class AdmissionLedger:
         """This layer's JWT verification succeeded for the route."""
         # [impl->req~ratelimit-identity-keyed-after-jwt-verification~1]
         self.jwt_verified = True
+
+    def reject_at_gateway(self, ceiling: str) -> None:
+        """A gateway ceiling refused this request at the edge, before it reached backend code.
+
+        Recording it here is what makes every later backend step refuse: the request creates no
+        `core.auth_challenges` row, no `core.users` or `core.external_identities` row, no
+        `audit.auth_events` row, and triggers no Firebase Admin lookup, because each of those is
+        an expensive step and an expensive step runs only for an admitted request.
+        """
+        # [impl->req~sessions-rejected-request-never-reaches-backend~1]
+        if ceiling not in CREATE_USER_GATEWAY_ENTRIES:
+            raise AdmissionOrderError(f"{ceiling} is no create-user gateway ceiling")
+        self.refused = True
 
     def admit_barrier(self) -> None:
         """The shared authentication-and-identity-resolution barrier resolved and admitted a

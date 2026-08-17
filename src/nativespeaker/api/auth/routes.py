@@ -17,17 +17,15 @@ class RouteCategory(StrEnum):
     authenticated = "authenticated"
 
 
-# Zero-authentication routes. The health and readiness probes, plus the generated schema and
-# documentation routes FastAPI registers. The allowlist is explicit and enumerated: neither
-# provider-callback route is on it, because public means zero authentication and those routes
-# require provider-specific verification.
+# Zero-authentication routes: the health and readiness probes, and nothing else. Authentication
+# is the default, not the exception, so this allowlist is explicit, enumerated and as short as the
+# specification names it. Neither provider-callback route is on it, because public means zero
+# authentication and those routes require provider-specific verification; nor are the generated
+# schema and documentation routes, which the application does not register at all (see
+# `app/main.py`) rather than serve anonymously.
 # [impl->req~sessions-shared-entry-point-three-way-partition~1]
 PUBLIC_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/health/ready"),
-    ("GET", "/openapi.json"),
-    ("GET", "/docs"),
-    ("GET", "/docs/oauth2-redirect"),
-    ("GET", "/redoc"),
 })
 
 

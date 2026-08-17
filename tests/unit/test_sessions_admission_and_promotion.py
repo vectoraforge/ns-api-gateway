@@ -333,7 +333,14 @@ def test_identity_already_linked_is_the_create_user_conflict():
 
 # [utest->req~sessions-class-operation-not-allowed~1]
 def test_operation_not_allowed_carries_the_structural_conflicts():
-    for result in (AuthEventResult.policy_rejected,
+    """The two cases this class is named for: the provider-transition conflict on
+    `POST /auth/upgrade-anonymous`, and `provider_account_already_linked` on either write that
+    binds a provider account. The first is registered through the taxonomy's extension point at
+    import time rather than sitting in the static table, so it is asserted here explicitly —
+    dropping that registration must fail this test, not pass it silently."""
+    import nativespeaker.api.auth.external_identities  # noqa: F401, PLC0415
+
+    for result in (AuthEventResult.provider_transition_not_allowed,
                    AuthEventResult.provider_account_already_linked):
         assert surface(result) == ("operation_not_allowed", 403)
     remediation = remediation_for(ClientErrorClass.operation_not_allowed)

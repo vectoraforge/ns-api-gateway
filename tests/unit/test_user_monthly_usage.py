@@ -52,15 +52,21 @@ class FakeResult:
 
 
 class FakeSession:
-    """Records every statement the module under test issues."""
+    """Records every statement the module under test issues, and the commits, in order. A commit
+    is recorded as the literal `COMMIT` so its position among the statements is visible."""
 
     def __init__(self, *results: FakeResult):
         self.results = list(results)
         self.statements: list[object] = []
+        self.commits = 0
 
     async def exec(self, statement):
         self.statements.append(statement)
         return self.results.pop(0) if self.results else FakeResult()
+
+    async def commit(self) -> None:
+        self.statements.append("COMMIT")
+        self.commits += 1
 
     def sql(self) -> list[str]:
         return [str(statement) for statement in self.statements]
@@ -73,6 +79,22 @@ def db(session: FakeSession) -> AsyncSession:
 
 USAGE_TABLE = SQLModel.metadata.tables["core.user_monthly_usage"]
 GRANTS_TABLE = SQLModel.metadata.tables["core.access_grants"]
+
+
+def live_grant(user_id, *, tier_id: str = "free") -> AccessGrant:
+    """One effective `core.access_grants` row for this user."""
+    return AccessGrant(user_id=user_id, tier_id=tier_id,
+                       source=AccessGrantSource.anonymous_device_grant,
+                       status=AccessGrantStatus.active,
+                       starts_at=datetime(2026, 1, 1, tzinfo=UTC))
+
+
+async def quota_checked_request(session: FakeSession, user_id) -> None:
+    """One quota-checked request, driving the live enforcement path against the recording
+    session: backend admission, then the lazy monthly rollover sequence."""
+    user = MagicMock()
+    user.id = user_id
+    await require_quota(quota_request(), user=user, db=db(session))
 
 
 # --- The row and its fields --------------------------------------------------------------------
@@ -121,16 +143,22 @@ def test_monthly_used_is_consumption_for_the_stored_period():
 # [utest->req~schema-user-monthly-usage-monthly-used-field~1]
 @pytest.mark.asyncio
 async def test_the_increment_is_bounded_by_the_allowance_of_the_period():
-    grant_id = uuid7()
-    session = FakeSession(FakeResult("2026-03"), FakeResult(3))
-    allowed = await UsageDB(db(session)).try_increment(grant_id, "2026-03", 10)
-    assert allowed is True
-    update = session.sql()[-1]
+    """The live enforcement path increments `monthly_used` for the stored period, and only while
+    the allowance the grant's tier configures leaves something to consume."""
+    user_id = uuid7()
+    grant = live_grant(user_id)
+    period = current_period()
+    session = FakeSession(FakeResult(rows=[(grant, 10)]), FakeResult((period, 3)))
+    await quota_checked_request(session, user_id)
+    update = session.sql()[-2]  # the increment, then the sequence's own commit
     assert "UPDATE core.user_monthly_usage" in update
     assert "monthly_used" in update and "monthly_period" in update
 
-    exhausted = FakeSession(FakeResult("2026-03"), FakeResult(None))
-    assert await UsageDB(db(exhausted)).try_increment(grant_id, "2026-03", 10) is False
+    # A counter already at the tier's allowance is ordinary exhaustion: nothing is written.
+    exhausted = FakeSession(FakeResult(rows=[(grant, 10)]), FakeResult((period, 10)))
+    with pytest.raises(QuotaExceededError):
+        await quota_checked_request(exhausted, user_id)
+    assert [sql for sql in exhausted.sql() if sql.startswith("UPDATE")] == []
 
 
 # --- The lazy monthly reset --------------------------------------------------------------------
@@ -148,17 +176,19 @@ def test_the_counter_rolls_over_when_the_month_changes():
 async def test_the_reset_happens_on_the_first_quota_checked_request_of_the_new_month():
     """A stale period is advanced and zeroed in place by the request that noticed; a row already
     on the current period is not rewritten."""
-    grant_id = uuid7()
-    stale = FakeSession(FakeResult("2026-02"), FakeResult(None), FakeResult(1))
-    await UsageDB(db(stale)).try_increment(grant_id, "2026-03", 10)
-    assert len(stale.statements) == 3  # the read, the rollover, then the increment
-    rollover = stale.sql()[1]
+    user_id = uuid7()
+    grant = live_grant(user_id)
+    stale = FakeSession(FakeResult(rows=[(grant, 10)]), FakeResult(("2020-01", 10)))
+    await quota_checked_request(stale, user_id)
+    # the grant read, the usage read, the reset, the increment, then the commit
+    assert len(stale.statements) == 5
+    rollover = stale.sql()[2]
     assert rollover.startswith("UPDATE core.user_monthly_usage SET monthly_period=")
     assert "monthly_used=:monthly_used" in rollover  # zeroed, not carried forward
 
-    current = FakeSession(FakeResult("2026-03"), FakeResult(1))
-    await UsageDB(db(current)).try_increment(grant_id, "2026-03", 10)
-    assert len(current.statements) == 2  # the read, then the bounded increment
+    current = FakeSession(FakeResult(rows=[(grant, 10)]), FakeResult((current_period(), 1)))
+    await quota_checked_request(current, user_id)
+    assert len(current.statements) == 4  # the two reads, the increment, then the commit
 
 
 # --- The allowance is the tier's, and is not stored here ---------------------------------------
@@ -223,19 +253,21 @@ def test_the_row_is_created_in_the_transaction_that_creates_its_grant():
 @pytest.mark.asyncio
 async def test_the_quota_path_never_creates_the_row_and_fails_closed_without_one():
     """A missing row for an existing grant is a server-side data error, not a fresh counter."""
-    grant_id = uuid7()
-    session = FakeSession(FakeResult(None))
+    user_id = uuid7()
+    grant = live_grant(user_id)
+    session = FakeSession(FakeResult(rows=[(grant, 10)]), FakeResult(None))
     with pytest.raises(MissingUsageRowError):
-        await UsageDB(db(session)).try_increment(grant_id, "2026-03", 10)
+        await quota_checked_request(session, user_id)
     assert all("INSERT" not in sql for sql in session.sql())
+    assert session.commits == 0  # nothing is persisted behind a data error either
 
-    with_row = FakeSession(FakeResult("2026-03"), FakeResult(1))
-    await UsageDB(db(with_row)).try_increment(grant_id, "2026-03", 10)
+    with_row = FakeSession(FakeResult(rows=[(grant, 10)]), FakeResult((current_period(), 1)))
+    await quota_checked_request(with_row, user_id)
     assert all("INSERT" not in sql for sql in with_row.sql())
 
-    assert require_usage_row("2026-03", grant_id) == "2026-03"
+    assert require_usage_row("2026-03", grant.id) == "2026-03"
     with pytest.raises(MissingUsageRowError):
-        require_usage_row(None, grant_id)
+        require_usage_row(None, grant.id)
 
 
 # [utest->req~schema-user-monthly-usage-created-with-grant~1]

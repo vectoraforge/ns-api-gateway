@@ -68,7 +68,11 @@ async def lifespan(app: FastAPI):
     # while that store's integration is unconfigured.
     # [impl->req~sessions-named-verifier-per-callback-route~1]
     # [impl->req~sessions-no-supplementary-callback-controls~1]
-    assert_callback_configuration(registered_routes(app), environment.raw_config or {})
+    # The validated configuration is the authority here, not the YAML file: keys the deployment
+    # supplies through the environment — `apple.certs_dir` among them — are absent from the file
+    # and present only on the parsed model.
+    assert_callback_configuration(registered_routes(app), config.model_dump(),
+                                  environment.raw_config or {})
 
     # The backend mints no backend access token and keeps no server-side session tier.
     # [impl->req~sessions-no-backend-tokens-or-session-tier~1]

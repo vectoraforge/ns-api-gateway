@@ -377,17 +377,20 @@ class TestGatewayLimit:
         assert entry.route == "POST /auth/upgrade-anonymous"
 
     # [utest->req~sessions-upgrade-gateway-rate-limit~1]
-    def test_a_missing_route_key_value_or_position_is_refused(self):
+    def test_a_missing_route_key_or_position_is_refused_but_the_ceiling_is_tunable(self):
         raw = yaml.safe_load(CONFIG_PATH.read_text())["gateway_rate_limits"]
         entry = GatewayRateLimitsConfig(**raw).upgrade_anonymous
         for override in ({"route": "POST /auth/create-user"},
                          {"key": "ip"},
-                         {"limit": "300/hour"},
                          {"evaluate_after": "gateway_route_match"}):
-            # Another route, another key, another ceiling, or an earlier evaluation position is
-            # not this limit.
+            # Another route, another key, or an earlier evaluation position is not this limit.
             with pytest.raises(Exception):
                 assert_upgrade_gateway_limit(entry.model_copy(update=override))
+        # 3/hour is the shipped default, not a mandate: a retuned ceiling validates, and nothing
+        # in code substitutes the shipped value. An operator raising it raises this route's real
+        # request-rate bound, because no backend request-rate counter sits behind it.
+        for tuned in ("1/hour", "10/hour", "300/hour", "3/hour; 20/day"):
+            assert_upgrade_gateway_limit(entry.model_copy(update={"limit": tuned}))
 
     # [utest->req~sessions-upgrade-limit-before-admin-call~1]
     def test_the_limit_is_applied_before_the_firebase_admin_call(self):

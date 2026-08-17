@@ -126,14 +126,29 @@ def pubsub_oidc_verifier(verify_oidc: Callable[[str], Any]) -> CallbackVerifier:
 def registered_callback_routes(configured_integrations: Iterable[str]
                                ) -> tuple[ProviderCallbackRoute, ...]:
     """The callback routes a deployment registers: a store's route is not registered at all
-    while that store's integration is unconfigured."""
+    while that store's integration is unconfigured. The router builds its routes from this, so
+    an unconfigured store's path is absent from `app.routes` rather than registered and then
+    refused."""
     # [impl->req~sessions-named-verifier-per-callback-route~1]
     configured = set(configured_integrations)
     return tuple(route for route in PROVIDER_CALLBACK_ROUTES if route.integration in configured)
 
 
-def _configured(raw_config: Mapping[str, Any], dotted_key: str) -> bool:
-    node: Any = raw_config
+# The store integrations a callback route can belong to, named by the registry itself.
+CALLBACK_INTEGRATIONS: tuple[str, ...] = tuple(
+    dict.fromkeys(route.integration for route in PROVIDER_CALLBACK_ROUTES if route.integration))
+
+
+def configured_store_integrations(raw_config: Mapping[str, Any]) -> tuple[str, ...]:
+    """Which store integrations this deployment has configured, read from the configuration file
+    as written. An integration with no section of its own is unconfigured, and its route is
+    therefore never registered."""
+    # [impl->req~sessions-named-verifier-per-callback-route~1]
+    return tuple(name for name in CALLBACK_INTEGRATIONS if _configured(raw_config, name))
+
+
+def _configured(config: Mapping[str, Any], dotted_key: str) -> bool:
+    node: Any = config
     for part in dotted_key.split("."):
         if not isinstance(node, Mapping) or part not in node:
             return False
@@ -142,12 +157,24 @@ def _configured(raw_config: Mapping[str, Any], dotted_key: str) -> bool:
 
 
 def callback_configuration_problems(registered_paths: Sequence[tuple[str, str]],
+                                    resolved_config: Mapping[str, Any],
                                     raw_config: Mapping[str, Any]) -> list[str]:
-    """Every reason a registered provider-callback route must not serve traffic."""
+    """Every reason a registered provider-callback route must not serve traffic.
+
+    Both configuration views are required arguments, and the order is the order of authority. A
+    verifier's required configuration is looked up in `resolved_config` — the validated settings,
+    which is where a value supplied through the environment rather than through the YAML file
+    actually lands — and only then in `raw_config`, the file as written. Judging by the file alone
+    cannot tell a correctly configured deployment from an unconfigured one: it would refuse to
+    boot a deployment that supplies, say, `apple.certs_dir` as `APPLE_CERTS_DIR`. The
+    supplementary-control check reads the file, because a forbidden key there is dropped by
+    validation and would otherwise go unseen.
+    """
     # A registered route whose named verifier lacks configuration it requires is a startup
     # failure, never a route that runs with a weaker check.
     # [impl->req~sessions-named-verifier-per-callback-route~1]
     problems: list[str] = []
+    resolved = resolved_config
     registered = {(method.upper(), path) for method, path in registered_paths}
     for route in PROVIDER_CALLBACK_ROUTES:
         if (route.method, route.path) not in registered:
@@ -155,7 +182,7 @@ def callback_configuration_problems(registered_paths: Sequence[tuple[str, str]],
         if route.verifier not in NAMED_VERIFIERS:
             problems.append(f"{route.path} declares no named verifier")
         for key in route.required_config:
-            if not _configured(raw_config, key):
+            if not (_configured(resolved, key) or _configured(raw_config, key)):
                 problems.append(f"{route.path} is registered without {key}")
         # [impl->req~sessions-no-supplementary-callback-controls~1]
         section = raw_config.get(route.integration)
@@ -166,10 +193,11 @@ def callback_configuration_problems(registered_paths: Sequence[tuple[str, str]],
 
 
 def assert_callback_configuration(registered_paths: Sequence[tuple[str, str]],
+                                  resolved_config: Mapping[str, Any],
                                   raw_config: Mapping[str, Any]) -> None:
     """Startup fails closed on a registered provider-callback route that cannot verify its
     store's credential, or that carries a supplementary control instead of relying on the
     vendor's own mechanism."""
-    problems = callback_configuration_problems(registered_paths, raw_config)
+    problems = callback_configuration_problems(registered_paths, resolved_config, raw_config)
     if problems:
         raise ProviderCallbackConfigError("; ".join(sorted(set(problems))))

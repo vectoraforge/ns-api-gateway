@@ -4,10 +4,14 @@ partition, the provider-callback category, the minimum JWT acceptance policy, an
 acceptance failure does.
 """
 
+import os
 import time
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import structlog
+import yaml
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
@@ -33,6 +37,7 @@ from nativespeaker.api.auth.callbacks import (
     apple_signed_payload_verifier,
     assert_callback_configuration,
     callback_configuration_problems,
+    configured_store_integrations,
     pubsub_oidc_verifier,
     registered_callback_routes,
     verify_provider_callback,
@@ -63,6 +68,8 @@ from nativespeaker.api.auth.tokens import (
     InvalidExternalJwtError,
     JwtRejectionReason,
 )
+from nativespeaker.api.config import AppConfig, EnvironmentConfig
+from nativespeaker.api.routers import build_webhooks_router
 from unit.conftest import PUBLIC_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_token
 from unit.test_auth_barrier import (
     FakeResolver,
@@ -75,6 +82,81 @@ from unit.test_auth_barrier import (
 )
 
 TOKEN_HEADER = "Authorization"
+
+CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
+SHIPPED_RAW_CONFIG = yaml.safe_load((CONFIG_DIR / "config.yaml").read_text())
+
+# The values the shipped configuration file deliberately leaves to the deployment's environment
+# rather than writing into the file: database credentials, the Firebase project, and Apple's root
+# certificate directory.
+DEPLOYMENT_ENVIRONMENT = {
+    "DB_HOST": "db",
+    "DB_PORT": "5432",
+    "DB_USER": "nativespeaker",
+    "DB_PASSWORD": "deployment-secret",
+    "DB_NAME": "nativespeaker",
+    "JWT_PROJECT_ID": "deployment-project",
+    "JWT_API_KEY": "deployment-api-key",
+    "AUTH_SUBJECT_HASH_KEY": "deployment-subject-hash-key",
+    "APPLE_CERTS_DIR": "/etc/nativespeaker/apple-certs",
+}
+
+
+def shipped_app_config() -> AppConfig:
+    """The shipped configuration as the running service resolves it: `config/config.yaml` plus
+    the environment variables the deployment supplies for the keys the file leaves out."""
+    with patch.dict(os.environ, DEPLOYMENT_ENVIRONMENT):
+        config = EnvironmentConfig(config_dir=CONFIG_DIR).app_config
+    assert config is not None
+    return config
+
+
+def shipped_app() -> FastAPI:
+    from nativespeaker.api.app.main import app  # noqa: PLC0415
+
+    return app
+
+
+# Every provider-callback route, so the split proof runs on each of them rather than on whichever
+# one happens to be convenient.
+CALLBACK_ROUTE_CASES = [pytest.param(route, id=route.path) for route in PROVIDER_CALLBACK_ROUTES]
+
+APPLE_SIGNED_PAYLOAD = "apple.signed.payload"
+
+
+def _accepts_only_apples_jws(payload: str) -> None:
+    """A stand-in for the backend's own verification of Apple's body JWS."""
+    if payload != APPLE_SIGNED_PAYLOAD:
+        raise ProviderCallbackError("the signedPayload is not one Apple signed")
+
+
+def callback_verifiers(route: ProviderCallbackRoute) -> dict:
+    """The one named verifier this route declares, and nothing else."""
+    if route.verifier == "pubsub_oidc":
+        return {"pubsub_oidc": pubsub_oidc_verifier(_accepts_only_pubsub_oidc)}
+    return {"apple_signed_payload": apple_signed_payload_verifier(_accepts_only_apples_jws)}
+
+
+def provider_credential_material(route: ProviderCallbackRoute) -> str:
+    """The credential the calling store presents on this route."""
+    return _pubsub_oidc_token() if route.verifier == "pubsub_oidc" else APPLE_SIGNED_PAYLOAD
+
+
+def valid_credential(route: ProviderCallbackRoute) -> CallbackRequest:
+    """The store's own credential, in the field that route carries it in: `Authorization` for
+    Google's Pub/Sub push, the body JWS for Apple."""
+    if route.verifier == "pubsub_oidc":
+        return CallbackRequest(route.method, route.path,
+                               authorization=(f"Bearer {_pubsub_oidc_token()}",))
+    return CallbackRequest(route.method, route.path,
+                           body={"signedPayload": APPLE_SIGNED_PAYLOAD})
+
+
+def invalid_credential(route: ProviderCallbackRoute) -> CallbackRequest:
+    if route.verifier == "pubsub_oidc":
+        return CallbackRequest(route.method, route.path,
+                               authorization=("Bearer not-an-oidc-token",))
+    return CallbackRequest(route.method, route.path, body={"signedPayload": "not-apples-jws"})
 
 
 def callback_app(path: str = "/webhooks/google-play/rtdn") -> FastAPI:
@@ -255,9 +337,15 @@ class TestSharedEntryPoint:
         assert categories, "the shipped app registers routes"
         assert set(categories.values()) <= {RouteCategory.public, RouteCategory.authenticated,
                                             RouteCategory.provider_callback}
-        # Public means the probes and the generated documentation, and nothing else.
+        # Public means zero authentication, so the allowlist is exactly the probes. Equality, not
+        # containment: widening it is how a route ends up served anonymously by accident.
+        assert PUBLIC_ROUTES == frozenset({("GET", "/health/ready")})
         assert {path for path, category in categories.items()
-                if category is RouteCategory.public} <= {path for _, path in PUBLIC_ROUTES}
+                if category is RouteCategory.public} == {"/health/ready"}
+        # The generated schema and documentation routes are not registered at all, so neither the
+        # OpenAPI document nor Swagger UI is reachable without authentication.
+        registered = {path for _, path in registered_routes(app)}
+        assert not registered & {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 
     # [utest->req~sessions-shared-entry-point-three-way-partition~1]
     def test_a_route_wired_outside_the_entry_point_fails_loudly(self):
@@ -311,42 +399,51 @@ class TestRouteEnumerationAssertion:
         with pytest.raises(RouteCategoryError, match="more than one category"):
             assert_route_categories(FastAPI())
 
+    # The split is proved on *each* provider-callback route, not just on one of them: the four
+    # cases below are parametrized over the whole registry.
     # [utest->req~sessions-route-enumeration-assertion~1]
-    def test_a_callback_route_is_reachable_without_a_firebase_token(self):
-        app = callback_app()
+    @pytest.mark.parametrize("route", CALLBACK_ROUTE_CASES)
+    def test_a_callback_route_is_reachable_without_a_firebase_token(self, route):
+        app = callback_app(route.path)
         with TestClient(app, raise_server_exceptions=False) as client:
-            response = client.post("/webhooks/google-play/rtdn", json={"message": {}})
+            response = client.request(route.method, route.path, json={"message": {}})
         assert response.status_code == 200
         # The barrier resolved no identity for it: it is not behind the user-token barrier.
         assert response.json()["identity"] is False
 
     # [utest->req~sessions-route-enumeration-assertion~1]
-    async def test_a_callback_route_rejects_a_missing_or_invalid_provider_credential(self):
-        verifiers = {"pubsub_oidc": pubsub_oidc_verifier(_accepts_only_pubsub_oidc)}
-        missing = CallbackRequest("POST", "/webhooks/google-play/rtdn")
+    @pytest.mark.parametrize("route", CALLBACK_ROUTE_CASES)
+    async def test_a_callback_route_rejects_a_missing_or_invalid_provider_credential(self, route):
+        verifiers = callback_verifiers(route)
         with pytest.raises(ProviderCallbackError):
-            await verify_provider_callback(missing, verifiers)
-        invalid = CallbackRequest("POST", "/webhooks/google-play/rtdn",
-                                  authorization=("Bearer not-an-oidc-token",))
+            await verify_provider_callback(CallbackRequest(route.method, route.path), verifiers)
         with pytest.raises(ProviderCallbackError):
-            await verify_provider_callback(invalid, verifiers)
+            await verify_provider_callback(invalid_credential(route), verifiers)
+        # The route's own credential, presented where the route expects it, is what admits it.
+        assert await verify_provider_callback(valid_credential(route), verifiers) == route.verifier
 
     # [utest->req~sessions-route-enumeration-assertion~1]
-    async def test_a_firebase_user_token_never_stands_in_for_provider_verification(self):
-        verifiers = {"pubsub_oidc": pubsub_oidc_verifier(_accepts_only_pubsub_oidc)}
-        firebase = CallbackRequest("POST", "/webhooks/google-play/rtdn",
+    @pytest.mark.parametrize("route", CALLBACK_ROUTE_CASES)
+    async def test_a_firebase_user_token_never_stands_in_for_provider_verification(self, route):
+        # A valid Firebase user token in the `Authorization` field, and none of the store's own
+        # credential: refused by the named verifier on either route, Apple's included, whose
+        # verifier reads the body JWS and never consults `Authorization` at all.
+        firebase = CallbackRequest(route.method, route.path,
                                    authorization=(f"Bearer {make_token('u1')}",))
         with pytest.raises(ProviderCallbackError):
-            await verify_provider_callback(firebase, verifiers)
+            await verify_provider_callback(firebase, callback_verifiers(route))
 
     # [utest->req~sessions-route-enumeration-assertion~1]
-    def test_a_provider_credential_opens_no_route_behind_the_barrier(self):
+    @pytest.mark.parametrize("route", CALLBACK_ROUTE_CASES)
+    def test_a_provider_credential_opens_no_route_behind_the_barrier(self, route):
         # The Pub/Sub OIDC token is issued by Google's account issuer for the push endpoint's
-        # audience; the barrier's Firebase acceptance policy refuses it.
+        # audience, and Apple's credential is a signed payload, not an ID token at all; the
+        # barrier's Firebase acceptance policy refuses either as a bearer token.
         app = build_app([("GET", "/users/me")], resolver=FakeResolver(), writer=make_writer())
         with TestClient(app, raise_server_exceptions=False) as client:
-            response = client.get("/users/me",
-                                  headers={TOKEN_HEADER: f"Bearer {_pubsub_oidc_token()}"})
+            response = client.get(
+                "/users/me",
+                headers={TOKEN_HEADER: f"Bearer {provider_credential_material(route)}"})
         assert response.status_code == 401
         assert response.json()["code"] == "auth_required"
 
@@ -411,10 +508,43 @@ class TestProviderCallbackRoutes:
         # A registered route whose named verifier lacks its configuration fails startup closed.
         registered = [("POST", "/webhooks/app-store")]
         with pytest.raises(ProviderCallbackConfigError, match="apple.bundle_id"):
-            assert_callback_configuration(registered, {"apple": {"certs_dir": "/tmp"}})
+            assert_callback_configuration(registered, {"apple": {"certs_dir": "/tmp"}}, {})
         assert_callback_configuration(registered, {"apple": {"bundle_id": "com.example",
                                                              "environment": "sandbox",
-                                                             "certs_dir": "/tmp/certs"}})
+                                                             "certs_dir": "/tmp/certs"}}, {})
+
+    # [utest->req~sessions-named-verifier-per-callback-route~1]
+    def test_an_unconfigured_store_is_absent_from_the_routers_registered_routes(self):
+        """The router itself is built from the filtered registry, so an unconfigured store's path
+        is not in `app.routes` at all — not registered and then refused."""
+        def callback_paths(raw_config: dict) -> list[tuple[str, str]]:
+            router = build_webhooks_router(configured_store_integrations(raw_config))
+            return sorted(registered_routes(router))
+
+        assert callback_paths({"quotas": {}}) == []
+        assert callback_paths({"apple": {"bundle_id": "x"}}) == [
+            ("POST", "/webhooks/app-store")]
+        # Google Play has no configuration section of its own, so its route is never registered.
+        assert configured_store_integrations(SHIPPED_RAW_CONFIG) == ("apple",)
+
+    # [utest->req~sessions-named-verifier-per-callback-route~1]
+    def test_the_shipped_configuration_plus_its_environment_boots(self):
+        """The startup gate resolves each verifier's required configuration against the validated
+        settings, not the YAML file alone: `apple.certs_dir` is supplied as `APPLE_CERTS_DIR` and
+        never appears in `config/config.yaml`, so checking the file alone would refuse to boot a
+        correctly configured deployment."""
+        assert "certs_dir" not in SHIPPED_RAW_CONFIG["apple"]
+        resolved = shipped_app_config().model_dump()
+        registered = registered_routes(shipped_app())
+
+        assert_callback_configuration(registered, resolved, SHIPPED_RAW_CONFIG)
+        # Judging the file alone is the boot-blocking false positive this guards against.
+        assert callback_configuration_problems(registered, {}, SHIPPED_RAW_CONFIG) == [
+            "/webhooks/app-store is registered without apple.certs_dir"]
+        # And the check is still a real one: blank the resolved value and it fails closed again.
+        blank = dict(resolved, apple=dict(resolved["apple"], certs_dir=None))
+        with pytest.raises(ProviderCallbackConfigError, match="apple.certs_dir"):
+            assert_callback_configuration(registered, blank, SHIPPED_RAW_CONFIG)
 
     # [utest->req~sessions-gateway-behavior-callback-paths-only~1]
     def test_callback_treatment_applies_to_those_two_paths_and_no_others(self):
@@ -482,10 +612,13 @@ class TestProviderCallbackRoutes:
     def test_a_supplementary_control_on_a_callback_route_is_a_startup_error(self):
         base = {"bundle_id": "com.example", "environment": "sandbox", "certs_dir": "/tmp/certs"}
         registered = [("POST", "/webhooks/app-store")]
-        assert callback_configuration_problems(registered, {"apple": base}) == []
+        assert callback_configuration_problems(registered, {"apple": base},
+                                               {"apple": base}) == []
         for control in ("secret_url_token", "ip_allowlist", "mtls", "certificate_pinning"):
+            # Read from the file as written: validation would silently drop a forbidden key, so a
+            # supplementary control has to be caught where it was written.
             problems = callback_configuration_problems(
-                registered, {"apple": {**base, control: "on"}})
+                registered, {"apple": base}, {"apple": {**base, control: "on"}})
             assert any(control in problem for problem in problems), control
         assert {"secret_url_token", "ip_allowlist", "mtls"} <= SUPPLEMENTARY_CONTROLS
 

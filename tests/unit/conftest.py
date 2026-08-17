@@ -37,12 +37,12 @@ from nativespeaker.api.quota.rollover import (
 from nativespeaker.api.ratelimit.limiter import LimitDecision
 from nativespeaker.api.ratelimit.ordering import AdmissionLedger
 from nativespeaker.api.routers import (
+    build_webhooks_router,
     chats_router,
     examples_router,
     health_router,
     root_router,
     users_router,
-    webhooks_router,
 )
 from nativespeaker.api.services import ChatService, SubscriptionService
 
@@ -162,7 +162,6 @@ def mock_chats_db():
 @pytest.fixture
 def mock_usage_db():
     db = AsyncMock()
-    db.try_increment = AsyncMock(return_value=True)
     db.get_usage = AsyncMock(return_value=0)
     db.reset_usage = AsyncMock(return_value=None)
     return db
@@ -242,7 +241,7 @@ def mock_subscription_service():
 @pytest.fixture
 def webhook_client(mock_subscription_service):
     app = FastAPI()
-    app.include_router(webhooks_router)
+    app.include_router(build_webhooks_router(["apple"]))
     register_exception_handlers(app)
 
     app.dependency_overrides[get_db] = lambda: MagicMock()
@@ -305,7 +304,8 @@ def quota_request(*, method: str = "POST", path: str = "/chats",
 
 
 class FakeQuotaStore:
-    """Records the four statements the rollover sequence takes."""
+    """Records the four statements the rollover sequence takes, and the commit that ends its
+    transaction. `calls` keeps them all in the order they were made."""
 
     def __init__(self,
                  rows: Sequence[GrantRow] = (),
@@ -319,22 +319,32 @@ class FakeQuotaStore:
         self.usage_reads: list[UUID] = []
         self.rollovers: list[tuple[UUID, dict]] = []
         self.increments: list[tuple[UUID, str]] = []
+        self.commits = 0
+        self.calls: list[str] = []
 
     async def locked_grant_rows(self, user_id: UUID, now: datetime) -> Sequence[GrantRow]:
+        self.calls.append("locked_grant_rows")
         self.grant_reads.append((user_id, now))
         return self.rows
 
     async def locked_usage_row(self, grant_id: UUID) -> tuple[str, int] | None:
+        self.calls.append("locked_usage_row")
         self.usage_reads.append(grant_id)
         return self.usage
 
     async def write_rollover(self, grant_id: UUID, values) -> None:
+        self.calls.append("write_rollover")
         self.rollovers.append((grant_id, dict(values)))
 
     async def increment_usage(self, grant_id: UUID, period: str) -> None:
+        self.calls.append("increment_usage")
         self.increments.append((grant_id, period))
         if self.increment_error is not None:
             raise self.increment_error
+
+    async def commit(self) -> None:
+        self.calls.append("commit")
+        self.commits += 1
 
 
 def admitted_ledger(*, method: str = "POST", path: str = "/chats",

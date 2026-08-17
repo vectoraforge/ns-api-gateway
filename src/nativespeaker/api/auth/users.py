@@ -687,8 +687,11 @@ def assert_upgrade_gateway_limit(entry: GatewayRateLimitEntry) -> None:
         raise UsersError(f"the standalone limit is the one on {method} {path}")
     if parse_key_policy(entry.key) != UPGRADE_GATEWAY_KEY_POLICY:
         raise UsersError("the standalone limit is keyed per linked subject as issuer+subject_hash")
-    if entry.limit != UPGRADE_GATEWAY_DEFAULT_LIMIT:
-        raise UsersError(f"the shipped default is {UPGRADE_GATEWAY_DEFAULT_LIMIT} per linked subject")
+    # The ceiling itself is not checked here. 3 requests per hour is the *default*, tunable by
+    # configuration, and an operator raising it raises this route's real request-rate bound —
+    # there is no backend request-rate counter behind it to contradict. `UPGRADE_GATEWAY_DEFAULT_LIMIT`
+    # documents the shipped value and is asserted against the shipped file, never against an
+    # operator's.
     if entry.evaluate_after != GATEWAY_JWT_VERIFICATION:
         raise UsersError("the linked-subject key exists only after Envoy JWT verification")
     if CREATE_USER_PRIMARY_KEY_POLICY == UPGRADE_GATEWAY_KEY_POLICY:

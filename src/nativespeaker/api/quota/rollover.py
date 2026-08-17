@@ -156,7 +156,8 @@ class QuotaConsumption:
 
 
 class QuotaStore(Protocol):
-    """The four statements the sequence takes against the database, in this order."""
+    """The four statements the sequence takes against the database, in this order, plus the
+    commit that ends the sequence's own transaction and releases its two locks."""
 
     async def locked_grant_rows(self, user_id: UUID,
                                 now: datetime) -> Sequence[GrantRow]: ...
@@ -166,6 +167,8 @@ class QuotaStore(Protocol):
     async def write_rollover(self, grant_id: UUID, values: Mapping[str, Any]) -> None: ...
 
     async def increment_usage(self, grant_id: UUID, period: str) -> None: ...
+
+    async def commit(self) -> None: ...
 
 
 async def consume_quota(store: QuotaStore,
@@ -179,6 +182,11 @@ async def consume_quota(store: QuotaStore,
     restore for the same user queues briefly behind this transaction instead of deadlocking with
     it. The two locks are held for these few statements and released at commit, no external call
     is made while they are held, and there is no retry loop.
+
+    The commit is this sequence's own, taken before it returns: the request handler's outbound
+    model or provider call runs after the locking transaction has ended, never inside it. Leaving
+    the commit to the request-scoped session's finalizer would hold both row locks across that
+    call, which is precisely the transaction shape this sequence does not share with restore.
     """
     # [impl->req~quota-rollover-after-admission~1]
     # One captured evaluation time drives grant selection, the period computation and the usage
@@ -249,6 +257,13 @@ async def consume_quota(store: QuotaStore,
                               guarded_by=(QUOTA_ADMISSION_ENTRY,))
         await store.increment_usage(grant.grant_id, current)
         monthly_used += 1
+
+        # The sequence's own commit, the last thing it does under the locks: the grant and usage
+        # locks are gone before this function returns, so the handler's store or provider call
+        # cannot run while they are held. The lock ledger declares them released on the way out
+        # of this block, which is the same moment.
+        # [impl->req~quota-rollover-lock-scope~1]
+        await store.commit()
 
     # The locks are released at commit; the sequence adds no retry loop of its own.
     # [impl->req~quota-rollover-lock-scope~1]

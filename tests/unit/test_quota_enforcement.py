@@ -7,13 +7,16 @@ order, and the ones it must never take — are checked directly.
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import MagicMock
 from uuid import uuid7
 
 import pytest
 import yaml
 
+from nativespeaker.api.app.dependencies import require_quota
 from nativespeaker.api.auth.entitlement import AccessGrantSource, AccessGrantStatus
 from nativespeaker.api.auth.locks import ExternalCallUnderLockError, LockingPath, LockLedger
+from nativespeaker.api.database.usage import GrantsDB, QuotaStoreDB, current_period
 from nativespeaker.api.exceptions import QuotaExceededError
 from nativespeaker.api.models.subscriptions import SubscriptionStatus
 from nativespeaker.api.quota.grants import (
@@ -55,11 +58,20 @@ from nativespeaker.api.ratelimit.keys import KeyComponent
 from nativespeaker.api.ratelimit.limiter import LimitDecision
 from nativespeaker.api.ratelimit.ordering import AdmissionLedger, AdmissionOrderError
 from nativespeaker.api.ratelimit.rejection import AdmissionRejected
-from unit.conftest import FakeQuotaStore, admitted_ledger, grant_row
+from unit.conftest import FakeQuotaStore, admitted_ledger, grant_row, quota_request
+from unit.test_user_monthly_usage import FakeResult, FakeSession, db, live_grant
 
 NOW = datetime(2026, 3, 9, 12, 0, tzinfo=UTC)
 PERIOD = "2026-03"
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+
+
+def postgres_sql(statement: object) -> str:
+    """One recorded statement as PostgreSQL sees it, so the row-locking clause the sequence
+    depends on is visible — the default dialect drops the `OF` list."""
+    from sqlalchemy.dialects import postgresql  # noqa: PLC0415
+
+    return str(statement.compile(dialect=postgresql.dialect()))  # ty: ignore[unresolved-attribute]
 
 
 def ledger() -> AdmissionLedger:
@@ -456,6 +468,56 @@ async def test_the_sequence_locks_the_grant_then_the_usage_row():
     assert (locks.grant_locks, locks.usage_locks) == ((row.grant_id,), (row.grant_id,))
 
 
+# [utest->req~quota-rollover-step-01~1]
+# [utest->req~quota-rollover-step-02~1]
+@pytest.mark.asyncio
+async def test_the_two_statements_really_take_row_locks_in_that_order():
+    """`FOR UPDATE` is the whole content of steps 1 and 2, so the statements the store issues are
+    checked as compiled SQL: the grant select locks the grant row and precedes the usage select,
+    which locks the usage row."""
+    user_id = uuid7()
+    grant = live_grant(user_id)
+    session = FakeSession(FakeResult(rows=[(grant, 10)]), FakeResult((PERIOD, 0)))
+    store = QuotaStoreDB(db(session))
+    await store.locked_grant_rows(user_id, NOW)
+    await store.locked_usage_row(grant.id)
+
+    grant_select, usage_select = (postgres_sql(statement) for statement in session.statements)
+    # 1. the grant row itself is locked; the tier row it joins is configuration and is not.
+    assert "core.access_grants" in grant_select
+    assert grant_select.rstrip().endswith("FOR UPDATE OF access_grants")
+    # 2. the usage row is locked second, after its grant.
+    assert "core.user_monthly_usage" in usage_select
+    assert usage_select.rstrip().endswith("FOR UPDATE")
+
+
+# [utest->req~quota-effective-tier-step-03~1]
+# [utest->req~quota-effective-tier-step-04~1]
+@pytest.mark.asyncio
+async def test_the_read_paths_lock_nothing_read_no_subscription_and_write_nothing():
+    """Evaluation never re-reads or branches on the linked subscription's status, and no read
+    path repairs grant state: the reporting statements name no subscription table, take no lock
+    and issue no write."""
+    user_id = uuid7()
+    grant = live_grant(user_id)
+
+    effective = FakeSession(FakeResult(rows=[(grant, 10)]))
+    await GrantsDB(db(effective)).effective_grant(user_id, NOW)
+    reported = FakeSession(FakeResult(rows=[(grant, 10)]), FakeResult((PERIOD, 3)))
+    await GrantsDB(db(reported)).entitlement(user_id, NOW)
+
+    for session in (effective, reported):
+        assert session.statements, "the read path issues its statements"
+        assert session.commits == 0
+        for statement in session.statements:
+            sql = postgres_sql(statement)
+            # `core.subscriptions` is never consulted: the deferrable foreign key already
+            # guarantees an active subscription-backed grant is product-entitled.
+            assert "core.subscriptions" not in sql
+            assert "FOR UPDATE" not in sql
+            assert sql.lstrip().split(" ", 1)[0] == "SELECT"
+
+
 # [utest->req~quota-rollover-step-02~1]
 @pytest.mark.asyncio
 async def test_a_missing_usage_row_fails_closed_instead_of_minting_a_counter():
@@ -555,3 +617,28 @@ async def test_the_locks_are_held_for_these_statements_only_and_nothing_retries(
     # The client's next request is the natural retry: this transaction tried exactly once.
     assert len(aborted.increments) == 1
     assert len(aborted.grant_reads) == 1
+    assert aborted.commits == 0  # an aborted sequence commits nothing
+
+
+# [utest->req~quota-rollover-lock-scope~1]
+@pytest.mark.asyncio
+async def test_the_sequence_commits_before_the_handler_calls_a_provider():
+    """The locks are released at the sequence's own commit, which happens before it returns — so
+    the handler's outbound model call is never made while the grant and usage rows are locked."""
+    row = grant_row(monthly_credits=10)
+    store = FakeQuotaStore(rows=[row], usage=("2026-02", 4))
+    await consume_quota(store, user_id=row.user_id, ledger=ledger(), now=NOW)
+    # Four statements, then the commit that ends the transaction. Nothing follows it.
+    assert store.calls == ["locked_grant_rows", "locked_usage_row", "write_rollover",
+                           "increment_usage", "commit"]
+
+    # And on the real store the commit is the request-scoped session's own, taken inside the
+    # dependency rather than left to the session finalizer that runs after the handler.
+    user_id = uuid7()
+    grant = live_grant(user_id)
+    session = FakeSession(FakeResult(rows=[(grant, 10)]), FakeResult((current_period(), 0)))
+    user = MagicMock()
+    user.id = user_id
+    await require_quota(quota_request(), user=user, db=db(session))
+    assert session.commits == 1
+    assert session.sql()[-1] == "COMMIT"

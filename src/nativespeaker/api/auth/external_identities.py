@@ -885,22 +885,22 @@ def assert_live_provider_data_scope(point: ProviderDataReadPoint) -> ProviderDat
 
 def registered_grant_class_inputs(row: ExternalIdentityRow, *,
                                   registered_at: datetime | None,
-                                  grant_history_exhausted: bool,
-                                  live_provider: IdentityProvider | None = None) -> bool:
+                                  grant_history_exhausted: bool) -> bool:
     """Registered-grant eligibility keys on backend-stored registration state — the stored
     classification and `registered_at`, together with the account's own grant history — and never
     on live Firebase state. A user who unlinks in Firebase stays in the registered grant class,
     because the account did register and `registered_at` is set, and at most one registered grant
-    is ever claimable per account. The live `providerData` confirmation `claim_registered_grant`
-    performs on every call denies only the free grant on a mismatch: it never rewrites the stored
-    classification, and no automatic registered-to-anonymous downgrade exists anywhere."""
+    is ever claimable per account.
+
+    The other half of that rule — `claim_registered_grant`'s mandatory fail-closed `providerData`
+    confirmation of the stored binding on every call — is `confirm_registered_binding`, and lives
+    there rather than being restated here: eligibility takes no live input, so a live result
+    cannot make an ineligible account eligible or an eligible one ineligible.
+    """
     # [impl->req~sessions-registered-grant-keys-on-stored-state~1]
     stored = authoritative_provider(row, ProviderConsumer.registered_grant_gating)
     if stored not in REGISTERED_PROVIDERS or registered_at is None:
         return False
-    if live_provider is not None:
-        # A divergent live result is a conflict against this claim alone; the stored row stands.
-        assert_stored_provider_not_a_mirror(live_provider=live_provider, row=row)
     return not grant_history_exhausted
 
 

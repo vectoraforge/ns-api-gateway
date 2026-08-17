@@ -1,11 +1,12 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
+from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlmodel import select
+from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.auth.entitlement import AccessGrantSource
+from nativespeaker.api.auth.entitlement import AccessGrantSource, AccessGrantStatus
 from nativespeaker.api.models import (
     Subscription,
     SubscriptionEvent,
@@ -58,6 +59,34 @@ class SubscriptionDB:
         subscription.updated_at = datetime.now(UTC)
         self.session.add(subscription)
         await self.session.flush()
+
+    async def active_subscription_grant_id(self, subscription_id: UUID) -> UUID | None:
+        """The active `core.access_grants` row this subscription backs, or `None` when it backs
+        none. This is what a status writer must settle when it takes the subscription out of the
+        product-entitled set."""
+        # [impl->req~quota-status-writer-owns-grant-deactivation~1]
+        result = await self.session.exec(
+            select(AccessGrant).where(col(AccessGrant.subscription_id) == subscription_id,
+                                      col(AccessGrant.status) == AccessGrantStatus.active)
+        )
+        grant = result.first()
+        return grant.id if grant is not None else None
+
+    async def deactivate_grant(self,
+                               grant_id: UUID,
+                               status: AccessGrantStatus,
+                               now: datetime | None = None) -> None:
+        """Deactivate the grant, in the same transaction as the subscription status change that
+        required it. Nothing sweeps this up later: without it the deferrable foreign key from the
+        generated `active_subscription_grant_subscription_id` column would fail the commit."""
+        # [impl->req~quota-status-writer-owns-grant-deactivation~1]
+        # [impl->req~quota-subscription-grant-active-requires-entitled~2]
+        moment = now or datetime.now(UTC)
+        await self.session.exec(
+            update(AccessGrant)
+            .where(col(AccessGrant.id) == grant_id)
+            .values(status=status, ends_at=moment)
+        )
 
     async def insert_event_idempotent(self,
                                       subscription_id: UUID,

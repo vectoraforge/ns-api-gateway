@@ -12,6 +12,11 @@ from nativespeaker.api.config import AppleConfig
 from nativespeaker.api.database import SubscriptionDB
 from nativespeaker.api.exceptions import WebhookVerificationError
 from nativespeaker.api.models import SubscriptionPlan, SubscriptionProvider, SubscriptionStatus
+from nativespeaker.api.quota.grants import (
+    assert_status_writer_settled_grant,
+    is_product_entitled,
+    settled_grant_status,
+)
 from nativespeaker.api.services.firebase import FirebaseService
 
 logger = structlog.get_logger()
@@ -121,6 +126,7 @@ class SubscriptionService:
         )
 
         old_plan = subscription.plan if subscription else None
+        old_status = subscription.status if subscription else None
 
         if subscription is None:
             app_account_token = transaction.appAccountToken
@@ -163,6 +169,9 @@ class SubscriptionService:
             await self.subscriptions_db.update_subscription(
                 subscription=subscription, plan=plan, status=status
             )
+            await self._settle_grant_for_status_change(subscription.id,
+                                                       old_status=old_status,
+                                                       new_status=status)
             await self.subscriptions_db.update_user_plan(
                 user_id=subscription.user_id, plan=plan
             )
@@ -176,6 +185,43 @@ class SubscriptionService:
             subject = await self.subscriptions_db.external_subject(subscription.user_id)
             if subject:
                 await self.firebase_service.set_plan_claim(subject, plan)
+
+    async def _settle_grant_for_status_change(self,
+                                              subscription_id: UUID,
+                                              *,
+                                              old_status: SubscriptionStatus | None,
+                                              new_status: SubscriptionStatus) -> None:
+        """This notification handler is a subscription status writer, so it owns the obligation
+        the entitlement invariant places on one: a transition out of the product-entitled set
+        deactivates or replaces the active grant in the same transaction as the status change.
+
+        No reconciliation sweep does it later. Skipping it would not leave a stale grant behind
+        either — the deferrable foreign key from the grant's generated
+        `active_subscription_grant_subscription_id` column to `product_entitled_subscription_id`
+        fails the commit, so the notification would 500 and never persist the status at all.
+        """
+        # [impl->req~quota-status-writer-owns-grant-deactivation~1]
+        # [impl->req~quota-lifecycle-ingestion-single-transaction~2]
+        if old_status is None:
+            return
+        active_grant_id = await self.subscriptions_db.active_subscription_grant_id(subscription_id)
+        deactivated = False
+        if (active_grant_id is not None
+                and is_product_entitled(old_status)
+                and not is_product_entitled(new_status)):
+            await self.subscriptions_db.deactivate_grant(active_grant_id,
+                                                         settled_grant_status(new_status))
+            deactivated = True
+            logger.info("subscription_grant_settled", subscription_id=str(subscription_id),
+                        grant_id=str(active_grant_id), old_status=old_status,
+                        new_status=new_status)
+        # The writer's own check, taken on the one transaction that carries both writes.
+        assert_status_writer_settled_grant(old_status=old_status,
+                                           new_status=new_status,
+                                           active_grant_id=active_grant_id,
+                                           grant_deactivated=deactivated,
+                                           subscription_transaction=self.db,
+                                           grant_transaction=self.db)
 
     def _map_lifecycle_event(self,
                              notification_type: str,
