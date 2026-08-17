@@ -344,12 +344,17 @@ REDACTED = "[redacted]"
 # [impl->req~shared-auth-events-details-redaction~1]
 # [impl->req~schema-auth-events-details-non-secret-only~1]
 # [impl->req~schema-auth-events-challenge-row-id-non-secret~1]
+# Raw JWTs, raw `restore_proof`, raw purchase tokens, raw signed transaction payloads, raw
+# attestation blobs, raw Play Integrity verdicts, raw DeviceCheck payloads, raw attestation
+# private keys and raw device identifiers are all named here, so none of them can reach the row.
+# [impl->req~proof-no-raw-proof-material-stored~1]
 SECRET_DETAIL_FRAGMENTS: frozenset[str] = frozenset({
     "subject", "authorization", "bearer", "jwt", "id_token", "token", "secret",
     "password", "private_key", "restore_proof", "proof_payload", "receipt",
     "signed_transaction", "signed_payload", "signed_renewal", "attestation", "assertion",
     "device_id", "device_identifier", "identifier_for_vendor", "challenge_id", "nonce",
-    "credential", "api_key",
+    "credential", "api_key", "verdict", "integrity", "devicecheck", "device_check",
+    "recall_state", "purchase_token",
 })
 
 # Short names too ambiguous to match as a fragment: `sub` is the raw token subject, while

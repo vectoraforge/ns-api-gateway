@@ -20,6 +20,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from nativespeaker.api.auth.audit import SubjectHasher
+from nativespeaker.api.auth.derived_identifiers import actor_subject_preimage
 from nativespeaker.api.auth.operations import (
     CHALLENGE_BEARING_OPERATIONS,
     AuthOperation,
@@ -386,15 +387,10 @@ OUTCOME_COLUMN_NAMES: frozenset[str] = frozenset({
 CONSUMED_OUTCOME_LOG: str = "audit.auth_events"
 
 
-# The `actor_subject_hash` derivation family's domain separator. `preauth_subject_hash` is that
-# family, unchanged: same key, same prefix, same `issuer || ":" || subject` input.
-ACTOR_SUBJECT_DOMAIN = "actor-subject:v1:"
-
-
-def actor_subject_preimage(issuer: str, subject: str) -> str:
-    """`"actor-subject:v1:" || issuer || ":" || canonical_subject`, the input the family HMACs."""
-    # [impl->req~schema-auth-challenges-preauth-subject-hash-derivation~1]
-    return f"{ACTOR_SUBJECT_DOMAIN}{issuer}:{subject}"
+# The `actor_subject_hash` derivation family's domain-separated preimage is the derived-identifier
+# module's; `preauth_subject_hash` is that family, unchanged — same key, same label, same
+# `issuer || ":" || canonical_subject` input — so it is imported rather than restated here.
+# [impl->req~schema-auth-challenges-preauth-subject-hash-derivation~1]
 
 
 def preauth_subject_hash(issuer: str, subject: str, hasher: SubjectHasher) -> bytes:
