@@ -6,6 +6,7 @@ comparison, proof and provider work, then one short database-only consuming tran
 the numbered order is the rejection precedence.
 """
 
+import re
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import replace
@@ -45,6 +46,7 @@ from nativespeaker.api.auth.challenges import (
     variants_equal,
 )
 from nativespeaker.api.auth.flow import OperationMismatchError, assert_challenge_bearing
+from nativespeaker.api.auth.modes import CHALLENGE_QUERY_PARAM, CHALLENGE_QUERY_VALUE
 from nativespeaker.api.auth.operations import (
     AuthOperation,
     IdentityProvider,
@@ -53,85 +55,31 @@ from nativespeaker.api.auth.operations import (
     variants_for,
 )
 from nativespeaker.api.auth.routes import is_pre_auth_callable, requires_id_token
+from nativespeaker.api.auth.taxonomy import (
+    UnsurfacedResultError,
+    register_client_class,
+    surface,
+)
 from nativespeaker.api.exceptions import ErrorCode, ServiceError
 
+__all__ = ["ChallengeLookupUnavailableError", "ChallengeRejection", "SharedChallengeService",
+           "TransientTransactionError", "UnsurfacedResultError", "challenge_id_shape",
+           "prepare_mode_supported", "reconciliation_options", "register_client_class",
+           "surface"]
+
 # --- Taxonomy surfacing -------------------------------------------------------------------
-
-# The shared client-error taxonomy. Rejections surface through these classes alone; a
-# `core.auth_event_result` value is never exposed to the client.
-_RESULT_TO_CLIENT_CLASS: dict[AuthEventResult, ErrorCode] = {
-    AuthEventResult.invalid_external_jwt: "auth_required",
-    AuthEventResult.firebase_user_unresolved: "auth_required",
-    AuthEventResult.preauth_identity_not_allowed: "preauth_identity_not_allowed",
-    AuthEventResult.historical_identity: "account_unavailable",
-    AuthEventResult.blocked_user: "account_unavailable",
-    AuthEventResult.identity_already_linked: "identity_already_linked",
-    AuthEventResult.challenge_not_found: "challenge_required",
-    AuthEventResult.challenge_expired: "challenge_required",
-    AuthEventResult.challenge_consumed: "challenge_required",
-    AuthEventResult.challenge_identity_mismatch: "challenge_required",
-    AuthEventResult.challenge_operation_mismatch: "challenge_required",
-    AuthEventResult.proof_malformed: "proof_rejected",
-    AuthEventResult.invalid_restore_proof: "proof_rejected",
-    AuthEventResult.policy_rejected: "operation_not_allowed",
-    AuthEventResult.provider_account_already_linked: "operation_not_allowed",
-    AuthEventResult.firebase_lookup_unavailable: "verification_temporarily_unavailable",
-    AuthEventResult.verification_temporarily_unavailable: "verification_temporarily_unavailable",
-}
-
-# The only results this specification names identically on both sides. Everywhere else the
-# audited internal result must be strictly more specific than the class the client sees.
-_NAMED_IDENTICALLY: frozenset[AuthEventResult] = frozenset({
-    AuthEventResult.identity_already_linked,
-    AuthEventResult.preauth_identity_not_allowed,
-    AuthEventResult.verification_temporarily_unavailable,
-})
-
-_CLASS_STATUS: dict[str, int] = {
-    "auth_required": 401,
-    "preauth_identity_not_allowed": 403,
-    "account_unavailable": 403,
-    "identity_already_linked": 409,
-    "challenge_required": 403,
-    "proof_rejected": 403,
-    "operation_not_allowed": 403,
-    "verification_temporarily_unavailable": 503,
-}
-
-
-class UnsurfacedResultError(RuntimeError):
-    """An internal result reached the client boundary with no shared class mapped to it."""
-
-
-def surface(result: AuthEventResult) -> tuple[ErrorCode, int]:
-    """Map an internal `core.auth_event_result` onto the shared client-visible class. Fails
-    closed rather than leaking the internal value, and enforces that the audited internal result
-    is never less specific than the class returned."""
-    # [impl->req~shared-completion-taxonomy-surfacing~1]
-    client_class = _RESULT_TO_CLIENT_CLASS.get(result)
-    if client_class is None:
-        raise UnsurfacedResultError(f"{result} has no shared client-visible class")
-    if str(result) == client_class and result not in _NAMED_IDENTICALLY:
-        raise UnsurfacedResultError(f"{result} must audit more specifically than {client_class}")
-    return client_class, _CLASS_STATUS[client_class]
-
-
-def register_client_class(result: AuthEventResult, client_class: ErrorCode, status: int) -> None:
-    """Endpoint-specific response contracts add only their own post-barrier, operation-specific
-    cases; they never redefine a shared class or remap a result the shared contract owns."""
-    # [impl->req~shared-completion-taxonomy-surfacing~1]
-    if result in _RESULT_TO_CLIENT_CLASS:
-        raise UnsurfacedResultError(f"{result} already maps to a shared class")
-    if _CLASS_STATUS.get(client_class, status) != status:
-        raise UnsurfacedResultError(f"{client_class} already carries a different status")
-    _RESULT_TO_CLIENT_CLASS[result] = client_class
-    _CLASS_STATUS.setdefault(client_class, status)
 
 
 class ChallengeRejection(ServiceError):
     """A rejection on a challenge-bearing endpoint, carrying the specific internal result for
-    the audit row and the shared class for the client."""
+    the audit row and the shared class for the client. The shared client-error taxonomy lives
+    in one module and governs every authenticated route, the shared pre-handler barrier
+    included: rejections surface through those classes alone, and a `core.auth_event_result`
+    value is never exposed."""
 
+    # [impl->req~shared-completion-taxonomy-surfacing~1]
+    # [impl->req~shared-error-classes-govern-all-routes~1]
+    # [impl->req~shared-error-no-internal-results-exposed~1]
     def __init__(self, result: AuthEventResult, *, detail: str | None = None):
         self.result = result
         self.detail = detail
@@ -143,6 +91,33 @@ class ChallengeRejection(ServiceError):
 
 class TransientTransactionError(RuntimeError):
     """The consuming transaction failed transiently — a lost commit acknowledgment included."""
+
+
+class ChallengeLookupUnavailableError(ServiceError):
+    """The challenge lookup could not be completed. An infrastructure failure, never the
+    definitive `challenge_not_found`."""
+    status_code = 503
+    error_code: ErrorCode = "service_unavailable"
+
+
+_CHALLENGE_ID_SHAPE = re.compile(r"^[A-Za-z0-9_-]{22}$")
+
+
+def challenge_id_shape(challenge_id: str) -> str:
+    """The malformed-versus-unknown debugging detail, which belongs in `audit.auth_events`
+    `details`. The raw identifier is never written to the audit row and never logged."""
+    # [impl->req~shared-challenge-not-found-scope~1]
+    return "unknown_challenge_id" if _CHALLENGE_ID_SHAPE.match(challenge_id) \
+        else "malformed_challenge_id"
+
+
+def reconciliation_options() -> tuple[tuple[str, str], str]:
+    """After losing the response to a state-changing attempt the client does not replay it: it
+    calls `/auth/sync` again and uses the current resolved backend state, or calls the concrete
+    endpoint again with `challenge=true` to start a whole fresh attempt. The server offers no
+    third option, because it stores no completion result to hand back."""
+    # [impl->req~shared-single-use-client-reconciliation~1]
+    return route_for(AuthOperation.sync), f"{CHALLENGE_QUERY_PARAM}={CHALLENGE_QUERY_VALUE}"
 
 
 # --- The endpoint-specific half ------------------------------------------------------------
@@ -347,12 +322,22 @@ class SharedChallengeService:
         # [impl->req~shared-completion-step-05~1]
         # [impl->req~shared-completion-request-challenge-id~1]
         # [impl->req~shared-wire-completion-body~1]
-        row = await self._store.get(challenge_id) if challenge_id else None
+        try:
+            row = await self._store.get(challenge_id) if challenge_id else None
+        except Exception as cause:
+            # `challenge_not_found` covers only a lookup that definitively finds no row: a
+            # database outage while looking up the challenge remains the ordinary
+            # infrastructure-failure result.
+            # [impl->req~shared-challenge-not-found-scope~1]
+            raise await self._lookup_unavailable(attempt, context, cause) from None
         if row is None or not challenge_ids_equal(challenge_id, row.challenge_id):
-            # 7. an unknown `challenge_id` rejects before any consumption.
+            # 7. an unknown `challenge_id` rejects before any consumption. Whether the handle
+            # was malformed or merely unknown is a `details` field, never the raw identifier.
             # [impl->req~shared-completion-step-07~1]
+            # [impl->req~shared-challenge-not-found-scope~1]
             raise await self._reject(attempt, AttemptPhase.business,
-                                     AuthEventResult.challenge_not_found, context)
+                                     AuthEventResult.challenge_not_found, context,
+                                     detail=challenge_id_shape(challenge_id))
 
         # 6. verify the operation binding and the bound identity context. The operation, the
         # variant, the binding and the expiry are read from the server-held row and from no
@@ -374,13 +359,23 @@ class SharedChallengeService:
             raise await self._reject(attempt, AttemptPhase.business,
                                      AuthEventResult.challenge_identity_mismatch, context, row=row)
 
-        # 8. claim the row for this attempt before any endpoint-specific work runs.
+        # 8. claim the row for this attempt before any endpoint-specific work runs. Completion
+        # attempts for one `challenge_id` therefore have exactly two outcomes: this attempt
+        # claims the row, or it fails as already used right here.
         # [impl->req~shared-completion-step-08~1]
+        # [impl->req~shared-single-use-completion-outcomes~1]
         claim_attempt_id = uuid7()
         outcome = await self._store.claim(row.challenge_id, claim_attempt_id)
         if outcome is not ClaimOutcome.claimed:
-            # The claiming update is the only place expiry is evaluated, and the attempt that
-            # loses it performs no endpoint work at all.
+            # The already-used branch: it fails at the claim, before any proof verification or
+            # provider call, so it performs no provider work and causes no duplicate mutation.
+            # No stored success result is ever handed back for a claimed or consumed
+            # challenge — same-challenge replay is not allowed, and the duplicate receives the
+            # generic already-used conflict rather than the outcome of the attempt holding the
+            # claim. The claiming update is also the only place expiry is evaluated.
+            # [impl->req~shared-single-use-already-used-branch~1]
+            # [impl->req~shared-single-use-no-stored-result~1]
+            # [impl->req~shared-challenge-required-remediation~1]
             # [impl->req~shared-completion-loser-no-work~1]
             # [impl->req~shared-claimed-challenge-is-dead~1]
             result = (AuthEventResult.challenge_expired if outcome is ClaimOutcome.expired
@@ -389,8 +384,12 @@ class SharedChallengeService:
                       else AuthEventResult.challenge_consumed)
             raise await self._reject(attempt, AttemptPhase.business, result, context, row=row)
 
-        # The row this attempt now holds. From here it is dead: every exit consumes it, and it
-        # never returns to `issued`.
+        # The claim branch: this attempt claimed the challenge exactly once and now proceeds
+        # through one completion attempt for the exact challenge-bound identity context and
+        # operation. From here the row is dead — every exit consumes it, whether the
+        # operation-variant, proof and live-state checks then succeed or fail — and it never
+        # returns to `issued`.
+        # [impl->req~shared-single-use-claim-branch~1]
         # [impl->req~shared-claimed-challenge-is-dead~1]
         # [impl->req~shared-challenge-lifecycle-one-way~1]
         row = replace(row, state=advance_state(row.state, ChallengeState.claimed),
@@ -586,8 +585,22 @@ class SharedChallengeService:
                       detail: str | None = None) -> Exception:
         """Audit the rejection before the response is returned, then hand back the error. Every
         rejection inside the endpoint — barrier, prepare phase, request validation, or the
-        consuming transaction — owes that row."""
+        consuming transaction — owes that row, whether or not a mutation completed."""
         # [impl->req~shared-completion-audit-obligation~1]
+        # [impl->req~shared-rejection-audit-required~1]
+        # [impl->req~shared-rejection-audit-scope~1]
         error = ChallengeRejection(result, detail=detail)
         event = self._event(phase, result, attempt, context, row=row, detail=detail)
+        return await self._audit.record_rejection(attempt, event, error)
+
+    async def _lookup_unavailable(self, attempt: AuthAttempt,
+                                  context: VerifiedIdentityContext | None,
+                                  cause: Exception) -> Exception:
+        """An infrastructure failure looking the challenge up: audited as the ordinary internal
+        failure, never as the definitive `challenge_not_found`, and the raw identifier the
+        client sent is not part of the record."""
+        # [impl->req~shared-challenge-not-found-scope~1]
+        error = ChallengeLookupUnavailableError(str(type(cause).__name__))
+        event = self._event(AttemptPhase.business, AuthEventResult.internal_error, attempt,
+                            context, detail="challenge_lookup_unavailable")
         return await self._audit.record_rejection(attempt, event, error)

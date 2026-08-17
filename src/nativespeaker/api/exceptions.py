@@ -17,7 +17,11 @@ ErrorCode = Literal["invalid_request",
                     "challenge_required",
                     "proof_rejected",
                     "operation_not_allowed",
-                    "verification_temporarily_unavailable"]
+                    "verification_required",
+                    "device_grant_exhausted",
+                    "account_already_claimed",
+                    "verification_temporarily_unavailable",
+                    "registration_temporarily_unavailable"]
 
 
 class ServiceError(Exception):

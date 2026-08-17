@@ -33,31 +33,34 @@ from nativespeaker.api.auth.routes import (
     is_pre_auth_callable,
     resolve_route_template,
 )
+from nativespeaker.api.auth.taxonomy import client_response, surface
 from nativespeaker.api.auth.tokens import InvalidExternalJwtError, JwtRejectionReason
 from nativespeaker.api.exceptions import ServiceError
 from nativespeaker.api.models.api import ErrorResponse
 
 BEARER_PREFIX = "Bearer "
 
-_RESULT_TO_CLIENT_CLASS: dict[AuthEventResult, tuple[str, int]] = {
-    AuthEventResult.invalid_external_jwt: ("auth_required", 401),
-    AuthEventResult.preauth_identity_not_allowed: ("preauth_identity_not_allowed", 403),
-    AuthEventResult.historical_identity: ("account_unavailable", 403),
-    AuthEventResult.blocked_user: ("account_unavailable", 403),
-}
-
 
 class BarrierRejectionError(ServiceError):
-    """A barrier rejection, surfaced through the shared client-error taxonomy. The internal
-    `core.auth_event_result` is never exposed to the client."""
+    """A barrier rejection, surfaced through the shared client-error taxonomy that governs
+    every authenticated route. The internal `core.auth_event_result` is never exposed to the
+    client, and neither is the bounded rejection reason it carries for the audit row."""
 
+    # [impl->req~shared-error-classes-govern-all-routes~1]
+    # [impl->req~shared-error-no-internal-results-exposed~1]
+    # [impl->req~shared-invalid-external-jwt-reasons~1]
     def __init__(self, result: AuthEventResult, reason: str | None = None):
         self.result = result
         self.reason = reason
-        error_code, status_code = _RESULT_TO_CLIENT_CLASS[result]
-        self.error_code = error_code  # type: ignore[invalid-assignment]
+        error_code, status_code = surface(result)
+        self.error_code = error_code
         self.status_code = status_code
+        self.rejection = client_response(error_code)
         super().__init__("Authentication failed")
+
+    def body(self) -> dict[str, str]:
+        """The shared response shape: it names the class and nothing else."""
+        return self.rejection.body
 
 
 class ResolutionOutcome(StrEnum):
@@ -215,6 +218,13 @@ class AuthBarrierMiddleware(BaseHTTPMiddleware):
             try:
                 request.state.identity = await barrier.admit(
                     attempt, request.headers.getlist("authorization"))
+            except BarrierRejectionError as exc:
+                # The shared response shape, naming the class and disclosing nothing else: not
+                # the internal result, not the bounded reason, not the failed check.
+                # [impl->req~shared-error-no-internal-results-exposed~1]
+                # [impl->req~shared-invalid-external-jwt-reasons~1]
+                return JSONResponse(status_code=exc.rejection.status, content=exc.body(),
+                                    headers=exc.rejection.headers or None)
             except ServiceError as exc:
                 return JSONResponse(status_code=exc.status_code,
                                     content=ErrorResponse(code=exc.error_code).model_dump(),

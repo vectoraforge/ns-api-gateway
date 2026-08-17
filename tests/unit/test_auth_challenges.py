@@ -38,22 +38,26 @@ from nativespeaker.api.auth.challenges import (
     variants_equal,
 )
 from nativespeaker.api.auth.flow import ChallengeScopeError, dispatch_state_changing
-from nativespeaker.api.auth.modes import ModeSignalError
+from nativespeaker.api.auth.modes import ModeSignalError, RequestMode, classify_mode
 from nativespeaker.api.auth.operations import (
     AuthOperation,
     IdentityProvider,
     InvalidOperationVariantError,
+    route_for,
 )
 from nativespeaker.api.auth.procedures import (
-    _RESULT_TO_CLIENT_CLASS,
+    ChallengeLookupUnavailableError,
     ChallengeRejection,
     SharedChallengeService,
     TransientTransactionError,
     UnsurfacedResultError,
+    challenge_id_shape,
     prepare_mode_supported,
+    reconciliation_options,
     register_client_class,
     surface,
 )
+from nativespeaker.api.auth.taxonomy import RESULT_TO_CLASS
 from nativespeaker.api.database.challenges import (
     CLAIM_CHALLENGE,
     CONSUME_CHALLENGE,
@@ -1279,7 +1283,7 @@ class TestCompletionSteps:
             with pytest.raises(UnsurfacedResultError):
                 register_client_class(AuthEventResult.challenge_expired, "invalid_request", 400)
         finally:
-            _RESULT_TO_CLIENT_CLASS.pop(AuthEventResult.provider_transition_not_allowed, None)
+            RESULT_TO_CLASS.pop(AuthEventResult.provider_transition_not_allowed, None)
 
         # And a real rejection carries the specific internal result to the audit row while the
         # client sees only the shared class.
@@ -1387,3 +1391,110 @@ class TestChallengesDbStatements:
                          claim_attempt_id=uuid7(), preauth_subject_hash=None)
         db, session = _db([None, theirs])
         assert await db.consume(session, "cid", claim_attempt_id) is ConsumeOutcome.lost
+
+
+class TestSingleUseSemantics:
+    """One `challenge_id`, two possible outcomes, and no replay of either."""
+
+    # [utest->req~shared-single-use-completion-outcomes~1]
+    # [utest->req~shared-single-use-claim-branch~1]
+    async def test_the_first_attempt_claims_and_that_attempt_consumes_the_challenge(self, h):
+        row = await h.prepared(AuthOperation.claim_anonymous_grant)
+        context = linked_context(row.binding.bound_external_identity_id)
+        endpoint = h.endpoint(AuthOperation.claim_anonymous_grant)
+        await h.service.complete(AuthOperation.claim_anonymous_grant, None, row.challenge_id,
+                                 context, endpoint)
+        # It claimed the row exactly once and proceeded through one completion attempt for the
+        # challenge-bound identity context and operation.
+        assert h.store.calls.count("claim") == 1
+        assert h.store.only().state is ChallengeState.consumed
+        assert endpoint.calls == ["verify_proof", "confirm_live_state", "mutate"]
+
+    # [utest->req~shared-single-use-claim-branch~1]
+    @pytest.mark.parametrize("failure", ["proof", "live"])
+    async def test_the_claiming_attempt_consumes_the_challenge_even_when_it_then_fails(
+            self, h, failure):
+        row = await h.prepared(AuthOperation.claim_anonymous_grant)
+        context = linked_context(row.binding.bound_external_identity_id)
+        endpoint = h.endpoint(AuthOperation.claim_anonymous_grant,
+                              **{failure: AuthEventResult.policy_rejected})
+        with pytest.raises(ChallengeRejection):
+            await h.service.complete(AuthOperation.claim_anonymous_grant, None,
+                                     row.challenge_id, context, endpoint)
+        # Whether the proof or the live-state check failed, the claimed row is consumed and
+        # never returns to `issued`.
+        assert h.store.rows[row.challenge_id].state is ChallengeState.consumed
+
+    # [utest->req~shared-single-use-already-used-branch~1]
+    # [utest->req~shared-single-use-no-stored-result~1]
+    async def test_a_second_attempt_fails_at_the_claim_with_no_provider_work(self, h):
+        row = await h.prepared(AuthOperation.claim_anonymous_grant)
+        context = linked_context(row.binding.bound_external_identity_id)
+        first = await h.service.complete(AuthOperation.claim_anonymous_grant, None,
+                                         row.challenge_id, context,
+                                         h.endpoint(AuthOperation.claim_anonymous_grant))
+        duplicate = h.endpoint(AuthOperation.claim_anonymous_grant)
+        with pytest.raises(ChallengeRejection) as excinfo:
+            await h.service.complete(AuthOperation.claim_anonymous_grant, None,
+                                     row.challenge_id, context, duplicate)
+        # It failed as already used at the claim: no proof verification, no provider call, no
+        # duplicate mutation, and no stored success result handed back.
+        assert duplicate.calls == []
+        assert excinfo.value.result is AuthEventResult.challenge_consumed
+        assert excinfo.value.error_code == "challenge_required"
+        assert first["mutated"] == str(AuthOperation.claim_anonymous_grant)
+        assert not hasattr(excinfo.value, "result_body")
+
+    # [utest->req~shared-single-use-client-reconciliation~1]
+    async def test_a_lost_response_is_reconciled_by_sync_or_a_fresh_attempt(self, h):
+        sync_route, fresh_attempt_signal = reconciliation_options()
+        # `/auth/sync` is the canonical operation that re-reads the resolved backend state.
+        assert sync_route == route_for(AuthOperation.sync)
+        # And the concrete endpoint's own prepare signal starts a whole fresh attempt.
+        name, _, value = fresh_attempt_signal.partition("=")
+        assert classify_mode([(name, value)], None).mode is RequestMode.prepare
+        # The lost attempt itself is not replayable: the same challenge is refused.
+        row = await h.prepared(AuthOperation.claim_anonymous_grant)
+        context = linked_context(row.binding.bound_external_identity_id)
+        await h.service.complete(AuthOperation.claim_anonymous_grant, None, row.challenge_id,
+                                 context, h.endpoint(AuthOperation.claim_anonymous_grant))
+        with pytest.raises(ChallengeRejection):
+            await h.service.complete(AuthOperation.claim_anonymous_grant, None, row.challenge_id,
+                                     context, h.endpoint(AuthOperation.claim_anonymous_grant))
+        # A fresh prepare, by contrast, issues a whole new challenge.
+        fresh = await h.service.prepare(AuthOperation.claim_anonymous_grant, None, context,
+                                        h.endpoint(AuthOperation.claim_anonymous_grant))
+        assert fresh.challenge_id != row.challenge_id
+        assert h.store.rows[fresh.challenge_id].state is ChallengeState.issued
+
+
+class TestChallengeNotFoundScope:
+    # [utest->req~shared-challenge-not-found-scope~1]
+    async def test_only_a_definitive_missing_row_is_challenge_not_found(self, h):
+        context = linked_context()
+        with pytest.raises(ChallengeRejection) as unknown:
+            await h.service.complete(AuthOperation.claim_anonymous_grant, None,
+                                     "AAAAAAAAAAAAAAAAAAAAAA", context,
+                                     h.endpoint(AuthOperation.claim_anonymous_grant))
+        assert unknown.value.result is AuthEventResult.challenge_not_found
+        # The malformed-versus-unknown detail belongs in `details`, and the raw identifier the
+        # client sent is never part of the record.
+        assert unknown.value.detail == "unknown_challenge_id"
+        assert h.sink.events[-1].details["reason"] == "unknown_challenge_id"
+        assert challenge_id_shape("not a challenge id!") == "malformed_challenge_id"
+        assert all("AAAAAAAAAAAAAAAAAAAAAA" not in str(event.details)
+                   for event in h.sink.events)
+
+    # [utest->req~shared-challenge-not-found-scope~1]
+    async def test_a_lookup_outage_is_not_challenge_not_found(self, h):
+        async def outage(_challenge_id):
+            raise RuntimeError("connection reset by peer")
+
+        h.store.get = outage
+        with pytest.raises(ChallengeLookupUnavailableError) as excinfo:
+            await h.service.complete(AuthOperation.claim_anonymous_grant, None, "some-handle",
+                                     linked_context(),
+                                     h.endpoint(AuthOperation.claim_anonymous_grant))
+        assert excinfo.value.status_code == 503
+        # It stays the ordinary infrastructure failure in the audit trail too.
+        assert h.sink.results() == [AuthEventResult.internal_error]

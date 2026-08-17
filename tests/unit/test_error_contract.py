@@ -11,7 +11,9 @@ CONTRACT_CODES = {"invalid_request", "validation_error", "unauthorized", "not_fo
                   # Shared client-visible auth classes
                   "auth_required", "preauth_identity_not_allowed", "account_unavailable",
                   "identity_already_linked", "challenge_required", "proof_rejected",
-                  "operation_not_allowed", "verification_temporarily_unavailable"}
+                  "operation_not_allowed", "verification_required", "device_grant_exhausted",
+                  "account_already_claimed", "verification_temporarily_unavailable",
+                  "registration_temporarily_unavailable"}
 CONTRACT_STATUSES = {400, 401, 403, 404, 422, 429, 500, 503}
 
 
