@@ -156,6 +156,7 @@ def anonymous_identity_shape(row: ExternalIdentityRow,
     linked identity whose stored provider is `google` or `apple` and whose stored `provider_uid` is
     present. The stored provider is the classifier; `registered_at` is not consulted."""
     # [impl->req~grants-anon-req-identity-shape~1]
+    # [impl->req~grants-anon-entry-identity-classification~1]
     offending = sorted({name for name in consulted if "registered_at" in name})
     if offending or REGISTRATION_TIMESTAMP_INPUTS:
         raise ClaimEndpointError(f"{offending} is not an eligibility input here")
@@ -177,6 +178,7 @@ def registered_identity_linked_active(context: VerifiedIdentityContext,
                                       user_active: bool) -> ExternalIdentityRow:
     """The resolved identity must be linked and active, and its linked user must be active."""
     # [impl->req~grants-reg-req-linked-active~1]
+    # [impl->req~grants-reg-entry-barrier~1]
     if context.outcome is not ResolutionOutcome.linked:
         raise ClaimEndpointError("the registered claim needs a linked identity")
     if row.identity_state is not IdentityState.active:
@@ -192,6 +194,7 @@ def registered_provider_requirement(row: ExternalIdentityRow) -> IdentityProvide
     """The current linked external identity must have `provider = 'google'` or
     `provider = 'apple'`."""
     # [impl->req~grants-reg-req-provider-google-apple~1]
+    # [impl->req~grants-reg-entry-provider~1]
     return assert_registered_provider(row)
 
 
@@ -241,6 +244,7 @@ def anonymous_native_vendor_tokens(branch: ClaimBranch,
     and update. On Android where Device Recall is available, one untrusted Play Integrity token
     covering both the Device Recall read and write."""
     # [impl->req~grants-anon-req-native-vendor-tokens~1]
+    # [impl->req~grants-anon-entry-vendor-material~1]
     if branch not in NATIVE_BRANCHES:
         raise ClaimEndpointError(f"{branch} carries no native vendor material")
     material = ANON_NATIVE_MATERIAL[branch]
@@ -271,6 +275,7 @@ def anonymous_web_evidence(read: WebGateRead,
     requires the classified provider and sole entry's non-empty `uid` to equal the identity's stored
     provider and stored `provider_uid`."""
     # [impl->req~grants-anon-req-web-evidence~1]
+    # [impl->req~grants-anon-entry-vendor-material~1]
     if CLIENT_SUPPLIED_WEB_SIGN_IN_EVIDENCE:
         raise ClaimEndpointError("the web sign-in half is never client-supplied")
     offered = frozenset(body_evidence) if body_evidence else ANON_WEB_BODY_EVIDENCE
@@ -294,6 +299,8 @@ def assert_no_attestation_material(body: Mapping[str, Any] | None) -> None:
     """The anonymous claim request carries no App Attest proof, Android Keystore proof,
     enrolled-key proof, or `restore_proof`."""
     # [impl->req~grants-anon-req-no-attestation-material~1]
+    # [impl->req~grants-anon-entry-no-restore-proof~1]
+    # [impl->req~grants-anon-entry-no-app-attest~1]
     offending = sorted(set(body or {}) & ANON_FORBIDDEN_FIELDS)
     if offending:
         raise ClaimEndpointError(
@@ -379,6 +386,7 @@ def assert_no_registered_device_identity_proof(*,
     """No App Attest, Android Keystore proof, or device material as identity or ownership proof is
     required, accepted, or evaluated by the registered claim."""
     # [impl->req~grants-reg-req-no-device-identity-proof~1]
+    # [impl->req~grants-reg-entry-no-device-identity-proof~1]
     assert_no_device_proof_as_identity(required=required, accepted=accepted, evaluated=evaluated)
 
 
@@ -397,6 +405,7 @@ def registered_platform_proof_set(kind: ClaimBranch,
     cover, never whether the token is required.
     """
     # [impl->req~grants-reg-req-platform-proof-set~1]
+    # [impl->req~grants-reg-entry-claim-kind-proof-set~1]
     material = BRANCH_GATE_MATERIAL[kind]
     if not material:
         raise ClaimEndpointError(f"{kind} would be a claim kind with no mandatory proof set")
@@ -427,6 +436,7 @@ CLIENT_PROVIDER_ID_FIELDS: frozenset[str] = frozenset({
 def assert_no_registered_restore_proof(body: Mapping[str, Any] | None) -> None:
     """The registered claim request carries no `restore_proof`."""
     # [impl->req~grants-reg-req-no-restore-proof~1]
+    # [impl->req~grants-reg-entry-no-restore-proof~1]
     offending = sorted(set(body or {}) & REGISTERED_RESTORE_PROOF_FIELDS)
     if offending:
         raise ClaimEndpointError(f"POST /auth/claim-registered-grant takes no {offending}")
@@ -435,6 +445,7 @@ def assert_no_registered_restore_proof(body: Mapping[str, Any] | None) -> None:
 def assert_no_client_provider_identifier(body: Mapping[str, Any] | None) -> None:
     """The registered claim request carries no client-supplied provider account identifier."""
     # [impl->req~grants-reg-req-no-client-provider-id~1]
+    # [impl->req~grants-reg-entry-no-client-provider-id~1]
     offending = sorted(set(body or {}) & CLIENT_PROVIDER_ID_FIELDS)
     if offending:
         raise ClaimEndpointError(
@@ -463,6 +474,8 @@ def registered_endpoint_reads_and_enforces(row: ExternalIdentityRow,
     fail-closed Firebase Admin `providerData` confirmation of the stored binding; `POST /auth/sync`
     still performs no Firebase account lookups."""
     # [impl->req~grants-reg-endpoint-reads-and-enforces~1]
+    # [impl->req~grants-reg-entry-provider-uid~1]
+    # [impl->req~grants-reg-entry-mandatory-confirmation~1]
     assert_registered_provider(row)
     if not row.provider_uid:
         raise ClaimEndpointError("the alias is computed from the stored provider_uid")

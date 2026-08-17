@@ -337,6 +337,8 @@ def classify_anonymous_failure(condition: AnonFailureCondition) -> AnonFailure:
     conflict branch."""
     # [impl->req~grants-anon-proof-state-dependency-split~1]
     # [impl->req~grants-anon-failure-classes~1]
+    # [impl->req~grants-anon-failure-rejection-conditions~1]
+    # [impl->req~grants-anon-failure-class-mapping~1]
     assert_no_enrolled_key()
     failure = ANON_FAILURES.get(condition)
     if failure is None:
@@ -452,6 +454,8 @@ def verification_required_outcome(condition: AnonFailureCondition) -> AnonOutcom
     grant path is closed for this user state with no guarantee that another free-credit path
     succeeds."""
     # [impl->req~grants-anon-class-verification-required~1]
+    # [impl->req~grants-anon-alt-verification-required-no-alternate~1]
+    # [impl->req~grants-anon-step-03-gate-state-and-dependencies~1]
     failure = classify_anonymous_failure(condition)
     if failure.client_class is not ClientErrorClass.verification_required:
         raise GrantFailureError(f"{condition} is no durable anonymous-grant block")
@@ -478,6 +482,7 @@ def verification_temporarily_unavailable_outcome(condition: AnonFailureCondition
     `429`."""
     # [impl->req~grants-anon-class-verification-temporarily-unavailable~1]
     # [impl->req~grants-vtu-cond-device-bit-budget~1]
+    # [impl->req~grants-anon-taxonomy-shared-never-blocks-paid~1]
     failure = classify_anonymous_failure(condition)
     if failure.client_class is not ClientErrorClass.verification_temporarily_unavailable:
         raise GrantFailureError(f"{condition} is no transient dependency failure")
@@ -577,6 +582,7 @@ def retry_claim_step(step: RetryableStep,
     # [impl->req~grants-anon-retry-three-attempts~1]
     # [impl->req~grants-anon-non-retryable-immediate~1]
     # [impl->req~grants-anon-retry-budget-exhausted~1]
+    # [impl->req~grants-anon-step-03-gate-state-and-dependencies~1]
     if step not in STEP_EXHAUSTED_CONDITION:
         raise GrantFailureError(f"{step} carries no in-request retry budget")
     if attempts < 1 or attempts > ANON_RETRY_TOTAL_ATTEMPTS:
@@ -600,6 +606,7 @@ def retry_budget_exhausted(step: RetryableStep, *, grants_written: int = 0) -> C
     """The rejection a spent retry budget produces: `verification_temporarily_unavailable`, the
     step's own internal result on the audit row, and no grant."""
     # [impl->req~grants-anon-retry-budget-exhausted~1]
+    # [impl->req~grants-anon-step-03-gate-state-and-dependencies~1]
     if grants_written:
         raise GrantFailureError("a spent retry budget leaves no grant behind")
     outcome = verification_temporarily_unavailable_outcome(STEP_EXHAUSTED_CONDITION[step],
@@ -686,6 +693,7 @@ def accepted_burned_slot(cause: BurnedSlotCause,
     outcomes, and only these operational failures produce them. The remediation is the existing
     `manual` grant source: bits are never auto-cleared and nothing reconciles them."""
     # [impl->req~grants-burned-slot-accepted-outcome~1]
+    # [impl->req~grants-anon-step-08-crash-outcomes~1]
     if cause not in BURNED_SLOT_CAUSES:
         raise GrantFailureError(f"{cause} does not burn a device slot")
     if not write_confirmed:
@@ -703,6 +711,7 @@ def burned_slot_retry_outcome(branch: ClaimBranch) -> AnonOutcome:
     """The whole-claim retry after a lost write acknowledgment reads the now-set bit and returns
     `device_grant_exhausted`, even though that user received nothing."""
     # [impl->req~grants-burned-slot-accepted-outcome~1]
+    # [impl->req~grants-anon-step-08-crash-outcomes~1]
     condition = (AnonFailureCondition.ios_anonymous_bit_set
                  if branch is ClaimBranch.native_ios
                  else AnonFailureCondition.android_recall_anonymous_state_set)
@@ -834,6 +843,8 @@ def exhausted_alternate_path(row: ExternalIdentityRow,
     account grant, which requires the current user to be linked to a Google or Apple identity and
     to satisfy the registered-grant gate rules. It is a path, not a guarantee."""
     # [impl->req~grants-remediation-exhausted-alternate-path~1]
+    # [impl->req~grants-anon-alt-exhausted-to-registered~1]
+    # [impl->req~grants-anon-alt-not-guaranteed~1]
     remediation = anonymous_remediation(ClientErrorClass.device_grant_exhausted)
     if remediation.alternate_operation is None:
         raise GrantFailureError("device_grant_exhausted names an alternate free-credit path")
@@ -867,8 +878,10 @@ def vtu_registered_backstop(row: ExternalIdentityRow,
 
 # --- The client error taxonomy for the auth completion endpoints -----------------------------------
 
-# The four endpoints this taxonomy governs.
+# The four endpoints this taxonomy governs. It is one shared taxonomy across all of them, not a
+# per-endpoint error contract.
 # [impl->req~grants-taxonomy-opaque-classes~1]
+# [impl->req~grants-anon-taxonomy-shared-never-blocks-paid~1]
 COMPLETION_ENDPOINTS: dict[AuthOperation, str] = {
     AuthOperation.create_user: "/auth/create-user",
     AuthOperation.upgrade_anonymous_to_registered: "/auth/upgrade-anonymous",
@@ -929,6 +942,7 @@ def grants_client_class(result: AuthEventResult,
     re-auth, re-challenge, retry, the switch to the registered-account path, stopping on the same
     account, and waiting on a transient dependency — without any internal state leaking."""
     # [impl->req~grants-taxonomy-opaque-classes~1]
+    # [impl->req~grants-anon-failure-class-mapping~1]
     if operation not in COMPLETION_ENDPOINTS:
         raise GrantFailureError(f"{operation} is no auth completion endpoint")
     if result is AuthEventResult.succeeded:
@@ -977,6 +991,7 @@ def completion_rejection(result: AuthEventResult,
     contract. The audit row records the specific internal result — never a generic placeholder —
     and that audited value is never less specific than the class returned."""
     # [impl->req~grants-taxonomy-shared-response-shape~1]
+    # [impl->req~grants-anon-audit-specific-internal-result~1]
     client_class = grants_client_class(result, operation=operation, structural=structural)
     response = client_response(client_class, blocked_until=blocked_until)
     # The body names the class and nothing else: no internal result reaches the client.

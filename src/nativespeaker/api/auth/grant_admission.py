@@ -247,6 +247,7 @@ def anonymous_completion_admission(ledger: AdmissionLedger,
     on a vendor query for its key.
     """
     # [impl->req~grants-anon-completion-admission~1]
+    # [impl->req~grants-anon-logic-admission-applies~1]
     if not identity_resolved:
         raise GrantAdmissionError("completion admission runs after the identity is resolved")
     pair = claim_admission_pair(ClaimBranch.web, "complete")
@@ -391,6 +392,7 @@ def admission_rejection_leaves_challenge_unclaimed(attempt: AuthAttempt,
     is governed by `08-rate-limits-and-admission-control.md` and taken from there rather than
     restated here."""
     # [impl->req~grants-admission-before-challenge-claim~1]
+    # [impl->req~grants-anon-logic-admission-applies~1]
     if challenge_state is ChallengeState.claimed:
         raise GrantAdmissionError("the admission limits run before the challenge is claimed")
     rejection = AdmissionPhase(attempt, telemetry,

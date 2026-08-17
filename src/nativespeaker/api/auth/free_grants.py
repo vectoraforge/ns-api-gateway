@@ -24,7 +24,7 @@ from uuid import UUID
 
 from nativespeaker.api.auth.audit import AttemptPhase, AuthEvent, AuthEventResult, terminal_event
 from nativespeaker.api.auth.barrier import ResolutionOutcome, VerifiedIdentityContext
-from nativespeaker.api.auth.challenges import ClaimOutcome
+from nativespeaker.api.auth.challenges import ChallengeRow, ChallengeState, ClaimOutcome
 from nativespeaker.api.auth.derived_identifiers import (
     UNIQUENESS_ANCHOR,
     DerivedValue,
@@ -39,12 +39,15 @@ from nativespeaker.api.auth.external_identities import (
     IdentityError,
     IdentityState,
     NativeClaimPlatform,
+    free_grant_available,
+    mark_free_grant_consumed,
     pin_native_claim_platform,
 )
 from nativespeaker.api.auth.integration import FirebaseIntegrations
 from nativespeaker.api.auth.invariants import (
     DEVICE_CHECK_MECHANISM,
     DevicePlatform,
+    GateAlreadyConsumedError,
     GateConsumptionKind,
     ProofUse,
     ProviderAccount,
@@ -225,14 +228,45 @@ BRANCH_PLATFORM: dict[ClaimBranch, DevicePlatform] = {
 }
 
 
+# What `claim_anonymous_grant` is for, per branch: an explicit free-credit claim of the one
+# anonymous source, for a linked anonymous user on native gated by durable device state, or for a
+# linked `google`/`apple` user on web gated by the complete closed-classifier-and-stored-binding
+# `providerData` check plus the bot-check gate.
+# [impl->req~grants-anon-logic-purpose~1]
+ANONYMOUS_CLAIM_GATING: dict[ClaimBranch, tuple[str, ...]] = {
+    ClaimBranch.native_ios: ("durable_device_state",),
+    ClaimBranch.native_android: ("durable_device_state",),
+    ClaimBranch.web: ("closed_classifier_and_stored_binding_provider_data", "bot_check_gate"),
+}
+
+
 def anonymous_claim_source(branch: ClaimBranch) -> AccessGrantSource:
     """Every branch of `claim_anonymous_grant` produces one `core.access_grants` row with
     `source = 'anonymous_device_grant'` — the shared free-tier bucket, counted as the account's
-    one free entitlement whichever branch issued it."""
+    one free entitlement whichever branch issued it.
+
+    That is the whole purpose of the operation: an explicit free-credit grant claim of this one
+    source, gated on native by the durable per-device state and on web by the complete
+    closed-classifier-and-stored-binding `providerData` check plus the bot-check gate.
+    """
     # [impl->req~grants-claim-anonymous-operation~1]
+    # [impl->req~grants-anon-logic-purpose~1]
     if branch not in BRANCH_VENDOR_GATE:
         raise FreeGrantError(f"{branch} is no claim_anonymous_grant branch")
+    if branch not in ANONYMOUS_CLAIM_GATING:
+        raise FreeGrantError(f"{branch} names no anonymous-claim gate")
     return AccessGrantSource.anonymous_device_grant
+
+
+def anonymous_claim_gating(branch: ClaimBranch) -> tuple[str, ...]:
+    """What gates this branch's claim of the one anonymous source: durable device state on the
+    native platforms, and the complete `providerData` stored-binding check plus the bot-check gate
+    on web. `registered_at` gates nothing anywhere."""
+    # [impl->req~grants-anon-logic-purpose~1]
+    gating = ANONYMOUS_CLAIM_GATING.get(branch)
+    if gating is None:
+        raise FreeGrantError(f"{branch} names no anonymous-claim gate")
+    return gating
 
 
 def assert_claimant_eligible(branch: ClaimBranch, row: ExternalIdentityRow) -> IdentityProvider:
@@ -472,8 +506,10 @@ def registered_backstop(row: ExternalIdentityRow,
     device state or the web provider-account gate is exhausted, and when the platform has no
     supported anonymous platform gate at all. It requires a Google or Apple linked identity and
     no active grant other than a convertible anonymous device grant, stays subject to the
-    registered-grant gates, and is not guaranteed to succeed."""
+    registered-grant gates, and is not guaranteed to succeed: it has its own gates, so naming it as
+    the alternate path is not a promise that it will issue a grant."""
     # [impl->req~grants-anonymous-exhausted-registered-backstop~1]
+    # [impl->req~grants-anon-alt-not-guaranteed~1]
     if not anonymous_gate_exhausted:
         raise FreeGrantError("the backstop applies once the anonymous gate is closed")
     if row.provider not in REGISTERED_PROVIDERS:
@@ -588,8 +624,11 @@ def android_gate(*, device_recall_available: bool) -> tuple[str, ...] | AuthOper
 
 
 def android_anonymous_path_available(*, device_recall_available: bool) -> bool:
-    """Whether this Android client has an anonymous device-check path at all."""
+    """Whether this Android client has an anonymous device-check path at all. Where Device Recall
+    is available there is no Android-platform pre-rejection: the claim runs its gate like any
+    other."""
     # [impl->req~grants-android-device-recall-availability~1]
+    # [impl->req~grants-anon-entry-no-app-attest~1]
     return device_recall_available
 
 
@@ -1211,6 +1250,62 @@ def claim_admission_pair(branch: ClaimBranch, phase: str = "complete") -> tuple[
     return ANONYMOUS_GRANT_ADMISSION[phase]
 
 
+# --- Development and simulator bypass boundary ------------------------------------------------------
+
+
+class DeploymentEnvironment(StrEnum):
+    """The server-side deployment environments a build or configuration can name."""
+    development = "development"
+    staging = "staging"
+    production = "production"
+
+
+# The one gate that has a development and simulator bypass, and the environments that bypass may
+# exist in. Production is not one of them, so a bypass cannot reach production.
+# [impl->req~grants-devcheck-bypass-non-production-only~1]
+BYPASSABLE_GATES: frozenset[str] = frozenset({"device_check"})
+BYPASS_ENVIRONMENTS: frozenset[DeploymentEnvironment] = frozenset({
+    DeploymentEnvironment.development, DeploymentEnvironment.staging})
+# No client-supplied signal of any kind can enable the bypass — not a header, body field, token
+# claim, or anything else — and no generalized development-flag framework exists.
+CLIENT_SELECTABLE_BYPASS_SIGNALS: frozenset[str] = frozenset()
+DEVELOPMENT_FLAG_FRAMEWORKS: frozenset[str] = frozenset()
+BYPASS_ENABLED_BY: str = "server_side_build_or_configuration_state"
+
+
+def device_check_bypass_enabled(*,
+                                environment: DeploymentEnvironment,
+                                server_configured: bool,
+                                client_signals: Mapping[str, Any] | Sequence[str] = (),
+                                production_credentials: bool = False,
+                                gate: str = "device_check") -> bool:
+    """Whether the device-check gate's development or simulator bypass is in effect.
+
+    It may be in effect only in a non-production configuration that cannot reach production, and
+    only from server-side build or configuration state. Any client-supplied signal offered as an
+    enabler is a hard failure rather than an ignored input, as is a bypass configured in production
+    or alongside production service credentials. This governs the device-check gate alone: no other
+    gate — the Cloudflare gate included — gains a symmetric bypass.
+    """
+    # [impl->req~grants-devcheck-bypass-non-production-only~1]
+    if gate not in BYPASSABLE_GATES:
+        raise FreeGrantError(f"{gate} has no development or simulator bypass")
+    if DEVELOPMENT_FLAG_FRAMEWORKS or CLIENT_SELECTABLE_BYPASS_SIGNALS:
+        raise FreeGrantError("no generalized development-flag framework exists")
+    offered = sorted(client_signals)
+    if offered:
+        raise FreeGrantError(f"{offered} is client input and never enables the bypass")
+    if production_credentials:
+        raise FreeGrantError("production service credentials never enable the bypass")
+    if environment is DeploymentEnvironment.production:
+        if server_configured:
+            raise FreeGrantError("a device-check bypass cannot be enabled in production")
+        return False
+    if environment not in BYPASS_ENVIRONMENTS:
+        raise FreeGrantError(f"{environment} is no bypass environment")
+    return server_configured
+
+
 # --- The proof is not identity ---------------------------------------------------------------------
 
 # What establishes verified identity, and what never does. The gateway JWT filter is edge
@@ -1309,8 +1404,10 @@ def assert_no_enrolled_key(*,
                            participants: Sequence[str] = (),
                            uniqueness_rows: Sequence[str] = ()) -> None:
     """No App Attest proof, Android Keystore proof, enrolled-key binding or per-key uniqueness row
-    participates in `claim_anonymous_grant`."""
+    participates in `claim_anonymous_grant`: there is no App Attest proof requirement and no
+    enrolled-key binding requirement at its entry condition."""
     # [impl->req~grants-anon-rule-no-enrolled-key~1]
+    # [impl->req~grants-anon-entry-no-app-attest~1]
     if participants or uniqueness_rows or ENROLLED_KEY_PARTICIPANTS or PER_KEY_UNIQUENESS_ROWS:
         raise FreeGrantError(
             f"no enrolled key or per-key uniqueness row participates: "
@@ -1348,6 +1445,7 @@ def read_web_gate(read: WebGateRead,
     # [impl->req~grants-platform-gate-web~1]
     # [impl->req~grants-anon-rule-read-platform-gate~1]
     # [impl->req~grants-anon-rule-web-classifier-and-hash~1]
+    # [impl->req~grants-anon-step-02-read-platform-gate~1]
     # [impl->req~grants-vendor-state-never-client-supplied~1]
     row = read.row
     if not read.bot_check():
@@ -1369,8 +1467,10 @@ def read_native_gate(adapter: DeviceStateAdapter,
                      ledger: NativeClaimLedger) -> bool:
     """The native branch's gate read: verify the vendor material, then read the per-device
     anonymous-claimed state through DeviceCheck on iOS or Play Integrity plus Device Recall on
-    Android. The step order inside it is the proof adapters' mandatory sequence."""
+    Android. The step order inside it is the proof adapters' mandatory sequence: all the vendor
+    material this branch needs is required and verified up front, before the state is queried."""
     # [impl->req~grants-anon-rule-read-platform-gate~1]
+    # [impl->req~grants-anon-step-02-read-platform-gate~1]
     # [impl->req~grants-platform-gate-ios~1]
     # [impl->req~grants-platform-gate-android~1]
     operation = AuthOperation.claim_anonymous_grant
@@ -1380,9 +1480,114 @@ def read_native_gate(adapter: DeviceStateAdapter,
 
 def recall_absence_alternate() -> AuthOperation:
     """Android Device Recall state that the decoded verdict does not carry rejects the claim with
-    no grant; the registered account grant path remains the specified alternate."""
+    no grant; the registered account grant path remains the specified alternate.
+
+    The same alternate is what the client is directed to whenever it cannot present qualifying
+    native evidence at all: withheld, missing or malformed native material and a verified verdict
+    that lacks Device Recall are one `proof_rejected` outcome with one alternate, and the backend
+    never distinguishes absent capability from withheld material.
+    """
     # [impl->req~grants-anon-rule-device-recall-fails-closed~1]
+    # [impl->req~grants-anon-alt-proof-rejected-to-registered~1]
     return AuthOperation.claim_registered_grant
+
+
+# --- The operation challenge this attempt claims ---------------------------------------------------
+
+
+def assert_challenge_valid_for_claim(row: ChallengeRow,
+                                    context: VerifiedIdentityContext,
+                                    *,
+                                    now: datetime,
+                                    operation: AuthOperation =
+                                    AuthOperation.claim_anonymous_grant) -> ChallengeRow:
+    """The operation challenge the completion presents must be valid for this operation: issued
+    for it, bound to the barrier-verified identity, unexpired, and not already claimed or
+    consumed.
+
+    Every one of these is checked before the atomic claim, so a challenge that fails them is left
+    unclaimed — the identity- and operation-mismatch cases included, which reject here having made
+    no vendor call, no Cloudflare validation and no Firebase lookup. Each keeps its own specific
+    internal result under the shared `challenge_required` class.
+    """
+    # [impl->req~grants-anon-entry-challenge-valid~1]
+    if row.operation is not operation:
+        raise FreeGrantRejected(AuthEventResult.challenge_operation_mismatch, "challenge_required",
+                                f"the challenge was issued for {row.operation}")
+    bound = row.binding.bound_external_identity_id
+    if bound is None or (context.external_identity_id is not None
+                         and bound != context.external_identity_id):
+        raise FreeGrantRejected(AuthEventResult.challenge_identity_mismatch, "challenge_required",
+                                "the challenge binds another identity")
+    if row.state is not ChallengeState.issued:
+        raise FreeGrantRejected(AuthEventResult.challenge_consumed, "challenge_required",
+                                f"a {row.state} challenge cannot be claimed again")
+    if row.expires_at <= now:
+        raise FreeGrantRejected(AuthEventResult.challenge_expired, "challenge_required",
+                                "the operation challenge expired")
+    return row
+
+
+# --- The database eligibility preflight, and the invariant paths it takes --------------------------
+
+
+def active_grant_invariant_rejection(source: AccessGrantSource) -> FreeGrantRejected:
+    """An existing active grant fails the database eligibility check under the specific
+    active-grant invariant path. An active `anonymous_device_grant` is no exception and returns no
+    idempotent success: it is a structural completion-time invariant violation, audited as
+    `policy_rejected` and surfaced as `operation_not_allowed`, and no database grant may substitute
+    for or suppress the platform-gate read that ran before it."""
+    # [impl->req~grants-anon-step-04-db-eligibility~1]
+    from nativespeaker.api.auth.grant_failures import (  # noqa: PLC0415
+        StructuralBlock,
+        operation_not_allowed_block,
+    )
+
+    rejection = operation_not_allowed_block(StructuralBlock.anon_completion_invariant)
+    return FreeGrantRejected(rejection.audit_result, rejection.client_class.value,
+                             f"an active {source} grant violates the one-active-grant invariant",
+                             status_code=rejection.status)
+
+
+def reconfirm_claimant(row: ExternalIdentityRow,
+                       branch: ClaimBranch,
+                       *,
+                       web_account: WebGateAccount | None = None,
+                       consulted: Sequence[str] = ()) -> ExternalIdentityRow:
+    """The activation transaction's own reconfirmation of the claimant, under the lock.
+
+    The identity must still be active, and it must still be the same identity the gate ran
+    against: an anonymous native claimant still matching its pinned native claim platform, or a
+    registered claimant still carrying the stored Google or Apple provider and `provider_uid` the
+    native or web gate used. The permanent free-grant-consumed marker must still be unset.
+    `registered_at` is not consulted.
+    """
+    # [impl->req~grants-anon-step-06-activation-transaction~1]
+    offending = sorted(set(consulted) & NEVER_CONSULTED_FOR_ELIGIBILITY)
+    if offending:
+        raise FreeGrantError(f"{offending} is not consulted by the activation reconfirmation")
+    if row.identity_state is not IdentityState.active:
+        raise ClaimRejection(AuthEventResult.historical_identity,
+                             "the claimant identity is no longer active")
+    if not free_grant_available(row, AuthOperation.claim_anonymous_grant):
+        # The marker is authoritative for the cross-endpoint refusal, and it is permanent.
+        raise ClaimRejection(AuthEventResult.anti_abuse_already_claimed,
+                             "this account already consumed its one lifetime free grant")
+    if row.provider is IdentityProvider.anonymous:
+        # Still the same identity: an anonymous native claimant still matches its pin.
+        assert_pinned_platform_matches(row, branch)
+        return row
+    if row.provider not in REGISTERED_PROVIDERS or not row.provider_uid:
+        raise FreeGrantRejected(AuthEventResult.policy_rejected, "verification_required",
+                                "the registered claimant no longer carries its stored binding")
+    if branch is ClaimBranch.web:
+        if web_account is None:
+            raise FreeGrantError("a web activation reconfirms the account its gate resolved")
+        if (web_account.provider is not row.provider
+                or web_account.canonical_provider_account_id != row.provider_uid):
+            raise FreeGrantRejected(AuthEventResult.policy_rejected, "verification_required",
+                                    "the stored binding the web gate used no longer applies")
+    return row
 
 
 class AnonymousGrantClaim:
@@ -1429,13 +1634,27 @@ class AnonymousGrantClaim:
         if not pre_consumption_passed or not handler_admission_passed:
             raise FreeGrantError("the shared and handler-side admission checks must pass first")
 
-    def claim_challenge(self, gate: ChallengeGate) -> ClaimOutcome:
+    def claim_challenge(self, gate: ChallengeGate,
+                        *,
+                        row: ChallengeRow | None = None,
+                        context: VerifiedIdentityContext | None = None,
+                        now: datetime | None = None) -> ClaimOutcome:
         """The operation challenge is then claimed under the shared completion requirements —
-        after the barrier's checks and handler-side admission, and still before any vendor
-        call."""
+        after the barrier's checks and handler-side admission, and still before any vendor call.
+
+        Where the presented row is available, it is checked for validity for
+        `claim_anonymous_grant` first: a challenge issued for another operation, bound to another
+        identity, expired, or already claimed or consumed is rejected here and left unclaimed.
+        """
         # [impl->req~grants-anon-rule-pre-consumption-then-challenge~1]
         # [impl->req~grants-anon-mutation-challenge-claim-order~1]
+        # [impl->req~grants-anon-entry-challenge-valid~1]
         self._require(ClaimStep.admission, ClaimStep.identity_barrier)
+        if row is not None:
+            if context is None:
+                raise FreeGrantError("the challenge is checked against the barrier's own identity")
+            assert_challenge_valid_for_claim(
+                row, context, now=now if now is not None else datetime.now(UTC))
         self._record(ClaimStep.challenge_claim)
         claim = claim_challenge_before_vendor(gate.claim, vendor_calls_made=self.vendor_calls)
         if not claim.vendor_calls_allowed:
@@ -1448,11 +1667,16 @@ class AnonymousGrantClaim:
                          *,
                          offered_identity_inputs: Sequence[str] = ()) -> ExternalIdentityRow:
         """The current identity comes from the shared mandatory authentication-and-identity-
-        resolution barrier and from nothing else. It is resolved before the challenge is claimed,
-        so an identity the barrier refuses leaves the challenge unclaimed."""
+        resolution barrier and from nothing else: the barrier has backend-verified the Firebase ID
+        token from the `Authorization` header, produced `(issuer, subject)` and resolved the current
+        identity, and this handler neither re-verifies the token nor re-implements identity
+        resolution. It is resolved before the challenge is claimed, so an identity the barrier
+        refuses leaves the challenge unclaimed."""
         # [impl->req~grants-anon-rule-identity-barrier~1]
         # [impl->req~grants-anon-proof-not-identity~1]
         # [impl->req~grants-anon-mutation-challenge-claim-order~1]
+        # [impl->req~grants-anon-entry-barrier~1]
+        # [impl->req~grants-anon-step-01-resolve-identity~1]
         self._require(ClaimStep.admission)
         self._record(ClaimStep.identity_barrier)
         claim_identity(context, offered=offered_identity_inputs)
@@ -1477,10 +1701,15 @@ class AnonymousGrantClaim:
                       consulted: Sequence[str] = (),
                       verified: Sequence[str] = ()) -> ClaimBranch:
         """Select the one branch the request's evidence resolves to, verify that evidence set
-        against the vendor, and only then apply the branch's identity and pinning rules."""
+        against the vendor, and only then apply the branch's identity and pinning rules: an active
+        anonymous identity or an active `google`/`apple` registered identity on native, an active
+        registered identity on web, and — for an anonymous claimant — the identity's pinned native
+        claim platform, which rejects material from the other platform where it is already
+        pinned."""
         # [impl->req~grants-branch-selection-deterministic~1]
         # [impl->req~grants-branch-pinning-and-shared-admission~1]
         # [impl->req~grants-anon-rule-identity-barrier~1]
+        # [impl->req~grants-anon-step-01-resolve-identity~1]
         self._require(ClaimStep.identity_barrier)
         self._record(ClaimStep.branch_selection)
         branch = select_branch(evidence, declared_channel=declared_channel, consulted=consulted)
@@ -1498,12 +1727,27 @@ class AnonymousGrantClaim:
                            native: tuple[DeviceStateAdapter, Any, NativeClaimLedger] | None = None,
                            web: WebGateRead | None = None,
                            index: IdpAccountAliasIndex | None = None) -> GateReading:
-        """Read the branch's platform gate: the per-device anonymous-claimed state on native, or
-        the server-side `providerData` stored-binding check plus the server-validated Cloudflare
-        bot check on web. An already-set state or an already-consumed web gate rejects with
-        `device_grant_exhausted` and creates no grant."""
+        """Read the branch's platform gate, after completion admission and the challenge claim.
+
+        On iOS the separate DeviceCheck query and update tokens are required up front, the query
+        material is verified, and the anonymous-claimed bit is queried; on Android the one Play
+        Integrity token covering the Device Recall read and write is required and verified before
+        the anonymous-claimed state is queried; on web the Cloudflare bot check is validated, the
+        Admin client of the single configured Firebase integration is selected by matching the
+        request's backend-verified issuer, the closed classifier is applied to the complete
+        `providerData` result, the classified provider and sole entry's non-empty `uid` must equal
+        the row's stored provider and stored `provider_uid`, and the web `idp_account_hash` is
+        derived from that entry with the stored provider as the HMAC provider component. There is
+        no provider preference order, and an extra or unrecognized entry rejects rather than being
+        ignored.
+
+        An already-set native state or an already-consumed web gate audits its own specific result
+        and rejects with `device_grant_exhausted`, creating no grant.
+        """
         # [impl->req~grants-anon-rule-read-platform-gate~1]
         # [impl->req~grants-anon-rule-already-consumed-rejects~1]
+        # [impl->req~grants-anon-step-02-read-platform-gate~1]
+        # [impl->req~grants-anon-step-03-gate-state-and-dependencies~1]
         self._require(ClaimStep.branch_selection)
         self._record(ClaimStep.platform_gate)
         branch = self._branch()
@@ -1531,15 +1775,27 @@ class AnonymousGrantClaim:
                                    *,
                                    committed_free_sources: Sequence[AccessGrantSource],
                                    active_grants: int = 0,
+                                   active_sources: Sequence[AccessGrantSource] = (),
+                                   identity: ExternalIdentityRow | None = None,
                                    reconcile_vendor_state: bool = False,
                                    ledger: NativeClaimLedger | None = None) -> None:
         """After an unset native bit or a satisfied web gate, check database per-user eligibility
-        and enforce the lifetime `(user, anonymous_device_grant)` slot together with the
-        one-free-grant-per-account rule: any committed free grant of either source in the user's
-        history refuses the claim. An existing grant is an ineligible database state, not an
-        idempotent-success shortcut, and the backend must not infer, repair or reconcile vendor
-        state from it."""
+        in one lookup against the identity record's permanent free-grant-consumed marker and the
+        user's grant history, and confirm that activation would not stack a second free allowance
+        or violate the lifetime `(user, source)`, one-free-grant-per-account, or one-active-grant
+        rules.
+
+        A set marker or any committed free grant of either source refuses the claim. An existing
+        active `anonymous_device_grant` fails under the specific active-grant invariant path — it
+        is never an idempotent-success shortcut — and no database grant may substitute for or
+        suppress the platform-gate read, which is why this step cannot run before it. The check
+        runs before any vendor bit or account-gate slot is burned, so a rejection consumes neither,
+        and the backend must not infer, repair or reconcile vendor state from a grant. This is a
+        preflight: the activation transaction repeats the live checks under lock, where the lifetime
+        index's unique violation is the concurrency-safe final eligibility check.
+        """
         # [impl->req~grants-anon-rule-db-eligibility-lifetime-slot~1]
+        # [impl->req~grants-anon-step-04-db-eligibility~1]
         self._require(ClaimStep.platform_gate)
         self._record(ClaimStep.database_eligibility)
         if ledger is not None:
@@ -1547,22 +1803,38 @@ class AnonymousGrantClaim:
             ledger.record(NativeClaimStep.database_eligibility)
         if reconcile_vendor_state:
             raise FreeGrantError("no vendor state is inferred, repaired or reconciled from a grant")
+        # No bit has been written and no gate slot consumed at this point, so every rejection below
+        # burns neither.
+        if ClaimStep.native_bit_write in self.steps:
+            raise FreeGrantError("eligibility is checked before the device bit is burned")
         assert_database_bounds(committed_free_sources=committed_free_sources,
                                active_grants=active_grants)
+        if identity is not None and not free_grant_available(
+                identity, AuthOperation.claim_anonymous_grant):
+            raise ClaimRejection(AuthEventResult.anti_abuse_already_claimed,
+                                 "the permanent free-grant-consumed marker is already set")
         held = [source for source in committed_free_sources if source in FREE_GRANT_SOURCES]
         if len(held) >= LIFETIME_FREE_GRANTS_PER_ACCOUNT:
             raise ClaimRejection(AuthEventResult.anti_abuse_already_claimed,
                                  f"a committed {held[0]} grant refuses this claim")
+        active = [source for source in active_sources]
+        if active:
+            # The specific active-grant invariant path, an active anonymous grant included.
+            raise active_grant_invariant_rejection(active[0])
 
     def write_native_bit(self,
                          adapter: DeviceStateAdapter,
                          material: Any,
                          *,
                          ledger: NativeClaimLedger) -> DeviceBitWrite:
-        """On a native path, write the per-device anonymous-claimed bit with the in-request retry
-        budget and refuse with no grant on any failure, timeout, cancellation, ambiguous result or
-        inability to attempt the write. Only vendor confirmation permits activation."""
+        """On a native path, write the per-device anonymous-claimed bit before activation, with the
+        in-request retry budget, and refuse with `verification_temporarily_unavailable` and no grant
+        on any exhausted failure, timeout, cancellation, ambiguous result or inability to attempt
+        the write: the server never grants around the write. Only explicit vendor confirmation
+        permits the activation transaction, and the whole read-write-activate sequence runs in a
+        server execution context a client disconnect cannot cancel."""
         # [impl->req~grants-anon-rule-native-bit-write~1]
+        # [impl->req~grants-anon-step-05-write-bit~1]
         self._require(ClaimStep.database_eligibility)
         if self._branch() not in NATIVE_BRANCHES:
             raise FreeGrantError("only a native branch writes a per-device bit")
@@ -1595,12 +1867,17 @@ class AnonymousGrantClaim:
         claimant's now-verified `native_claim_platform` pin; the `core.user_monthly_usage` row; the
         consumption of the challenge this attempt claimed; and the success audit.
 
+        It is entered only after the confirmed native write, or after the web gates pass, and it
+        re-resolves and locks the current user, identity and live grant set before reconfirming
+        them.
+
         A rejection taken inside this transaction consumes the claimed challenge too, atomically
         with its own rejection audit: a claimed challenge is dead whatever later check failed.
         """
         # [impl->req~grants-anon-rule-activation-transaction~1]
         # [impl->req~grants-anon-rule-reconfirm-in-transaction~1]
         # [impl->req~grants-anon-rule-uncancellable-context~1]
+        # [impl->req~grants-anon-step-06-activation-transaction~1]
         # [impl->req~grants-grant-ordering-two-ledgers~2]
         branch = self._branch()
         self._require(ClaimStep.database_eligibility)
@@ -1658,6 +1935,11 @@ class AnonymousGrantClaim:
         source, platform_detail = anonymous_platform_detail(branch)
         locks.lock_user(user_id)
         lock_grant_set(locks, [grant_id])
+        # Under the lock: the user and identity are still active, the identity is still the same
+        # identity the gate ran against, and the free-grant-consumed marker is still unset.
+        # [impl->req~grants-anon-step-06-activation-transaction~1]
+        if identity_row is not None:
+            reconfirm_claimant(identity_row, branch, web_account=web_account)
         grant: dict[str, Any] = {
             "id": grant_id,
             "user_id": user_id,
@@ -1682,15 +1964,35 @@ class AnonymousGrantClaim:
                 raise FreeGrantError("a web row carries its derived idp_account_hash")
             account = ProviderAccount(provider=web_account.provider,
                                       provider_uid=web_account.canonical_provider_account_id)
-            alias = consume_free_grant_gate(index, account,
-                                            GateConsumptionKind.web_anonymous_gate, grant_id,
-                                            transaction=transaction,
-                                            grant_transaction=transaction)
+            # Resolve-or-create the canonical `core.provider_accounts` row, then insert the
+            # `web_anonymous_gate` consumption row. A conflict on the stable provider UID rolls the
+            # transaction back, audits `anti_abuse_already_claimed` and surfaces
+            # `device_grant_exhausted` — never `account_already_claimed`, which belongs to the
+            # registered gate.
+            # [impl->req~grants-anon-step-07-insert-rows~1]
+            index.register(account)
+            try:
+                alias = consume_free_grant_gate(index, account,
+                                                GateConsumptionKind.web_anonymous_gate, grant_id,
+                                                transaction=transaction,
+                                                grant_transaction=transaction)
+            except GateAlreadyConsumedError as conflict:
+                raise ClaimRejection(
+                    conflict.result,
+                    "this provider account already consumed the web anonymous gate") from None
         anti_abuse = free_grant_anti_abuse_row(
             grant_id=grant_id, source=source, platform=platform,
             idp_account_hash=alias.digest if alias is not None else None,
             idp_account_hash_key_version=alias.key_version if alias is not None else None,
             created_at=now, grant_columns=grant)
+        # The claimant identity's permanent free-grant-consumed marker, set in the transaction that
+        # commits the grant and never cleared.
+        # [impl->req~grants-anon-step-07-insert-rows~1]
+        if pinned is not None:
+            pinned = mark_free_grant_consumed(pinned, now=now if now is not None
+                                              else datetime.now(UTC),
+                                              grant_transaction=transaction,
+                                              marker_transaction=transaction)
         usage = free_grant_usage_row(grant_id, transaction=transaction, now=now)
         assert_same_transaction("claim_anonymous_grant",
                                 [transaction, transaction, transaction, transaction])

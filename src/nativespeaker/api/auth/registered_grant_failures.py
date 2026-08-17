@@ -342,6 +342,7 @@ def verification_temporarily_unavailable_conditions() -> tuple[RegClaimCondition
     confirmation fails transiently after its budget. Firebase user-not-found at that read is
     non-retryable, audited as `firebase_user_unresolved`, and surfaces as `auth_required`."""
     # [impl->req~grants-reg-class-verification-temporarily-unavailable~1]
+    # [impl->req~grants-reg-proof-vs-dependency-mapping~1]
     conditions = (RegClaimCondition.device_check_vendor_outage,
                   RegClaimCondition.firebase_provider_data_unavailable,
                   RegClaimCondition.turnstile_dependency_failed)
@@ -363,6 +364,7 @@ def proof_rejected_conditions() -> tuple[RegClaimCondition, ...]:
     error, rejected before any eligibility check, vendor call or ledger write. Server-to-server and
     Turnstile dependency failures map to `verification_temporarily_unavailable` instead."""
     # [impl->req~grants-reg-class-proof-rejected~1]
+    # [impl->req~grants-reg-proof-vs-dependency-mapping~1]
     conditions = (RegClaimCondition.incomplete_platform_proof_set,
                   RegClaimCondition.evidence_set_shape_invalid)
     for condition in conditions:
@@ -634,6 +636,7 @@ def registered_durable_rejection(client_class: ClientErrorClass) -> tuple[None, 
     `claim_registered_grant` does not promise an alternate free-credit path: continued access
     requires an active subscription or another non-free entitlement."""
     # [impl->req~grants-reg-durable-rejection-no-alternate~1]
+    # [impl->req~grants-reg-durable-rejections-final~1]
     if client_class not in DURABLE_REGISTERED_CLASSES:
         raise GrantFailureError(f"{client_class} is no durable registered-claim rejection")
     result = (AuthEventResult.idp_account_not_eligible

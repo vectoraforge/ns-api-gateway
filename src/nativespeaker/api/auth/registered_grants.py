@@ -53,8 +53,11 @@ from nativespeaker.api.auth.external_identities import (
     REGISTERED_PROVIDERS,
     ExternalIdentityRow,
     IdentityState,
+    assert_conversion_same_lineage,
     assert_raw_provider_account_store,
     assert_stored_provider_not_a_mirror,
+    free_grant_available,
+    mark_free_grant_consumed,
 )
 from nativespeaker.api.auth.free_grants import (
     ANTI_ABUSE_UNIQUENESS_DOMAIN,
@@ -166,6 +169,7 @@ def registered_grant_operation() -> RegisteredGrantDefinition:
     domain. It is the platform-independent backstop, and it never outranks a grant the user
     already holds: no ranking, no queued pending claim, and no call that drops the held grant."""
     # [impl->req~grants-registered-operation-definition~1]
+    # [impl->req~grants-reg-logic-purpose~1]
     if GRANT_VALUE_RANKINGS or PENDING_CLAIM_QUEUES or GRANT_DROPPING_CALLS:
         raise FreeGrantError("the backend ranks, queues and drops no grant for this claim")
     if ANTI_ABUSE_UNIQUENESS_DOMAIN[REGISTERED_GRANT_SOURCE] is not REGISTERED_GRANT_GATE:
@@ -200,6 +204,7 @@ def assert_registered_provider(row: ExternalIdentityRow) -> IdentityProvider:
     other provider, `anonymous` included, is audited as `idp_account_not_eligible` and rejected
     with `verification_required`."""
     # [impl->req~grants-reg-rule-provider-google-apple~1]
+    # [impl->req~grants-reg-entry-provider~1]
     if row.provider not in GRANT_PROVIDERS:
         raise FreeGrantError(f"{row.provider} is no core.identity_provider value")
     if row.provider not in REGISTERED_PROVIDERS:
@@ -228,6 +233,7 @@ def assert_no_device_proof_as_identity(*,
     """The operation must not require, accept or evaluate App Attest, Android Keystore proof, or
     any device proof as identity, ownership, or account-resolution evidence."""
     # [impl->req~grants-reg-rule-no-device-proof-as-identity~1]
+    # [impl->req~grants-reg-entry-no-device-identity-proof~1]
     if requires_attestation(AuthOperation.claim_registered_grant):
         raise FreeGrantError("the registered claim requires no attestation proof")
     offending = sorted(DEVICE_PROOF_INPUTS & (set(required) | set(accepted) | set(evaluated)))
@@ -389,6 +395,9 @@ def confirm_stored_binding_live(row: ExternalIdentityRow,
     `provider_uid`. A divergent confirmation is a conflict that mutates nothing and never rewrites
     the stored binding. Provider eligibility itself is still read from the stored column."""
     # [impl->req~grants-reg-rule-mandatory-providerdata-confirmation~1]
+    # [impl->req~grants-reg-entry-mandatory-confirmation~1]
+    # [impl->req~grants-reg-gate-compute-hash-and-confirm~1]
+    # [impl->req~grants-reg-id-mandatory-confirmation~1]
     if lookups != MANDATORY_PROVIDER_DATA_LOOKUPS:
         raise FreeGrantError("every call performs exactly one providerData confirmation")
     if not issuer_selected_admin_client:
@@ -429,6 +438,8 @@ def registered_provider_account(row: ExternalIdentityRow) -> ProviderAccount:
     canonical provider account identifier. A row with none is audited as
     `idp_account_not_eligible` and rejected with `verification_required`."""
     # [impl->req~grants-reg-rule-hash-from-stored-provider-uid~1]
+    # [impl->req~grants-reg-entry-provider-uid~1]
+    # [impl->req~grants-reg-id-canonical-provider-uid~1]
     assert_registered_provider(row)
     if not row.provider_uid:
         raise FreeGrantRejected(AuthEventResult.idp_account_not_eligible, "verification_required",
@@ -450,6 +461,7 @@ def registered_account_alias(index: IdpAccountAliasIndex,
     live in `derived_identifiers`; this is the grant operation's consumption of them, which is all
     the grants file defines."""
     # [impl->req~grants-reg-rule-hash-derivation~1]
+    # [impl->req~grants-reg-gate-compute-hash-and-confirm~1]
     # [impl->req~grants-derived-identifiers-owned-by-proof-file~1]
     label = domain_label(DerivationFamily.idp_account_hash)
     if not label.startswith("idp-account:") or not label.endswith(":"):
@@ -468,6 +480,8 @@ def consume_registered_gate(index: IdpAccountAliasIndex,
     inserts the `registered_account_grant` gate-consumption row. A consumption conflict is audited
     as `idp_account_already_claimed` and rejected with `account_already_claimed`."""
     # [impl->req~grants-reg-rule-gate-consumption-uniqueness~1]
+    # [impl->req~grants-reg-txn-step-05-gate-consumption~1]
+    # [impl->req~grants-reg-id-gate-conflict-mapping~1]
     index.register(account)
     try:
         return consume_free_grant_gate(index, account, REGISTERED_GRANT_GATE, grant_id,
@@ -571,6 +585,7 @@ def assert_one_active_grant(*,
     """The operation preserves the one-active-grant-per-user invariant and never creates a second
     free-credit allowance for the same user."""
     # [impl->req~grants-reg-rule-one-active-grant~1]
+    # [impl->req~grants-reg-never-second-allowance~1]
     if second_allowance:
         raise FreeGrantError("the operation never creates a second free-credit allowance")
     if active_after > MAX_ACTIVE_GRANTS_PER_USER:
@@ -682,6 +697,7 @@ def select_destination(*,
     # [impl->req~grants-dest-incompatible-active-grant~1]
     # [impl->req~grants-dest-supersession-conversion~1]
     # [impl->req~grants-dest-new-grant-creation~1]
+    # [impl->req~grants-reg-txn-step-02-select-destination~1]
     lapsed = lapsed_active_grants(grants, now)
     effective = sum(1 for grant in grants if is_effective(grant, now))
     repeat = committed_registered_grant(grants)
@@ -798,7 +814,9 @@ REGISTERED_CLAIM_STEPS: tuple[RegisteredClaimStep, ...] = tuple(RegisteredClaimS
 
 @dataclass(frozen=True, slots=True)
 class RegisteredActivation:
-    """The rows one completion transaction wrote, and the audit record it appended."""
+    """The rows one completion transaction wrote, and the audit record it appended. `identity` is
+    the claimant's identity row as the transaction leaves it, carrying the permanent
+    free-grant-consumed marker."""
     destination: RegisteredDestination
     grant: dict[str, Any]
     anti_abuse: dict[str, Any]
@@ -807,6 +825,105 @@ class RegisteredActivation:
     audit: AuthEvent
     superseded: dict[str, Any] | None = None
     lapsed_grant_ids: tuple[UUID, ...] = ()
+    identity: ExternalIdentityRow | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RegisteredGrantState:
+    """What the completion returns: the active registered grant, its tier, and the current usage
+    state of that grant."""
+    grant_id: UUID
+    status: AccessGrantStatus
+    tier_id: str
+    monthly_period: str
+    monthly_used: int
+
+
+def returned_grant_state(activation: RegisteredActivation) -> RegisteredGrantState:
+    """Step 7: return the active registered grant, tier, and current usage state. A mutating
+    destination returns the row it just wrote and that row's own usage state — for the conversion
+    path, the allowance carried across from the superseded grant."""
+    # [impl->req~grants-reg-txn-step-07-return-grant~1]
+    grant = activation.grant
+    if grant["status"] is not AccessGrantStatus.active:
+        raise FreeGrantError("the completion returns the active registered grant")
+    if grant["source"] is not REGISTERED_GRANT_SOURCE:
+        raise FreeGrantError("the completion returns this operation's own grant")
+    usage = activation.usage
+    if usage.grant_id != grant["id"]:
+        raise FreeGrantError("the usage state returned is the returned grant's own")
+    return RegisteredGrantState(grant_id=grant["id"], status=grant["status"],
+                                tier_id=grant["tier_id"], monthly_period=usage.monthly_period,
+                                monthly_used=usage.monthly_used)
+
+
+def repeated_grant_state(grant: GrantRow, usage: tuple[str, int]) -> RegisteredGrantState:
+    """The same three things for the idempotent repeat, which writes nothing and returns the held
+    registered grant's live state."""
+    # [impl->req~grants-reg-txn-step-07-return-grant~1]
+    if grant.source is not REGISTERED_GRANT_SOURCE:
+        raise FreeGrantError("the repeat returns the user's own registered grant")
+    period, used = usage
+    return RegisteredGrantState(grant_id=grant.grant_id, status=grant.status,
+                                tier_id=grant.tier_id, monthly_period=period, monthly_used=used)
+
+
+# Deferred foreign keys are checked once, at commit, and never relaxed per statement.
+DEFERRED_KEY_CHECK_POINT: str = "commit"
+
+
+def assert_deferred_keys_checked_at_commit(transaction: object,
+                                          *, check_point: str = DEFERRED_KEY_CHECK_POINT) -> None:
+    """All deferred foreign keys are checked at commit of this one transaction, so the composite and
+    generated-column foreign keys, the one-active-grant-per-user index and the lifetime free-grant
+    index keep the declarative behavior table semantics describes."""
+    # [impl->req~grants-reg-txn-step-05-gate-consumption~1]
+    if transaction is None:
+        raise FreeGrantError("the deferred keys are checked at this transaction's commit")
+    if check_point != DEFERRED_KEY_CHECK_POINT:
+        raise FreeGrantError(f"deferred keys are checked at {DEFERRED_KEY_CHECK_POINT}")
+
+
+def reconfirm_registered_claimant(row: ExternalIdentityRow,
+                                  account: ProviderAccount,
+                                  moment: datetime,
+                                  *,
+                                  destination: RegisteredDestination) -> ExternalIdentityRow:
+    """Step 1's reconfirmation, under the lock the completion transaction just took.
+
+    The user must be active and unblocked, the identity active rather than historical, and the exact
+    stored provider, `provider_uid` and registered state the hash used must still apply. Any
+    inactive or blocked user or historical identity keeps its own distinct internal result under the
+    shared `account_unavailable` class, and no grant mutation happens.
+
+    Step 2's free-grant-consumed reconfirmation runs with it: a new issuance needs the marker unset,
+    while the conversion transitions the same already-marked lineage rather than issuing a second
+    allowance.
+    """
+    # [impl->req~grants-reg-txn-step-01-lock-and-reconfirm~1]
+    # [impl->req~grants-reg-txn-step-02-select-destination~1]
+    if row.identity_state is not IdentityState.active:
+        raise registered_claim_rejected(AuthEventResult.historical_identity,
+                                        "the claimant identity is no longer active")
+    assert_registered_provider(row)
+    if not row.provider_uid or row.provider_uid != account.provider_uid \
+            or row.provider is not account.provider:
+        raise FreeGrantError("the stored binding the hash used no longer applies")
+    if destination is RegisteredDestination.supersession_conversion:
+        # The conversion transitions the lineage the anonymous grant opened rather than issuing a
+        # second allowance, so a marker that is already set is exactly what it expects — and it must
+        # not post-date the conversion. A lineage carrying no marker yet takes one below.
+        if row.free_grant_consumed_at is not None:
+            assert_conversion_same_lineage(row, converted_at=moment)
+    elif not free_grant_available(row, AuthOperation.claim_registered_grant):
+        from nativespeaker.api.auth.registered_grant_failures import (  # noqa: PLC0415
+            RegClaimCondition,
+        )
+
+        raise registered_condition_rejected(
+            RegClaimCondition.structural_policy_block,
+            "this account already consumed its one lifetime free grant")
+    return row
 
 
 class RegisteredGrantClaim:
@@ -873,7 +990,16 @@ class RegisteredGrantClaim:
 
     def claim_challenge(self, claim: Callable[[], ClaimOutcome]) -> ClaimOutcome:
         """The operation challenge is claimed under the shared completion requirements — after the
-        barrier's checks and completion admission, and still before any vendor call."""
+        barrier's checks and completion admission, and still before any vendor call.
+
+        The mandatory `providerData` confirmation, the device-checked kinds' bit read and write, and
+        the Turnstile validation all run after this claim. IDP-account derivation is the exception:
+        completion admission is keyed on `user + idp_account_hash`, so the alias is derived from the
+        stored provider and stored `provider_uid` before that admission check and therefore before
+        the claim — it needs no Firebase and no vendor call, so deriving it early spends nothing. A
+        duplicate that loses the claim is rejected here, having spent neither.
+        """
+        # [impl->req~grants-reg-mutation-challenge-claim-order~1]
         self._require(RegisteredClaimStep.admission, RegisteredClaimStep.identity_barrier)
         self._record(RegisteredClaimStep.challenge_claim)
         if self.vendor_calls or self.provider_data_lookups:
@@ -900,6 +1026,8 @@ class RegisteredGrantClaim:
         """
         # [impl->req~grants-reg-rule-identity-barrier~1]
         # [impl->req~grants-reg-class-account-unavailable~1]
+        # [impl->req~grants-reg-entry-barrier~1]
+        # [impl->req~grants-reg-gate-resolve-identity~1]
         self._require(RegisteredClaimStep.admission)
         self._record(RegisteredClaimStep.identity_barrier)
         if not context.issuer or not context.subject:
@@ -930,6 +1058,8 @@ class RegisteredGrantClaim:
         """Resolve the one complete claim kind server-side, before any eligibility check, vendor
         call or ledger write."""
         # [impl->req~grants-reg-rule-server-owned-claim-kind~1]
+        # [impl->req~grants-reg-entry-claim-kind-proof-set~1]
+        # [impl->req~grants-reg-gate-resolve-claim-kind~1]
         self._require(RegisteredClaimStep.identity_barrier)
         self._record(RegisteredClaimStep.claim_kind)
         if self.vendor_calls or self.provider_data_lookups:
@@ -949,6 +1079,8 @@ class RegisteredGrantClaim:
         stored provider and stored `provider_uid`."""
         # [impl->req~grants-reg-rule-mandatory-providerdata-confirmation~1]
         # [impl->req~grants-reg-rule-hash-from-stored-provider-uid~1]
+        # [impl->req~grants-reg-gate-compute-hash-and-confirm~1]
+        # [impl->req~grants-reg-entry-mandatory-confirmation~1]
         self._require(RegisteredClaimStep.claim_kind)
         self._record(RegisteredClaimStep.provider_data_confirmation)
         account = registered_provider_account(row)
@@ -1047,6 +1179,7 @@ class RegisteredGrantClaim:
         check the account's own grant history and select the one destination."""
         # [impl->req~grants-reg-rule-account-grant-history~1]
         # [impl->req~grants-dest-incompatible-active-grant~1]
+        # [impl->req~grants-reg-gate-db-history-destination~1]
         self._require(RegisteredClaimStep.device_state_read)
         self._record(RegisteredClaimStep.database_eligibility)
         if ledger is not None:
@@ -1108,10 +1241,15 @@ class RegisteredGrantClaim:
         creation inserts the same rows with a fresh usage row for the current period and
         `monthly_used = 0`. Either way exactly one destination executes, and the whole transaction
         rolls back on any insertion failure or uniqueness conflict.
+
+        It is entered only after the confirmed write on a device-checked kind, or after the database
+        preflight and the mandatory Turnstile validation on the web kind.
         """
         # [impl->req~grants-dest-supersession-conversion~1]
         # [impl->req~grants-dest-new-grant-creation~1]
         # [impl->req~grants-reg-rule-one-active-grant~1]
+        # [impl->req~grants-reg-completion-transaction-entry~1]
+        # [impl->req~grants-reg-never-second-allowance~1]
         self._require(RegisteredClaimStep.database_eligibility)
         decision = self.decision
         account = self.account
@@ -1147,6 +1285,8 @@ class RegisteredGrantClaim:
             if superseded is None:
                 raise FreeGrantError("the conversion path supersedes one anonymous grant")
             lock_grant_set(locks, sorted({superseded.grant_id, grant_id}))
+            reconfirm_registered_claimant(row, account, moment,
+                                          destination=decision.destination)
             assert_grant_source_never_rewritten(superseded.source, superseded.source)
             assert_registered_conversion(superseded_source=superseded.source,
                                          created_source=REGISTERED_GRANT_SOURCE,
@@ -1166,6 +1306,8 @@ class RegisteredGrantClaim:
             carried = carried_usage
         else:
             lock_grant_set(locks, [grant_id])
+            reconfirm_registered_claimant(row, account, moment,
+                                          destination=decision.destination)
         grant: dict[str, Any] = {
             "id": grant_id,
             "user_id": row.user_id,
@@ -1197,9 +1339,22 @@ class RegisteredGrantClaim:
             idp_account_hash_key_version=alias.key_version,
             created_at=moment, grant_columns=grant)
         assert_no_raw_provider_ids(columns=anti_abuse)
+        # The conversion path carries the superseded grant's `monthly_period` and `monthly_used`
+        # across unchanged; the new-grant path opens the current period at `monthly_used = 0`.
+        # [impl->req~grants-reg-txn-step-03-supersession-conversion~1]
+        # [impl->req~grants-reg-txn-step-04-new-grant-creation~1]
+        # [impl->req~grants-inherit-conversion-carryover~1]
+        # [impl->req~grants-inherit-new-grant-zero-used~1]
         usage = new_usage_row(grant_id, now=moment, carried=carried,
                               grant_transaction=transaction, usage_transaction=transaction)
+        # The identity record's permanent free-grant-consumed marker, set where not already set, in
+        # this same transaction — then the deferred foreign keys are checked at commit.
+        # [impl->req~grants-reg-txn-step-05-gate-consumption~1]
+        marked = mark_free_grant_consumed(row, now=moment, grant_transaction=transaction,
+                                          marker_transaction=transaction)
+        assert_deferred_keys_checked_at_commit(transaction)
         assert_same_transaction("claim_registered_grant", [transaction] * 4)
+        # [impl->req~grants-reg-txn-step-06-consume-challenge-audit~1]
         if not consume_challenge():
             raise FreeGrantError("the challenge this attempt claimed is consumed exactly once")
         audit = terminal_event(AttemptPhase.success, AuthEventResult.succeeded,
@@ -1211,7 +1366,8 @@ class RegisteredGrantClaim:
         return RegisteredActivation(destination=decision.destination, grant=grant,
                                     anti_abuse=anti_abuse, usage=usage, alias=alias, audit=audit,
                                     superseded=superseded_row,
-                                    lapsed_grant_ids=decision.lapsed_grant_ids)
+                                    lapsed_grant_ids=decision.lapsed_grant_ids,
+                                    identity=marked)
 
     def repeat(self,
                row: ExternalIdentityRow,
@@ -1260,6 +1416,7 @@ def supersession_write_order(activation: RegisteredActivation) -> tuple[str, ...
     the registered row is inserted, so one-active-grant-per-user holds throughout. Its
     `source` stays `anonymous_device_grant` forever and its anti-abuse row is left untouched."""
     # [impl->req~grants-dest-supersession-conversion~1]
+    # [impl->req~grants-reg-txn-step-03-supersession-conversion~1]
     if activation.destination is not RegisteredDestination.supersession_conversion:
         raise FreeGrantError("only the conversion path supersedes a grant")
     superseded = activation.superseded
