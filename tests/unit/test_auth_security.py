@@ -52,12 +52,12 @@ class TestBearerTokenEdgeCases:
         assert response.status_code == 401
         assert response.json()["code"] == "auth_required"
 
-    def test_bearer_lowercase_rejected(self, dep_client):
-        """Lowercase 'bearer' is rejected -- case-sensitive check."""
+    # [utest->req~sessions-wire-bearer-scheme-case~1]
+    def test_bearer_lowercase_is_accepted(self, dep_client):
+        """The scheme name matches case-insensitively, per RFC 6750."""
         response = dep_client.get("/protected",
                                   headers={"Authorization": "bearer " + make_token()})
-        assert response.status_code == 401
-        assert response.json()["code"] == "auth_required"
+        assert response.status_code == 200
 
     def test_a_second_authorization_header_is_rejected(self, dep_client):
         """The header is the sole identity carrier: exactly one field, never two."""

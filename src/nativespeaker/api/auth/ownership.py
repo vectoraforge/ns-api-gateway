@@ -38,7 +38,10 @@ def ownership_violations(metadata: Any) -> list[str]:
         name = table.name
         for column in table.columns:
             targets = {fk.target_fullname for fk in column.foreign_keys}
+            # Business ownership remains through `core.users.id`: no business table keys
+            # ownership on an external subject (`sub`, `uid`, ...).
             # [impl->req~shared-no-external-subject-ownership~1]
+            # [impl->req~sessions-no-external-subject-ownership~1]
             if name not in IDENTITY_TABLES and column.name in EXTERNAL_SUBJECT_COLUMNS:
                 violations.append(
                     f"{name}.{column.name} uses an external subject as an ownership key")
@@ -49,6 +52,7 @@ def ownership_violations(metadata: Any) -> list[str]:
             # introductory allocation state always belong to internal `core.users.id`; monthly
             # usage counters belong to `core.access_grants.id`.
             # [impl->req~shared-ownership-key-users-id~1]
+            # [impl->req~sessions-users-id-sole-ownership-key~1]
             # [impl->req~schema-invariant-01~1]
             if column.name.endswith(_OWNER_COLUMN_SUFFIX) and targets:
                 if name in GRANT_OWNED_TABLES:

@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from dataclasses import fields
 
 import firebase_admin
 import structlog
@@ -8,11 +9,21 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth.audit import AuthAuditWriter, AuthResultCounter, KeyedSubjectHasher
-from nativespeaker.api.auth.barrier import AuthBarrier
+from nativespeaker.api.auth.audit import (
+    AuthAuditWriter,
+    AuthResultCounter,
+    InvalidExternalJwtAlerting,
+    KeyedSubjectHasher,
+)
+from nativespeaker.api.auth.barrier import AuthBarrier, VerifiedIdentityContext
+from nativespeaker.api.auth.callbacks import assert_callback_configuration
 from nativespeaker.api.auth.integration import build_firebase_integrations
 from nativespeaker.api.auth.ownership import assert_ownership_keys
-from nativespeaker.api.auth.routes import assert_route_categories
+from nativespeaker.api.auth.routes import (
+    assert_route_categories,
+    backend_credential_violations,
+    registered_routes,
+)
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.database import AccessTiersDB, AuthEventsDB, IdentityResolverDB
 from nativespeaker.api.logs import setup_logging
@@ -50,6 +61,20 @@ async def lifespan(app: FastAPI):
     # Fail closed on route-category and ownership-key violations before serving traffic
     assert_route_categories(app)
     assert_ownership_keys(SQLModel.metadata)
+
+    # A registered provider-callback route must be able to verify its store's own credential,
+    # and carries no supplementary control instead: a store's route is not registered at all
+    # while that store's integration is unconfigured.
+    # [impl->req~sessions-named-verifier-per-callback-route~1]
+    # [impl->req~sessions-no-supplementary-callback-controls~1]
+    assert_callback_configuration(registered_routes(app), environment.raw_config or {})
+
+    # The backend mints no backend access token and keeps no server-side session tier.
+    # [impl->req~sessions-no-backend-tokens-or-session-tier~1]
+    credential_violations = backend_credential_violations(
+        registered_routes(app), [f.name for f in fields(VerifiedIdentityContext)])
+    if credential_violations:
+        raise RuntimeError("; ".join(sorted(credential_violations)))
 
     # Fail closed on a rate-limit configuration this specification cannot serve: a missing
     # named entry, a forbidden one, or a security-sensitive control configured fail-open.
@@ -110,7 +135,13 @@ async def lifespan(app: FastAPI):
     # The shared, mandatory, default-on pre-handler barrier: the only place external JWT
     # acceptance and the four identity-resolution outcomes are evaluated.
     # [impl->req~shared-prehandler-barrier~1]
-    app.state.auth_result_counter = AuthResultCounter()
+    # The required counter, and the operational alert on a sustained rise in
+    # `invalid_external_jwt` rejections that is the systemic-break detection path.
+    # [impl->req~sessions-invalid-external-jwt-metric-alert~1]
+    # [impl->req~sessions-systemic-break-detection-path~1]
+    app.state.invalid_jwt_alerting = InvalidExternalJwtAlerting(
+        config.auth.invalid_external_jwt_alert)
+    app.state.auth_result_counter = AuthResultCounter(app.state.invalid_jwt_alerting)
     app.state.auth_barrier = AuthBarrier(
         integrations=integrations,
         resolver=IdentityResolverDB(session_factory),

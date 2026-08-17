@@ -41,7 +41,15 @@ from nativespeaker.api.auth.taxonomy import client_response, surface
 from nativespeaker.api.auth.tokens import InvalidExternalJwtError, JwtRejectionReason
 from nativespeaker.api.exceptions import ServiceError
 
-BEARER_PREFIX = "Bearer "
+BEARER_SCHEME = "bearer"
+
+# The one request field the backend reads for authentication. There is no second backend check:
+# no formal header registry, no header-canonicalization matrix, and no dual read of a header and
+# the token with an equality check between them, because the one check is cryptographic.
+# [impl->req~sessions-no-second-backend-header-check~1]
+# [impl->req~sessions-backend-ignores-identity-headers~1]
+# [impl->req~sessions-wire-no-alternate-token-location~1]
+IDENTITY_HEADER = "authorization"
 
 
 class BarrierRejectionError(ServiceError):
@@ -128,21 +136,41 @@ def barrier_result_for(outcome: ResolutionOutcome,
 
 
 def extract_bearer_token(authorization_values: Sequence[str]) -> str:
-    """The `Authorization` header is the sole identity carrier: exactly one field, `Bearer`
-    scheme, non-empty token."""
+    """The `Authorization` field is the sole identity carrier, per RFC 6750: exactly one field
+    value carrying exactly one well-formed `Bearer` credential.
+
+    Zero field instances, several of them, a comma-joined or folded value, several credentials,
+    an empty token, and trailing content after the token are all rejected here. None of them is
+    ever resolved by taking the first or the last value, and none by concatenation. HTTP field
+    names are case-insensitive, so differently-cased occurrences of the field arrive in this one
+    list and count as duplicates; the rejection therefore happens before any value is picked.
+    The scheme name matches case-insensitively, while the token bytes stay case-sensitive."""
     # [impl->req~shared-bearer-single-identity-carrier~1]
     # [impl->req~shared-wire-contract-owner~1]
+    # [impl->req~sessions-bearer-firebase-id-token~1]
+    # [impl->req~sessions-wire-authorization-bearer-sole-carrier~1]
+    # [impl->req~sessions-wire-exactly-one-credential~1]
+    # [impl->req~sessions-wire-case-insensitive-duplicate-fields~1]
     if len(authorization_values) > 1:
         raise InvalidExternalJwtError(JwtRejectionReason.duplicate_authorization)
     if not authorization_values:
         raise InvalidExternalJwtError(JwtRejectionReason.missing_token)
     value = authorization_values[0]
-    if not value.startswith(BEARER_PREFIX):
+    # A comma-joined or folded value carries more than one field value. It is a duplicate, never
+    # a list to pick a credential out of.
+    if "," in value or "\n" in value or "\r" in value:
+        raise InvalidExternalJwtError(JwtRejectionReason.duplicate_authorization)
+    # [impl->req~sessions-wire-bearer-scheme-case~1]
+    scheme, separator, credential = value.partition(" ")
+    if not separator or scheme.lower() != BEARER_SCHEME:
         raise InvalidExternalJwtError(JwtRejectionReason.malformed)
-    token = value[len(BEARER_PREFIX):].strip()
-    if not token:
+    if not credential:
         raise InvalidExternalJwtError(JwtRejectionReason.missing_token)
-    return token
+    # Exactly one credential and nothing after it: any further whitespace-separated content is a
+    # second credential or trailing junk, and the token bytes themselves carry no whitespace.
+    if any(character.isspace() for character in credential):
+        raise InvalidExternalJwtError(JwtRejectionReason.malformed)
+    return credential
 
 
 class AuthBarrier:
@@ -173,19 +201,41 @@ class AuthBarrier:
                     attempt: AuthAttempt,
                     authorization_values: Sequence[str]) -> VerifiedIdentityContext:
         """Verify, resolve, enforce the route's identity policy, and return the typed context.
-        Every rejection is audited on the path and counted everywhere."""
+        Every rejection is audited on the path and counted everywhere.
+
+        The backend's own cryptographic verification of the raw external IDP JWT runs here,
+        ahead of identity resolution, on every authenticated request; no endpoint handler
+        repeats or re-implements it, and nothing weaker than that verification satisfies it."""
         # [impl->req~shared-prehandler-barrier~1]
+        # [impl->req~sessions-jwt-acceptance-policy-scope~1]
+        # [impl->req~sessions-backend-authoritative-verifier~1]
+        # Authenticated traffic, counted before any branch: the alert's fractional threshold is
+        # a share of it, and every route that rejects here is inside that share.
+        # [impl->req~sessions-invalid-external-jwt-metric-alert~1]
+        self._audit.count_authenticated_request()
         try:
             token = extract_bearer_token(authorization_values)
             claims = self._integrations.verify_id_token(token)
         except InvalidExternalJwtError as exc:
+            # Every acceptance failure folds into one contract whatever check produced it — a
+            # missing, duplicated or malformed credential, a bad signature, a wrong `iss` or
+            # `aud`, an expired token, an empty `sub` — auditing as `invalid_external_jwt` and
+            # surfacing through `auth_required`. The bounded reason stays internal.
+            # [impl->req~sessions-any-verification-failure-rejects~1]
+            # [impl->req~sessions-acceptance-failures-single-contract~1]
+            # [impl->req~sessions-acceptance-failure-internal-reason~1]
             # Verification supplied no permitted actor, so the row takes the actor-`NULL` shape.
             raise await self._reject(attempt, AuthEventResult.invalid_external_jwt,
                                      reason=str(exc.reason)) from None
 
-        # Identity comes only from the verified claims. No header, cookie, query parameter or
-        # body field contributes any part of it.
+        # Identity comes only from the verified claims: the lookup key is exactly the verified
+        # `(iss, sub)`. No header, cookie, query parameter or body field contributes any part of
+        # it, and the provider is never read from either.
         # [impl->req~shared-identity-from-verified-claims-only~1]
+        # [impl->req~sessions-identity-from-verified-iss-sub~1]
+        # [impl->req~sessions-lookup-keyed-on-issuer-subject~1]
+        # [impl->req~sessions-users-id-not-auth-key~1]
+        # [impl->req~sessions-wire-no-provider-derivation~1]
         resolved = await self._resolver.resolve(claims.issuer, claims.subject)
         actor = self._actor(claims.issuer, claims.subject, resolved)
 
@@ -230,7 +280,15 @@ class AuthBarrier:
                       actor: AuthActor = NO_ACTOR,
                       reason: str | None = None) -> Exception:
         """A barrier result is first-class either way: an `audit.auth_events` row on the path,
-        the named result code in the security log and counter metric off it."""
+        the named result code in the security log and counter metric off it.
+
+        Where the rejection is durably recorded depends on the route alone. On a route matched
+        to a canonical state-changing auth operation it writes its own `audit.auth_events` row —
+        `invalid_external_jwt` with `NULL` actor fields — never collapsed into a generic 401 log
+        line. On every other authenticated route, `GET /users/me` and the chat and quota
+        endpoints among them, it writes no row and stays first-class as the named result code in
+        the structured security log and in the counter."""
+        # [impl->req~sessions-acceptance-failure-durable-record-by-route~1]
         # [impl->req~shared-barrier-result-first-class~1]
         # [impl->req~shared-challenge-scope-narrower-subset~1]
         error = BarrierRejectionError(result, reason)
@@ -263,9 +321,22 @@ class AuthBarrier:
 
 
 class AuthBarrierMiddleware(BaseHTTPMiddleware):
-    """Runs the barrier ahead of every handler. Public and provider-callback routes pass
-    through; every other route, declared or not, is authenticated."""
+    """The one shared entry point: it reads the bearer token, verifies it, derives
+    `(issuer, subject)`, resolves the identity and only then dispatches to the handler.
 
+    It is applied to every route by default, so authentication is the default rather than the
+    exception. Public routes — the health and readiness probes — pass through on an explicit
+    enumerated allowlist, and the two provider-callback routes pass through as the third
+    category, carrying the calling store's own credential and no Firebase ID token; the
+    `Authorization` field of a callback request is forwarded to its handler untouched, because
+    the backend, not this barrier, verifies that provider credential.
+    """
+
+    # [impl->req~sessions-shared-entry-point-three-way-partition~1]
+    # [impl->req~sessions-authenticated-endpoint-families~1]
+    # [impl->req~sessions-provider-callback-third-category~1]
+    # [impl->req~sessions-gateway-forwards-pubsub-oidc-unchanged~1]
+    # [impl->req~sessions-gateway-never-parses-apple-signedpayload~1]
     async def dispatch(self, request: Request, call_next: Callable) -> Any:
         method = request.method
         path = request.url.path
@@ -275,13 +346,21 @@ class AuthBarrierMiddleware(BaseHTTPMiddleware):
         if categorize(method, path) is RouteCategory.authenticated:
             barrier: AuthBarrier = request.app.state.auth_barrier
             try:
+                # The sole identity carrier, read here and nowhere else: not from a query
+                # parameter, a cookie, the body, an `X-*` header, a framework header alias or a
+                # gateway-projected claim header.
+                # [impl->req~sessions-wire-no-alternate-token-location~1]
+                # [impl->req~sessions-backend-ignores-identity-headers~1]
                 request.state.identity = await barrier.admit(
-                    attempt, request.headers.getlist("authorization"))
+                    attempt, request.headers.getlist(IDENTITY_HEADER))
             except BarrierRejectionError as exc:
                 # The shared response shape, naming the class and disclosing nothing else: not
-                # the internal result, not the bounded reason, not the failed check.
+                # the internal result, not the bounded reason, not the failed check. Status,
+                # body and headers are identical across every acceptance-failure branch, so an
+                # issuer mismatch is indistinguishable from an expired token.
                 # [impl->req~shared-error-no-internal-results-exposed~1]
                 # [impl->req~shared-invalid-external-jwt-reasons~1]
+                # [impl->req~sessions-acceptance-failure-response-indistinguishable~1]
                 return JSONResponse(status_code=exc.rejection.status, content=exc.body(),
                                     headers=exc.rejection.headers or None)
             except ServiceError as exc:
@@ -296,8 +375,10 @@ class AuthBarrierMiddleware(BaseHTTPMiddleware):
 
 def verified_identity(request: Request) -> VerifiedIdentityContext:
     """The handler-side accessor for the barrier's typed output. A route wired outside the
-    barrier has no identity context and fails loudly rather than running open."""
+    barrier has no identity context and fails loudly as `auth_required` rather than running
+    open, and a new route attaches here instead of reimplementing token extraction."""
     # [impl->req~shared-prehandler-barrier~1]
+    # [impl->req~sessions-shared-entry-point-three-way-partition~1]
     identity = getattr(request.state, "identity", None)
     if identity is None:
         raise BarrierRejectionError(AuthEventResult.invalid_external_jwt)

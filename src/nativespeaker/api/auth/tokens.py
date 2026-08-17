@@ -10,7 +10,11 @@ from nativespeaker.api.exceptions import AuthenticationError
 
 
 class JwtRejectionReason(StrEnum):
-    """Bounded, never client-visible reason carried by an `invalid_external_jwt` rejection."""
+    """Bounded, never client-visible reason carried by an `invalid_external_jwt` rejection.
+
+    The finer detail behind an acceptance failure lives here and nowhere else: this
+    classification reaches audit detail fields and metric labels only, never the client."""
+    # [impl->req~sessions-acceptance-failure-internal-reason~1]
     missing_token = "missing_token"
     malformed = "malformed"
     duplicate_authorization = "duplicate_authorization"
@@ -35,7 +39,11 @@ class InvalidExternalJwtError(AuthenticationError):
 
 @dataclass(frozen=True, slots=True)
 class VerifiedClaims:
-    """The only identity material a request may contribute: backend-verified `(iss, sub)`."""
+    """The only identity material a request may contribute: backend-verified `(iss, sub)`.
+
+    Both values come out of the verifying decode below and are never reconstructed from
+    transport metadata."""
+    # [impl->req~sessions-wire-claims-from-verifying-decode~1]
     issuer: str
     subject: str
 
@@ -64,8 +72,20 @@ class CachedGoogleSigningKeys:
 
 
 class FirebaseIdTokenVerifier:
-    """JWKS-backed Firebase ID token verifier: RS256 signature, exact issuer and audience,
-    temporal validity, non-empty subject. Claims are never read without verification."""
+    """JWKS-backed Firebase ID token verifier: RS256 signature against Google's securetoken
+    signing keys, `iss` exactly the configured integration's issuer, `aud` exactly the
+    configured Firebase project ID, `exp`/`iat` temporal validity, and a non-empty `sub`.
+    Claims are never read without verifying the signature first.
+
+    This is the backend's own verification and the whole of it. It runs in the normal mode,
+    without Firebase Admin's optional `checkRevoked`: no per-request revocation check and no
+    Admin round-trip happens here, so an already-minted ID token stays valid until its own
+    `exp`. Firebase ID tokens carry no `azp` and no `nbf` claim, so no rule is written on
+    either: a check on them would test values the accepted token class never carries."""
+
+    # [impl->req~sessions-backend-sole-jwt-verifier~1]
+    # [impl->req~sessions-no-check-revoked~1]
+    # [impl->req~sessions-no-azp-nbf-rules~1]
 
     def __init__(self, *,
                  issuer: str,
@@ -90,7 +110,12 @@ class FirebaseIdTokenVerifier:
             raise
         except Exception:
             raise InvalidExternalJwtError(JwtRejectionReason.signing_key_unavailable) from None
+        # One verifying decode does the whole acceptance policy, and any branch of it failing —
+        # bad signature, wrong `iss`, wrong `aud`, expired, unparseable — rejects the request.
         # [impl->req~shared-verify-id-token~1]
+        # [impl->req~sessions-iss-must-equal-configured-issuer~1]
+        # [impl->req~sessions-any-verification-failure-rejects~1]
+        # [impl->req~sessions-wire-claims-from-verifying-decode~1]
         try:
             claims = jwt.decode(token,
                                 signing_key,

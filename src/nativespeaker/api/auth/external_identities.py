@@ -322,8 +322,12 @@ def resolve_owner(row: ExternalIdentityRow | None, *, user_id: UUID) -> UUID:
     one is an unresolvable owner and an internal error: the read path fails closed, and no path
     invents an identity row, reassigns the account, or repairs it in the background."""
     # An account with zero identity rows is unresolvable by design: the path that meets one
-    # fails closed rather than inventing an identity row or reassigning the account.
+    # fails closed rather than inventing an identity row or reassigning the account. This is the
+    # arrival point of every lookup that comes in by user id — a support query, a server-side
+    # attribution lookup — and `core.users.id` never authenticates anyone here: it only names an
+    # owner whose identity row must already exist.
     # [impl->req~schema-external-identities-orphan-user-internal-error~1]
+    # [impl->req~sessions-users-id-not-auth-key~1]
     # [impl->req~schema-invariant-07~1]
     # [impl->req~users-account-and-identity-row-atomic~1]
     if row is None:

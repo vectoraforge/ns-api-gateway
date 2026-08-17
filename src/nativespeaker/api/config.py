@@ -6,6 +6,7 @@ import yaml
 from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from nativespeaker.api.auth.audit import InvalidJwtAlertPolicy
 from nativespeaker.api.models import SubscriptionPlan
 from nativespeaker.api.quota.tiers import AccessTierEntry, assert_tier_sizing
 from nativespeaker.api.ratelimit.config import GatewayRateLimitsConfig, RateLimitsConfig
@@ -55,6 +56,10 @@ class JWTConfig(BaseModel):
 
     @property
     def issuer(self) -> str:
+        """The accepted issuer, derived from the one configured Firebase project rather than
+        configured separately: the project, the issuer and the audience the backend pins are one
+        value, which is also the value the gateway's JWT filter is configured against."""
+        # [impl->req~sessions-gateway-backend-same-project-pin~1]
         return  f"https://securetoken.google.com/{self.project_id}"
 
 
@@ -67,6 +72,14 @@ class AuthConfig(BaseModel):
         description="HMAC key for derived subject identifiers")
     subject_hash_key_version: int = Field(default=1, ge=1,
                                           description="Version of the subject hash key in use")
+
+    # The threshold for the required operational alert on a sustained rise in
+    # `invalid_external_jwt` rejections is deployment configuration: an absolute count of
+    # rejections per window, or a fraction of the authenticated traffic in that window.
+    # [impl->req~sessions-invalid-external-jwt-metric-alert~1]
+    invalid_external_jwt_alert: InvalidJwtAlertPolicy = Field(
+        default_factory=lambda: InvalidJwtAlertPolicy(threshold_fraction=0.25),
+        description="Sustained-rise alert threshold for invalid external JWT rejections")
 
 
 class AppleConfig(BaseModel):

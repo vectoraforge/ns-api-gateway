@@ -774,16 +774,155 @@ class AuthAttempt:
         self.audited = False
 
 
+class AlertPolicyError(ValueError):
+    """The alert threshold is not deployment configuration this detector can evaluate."""
+
+
+@dataclass(frozen=True, slots=True)
+class InvalidJwtAlertPolicy:
+    """The alert threshold, which is deployment configuration: either an absolute number of
+    `invalid_external_jwt` rejections in a window, or a fraction of the authenticated traffic in
+    that window. `sustained_windows` is what makes a rise sustained rather than a spike, since
+    single-client token expiry and bot noise are expected baseline."""
+
+    window_seconds: float = 300.0
+    threshold_count: int | None = None
+    threshold_fraction: float | None = None
+    sustained_windows: int = 2
+
+    def __post_init__(self) -> None:
+        if (self.threshold_count is None) == (self.threshold_fraction is None):
+            raise AlertPolicyError(
+                "an alert threshold is either an absolute count or a fraction of traffic")
+        if self.threshold_count is not None and self.threshold_count < 1:
+            raise AlertPolicyError("an absolute alert threshold counts at least one rejection")
+        if self.threshold_fraction is not None and not 0 < self.threshold_fraction <= 1:
+            raise AlertPolicyError("a fractional alert threshold lies in (0, 1]")
+        if self.window_seconds <= 0 or self.sustained_windows < 1:
+            raise AlertPolicyError("the alert window and its sustain count are positive")
+
+
+@dataclass(frozen=True, slots=True)
+class InvalidJwtAlert:
+    """One raised operational alert: how many rejections, over how much authenticated traffic,
+    and which bounded reasons and routes carried them."""
+    rejections: int
+    authenticated_requests: int
+    windows: int
+    reasons: tuple[str, ...]
+    routes: tuple[str, ...]
+
+
+class InvalidExternalJwtAlerting:
+    """The operational alert on a sustained rise in `invalid_external_jwt` rejections above
+    baseline.
+
+    It is the detection path for a systemic break, because a systemic break is
+    client-indistinguishable from ordinary session expiry by design: a misconfigured
+    integration, an unreachable or stale signing-key source, clock skew, or a route change that
+    strips `Authorization` fails every request the same way a normal expiry does. Alerting on
+    the first sustained occurrence is what makes that visible; no synthetic-token probe and no
+    backend health protocol second-guessing the gateway is involved."""
+
+    # [impl->req~sessions-invalid-external-jwt-metric-alert~1]
+    # [impl->req~sessions-systemic-break-detection-path~1]
+    def __init__(self,
+                 policy: InvalidJwtAlertPolicy,
+                 *,
+                 clock: Callable[[], float] | None = None,
+                 notify: Callable[[InvalidJwtAlert], None] | None = None):
+        self._policy = policy
+        self._clock = clock or (lambda: datetime.now(UTC).timestamp())
+        self._notify = notify or self._log
+        self._window_start = self._clock()
+        self._rejections = 0
+        self._requests = 0
+        self._reasons: set[str] = set()
+        self._routes: set[str] = set()
+        self._consecutive = 0
+        self._firing = False
+        self.alerts: list[InvalidJwtAlert] = []
+
+    @staticmethod
+    def _log(alert: InvalidJwtAlert) -> None:
+        logger.error("invalid_external_jwt_alert",
+                     rejections=alert.rejections,
+                     authenticated_requests=alert.authenticated_requests,
+                     windows=alert.windows,
+                     reasons=list(alert.reasons),
+                     routes=list(alert.routes))
+
+    def observe_request(self) -> None:
+        """Authenticated traffic: the denominator a fractional threshold is measured against."""
+        self._roll()
+        self._requests += 1
+
+    def observe_rejection(self, *, route: str, reason: str | None) -> None:
+        """One `invalid_external_jwt` rejection, whatever branch produced it."""
+        self._roll()
+        self._rejections += 1
+        self._reasons.add(reason or "none")
+        self._routes.add(route)
+
+    def _roll(self) -> None:
+        now = self._clock()
+        while now - self._window_start >= self._policy.window_seconds:
+            self._close_window()
+            self._window_start += self._policy.window_seconds
+
+    def _close_window(self) -> None:
+        if self._above_baseline():
+            self._consecutive += 1
+            if self._consecutive >= self._policy.sustained_windows and not self._firing:
+                self._firing = True
+                alert = InvalidJwtAlert(rejections=self._rejections,
+                                        authenticated_requests=self._requests,
+                                        windows=self._consecutive,
+                                        reasons=tuple(sorted(self._reasons)),
+                                        routes=tuple(sorted(self._routes)))
+                self.alerts.append(alert)
+                self._notify(alert)
+        else:
+            self._consecutive = 0
+            self._firing = False
+        self._rejections = 0
+        self._requests = 0
+        self._reasons = set()
+        self._routes = set()
+
+    def _above_baseline(self) -> bool:
+        if self._policy.threshold_count is not None:
+            return self._rejections >= self._policy.threshold_count
+        fraction = self._policy.threshold_fraction or 1.0
+        if self._requests == 0:
+            return False
+        return self._rejections / self._requests >= fraction
+
+
 class AuthResultCounter:
     """The bounded-cardinality counter metric labeled by result, bounded reason and route.
-    It is mandatory wherever the barrier rejects, on and off the audited path alike."""
+    It is mandatory wherever the barrier rejects, on and off the audited path alike, and it —
+    not `audit.auth_events` — is the required alerting source for cross-route attack volume."""
 
-    def __init__(self) -> None:
+    # [impl->req~sessions-invalid-external-jwt-metric-alert~1]
+    def __init__(self, alerting: InvalidExternalJwtAlerting | None = None) -> None:
         self._counts: dict[tuple[str, str, str], int] = {}
+        self._alerting = alerting
 
     def increment(self, *, result: AuthEventResult, route: str, reason: str | None = None) -> None:
         key = (str(result), reason or "none", route)
         self._counts[key] = self._counts.get(key, 0) + 1
+        # Every `invalid_external_jwt` rejection feeds the alert, whatever bounded reason it
+        # carries and whichever authenticated route it arrived on.
+        # [impl->req~sessions-invalid-external-jwt-metric-alert~1]
+        if self._alerting is not None and result is AuthEventResult.invalid_external_jwt:
+            self._alerting.observe_rejection(route=route, reason=reason)
+
+    def observe_authenticated_request(self) -> None:
+        """Authenticated traffic reaching the barrier, so a fractional alert threshold can be
+        expressed as a share of it."""
+        if self._alerting is not None:
+            self._alerting.observe_request()
 
     def value(self, *, result: AuthEventResult, route: str, reason: str | None = None) -> int:
         return self._counts.get((str(result), reason or "none", route), 0)
@@ -806,6 +945,12 @@ class AuthAuditWriter:
         self._counter = counter
         self._session_factory = session_factory
         self._clock = clock or (lambda: datetime.now(UTC))
+
+    def count_authenticated_request(self) -> None:
+        """One authenticated request reached the barrier. It is traffic the alert's fractional
+        threshold is measured against, and nothing else."""
+        # [impl->req~sessions-invalid-external-jwt-metric-alert~1]
+        self._counter.observe_authenticated_request()
 
     def row_for(self, event: AuthEvent) -> dict[str, Any]:
         """Build the durable row this event becomes. Every write goes through `auth_event_row`,

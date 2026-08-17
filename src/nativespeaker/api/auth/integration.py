@@ -69,7 +69,12 @@ class FirebaseIntegrations:
     @staticmethod
     def classify_provider(provider_data: Sequence[Any]) -> str:
         """Closed backstop classifier over an Admin `providerData` response. No provider is
-        accepted merely because it appeared in a successful Admin response."""
+        accepted merely because it appeared in a successful Admin response.
+
+        A `providerData` response is the only input: `provider` and the anonymous-versus-
+        registered classification are never derived from a header, a token claim, client input
+        or an optional untrusted profile field."""
+        # [impl->req~sessions-provider-only-from-providerdata~1]
         provider_ids = [str(getattr(entry, "provider_id", None) or "") for entry in provider_data]
         recognized = {PROVIDER_ID_TO_PROVIDER[pid] for pid in provider_ids
                       if pid in PROVIDER_ID_TO_PROVIDER}
@@ -90,8 +95,13 @@ def build_firebase_integrations(*,
                                 warm: bool = True) -> FirebaseIntegrations:
     """The one configured Firebase integration: its expected issuer, its project ID as the
     accepted audience, a JWKS-backed verifier over the cached Google signing keys, and the
-    named Admin client every Admin call for that issuer selects. There is no default client."""
+    named Admin client every Admin call for that issuer selects. There is no default client.
+
+    One configured Firebase project pins both values, so the project, the issuer and the
+    audience the backend accepts cannot drift apart, and the gateway's `jwt_authn` filter has a
+    single source of truth to be configured against."""
     # [impl->req~shared-single-firebase-integration~1]
+    # [impl->req~sessions-gateway-backend-same-project-pin~1]
     keys = CachedGoogleSigningKeys(jwks_url=jwks_url, cache_ttl_seconds=jwks_cache_ttl_seconds)
     if warm:
         keys.warm()

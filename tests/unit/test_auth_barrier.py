@@ -316,9 +316,17 @@ class TestBearerCredential:
         assert empty.value.reason is JwtRejectionReason.missing_token
 
     # [utest->req~shared-bearer-single-identity-carrier~1]
-    def test_bearer_prefix_is_required_verbatim(self):
-        with pytest.raises(InvalidExternalJwtError):
-            extract_bearer_token(["bearer token"])
+    # [utest->req~sessions-wire-bearer-scheme-case~1]
+    def test_the_scheme_matches_case_insensitively_and_the_token_bytes_do_not(self):
+        # RFC 6750: the scheme name is case-insensitive.
+        for scheme in ("Bearer", "bearer", "BEARER", "BeArEr"):
+            assert extract_bearer_token([f"{scheme} AbC.dEf"]) == "AbC.dEf"
+        # The token bytes are case-sensitive: they come back exactly as sent, never folded.
+        assert extract_bearer_token(["Bearer AbC.dEf"]) != "abc.def"
+        # Another scheme is not a Bearer credential.
+        with pytest.raises(InvalidExternalJwtError) as basic:
+            extract_bearer_token(["Basic AbC.dEf"])
+        assert basic.value.reason is JwtRejectionReason.malformed
 
 
 class TestPreHandlerBarrier:
@@ -457,37 +465,45 @@ def assert_family_requires_id_token(method: str, path: str) -> None:
 
 class TestIdTokenRequiredEndpoints:
     # [utest->req~shared-id-token-required-endpoints~1]
+    # [utest->req~sessions-authenticated-endpoint-families~1]
     def test_every_listed_family_requires_the_id_token(self):
         for method, path in ID_TOKEN_FAMILIES.values():
             assert (method, path) in ID_TOKEN_REQUIRED_ROUTES
             assert categorize(method, path) is RouteCategory.authenticated
 
     # [utest->req~shared-id-token-endpoint-auth-sync~1]
+    # [utest->req~sessions-authfamily-auth-sync~1]
     def test_auth_sync_requires_the_id_token(self):
         assert_family_requires_id_token(*ID_TOKEN_FAMILIES["auth_sync"])
 
     # [utest->req~shared-id-token-endpoint-challenge-prepare~1]
+    # [utest->req~sessions-authfamily-challenge-prepare~1]
     def test_challenge_prepare_requires_the_id_token(self):
         assert_family_requires_id_token(*ID_TOKEN_FAMILIES["challenge_prepare"])
 
     # [utest->req~shared-id-token-endpoint-completion~1]
+    # [utest->req~sessions-authfamily-completion-calls~1]
     def test_completion_calls_require_the_id_token(self):
         assert_family_requires_id_token(*ID_TOKEN_FAMILIES["completion"])
 
     # [utest->req~shared-id-token-endpoint-restore-subscription~1]
+    # [utest->req~sessions-authfamily-restore-subscription~1]
     def test_restore_subscription_requires_the_id_token(self):
         assert_family_requires_id_token(*ID_TOKEN_FAMILIES["restore_subscription"])
 
     # [utest->req~shared-id-token-endpoint-users-me~1]
+    # [utest->req~sessions-authfamily-users-me~1]
     def test_users_me_requires_the_id_token(self):
         assert_family_requires_id_token(*ID_TOKEN_FAMILIES["users_me"])
 
     # [utest->req~shared-id-token-endpoint-chat-quota~1]
+    # [utest->req~sessions-authfamily-chat-and-quota~1]
     def test_chat_and_quota_endpoints_require_the_id_token(self):
         assert_family_requires_id_token(*ID_TOKEN_FAMILIES["chat_quota"])
         assert ("GET", "/users/me/quota") in ID_TOKEN_REQUIRED_ROUTES
 
     # [utest->req~shared-id-token-endpoint-sign-out-everywhere~1]
+    # [utest->req~sessions-authfamily-sign-out-all~1]
     def test_sign_out_everywhere_requires_the_id_token(self):
         assert_family_requires_id_token(*ID_TOKEN_FAMILIES["sign_out_everywhere"])
 

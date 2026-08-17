@@ -391,6 +391,7 @@ def _schema_with(*tables) -> MetaData:
 
 class TestOwnershipKeys:
     # [utest->req~shared-ownership-key-users-id~1]
+    # [utest->req~sessions-users-id-sole-ownership-key~1]
     def test_business_data_is_owned_by_users_id_and_usage_by_the_grant(self):
         good = _schema_with(
             lambda md: Table("chats", md, Column("id", String, primary_key=True),
@@ -414,6 +415,7 @@ class TestOwnershipKeys:
         assert ownership_violations(misowned) != []
 
     # [utest->req~shared-no-external-subject-ownership~1]
+    # [utest->req~sessions-no-external-subject-ownership~1]
     def test_no_business_table_owns_rows_by_an_external_subject(self):
         for column_name in ("sub", "uid", "jwt_sub", "firebase_uid"):
             metadata = _schema_with(
@@ -424,6 +426,8 @@ class TestOwnershipKeys:
             assert any("external subject" in violation for violation in violations), column_name
 
     # [utest->req~shared-ownership-key-users-id~1]
+    # [utest->req~sessions-users-id-sole-ownership-key~1]
+    # [utest->req~sessions-no-external-subject-ownership~1]
     def test_the_guard_reads_the_shipped_schema_and_reports_its_real_state(self):
         # Every business table owns its rows by `core.users.id`, no business table owns rows by
         # an external subject or an external identity, and the monthly-usage table hangs off the
