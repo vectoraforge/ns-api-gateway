@@ -9,35 +9,54 @@ from uuid import uuid4
 import pytest
 
 from nativespeaker.api.auth.audit import (
+    AuthActor,
+    AuthAttempt,
     AuthEventResult,
     InvalidTerminalOutcomeError,
     sync_event,
 )
 from nativespeaker.api.auth.barrier import (
+    BarrierRejectionError,
     ResolutionOutcome,
     VerifiedIdentityContext,
     barrier_result_for,
 )
+from nativespeaker.api.auth.endpoints import EndpointContractError, bearer_credential
 from nativespeaker.api.auth.entitlement import AccessGrantSource, AccessGrantStatus
-from nativespeaker.api.auth.operations import IdentityProvider
+from nativespeaker.api.auth.operations import (
+    AdmissionRejection,
+    AuthOperation,
+    IdentityProvider,
+)
 from nativespeaker.api.auth.routes import is_pre_auth_callable
 from nativespeaker.api.auth.sync import (
     ENTITLEMENT_FIELDS,
+    ENTITLEMENT_SOURCE_TABLES,
     FORBIDDEN_EFFECTS,
     GRANT_SOURCE_PRECEDENCE,
     PROHIBITED_CALLS,
+    SYNC_BUSINESS_WRITES,
+    SYNC_CHALLENGE_ROWS_TOUCHED,
+    SYNC_RESPONSE_IS_ADVISORY,
     ReadOnlySyncSession,
     SyncEffect,
     SyncError,
     SyncIntegrityError,
     SyncProhibitedError,
     assert_admitted,
+    assert_barrier_precondition,
     assert_permitted,
     is_forbidden,
     preauth_rejection,
+    sync_admission_rejection_writes_row,
+    sync_attempt_event,
+    sync_credential,
+    sync_handler,
     sync_response,
     sync_state,
+    sync_terminal_result,
 )
+from nativespeaker.api.auth.tokens import InvalidExternalJwtError
 from nativespeaker.api.quota.grants import PublicEntitlementStatus, PublicEntitlementType
 from unit.conftest import grant_row
 
@@ -66,6 +85,11 @@ def active_grant(**overrides):
     return grant_row(user_id=USER_ID,
                      starts_at=datetime(2026, 1, 1, tzinfo=UTC),
                      **overrides)
+
+
+def _actor() -> AuthActor:
+    """An actor the shared audit contract accepts: a verified issuer and a 32-byte subject hash."""
+    return AuthActor(issuer=ISSUER, subject_hash=b"\x11" * 32, subject_hash_key_version=1)
 
 
 class TestAdmission:
@@ -313,3 +337,119 @@ class TestProhibitions:
         with pytest.raises(InvalidTerminalOutcomeError):
             sync_event(AuthEventResult.succeeded,
                        details={"mutation": {"core.users": {"email": "x@example.com"}}})
+
+
+class TestEndpointContract:
+    """The `## API: POST /auth/sync` section: the credential, the admission precondition, what the
+    handler returns, and what it refuses to trust."""
+
+    # [utest->req~sessions-api-sync-bearer-credential~1]
+    def test_the_credential_is_exactly_one_authorization_bearer_value(self):
+        assert sync_credential(["Bearer id-token"]) == "id-token"
+        # Zero, duplicated, comma-folded, non-`Bearer` and multi-credential values all reject.
+        for values in ([], ["Bearer a", "Bearer b"], ["Bearer a, Bearer b"], ["Basic a"],
+                       ["Bearer "], ["Bearer a b"]):
+            with pytest.raises(InvalidExternalJwtError):
+                sync_credential(values)
+
+    # [utest->req~sessions-api-sync-bearer-credential~1]
+    def test_a_route_declaring_no_id_token_requirement_carries_no_credential(self):
+        with pytest.raises(EndpointContractError):
+            bearer_credential("GET", "/health/ready", ["Bearer id-token"])
+
+    # [utest->req~sessions-api-sync-barrier-precondition~1]
+    def test_the_endpoint_requires_a_linked_active_identity(self):
+        assert assert_barrier_precondition(linked()).user_id == USER_ID
+        # Pre-auth, historical and blocked are all rejected, each with the barrier's own result.
+        for outcome, result in ((ResolutionOutcome.pre_auth,
+                                 AuthEventResult.preauth_identity_not_allowed),
+                                (ResolutionOutcome.historical_identity,
+                                 AuthEventResult.historical_identity),
+                                (ResolutionOutcome.blocked_user, AuthEventResult.blocked_user)):
+            with pytest.raises(BarrierRejectionError) as raised:
+                assert_barrier_precondition(
+                    VerifiedIdentityContext(issuer=ISSUER, subject="sub-1", outcome=outcome))
+            assert raised.value.result is result
+
+    # [utest->req~sessions-api-sync-handler-returns-state~1]
+    def test_the_handler_returns_entitlement_state_from_the_three_tables(self):
+        rows = (active_grant(status=AccessGrantStatus.active, tier_id="silver",
+                             monthly_credits=50, source=AccessGrantSource.subscription),)
+        body = sync_handler(linked(IdentityProvider.google),
+                            session(rows=rows, usage=("2026-03", 7),
+                                    provider=IdentityProvider.google),
+                            now=NOW)
+        assert body["entitlement"]["tier_id"] == "silver"
+        assert body["entitlement"]["monthly_credits"] == 50
+        assert body["entitlement"]["monthly_used"] == 7
+        assert body["identity_provider"] == "google"
+        # The three named tables are the whole derivation, and the handler writes nothing.
+        assert set(ENTITLEMENT_SOURCE_TABLES) == {"core.access_grants", "core.access_tiers",
+                                                 "core.user_monthly_usage"}
+        assert SYNC_BUSINESS_WRITES == frozenset()
+
+    # [utest->req~sessions-api-sync-handler-returns-state~1]
+    def test_the_handler_runs_the_admission_precondition_before_reading(self):
+        handle = session()
+        with pytest.raises(BarrierRejectionError):
+            sync_handler(VerifiedIdentityContext(issuer=ISSUER, subject="sub-1",
+                                                 outcome=ResolutionOutcome.blocked_user),
+                         handle, now=NOW)
+        assert handle.reads == []
+
+    # [utest->req~sessions-api-sync-no-client-snapshot-trust~1]
+    def test_an_offered_client_snapshot_is_refused_rather_than_merged(self):
+        for field in ("client_snapshot", "cached_entitlement", "last_known_tier",
+                      "cached_identity_provider"):
+            with pytest.raises(SyncError):
+                sync_handler(linked(), session(), now=NOW, request_body={field: "anything"})
+        # A body carrying nothing the snapshot list names is simply not read.
+        assert sync_handler(linked(), session(), now=NOW,
+                            request_body={"unrelated": 1})["identity_provider"] == "anonymous"
+        assert SYNC_RESPONSE_IS_ADVISORY is True
+
+    # The endpoint's purpose and the completeness of its must-not list are reference statements
+    # rather than behaviour of their own — the individual `must not` items carry the tests — so
+    # this keeps the derived sets honest without claiming a coverage tag for either.
+    def test_the_prohibitions_are_exactly_the_read_only_contract_must_not_list(self):
+        assert FORBIDDEN_EFFECTS == frozenset(SyncEffect)
+        assert set(PROHIBITED_CALLS.values()) <= FORBIDDEN_EFFECTS
+
+
+class TestAuditedAttemptPath:
+    """Every attempt owes exactly one row, and an admission rejection owes none."""
+
+    # [utest->req~sessions-api-sync-audited-attempt-path~1]
+    def test_the_terminal_result_is_succeeded_or_the_barriers_own_result(self):
+        assert sync_terminal_result(None) is AuthEventResult.succeeded
+        for result in (AuthEventResult.invalid_external_jwt,
+                       AuthEventResult.preauth_identity_not_allowed,
+                       AuthEventResult.historical_identity,
+                       AuthEventResult.blocked_user):
+            assert sync_terminal_result(result) is result
+
+    # [utest->req~sessions-api-sync-audited-attempt-path~1]
+    def test_the_attempt_row_names_sync_records_no_mutation_and_is_challenge_free(self):
+        attempt = AuthAttempt("POST", "/auth/sync")
+        assert attempt.on_audited_path is True
+        event = sync_attempt_event(AuthEventResult.succeeded, actor=_actor())
+        assert event.operation is AuthOperation.sync
+        assert event.details["mutation"] == {}
+        assert event.challenge_row_id is None
+        # A caller offering a mutation is refused rather than trimmed: the row is an attempt
+        # record, never evidence of a state change.
+        with pytest.raises(InvalidTerminalOutcomeError):
+            sync_attempt_event(AuthEventResult.succeeded, actor=_actor(),
+                               details={"mutation": {"core.users": {"email": "x@example.com"}}})
+        # And no result outside the endpoint's terminal outcomes can be recorded for it.
+        with pytest.raises(InvalidTerminalOutcomeError):
+            sync_attempt_event(AuthEventResult.revocation_unconfirmed, actor=_actor())
+
+    # [utest->req~sessions-api-sync-audited-attempt-path~1]
+    def test_an_admission_rejection_ahead_of_the_route_match_writes_no_row(self):
+        for rejection in (AdmissionRejection.gateway_rate_limited,
+                          AdmissionRejection.backend_rate_limited,
+                          AdmissionRejection.overload_shed,
+                          AdmissionRejection.route_or_method_mismatch):
+            assert sync_admission_rejection_writes_row(rejection) is False
+        assert SYNC_CHALLENGE_ROWS_TOUCHED == frozenset()

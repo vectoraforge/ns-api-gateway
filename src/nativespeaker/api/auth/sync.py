@@ -12,7 +12,7 @@ than recomputed here, so sync and quota enforcement can never disagree about the
 instant.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -20,13 +20,27 @@ from typing import Any, NoReturn
 
 import structlog
 
-from nativespeaker.api.auth.audit import AuthEventResult
+from nativespeaker.api.auth.audit import (
+    NO_ACTOR,
+    AuthActor,
+    AuthEvent,
+    AuthEventResult,
+    sync_event,
+)
 from nativespeaker.api.auth.barrier import (
     ResolutionOutcome,
     VerifiedIdentityContext,
     barrier_result_for,
 )
-from nativespeaker.api.auth.operations import AuthOperation, IdentityProvider
+from nativespeaker.api.auth.operations import (
+    AdmissionRejection,
+    AuthOperation,
+    IdentityProvider,
+    is_admission_phase,
+    is_challenge_bearing,
+    is_on_audited_path,
+    supports_prepare,
+)
 from nativespeaker.api.auth.routes import is_pre_auth_callable
 from nativespeaker.api.quota.grants import (
     EntitlementReport,
@@ -150,6 +164,11 @@ class SyncEffect(StrEnum):
 
 
 # Every effect on the list is forbidden; there is no permitted subset and no per-caller exception.
+# That closed list is what makes `/auth/sync` the business-state read-only auth resolution
+# endpoint, and it is the complete set of prohibitions the endpoint carries: the endpoint's
+# prohibitions are exactly the must-not list this enumeration holds, with nothing added elsewhere.
+# [impl->req~sessions-api-sync-purpose~1]
+# [impl->req~sessions-api-sync-prohibited-operations~2]
 FORBIDDEN_EFFECTS: frozenset[SyncEffect] = frozenset(SyncEffect)
 
 # The calls a caller could make against the sync session, and the forbidden effect each one is.
@@ -273,6 +292,11 @@ class SyncState:
 # and `current_period` and `monthly_used` are never null.
 ENTITLEMENT_FIELDS: tuple[str, ...] = (
     "type", "status", "tier_id", "monthly_credits", "current_period", "monthly_used")
+
+# The field sync reports the account's stored registration state under. `GET /users/me` reports the
+# same value under the same name, reading this constant rather than repeating the string, so the
+# two read surfaces cannot disagree about what the account's registration state is called.
+REGISTRATION_STATE_FIELD = "identity_provider"
 NON_NULL_ENTITLEMENT_FIELDS: frozenset[str] = frozenset({"current_period", "monthly_used"})
 
 # No source ranking exists to break a tie with: more than one effective grant is an integrity
@@ -309,7 +333,8 @@ def sync_response(state: SyncState) -> dict[str, Any]:
     # The stored registration state, reported so the client can compare it against local Firebase
     # state. Reporting it changes nothing else.
     # [impl->req~sessions-sync-reports-registration-state~1]
-    return {"entitlement": entitlement, "identity_provider": state.identity_provider.value}
+    return {"entitlement": entitlement,
+            REGISTRATION_STATE_FIELD: state.identity_provider.value}
 
 
 def sync_state(context: VerifiedIdentityContext,
@@ -368,3 +393,130 @@ def sync_state(context: VerifiedIdentityContext,
     # flips nothing.
     # [impl->req~sessions-sync-reports-registration-state~1]
     return SyncState(entitlement=report, identity_provider=session.read_stored_provider())
+
+
+# --- the endpoint contract ------------------------------------------------------------------------
+
+
+def sync_credential(authorization_values: Sequence[str]) -> str:
+    """The endpoint's authentication: the external IDP ID token as a single `Authorization: Bearer`
+    credential, and nothing else."""
+    # [impl->req~sessions-api-sync-bearer-credential~1]
+    # Imported here: `endpoints` sits above this module in the import graph.
+    from nativespeaker.api.auth.endpoints import bearer_credential  # noqa: PLC0415
+
+    return bearer_credential(SYNC_METHOD, SYNC_PATH, authorization_values)
+
+
+def assert_barrier_precondition(context: VerifiedIdentityContext) -> VerifiedIdentityContext:
+    """The endpoint's admission precondition: authentication and identity resolution happen in the
+    shared pre-handler barrier before this handler runs, and the endpoint requires a linked, active
+    identity — pre-auth, historical and blocked identities are rejected at the barrier."""
+    # [impl->req~sessions-api-sync-barrier-precondition~1]
+    from nativespeaker.api.auth.endpoints import barrier_admitted  # noqa: PLC0415
+
+    return barrier_admitted(context, SYNC_METHOD, SYNC_PATH)
+
+
+# The tables the reported entitlement state is derived from, and the whole of them.
+# [impl->req~sessions-api-sync-handler-returns-state~1]
+ENTITLEMENT_SOURCE_TABLES: tuple[str, ...] = ("core.access_grants", "core.access_tiers",
+                                             "core.user_monthly_usage")
+
+# What the handler writes to business state: nothing.
+# [impl->req~sessions-api-sync-handler-returns-state~1]
+SYNC_BUSINESS_WRITES: frozenset[str] = frozenset()
+
+# Client-supplied state a caller might offer as a starting point. None of it is read: the reported
+# view is derived from committed database state alone, and it is advisory only — the client compares
+# it against its own state rather than the backend trusting the client's.
+# [impl->req~sessions-api-sync-no-client-snapshot-trust~1]
+CLIENT_SNAPSHOT_FIELDS: frozenset[str] = frozenset({
+    "client_snapshot", "cached_entitlement", "last_known_tier", "local_provider",
+    "client_state", "previous_sync", "assumed_registered", "cached_identity_provider",
+})
+SYNC_RESPONSE_IS_ADVISORY: bool = True
+
+
+def assert_no_client_snapshot_trusted(request_body: Mapping[str, Any] | None = None) -> None:
+    """`/auth/sync` must not trust any earlier client snapshot: a snapshot the client sends is not
+    read, not merged, and not allowed to influence the reported view. Its returned view is advisory
+    only, so nothing downstream may treat it as authoritative client state either."""
+    # [impl->req~sessions-api-sync-no-client-snapshot-trust~1]
+    if not SYNC_RESPONSE_IS_ADVISORY:
+        raise SyncError("the view /auth/sync returns is advisory only")
+    offered = sorted(set(request_body or {}) & CLIENT_SNAPSHOT_FIELDS)
+    if offered:
+        raise SyncError(f"/auth/sync trusts no earlier client snapshot: {offered}")
+
+
+def sync_handler(context: VerifiedIdentityContext,
+                 session: ReadOnlySyncSession,
+                 *,
+                 now: datetime | None = None,
+                 request_body: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The handler: it returns the current backend state for the resolved user — including the
+    effective entitlement state derived from `core.access_grants`, `core.access_tiers` and
+    `core.user_monthly_usage` — and performs no business-state mutation.
+
+    The admission precondition runs first, then the three reads, then the fixed response shape. No
+    client snapshot participates in any of it.
+    """
+    # [impl->req~sessions-api-sync-handler-returns-state~1]
+    # [impl->req~sessions-api-sync-no-client-snapshot-trust~1]
+    assert_barrier_precondition(context)
+    assert_no_client_snapshot_trusted(request_body)
+    if SYNC_BUSINESS_WRITES:
+        raise SyncError("/auth/sync performs no business-state mutation")
+    if set(ENTITLEMENT_SOURCE_TABLES) != {"core.access_grants", "core.access_tiers",
+                                          "core.user_monthly_usage"}:
+        raise SyncError(f"the reported entitlement derives from {ENTITLEMENT_SOURCE_TABLES}")
+    return sync_response(sync_state(context, session, now=now))
+
+
+# --- the audited attempt path ---------------------------------------------------------------------
+
+
+def sync_terminal_result(barrier_result: AuthEventResult | None) -> AuthEventResult:
+    """The single `audit.auth_events` row every `POST /auth/sync` attempt owes, by result.
+
+    `/auth/sync` is a canonical state-changing auth operation by route, so every attempt is on the
+    audited attempt path: exactly one row with `operation = 'sync'` is appended for the attempt's
+    terminal outcome — the barrier's own result where the barrier rejected, otherwise `succeeded` —
+    before the response is returned. That row records no mutation; appending it is operational
+    logging rather than business state, which is what makes it compatible with the endpoint's
+    read-only rules.
+    """
+    # [impl->req~sessions-api-sync-audited-attempt-path~1]
+    if not is_on_audited_path(SYNC_METHOD, SYNC_PATH):
+        raise SyncError("/auth/sync is a canonical state-changing auth operation by route")
+    return barrier_result if barrier_result is not None else AuthEventResult.succeeded
+
+
+def sync_attempt_event(result: AuthEventResult,
+                       *,
+                       actor: AuthActor = NO_ACTOR,
+                       details: Mapping[str, Any] | None = None) -> AuthEvent:
+    """That one row, built. It carries no mutation and no `challenge_row_id`: `/auth/sync` is not
+    challenge-bearing — it has no prepare mode and touches no `core.auth_challenges` row."""
+    # [impl->req~sessions-api-sync-audited-attempt-path~1]
+    if is_challenge_bearing(SYNC_OPERATION) or supports_prepare(SYNC_OPERATION):
+        raise SyncError("/auth/sync is challenge-free and has no prepare mode")
+    # The row itself is built by the shared audit contract, which refuses a mutation outright; the
+    # postcondition here is that the row this endpoint appends carries none and names no challenge.
+    event = sync_event(result, actor=actor, details=dict(details or {}))
+    if event.details.get("mutation") != {} or event.challenge_row_id is not None:
+        raise SyncError("the attempt row records no mutation and names no challenge row")
+    return event
+
+
+def sync_admission_rejection_writes_row(rejection: AdmissionRejection) -> bool:
+    """An admission-control rejection ahead of the route match writes no row at all: it never
+    reached the audited attempt path."""
+    # [impl->req~sessions-api-sync-audited-attempt-path~1]
+    return not is_admission_phase(rejection)
+
+
+# `/auth/sync` touches no `core.auth_challenges` row, in any phase.
+# [impl->req~sessions-api-sync-audited-attempt-path~1]
+SYNC_CHALLENGE_ROWS_TOUCHED: frozenset[str] = frozenset()
