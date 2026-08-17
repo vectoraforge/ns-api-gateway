@@ -369,32 +369,65 @@ SECONDARY_AUTH_STATE: frozenset[str] = frozenset()
 def assert_no_secondary_auth_state(state: Mapping[str, Any] | None = None, *,
                                    generation: int | None = None) -> None:
     """No secondary backend auth state and no generation exist, so the same Firebase ID token
-    resolves as linked on the next request purely by being verified again."""
+    resolves as linked on the next request purely by being verified again: the new
+    `core.external_identities` row is the whole of what changed."""
     # [impl->req~users-no-secondary-auth-state-or-generation~1]
+    # [impl->req~sessions-no-secondary-auth-state~1]
     if SECONDARY_AUTH_STATE or state or generation is not None:
         raise UsersError("no secondary backend auth state or generation exists to advance")
+
+
+# Nothing recovers a lost anonymous account: there is no recovery route, no recovery credential,
+# and no path that re-binds a new subject to an old anonymous user.
+# [impl->req~sessions-no-anonymous-account-recovery~1]
+ANONYMOUS_RECOVERY_ROUTES: frozenset[str] = frozenset()
+
+# The flow that user proceeds on instead.
+REGISTRATION_FLOW = "registered"
+
+
+def anonymous_session_lost_next_step() -> tuple[str, str]:
+    """What a user whose anonymous session is lost — through an app reinstall or cleared local
+    state — does next: they do not recover the prior anonymous account, they register. The next
+    step is therefore `POST /auth/create-user` on the registered flow, and there is no
+    anonymous-account recovery path to offer instead."""
+    # [impl->req~sessions-no-anonymous-account-recovery~1]
+    if ANONYMOUS_RECOVERY_ROUTES:
+        raise UsersError("no route recovers a prior anonymous account")
+    method, path = CREATE_USER_ROUTE
+    return f"{method} {path}", REGISTRATION_FLOW
 
 
 def complete_create_user(*, user_id: UUID, identity: ExternalIdentityRow,
                          completion_transaction: object, identity_transaction: object,
                          backend_token: object | None = None,
                          secondary_auth_state: Mapping[str, Any] | None = None,
-                         grant_writes: Iterable[str] = ()) -> CreateUserOutcome:
-    """The obligations a `create_user` success from a pre-auth identity owes."""
+                         grant_writes: Iterable[str] = (),
+                         classified: IdentityProvider | None = None) -> CreateUserOutcome:
+    """The obligations a `create_user` success from a pre-auth identity owes — the whole of what
+    promoting a pre-auth identity to a linked one requires."""
+    # [impl->req~sessions-preauth-promotion-obligations~1]
     # The corresponding `core.external_identities` row is created as `create_user` defines it,
+    # carrying the `provider` the classifier returned for this completion,
     # [impl->req~users-create-user-success-obligations~1]
     # [impl->req~users-create-user-creates-identity-row~1]
-    # inside the completion transaction, together with the `core.users` row, so a failure of
-    # either insert rolls the whole transaction back and no account exists.
+    # [impl->req~sessions-promotion-create-identity-row~1]
+    # inside the completion transaction, together with the `core.users` row — its `registered_at`
+    # `NULL` for an anonymous creation and non-null for a registered one, with any verified-email
+    # copy alongside — so a partial failure leaves no user, no identity and no classification.
     # [impl->req~users-identity-row-in-completion-transaction~1]
     # [impl->req~users-account-and-identity-row-atomic~1]
+    # [impl->req~sessions-promotion-single-transaction~1]
     if identity_transaction is not completion_transaction:
         raise UsersError("the identity row is created inside the completion transaction")
+    if classified is not None and identity.provider is not classified:
+        raise UsersError("the identity row carries the provider the classifier returned")
     creation = create_account(user_id=user_id, identity=identity,
                               user_transaction=completion_transaction,
                               identity_transaction=identity_transaction)
     # The response carries the resulting backend state, with no backend token in it.
     # [impl->req~users-create-user-returns-no-backend-token~1]
+    # [impl->req~sessions-promotion-no-backend-token~1]
     if backend_token is not None:
         raise UsersError("create_user returns no backend token")
     assert_no_secondary_auth_state(secondary_auth_state)
@@ -827,9 +860,17 @@ def create_user_prepare_constraints(context: VerifiedIdentityContext,
     that check finds one; that rejection is the `identity_already_linked` conflict class and
     audit result, never `preauth_identity_not_allowed` and never idempotent success. Historical
     identities and identities linked to blocked users are rejected by the shared barrier as
-    `account_unavailable` before either phase."""
+    `account_unavailable` before either phase.
+
+    That prepare-time check is best-effort fail-fast only: it is racy by nature and never
+    authoritative, which is why completion re-resolves inside its own transaction."""
     # [impl->req~users-create-user-identity-constraints~1]
+    # [impl->req~sessions-create-user-prepare-check-best-effort~1]
+    # [impl->req~sessions-create-user-preauth-only~1]
     _assert_create_user_admissible(context.outcome)
+    # The pre-auth context is the verified `(issuer, subject)` and nothing else: no backend-minted
+    # claim, no user row, no identity row and no stored provider stands in for it.
+    # [impl->req~sessions-preauth-context-from-verified-claims~1]
     preauth_context(context)
     return prepare_variant(AuthOperation.create_user, declared)
 
@@ -842,6 +883,10 @@ def create_user_completion_constraints(context: VerifiedIdentityContext, row: Ch
     takes the same `identity_already_linked` conflict. The `provider` field is required at
     completion and must equal the challenge-bound variant byte-for-byte."""
     # [impl->req~users-create-user-identity-constraints~1]
+    # Both phases are pre-auth only, judged by the same predicate: pre-auth status observed at
+    # prepare is never sufficient evidence that the subject is still unlinked.
+    # [impl->req~sessions-create-user-preauth-only~1]
+    # [impl->req~sessions-create-user-completion-re-resolves~1]
     _assert_create_user_admissible(context.outcome)
     # The shared completion order is normative and a rejection names the earliest failed step:
     # step 09 compares the variant, before the step 10 Firebase Admin lookup and the step 11
@@ -858,14 +903,25 @@ def create_user_completion_constraints(context: VerifiedIdentityContext, row: Ch
 
 
 def _assert_create_user_admissible(outcome: ResolutionOutcome) -> None:
-    """The one place both phases judge a resolved outcome, so the two can never drift."""
+    """The one place both phases judge a resolved outcome, so the two can never drift.
+
+    Accepted residual: a caller holding a valid token for a subject can tell that subject's
+    unlinked state from its historical state right here, because one proceeds to a challenge and
+    the other refuses. That is inherent once create-user admits pre-auth identities and bars
+    historical ones, and it is bounded by the route's required gateway limits — keyed on the
+    canonical client IP and bucketed by `/64` for IPv6 — and by the caller needing a valid token
+    for that exact, non-guessable subject in the first place."""
     # [impl->req~users-create-user-identity-constraints~1]
+    # [impl->req~sessions-residual-unlinked-vs-historical-oracle~1]
     method, path = CREATE_USER_ROUTE
     if outcome in UNAVAILABLE_ACCOUNT_RESULTS:
         result, _client_class = unavailable_account(outcome, method, path)
         raise ChallengeRejection(result)
     if outcome is ResolutionOutcome.linked:
-        # Never `preauth_identity_not_allowed`, and never idempotent success.
+        # An already-linked identity is rejected from prepare and from completion alike, with the
+        # conflict class distinct from `preauth_identity_not_allowed`, and it never yields a
+        # second user, a merge, an overwrite of the existing identity row, or idempotent success.
+        # [impl->req~sessions-create-user-preauth-only~1]
         raise ChallengeRejection(AuthEventResult.identity_already_linked)
     if outcome is not ResolutionOutcome.pre_auth:
         raise UsersError(f"{outcome} is no resolution outcome create_user admits")

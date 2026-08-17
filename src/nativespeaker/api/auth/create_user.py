@@ -576,12 +576,27 @@ def race_loser_rejection() -> CreateUserRejection:
     proceeds on the winner's account, and no path merges, overwrites, creates a second user or
     treats the retry as idempotent success."""
     # [impl->req~users-create-user-race-arbitration~1]
+    # `UNIQUE (issuer, subject)` with `UNIQUE (user_id)` is the final arbiter between two
+    # completions that both observed an unlinked subject, and the loser rolls back every business
+    # mutation — reading and writing no per-device grant state on the way.
+    # [impl->req~sessions-create-user-unique-constraint-arbiter~1]
+    # The loser needs no recovery API: the same token now resolves as linked, so the client calls
+    # `POST /auth/sync` and proceeds on the winning account.
+    # [impl->req~sessions-loser-no-recovery-api~1]
     outcome = uniqueness_race_loser()
     if outcome.result is not already_linked_result(AlreadyLinkedSite.uniqueness_race_loser):
         raise CreateUserError("the race loser audits as identity_already_linked")
     rejection = CreateUserRejection(outcome.result)
     if rejection.status_code == 500 or rejection.result is AuthEventResult.invalid_external_jwt:
         raise CreateUserError("the uniqueness violation is neither a 500 nor an invalid JWT")
+    # A losing attempt is never reported as idempotent success, so its remediation is the sync
+    # route rather than a success body, and it names no second account of its own.
+    # [impl->req~sessions-loser-no-recovery-api~1]
+    if rejection.error_code != ClientErrorClass.identity_already_linked:
+        raise CreateUserError("the loser returns the identity_already_linked conflict")
+    if REMEDIATIONS[ClientErrorClass.identity_already_linked].next_route != route_for(
+            AuthOperation.sync)[1]:
+        raise CreateUserError("the loser's remediation is POST /auth/sync")
     return rejection
 
 
@@ -768,9 +783,15 @@ class CreateUserEndpoint:
         internal audit result. Neither performs any business mutation.
 
         The completion phase is the second of the two phases a linked identity is ineligible for,
-        and it takes the same `identity_already_linked` rejection the prepare phase does."""
+        and it takes the same `identity_already_linked` rejection the prepare phase does.
+
+        Nothing observed at prepare time is evidence here: this re-resolution inside the
+        consuming transaction is the authoritative one, and an active row found at this point
+        mutates no user, identity, profile or grant state."""
         # [impl->req~users-create-user-step-05~1]
         # [impl->req~sessions-linked-identity-ineligible-for-create-user~1]
+        # [impl->req~sessions-create-user-completion-re-resolves~1]
+        # [impl->req~sessions-create-user-preauth-only~1]
         issuer, subject = context_pair(identity)
         outcome = await self._accounts.resolve(session, issuer, subject)
         if outcome is ResolutionOutcome.linked:
@@ -841,9 +862,17 @@ class CreateUserEndpoint:
         # [impl->req~users-create-user-step-13~1]
         assert_one_transaction(session, creation.transaction)
 
-        # 14. return the resulting backend state, with no backend token issued.
+        # 14. return the resulting backend state, with no backend token issued. Promotion of the
+        # pre-auth identity is complete here: the identity row carrying the classified provider,
+        # the user row and its `registered_at`, and any verified-email copy all commit with this
+        # one transaction, and nothing is handed back but that state.
         # [impl->req~users-create-user-step-14~1]
+        # [impl->req~sessions-preauth-promotion-obligations~1]
+        # [impl->req~sessions-promotion-create-identity-row~1]
+        # [impl->req~sessions-promotion-single-transaction~1]
+        # [impl->req~sessions-promotion-no-backend-token~1]
         complete_create_user(user_id=user.id, identity=creation.identity,
-                             completion_transaction=session, identity_transaction=session)
+                             completion_transaction=session, identity_transaction=session,
+                             classified=proof.provider)
         return CreatedAccount(user=user, identity=creation.identity,
                               attribution_tokens=tokens, audit_details=details)

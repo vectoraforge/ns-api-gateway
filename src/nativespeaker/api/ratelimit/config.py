@@ -15,7 +15,15 @@ from limits import RateLimitItem, parse_many
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from nativespeaker.api.auth.operations import AuthOperation
-from nativespeaker.api.ratelimit.keys import KeyComponent, LimiterKeyError, parse_key_policy
+from nativespeaker.api.ratelimit.keys import (
+    IDENTITY_COMPONENTS,
+    AddressSource,
+    KeyComponent,
+    LimiterKeyError,
+    TrustedProxyChain,
+    parse_key_policy,
+    trusted_proxy_chain,
+)
 
 _ENV_PATTERN = re.compile(r"^\$\{([A-Z0-9_]+)\}$")
 
@@ -138,6 +146,27 @@ class RateLimitEntry(BaseModel):
                 "enabled": self.enabled, "failure_mode": self.failure_mode}
 
 
+class GatewayCounterScope(StrEnum):
+    """Where a gateway counter lives. Only one value is permitted: a per-Envoy-pod counter would
+    multiply every ceiling by the replica count."""
+    # [impl->req~sessions-create-user-two-gateway-limits~1]
+    global_rate_limit_service = "global_rate_limit_service"
+    per_envoy_pod = "per_envoy_pod"
+
+
+class GatewayPhase(StrEnum):
+    """The two phases of a challenge-bearing route a gateway limit can cover."""
+    prepare = "prepare"
+    complete = "complete"
+
+
+# Where an identity-keyed gateway limiter may be evaluated, and where an IP-keyed one may.
+ENVOY_JWT_VERIFICATION = "envoy_jwt_verification"
+GATEWAY_ROUTE_MATCH = "gateway_route_match"
+GATEWAY_EVALUATION_POINTS: frozenset[str] = frozenset({ENVOY_JWT_VERIFICATION,
+                                                       GATEWAY_ROUTE_MATCH})
+
+
 class GatewayRateLimitEntry(BaseModel):
     """A limit the gateway enforces. It is declared here because the application configuration
     file is the source of truth for every limit; the backend evaluates none of them."""
@@ -145,6 +174,18 @@ class GatewayRateLimitEntry(BaseModel):
     limit: str
     key: str
     evaluate_after: str
+    # Both gateway counters are enforced as counters in a global rate-limit service shared by
+    # every Envoy replica, never as per-Envoy-pod counters.
+    # [impl->req~sessions-create-user-two-gateway-limits~1]
+    enforcement: GatewayCounterScope = Field(default=GatewayCounterScope.global_rate_limit_service)
+    # Which phases of the route the limit covers. A challenge-bearing route's limits cover both.
+    phases: tuple[GatewayPhase, ...] = Field(default=(GatewayPhase.prepare, GatewayPhase.complete))
+    # A gateway limit fails closed: an unevaluable ceiling rejects rather than admitting.
+    # [impl->req~sessions-create-user-limits-fail-closed~1]
+    failure_mode: FailureMode = Field(default=FailureMode.fail_closed)
+    # Sustained saturation of a deployment-wide ceiling raises an operational alert.
+    # [impl->req~sessions-create-user-limit-tuning-and-alert~1]
+    saturation_alert: bool = Field(default=False)
 
     @field_validator("limit")
     @classmethod
@@ -162,14 +203,55 @@ class GatewayRateLimitEntry(BaseModel):
             raise ValueError(str(exc)) from exc
         return value
 
+    @field_validator("enforcement")
+    @classmethod
+    def _global_counters_only(cls, value: GatewayCounterScope) -> GatewayCounterScope:
+        # [impl->req~sessions-create-user-two-gateway-limits~1]
+        if value is not GatewayCounterScope.global_rate_limit_service:
+            raise ValueError("a gateway counter lives in the global rate-limit service")
+        return value
+
+    @model_validator(mode="after")
+    def _identity_keys_evaluated_after_jwt_verification(self):
+        """A gateway limiter keyed on verified identity derives its key from the JWT filter's own
+        verified token metadata, so it is evaluated only after that filter has verified the
+        request's token for the route. A client-IP-keyed limit needs no verified identity and may
+        sit anywhere in the filter chain."""
+        # [impl->req~sessions-identity-keyed-limiter-from-verified-metadata~1]
+        if self.evaluate_after not in GATEWAY_EVALUATION_POINTS:
+            raise ValueError(f"{self.evaluate_after!r} is no gateway evaluation point")
+        identity_keyed = any(component in IDENTITY_COMPONENTS
+                             for component in parse_key_policy(self.key))
+        if identity_keyed and self.evaluate_after != ENVOY_JWT_VERIFICATION:
+            raise ValueError("an identity-keyed gateway limit is evaluated after JWT verification")
+        return self
+
+    @property
+    def windows(self) -> list[RateLimitItem]:
+        """The entry's configured windows."""
+        return parse_many(self.limit)
+
+    def per_window(self) -> dict[str, float]:
+        """The configured ceiling per window granularity, as `{'minute': 10}`."""
+        return {window.GRANULARITY.name: window.amount / window.multiples
+                for window in self.windows}
+
 
 class ClientAddressConfig(BaseModel):
-    """How the canonical client address becomes a limiter key."""
+    """How the canonical client address becomes a limiter key, and the trusted-proxy chain it is
+    resolved through."""
     # [impl->req~ratelimit-canonical-client-ip-resolution~2]
     ipv6_prefix: int = Field(default=64, description="64, operator-configurable to 56 or 48")
     unresolved_limit: str = Field(default="10/minute",
                                   description="The single-address ceiling for the one shared "
                                               "unresolved-address bucket")
+    # The explicitly configured chain: how Envoy terminates, which proxies may connect to the
+    # listener, and which component injects the true client address.
+    # [impl->req~sessions-client-ip-trusted-proxy-chain~1]
+    source: AddressSource = Field(default=AddressSource.envoy_direct_downstream)
+    trusted_proxies: tuple[str, ...] = Field(default=())
+    injector: str | None = Field(default=None)
+    overwrite_inbound_forwarding_headers: bool = Field(default=True)
 
     @field_validator("ipv6_prefix")
     @classmethod
@@ -177,6 +259,34 @@ class ClientAddressConfig(BaseModel):
         if value not in (64, 56, 48):
             raise ValueError("the IPv6 aggregation prefix is /64, /56 or /48")
         return value
+
+    @model_validator(mode="after")
+    def _trust_chain_is_pinned_to_the_deployment(self):
+        """The configured chain is validated by the one module that owns the client-address
+        definition, so a hop count that does not match the deployment's actual chain, an
+        undocumented injector, or an appending outermost hop is a startup configuration error."""
+        # [impl->req~sessions-client-ip-trusted-proxy-chain~1]
+        # [impl->req~sessions-client-ip-deployment-documents-injector~1]
+        try:
+            trusted_proxy_chain(
+                self.source,
+                trusted_proxies=self.trusted_proxies,
+                injector=self.injector,
+                overwrite_inbound_forwarding_headers=self.overwrite_inbound_forwarding_headers)
+        except LimiterKeyError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+    @property
+    def chain(self) -> TrustedProxyChain:
+        """The validated trusted-proxy chain, with `xff_num_trusted_hops` pinned to exactly the
+        number of trusted proxies."""
+        # [impl->req~sessions-client-ip-xff-trusted-hops~1]
+        return trusted_proxy_chain(
+            self.source,
+            trusted_proxies=self.trusted_proxies,
+            injector=self.injector,
+            overwrite_inbound_forwarding_headers=self.overwrite_inbound_forwarding_headers)
 
 
 class RateLimitsConfig(BaseModel):
@@ -272,25 +382,110 @@ class GatewayRateLimitsConfig(BaseModel):
     create_user_deployment: GatewayRateLimitEntry
 
 
-# The `POST /auth/create-user` gateway entries, and the route both of them cover.
+# The `POST /auth/create-user` gateway entries, and the route both of them cover. There are
+# exactly two, and both cover the route's prepare and complete phases.
+# [impl->req~sessions-create-user-two-gateway-limits~1]
 CREATE_USER_GATEWAY_ENTRIES: tuple[str, ...] = ("create_user_ip", "create_user_deployment")
 CREATE_USER_GATEWAY_ROUTE: str = "POST /auth/create-user"
+
+# The per-client-IP entry keys on the canonical client address alone: the verified
+# `issuer+subject_hash` may only ever be a secondary key here, because a fresh anonymous sign-in
+# is free and mints a new subject on every call.
+# [impl->req~sessions-client-ip-primary-key-on-create-user~1]
+CREATE_USER_PRIMARY_KEY_POLICY: tuple[KeyComponent, ...] = (KeyComponent.ip,)
+CREATE_USER_SECONDARY_KEY_POLICY: tuple[KeyComponent, ...] = (KeyComponent.issuer,
+                                                              KeyComponent.subject_hash)
+
+# The default ceilings. Both are configuration-tunable; these are the values the shipped file
+# carries, not values any code path falls back to.
+# [impl->req~sessions-create-user-per-ip-limit~1]
+# [impl->req~sessions-create-user-deployment-wide-limit~1]
+CREATE_USER_IP_DEFAULT_LIMIT = "10/minute"
+CREATE_USER_DEPLOYMENT_DEFAULT_LIMIT = "100/minute; 2000/day"
+
+# The deployment-wide ceiling is what bounds total account creation, so it must sit far above the
+# single-address ceiling: the per-IP limit bounds per-source throughput only, and an attacker
+# rotating source addresses is otherwise unbounded.
+# [impl->req~sessions-create-user-limit-tuning-and-alert~1]
+MINIMUM_DEPLOYMENT_TO_IP_RATIO = 10
 
 
 def assert_create_user_gateway_limits(gateway: GatewayRateLimitsConfig | None) -> None:
     """Gateway rate limiting on `POST /auth/create-user` is a required, load-bearing control on
     every deployment: leaving this pre-auth route unthrottled is not a permitted configuration.
     A missing `gateway_rate_limits` section, or an entry that names another route, is a startup
-    configuration error rather than a route that quietly runs unthrottled."""
+    configuration error rather than a route that quietly runs unthrottled.
+
+    Two limits apply, both covering the route's prepare and complete phases and both enforced as
+    counters in a global rate-limit service: a per-client-IP limit keyed on the canonical client
+    address, and a deployment-wide limit across all source addresses. Both fail closed, the
+    deployment-wide ceiling carries the operational saturation alert, and it is sized well above
+    the single-address ceiling because it, and not the per-IP limit, bounds total creation.
+    """
     # [impl->req~sessions-create-user-gateway-limit-required~1]
+    # [impl->req~sessions-create-user-two-gateway-limits~1]
     if gateway is None:
         raise RateLimitConfigError(
             f"gateway rate limiting on {CREATE_USER_GATEWAY_ROUTE} is required on every deployment")
     problems = [f"{name} must limit {CREATE_USER_GATEWAY_ROUTE}"
                 for name in CREATE_USER_GATEWAY_ENTRIES
                 if getattr(gateway, name).route != CREATE_USER_GATEWAY_ROUTE]
+    for name in CREATE_USER_GATEWAY_ENTRIES:
+        entry = getattr(gateway, name)
+        # Both limits cover the prepare and the complete phase, and both are global counters.
+        # [impl->req~sessions-create-user-two-gateway-limits~1]
+        if set(entry.phases) != set(GatewayPhase):
+            problems.append(f"{name} must cover the prepare and complete phases")
+        if entry.enforcement is not GatewayCounterScope.global_rate_limit_service:
+            problems.append(f"{name} must be a counter in the global rate-limit service")
+        # Both limits fail closed: a ceiling that cannot be evaluated rejects.
+        # [impl->req~sessions-create-user-limits-fail-closed~1]
+        if entry.failure_mode is not FailureMode.fail_closed:
+            problems.append(f"{name} must fail closed")
+    # The client-IP key is the primary key for this pre-auth route, and never the verified
+    # subject alone; no device fingerprint is a key component anywhere.
+    # [impl->req~sessions-client-ip-primary-key-on-create-user~1]
+    # [impl->req~sessions-create-user-per-ip-limit~1]
+    ip_policy = parse_key_policy(gateway.create_user_ip.key)
+    if ip_policy[:1] != CREATE_USER_PRIMARY_KEY_POLICY:
+        problems.append("create_user_ip keys on the canonical client IP first")
+    if set(ip_policy) & set(CREATE_USER_SECONDARY_KEY_POLICY) and len(ip_policy) < 2:
+        problems.append("the verified subject is never the sole create-user key")
+    # The deployment-wide limit spans all source addresses, so it keys on the deployment.
+    # [impl->req~sessions-create-user-deployment-wide-limit~1]
+    if parse_key_policy(gateway.create_user_deployment.key) != (KeyComponent.deployment,):
+        problems.append("create_user_deployment applies across all source addresses")
+    problems.extend(_create_user_ceiling_problems(gateway))
     if problems:
         raise RateLimitConfigError("; ".join(sorted(problems)))
+
+
+def _create_user_ceiling_problems(gateway: GatewayRateLimitsConfig) -> list[str]:
+    """The relationship between the two configured ceilings, and the alert the deployment-wide
+    one carries. Both values are tunable; what is fixed is that the deployment-wide ceiling is
+    the one that bounds total creation and that its sustained saturation alerts."""
+    # [impl->req~sessions-create-user-limit-tuning-and-alert~1]
+    problems: list[str] = []
+    per_ip = gateway.create_user_ip.per_window()
+    deployment = gateway.create_user_deployment.per_window()
+    # The deployment-wide entry declares the windows that bound total creation.
+    # [impl->req~sessions-create-user-deployment-wide-limit~1]
+    missing = [window for window in ("minute", "day") if window not in deployment]
+    if missing:
+        problems.append("create_user_deployment declares a per-minute and a per-day ceiling")
+    for window, ceiling in deployment.items():
+        loosest = per_ip.get(window)
+        if loosest is not None and ceiling < loosest * MINIMUM_DEPLOYMENT_TO_IP_RATIO:
+            # A deployment-wide ceiling near the single-address one would bind on ordinary
+            # traffic behind one NAT, and the per-IP limit must stay loose for those users.
+            problems.append(f"the deployment-wide {window} ceiling must sit far above "
+                            "the single-address ceiling")
+    # Sustained saturation of the deployment-wide ceiling must raise an operational alert: at
+    # launch scale, that ceiling binding at all is the anomaly signal.
+    # [impl->req~sessions-create-user-limit-tuning-and-alert~1]
+    if not gateway.create_user_deployment.saturation_alert:
+        problems.append("sustained saturation of the deployment-wide ceiling must alert")
+    return problems
 
 
 # --- What the configuration must contain -----------------------------------------------------

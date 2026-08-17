@@ -547,6 +547,11 @@ class SharedChallengeService:
                 # rejected audit row that follow still commit with the outer transaction.
                 # [impl->req~shared-claimed-challenge-is-dead~1]
                 # [impl->req~shared-completion-step-12~1]
+                # Every business mutation, grant side effects included, runs inside this boundary
+                # and therefore only for the attempt whose insert wins; a rejection rolls the
+                # whole of it back while the consumption below still commits.
+                # [impl->req~sessions-loser-challenge-consumed~1]
+                # [impl->req~sessions-grant-side-effects-winner-only~1]
                 async with self._business_boundary(session):
                     # 11. re-verify the shared historical and blocked state to close the race the
                     # barrier opened, and reject a pre-auth-bound `create_user` subject that has
@@ -651,8 +656,13 @@ class SharedChallengeService:
         those writes back, and the challenge consumption and the rejected audit row — written
         after this boundary closes — survive it, because single-use applies to rejected attempts.
         A session with no savepoint support fails closed rather than committing a partial
-        mutation alongside its own rejection."""
+        mutation alongside its own rejection.
+
+        This is the mechanism the `create-user` uniqueness race needs: the loser's challenge was
+        valid and identity-matched, so it is consumed, and both that consumption and the rejected
+        audit result survive the rollback of the losing business mutation."""
         # [impl->req~shared-claimed-challenge-is-dead~1]
+        # [impl->req~sessions-loser-challenge-consumed~1]
         begin_nested = getattr(session, "begin_nested", None)
         if begin_nested is None:
             raise ChallengeError("the consuming transaction needs a savepoint to roll back into")

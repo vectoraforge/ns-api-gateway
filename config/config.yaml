@@ -66,18 +66,36 @@ gateway_rate_limits:
     key: "issuer+subject_hash"
     evaluate_after: "envoy_jwt_verification"
   # Gateway limiting on the pre-auth create-user route is required on every deployment: both
-  # entries cover its prepare and complete phases, and neither is optional.
+  # entries cover its prepare and complete phases, and neither is optional. Both are counters in
+  # the global rate-limit service every Envoy replica shares, never per-pod counters, and both
+  # fail closed.
   # [impl->req~sessions-create-user-gateway-limit-required~1]
+  # [impl->req~sessions-create-user-two-gateway-limits~1]
+  # The per-client-IP ceiling, keyed on the canonical client address and loose enough for
+  # legitimate users sharing one NAT egress address.
+  # [impl->req~sessions-create-user-per-ip-limit~1]
+  # [impl->req~sessions-client-ip-primary-key-on-create-user~1]
   create_user_ip:
     route: "POST /auth/create-user"
     limit: "10/minute"
     key: "ip"
     evaluate_after: "gateway_route_match"
+    enforcement: global_rate_limit_service
+    phases: ["prepare", "complete"]
+    failure_mode: fail_closed
+  # The deployment-wide ceiling across all source addresses. This is the bound on total account
+  # creation, and its sustained saturation is the anomaly signal an operator is alerted on.
+  # [impl->req~sessions-create-user-deployment-wide-limit~1]
+  # [impl->req~sessions-create-user-limit-tuning-and-alert~1]
   create_user_deployment:
     route: "POST /auth/create-user"
     limit: "100/minute; 2000/day"
     key: "deployment"
     evaluate_after: "gateway_route_match"
+    enforcement: global_rate_limit_service
+    phases: ["prepare", "complete"]
+    failure_mode: fail_closed
+    saturation_alert: true
 
 # The backend-to-provider damping limits every adapter runs under, so provider outages, retries
 # and replay attempts cannot fan out unbounded calls. These are the second layer: they protect
@@ -168,9 +186,28 @@ rate_limits:
   # [impl->req~ratelimit-config-key-strategy~1]
   strategy: moving-window
   environment: "${APP_ENVIRONMENT}"
+  # The canonical client address, and the trusted-proxy chain it is resolved through. This
+  # deployment terminates client connections at Envoy itself, so the key is the direct
+  # downstream socket address, no forwarded address is trusted, `xff_num_trusted_hops` is 0, and
+  # Envoy is the documented component that establishes the true client address. A deployment that
+  # puts a load balancer in front of Envoy names it under `trusted_proxies` and `injector`, and
+  # the hop count then follows from that list.
+  # [impl->req~sessions-client-ip-trusted-proxy-chain~1]
+  # [impl->req~sessions-client-ip-direct-downstream~1]
+  # [impl->req~sessions-client-ip-deployment-documents-injector~1]
   client_address:
+    # IPv4 keys on the full address; IPv6 buckets by this prefix, tightened only if abuse appears.
+    # [impl->req~sessions-client-ip-ipv6-prefix-bucket~1]
     ipv6_prefix: 64
+    # The one shared unresolved-address bucket runs at the single-address ceiling.
+    # [impl->req~sessions-client-ip-unresolved-bucket~1]
     unresolved_limit: "10/minute"
+    source: envoy_direct_downstream
+    trusted_proxies: []
+    injector: envoy_direct_downstream_socket
+    # The outermost trusted hop overwrites inbound forwarding headers rather than appending.
+    # [impl->req~sessions-client-ip-outermost-hop-overwrites~1]
+    overwrite_inbound_forwarding_headers: true
   # [impl->req~ratelimit-config-key-default~1]
   default:
     limit: "120/minute"

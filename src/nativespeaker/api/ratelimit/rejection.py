@@ -11,6 +11,7 @@ after the operation challenge has been claimed.
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, cast
 from uuid import UUID
@@ -31,10 +32,13 @@ from nativespeaker.api.auth.taxonomy import (
     RATE_LIMITED_CLASS,
     ClientErrorClass,
     ClientRejection,
+    Remediation,
     client_response,
+    remediation_for,
 )
 from nativespeaker.api.exceptions import ErrorCode, ServiceError
 from nativespeaker.api.ratelimit.config import (
+    CREATE_USER_GATEWAY_ENTRIES,
     DEVICE_BIT_BUDGET_ENTRIES,
     FIREBASE_LOOKUP_ENTRY_KEYS,
     TURNSTILE_ENTRY,
@@ -390,6 +394,117 @@ def assert_aggregate_only(payload: Mapping[str, object]) -> None:
     extra = sorted(set(payload) - permitted)
     if extra:
         raise AdmissionPhaseError(f"aggregate telemetry stores no {extra}")
+
+
+# --- The pre-auth create-user gateway rejection ------------------------------------------------
+
+# The one client-visible class both `POST /auth/create-user` gateway ceilings reject with.
+# [impl->req~sessions-create-user-limits-fail-closed~1]
+GATEWAY_REGISTRATION_CLASS = ClientErrorClass.registration_temporarily_unavailable
+
+# Everything the route creates when it runs, and therefore everything a request rejected at the
+# gateway never creates: it reaches no backend code at all.
+# [impl->req~sessions-rejected-request-never-reaches-backend~1]
+CREATE_USER_BACKEND_ARTIFACTS: frozenset[str] = frozenset({
+    "core.auth_challenges", "core.users", "core.external_identities", "audit.auth_events",
+    "firebase_admin_lookup"})
+
+# What a gateway-rejected request leaves behind in the backend: nothing.
+# [impl->req~sessions-rejected-request-never-reaches-backend~1]
+GATEWAY_REJECTED_BACKEND_ARTIFACTS: frozenset[str] = frozenset()
+
+# Nothing this route creates is deleted automatically: no scheduled purge of expired or consumed
+# challenge rows, and no scheduled deletion of empty anonymous users. Both retention rules are
+# read from the modules that own them rather than restated here.
+# [impl->req~sessions-no-automatic-deletion-on-create-user-route~1]
+CREATE_USER_ROUTE_DELETION_JOBS: frozenset[str] = frozenset()
+
+
+class GatewayRejectionError(RuntimeError):
+    """A gateway rejection was about to leave the shared client contract: a status other than
+    `429`, a body naming the exhausted bucket, or backend work behind a rejected request."""
+
+
+def gateway_registration_rejection(*,
+                                   retry_after_seconds: Sequence[int] = (),
+                                   ceiling: str | None = None) -> ClientRejection:
+    """The rejection either `POST /auth/create-user` gateway ceiling returns.
+
+    Both limits fail closed with the shared `registration_temporarily_unavailable` class: HTTP
+    429, a `Retry-After` header reflecting the limiting bucket's true wait, and the shared
+    response shape naming the class. The response is identical and non-accusatory for the per-IP
+    and the deployment-wide ceiling alike, and it never identifies which bucket was exhausted.
+    """
+    # [impl->req~sessions-create-user-limits-fail-closed~1]
+    if ceiling is not None and ceiling not in CREATE_USER_GATEWAY_ENTRIES:
+        raise GatewayRejectionError(f"{ceiling} is no create-user gateway ceiling")
+    rejection = client_response(GATEWAY_REGISTRATION_CLASS,
+                               retry_after_seconds=tuple(retry_after_seconds))
+    if rejection.status != ADMISSION_REJECTION_STATUS:
+        raise GatewayRejectionError("a gateway ceiling rejects with HTTP 429")
+    if retry_after_seconds and "Retry-After" not in rejection.headers:
+        raise GatewayRejectionError("the rejection carries the limiting bucket's true wait")
+    disclosed = f"{sorted(rejection.body.items())}{sorted(rejection.headers.items())}"
+    # Neither the bucket that fired nor the key it fired on appears anywhere in the response.
+    # [impl->req~sessions-create-user-limits-fail-closed~1]
+    for name in (*CREATE_USER_GATEWAY_ENTRIES, *([ceiling] if ceiling else [])):
+        if name in disclosed:
+            raise GatewayRejectionError("the rejection never identifies the exhausted bucket")
+    return rejection
+
+
+def backend_artifacts_after_gateway(*,
+                                    admitted: bool,
+                                    artifacts: Sequence[str] = ()) -> frozenset[str]:
+    """The artifacts a `POST /auth/create-user` request is allowed to have created, given whether
+    the gateway limits admitted it. Every database insert and every Firebase Admin read on this
+    route happens only after those limits admit the request, so a rejected one creates no
+    challenge row, no user or identity row, no `audit.auth_events` row, and triggers no Firebase
+    Admin lookup."""
+    # [impl->req~sessions-rejected-request-never-reaches-backend~1]
+    offered = frozenset(artifacts)
+    unknown = sorted(offered - CREATE_USER_BACKEND_ARTIFACTS)
+    if unknown:
+        raise GatewayRejectionError(f"{unknown} is not a create-user backend artifact")
+    if not admitted:
+        if offered:
+            raise GatewayRejectionError(
+                f"a gateway-rejected request creates no {sorted(offered)}")
+        return GATEWAY_REJECTED_BACKEND_ARTIFACTS
+    return offered
+
+
+def assert_saturation_tradeoff_accepted() -> Remediation:
+    """The accepted availability trade-off: while a distributed attack keeps the deployment-wide
+    ceiling saturated, account creation is unavailable to legitimate users for the duration.
+
+    That is the intended trade, so the rejection stays a transient wait-and-retry rather than
+    something a caller can route around: the class is transient and carries `Retry-After`, and no
+    bypass token, priority lane or limiting exemption exists to reopen the path while the ceiling
+    binds."""
+    # [impl->req~sessions-create-user-saturation-tradeoff~1]
+    remediation = remediation_for(GATEWAY_REGISTRATION_CLASS)
+    if not remediation.transient or not remediation.sends_retry_after:
+        raise GatewayRejectionError("a saturated ceiling is a transient wait, not a terminal stop")
+    if remediation.terminal:
+        raise GatewayRejectionError("a saturated ceiling never terminally closes registration")
+    return remediation
+
+
+def assert_no_automatic_deletion(jobs: Sequence[str] = ()) -> None:
+    """Nothing created on this route is deleted automatically: retention is indefinite, and total
+    volume is bounded by the gateway ceilings instead. The challenge table's purge rule and the
+    anonymous user row's retention rule are read from their owning modules."""
+    # [impl->req~sessions-no-automatic-deletion-on-create-user-route~1]
+    from nativespeaker.api.auth.challenges import CHALLENGE_PURGE_JOBS  # noqa: PLC0415
+    from nativespeaker.api.auth.profile import AccountClass, retention_deadline  # noqa: PLC0415
+
+    scheduled = sorted({*jobs, *CHALLENGE_PURGE_JOBS, *CREATE_USER_ROUTE_DELETION_JOBS})
+    if scheduled:
+        raise GatewayRejectionError(f"nothing on this route is purged on a schedule: {scheduled}")
+    if retention_deadline(AccountClass.anonymous,
+                          created_at=datetime(2026, 1, 1, tzinfo=UTC)) is not None:
+        raise GatewayRejectionError("an empty anonymous user row is never deleted on a schedule")
 
 
 # --- Operational counters ---------------------------------------------------------------------

@@ -112,10 +112,14 @@ class FirebaseIdTokenVerifier:
             raise InvalidExternalJwtError(JwtRejectionReason.signing_key_unavailable) from None
         # One verifying decode does the whole acceptance policy, and any branch of it failing —
         # bad signature, wrong `iss`, wrong `aud`, expired, unparseable — rejects the request.
+        # Expired, not-yet-valid, wrong-audience, wrong-issuer and wrong-token-class tokens all
+        # fail here, in the backend's own verification: the gateway's JWT filter rejects most of
+        # them earlier, but nothing in this decode depends on that having happened.
         # [impl->req~shared-verify-id-token~1]
         # [impl->req~sessions-iss-must-equal-configured-issuer~1]
         # [impl->req~sessions-any-verification-failure-rejects~1]
         # [impl->req~sessions-wire-claims-from-verifying-decode~1]
+        # [impl->req~sessions-token-class-failures-backend-side~1]
         try:
             claims = jwt.decode(token,
                                 signing_key,

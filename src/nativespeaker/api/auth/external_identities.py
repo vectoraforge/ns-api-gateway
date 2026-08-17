@@ -398,12 +398,24 @@ class RaceLoserOutcome:
     rolled_back: frozenset[str]
 
 
-# Every business mutation the losing transaction rolls back. A per-device grant-state read is
-# rolled back with the rest: the loser leaves no trace at all.
+# Every business mutation the losing transaction rolls back: no `core.users` row, no
+# `core.external_identities` row and no grant survive it. A per-device grant-state read is rolled
+# back with the rest — the loser neither reads nor modifies per-device grant state — so grant side
+# effects belong to the winning insert path alone, keyed on the new `core.users.id`.
+# [impl->req~sessions-grant-side-effects-winner-only~1]
 RACE_LOSER_ROLLBACK: frozenset[str] = frozenset({
     "user_row", "identity_row", "grant", "per_device_grant_state_read",
     "per_device_grant_state_write",
 })
+
+# The only race controls a `create-user` completion needs: atomic challenge consumption and these
+# unique constraints. Nothing else is added — no serializable isolation level, no distributed
+# lock, no compare-and-swap generation on a pre-auth subject, and no cancellation of the loser's
+# challenge beyond its single-use consumption.
+# [impl->req~sessions-create-user-race-controls-bounded~1]
+CREATE_USER_RACE_CONTROLS: frozenset[str] = frozenset({
+    "atomic_challenge_consumption", "unique_issuer_subject", "unique_user_id"})
+FORBIDDEN_RACE_CONTROLS: frozenset[str] = frozenset()
 
 
 def uniqueness_race_loser() -> RaceLoserOutcome:
@@ -412,6 +424,10 @@ def uniqueness_race_loser() -> RaceLoserOutcome:
     violation never escapes as a generic server error and is never audited as
     `invalid_external_jwt`."""
     # [impl->req~schema-external-identities-uniqueness-race-arbiter~1]
+    # [impl->req~sessions-create-user-unique-constraint-arbiter~1]
+    # [impl->req~sessions-create-user-race-controls-bounded~1]
+    if FORBIDDEN_RACE_CONTROLS or "unique_issuer_subject" not in CREATE_USER_RACE_CONTROLS:
+        raise IdentityError("the unique constraints and single-use are the whole race control")
     result = already_linked_result(AlreadyLinkedSite.uniqueness_race_loser)
     if result in (AuthEventResult.internal_error, AuthEventResult.invalid_external_jwt):
         raise IdentityError("the uniqueness race loser audits as identity_already_linked")

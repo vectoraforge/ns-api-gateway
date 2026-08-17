@@ -133,7 +133,11 @@ def barrier_result_for(outcome: ResolutionOutcome,
     treatment. The predicate admits no route-specific exception, `POST /auth/sign-out-all`
     included: a blocked user or a historical identity is rejected there exactly as everywhere
     else, and both surface as `account_unavailable`. Barrier rejections carry the client and audit
-    mappings already defined for these outcomes; no per-endpoint variant is introduced."""
+    mappings already defined for these outcomes; no per-endpoint variant is introduced.
+
+    This predicate is the whole of the must-reject list an authenticated request is judged
+    against once its token has been verified: a historical linked identity and a blocked user are
+    rejected here, on every route, and no handler can admit either."""
     # [impl->req~shared-prehandler-barrier~1]
     # [impl->req~shared-invariant-03~1]
     # [impl->req~sessions-barrier-step-enforce-outcomes~1]
@@ -143,6 +147,10 @@ def barrier_result_for(outcome: ResolutionOutcome,
     # [impl->req~sessions-undeclared-route-strictest~1]
     # [impl->req~sessions-barrier-no-route-exception~1]
     # [impl->req~sessions-barrier-rejection-mappings-reused~1]
+    # [impl->req~sessions-backend-must-reject-list~1]
+    # A historical identity and a blocked user are rejected on every endpoint, both phases of
+    # `POST /auth/create-user` included, and always with the shared `account_unavailable` class.
+    # [impl->req~sessions-historical-and-blocked-rejection-everywhere~1]
     if outcome is ResolutionOutcome.linked:
         # The one admitted outcome by default: a linked identity whose user is active.
         # [impl->req~sessions-resolution-outcome-04~1]
@@ -158,11 +166,16 @@ def barrier_result_for(outcome: ResolutionOutcome,
         # Once an external identity has transitioned to `historical`, every subsequent request
         # for it is rejected here, at per-request resolution — on the pre-auth-declared
         # `POST /auth/create-user` phases too, so a retired identity never becomes eligible for a
-        # pre-auth creation flow.
+        # pre-auth creation flow. It never receives `preauth_identity_not_allowed`, which would
+        # send the client into create-user, and it never reaches a success path.
         # [impl->req~sessions-resolution-outcome-02~1]
+        # [impl->req~sessions-reject-historical-identity~1]
         return AuthEventResult.historical_identity
     if outcome is ResolutionOutcome.blocked_user:
+        # A blocked user is already linked and never legitimately reaches a pre-auth route; it is
+        # rejected everywhere, under its own internal result.
         # [impl->req~sessions-resolution-outcome-03~1]
+        # [impl->req~sessions-reject-blocked-user~1]
         return AuthEventResult.blocked_user
     # An outcome outside the four never authorizes: it takes the strictest rejection rather than
     # falling through to admission.
@@ -186,6 +199,9 @@ def extract_bearer_token(authorization_values: Sequence[str]) -> str:
     # [impl->req~sessions-wire-authorization-bearer-sole-carrier~1]
     # [impl->req~sessions-wire-exactly-one-credential~1]
     # [impl->req~sessions-wire-case-insensitive-duplicate-fields~1]
+    # A request carrying no `Authorization` bearer credential conforming to that contract is
+    # rejected here, before any resolution.
+    # [impl->req~sessions-reject-no-bearer-credential~1]
     if len(authorization_values) > 1:
         raise InvalidExternalJwtError(JwtRejectionReason.duplicate_authorization)
     if not authorization_values:
@@ -255,6 +271,16 @@ class AuthBarrier:
         # [impl->req~sessions-barrier-ordered-steps~1]
         # [impl->req~sessions-barrier-positive-admission-test~1]
         # [impl->req~sessions-no-principal-for-historical-or-blocked~1]
+        # Every authenticated endpoint is admitted only after this verification, this acceptance
+        # policy over the verified claims, and these per-request identity-resolution rules have
+        # all run, in this order.
+        # [impl->req~sessions-endpoint-admission-after-verification~1]
+        # [impl->req~sessions-backend-must-reject-list~1]
+        # Backend network isolation is defence in depth, never a trust precondition: nothing here
+        # reads the peer address, a gateway marker header or a mesh identity, so a request that
+        # reached the pod off-gateway is judged by exactly the same token verification.
+        # [impl->req~sessions-network-isolation-recommended~1]
+        # [impl->req~sessions-off-gateway-access-accepted-risk~1]
         # Authenticated traffic, counted before any branch: the alert's fractional threshold is
         # a share of it, and every route that rejects here is inside that share.
         # [impl->req~sessions-invalid-external-jwt-metric-alert~1]
@@ -273,6 +299,12 @@ class AuthBarrier:
             # [impl->req~sessions-any-verification-failure-rejects~1]
             # [impl->req~sessions-acceptance-failures-single-contract~1]
             # [impl->req~sessions-acceptance-failure-internal-reason~1]
+            # A verification failure — for any reason, a bad signature, an `iss` that is not the
+            # configured integration's issuer, a wrong `aud`, expiry, or an empty `sub` — takes
+            # the same `invalid_external_jwt` audit result and the same `auth_required` client
+            # surfacing as every other acceptance failure.
+            # [impl->req~sessions-reject-failed-verification~1]
+            # [impl->req~sessions-verification-failure-mapping~1]
             # Verification supplied no permitted actor, so the row takes the actor-`NULL` shape.
             raise await self._reject(attempt, AuthEventResult.invalid_external_jwt,
                                      reason=str(exc.reason)) from None
@@ -286,7 +318,12 @@ class AuthBarrier:
         # [impl->req~sessions-users-id-not-auth-key~1]
         # [impl->req~sessions-wire-no-provider-derivation~1]
         # Step two: resolve the verified pair against `core.external_identities` and `core.users`.
+        # All four outcomes come out of this one lookup: there is no outcome-dependent early
+        # exit, no extra query for a particular state, no deliberate per-reason delay, and no
+        # state-specific externally observable side effect. Constant-time resolution is not
+        # required and is not attempted.
         # [impl->req~sessions-barrier-step-resolve-identity~1]
+        # [impl->req~sessions-single-lookup-path-no-early-exit~1]
         resolved = await self._resolver.resolve(claims.issuer, claims.subject)
         actor = self._actor(claims.issuer, claims.subject, resolved)
 
@@ -455,3 +492,80 @@ def verified_identity(request: Request) -> VerifiedIdentityContext:
     if identity is None:
         raise BarrierRejectionError(AuthEventResult.invalid_external_jwt)
     return identity
+
+
+# --- The backend trust boundary ----------------------------------------------------------------
+
+# Enforced backend network isolation — a Kubernetes NetworkPolicy restricting backend ingress to
+# the gateway, or equivalent service-mesh mTLS restricting callers to the gateway's identity — is
+# recommended defence-in-depth. It is not a required or load-bearing control for authenticated
+# request trust, because the backend verifies every token itself; what it buys is a bound on the
+# residual bypass of the gateway's rate limits, create-user spam included.
+# [impl->req~sessions-network-isolation-recommended~1]
+NETWORK_ISOLATION_IS_LOAD_BEARING = False
+
+# This trust boundary introduces no new data artifacts: no table, column, stored marker or
+# persisted flag records how a request reached the pod.
+# [impl->req~sessions-network-isolation-no-data-artifacts~1]
+NETWORK_ISOLATION_DATA_ARTIFACTS: frozenset[str] = frozenset()
+
+# Fields a caller could send to claim it arrived through the gateway, or that a mesh would add.
+# None of them is read by admission.
+# [impl->req~sessions-off-gateway-access-accepted-risk~1]
+GATEWAY_PRESENCE_MARKERS: frozenset[str] = frozenset({
+    "x-envoy-external-address", "x-envoy-internal", "x-envoy-original-path",
+    "x-envoy-peer-metadata", "x-forwarded-client-cert", "x-gateway-verified", "x-from-gateway"})
+
+# The one residual capability an off-gateway caller gains: using its own valid token against the
+# backend directly and thereby bypassing the gateway's rate limits. Holding such a token makes
+# that caller the subject, exactly as it would through the gateway, so no identity is minted.
+# [impl->req~sessions-off-gateway-access-accepted-risk~1]
+OFF_GATEWAY_RESIDUAL_CAPABILITIES: frozenset[str] = frozenset({"bypasses_gateway_rate_limits"})
+
+
+class OffGatewayTrustError(RuntimeError):
+    """Backend admission was about to depend on the caller's network position."""
+
+
+def admission_inputs(field_names: Sequence[str],
+                     *,
+                     consulted: Sequence[str] = (IDENTITY_HEADER,)) -> tuple[str, ...]:
+    """The request fields backend admission reads, out of everything a caller sent: the one
+    identity carrier and nothing else. A gateway-presence marker, a mesh peer identity or a
+    proxy-added client certificate header contributes nothing, so a caller that reaches a pod
+    off-gateway is judged by the same token verification as one that came through the gateway —
+    and a caller that fakes a marker gains nothing. `consulted` is what an admission path
+    declares it reads: anything beyond the identity carrier fails closed here."""
+    # [impl->req~sessions-network-isolation-recommended~1]
+    # [impl->req~sessions-off-gateway-access-accepted-risk~1]
+    if NETWORK_ISOLATION_IS_LOAD_BEARING or NETWORK_ISOLATION_DATA_ARTIFACTS:
+        raise OffGatewayTrustError("isolation is defence-in-depth and stores nothing")
+    reads = {name.lower() for name in consulted}
+    beyond = sorted(reads - {IDENTITY_HEADER})
+    if beyond:
+        raise OffGatewayTrustError(
+            f"admission reads {IDENTITY_HEADER} alone, never {beyond}")
+    return tuple(name.lower() for name in field_names if name.lower() in reads)
+
+
+class RevocationWindowState(StrEnum):
+    """The two states a subject is in after an operator block or an identity retirement revoked
+    its Firebase refresh tokens."""
+    # The client can mint no fresh ID token, so once its current one expires its requests fail
+    # acceptance.
+    no_mintable_token = "no_mintable_token"
+    # An ID token already minted reaches resolution until its own `exp`.
+    unexpired_id_token = "unexpired_id_token"
+
+
+def revocation_window_class(state: RevocationWindowState) -> str:
+    """The client-visible class each side of the revocation window surfaces as. That window needs
+    no distinct class: both sides are classes the shared contract already defines, read from it
+    here rather than restated — acceptance failure surfaces as `auth_required`, and a still-valid
+    token that reaches resolution surfaces as `account_unavailable`."""
+    # [impl->req~sessions-revocation-window-no-distinct-class~1]
+    if state is RevocationWindowState.no_mintable_token:
+        client_class, _status = surface(AuthEventResult.invalid_external_jwt)
+    else:
+        client_class, _status = surface(AuthEventResult.blocked_user)
+    return client_class

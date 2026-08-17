@@ -75,24 +75,35 @@ class Remediation:
 # Each class's normative remediation. The action strings are the contract's own vocabulary.
 # [impl->req~shared-error-remediation-normative~1]
 REMEDIATIONS: dict[ClientErrorClass, Remediation] = {
-    # Re-authenticate through the Firebase client SDK and retry with a fresh ID token.
+    # Re-authenticate through the Firebase client SDK and retry with a fresh ID token. The
+    # presented token was not accepted, at the gateway or at the backend.
     # [impl->req~shared-auth-required-grouping~1]
+    # [impl->req~sessions-class-auth-required~1]
     ClientErrorClass.auth_required: Remediation(
         action="reauthenticate_and_retry_with_fresh_id_token", http_status=401),
-    # An unlinked identity called a linked-only route: complete create-user, then retry.
+    # An unlinked identity called a linked-only route: complete create-user, then retry. The
+    # class keeps its own remediation because sending the client into create-user is
+    # load-bearing product UX, and it is not sensitive: every fresh anonymous sign-in is
+    # unlinked, so the class reveals nothing about existing accounts.
     # [impl->req~shared-preauth-not-allowed-remediation~1]
+    # [impl->req~sessions-class-preauth-identity-not-allowed~1]
+    # [impl->req~sessions-preauth-class-rationale~1]
     ClientErrorClass.preauth_identity_not_allowed: Remediation(
         action="create_user_then_retry_linked_only_route", http_status=403,
         next_route="/auth/create-user"),
     # Terminal: discard tokens, stop refreshing, stop every further authenticated call —
     # retries of the same route and of sign-out-all included — and show "contact support".
-    # Re-authentication and create-user are not remedies; there is no in-band unblock.
+    # Re-authentication and create-user are not remedies; there is no in-band unblock. The
+    # account cannot proceed: this one class covers a historical identity and a blocked user.
     # [impl->req~shared-account-unavailable-remediation~1]
+    # [impl->req~sessions-class-account-unavailable~1]
     ClientErrorClass.account_unavailable: Remediation(
         action="stop_all_authenticated_calls_and_contact_support", http_status=403,
         terminal=True, discard_credentials=True),
-    # Call `/auth/sync` and proceed on the linked account.
+    # Call `/auth/sync` and proceed on the linked account. This is the class the already-linked
+    # identity earns on `POST /auth/create-user`, whose two phases are pre-auth only.
     # [impl->req~shared-identity-already-linked-remediation~1]
+    # [impl->req~sessions-class-identity-already-linked~1]
     ClientErrorClass.identity_already_linked: Remediation(
         action="sync_then_proceed_on_linked_account", http_status=409, next_route="/auth/sync"),
     # Prepare a fresh challenge and retry.
@@ -112,8 +123,12 @@ REMEDIATIONS: dict[ClientErrorClass, Remediation] = {
         action="obtain_fresh_proof_material_and_retry_whole_attempt", http_status=403,
         fresh_proof=True, fresh_challenge=True),
     # Remedy the underlying structural state before retrying, never blind-retry from the same
-    # state; where the blocking state is a held grant with a known end, wait for that end.
+    # state; where the blocking state is a held grant with a known end, wait for that end. This
+    # is the class the provider-transition conflict on `POST /auth/upgrade-anonymous` takes, and
+    # the one `provider_account_already_linked` takes on either write that binds a provider
+    # account — registered create-user completion and the anonymous-to-registered upgrade.
     # [impl->req~shared-operation-not-allowed-remediation~1]
+    # [impl->req~sessions-class-operation-not-allowed~1]
     ClientErrorClass.operation_not_allowed: Remediation(
         action="remedy_structural_state_before_retrying", http_status=403,
         carries_blocking_end=True),
@@ -279,8 +294,10 @@ INVALID_EXTERNAL_JWT_REASONS: frozenset[str] = frozenset(str(reason)
 
 # The shared internal-result-to-class mapping every authenticated route rejects through,
 # including the shared pre-handler barrier. Endpoint contracts extend it; they never replace
-# or rename a shared class.
+# or rename a shared class. Rejections on authenticated routes use these client-visible classes
+# and no others.
 # [impl->req~shared-error-classes-govern-all-routes~1]
+# [impl->req~sessions-rejection-classes~1]
 RESULT_TO_CLASS: dict[AuthEventResult, ErrorCode] = {
     AuthEventResult.invalid_external_jwt: "auth_required",
     AuthEventResult.firebase_user_unresolved: "auth_required",
@@ -344,6 +361,39 @@ def _assert_grouping_consistent() -> None:
 
 
 _assert_grouping_consistent()
+
+
+# The two account states that share `account_unavailable`, each keeping its own internal audit
+# result so support and abuse review can tell retirement from blocking.
+# [impl->req~sessions-account-unavailable-shared-shape~1]
+ACCOUNT_UNAVAILABLE_RESULTS: tuple[AuthEventResult, ...] = (AuthEventResult.historical_identity,
+                                                            AuthEventResult.blocked_user)
+
+
+def _assert_account_unavailable_indistinguishable() -> None:
+    """Historical and blocked share `account_unavailable` exactly: same HTTP status, same
+    machine-readable code, same generic copy, and no state-specific field, so the two states stay
+    mutually indistinguishable to clients and the API contract carries no retired-versus-blocked
+    branch. Neither may map to `auth_required`, which would leave the client looping on a
+    still-valid token instead of stopping."""
+    # [impl->req~sessions-account-unavailable-shared-shape~1]
+    shapes = set()
+    for result in ACCOUNT_UNAVAILABLE_RESULTS:
+        client_class = RESULT_TO_CLASS[result]
+        if client_class != ClientErrorClass.account_unavailable:
+            raise TaxonomyError(f"{result} surfaces as account_unavailable, not {client_class}")
+        response = client_response(client_class)
+        shapes.add((response.status,
+                    tuple(sorted(response.body.items())),
+                    tuple(sorted(response.headers.items()))))
+    if len(shapes) != 1:
+        raise TaxonomyError("the two account-unavailable states are indistinguishable to clients")
+    # Internally they stay distinct: two audit results, never collapsed into one.
+    if len(set(ACCOUNT_UNAVAILABLE_RESULTS)) != len(ACCOUNT_UNAVAILABLE_RESULTS):
+        raise TaxonomyError("retirement and blocking keep distinct audit results")
+
+
+_assert_account_unavailable_indistinguishable()
 
 
 class UnsurfacedResultError(RuntimeError):
