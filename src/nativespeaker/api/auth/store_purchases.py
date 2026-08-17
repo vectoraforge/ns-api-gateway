@@ -180,6 +180,7 @@ def build_purchase_row(*,
                        purchase_user_id: UUID | None,
                        store_transaction_id: str | None = None,
                        store_original_transaction_id: str | None = None,
+                       token_resolved: bool | None = None,
                        existing: Sequence[PurchaseRow] = ()) -> PurchaseRow:
     """One row per accepted `(provider, external_id)` store subscription: the store provider, the
     attribution token value the client passed into that store's SDK — or the server-generated
@@ -187,9 +188,12 @@ def build_purchase_row(*,
     the `core.users.id` the attribution resolved to where one did, and the store subscription the
     purchase produced.
 
-    Where the attribution resolved to a user, the token it resolved through is recorded as
-    `resolved_token_value` — the same value as `identity_value`, which is what the schema's own
-    CHECK requires. An unattributed row records none.
+    Where ingestion resolved the echoed token to a `core.store_purchase_tokens` row, the token it
+    resolved through is recorded as `resolved_token_value` — the same value as `identity_value`,
+    which is what the schema's own CHECK requires. Every other row records none: an echoed token
+    that resolved to no binding, a verified purchase carrying no echoed token, and a row
+    `restore_subscription` created from store-verified proof, which attributes to its destination
+    user without resolving a token binding at all.
 
     This is a purchase-attribution table, not a separate audit row per lifecycle event: the store
     itself remains the source of lifecycle history.
@@ -200,12 +204,15 @@ def build_purchase_row(*,
         raise StorePurchaseError(
             f"{(provider, external_id)} already holds its one purchase-attribution row")
     attribution_field(provider)
+    # `resolved_token_value` is non-NULL exactly where ingestion resolved the echoed token to a
+    # token binding; an attributed row that resolved no binding still records none.
+    # [impl->req~schema-store-purchases-resolved-token-value-fk~1]
+    resolved = purchase_user_id is not None if token_resolved is None else token_resolved
     return PurchaseRow(purchase_id=uuid4(), provider=provider, external_id=external_id,
                        identity_value=identity_value, purchase_user_id=purchase_user_id,
                        store_transaction_id=store_transaction_id,
                        store_original_transaction_id=store_original_transaction_id,
-                       resolved_token_value=(identity_value if purchase_user_id is not None
-                                             else None))
+                       resolved_token_value=identity_value if resolved else None)
 
 
 # --- The echoed UUID is evidence, not identity ------------------------------------------------------
@@ -254,10 +261,14 @@ def resolve_or_create_purchase_row(rows: Sequence[PurchaseRow],
         assert_carried_uuid_matches(verified, row)
         return row
     identity_value = verified.carried_purchase_uuid or str(uuid4())
+    # A row restore creates from store-verified proof resolved no token binding, so it records no
+    # `resolved_token_value` even though it names the restoring destination user.
+    # [impl->req~schema-store-purchases-resolved-token-value-fk~1]
     return build_purchase_row(provider=verified.provider,
                               external_id=verified.external_id,
                               identity_value=identity_value,
                               purchase_user_id=destination_user_id,
+                              token_resolved=False,
                               existing=rows)
 
 

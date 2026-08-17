@@ -1219,3 +1219,144 @@ def duplicate_claim_rejection(detection: DuplicateDetection,
     return DuplicateRejection(result=rejection.result,
                               client_class=rejection.client_class,
                               rolls_back_grant_insert=inside_activation)
+
+
+# --- Invariant 14: the conditional invariants the declarative structure enforces ---------------
+#
+# Four rules, each enforced by one declarative mechanism, plus the two combining paragraphs the
+# schema file adds after them. Every one of them is checked here on the write side, so a path
+# proposing a state the commit would reject fails where it is written rather than at COMMIT.
+
+# Enforcement of the native anonymous claim ordering is an operation invariant of
+# `claim_anonymous_grant`, never a cross-table schema constraint.
+# [impl->req~schema-invariant-14~1]
+NATIVE_ORDERING_ENFORCEMENT: str = "claim_anonymous_grant_operation_rules"
+SCHEMA_ENFORCED_ORDERINGS: frozenset[str] = frozenset()
+
+
+def assert_active_subscription_grant_backed_at_commit(*,
+                                                      grant_status: AccessGrantStatus,
+                                                      subscription_status: SubscriptionStatus
+                                                      ) -> None:
+    """Sub-bullet 1: the active-subscription-backed-grant-requires-product-entitled-canonical-
+    subscription rule, enforced by the deferrable foreign key from the generated column
+    `active_subscription_grant_subscription_id` to `product_entitled_subscription_id`. A commit
+    that would activate a subscription-backed grant whose linked canonical subscription is not in
+    the fixed product-entitled status set is rejected."""
+    # [impl->req~schema-invariant-14~1]
+    if ENTITLED_SUBSCRIPTION_FK.target_columns != (PRODUCT_ENTITLED_SUBSCRIPTION_COLUMN.name,):
+        raise GrantSchemaError("the entitlement foreign key targets the generated column")
+    if not ENTITLED_SUBSCRIPTION_FK.deferrable:
+        raise GrantSchemaError("the entitlement foreign key is checked at commit")
+    assert_active_subscription_entitled(status=grant_status,
+                                        subscription_status=subscription_status)
+
+
+def assert_anti_abuse_lower_bound_at_commit(*,
+                                            source: AccessGrantSource,
+                                            grant_id: UUID,
+                                            anti_abuse_grant_ids: Iterable[UUID],
+                                            transaction: object = None) -> None:
+    """Sub-bullet 2: the lower bound that every grant with a free-credit source has at least one
+    matching `core.access_grants_anti_abuse` row, enforced by the deferrable foreign key from the
+    generated column `anti_abuse_required_grant_id`. A commit that would leave an eligible grant
+    without its anti-abuse row is rejected."""
+    # [impl->req~schema-invariant-14~1]
+    assert_anti_abuse_lower_bound(source=source, grant_id=grant_id,
+                                  anti_abuse_grant_ids=anti_abuse_grant_ids,
+                                  grant_transaction=transaction,
+                                  anti_abuse_transaction=transaction)
+
+
+def assert_gate_consumptions_unique(
+        consumptions: Iterable[tuple[str, GateConsumptionKind]]) -> None:
+    """Sub-bullets 3 and 4: each gate's uniqueness per provider account, enforced by the
+    `core.provider_account_gate_consumptions` row unique on
+    `(provider_account_id, consumption_kind)` over the stable provider UID. The same Google or
+    Apple provider account cannot back two successful registered free-credit claims globally —
+    regardless of Firebase account, external identity, internal user, reinstall or device — and
+    cannot back two web anonymous free-credit gates. The two consumption kinds are distinct rows,
+    so consuming one never consumes the other, and `idp_account_hash` decides neither."""
+    # [impl->req~schema-invariant-14~1]
+    if IDP_ACCOUNT_HASH_IS_AUTHORITATIVE:
+        raise GrantSchemaError("idp_account_hash is a non-authoritative lookup and audit alias")
+    if GATE_CONSUMPTIONS_KEY != ("provider_account_id", "consumption_kind"):
+        raise GrantSchemaError("each gate is unique per provider account and kind")
+    seen: set[tuple[str, GateConsumptionKind]] = set()
+    for provider_account_id, kind in consumptions:
+        if kind not in set(GateConsumptionKind):
+            raise GrantSchemaError(f"{kind} is no gate consumption kind")
+        if (provider_account_id, kind) in seen:
+            raise GrantSchemaError(
+                f"provider account {provider_account_id} has already consumed the {kind} gate")
+        seen.add((provider_account_id, kind))
+
+
+def assert_free_grant_lifetime_bound(rows: Iterable[tuple[UUID, AccessGrantSource]]) -> None:
+    """Sub-bullet 4's tail: the lifetime partial unique index on `core.access_grants
+    (user_id, source)` over the two free sources separately bounds each user to one committed
+    grant per free source for life — whatever status that committed row now carries."""
+    # [impl->req~schema-invariant-14~1]
+    if FREE_GRANT_LIFETIME_INDEX.columns != ("user_id", "source"):
+        raise GrantSchemaError("the lifetime bound is keyed by the user and the grant source")
+    if "status" in (FREE_GRANT_LIFETIME_INDEX.predicate or ""):
+        raise GrantSchemaError("the lifetime bound carries no status term")
+    seen: set[tuple[UUID, AccessGrantSource]] = set()
+    for user_id, source in rows:
+        if source not in FREE_GRANT_SOURCES:
+            continue
+        if (user_id, source) in seen:
+            raise GrantSchemaError(f"user {user_id} holds one {source} grant for life")
+        seen.add((user_id, source))
+
+
+def assert_exactly_one_anti_abuse_row(*,
+                                      grant_source: AccessGrantSource,
+                                      anti_abuse_grant_source: AccessGrantSource | None,
+                                      native_claim_provider: NativeClaimPlatform | None = None,
+                                      idp_account_hash: bytes | None = None,
+                                      idp_account_hash_key_version: int | None = None) -> None:
+    """First continuation paragraph: "exactly one anti-abuse row per anti-abuse-eligible grant,
+    none for any other source" is the declarative lower bound combined with the upper bound from
+    `grant_id` being the anti-abuse table's primary key and the per-source restriction the
+    composite foreign key on `(grant_id, grant_source)` and the per-source CHECK enforce together.
+    That CHECK additionally requires each row to match one allowed evidence shape."""
+    # [impl->req~schema-invariant-14~1]
+    if ANTI_ABUSE_KEY != "grant_id":
+        raise GrantSchemaError("the primary key is the upper bound of one row per grant")
+    anti_abuse_row_bounds()
+    assert_anti_abuse_row_presence(grant_source, anti_abuse_grant_source)
+    if anti_abuse_grant_source is not None:
+        anti_abuse_evidence(grant_source=anti_abuse_grant_source,
+                            native_claim_provider=native_claim_provider,
+                            idp_account_hash=idp_account_hash,
+                            idp_account_hash_key_version=idp_account_hash_key_version)
+
+
+def assert_deferred_constraints_hold_at_commit(path: str,
+                                               transactions: Sequence[object],
+                                               *,
+                                               intermediate_states: Sequence[object] = (),
+                                               committed_state_preserves: bool = True) -> None:
+    """Second continuation paragraph: subscription lifecycle ingestion, `restore_subscription`,
+    `claim_anonymous_grant` and `claim_registered_grant` — the conversion path included — update
+    the relevant rows within one transaction so these deferred foreign keys hold at commit.
+    Intermediate states inside a transaction are allowed only when the committed state preserves
+    these invariants."""
+    # [impl->req~schema-invariant-14~1]
+    assert_same_transaction(path, list(transactions))
+    del intermediate_states  # allowed; only the committed state is checked
+    if not committed_state_preserves:
+        raise GrantSchemaError(f"{path} must commit a state that preserves these invariants")
+
+
+def assert_native_ordering_is_an_operation_invariant(mechanism: str) -> None:
+    """Second continuation paragraph's last sentence: the write-before-activation ordering for
+    native anonymous device grants is intentionally an operation invariant of
+    `claim_anonymous_grant`, not a schema-enforced cross-table constraint."""
+    # [impl->req~schema-invariant-14~1]
+    if SCHEMA_ENFORCED_ORDERINGS:
+        raise GrantSchemaError("no cross-table constraint enforces a write ordering")
+    if mechanism != NATIVE_ORDERING_ENFORCEMENT:
+        raise GrantSchemaError(
+            f"the native write ordering is enforced by {NATIVE_ORDERING_ENFORCEMENT}")

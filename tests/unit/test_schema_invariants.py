@@ -36,6 +36,17 @@ from nativespeaker.api.auth.external_identities import (
     retire,
     transition_identity_state,
 )
+from nativespeaker.api.auth.grant_schema import (
+    NATIVE_ORDERING_ENFORCEMENT,
+    GrantSchemaError,
+    assert_active_subscription_grant_backed_at_commit,
+    assert_anti_abuse_lower_bound_at_commit,
+    assert_deferred_constraints_hold_at_commit,
+    assert_exactly_one_anti_abuse_row,
+    assert_free_grant_lifetime_bound,
+    assert_gate_consumptions_unique,
+    assert_native_ordering_is_an_operation_invariant,
+)
 from nativespeaker.api.auth.invariants import (
     ENUM_TYPED_FIELDS,
     AttributionSource,
@@ -88,6 +99,7 @@ from nativespeaker.api.auth.schema_invariants import (
     is_free_credit_source,
     requires_anti_abuse_row,
 )
+from nativespeaker.api.models import SubscriptionStatus
 from unit.test_schema_auth_events import ISSUER, NOW, FakeSession, RecordingSink, actor
 from unit.test_schema_ddl import MIGRATION, Schema, declarative_section, parse
 
@@ -736,3 +748,133 @@ def test_tokens_are_minted_once_at_creation_and_survive_the_in_place_upgrade(app
     # The schema keeps one row per user and store for the life of the user.
     assert "UNIQUE (user_id, provider)" in \
         applied.tables["core.store_purchase_tokens"].constraints
+
+
+# --- 14. The conditional invariants the declarative structure enforces --------------------------
+
+# [utest->req~schema-invariant-14~1]
+def test_activating_a_grant_whose_subscription_is_not_entitled_cannot_commit(applied: Schema):
+    # Sub-bullet 1: the deferrable foreign key from the generated column on `core.access_grants`
+    # to `product_entitled_subscription_id` rejects the commit.
+    for status in (SubscriptionStatus.active, SubscriptionStatus.grace_period):
+        assert_active_subscription_grant_backed_at_commit(
+            grant_status=AccessGrantStatus.active, subscription_status=status)
+    for status in (SubscriptionStatus.billing_retry, SubscriptionStatus.expired,
+                   SubscriptionStatus.revoked):
+        with pytest.raises(GrantSchemaError):
+            assert_active_subscription_grant_backed_at_commit(
+                grant_status=AccessGrantStatus.active, subscription_status=status)
+        # A grant that is not active generates a NULL and is not subject to the check.
+        assert_active_subscription_grant_backed_at_commit(
+            grant_status=AccessGrantStatus.expired, subscription_status=status)
+    joined = " ".join(applied.tables["core.access_grants"].constraints)
+    assert ("FOREIGN KEY (active_subscription_grant_subscription_id) REFERENCES "
+            "core.subscriptions (product_entitled_subscription_id) DEFERRABLE INITIALLY "
+            "DEFERRED") in joined
+
+
+# [utest->req~schema-invariant-14~1]
+def test_an_anti_abuse_eligible_grant_without_its_row_cannot_commit(applied: Schema):
+    # Sub-bullet 2: the deferrable foreign key from `anti_abuse_required_grant_id`.
+    transaction = object()
+    grant_id = uuid4()
+    for source in (AccessGrantSource.anonymous_device_grant,
+                   AccessGrantSource.registered_account_grant):
+        assert_anti_abuse_lower_bound_at_commit(source=source, grant_id=grant_id,
+                                                anti_abuse_grant_ids=[grant_id],
+                                                transaction=transaction)
+        with pytest.raises(GrantSchemaError):
+            assert_anti_abuse_lower_bound_at_commit(source=source, grant_id=grant_id,
+                                                    anti_abuse_grant_ids=[],
+                                                    transaction=transaction)
+    # A `subscription` or `manual` grant generates a NULL and needs no row.
+    for source in (AccessGrantSource.subscription, AccessGrantSource.manual):
+        assert_anti_abuse_lower_bound_at_commit(source=source, grant_id=grant_id,
+                                                anti_abuse_grant_ids=[],
+                                                transaction=transaction)
+    altered = " ".join(applied.alters)
+    assert ("ADD FOREIGN KEY (anti_abuse_required_grant_id) REFERENCES "
+            "core.access_grants_anti_abuse (grant_id) DEFERRABLE INITIALLY DEFERRED") in altered
+
+
+# [utest->req~schema-invariant-14~1]
+def test_each_gate_is_consumed_once_per_provider_account_and_the_kinds_are_distinct_rows():
+    # Sub-bullets 3 and 4: registered-gate and web-gate uniqueness, per provider account.
+    account, other = "provider-account-1", "provider-account-2"
+    assert_gate_consumptions_unique([
+        (account, GateConsumptionKind.registered_account_grant),
+        (account, GateConsumptionKind.web_anonymous_gate),
+        (other, GateConsumptionKind.registered_account_grant),
+    ])
+    for kind in GateConsumptionKind:
+        with pytest.raises(GrantSchemaError):
+            assert_gate_consumptions_unique([(account, kind), (account, kind)])
+
+
+# [utest->req~schema-invariant-14~1]
+def test_each_user_holds_one_committed_grant_per_free_source_for_life(applied: Schema):
+    # Sub-bullet 4's tail: the lifetime partial unique index over the two free sources.
+    user, another = uuid4(), uuid4()
+    assert_free_grant_lifetime_bound([
+        (user, AccessGrantSource.anonymous_device_grant),
+        (user, AccessGrantSource.registered_account_grant),
+        (another, AccessGrantSource.anonymous_device_grant),
+        (user, AccessGrantSource.subscription),
+        (user, AccessGrantSource.subscription),
+    ])
+    for source in (AccessGrantSource.anonymous_device_grant,
+                   AccessGrantSource.registered_account_grant):
+        with pytest.raises(GrantSchemaError):
+            assert_free_grant_lifetime_bound([(user, source), (user, source)])
+    index = applied.indexes["ix_access_grants_one_free_grant_per_user_source"]
+    assert index.startswith("CREATE UNIQUE INDEX")
+    assert "(user_id, source)" in index
+    assert "status" not in index
+
+
+# [utest->req~schema-invariant-14~1]
+def test_exactly_one_anti_abuse_row_per_eligible_grant_and_none_for_any_other_source():
+    # First continuation paragraph: the lower bound, the primary-key upper bound, the per-source
+    # foreign key and CHECK, and the evidence shapes that CHECK admits.
+    assert_exactly_one_anti_abuse_row(
+        grant_source=AccessGrantSource.anonymous_device_grant,
+        anti_abuse_grant_source=AccessGrantSource.anonymous_device_grant,
+        native_claim_provider=NativeClaimPlatform.ios_devicecheck)
+    assert_exactly_one_anti_abuse_row(
+        grant_source=AccessGrantSource.registered_account_grant,
+        anti_abuse_grant_source=AccessGrantSource.registered_account_grant,
+        idp_account_hash=b"h" * 32, idp_account_hash_key_version=1)
+    with pytest.raises(InvariantError):
+        assert_exactly_one_anti_abuse_row(
+            grant_source=AccessGrantSource.anonymous_device_grant,
+            anti_abuse_grant_source=None)
+    with pytest.raises(InvariantError):
+        assert_exactly_one_anti_abuse_row(
+            grant_source=AccessGrantSource.subscription,
+            anti_abuse_grant_source=AccessGrantSource.subscription)
+    # A registered row carrying native evidence is not one of the admitted shapes.
+    with pytest.raises(InvariantError):
+        assert_exactly_one_anti_abuse_row(
+            grant_source=AccessGrantSource.registered_account_grant,
+            anti_abuse_grant_source=AccessGrantSource.registered_account_grant,
+            native_claim_provider=NativeClaimPlatform.ios_devicecheck,
+            idp_account_hash=b"h" * 32, idp_account_hash_key_version=1)
+
+
+# [utest->req~schema-invariant-14~1]
+def test_the_deferred_constraint_paths_commit_their_rows_in_one_transaction():
+    # Second continuation paragraph, and its closing sentence about the native ordering.
+    transaction, other = object(), object()
+    for path in ("subscription_lifecycle_ingestion", "restore_subscription",
+                 "claim_anonymous_grant", "claim_registered_grant"):
+        assert_deferred_constraints_hold_at_commit(
+            path, [transaction, transaction, transaction],
+            intermediate_states=["grant inserted before its anti-abuse row"])
+        with pytest.raises(InvariantError):
+            assert_deferred_constraints_hold_at_commit(path, [transaction, other])
+        with pytest.raises(GrantSchemaError):
+            assert_deferred_constraints_hold_at_commit(path, [transaction],
+                                                       committed_state_preserves=False)
+    assert_native_ordering_is_an_operation_invariant(NATIVE_ORDERING_ENFORCEMENT)
+    with pytest.raises(GrantSchemaError):
+        assert_native_ordering_is_an_operation_invariant("deferrable_foreign_key")
