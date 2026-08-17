@@ -442,8 +442,15 @@ def registered_account_alias(index: IdpAccountAliasIndex,
                             account: ProviderAccount) -> DerivedValue:
     """The backend computes `idp_account_hash` over the stored provider and stored `provider_uid`
     using this document's HMAC derivation, with explicit domain separation and a persisted key
-    version, as the non-authoritative lookup and audit alias."""
+    version, as the non-authoritative lookup and audit alias.
+
+    The derivation itself is not defined here. The entropy-match principle, the HMAC families and
+    formulas, canonicalization, domain separation and its label format, key versioning and rotation,
+    and the IDP-account-hash rules all belong to `05-proof-adapters-and-derived-identifiers.md` and
+    live in `derived_identifiers`; this is the grant operation's consumption of them, which is all
+    the grants file defines."""
     # [impl->req~grants-reg-rule-hash-derivation~1]
+    # [impl->req~grants-derived-identifiers-owned-by-proof-file~1]
     label = domain_label(DerivationFamily.idp_account_hash)
     if not label.startswith("idp-account:") or not label.endswith(":"):
         raise FreeGrantError(f"{label} is no domain separation label for this derivation")
