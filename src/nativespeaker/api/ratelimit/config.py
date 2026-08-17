@@ -261,8 +261,36 @@ class RateLimitsConfig(BaseModel):
 
 class GatewayRateLimitsConfig(BaseModel):
     """`gateway_rate_limits`. Declared here so the deployment renders Envoy's limits from the
-    same source of truth; the backend enforces none of them."""
+    same source of truth; the backend enforces none of them.
+
+    The two `POST /auth/create-user` entries are required fields rather than optional ones:
+    gateway rate limiting on that pre-auth route is a load-bearing control on every deployment, so
+    a configuration that omits either is rejected here at load time."""
+    # [impl->req~sessions-create-user-gateway-limit-required~1]
     upgrade_anonymous: GatewayRateLimitEntry
+    create_user_ip: GatewayRateLimitEntry
+    create_user_deployment: GatewayRateLimitEntry
+
+
+# The `POST /auth/create-user` gateway entries, and the route both of them cover.
+CREATE_USER_GATEWAY_ENTRIES: tuple[str, ...] = ("create_user_ip", "create_user_deployment")
+CREATE_USER_GATEWAY_ROUTE: str = "POST /auth/create-user"
+
+
+def assert_create_user_gateway_limits(gateway: GatewayRateLimitsConfig | None) -> None:
+    """Gateway rate limiting on `POST /auth/create-user` is a required, load-bearing control on
+    every deployment: leaving this pre-auth route unthrottled is not a permitted configuration.
+    A missing `gateway_rate_limits` section, or an entry that names another route, is a startup
+    configuration error rather than a route that quietly runs unthrottled."""
+    # [impl->req~sessions-create-user-gateway-limit-required~1]
+    if gateway is None:
+        raise RateLimitConfigError(
+            f"gateway rate limiting on {CREATE_USER_GATEWAY_ROUTE} is required on every deployment")
+    problems = [f"{name} must limit {CREATE_USER_GATEWAY_ROUTE}"
+                for name in CREATE_USER_GATEWAY_ENTRIES
+                if getattr(gateway, name).route != CREATE_USER_GATEWAY_ROUTE]
+    if problems:
+        raise RateLimitConfigError("; ".join(sorted(problems)))
 
 
 # --- What the configuration must contain -----------------------------------------------------

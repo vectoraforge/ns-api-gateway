@@ -207,16 +207,35 @@ def requires_id_token(method: str, path: str) -> bool:
 
 def is_pre_auth_callable(method: str, path: str) -> bool:
     """A pre-auth identity is admitted only where the route declares it. The only such route
-    is `POST /auth/create-user`, in both its prepare and completion phases."""
+    is `POST /auth/create-user`, in both its prepare and completion phases.
+
+    The declaration is per-route data the barrier consults, never endpoint code skipping the
+    barrier, and a route that carries no declaration — an unregistered one included — is not
+    pre-auth-callable. `POST /auth/create-user` is callable from any pre-auth identity; a linked
+    identity is refused both phases by the shared procedures' `identity_already_linked` rule."""
+    # [impl->req~sessions-preauth-admission-explicit-declaration~1]
+    # [impl->req~sessions-undeclared-route-strictest~1]
+    # [impl->req~sessions-create-user-callable-from-preauth~1]
     route = _AUTHENTICATED_BY_ROUTE.get((method.upper(), path))
     return route is not None and route.pre_auth_callable
+
+
+# Pre-auth admission is that one declaration, so no separate establishment admission path exists
+# or is needed: there is no session-establishment, registration-establishment or bootstrap route,
+# and none is to be added.
+# [impl->req~sessions-no-separate-establishment-path~1]
+ESTABLISHMENT_ROUTES: frozenset[tuple[str, str]] = frozenset()
 
 
 def named_verifier(method: str, path: str) -> str | None:
     """The verifier a provider-callback route declares, matched on the exact enumerated path.
     A path-prefix or wildcard match never confers membership, so a path that merely starts with
-    `/webhooks/` has no verifier and is not in the category."""
+    `/webhooks/` has no verifier and is not in the category.
+
+    A provider-callback route is not an authenticated route: it is registered outside the barrier
+    under its exact name, it carries no identity context, and this named verifier admits it."""
     # [impl->req~sessions-no-wildcard-callback-membership~1]
+    # [impl->req~sessions-callback-route-not-authenticated-route~1]
     callback = _CALLBACK_BY_ROUTE.get((method.upper(), path))
     return callback.verifier if callback is not None else None
 
@@ -279,10 +298,16 @@ def assert_route_categories(app: Any) -> None:
 
     This is the one route-coverage check required, and it covers the shared pre-handler barrier.
     No gateway conformance check belongs here: no Envoy route inventory, no assertion over
-    gateway configuration, no continuous gateway probing."""
+    gateway configuration, no continuous gateway probing.
+
+    It is also the route coverage check for the barrier: the middleware it enumerates against is
+    that barrier, so an authenticated route registered outside it, or a callback route claiming a
+    generic bypass, fails here rather than running open."""
     # [impl->req~shared-route-categories~1]
     # [impl->req~sessions-route-enumeration-assertion~1]
     # [impl->req~sessions-shared-entry-point-three-way-partition~1]
+    # [impl->req~sessions-route-coverage-via-enumeration-assertion~1]
+    # [impl->req~sessions-no-authenticated-route-outside-barrier~1]
     problems: list[str] = []
     for callback in PROVIDER_CALLBACK_ROUTES:
         key = (callback.method, callback.path)

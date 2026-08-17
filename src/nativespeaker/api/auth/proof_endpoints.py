@@ -35,7 +35,7 @@ from nativespeaker.api.auth.external_identities import (
     assert_provider_uid_source,
     matches_identity,
 )
-from nativespeaker.api.auth.integration import FirebaseIntegrations
+from nativespeaker.api.auth.integration import AdminCallSite, FirebaseIntegrations
 from nativespeaker.api.auth.invariants import (
     DevicePlatform,
     GateConsumptionKind,
@@ -400,6 +400,10 @@ class GateDenied(ServiceError):
 
 
 # What a failed web-gate lookup may deny: the free grant on this one endpoint, and nothing else.
+# At the web anonymous-grant sign-in gate a lookup failure fails closed for that grant only, as a
+# device-check vendor outage does, and must not block login, account creation, upgrade, sync,
+# subscription restore, or any paid entitlement path.
+# [impl->req~sessions-failure-web-grant-gate-fails-closed~1]
 GATE_DENIES: frozenset[AuthOperation] = frozenset({AuthOperation.claim_anonymous_grant})
 
 # The paths a failed, indeterminate, invalid-shape or non-matching Admin lookup must never deny.
@@ -415,7 +419,9 @@ def web_gate_admin_client(integrations: FirebaseIntegrations, issuer: str) -> An
     integration selected by the request's verified issuer match; the sessions file owns the
     selection mechanics."""
     # [impl->req~proof-web-gate-provider-data-classifier~1]
-    return integrations.admin_client_for_issuer(issuer)
+    # [impl->req~sessions-integration-select-request-driven~1]
+    return integrations.admin_client_for_request(verified_issuer=issuer,
+                                                 site=AdminCallSite.provider_data_read)
 
 
 def web_anonymous_grant_gate(row: ExternalIdentityRow,

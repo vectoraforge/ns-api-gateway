@@ -17,7 +17,11 @@ from typing import Any, NoReturn
 from uuid import UUID
 
 from nativespeaker.api.auth.audit import AuthEventResult
-from nativespeaker.api.auth.integration import FirebaseIntegrations, UnrecognizedProviderError
+from nativespeaker.api.auth.integration import (
+    AdminCallSite,
+    FirebaseIntegrations,
+    UnrecognizedProviderError,
+)
 from nativespeaker.api.auth.invariants import (
     InvariantError,
     ProviderAccountAlreadyLinkedError,
@@ -243,13 +247,27 @@ LIFECYCLE_WRITES: dict[AdministrativeAction, str] = {
 REVOCATION_FAILURE_MACHINERY: frozenset[str] = frozenset()
 
 
+ADMINISTRATIVE_ADMIN_CALL_SITES: dict[AdministrativeAction, AdminCallSite] = {
+    AdministrativeAction.block_user: AdminCallSite.operator_block_revocation,
+    AdministrativeAction.retire_identity: AdminCallSite.identity_retirement_revocation,
+}
+
+
 def admin_client_for_identity(integrations: FirebaseIntegrations,
-                              row: ExternalIdentityRow) -> Any:
+                              row: ExternalIdentityRow,
+                              *,
+                              action: AdministrativeAction = AdministrativeAction.block_user
+                              ) -> Any:
     """For an administrative operation acting on an existing identity row, the stored `issuer`
     selects the Firebase integration whose Admin client performs the operation — including the
-    refresh-token revocation that accompanies an operator block or an identity retirement."""
+    refresh-token revocation that accompanies an operator block or an identity retirement. A
+    stored issuer that no longer matches the configured one is a hard error, never a revocation
+    against another project."""
     # [impl->req~schema-external-identities-stored-issuer-selects-admin-client~1]
-    return integrations.admin_client_for_issuer(row.issuer)
+    # [impl->req~sessions-integration-select-administrative~1]
+    # [impl->req~sessions-integration-selection-fails-closed~1]
+    return integrations.admin_client_for_stored_issuer(
+        stored_issuer=row.issuer, site=ADMINISTRATIVE_ADMIN_CALL_SITES[action])
 
 
 def administrative_write(action: AdministrativeAction, *, revocation_failed: bool,
@@ -257,8 +275,13 @@ def administrative_write(action: AdministrativeAction, *, revocation_failed: boo
     """Commit the lifecycle write, then report the accompanying revocation. A revocation failure
     never rolls back or otherwise undoes that database state: it surfaces to the operator as an
     operational failure while the account stays blocked or retired and rejects on every route,
-    and an operator may retry the revocation by hand."""
+    and an operator may retry the revocation by hand.
+
+    The lifecycle write commits first and stays authoritative: a revocation failure, a selection
+    failure included, never undoes it, and it surfaces to the operator as an operational failure
+    rather than being swallowed."""
     # [impl->req~schema-external-identities-stored-issuer-selects-admin-client~1]
+    # [impl->req~sessions-database-change-first-on-revocation~1]
     if rollback_requested:
         raise IdentityError("a revocation failure never undoes the committed lifecycle write")
     if REVOCATION_FAILURE_MACHINERY:
@@ -449,6 +472,56 @@ def assert_no_sentinel_provider_uid(row: ExternalIdentityRow) -> None:
         raise IdentityError("an anonymous row carries no placeholder provider_uid")
 
 
+# --- The closed provider-derivation procedure -------------------------------------------------------
+
+# Provider derivation is one closed procedure, and these five stages are the whole of it, in
+# order. Nothing outside them derives a provider: there is no second classifier, no per-request
+# rederivation, and no reconciliation job. Every Firebase Admin `getUser(subject)` `providerData`
+# read a stage names runs on the integration selected under Firebase Integration Selection — the
+# request-driven selector in `integration.py` — and never on an ambient or default Admin client.
+# [impl->req~sessions-provider-derivation-closed-procedure~1]
+PROVIDER_DERIVATION_STAGES: tuple[tuple[str, str], ...] = (
+    ("call_sites", "assert_provider_data_read_point"),
+    ("lookup_failure", "provider_from_lookup"),
+    ("classifier", "classify_provider"),
+    ("declaration_match", "assert_declared_provider"),
+    ("persistence", "write_provider_uid"),
+)
+
+
+class ProviderDeclarationMismatchError(IdentityError):
+    """The classified provider does not equal the client-declared one."""
+
+    def __init__(self, classified: IdentityProvider, declared: IdentityProvider):
+        self.classified = classified
+        self.declared = declared
+        super().__init__(f"the lookup classified {classified}, not the declared {declared}")
+
+
+def provider_derivation_stage(name: str) -> str:
+    """The named stage of the closed procedure. Anything else is not part of provider derivation,
+    so no path can grow a sixth stage — or a private classifier — without failing here."""
+    # [impl->req~sessions-provider-derivation-closed-procedure~1]
+    for stage, entry_point in PROVIDER_DERIVATION_STAGES:
+        if stage == name:
+            return entry_point
+    raise ProviderClassificationError(f"{name} is not a stage of provider derivation")
+
+
+def assert_declared_provider(classified: IdentityProvider,
+                             declared: IdentityProvider | None) -> IdentityProvider:
+    """Declaration match, in the one place both declaring call sites read it: wherever the API
+    carries a client-declared provider — registered `create-user` and `upgrade-anonymous` — the
+    classified provider must equal the declaration, and a mismatch rejects the operation with no
+    mutation. Each call site maps this mismatch onto its own client class; none of them resolves
+    the disagreement in favour of the declaration."""
+    # [impl->req~sessions-declaration-match~1]
+    provider_derivation_stage("declaration_match")
+    if declared is not None and classified is not declared:
+        raise ProviderDeclarationMismatchError(classified, declared)
+    return classified
+
+
 # --- The provider classification -------------------------------------------------------------------
 
 
@@ -490,6 +563,7 @@ def classify_provider(provider_data: Sequence[object]) -> IdentityProvider:
     The first recognized entry is never selected, and non-empty `providerData` is never
     classified as `anonymous`."""
     # [impl->req~schema-external-identities-provider-closed-classifier~1]
+    provider_derivation_stage("classifier")
     assert_provider_source(ProviderSource.firebase_admin_provider_data)
     entries = [_ProviderDataEntry(_provider_id(entry)) for entry in provider_data]
     try:
@@ -511,6 +585,16 @@ class LookupFailure(StrEnum):
 # The subject deleted at Firebase is the one non-retryable failure; every other shape — transient,
 # infrastructure, malformed, or otherwise indeterminate — is the retryable one, audited
 # distinctly from a client-sent bad provider.
+# The failure classes stay distinct: `user-not-found` — the subject deleted at Firebase between
+# token mint and the call — is the non-retryable external-identity failure, audited as its own
+# internal result and surfaced through the existing `auth_required` class, so a still-valid token
+# for a deleted Firebase user creates and upgrades nothing. Transient and infrastructure failures
+# — timeout, 5xx, quota, and permission errors, the last indicating misconfiguration — are
+# retryable, audited as `firebase_lookup_unavailable`, and surfaced as
+# `verification_temporarily_unavailable` once the in-request retry budget is exhausted.
+# [impl->req~sessions-failure-classes-distinct~1]
+# [impl->req~sessions-failure-user-not-found~1]
+# [impl->req~sessions-failure-transient-unavailable~1]
 _LOOKUP_FAILURE_RESULTS: dict[LookupFailure, AuthEventResult] = {
     LookupFailure.user_not_found: AuthEventResult.firebase_user_unresolved,
     LookupFailure.transient: AuthEventResult.firebase_lookup_unavailable,
@@ -528,8 +612,15 @@ def provider_from_lookup(record: Sequence[object] | None, *,
     """A provider-derivation write proceeds only from a successful, well-formed
     `getUser(subject)` record. A failed, malformed, or indeterminate lookup is never treated as
     an empty `providerData` result and never falls back to a client-declared provider, token
-    claim, request header, or stored profile data. It persists nothing anywhere."""
+    claim, request header, or stored profile data. It persists nothing anywhere.
+
+    An operation proceeds only after the lookup returns a successful, well-formed record: a
+    timeout, a permission or configuration error, a malformed response, a missing `providerData`,
+    a 5xx or a quota error each stop it here, and no cached earlier provider value stands in.
+    Nothing is persisted on failure — no `provider`, no `registered_at`, no email, no grant."""
     # [impl->req~schema-external-identities-provider-lookup-fail-closed~1]
+    # [impl->req~sessions-providerdata-lookup-failure~1]
+    provider_derivation_stage("lookup_failure")
     if failure is not None or record is None:
         raise _lookup_failure(failure or LookupFailure.indeterminate)
     # A malformed record is detected here, not left to escape as a bare shape error: anything
@@ -571,8 +662,14 @@ def authoritative_provider(row: ExternalIdentityRow,
                            consumer: ProviderConsumer) -> IdentityProvider:
     """Once an identity row exists, its stored `provider` is authoritative for every per-request
     decision that depends on the classification. Revocation is unconditional for every account
-    and never reads or branches on the stored `provider`."""
+    and never reads or branches on the stored `provider`.
+
+    The stored value is the sole classifier for every identity, authorization, entitlement,
+    grant-class and audit decision made per request: the linked user's `registered_at` is a
+    reporting and profile timestamp and never a competing classifier, and no general authenticated
+    request rederives the provider or the anonymous-versus-registered classification."""
     # [impl->req~schema-external-identities-stored-provider-authoritative~1]
+    # [impl->req~sessions-stored-provider-sole-classifier~1]
     if consumer not in PROVIDER_CONSUMERS:
         raise IdentityError(f"{consumer} never reads the stored provider")
     return row.provider
@@ -610,11 +707,12 @@ def provider_uid_for(provider: IdentityProvider,
     """`provider_uid` is `NULL` for `anonymous` identities and, for `google` or `apple`, the
     non-empty stable `uid` from the `providerData` entry whose `providerId` matches the confirmed
     provider: the Google account ID for Google and the per-app Apple user identifier for Apple."""
-    # It is populated only from the `providerData` entry whose `providerId` matches the
-    # confirmed provider, and never from client input, headers, token claims, email or display
-    # name.
+    # It comes out of the same `getUser(subject)` read that confirmed the provider — it costs no
+    # further Firebase Admin call — and only from the entry whose `providerId` matches the
+    # confirmed provider, never from client input, headers, token claims, email or display name.
     # [impl->req~schema-external-identities-provider-uid-source~1]
     # [impl->req~users-provider-uid-source-and-immutability~1]
+    # [impl->req~sessions-provider-uid-from-same-read~1]
     assert_provider_uid_source(ProviderUidSource.firebase_provider_data)
     try:
         return provider_uid_from_provider_data(provider, provider_data)
@@ -646,8 +744,16 @@ PROVIDER_RECONCILIATION_JOBS: frozenset[str] = frozenset()
 def assert_provider_data_read_point(point: ProviderDataReadPoint | str) -> ProviderDataReadPoint:
     """The five `providerData` read points are the complete set. No other operation reads
     `providerData`, and the backend does not rederive the classification on ordinary
-    authenticated requests."""
+    authenticated requests.
+
+    The enumeration is closed and it is the procedure's own call-site stage: every
+    `getUser(subject)` `providerData` read happens at one of these points, each of which persists
+    or gates provider-dependent state. `POST /auth/sync`, `GET /users/me` and every other ordinary
+    authenticated request perform no such read, and no background or periodic reconciliation job
+    and no admin reconciliation surface exists to perform one either."""
     # [impl->req~schema-external-identities-provider-data-five-read-points~1]
+    # [impl->req~sessions-providerdata-read-call-sites~1]
+    provider_derivation_stage("call_sites")
     if point not in set(ProviderDataReadPoint):
         raise IdentityError(f"{point} is not one of the five providerData read points")
     if PROVIDER_RECONCILIATION_JOBS:
@@ -670,8 +776,14 @@ def write_provider_uid(row: ExternalIdentityRow, provider_uid: str | None, *,
                        row_transaction: object, uid_transaction: object) -> ExternalIdentityRow:
     """Identity creation writes `provider_uid` in the same transaction as the identity row; the
     anonymous-to-registered upgrade assigns it in the same transaction as the in-place
-    transition, so the provider flip and its UID land together or not at all."""
+    transition, so the provider flip and its UID land together or not at all.
+
+    This is the procedure's persistence stage: the classified provider, `provider_uid`,
+    `registered_at` and any verified-email copy are written together in the single completion
+    transaction, so stored `provider` and `registered_at` are aligned by construction."""
     # [impl->req~schema-external-identities-provider-uid-same-transaction~1]
+    # [impl->req~sessions-provider-persistence-single-transaction~1]
+    provider_derivation_stage("persistence")
     if row_transaction is not uid_transaction:
         raise IdentityError("provider_uid is written in the identity row's own transaction")
     return replace(row, provider=provider or row.provider, provider_uid=provider_uid)

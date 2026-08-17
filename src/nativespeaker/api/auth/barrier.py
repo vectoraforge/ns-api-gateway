@@ -55,11 +55,16 @@ IDENTITY_HEADER = "authorization"
 class BarrierRejectionError(ServiceError):
     """A barrier rejection, surfaced through the shared client-error taxonomy that governs
     every authenticated route. The internal `core.auth_event_result` is never exposed to the
-    client, and neither is the bounded rejection reason it carries for the audit row."""
+    client, and neither is the bounded rejection reason it carries for the audit row.
+
+    The client and audit mappings are the ones already defined for these resolution outcomes,
+    read out of the shared taxonomy: no per-endpoint error variant exists for the same
+    condition."""
 
     # [impl->req~shared-error-classes-govern-all-routes~1]
     # [impl->req~shared-error-no-internal-results-exposed~1]
     # [impl->req~shared-invalid-external-jwt-reasons~1]
+    # [impl->req~sessions-barrier-rejection-mappings-reused~1]
     def __init__(self, result: AuthEventResult, reason: str | None = None):
         self.result = result
         self.reason = reason
@@ -75,7 +80,8 @@ class BarrierRejectionError(ServiceError):
 
 
 class ResolutionOutcome(StrEnum):
-    """The four per-request identity-resolution outcomes."""
+    """The four per-request identity-resolution outcomes, and exactly those four."""
+    # [impl->req~sessions-exactly-four-resolution-outcomes~1]
     pre_auth = "pre_auth"
     historical_identity = "historical_identity"
     blocked_user = "blocked_user"
@@ -119,20 +125,49 @@ def barrier_result_for(outcome: ResolutionOutcome,
     the blocked-user rule, and the route-admission rule for a pre-auth identity. `None` means
     the outcome is admitted. Every enforcement point — the barrier itself and the completion
     procedure's re-checks — reads this predicate rather than restating the rules, so an
-    account-blocking rule can never drift between two copies."""
+    account-blocking rule can never drift between two copies.
+
+    Route policy is fail-closed and admission is positive: the default policy requires a linked,
+    active user, pre-auth admission is the explicit per-route declaration this predicate consults,
+    and every other outcome — a route carrying no declaration included — takes the strictest
+    treatment. The predicate admits no route-specific exception, `POST /auth/sign-out-all`
+    included: a blocked user or a historical identity is rejected there exactly as everywhere
+    else, and both surface as `account_unavailable`. Barrier rejections carry the client and audit
+    mappings already defined for these outcomes; no per-endpoint variant is introduced."""
     # [impl->req~shared-prehandler-barrier~1]
     # [impl->req~shared-invariant-03~1]
-    match outcome:
-        case ResolutionOutcome.historical_identity:
-            # Once an external identity has transitioned to `historical`, every subsequent
-            # request for it is rejected here, at per-request resolution.
-            return AuthEventResult.historical_identity
-        case ResolutionOutcome.blocked_user:
-            return AuthEventResult.blocked_user
-        case ResolutionOutcome.pre_auth:
-            if not is_pre_auth_callable(method, path):
-                return AuthEventResult.preauth_identity_not_allowed
-    return None
+    # [impl->req~sessions-barrier-step-enforce-outcomes~1]
+    # [impl->req~sessions-route-policy-fail-closed~1]
+    # [impl->req~sessions-route-default-requires-linked-active~1]
+    # [impl->req~sessions-preauth-admission-explicit-declaration~1]
+    # [impl->req~sessions-undeclared-route-strictest~1]
+    # [impl->req~sessions-barrier-no-route-exception~1]
+    # [impl->req~sessions-barrier-rejection-mappings-reused~1]
+    if outcome is ResolutionOutcome.linked:
+        # The one admitted outcome by default: a linked identity whose user is active.
+        # [impl->req~sessions-resolution-outcome-04~1]
+        return None
+    if outcome is ResolutionOutcome.pre_auth:
+        # A pre-auth identity is admitted only onto a route that declares itself pre-auth-callable;
+        # every other route rejects it as `preauth_identity_not_allowed`.
+        # [impl->req~sessions-resolution-outcome-01~1]
+        # [impl->req~sessions-create-user-callable-from-preauth~1]
+        return None if is_pre_auth_callable(method, path) \
+            else AuthEventResult.preauth_identity_not_allowed
+    if outcome is ResolutionOutcome.historical_identity:
+        # Once an external identity has transitioned to `historical`, every subsequent request
+        # for it is rejected here, at per-request resolution — on the pre-auth-declared
+        # `POST /auth/create-user` phases too, so a retired identity never becomes eligible for a
+        # pre-auth creation flow.
+        # [impl->req~sessions-resolution-outcome-02~1]
+        return AuthEventResult.historical_identity
+    if outcome is ResolutionOutcome.blocked_user:
+        # [impl->req~sessions-resolution-outcome-03~1]
+        return AuthEventResult.blocked_user
+    # An outcome outside the four never authorizes: it takes the strictest rejection rather than
+    # falling through to admission.
+    # [impl->req~sessions-malformed-lifecycle-never-authorizes~1]
+    return AuthEventResult.blocked_user
 
 
 def extract_bearer_token(authorization_values: Sequence[str]) -> str:
@@ -205,15 +240,29 @@ class AuthBarrier:
 
         The backend's own cryptographic verification of the raw external IDP JWT runs here,
         ahead of identity resolution, on every authenticated request; no endpoint handler
-        repeats or re-implements it, and nothing weaker than that verification satisfies it."""
+        repeats or re-implements it, and nothing weaker than that verification satisfies it.
+
+        The three steps run in this order on every authenticated request: verify the presented
+        token under the external JWT acceptance policy, resolve the verified `(issuer, subject)`
+        against `core.external_identities` and `core.users`, then enforce the four resolution
+        outcomes. The barrier decides admission and leaves no result for a handler to check: it
+        returns a context only for an admitted identity, so a historical identity and a blocked
+        user are never represented as an authenticated principal."""
         # [impl->req~shared-prehandler-barrier~1]
         # [impl->req~sessions-jwt-acceptance-policy-scope~1]
         # [impl->req~sessions-backend-authoritative-verifier~1]
+        # [impl->req~sessions-shared-barrier-mandatory~1]
+        # [impl->req~sessions-barrier-ordered-steps~1]
+        # [impl->req~sessions-barrier-positive-admission-test~1]
+        # [impl->req~sessions-no-principal-for-historical-or-blocked~1]
         # Authenticated traffic, counted before any branch: the alert's fractional threshold is
         # a share of it, and every route that rejects here is inside that share.
         # [impl->req~sessions-invalid-external-jwt-metric-alert~1]
         self._audit.count_authenticated_request()
         try:
+            # Step one: verify the presented external IDP ID token and apply the minimum external
+            # JWT acceptance policy to its verified claims.
+            # [impl->req~sessions-barrier-step-verify-token~1]
             token = extract_bearer_token(authorization_values)
             claims = self._integrations.verify_id_token(token)
         except InvalidExternalJwtError as exc:
@@ -236,14 +285,23 @@ class AuthBarrier:
         # [impl->req~sessions-lookup-keyed-on-issuer-subject~1]
         # [impl->req~sessions-users-id-not-auth-key~1]
         # [impl->req~sessions-wire-no-provider-derivation~1]
+        # Step two: resolve the verified pair against `core.external_identities` and `core.users`.
+        # [impl->req~sessions-barrier-step-resolve-identity~1]
         resolved = await self._resolver.resolve(claims.issuer, claims.subject)
         actor = self._actor(claims.issuer, claims.subject, resolved)
 
+        # Step three: enforce the four resolution outcomes. A rejection returns no context, so no
+        # handler ever sees a historical identity or a blocked user as a principal.
         # [impl->req~shared-invariant-03~1]
+        # [impl->req~sessions-barrier-step-enforce-outcomes~1]
+        # [impl->req~sessions-no-principal-for-historical-or-blocked~1]
         result = barrier_result_for(resolved.outcome, attempt.method, attempt.route)
         if result is not None:
             raise await self._reject(attempt, result, actor=actor)
 
+        # The admitted identity's resolved rows, including the stored `provider` and the user's
+        # `registered_at`, become the typed context handler logic then runs with.
+        # [impl->req~sessions-resolution-outcome-04~1]
         return VerifiedIdentityContext(issuer=claims.issuer,
                                        subject=claims.subject,
                                        outcome=resolved.outcome,
@@ -332,11 +390,18 @@ class AuthBarrierMiddleware(BaseHTTPMiddleware):
     the backend, not this barrier, verifies that provider credential.
     """
 
+    # It is a property of the request-processing layer rather than a per-endpoint obligation: the
+    # middleware runs before any endpoint handler on every authenticated route, and it is the only
+    # place the four resolution outcomes are evaluated. A provider-callback route is not an
+    # authenticated route — it passes through here carrying no identity context, and its own named
+    # verifier admits it instead.
     # [impl->req~sessions-shared-entry-point-three-way-partition~1]
     # [impl->req~sessions-authenticated-endpoint-families~1]
     # [impl->req~sessions-provider-callback-third-category~1]
     # [impl->req~sessions-gateway-forwards-pubsub-oidc-unchanged~1]
     # [impl->req~sessions-gateway-never-parses-apple-signedpayload~1]
+    # [impl->req~sessions-shared-barrier-mandatory~1]
+    # [impl->req~sessions-callback-route-not-authenticated-route~1]
     async def dispatch(self, request: Request, call_next: Callable) -> Any:
         method = request.method
         path = request.url.path
@@ -376,9 +441,16 @@ class AuthBarrierMiddleware(BaseHTTPMiddleware):
 def verified_identity(request: Request) -> VerifiedIdentityContext:
     """The handler-side accessor for the barrier's typed output. A route wired outside the
     barrier has no identity context and fails loudly as `auth_required` rather than running
-    open, and a new route attaches here instead of reimplementing token extraction."""
+    open, and a new route attaches here instead of reimplementing token extraction.
+
+    This accessor is the whole of the handler-side contract: a handler performs no external JWT
+    acceptance and no identity resolution of its own, never skips the barrier, and keeps only its
+    own endpoint-specific authorization and business rules. Registering an authenticated route
+    outside the barrier therefore cannot open it — the missing context rejects."""
     # [impl->req~shared-prehandler-barrier~1]
     # [impl->req~sessions-shared-entry-point-three-way-partition~1]
+    # [impl->req~sessions-handlers-no-reimplementation~1]
+    # [impl->req~sessions-no-authenticated-route-outside-barrier~1]
     identity = getattr(request.state, "identity", None)
     if identity is None:
         raise BarrierRejectionError(AuthEventResult.invalid_external_jwt)

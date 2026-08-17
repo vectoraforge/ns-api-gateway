@@ -4,12 +4,14 @@ ID-token verification, and the shared auth audit contract."""
 import hashlib
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import pytest
 import structlog
 from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth.audit import (
@@ -32,6 +34,7 @@ from nativespeaker.api.auth.barrier import (
     ResolutionOutcome,
     ResolvedIdentity,
     VerifiedIdentityContext,
+    barrier_result_for,
     extract_bearer_token,
     verified_identity,
 )
@@ -55,6 +58,7 @@ from nativespeaker.api.auth.routes import (
     categorize,
     is_pre_auth_callable,
 )
+from nativespeaker.api.auth.taxonomy import surface
 from nativespeaker.api.auth.tokens import (
     CachedGoogleSigningKeys,
     FirebaseIdTokenVerifier,
@@ -771,3 +775,444 @@ class TestTheShippedApp:
 
         # The startup assertion the shipped app runs, against the shipped router.
         assert_route_categories(app)
+
+
+# --- Per-Request Identity Resolution ------------------------------------------------------------
+
+
+class FakeIdentityRow:
+    """One joined `core.external_identities` / `core.users` row as the resolver reads it."""
+
+    def __init__(self, *, identity_state: Any = "active", active: Any = True,
+                 provider: str = "google", registered_at: Any = None):
+        from uuid import uuid7
+        self.external_identity_id = uuid7()
+        self.identity_state = identity_state
+        self.provider = provider
+        self.user_id = uuid7()
+        self.active = active
+        self.registered_at = registered_at
+
+
+class FakeIdentityResult:
+    def __init__(self, row: Any):
+        self._row = row
+
+    def first(self) -> Any:
+        return self._row
+
+
+class FakeIdentitySession:
+    def __init__(self, row: Any):
+        self._row = row
+        self.executed: list[Any] = []
+
+    async def execute(self, statement: Any, params: Any) -> FakeIdentityResult:
+        self.executed.append(params)
+        return FakeIdentityResult(self._row)
+
+
+def resolver_over(row: Any):
+    """`IdentityResolverDB` over one canned joined row, or `None` for no matching row."""
+    from nativespeaker.api.database.identities import IdentityResolverDB
+
+    sessions: list[FakeIdentitySession] = []
+
+    @asynccontextmanager
+    async def factory():
+        session = FakeIdentitySession(row)
+        sessions.append(session)
+        yield session
+
+    return IdentityResolverDB(factory), sessions
+
+
+class TestSharedBarrier:
+    # [utest->req~sessions-shared-barrier-mandatory~1]
+    def test_the_barrier_runs_before_every_handler_on_every_authenticated_route(self):
+        # Applied to the whole app rather than declared per endpoint: every authenticated route in
+        # the registry rejects an unauthenticated request without its handler running.
+        routes = [(route.method, route.path) for route in AUTHENTICATED_ROUTES]
+        app = build_app(routes, resolver=FakeResolver(), writer=make_writer())
+        with TestClient(app, raise_server_exceptions=False) as client:
+            for method, path in routes:
+                concrete = path.replace("{chat_id}", "c1")
+                assert client.request(method, concrete).status_code == 401, path
+                admitted = client.request(
+                    method, concrete,
+                    headers={"Authorization": f"Bearer {make_token('u1')}"})
+                assert admitted.status_code == 200, path
+
+    # [utest->req~sessions-barrier-ordered-steps~1]
+    # [utest->req~sessions-barrier-step-verify-token~1]
+    def test_verification_runs_first_so_a_bad_token_never_reaches_resolution(self):
+        for header in ({}, {"Authorization": "Bearer garbage"},
+                       {"Authorization": f"Bearer {make_token('u1', exp=time.time() - 60)}"}):
+            resolver = FakeResolver()
+            app = build_app([("GET", "/users/me")], resolver=resolver, writer=make_writer())
+            with TestClient(app, raise_server_exceptions=False) as client:
+                response = client.get("/users/me", headers=header)
+            assert response.status_code == 401
+            assert response.json()["code"] == "auth_required"
+            # Step two never ran: nothing was resolved for an unverified token.
+            assert resolver.seen == []
+
+    # [utest->req~sessions-barrier-ordered-steps~1]
+    # [utest->req~sessions-barrier-step-resolve-identity~1]
+    def test_resolution_runs_on_the_verified_pair_before_the_outcomes_are_enforced(self):
+        resolver = FakeResolver(ResolutionOutcome.blocked_user)
+        app = build_app([("GET", "/users/me")], resolver=resolver, writer=make_writer())
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.get("/users/me",
+                                  headers={"Authorization": f"Bearer {make_token('u9')}"})
+        # The outcome was enforced, and it could only be enforced on a resolved identity.
+        assert resolver.seen == [(TEST_ISSUER, "u9")]
+        assert response.status_code == 403
+        assert response.json()["code"] == "account_unavailable"
+
+    # [utest->req~sessions-barrier-step-enforce-outcomes~1]
+    def test_the_barrier_is_the_only_place_the_outcomes_are_evaluated(self):
+        from nativespeaker.api.auth.barrier import barrier_result_for
+
+        assert barrier_result_for(ResolutionOutcome.linked, "GET", "/users/me") is None
+        assert barrier_result_for(ResolutionOutcome.historical_identity, "GET", "/users/me") is \
+            AuthEventResult.historical_identity
+        assert barrier_result_for(ResolutionOutcome.blocked_user, "GET", "/users/me") is \
+            AuthEventResult.blocked_user
+        assert barrier_result_for(ResolutionOutcome.pre_auth, "GET", "/users/me") is \
+            AuthEventResult.preauth_identity_not_allowed
+        assert barrier_result_for(ResolutionOutcome.pre_auth, "POST", "/auth/create-user") is None
+
+    # [utest->req~sessions-barrier-positive-admission-test~1]
+    async def test_admission_is_positive_and_every_other_combination_rejects(self):
+        admitted, _ = resolver_over(FakeIdentityRow(identity_state="active", active=True))
+        assert (await admitted.resolve(TEST_ISSUER, "u1")).outcome is ResolutionOutcome.linked
+        # Every other combination of the two columns rejects.
+        for state, active in (("historical", True), ("active", False), ("active", None),
+                              ("historical", False), (None, True), ("ACTIVE", True),
+                              ("unknown", True)):
+            resolver, _ = resolver_over(FakeIdentityRow(identity_state=state, active=active))
+            outcome = (await resolver.resolve(TEST_ISSUER, "u1")).outcome
+            assert outcome is not ResolutionOutcome.linked, (state, active)
+            assert barrier_result_for(outcome, "GET", "/users/me") is not None
+
+    # [utest->req~sessions-exactly-four-resolution-outcomes~1]
+    async def test_resolution_has_exactly_four_outcomes(self):
+        assert {outcome.value for outcome in ResolutionOutcome} == {
+            "pre_auth", "historical_identity", "blocked_user", "linked"}
+        produced = set()
+        for row in (None, FakeIdentityRow(identity_state="historical"),
+                    FakeIdentityRow(active=False), FakeIdentityRow()):
+            resolver, _ = resolver_over(row)
+            produced.add((await resolver.resolve(TEST_ISSUER, "u1")).outcome)
+        assert produced == set(ResolutionOutcome)
+
+    # [utest->req~sessions-resolution-outcome-01~1]
+    async def test_no_matching_row_is_pre_auth_and_only_create_user_admits_it(self):
+        resolver, sessions = resolver_over(None)
+        resolved = await resolver.resolve(TEST_ISSUER, "never-linked")
+        assert resolved.outcome is ResolutionOutcome.pre_auth
+        assert resolved.user_id is None and resolved.external_identity_id is None
+        assert sessions[0].executed == [{"issuer": TEST_ISSUER, "subject": "never-linked"}]
+        app = build_app([("POST", "/auth/create-user"), ("GET", "/users/me")],
+                        resolver=FakeResolver(ResolutionOutcome.pre_auth), writer=make_writer())
+        with TestClient(app, raise_server_exceptions=False) as client:
+            headers = {"Authorization": f"Bearer {make_token('u1')}"}
+            assert client.post("/auth/create-user", headers=headers).status_code == 200
+            rejected = client.get("/users/me", headers=headers)
+        assert rejected.status_code == 403
+        assert rejected.json()["code"] == "preauth_identity_not_allowed"
+
+    # [utest->req~sessions-resolution-outcome-02~1]
+    async def test_any_state_other_than_active_rejects_everywhere_including_create_user(self):
+        for state in ("historical", None, "unknown", "Active"):
+            resolver, _ = resolver_over(FakeIdentityRow(identity_state=state))
+            resolved = await resolver.resolve(TEST_ISSUER, "u1")
+            # Distinct from unlinked: a retired identity is never a fresh one.
+            assert resolved.outcome is ResolutionOutcome.historical_identity
+            assert resolved.outcome is not ResolutionOutcome.pre_auth
+            assert resolved.user_id is not None
+        app = build_app([("POST", "/auth/create-user"), ("GET", "/users/me")],
+                        resolver=FakeResolver(ResolutionOutcome.historical_identity),
+                        writer=make_writer())
+        with TestClient(app, raise_server_exceptions=False) as client:
+            headers = {"Authorization": f"Bearer {make_token('u1')}"}
+            for path in ("/auth/create-user", "/users/me"):
+                response = client.request("POST" if "create" in path else "GET", path,
+                                          headers=headers)
+                assert response.status_code == 403
+                assert response.json()["code"] == "account_unavailable"
+
+    # [utest->req~sessions-resolution-outcome-03~1]
+    async def test_an_active_identity_whose_user_is_not_active_rejects_on_every_route(self):
+        for active in (False, None):
+            resolver, _ = resolver_over(FakeIdentityRow(active=active))
+            resolved = await resolver.resolve(TEST_ISSUER, "u1")
+            assert resolved.outcome is ResolutionOutcome.blocked_user
+        routes = [("POST", "/auth/sign-out-all"), ("POST", "/auth/sync"), ("GET", "/users/me")]
+        app = build_app(routes, resolver=FakeResolver(ResolutionOutcome.blocked_user),
+                        writer=make_writer())
+        with TestClient(app, raise_server_exceptions=False) as client:
+            for method, path in routes:
+                response = client.request(
+                    method, path, headers={"Authorization": f"Bearer {make_token('u1')}"})
+                assert response.status_code == 403, path
+                assert response.json()["code"] == "account_unavailable", path
+
+    # [utest->req~sessions-resolution-outcome-04~1]
+    async def test_a_linked_active_identity_carries_its_rows_onto_the_request(self):
+        row = FakeIdentityRow(provider="apple", registered_at="2026-08-16T00:00:00Z")
+        resolver, _ = resolver_over(row)
+        resolved = await resolver.resolve(TEST_ISSUER, "u1")
+        assert resolved.outcome is ResolutionOutcome.linked
+        assert resolved.user_id == row.user_id
+        assert resolved.external_identity_id == row.external_identity_id
+        # The stored `provider` and the user's `registered_at` travel with them.
+        assert resolved.provider is IdentityProvider.apple
+        assert resolved.registered_at == row.registered_at
+        app = build_app([("GET", "/users/me")],
+                        resolver=FakeResolver(provider=IdentityProvider.apple),
+                        writer=make_writer())
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.get("/users/me",
+                                  headers={"Authorization": f"Bearer {make_token('u1')}"})
+        assert response.status_code == 200
+        assert response.json()["provider"] == IdentityProvider.apple
+
+    # [utest->req~sessions-malformed-lifecycle-never-authorizes~1]
+    async def test_a_malformed_lifecycle_value_never_authorizes_and_never_becomes_pre_auth(self):
+        for state in (None, "", "acti ve", "ACTIVE", "retired", 0):
+            resolver, _ = resolver_over(FakeIdentityRow(identity_state=state))
+            resolved = await resolver.resolve(TEST_ISSUER, "u1")
+            assert resolved.outcome is not ResolutionOutcome.linked, state
+            assert resolved.outcome is not ResolutionOutcome.pre_auth, state
+            # No separate error class: it rejects through the outcomes above.
+            assert barrier_result_for(resolved.outcome, "POST", "/auth/create-user") in \
+                (AuthEventResult.historical_identity, AuthEventResult.blocked_user)
+        # A stored provider outside the enumeration fails closed rather than being admitted.
+        corrupt, _ = resolver_over(FakeIdentityRow(provider="password"))
+        with pytest.raises(ValueError):
+            await corrupt.resolve(TEST_ISSUER, "u1")
+
+    # [utest->req~sessions-no-principal-for-historical-or-blocked~1]
+    def test_neither_a_historical_identity_nor_a_blocked_user_becomes_a_principal(self):
+        for outcome in (ResolutionOutcome.historical_identity, ResolutionOutcome.blocked_user):
+            seen: list[Any] = []
+            app = FastAPI()
+
+            @app.get("/users/me")
+            async def handler(request: Request):
+                seen.append(getattr(request.state, "identity", None))
+                return {}
+
+            register_exception_handlers(app)
+            app.add_middleware(AuthBarrierMiddleware)  # ty: ignore[invalid-argument-type]
+            app.state.auth_barrier = AuthBarrier(integrations=make_integrations(),
+                                                 resolver=FakeResolver(outcome),
+                                                 audit=make_writer(),
+                                                 subject_hasher=subject_hasher)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                response = client.get("/users/me",
+                                      headers={"Authorization": f"Bearer {make_token('u1')}"})
+            assert response.status_code == 403
+            # The handler never ran, so no principal was ever handed to one.
+            assert seen == []
+
+    # [utest->req~sessions-barrier-no-route-exception~1]
+    def test_sign_out_all_takes_no_route_exception(self):
+        for outcome in (ResolutionOutcome.historical_identity, ResolutionOutcome.blocked_user):
+            app = build_app([("POST", "/auth/sign-out-all")], resolver=FakeResolver(outcome),
+                            writer=make_writer())
+            with TestClient(app, raise_server_exceptions=False) as client:
+                response = client.post("/auth/sign-out-all",
+                                       headers={"Authorization": f"Bearer {make_token('u1')}"})
+            assert response.status_code == 403
+            assert response.json()["code"] == "account_unavailable"
+        # The predicate itself knows no exception for the route.
+        assert barrier_result_for(ResolutionOutcome.blocked_user, "POST", "/auth/sign-out-all") \
+            is AuthEventResult.blocked_user
+
+    # [utest->req~sessions-barrier-rejection-mappings-reused~1]
+    def test_barrier_rejections_reuse_the_shared_mappings(self):
+        from nativespeaker.api.auth.taxonomy import client_response, surface
+
+        for result in (AuthEventResult.invalid_external_jwt, AuthEventResult.historical_identity,
+                       AuthEventResult.blocked_user,
+                       AuthEventResult.preauth_identity_not_allowed):
+            error = BarrierRejectionError(result)
+            error_code, status = surface(result)
+            # The class, the status and the body all come from the shared taxonomy: no
+            # per-endpoint variant exists for the same condition.
+            assert (error.error_code, error.status_code) == (error_code, status)
+            assert error.body() == client_response(error_code).body
+
+
+class TestRoutePolicy:
+    # [utest->req~sessions-route-policy-fail-closed~1]
+    # [utest->req~sessions-route-default-requires-linked-active~1]
+    def test_the_default_policy_requires_a_linked_active_user(self):
+        for outcome in (ResolutionOutcome.pre_auth, ResolutionOutcome.historical_identity,
+                        ResolutionOutcome.blocked_user):
+            assert barrier_result_for(outcome, "GET", "/users/me") is not None
+        assert barrier_result_for(ResolutionOutcome.linked, "GET", "/users/me") is None
+        # Fail-closed on an outcome the four do not cover.
+        assert barrier_result_for("something-else", "GET", "/users/me") is \
+            AuthEventResult.blocked_user  # ty: ignore[invalid-argument-type]
+
+    # [utest->req~sessions-preauth-admission-explicit-declaration~1]
+    # [utest->req~sessions-create-user-callable-from-preauth~1]
+    def test_pre_auth_admission_is_an_explicit_per_route_declaration(self):
+        declared = [route for route in AUTHENTICATED_ROUTES if route.pre_auth_callable]
+        assert [(route.method, route.path) for route in declared] == \
+            [("POST", "/auth/create-user")]
+        assert is_pre_auth_callable("POST", "/auth/create-user") is True
+        for route in AUTHENTICATED_ROUTES:
+            if not route.pre_auth_callable:
+                assert is_pre_auth_callable(route.method, route.path) is False
+                assert barrier_result_for(ResolutionOutcome.pre_auth, route.method, route.path) \
+                    is AuthEventResult.preauth_identity_not_allowed
+        # The barrier consults the declaration; endpoint code never skips the barrier to admit it.
+        app = build_app([("POST", "/auth/create-user")],
+                        resolver=FakeResolver(ResolutionOutcome.pre_auth), writer=make_writer())
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.post("/auth/create-user",
+                                   headers={"Authorization": f"Bearer {make_token('fresh')}"})
+        assert response.status_code == 200
+        assert response.json()["outcome"] == ResolutionOutcome.pre_auth
+
+    # [utest->req~sessions-undeclared-route-strictest~1]
+    def test_an_undeclared_route_takes_the_strictest_treatment(self):
+        assert categorize("GET", "/newly/added") is RouteCategory.authenticated
+        assert is_pre_auth_callable("GET", "/newly/added") is False
+        assert barrier_result_for(ResolutionOutcome.pre_auth, "GET", "/newly/added") is \
+            AuthEventResult.preauth_identity_not_allowed
+        # It never silently becomes public: unauthenticated, it rejects.
+        app = build_app([("GET", "/newly/added")], resolver=FakeResolver(), writer=make_writer())
+        with TestClient(app, raise_server_exceptions=False) as client:
+            assert client.get("/newly/added").status_code == 401
+        # And the startup assertion fails closed on it.
+        with pytest.raises(RouteCategoryError):
+            assert_route_categories(app)
+
+    # [utest->req~sessions-no-authenticated-route-outside-barrier~1]
+    # [utest->req~sessions-route-coverage-via-enumeration-assertion~1]
+    def test_no_authenticated_route_may_be_registered_outside_the_barrier(self):
+        # Wired outside the barrier, the route has no identity context and fails loudly.
+        app = build_app([("GET", "/users/me")], resolver=FakeResolver(), writer=make_writer(),
+                        with_barrier=False)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.get("/users/me",
+                                  headers={"Authorization": f"Bearer {make_token('u1')}"})
+        assert response.status_code == 401
+        assert response.json()["code"] == "auth_required"
+        # The route-enumeration assertion is the coverage check for the barrier, and it is the
+        # shipped app's own startup check.
+        from nativespeaker.api.app.main import app as shipped
+        assert_route_categories(shipped)
+        assert any(isinstance(middleware.cls, type)
+                   and issubclass(middleware.cls, AuthBarrierMiddleware)
+                   for middleware in shipped.user_middleware)
+
+    # [utest->req~sessions-callback-route-not-authenticated-route~1]
+    def test_a_provider_callback_route_is_not_an_authenticated_route(self):
+        from nativespeaker.api.auth.routes import named_verifier
+
+        for callback in PROVIDER_CALLBACK_ROUTES:
+            assert categorize(callback.method, callback.path) is RouteCategory.provider_callback
+            assert (callback.method, callback.path) not in ID_TOKEN_REQUIRED_ROUTES
+            assert named_verifier(callback.method, callback.path) == callback.verifier
+            assert is_pre_auth_callable(callback.method, callback.path) is False
+        # A path that merely looks like one is not in the category and has no verifier.
+        assert named_verifier("POST", "/webhooks/anything") is None
+        # It carries no identity context: the barrier passes it through untouched.
+        seen: list[Any] = []
+        app = FastAPI()
+
+        @app.post("/webhooks/app-store")
+        async def callback_handler(request: Request):
+            seen.append(getattr(request.state, "identity", None))
+            return {}
+
+        register_exception_handlers(app)
+        app.add_middleware(AuthBarrierMiddleware)  # ty: ignore[invalid-argument-type]
+        app.state.auth_barrier = AuthBarrier(integrations=make_integrations(),
+                                             resolver=FakeResolver(), audit=make_writer(),
+                                             subject_hasher=subject_hasher)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            assert client.post("/webhooks/app-store", json={}).status_code == 200
+        assert seen == [None]
+
+    # [utest->req~sessions-handlers-no-reimplementation~1]
+    def test_no_handler_re_implements_verification_or_resolution(self):
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parents[2] / "src"
+        # The `Authorization` field is read in exactly one place, and identity resolution runs
+        # through the barrier's resolver rather than in a handler.
+        readers = sorted(path.name for path in src.rglob("*.py")
+                         if ".headers.getlist(" in path.read_text())
+        assert readers == ["barrier.py"]
+        verifiers = sorted(path.name for path in src.rglob("*.py")
+                           if "verify_id_token(" in path.read_text())
+        assert verifiers == ["barrier.py", "integration.py", "tokens.py"]
+        # A handler-side dependency consumes the barrier's typed output and nothing else.
+        from nativespeaker.api.app.dependencies import get_current_user
+        from nativespeaker.api.exceptions import AuthenticationError
+
+        async def call_without_a_barrier():
+            request = Request({"type": "http", "method": "GET", "path": "/users/me",
+                               "headers": [(b"authorization", b"Bearer token")],
+                               "query_string": b""})
+            await get_current_user(request, db=None)  # ty: ignore[invalid-argument-type]
+
+        with pytest.raises((AuthenticationError, BarrierRejectionError)):
+            import anyio
+            anyio.run(call_without_a_barrier)
+
+    # [utest->req~sessions-linked-identity-ineligible-for-create-user~1]
+    def test_a_linked_identity_is_ineligible_for_either_create_user_phase(self):
+        from nativespeaker.api.auth.audit import AuthEventResult as Result
+        from nativespeaker.api.auth.external_identities import (
+            AlreadyLinkedSite,
+            already_linked_result,
+        )
+
+        # Both phases take the one `identity_already_linked` result, at each of its sites.
+        for site in (AlreadyLinkedSite.prepare_phase_check,
+                     AlreadyLinkedSite.completion_identity_reresolution):
+            assert already_linked_result(site) is Result.identity_already_linked
+        # A linked identity is still admitted onto the route by the barrier; the endpoint's own
+        # rule is what refuses it, with its own class rather than a barrier rejection.
+        assert barrier_result_for(ResolutionOutcome.linked, "POST", "/auth/create-user") is None
+        assert surface(Result.identity_already_linked)[0] == "identity_already_linked"
+
+    # [utest->req~sessions-create-user-gateway-limit-required~1]
+    def test_gateway_limiting_on_create_user_is_required_on_every_deployment(self):
+        import yaml
+
+        from nativespeaker.api.ratelimit.config import (
+            CREATE_USER_GATEWAY_ENTRIES,
+            GatewayRateLimitsConfig,
+            RateLimitConfigError,
+            assert_create_user_gateway_limits,
+        )
+
+        root = Path(__file__).resolve().parents[2]
+        shipped = yaml.safe_load((root / "config" / "config.yaml").read_text())
+        gateway = GatewayRateLimitsConfig(**shipped["gateway_rate_limits"])
+        # The shipped configuration throttles the pre-auth route, and both entries cover it.
+        assert_create_user_gateway_limits(gateway)
+        for name in CREATE_USER_GATEWAY_ENTRIES:
+            assert getattr(gateway, name).route == "POST /auth/create-user"
+        # Leaving the route unthrottled is not a permitted configuration.
+        with pytest.raises(RateLimitConfigError):
+            assert_create_user_gateway_limits(None)
+        only_upgrade = {"upgrade_anonymous":
+                        shipped["gateway_rate_limits"]["upgrade_anonymous"]}
+        with pytest.raises(ValidationError):
+            GatewayRateLimitsConfig(**only_upgrade)
+        elsewhere = {**shipped["gateway_rate_limits"]}
+        elsewhere["create_user_ip"] = {**elsewhere["create_user_ip"],
+                                       "route": "POST /auth/sync"}
+        with pytest.raises(RateLimitConfigError):
+            assert_create_user_gateway_limits(GatewayRateLimitsConfig(**elsewhere))

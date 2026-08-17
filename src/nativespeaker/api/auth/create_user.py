@@ -29,9 +29,11 @@ from nativespeaker.api.auth.external_identities import (
     ProviderAccountAlreadyLinkedError,
     ProviderClassificationError,
     ProviderDataReadPoint,
+    ProviderDeclarationMismatchError,
     ProviderLookupFailedError,
     ProviderSource,
     already_linked_result,
+    assert_declared_provider,
     assert_may_write_provider_fields,
     assert_provider_source,
     classify_provider,
@@ -342,16 +344,28 @@ def confirm_declaration(declared: IdentityProvider, lookup: AdminLookupResult) -
     `provider_uid`, and a missing or empty `uid` is a malformed lookup result that rejects with
     no persistence under the shared lookup-failure handling."""
     # [impl->req~users-create-user-step-04~1]
+    # Declaration match is the shared procedure's own stage: an anonymous completion therefore
+    # requires an empty `providerData`, and a registered one requires the classifier to return the
+    # declared `google` or `apple`. Neither branch persists anything on a mismatch, and neither
+    # silently records the account as the other kind.
+    # [impl->req~sessions-declaration-match~1]
+    # [impl->req~sessions-declaration-anonymous-create-user~1]
+    # [impl->req~sessions-declaration-registered-create-user~1]
     classified = classify_admin_provider_data(lookup.provider_data)
-    if classified is not declared:
+    try:
+        assert_declared_provider(classified, declared)
+    except ProviderDeclarationMismatchError:
         # A successful lookup the classifier classified: the flow is named from that
-        # classification, never from the declaration.
+        # classification, never from the declaration. A declared-anonymous completion that finds
+        # a Google or Apple login attached is refused toward `required_flow = registered`; a
+        # declared-registered completion that finds an empty result is refused toward
+        # `required_flow = anonymous` and never persists `anonymous` on that path.
         # [impl->req~users-create-user-provider-not-linked-audit~1]
         cause = (ProviderNotLinkedCause.empty_provider_data
                  if classified is IdentityProvider.anonymous
                  else ProviderNotLinkedCause.supported_provider_mismatch)
         raise CreateUserRejection(AuthEventResult.provider_not_linked, cause=cause,
-                                  required_flow=required_flow_for(classified))
+                                  required_flow=required_flow_for(classified)) from None
     # A missing or empty `uid` on the matching entry is a malformed lookup result. Taken on the
     # claimed row, it rejects with no persistence through the shared lookup-failure handling and
     # consumes the challenge like every other rejection at or after the mandatory lookup.
@@ -395,9 +409,14 @@ def lookup_rejection(failure: ProviderLookupFailedError) -> CreateUserRejection:
     and surfaced through the class that result maps to. It is a `ChallengeRejection`, so the
     shared completion machinery consumes the challenge and writes the rejection's audit row
     rather than letting an `IdentityError` escape the completion path."""
+    # The challenge is consumed whether the attempt succeeds or is rejected, so a rejected
+    # provider lookup leaves the client to prepare a fresh challenge and retry: raising a
+    # `ChallengeRejection` here is what puts this rejection on the shared consuming path, and no
+    # challenge-recycling path exists.
     # [impl->req~users-create-user-firebase-user-not-found~1]
     # [impl->req~users-create-user-lookup-unavailable~1]
     # [impl->req~users-create-user-rejection-consumes-challenge~1]
+    # [impl->req~sessions-failure-challenge-consumed~1]
     rejection = CreateUserRejection(failure.result)
     if rejection.error_code != failure.client_class:
         raise CreateUserError(f"{failure.result} surfaces as {failure.client_class}")
@@ -746,8 +765,12 @@ class CreateUserEndpoint:
         `(issuer, subject)`: prepare-time pre-auth status never suffices. An active row whose
         user is active rejects with `identity_already_linked`; a `historical` row, or one whose
         linked user is blocked, rejects with `account_unavailable` while retaining its distinct
-        internal audit result. Neither performs any business mutation."""
+        internal audit result. Neither performs any business mutation.
+
+        The completion phase is the second of the two phases a linked identity is ineligible for,
+        and it takes the same `identity_already_linked` rejection the prepare phase does."""
         # [impl->req~users-create-user-step-05~1]
+        # [impl->req~sessions-linked-identity-ineligible-for-create-user~1]
         issuer, subject = context_pair(identity)
         outcome = await self._accounts.resolve(session, issuer, subject)
         if outcome is ResolutionOutcome.linked:

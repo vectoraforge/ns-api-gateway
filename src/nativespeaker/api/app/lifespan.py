@@ -34,6 +34,7 @@ from nativespeaker.api.ratelimit import (
     RateLimiter,
     RateLimitMetrics,
     SecurityTelemetry,
+    assert_create_user_gateway_limits,
     assert_provider_damping,
     assert_rate_limit_config,
 )
@@ -81,6 +82,10 @@ async def lifespan(app: FastAPI):
     # [impl->req~ratelimit-config-must-include-at-least~1]
     # [impl->req~ratelimit-config-turnstile-siteverify-entry~1]
     assert_rate_limit_config(config.rate_limits, raw=(environment.raw_config or {}).get("rate_limits"))
+    # Gateway rate limiting on the pre-auth `POST /auth/create-user` route is required on every
+    # deployment: startup refuses a configuration that leaves it unthrottled.
+    # [impl->req~sessions-create-user-gateway-limit-required~1]
+    assert_create_user_gateway_limits(config.gateway_rate_limits)
     app.state.rate_limiter = RateLimiter(config.rate_limits)
 
     # Fail closed on adapter damping the configuration file does not declare: every outbound

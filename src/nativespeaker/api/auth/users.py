@@ -28,8 +28,10 @@ from nativespeaker.api.auth.external_identities import (
     ExternalIdentityRow,
     IdentityFieldSource,
     IdentityState,
+    ProviderDeclarationMismatchError,
     ProviderLookupFailedError,
     ProviderSource,
+    assert_declared_provider,
     assert_provider_source,
     classify_provider,
     confirm_stored_binding,
@@ -40,7 +42,7 @@ from nativespeaker.api.auth.external_identities import (
     upgrade_to_registered,
 )
 from nativespeaker.api.auth.flow import assert_challenge_bearing
-from nativespeaker.api.auth.integration import FirebaseIntegrations
+from nativespeaker.api.auth.integration import AdminCallSite, FirebaseIntegrations
 from nativespeaker.api.auth.modes import (
     CHALLENGE_QUERY_PARAM,
     CHALLENGE_QUERY_VALUE,
@@ -330,12 +332,21 @@ def upgrade_target_provider(declared: IdentityProvider,
                             provider_data: Sequence[object]) -> IdentityProvider:
     """The target registered provider is established server-side, through Firebase Admin
     `providerData` verification of the client-declared provider, and is never read from the
-    token."""
+    token.
+
+    `upgrade-anonymous` completion requires the same successful lookup and the same classifier
+    agreement with the declaration as registered creation does — the idempotent repeat, where the
+    stored provider already equals the declaration, included: the agreement is checked through the
+    shared declaration-match stage on every branch."""
     # [impl->req~users-upgrade-anonymous-not-preauth-endpoint~1]
+    # [impl->req~sessions-declaration-upgrade-anonymous~1]
     assert_provider_source(ProviderSource.firebase_admin_provider_data)
     confirmed = classify_provider(provider_data)
-    if confirmed is not declared:
-        raise ProviderNotConfirmedError(f"the live lookup confirms {confirmed}, not {declared}")
+    try:
+        assert_declared_provider(confirmed, declared)
+    except ProviderDeclarationMismatchError as mismatch:
+        raise ProviderNotConfirmedError(
+            f"the live lookup confirms {confirmed}, not {declared}") from mismatch
     return confirmed
 
 
@@ -678,10 +689,18 @@ def issuer_selected_admin_client(integrations: FirebaseIntegrations, issuer: str
     No default or ambient Admin client exists. An issuer mismatch cannot reach this stage — the
     shared barrier rejects it as `invalid_external_jwt` — and a matched integration whose Admin
     client is unavailable, misconfigured or otherwise unselectable fails closed as
-    `firebase_lookup_unavailable`, surfaced as `verification_temporarily_unavailable`."""
+    `firebase_lookup_unavailable`, surfaced as `verification_temporarily_unavailable`.
+
+    This is a request-driven Admin call site: the issuer it selects on is the one verified for the
+    current request, the same issuer that passed external-JWT acceptance and keys the identity
+    lookup. It is never derived from `subject`, from the provider, or from client input."""
     # [impl->req~users-issuer-selected-admin-client~1]
+    # [impl->req~sessions-admin-client-by-issuer-match~1]
+    # [impl->req~sessions-integration-select-request-driven~1]
+    # [impl->req~sessions-integration-selection-fails-closed~1]
     try:
-        client = integrations.admin_client_for_issuer(issuer)
+        client = integrations.admin_client_for_request(verified_issuer=issuer,
+                                                      site=AdminCallSite.provider_data_read)
     except InvalidExternalJwtError:
         raise
     except Exception as cause:

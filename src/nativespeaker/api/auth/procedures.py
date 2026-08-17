@@ -340,8 +340,11 @@ class SharedChallengeService:
                                          variant: IdentityProvider | None,
                                          context: VerifiedIdentityContext,
                                          endpoint: ChallengeEndpoint) -> None:
-        # An already-linked identity at `create_user` prepare is rejected here, not later.
+        # An already-linked identity at `create_user` prepare is rejected here, not later: a linked
+        # identity is ineligible for either phase of `POST /auth/create-user`, and both phases
+        # reject it with `identity_already_linked`.
         # [impl->req~shared-prepare-step-05~1]
+        # [impl->req~sessions-linked-identity-ineligible-for-create-user~1]
         if operation is AuthOperation.create_user and context.outcome is ResolutionOutcome.linked:
             raise await self._reject(attempt, AttemptPhase.prepare,
                                      AuthEventResult.identity_already_linked, context)
@@ -625,10 +628,13 @@ class SharedChallengeService:
     async def _consume_after_rejection(self, attempt: AuthAttempt, context: VerifiedIdentityContext,
                                        row: ChallengeRow, claim_attempt_id: UUID,
                                        rejection: ChallengeRejection) -> None:
-        """A claimed challenge is dead: a variant mismatch, a rejected proof or an exhausted
-        vendor budget consumes it, atomically with the attempt's audit record."""
+        """A claimed challenge is dead: a variant mismatch, a rejected proof, a failed provider
+        lookup or an exhausted vendor budget consumes it, atomically with the attempt's audit
+        record. The rejected attempt leaves the client to prepare a fresh challenge and retry;
+        there is no challenge-recycling path back to `issued`."""
         # [impl->req~shared-claimed-challenge-is-dead~1]
         # [impl->req~shared-completion-step-12~1]
+        # [impl->req~sessions-failure-challenge-consumed~1]
         async with self._open_session() as session:
             await self._store.consume(session, row.challenge_id, claim_attempt_id)
             # [impl->req~shared-upgrade-movement-context-required~1]

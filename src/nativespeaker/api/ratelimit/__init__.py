@@ -7,6 +7,7 @@ from nativespeaker.api.ratelimit.config import (
     RateLimitEntry,
     RateLimitsConfig,
     Strategy,
+    assert_create_user_gateway_limits,
     assert_rate_limit_config,
 )
 from nativespeaker.api.ratelimit.keys import (
@@ -80,6 +81,7 @@ __all__ = [
     "FailureMode",
     "GatewayResolvedAddress",
     "GatewayRateLimitsConfig",
+    "assert_create_user_gateway_limits",
     "GetUserCallSite",
     "KeyComponent",
     "KeyMaterial",

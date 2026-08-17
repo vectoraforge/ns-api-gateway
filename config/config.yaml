@@ -65,6 +65,19 @@ gateway_rate_limits:
     limit: "3/hour"
     key: "issuer+subject_hash"
     evaluate_after: "envoy_jwt_verification"
+  # Gateway limiting on the pre-auth create-user route is required on every deployment: both
+  # entries cover its prepare and complete phases, and neither is optional.
+  # [impl->req~sessions-create-user-gateway-limit-required~1]
+  create_user_ip:
+    route: "POST /auth/create-user"
+    limit: "10/minute"
+    key: "ip"
+    evaluate_after: "gateway_route_match"
+  create_user_deployment:
+    route: "POST /auth/create-user"
+    limit: "100/minute; 2000/day"
+    key: "deployment"
+    evaluate_after: "gateway_route_match"
 
 # The backend-to-provider damping limits every adapter runs under, so provider outages, retries
 # and replay attempts cannot fan out unbounded calls. These are the second layer: they protect

@@ -64,8 +64,16 @@ def is_registered(registered_at: datetime | None) -> bool:
 def assert_registered_at_pairing(provider: IdentityProvider,
                                  registered_at: datetime | None) -> None:
     """`registered_at` is set exactly when the stored provider is registered. Disagreement is a
-    corrupt row and fails closed; it never re-classifies the account."""
+    corrupt row and fails closed; it never re-classifies the account.
+
+    The two fields are paired: `registered_at IS NOT NULL` if and only if the stored provider is
+    `google` or `apple`, equivalently `provider = 'anonymous'` if and only if
+    `registered_at IS NULL`. Authorization, grant class and audit never invent a third state, and
+    because each user has exactly one external identity the pairing is enforced here — in the code
+    of the single completion transaction that writes both fields — rather than by a cross-table
+    constraint trigger."""
     # [impl->req~schema-users-registered-at-not-classifier~1]
+    # [impl->req~sessions-provider-registered-at-pairing~1]
     if is_registered(registered_at) != (account_class(provider) is AccountClass.registered):
         raise ProfileError(
             f"registered_at disagrees with the stored provider {provider}; the provider classifies")
