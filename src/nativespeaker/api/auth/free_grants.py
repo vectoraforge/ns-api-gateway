@@ -36,9 +36,12 @@ from nativespeaker.api.auth.entitlement import AccessGrantSource, AccessGrantSta
 from nativespeaker.api.auth.external_identities import (
     REGISTERED_PROVIDERS,
     ExternalIdentityRow,
+    IdentityError,
     IdentityState,
     NativeClaimPlatform,
+    pin_native_claim_platform,
 )
+from nativespeaker.api.auth.integration import FirebaseIntegrations
 from nativespeaker.api.auth.invariants import (
     DEVICE_CHECK_MECHANISM,
     DevicePlatform,
@@ -74,6 +77,7 @@ from nativespeaker.api.auth.proof_endpoints import (
     GateDenied,
     ProofArtifact,
     web_anonymous_grant_gate,
+    web_gate_admin_client,
 )
 from nativespeaker.api.auth.proof_material import assert_anti_abuse_row_prohibitions
 from nativespeaker.api.auth.schema_invariants import (
@@ -102,11 +106,15 @@ class FreeGrantRejected(ServiceError):
     `core.auth_event_result` for the audit row and the shared client-visible class for the
     response; the taxonomy owns the mapping and this exception invents neither side."""
 
+    audit: AuthEvent | None = None
+
     def __init__(self, result: AuthEventResult, error_code: ErrorCode, message: str,
-                 *, status_code: int = 403):
+                 *, status_code: int = 403, details: Mapping[str, Any] | None = None):
         self.result = result
         self.error_code: ErrorCode = error_code
         self.status_code = status_code
+        # The audit details this rejection carries onto its single `audit.auth_events` row.
+        self.audit_details: dict[str, Any] | None = dict(details) if details is not None else None
         super().__init__(message)
 
 
@@ -233,8 +241,11 @@ def assert_claimant_eligible(branch: ClaimBranch, row: ExternalIdentityRow) -> I
     burning the device-ledger bit exactly as an anonymous claimant would; on web an active
     registered identity whose stored provider is `google` or `apple`."""
     # [impl->req~grants-claim-anonymous-operation~1]
+    # A non-`active` row is a historical identity, audited under its own barrier result and
+    # surfaced through the shared `account_unavailable` class.
+    # [impl->req~shared-audit-outcome-barrier-rejection~1]
     if row.identity_state is not IdentityState.active:
-        raise FreeGrantRejected(AuthEventResult.policy_rejected, "operation_not_allowed",
+        raise FreeGrantRejected(AuthEventResult.historical_identity, "account_unavailable",
                                 "a free-credit claim needs an active identity")
     if row.provider in REGISTERED_PROVIDERS:
         return row.provider
@@ -1141,31 +1152,53 @@ ANONYMOUS_IDENTITY_BRANCHES: frozenset[ClaimBranch] = NATIVE_BRANCHES
 LIFETIME_FREE_GRANTS_PER_ACCOUNT: int = 1
 
 
-def pin_native_platform(row: ExternalIdentityRow,
-                        branch: ClaimBranch,
-                        *,
-                        attestation_verified: bool = True) -> NativeClaimPlatform | None:
-    """An anonymous identity's native claim platform is pinned to the identity record when its
-    first device attestation verifies, and is never re-declared per request: a later attempt by
-    the same anonymous identity presenting the other platform's material is rejected, so the same
-    anonymous identity cannot switch branches."""
+def assert_pinned_platform_matches(row: ExternalIdentityRow,
+                                   branch: ClaimBranch) -> NativeClaimPlatform | None:
+    """The half of the pinning rule that runs at branch selection: an anonymous identity may use
+    only the device-attestation branches, and material from the other platform than the one this
+    identity is already pinned to is rejected — so the same anonymous identity cannot switch
+    branches. Nothing is written here; the pin itself is set once the attestation verifies.
+
+    A registered claimant is not pinned: it may use the web/registered gate on any surface.
+    """
     # [impl->req~grants-branch-pinning-and-shared-admission~1]
     if row.provider is not IdentityProvider.anonymous:
-        # A registered claimant is not pinned: it may use the web/registered gate on any surface.
         return row.native_claim_platform
     if branch not in ANONYMOUS_IDENTITY_BRANCHES:
         raise FreeGrantRejected(AuthEventResult.policy_rejected, "verification_required",
                                 "an anonymous identity may use only the attestation branches")
     platform = NATIVE_CLAIM_PROVIDER[BRANCH_PLATFORM[branch]]
     stored = row.native_claim_platform
-    if stored is None:
-        if not attestation_verified:
-            raise ProofRejected("the platform is pinned once the device attestation verifies")
-        return platform
-    if stored is not platform:
+    if stored is not None and stored is not platform:
         raise FreeGrantRejected(AuthEventResult.policy_rejected, "operation_not_allowed",
                                 f"this identity is pinned to {stored}")
     return stored
+
+
+def pin_native_platform(row: ExternalIdentityRow,
+                        branch: ClaimBranch,
+                        *,
+                        attestation_verified: bool) -> ExternalIdentityRow:
+    """An anonymous identity's native claim platform is pinned to the identity record when its
+    first device attestation verifies, and is never re-declared per request. The set-once,
+    immutable-once-set decision belongs to the `native_claim_platform` column's owner, so this
+    delegates to it and only translates its refusal into this operation's rejection class; the
+    returned row is the one the activation transaction writes.
+    """
+    # [impl->req~grants-branch-pinning-and-shared-admission~1]
+    if row.provider is not IdentityProvider.anonymous:
+        # A registered claimant is not pinned: it may use the web/registered gate on any surface.
+        return row
+    stored = assert_pinned_platform_matches(row, branch)
+    platform = NATIVE_CLAIM_PROVIDER[BRANCH_PLATFORM[branch]]
+    if stored is None and not attestation_verified:
+        raise ProofRejected("the platform is pinned once the device attestation verifies")
+    try:
+        return pin_native_claim_platform(row, platform,
+                                         attestation_verified=attestation_verified)
+    except IdentityError as exc:
+        raise FreeGrantRejected(AuthEventResult.policy_rejected, "operation_not_allowed",
+                                str(exc)) from None
 
 
 def claim_admission_pair(branch: ClaimBranch, phase: str = "complete") -> tuple[str, str]:
@@ -1213,10 +1246,17 @@ def claim_identity(context: VerifiedIdentityContext,
 
 
 class ClaimStep(StrEnum):
-    """The steps of one `claim_anonymous_grant` attempt, in the one order they may run in."""
+    """The steps of one `claim_anonymous_grant` attempt, in the one order they may run in.
+
+    The shared pre-consumption checks — the barrier's four checks in
+    `00-overview-and-shared-contracts.md`, each of them rejected before every challenge check —
+    and the handler-side admission checks come first, and the challenge claim is step 8, after
+    them: a claimant whose identity the barrier refuses is rejected before the claim and leaves
+    the challenge unclaimed, having learnt nothing about whether it existed or was already used.
+    """
     admission = "admission"
-    challenge_claim = "challenge_claim"
     identity_barrier = "identity_barrier"
+    challenge_claim = "challenge_claim"
     branch_selection = "branch_selection"
     platform_gate = "platform_gate"
     database_eligibility = "database_eligibility"
@@ -1254,12 +1294,15 @@ class GateReading:
 
 @dataclass(frozen=True, slots=True)
 class ActivatedGrant:
-    """The rows one activation transaction wrote, and the audit record it appended."""
+    """The rows one activation transaction wrote, and the audit record it appended. `identity` is
+    the claimant's identity row as the transaction leaves it — for an anonymous native claimant,
+    carrying the `native_claim_platform` pin this attempt's verified attestation set."""
     grant: dict[str, Any]
     anti_abuse: dict[str, Any]
     usage: NewUsageRow
     audit: AuthEvent
     alias: DerivedValue | None = None
+    identity: ExternalIdentityRow | None = None
 
 
 def assert_no_enrolled_key(*,
@@ -1274,10 +1317,21 @@ def assert_no_enrolled_key(*,
             f"{sorted(set(participants) | set(uniqueness_rows))}")
 
 
-def read_web_gate(row: ExternalIdentityRow,
+@dataclass(frozen=True, slots=True)
+class WebGateRead:
+    """What the web branch needs to read its gate: the identity row, the server-side Cloudflare
+    bot check, the configured Firebase integrations, the request's backend-verified issuer, and
+    the `providerData` read itself — which runs through the Admin client this issuer selects and
+    never through a caller-supplied result."""
+    row: ExternalIdentityRow
+    bot_check: Callable[[], bool]
+    integrations: FirebaseIntegrations
+    issuer: str
+    read_provider_data: Callable[[Any], Sequence[object] | None]
+
+
+def read_web_gate(read: WebGateRead,
                   *,
-                  bot_check: Callable[[], bool],
-                  provider_data: Sequence[object] | None,
                   index: IdpAccountAliasIndex | None = None) -> tuple[WebGateAccount,
                                                                       DerivedValue | None]:
     """The web branch's gate, in its own order: the server-validated Cloudflare bot check, then
@@ -1285,12 +1339,21 @@ def read_web_gate(row: ExternalIdentityRow,
     backend-verified issuer classifying the complete live `providerData` result under the closed
     classifier, then equality against the stored provider and stored `provider_uid`, then the
     per-provider-account `idp_account_hash` derived with the stored provider as the HMAC provider
-    component — the hash and key version the anonymous-grant anti-abuse row persists."""
+    component — the hash and key version the anonymous-grant anti-abuse row persists.
+
+    The `providerData` result is never client-supplied: it is what the issuer-selected Admin
+    client returned for this identity, and an issuer that matches no configured integration fails
+    here, before the classifier runs.
+    """
     # [impl->req~grants-platform-gate-web~1]
     # [impl->req~grants-anon-rule-read-platform-gate~1]
     # [impl->req~grants-anon-rule-web-classifier-and-hash~1]
-    if not bot_check():
+    # [impl->req~grants-vendor-state-never-client-supplied~1]
+    row = read.row
+    if not read.bot_check():
         raise GateDenied("the server-validated Cloudflare bot check did not pass")
+    client = web_gate_admin_client(read.integrations, read.issuer)
+    provider_data = read.read_provider_data(client)
     account = web_anonymous_grant_gate(row, provider_data)
     web_hash_provider_component(row, account)
     if index is None:
@@ -1367,10 +1430,12 @@ class AnonymousGrantClaim:
             raise FreeGrantError("the shared and handler-side admission checks must pass first")
 
     def claim_challenge(self, gate: ChallengeGate) -> ClaimOutcome:
-        """The operation challenge is then claimed under the shared completion requirements,
-        still before any vendor call."""
+        """The operation challenge is then claimed under the shared completion requirements —
+        after the barrier's checks and handler-side admission, and still before any vendor
+        call."""
         # [impl->req~grants-anon-rule-pre-consumption-then-challenge~1]
-        self._require(ClaimStep.admission)
+        # [impl->req~grants-anon-mutation-challenge-claim-order~1]
+        self._require(ClaimStep.admission, ClaimStep.identity_barrier)
         self._record(ClaimStep.challenge_claim)
         claim = claim_challenge_before_vendor(gate.claim, vendor_calls_made=self.vendor_calls)
         if not claim.vendor_calls_allowed:
@@ -1383,17 +1448,22 @@ class AnonymousGrantClaim:
                          *,
                          offered_identity_inputs: Sequence[str] = ()) -> ExternalIdentityRow:
         """The current identity comes from the shared mandatory authentication-and-identity-
-        resolution barrier and from nothing else."""
+        resolution barrier and from nothing else. It is resolved before the challenge is claimed,
+        so an identity the barrier refuses leaves the challenge unclaimed."""
         # [impl->req~grants-anon-rule-identity-barrier~1]
         # [impl->req~grants-anon-proof-not-identity~1]
-        self._require(ClaimStep.challenge_claim)
+        # [impl->req~grants-anon-mutation-challenge-claim-order~1]
+        self._require(ClaimStep.admission)
         self._record(ClaimStep.identity_barrier)
         claim_identity(context, offered=offered_identity_inputs)
         if context.outcome is not ResolutionOutcome.linked:
             raise FreeGrantRejected(AuthEventResult.policy_rejected, "preauth_identity_not_allowed",
                                     "the claim needs the barrier's linked active identity")
+        # A row that is not `active` is `historical`: the barrier's own result for it, under the
+        # shared `account_unavailable` class, never the free-credit policy block.
+        # [impl->req~shared-audit-outcome-barrier-rejection~1]
         if row.identity_state is not IdentityState.active:
-            raise FreeGrantRejected(AuthEventResult.policy_rejected, "operation_not_allowed",
+            raise FreeGrantRejected(AuthEventResult.historical_identity, "account_unavailable",
                                     "the claim needs an active identity")
         if context.external_identity_id is not None and context.external_identity_id != row.id:
             raise FreeGrantError("the resolved context and the identity row must be the same row")
@@ -1417,15 +1487,16 @@ class AnonymousGrantClaim:
         assert_write_material_present(branch, _carried_artifacts(evidence))
         assert_branch_verified(branch, verified)
         assert_claimant_eligible(branch, row)
-        pin_native_platform(row, branch)
+        # The pinning rule's refusal half runs here, before any vendor call; the pin itself is
+        # written in the activation transaction, once the device attestation has verified.
+        assert_pinned_platform_matches(row, branch)
         self.branch = branch
         return branch
 
     def read_platform_gate(self,
                            *,
                            native: tuple[DeviceStateAdapter, Any, NativeClaimLedger] | None = None,
-                           web: tuple[ExternalIdentityRow, Callable[[], bool],
-                                      Sequence[object] | None] | None = None,
+                           web: WebGateRead | None = None,
                            index: IdpAccountAliasIndex | None = None) -> GateReading:
         """Read the branch's platform gate: the per-device anonymous-claimed state on native, or
         the server-side `providerData` stored-binding check plus the server-validated Cloudflare
@@ -1446,10 +1517,8 @@ class AnonymousGrantClaim:
             return GateReading(branch=branch, already_claimed=already)
         if web is None:
             raise FreeGrantError("the web branch reads the bot check and providerData")
-        row, bot_check, provider_data = web
         self.vendor_calls += 1
-        account, _ = read_web_gate(row, bot_check=bot_check, provider_data=provider_data,
-                                   index=index)
+        account, _ = read_web_gate(web, index=index)
         consumed = (index is not None
                     and index.consumed(ProviderAccount(
                         provider=account.provider,
@@ -1515,15 +1584,20 @@ class AnonymousGrantClaim:
                  write: DeviceBitWrite | None = None,
                  web_account: WebGateAccount | None = None,
                  index: IdpAccountAliasIndex | None = None,
+                 identity_row: ExternalIdentityRow | None = None,
                  context: ExecutionContext = CLAIM_EXECUTION_CONTEXT,
                  now: datetime | None = None) -> ActivatedGrant:
         """One activation transaction: the `core.access_grants` row with
         `source = 'anonymous_device_grant'`, the configured free tier and `status = 'active'`; the
         `core.access_grants_anti_abuse` row for the anonymous source, carrying
         `native_claim_provider` only for native rows and `idp_account_hash` with its key version
-        only for web rows; the platform in audit detail and never in `source`; the
-        `core.user_monthly_usage` row; the consumption of the challenge this attempt claimed; and
-        the success audit."""
+        only for web rows; the platform in audit detail and never in `source`; an anonymous native
+        claimant's now-verified `native_claim_platform` pin; the `core.user_monthly_usage` row; the
+        consumption of the challenge this attempt claimed; and the success audit.
+
+        A rejection taken inside this transaction consumes the claimed challenge too, atomically
+        with its own rejection audit: a claimed challenge is dead whatever later check failed.
+        """
         # [impl->req~grants-anon-rule-activation-transaction~1]
         # [impl->req~grants-anon-rule-reconfirm-in-transaction~1]
         # [impl->req~grants-anon-rule-uncancellable-context~1]
@@ -1535,6 +1609,40 @@ class AnonymousGrantClaim:
         self._record(ClaimStep.activation)
         # The native read-write-activate sequence runs where a client disconnect cannot cancel it.
         assert_execution_context(context)
+        try:
+            return self._activate(user_id=user_id, grant_id=grant_id, tier_id=tier_id,
+                                  transaction=transaction, locks=locks, reconfirm=reconfirm,
+                                  challenge=challenge, write=write, web_account=web_account,
+                                  index=index, identity_row=identity_row, branch=branch, now=now)
+        except (ClaimRejection, FreeGrantRejected) as rejection:
+            # This attempt holds the claim, so its challenge is consumed exactly once here —
+            # atomically with the rejection audit — however late the check that failed was.
+            # [impl->req~grants-anon-rule-activation-transaction~1]
+            # [impl->req~shared-claimed-challenge-is-dead~1]
+            challenge.consume()
+            rejection.audit = terminal_event(
+                AttemptPhase.business, rejection.result,
+                operation=AuthOperation.claim_anonymous_grant,
+                details={"verification": {"claim_branch": str(branch)},
+                         "failure": {"stage": str(ClaimStep.activation)}})
+            raise
+
+    def _activate(self, *,
+                  user_id: UUID,
+                  grant_id: UUID,
+                  tier_id: str,
+                  transaction: object,
+                  locks: LockLedger,
+                  reconfirm: Callable[[], bool],
+                  challenge: ChallengeGate,
+                  write: DeviceBitWrite | None,
+                  web_account: WebGateAccount | None,
+                  index: IdpAccountAliasIndex | None,
+                  identity_row: ExternalIdentityRow | None,
+                  branch: ClaimBranch,
+                  now: datetime | None) -> ActivatedGrant:
+        """The transaction's own body. Every rejection it raises leaves through `activate`, which
+        consumes the claimed challenge on the way out."""
         assert_no_enrolled_key()
         if not tier_id:
             raise FreeGrantError("the grant names the configured free tier")
@@ -1561,6 +1669,13 @@ class AnonymousGrantClaim:
         assert_billing_separation(source, None)
         assert_grant_columns_entitlement_only(grant)
         platform = BRANCH_PLATFORM[branch] if branch in NATIVE_BRANCHES else None
+        # An anonymous native claimant's `native_claim_platform` is pinned here: the device
+        # attestation has verified and the vendor has confirmed the write, so this is the point
+        # the identity record takes the pin, in the transaction that commits the grant.
+        # [impl->req~grants-branch-pinning-and-shared-admission~1]
+        pinned: ExternalIdentityRow | None = identity_row
+        if identity_row is not None and branch in NATIVE_BRANCHES:
+            pinned = pin_native_platform(identity_row, branch, attestation_verified=True)
         alias: DerivedValue | None = None
         if branch is ClaimBranch.web:
             if web_account is None or index is None:
@@ -1588,7 +1703,7 @@ class AnonymousGrantClaim:
                                         "mutation": {"grant_source": str(source),
                                                      "tier_id": tier_id}})
         return ActivatedGrant(grant=grant, anti_abuse=anti_abuse, usage=usage, audit=audit,
-                              alias=alias)
+                              alias=alias, identity=pinned)
 
     def _branch(self) -> ClaimBranch:
         if self.branch is None:

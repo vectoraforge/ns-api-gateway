@@ -500,7 +500,17 @@ def test_an_unconfirmed_revocation_carries_one_sanitized_category_and_no_second_
         with pytest.raises(InvalidTerminalOutcomeError):
             sign_out_all_event(actor=actor(), request_id="req-8", revoked=False,
                                error_category=category, details={"failure": forbidden})
-    assert set(row["details"]["failure"]) <= REVOCATION_FAILURE_FIELDS
+    # The caller's own `details.failure` keys are exactly the sanitized category; the shared row
+    # builder mirrors the row's `result` in the same machine-readable vocabulary beside it, which
+    # is the same outcome rather than a second one — and it can never disagree with the column.
+    assert set(row["details"]["failure"]) <= REVOCATION_FAILURE_FIELDS | {"result"}
+    assert row["details"]["failure"]["result"] == str(row["result"])
+    # A caller-supplied `result` in `details.failure` would be a second outcome field, so it is
+    # refused rather than merged: only the builder's own mirror of the column exists.
+    assert "result" not in REVOCATION_FAILURE_FIELDS
+    with pytest.raises(InvalidTerminalOutcomeError):
+        sign_out_all_event(actor=actor(), request_id="req-8", revoked=False,
+                           error_category=category, details={"failure": {"result": "revoked"}})
 
 
 # [utest->req~schema-auth-events-sign-out-all-row~1]

@@ -29,6 +29,7 @@ from nativespeaker.api.auth.grant_failures import (
     NOT_STRUCTURAL_RESULTS,
     PENDING_STATE_MACHINES,
     SHARED_CATALOG_CLASSES,
+    STEP_EXHAUSTED_CONDITION,
     TURNSTILE_AUDIT_RESULT,
     VENDOR_STATE_RECONCILERS,
     VERIFICATION_REQUIRED_CONDITIONS,
@@ -456,6 +457,32 @@ def test_a_retry_is_a_whole_new_claim_and_never_activates_around_a_failed_write(
         whole_claim_retry("material-2", previous_material="material-1",
                           challenge_id="challenge-2", previous_challenge_id="challenge-1",
                           write=FAILED_WRITE)
+
+
+# [utest->req~grants-anon-retry-whole-claim~1]
+def test_a_web_retry_brings_fresh_material_and_has_no_device_bit_write_to_confirm():
+    # The web branch's exhausted Cloudflare or Firebase step is retried as a whole new claim with
+    # a fresh operation challenge and fresh platform proof material. It carries no per-device bit,
+    # so there is no vendor write confirmation to wait for.
+    fresh = whole_claim_retry("turnstile-token-2", branch=ClaimBranch.web,
+                              previous_material="turnstile-token-1",
+                              challenge_id="challenge-2", previous_challenge_id="challenge-1")
+    assert fresh == "turnstile-token-2"
+    for step in (RetryableStep.cloudflare_validation,
+                 RetryableStep.web_firebase_provider_data):
+        outcome = verification_temporarily_unavailable_outcome(STEP_EXHAUSTED_CONDITION[step],
+                                                              retry_budget_exhausted=True)
+        assert outcome.client_class is ClientErrorClass.verification_temporarily_unavailable
+    # A web retry claiming a per-device bit write is a contradiction, and the native branches
+    # still need theirs confirmed.
+    with pytest.raises(GrantFailureError):
+        whole_claim_retry("turnstile-token-2", branch=ClaimBranch.web,
+                          previous_material="turnstile-token-1", challenge_id="challenge-2",
+                          previous_challenge_id="challenge-1", write=CONFIRMED_WRITE)
+    with pytest.raises(DeviceBitWriteError):
+        whole_claim_retry("material-2", branch=ClaimBranch.native_android,
+                          previous_material="material-1", challenge_id="challenge-2",
+                          previous_challenge_id="challenge-1")
 
 
 # [utest->req~grants-anon-retry-not-bounded-by-expiry~1]
@@ -898,6 +925,9 @@ def test_the_safe_native_and_web_paths_are_not_vulnerable():
     # persists a raw vendor token or a synthetic device principal hash
     {"persisted_columns": ["devicecheck_token"]},
     {"persisted_columns": ["device_principal_hash"]},
+    # treats the device check or the bot check as account-ownership proof
+    {"proof_use": ProofUse.ownership},
+    {"proof_use": ProofUse.identity},
     # omits the (user, grant source) uniqueness domain
     {"uniqueness_domains": []},
     # creates multiple active free grants for the same user
@@ -919,6 +949,22 @@ def test_each_vulnerability_condition_is_refused(overrides: dict[str, Any]):
     with pytest.raises((GrantFailureError, FreeGrantError, DeviceBitWriteError,
                         InvariantError)):
         assert_not_vulnerable(ClaimBranch.native_ios, **arguments)
+
+
+# [utest->req~grants-accepted-limitations-vulnerability-conditions~1]
+@pytest.mark.parametrize("use", [use for use in ProofUse if use is not ProofUse.anti_abuse_gate])
+def test_the_device_and_bot_checks_are_never_account_ownership_proof(use: ProofUse):
+    # The material is anti-abuse device state and nothing else: every other use of it — identity,
+    # ownership, recovery, upgrade, account resolution — is refused on both branches.
+    for branch, write in ((ClaimBranch.native_ios, CONFIRMED_WRITE), (ClaimBranch.web, None)):
+        with pytest.raises((GrantFailureError, InvariantError)):
+            assert_not_vulnerable(branch,
+                                  device_state_read=True, write=write,
+                                  web_binding_verified=True, bot_gate_verified=True,
+                                  proof_use=use,
+                                  persisted_columns=["grant_id"],
+                                  uniqueness_domains=["user_grant_source",
+                                                      "web_anonymous_gate_provider_account"])
 
 
 # [utest->req~grants-accepted-limitations-vulnerability-conditions~1]

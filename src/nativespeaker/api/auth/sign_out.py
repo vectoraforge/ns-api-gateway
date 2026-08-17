@@ -7,8 +7,9 @@ success only when Firebase confirmed the revocation.
 
 Per-device sign-out is not here because it does not exist as a backend operation: an ID token is
 stateless and Firebase revocation acts on the whole subject, so signing out one device is a purely
-local client action. The client responsibilities and the accepted residual risks the endpoint
-carries are written down here too, because they are the contract the endpoint is judged against.
+local client action. The accepted residual risks the endpoint carries are written down here too,
+because they are the contract the endpoint is judged against; the client-side sign-out
+responsibilities are the client app's and are not modelled here.
 """
 
 import asyncio
@@ -22,6 +23,7 @@ import structlog
 from nativespeaker.api.auth.audit import (
     AuthActor,
     AuthAttempt,
+    AuthAuditWriter,
     AuthEvent,
     AuthEventResult,
     RevocationErrorCategory,
@@ -85,13 +87,11 @@ def sign_out_endpoint() -> tuple[str, str]:
     return SIGN_OUT_ENDPOINTS[0]
 
 
-# What a current-device sign-out calls on the backend: nothing.
+# What a current-device sign-out calls on the backend: nothing. What the client clears locally
+# when it does that is the client app's own contract, not this backend's — see the client
+# responsibilities note below.
 # [impl->req~sessions-no-per-device-backend-sign-out~1]
-# [impl->req~sessions-client-local-sign-out~1]
 LOCAL_SIGN_OUT_BACKEND_CALLS: tuple[tuple[str, str], ...] = ()
-
-# What a current-device sign-out clears, locally and only locally.
-LOCAL_SIGN_OUT_CLEARS: tuple[str, ...] = ("local_client_session_state", "local_idp_session")
 
 
 # --- The endpoint's purpose and its preconditions -------------------------------------------------
@@ -504,6 +504,10 @@ def assert_one_row_per_attempt(attempt: AuthAttempt) -> AuthAttempt:
         raise SignOutError("sign-out-all is on the audited attempt path from the route match")
     if is_challenge_bearing(SIGN_OUT_ALL_OPERATION) or supports_prepare(SIGN_OUT_ALL_OPERATION):
         raise SignOutError("sign-out-all is challenge-free and has no prepare phase")
+    # Exactly one row per attempt: an attempt that already wrote its row owes no second one, and
+    # the shared writer's own claim is what this reads, so there is no second counter of rows.
+    if attempt.audited:
+        raise SignOutError("this attempt already wrote its one audit.auth_events row")
     assert_no_backend_quota()
     return attempt
 
@@ -586,116 +590,13 @@ def anonymous_revocation_consequence(
 
 # --- Client responsibilities ----------------------------------------------------------------------
 
-
-class ClientSignOutScope(StrEnum):
-    """The two things a user can mean by "sign out"."""
-    current_device = "current_device"
-    everywhere = "everywhere"
-
-
-@dataclass(frozen=True, slots=True)
-class ClientSignOutPlan:
-    """What the client does for one sign-out request: which backend call it makes, what it clears,
-    and whether the clearing waits for that call to succeed."""
-    backend_call: tuple[str, str] | None
-    clears: tuple[str, ...]
-    clear_after_success: bool
-    warning: str | None = None
-
-
-# The warning an anonymous session gets before it signs out everywhere. Anonymous revocation is a
-# one-way door, so the user is told what it costs and what prevents it.
-# [impl->req~sessions-client-anonymous-sign-out-warning~1]
-ANONYMOUS_SIGN_OUT_WARNING = (
-    "signing out everywhere permanently ends access to this account's chat history and credits "
-    "on every device; registering with Google or Apple first keeps them")
-
-
-def client_sign_out_plan(scope: ClientSignOutScope,
-                         *,
-                         provider: IdentityProvider = IdentityProvider.anonymous
-                         ) -> ClientSignOutPlan:
-    """The client's sign-out contract.
-
-    Current-device sign-out clears local client session state and the local IDP session and calls
-    no backend endpoint — for an anonymous session as for any other. Sign-out everywhere calls
-    `POST /auth/sign-out-all` and clears that same local state only after that call returns
-    success, and an anonymous session is warned first.
-    """
-    # [impl->req~sessions-client-local-sign-out~1]
-    # [impl->req~sessions-client-anonymous-local-sign-out~1]
-    if scope is ClientSignOutScope.current_device:
-        if LOCAL_SIGN_OUT_BACKEND_CALLS:
-            raise SignOutError("current-device sign-out calls no backend endpoint")
-        return ClientSignOutPlan(backend_call=None,
-                                 clears=LOCAL_SIGN_OUT_CLEARS,
-                                 clear_after_success=False)
-    # Sign-out everywhere: the one endpoint first, the local clearing only on its success, and an
-    # anonymous session warned before it calls at all.
-    # [impl->req~sessions-client-sign-out-everywhere-order~1]
-    # [impl->req~sessions-client-anonymous-sign-out-warning~1]
-    warning = (ANONYMOUS_SIGN_OUT_WARNING if provider is IdentityProvider.anonymous else None)
-    return ClientSignOutPlan(backend_call=sign_out_endpoint(),
-                             clears=LOCAL_SIGN_OUT_CLEARS,
-                             clear_after_success=True,
-                             warning=warning)
-
-
-class ClientSignOutDisposition(StrEnum):
-    """What the client does with the response to `POST /auth/sign-out-all`."""
-    signed_out_everywhere = "signed_out_everywhere"
-    unconfirmed_retryable = "unconfirmed_retryable"
-    account_unavailable_terminal = "account_unavailable_terminal"
-
-
-@dataclass(frozen=True, slots=True)
-class ClientSignOutOutcome:
-    """The client's disposition, and the four decisions that hang off it."""
-    disposition: ClientSignOutDisposition
-    keep_credential: bool
-    may_retry: bool
-    report_signed_out_everywhere: bool
-    local_only_must_be_labeled: bool = False
-
-
-def client_sign_out_outcome(*, success: bool,
-                            client_class: str | None = None) -> ClientSignOutOutcome:
-    """What the client does with each response.
-
-    On success it may report sign-out everywhere and clear its local state. On `account_unavailable`
-    the terminal contract for that class applies here as on every other authenticated route: the
-    client discards its stored tokens and credentials, stops refresh attempts and further
-    authenticated calls, shows the account-unavailable state, and never offers sign-out everywhere
-    as a recovery — so it neither retries nor keeps the credential. On any other non-success
-    response it keeps the current credential, reports that the sign-out could not be confirmed and
-    can be retried, and never reports that the user is signed out everywhere; a local-only
-    sign-out offered alongside it must be labeled local-only and say that global revocation was
-    not confirmed.
-    """
-    # [impl->req~sessions-client-non-success-sign-out-handling~1]
-    # [impl->req~sessions-client-account-unavailable-terminal~1]
-    if success:
-        if client_class is not None:
-            raise SignOutError("a success carries no client-visible error class")
-        return ClientSignOutOutcome(
-            disposition=ClientSignOutDisposition.signed_out_everywhere,
-            keep_credential=True, may_retry=False, report_signed_out_everywhere=True)
-    if client_class == ClientErrorClass.account_unavailable:
-        return ClientSignOutOutcome(
-            disposition=ClientSignOutDisposition.account_unavailable_terminal,
-            keep_credential=False, may_retry=False, report_signed_out_everywhere=False)
-    return ClientSignOutOutcome(
-        disposition=ClientSignOutDisposition.unconfirmed_retryable,
-        keep_credential=True, may_retry=True, report_signed_out_everywhere=False,
-        local_only_must_be_labeled=True)
-
-
-def account_unavailable_offers_sign_out_everywhere() -> bool:
-    """Whether the account-unavailable state may offer sign-out everywhere as a recovery: it may
-    not. The class is terminal, and this endpoint is one of the calls it stops."""
-    # [impl->req~sessions-client-account-unavailable-terminal~1]
-    return False
-
+# The sign-out client responsibilities in `01-sessions-and-identity-resolution.md` — the
+# current-device local sign-out, the sign-out-everywhere ordering, the non-success and
+# `account_unavailable` handling, and the anonymous warnings — are obligations of the client app.
+# They are implemented in `ns-ios`, which is outside this repository's traced scope, and no
+# backend behavior reads them, so they carry no coverage tag here: a Python model of them would
+# only be somewhere to put a tag, and regressing the real client would not fail it. The six ids
+# are recorded on the blocked list instead.
 
 # --- Accepted risk --------------------------------------------------------------------------------
 
@@ -775,14 +676,16 @@ async def sign_out_all(integrations: FirebaseIntegrations,
                        actor: AuthActor,
                        request_id: str,
                        audit_attempt: AuthAttempt,
+                       audit: AuthAuditWriter,
                        revoker: RefreshTokenRevoker = _firebase_revoke,
                        max_attempts: int = MAX_REVOCATION_ATTEMPTS) -> SignOutAllResult:
     """The three steps, in order: revoke, audit the observed outcome, then return success only on
     a confirmed revocation.
 
     Sign-out everywhere maps onto the external IDP and onto nothing else, so no business state
-    changes here and no revocation state is stored. The audit row is built before the response is
-    returned, on every outcome.
+    changes here and no revocation state is stored. The attempt's single row is appended through
+    the shared audit writer before the response is returned, on every outcome; the writer's own
+    per-attempt claim is what makes a second row for one attempt impossible.
     """
     # [impl->req~sessions-api-sign-out-all-canonical-operation~1]
     # [impl->req~sessions-api-sign-out-all-purpose~1]
@@ -793,11 +696,23 @@ async def sign_out_all(integrations: FirebaseIntegrations,
     # [impl->req~sessions-sign-out-all-step-02~1]
     event = sign_out_all_attempt_event(actor=actor, request_id=request_id, attempt=attempt)
     assert_no_business_mutation()
+    # The endpoint opens no consuming or mutating transaction — it mutates no business state — so
+    # the row is the standalone durable write of this attempt's own transaction, awaited here
+    # rather than deferred, and it is claimed against the attempt so no second row can follow.
+    # [impl->req~sessions-sign-out-all-step-02~1]
+    # [impl->req~sessions-api-sign-out-all-audit-row~1]
+    # [impl->req~sessions-api-sign-out-all-canonical-operation~1]
     if event.result is AuthEventResult.revocation_unconfirmed:
         logger.warning("sign_out_all_revocation_unconfirmed",
                        operation=str(SIGN_OUT_ALL_OPERATION),
                        error_category=str(attempt.error_category),
                        calls=attempt.calls)
+        # A failing audit write is logged loudly and the client still receives the unconfirmed
+        # outcome this attempt earned rather than a different one.
+        await audit.record_rejection(audit_attempt, event,
+                                     sign_out_all_failure(attempt.outcome))
+    else:
+        await audit.write_standalone(audit_attempt, event)
     # Step three: the client sees success exactly when the row says `succeeded`, which is exactly
     # when Firebase confirmed the revocation. The two can never disagree.
     # [impl->req~sessions-sign-out-all-step-03~1]

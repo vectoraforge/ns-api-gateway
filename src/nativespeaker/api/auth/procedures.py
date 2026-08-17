@@ -35,6 +35,7 @@ from nativespeaker.api.auth.barrier import (
     VerifiedIdentityContext,
     barrier_result_for,
 )
+from nativespeaker.api.auth.challenge_transport import assert_prepare_response_safe
 from nativespeaker.api.auth.challenges import (
     ChallengeError,
     ChallengeRow,
@@ -306,6 +307,14 @@ class SharedChallengeService:
         # [impl->req~shared-prepare-step-08~1]
         response = PrepareResponse(challenge_id=row.challenge_id, expires_at=row.expires_at)
         assert_nothing_serialized(response, row)
+        # The one secret capability handle leaves the backend in this body and nowhere else, and
+        # the response it leaves in is uncacheable: the transport rules run on the prepare path
+        # itself, so a prepare response that lost `Cache-Control: no-store` fails here rather
+        # than shipping a cacheable capability. `prepare_response_headers()` is the header set
+        # the response layer sends with this body.
+        # [impl->req~sessions-challenge-transport-body-only~1]
+        # [impl->req~sessions-challenge-transport-no-store~1]
+        assert_prepare_response_safe(response, row)
 
         # 9. no business-state mutation: prepare never opens the consuming transaction and never
         # reaches the endpoint's live-state or mutation hooks.

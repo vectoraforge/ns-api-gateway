@@ -22,6 +22,12 @@ from nativespeaker.api.auth.barrier import (
     ResolvedIdentity,
     VerifiedIdentityContext,
 )
+from nativespeaker.api.auth.challenge_transport import (
+    CACHE_CONTROL_HEADER,
+    NO_STORE,
+    TransportError,
+    prepare_response_headers,
+)
 from nativespeaker.api.auth.challenges import (
     CHALLENGE_TTL_SECONDS,
     ChallengeError,
@@ -527,6 +533,26 @@ class TestPrepareMode:
         row = h.store.only()
         assert response.model_dump() == {"challenge_id": row.challenge_id,
                                          "expires_at": row.expires_at}
+
+    # The prepare path the backend actually runs is what carries the challenge-transport rules:
+    # the handle leaves in this body alone, and the response it leaves in is `no-store`.
+    # [utest->req~sessions-challenge-transport-no-store~1]
+    # [utest->req~sessions-challenge-transport-body-only~1]
+    async def test_the_prepare_path_itself_refuses_a_cacheable_prepare_response(self, h,
+                                                                               monkeypatch):
+        endpoint = h.endpoint(AuthOperation.claim_anonymous_grant)
+        response = await h.service.prepare(AuthOperation.claim_anonymous_grant, None,
+                                           linked_context(), endpoint)
+        row = h.store.only()
+        assert response.challenge_id == row.challenge_id
+        assert prepare_response_headers()[CACHE_CONTROL_HEADER] == NO_STORE
+        # A prepare response layer that lost `no-store` fails the prepare path itself rather than
+        # shipping a cacheable capability handle.
+        monkeypatch.setattr("nativespeaker.api.auth.challenge_transport.prepare_response_headers",
+                            lambda headers=None: {CACHE_CONTROL_HEADER: "private, max-age=60"})
+        with pytest.raises(TransportError):
+            await h.service.prepare(AuthOperation.claim_anonymous_grant, None, linked_context(),
+                                    h.endpoint(AuthOperation.claim_anonymous_grant))
 
     # [utest->req~shared-prepare-step-09~1]
     async def test_prepare_mutates_no_business_state(self, h):

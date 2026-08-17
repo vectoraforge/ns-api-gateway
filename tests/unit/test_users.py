@@ -1,3 +1,4 @@
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -5,12 +6,16 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import nativespeaker.api.routers.users as users_module
-from nativespeaker.api.app.dependencies import get_current_user, get_db
+from nativespeaker.api.app.dependencies import (
+    get_current_user,
+    get_db,
+    get_identity_context,
+)
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth import UserIdentity
 from nativespeaker.api.models import SubscriptionPlan, User
 from nativespeaker.api.routers import users_router
-from unit.conftest import TEST_GRANT
+from unit.conftest import TEST_GRANT, TEST_IDENTITY, store_tokens_db
 
 
 class TestGetUsersMe:
@@ -43,7 +48,9 @@ class TestGetUsersMe:
         )
 
         with (patch.object(users_module, "UsageDB") as MockUsageDB,
-              patch.object(users_module, "GrantsDB") as MockGrantsDB):
+              patch.object(users_module, "GrantsDB") as MockGrantsDB,
+              patch.object(users_module, "StorePurchaseTokensDB",
+                           return_value=store_tokens_db())):
             mock_instance = MagicMock()
             mock_instance.get_usage = AsyncMock(return_value=0)
             MockUsageDB.return_value = mock_instance
@@ -55,6 +62,8 @@ class TestGetUsersMe:
             app.include_router(users_router)
             register_exception_handlers(app)
             app.dependency_overrides[get_current_user] = lambda: nameless_user
+            app.dependency_overrides[get_identity_context] = lambda: replace(
+                TEST_IDENTITY, user_id=nameless_user.id)
             app.dependency_overrides[get_db] = lambda: MagicMock()
 
             with TestClient(app, raise_server_exceptions=False) as test_client:

@@ -20,7 +20,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, SecretStr
 
-from nativespeaker.api.auth.audit import AuthEventResult
+from nativespeaker.api.auth.audit import AuthEvent, AuthEventResult
 from nativespeaker.api.auth.challenges import ClaimOutcome, claim_failure_result
 from nativespeaker.api.auth.entitlement import AccessGrantSource
 from nativespeaker.api.auth.external_identities import NativeClaimPlatform
@@ -111,7 +111,15 @@ for _result, _class in _CLAIM_PATH_CLASSES.items():
 
 class ClaimRejection(ServiceError):
     """A free-grant claim rejection, carrying the audited internal result and the class that
-    result surfaces as. The internal value never reaches the client."""
+    result surfaces as. The internal value never reaches the client.
+
+    `audit` is the rejected attempt's single `audit.auth_events` event where the rejection was
+    taken inside a consuming transaction that appended one, and `audit_details` the non-secret
+    detail a rejection resolved before it was taken.
+    """
+
+    audit: AuthEvent | None = None
+    audit_details: dict[str, Any] | None = None
 
     def __init__(self, result: AuthEventResult, message: str = ""):
         client_class, status = surface(result)
@@ -417,6 +425,16 @@ class NativeClaimLedger:
         self.steps: list[NativeClaimStep] = []
         self.budget = budget
         self.provider_calls: list[ProviderCall] = []
+        # Whether this claim's platform carries durable device state at all. Android releases the
+        # checked-in policy classes `no_device_recall` carry no registered-claimed bit, so the
+        # vendor read records that here for the claim to read: there is then nothing to write.
+        self.durable_bit_participates: bool = True
+
+    def record_bit_participation(self, participates: bool) -> None:
+        """The vendor read's finding about this platform's durable device state, recorded on the
+        attempt rather than on the adapter, so nothing about one attempt leaks into another."""
+        # [impl->req~grants-reg-rule-device-checked-kinds-bit~1]
+        self.durable_bit_participates = participates
 
     def dispatch(self, call: ProviderCall, run: Callable[[AttemptPlan | None], Any]) -> Any:
         """Dispatch one outbound vendor call under its own budget. The unit is checked and
@@ -475,10 +493,23 @@ class NativeClaimLedger:
         if self.budget is not None and self.budget.admission is not None and bit is not None:
             self.budget.admission.vendor_device_bit_call(bit)
 
+    def sequence(self) -> tuple[NativeClaimStep, ...]:
+        """This attempt's mandatory step sequence. It is the full read-check-write-confirm
+        sequence, minus the vendor write on a platform that carries no durable device state to
+        write — an Android release the checked-in policy classes `no_device_recall`, whose claim
+        rests on the account-level rules alone."""
+        # [impl->req~proof-native-claim-sequence-mandatory~1]
+        # [impl->req~grants-reg-rule-device-checked-kinds-bit~1]
+        if self.durable_bit_participates:
+            return NATIVE_CLAIM_SEQUENCE
+        return tuple(step for step in NATIVE_CLAIM_SEQUENCE
+                     if step is not NativeClaimStep.vendor_write)
+
     # [impl->req~proof-native-claim-sequence-mandatory~1]
     def record(self, step: NativeClaimStep) -> None:
         position = len(self.steps)
-        if position >= len(NATIVE_CLAIM_SEQUENCE) or NATIVE_CLAIM_SEQUENCE[position] is not step:
+        sequence = self.sequence()
+        if position >= len(sequence) or sequence[position] is not step:
             raise ProofAdapterError(
                 f"{step} cannot run after {self.steps}: the native claim sequence is mandatory")
         self.steps.append(step)
@@ -542,11 +573,14 @@ def assert_vendor_state_access(operation: AuthOperation) -> None:
 
 @dataclass(frozen=True, slots=True)
 class NativeClaimOutcome:
-    """What one completed native claim produced."""
+    """What one completed native claim produced. `write` is `None` only where the platform
+    carries no durable device state to write at all — an Android release the checked-in policy
+    classes `no_device_recall` on the registered claim — so the claim rested on the account-level
+    rules alone."""
     operation: AuthOperation
     platform: DevicePlatform
     state: ClaimState
-    write: DeviceBitWrite
+    write: DeviceBitWrite | None
     grant_id: UUID
 
 
@@ -596,10 +630,12 @@ def native_claim(adapter: DeviceStateAdapter,
                              "the per-user database eligibility checks failed")
 
     # [impl->req~proof-native-claim-vendor-write-gate~1]
-    write = adapter.write_claimed(operation, material, ledger)
-    # The one guard for "a grant row sits behind a vendor-confirmed write" lives in
-    # `ratelimit/ordering.py`; this path calls it rather than restating the rule.
-    assert_grant_row_permitted(write)
+    write: DeviceBitWrite | None = None
+    if ledger.durable_bit_participates:
+        write = adapter.write_claimed(operation, material, ledger)
+        # The one guard for "a grant row sits behind a vendor-confirmed write" lives in
+        # `ratelimit/ordering.py`; this path calls it rather than restating the rule.
+        assert_grant_row_permitted(write)
 
     # [impl->req~proof-native-claim-insert-grant~1]
     ledger.record(NativeClaimStep.insert_grant)
@@ -1128,8 +1164,12 @@ class PlayIntegrityAdapter:
         verdict = self._decoded_verdict(material, ledger)
         if not self.recall_required(operation, verdict):
             # This release is classed `no_device_recall`: the registered claim carries no recall
-            # state to consult, and the device has consumed no recall slot.
+            # state to consult, the device has consumed no recall slot, and there is no bit to
+            # write afterwards either — the claim rests on the account-level rules alone.
+            # [impl->req~grants-reg-rule-device-checked-kinds-bit~1]
+            ledger.record_bit_participation(False)
             return False
+        ledger.record_bit_participation(True)
         recall = verdict.get("deviceRecall")
         if not isinstance(recall, Mapping) or str(state) not in recall:
             raise ProofRejected("the decoded Play Integrity verdict carries no Device Recall")
@@ -1145,6 +1185,11 @@ class PlayIntegrityAdapter:
         # [impl->req~proof-android-recall-write-gate~1]
         self._assert_mandatory(operation)
         ledger.require(NativeClaimStep.database_eligibility)
+        if not ledger.durable_bit_participates:
+            # A `no_device_recall` release carries no registered-claimed bit, so there is nothing
+            # here to write and no recall slot to burn.
+            # [impl->req~grants-reg-rule-device-checked-kinds-bit~1]
+            raise ProofAdapterError("a no_device_recall release carries no bit to write")
         ledger.record(NativeClaimStep.vendor_write)
         state = recall_state_for(operation)
 

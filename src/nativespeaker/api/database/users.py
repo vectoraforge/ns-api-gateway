@@ -1,10 +1,12 @@
 from datetime import UTC, datetime
-from uuid import uuid7
+from uuid import UUID, uuid7
 
+from sqlalchemy import text
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth import UserIdentity
+from nativespeaker.api.auth.invariants import StoreProvider
 from nativespeaker.api.auth.operations import IdentityProvider
 from nativespeaker.api.auth.profile import assert_user_created_with_identity
 from nativespeaker.api.models import User
@@ -58,3 +60,27 @@ class UsersDB:
             select(User).where(User.id == user_id)
         )
         return result.first()
+
+
+# The user's persisted purchase-attribution tokens, one row per store provider. `GET /users/me`
+# reads them and creates nothing: the rows are minted once, in the create-user transaction.
+SELECT_STORE_PURCHASE_TOKENS = text("""
+    SELECT provider, identity_value
+      FROM core.store_purchase_tokens
+     WHERE user_id = :user_id
+""")
+
+
+class StorePurchaseTokensDB:
+    """The `core.store_purchase_tokens` read behind `GET /users/me`."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def tokens_for(self, user_id: UUID) -> dict[StoreProvider, str]:
+        """The user's stored attribution token per store provider. A store with no row is simply
+        absent here; whether that is an invariant failure is the endpoint's decision, not this
+        read's."""
+        # [impl->req~sessions-users-me-step-02~1]
+        result = await self.session.execute(SELECT_STORE_PURCHASE_TOKENS, {"user_id": user_id})
+        return {StoreProvider(row.provider): row.identity_value for row in result.all()}

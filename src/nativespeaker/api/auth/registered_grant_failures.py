@@ -12,7 +12,7 @@ are `grant_failures`', and the operation's rules are `registered_grants`'. This 
 second copy of any of them.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -20,7 +20,11 @@ from typing import Any
 
 from nativespeaker.api.auth.audit import AuthEventResult
 from nativespeaker.api.auth.entitlement import AccessGrantSource
-from nativespeaker.api.auth.external_identities import REGISTERED_PROVIDERS, ExternalIdentityRow
+from nativespeaker.api.auth.external_identities import (
+    REGISTERED_PROVIDERS,
+    ExternalIdentityRow,
+    ProviderLookupFailedError,
+)
 from nativespeaker.api.auth.free_grants import (
     FreeGrantError,
     FreeGrantRejected,
@@ -48,7 +52,12 @@ from nativespeaker.api.auth.proof_adapters import (
     ClaimRejection,
     stranded_slot_remediation,
 )
-from nativespeaker.api.auth.proof_endpoints import UPGRADE_IS_IN_PLACE, ClaimBranch
+from nativespeaker.api.auth.proof_endpoints import (
+    UPGRADE_IS_IN_PLACE,
+    ClaimBranch,
+    GateDenied,
+    web_anonymous_grant_gate,
+)
 from nativespeaker.api.auth.registered_grants import (
     ACCOUNT_LAYER_BINDINGS,
     DEVICE_CHECKED_KINDS,
@@ -90,8 +99,10 @@ class RegClaimCondition(StrEnum):
     android_registered_recall_set = "android_registered_recall_set"
     registered_gate_consumed = "registered_gate_consumed"
     device_check_vendor_outage = "device_check_vendor_outage"
+    registered_bit_write_failed = "registered_bit_write_failed"
     firebase_provider_data_unavailable = "firebase_provider_data_unavailable"
     firebase_user_not_found = "firebase_user_not_found"
+    turnstile_denied = "turnstile_denied"
     turnstile_dependency_failed = "turnstile_dependency_failed"
     incomplete_platform_proof_set = "incomplete_platform_proof_set"
     evidence_set_shape_invalid = "evidence_set_shape_invalid"
@@ -167,6 +178,15 @@ REG_FAILURES: dict[RegClaimCondition, RegFailure] = {
         RegClaimCondition.device_check_vendor_outage, AuthEventResult.native_claim_unavailable,
         ClientErrorClass.verification_temporarily_unavailable, retryable=True,
         after_retry_budget=True),
+    # A pre-activation registered-bit *write* whose budget is spent is the distinct write result:
+    # only the write case can have burned the device slot, and it is the one the burned-slot
+    # `manual`-grant remediation points at. The client class is the same as the read's.
+    # [impl->req~grants-reg-class-verification-temporarily-unavailable~1]
+    # [impl->req~grants-reg-retry-budget-exhausted~1]
+    RegClaimCondition.registered_bit_write_failed: RegFailure(
+        RegClaimCondition.registered_bit_write_failed, AuthEventResult.native_claim_write_failed,
+        ClientErrorClass.verification_temporarily_unavailable, retryable=True,
+        after_retry_budget=True),
     # [impl->req~grants-reg-class-verification-temporarily-unavailable~1]
     RegClaimCondition.firebase_provider_data_unavailable: RegFailure(
         RegClaimCondition.firebase_provider_data_unavailable,
@@ -178,6 +198,13 @@ REG_FAILURES: dict[RegClaimCondition, RegFailure] = {
     RegClaimCondition.firebase_user_not_found: RegFailure(
         RegClaimCondition.firebase_user_not_found, AuthEventResult.firebase_user_unresolved,
         ClientErrorClass.auth_required, durable=True),
+    # A Turnstile denial — invalid, expired, duplicate or replayed token, or a hostname mismatch
+    # — is the web kind's unsatisfied sign-in gate: a durable `verification_required` rejection,
+    # never the structural `operation_not_allowed` a *structural* policy block takes.
+    # [impl->req~grants-reg-gate-resolve-claim-kind~1]
+    RegClaimCondition.turnstile_denied: RegFailure(
+        RegClaimCondition.turnstile_denied, AuthEventResult.policy_rejected,
+        ClientErrorClass.verification_required, durable=True),
     # A Cloudflare Turnstile dependency failure records the class value itself as the result.
     # [impl->req~grants-reg-class-verification-temporarily-unavailable~1]
     RegClaimCondition.turnstile_dependency_failed: RegFailure(
@@ -430,9 +457,9 @@ class RegRetryableStep(StrEnum):
 # [impl->req~grants-reg-retry-budget-exhausted~1]
 REG_STEP_EXHAUSTED: dict[RegRetryableStep, RegClaimCondition] = {
     RegRetryableStep.devicecheck_read: RegClaimCondition.device_check_vendor_outage,
-    RegRetryableStep.devicecheck_write: RegClaimCondition.device_check_vendor_outage,
+    RegRetryableStep.devicecheck_write: RegClaimCondition.registered_bit_write_failed,
     RegRetryableStep.device_recall_read: RegClaimCondition.device_check_vendor_outage,
-    RegRetryableStep.device_recall_write: RegClaimCondition.device_check_vendor_outage,
+    RegRetryableStep.device_recall_write: RegClaimCondition.registered_bit_write_failed,
     RegRetryableStep.firebase_provider_data:
         RegClaimCondition.firebase_provider_data_unavailable,
     RegRetryableStep.turnstile_validation: RegClaimCondition.turnstile_dependency_failed,
@@ -655,23 +682,44 @@ def device_state_set_closure(kind: ClaimBranch) -> tuple[AuthEventResult, Client
 
 
 def web_stored_binding_closure(row: ExternalIdentityRow,
+                               provider_data: Sequence[object] | None,
                                *,
-                               classifier_passed: bool,
-                               live_provider_matches: bool,
-                               live_uid_matches: bool) -> ClientErrorClass:
+                               lookup_failure: ProviderLookupFailedError | None = None
+                               ) -> ClientErrorClass:
     """On web, the claimant's stored provider must be `google` or `apple` and the complete live
     `providerData` result must pass the closed classifier with the classified provider and sole
     entry's non-empty `uid` equal to the stored provider and stored `provider_uid`. An empty,
     invalid-shape or mismatching result follows the durable `verification_required` unsatisfied
-    sign-in-gate path rather than the alternate path's duplicate branch."""
+    sign-in-gate path rather than the alternate path's duplicate branch.
+
+    The rule itself belongs to the web anonymous-grant gate, so this runs that gate rather than
+    re-deciding it from booleans — which is also what keeps a *lookup failure* on its own
+    transient path instead of collapsing into the durable sign-in-gate class.
+    """
     # [impl->req~grants-alt-cond-web-stored-binding~1]
-    if (row.provider not in REGISTERED_PROVIDERS or not row.provider_uid
-            or not (classifier_passed and live_provider_matches and live_uid_matches)):
-        failure = classify_anonymous_failure(AnonFailureCondition.web_stored_binding_mismatch)
-        if failure.client_class is not ClientErrorClass.verification_required:
-            raise GrantFailureError("an unsatisfied web sign-in gate is verification_required")
-        return failure.client_class
+    if row.provider not in REGISTERED_PROVIDERS or not row.provider_uid:
+        return _unsatisfied_web_sign_in_gate()
+    try:
+        web_anonymous_grant_gate(row, provider_data, lookup_failure=lookup_failure)
+    except GateDenied:
+        return _unsatisfied_web_sign_in_gate()
+    except ProviderLookupFailedError as failed:
+        # An indeterminate or failed Admin lookup keeps its own class: it is not an empty,
+        # invalid-shape or mismatching result and never reads as the durable sign-in-gate denial.
+        if failed.client_class is ClientErrorClass.verification_required:
+            raise GrantFailureError("a failed lookup is no unsatisfied sign-in gate") from None
+        return ClientErrorClass(failed.client_class)
     return ClientErrorClass.device_grant_exhausted
+
+
+def _unsatisfied_web_sign_in_gate() -> ClientErrorClass:
+    """The one class an unsatisfied web sign-in gate takes, read from the anonymous condition
+    table that owns it."""
+    # [impl->req~grants-alt-cond-web-stored-binding~1]
+    failure = classify_anonymous_failure(AnonFailureCondition.web_stored_binding_mismatch)
+    if failure.client_class is not ClientErrorClass.verification_required:
+        raise GrantFailureError("an unsatisfied web sign-in gate is verification_required")
+    return failure.client_class
 
 
 def web_gate_conflict_closure() -> tuple[AuthEventResult, ClientErrorClass]:
@@ -807,6 +855,18 @@ def registered_failure_rejection(condition: RegClaimCondition,
     return RegisteredRejection(status=rejection.status, body=dict(rejection.body),
                                headers=rejection.headers, audit_result=rejection.audit_result,
                                client_class=rejection.client_class)
+
+
+def registered_condition_rejected(condition: RegClaimCondition,
+                                  message: str = "") -> FreeGrantRejected:
+    """The exception one registered-claim condition raises, carrying the audited internal result
+    and the class the condition table pairs with it — so the class the client sees and the class
+    anything re-deriving it from the audited result computes are the same one."""
+    # [impl->req~grants-reg-failure-classes~1]
+    failure = classify_registered_failure(condition)
+    return FreeGrantRejected(failure.result, failure.client_class.value,
+                             message or str(condition),
+                             status_code=remediation_for(failure.client_class).http_status)
 
 
 def registered_claim_rejected(result: AuthEventResult, message: str = "") -> FreeGrantRejected:

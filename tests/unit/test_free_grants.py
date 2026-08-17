@@ -24,6 +24,7 @@ from nativespeaker.api.auth.external_identities import (
     ExternalIdentityRow,
     IdentityState,
     NativeClaimPlatform,
+    pin_native_claim_platform,
 )
 from nativespeaker.api.auth.free_grants import (
     ANONYMOUS_CLAIM_STEPS,
@@ -53,6 +54,7 @@ from nativespeaker.api.auth.free_grants import (
     DeviceGrantState,
     FreeGrantError,
     FreeGrantRejected,
+    WebGateRead,
     android_anonymous_path_available,
     android_gate,
     anonymous_claim_source,
@@ -72,6 +74,7 @@ from nativespeaker.api.auth.free_grants import (
     assert_no_raw_attestation_tokens,
     assert_no_raw_cloudflare_tokens,
     assert_no_raw_device_ids,
+    assert_pinned_platform_matches,
     assert_postgres_does_not_store,
     assert_provider_account_id_store,
     assert_vendor_state_not_client_supplied,
@@ -102,6 +105,7 @@ from nativespeaker.api.auth.free_grants import (
     web_eligible,
     web_hash_provider_component,
 )
+from nativespeaker.api.auth.integration import FirebaseIntegration, FirebaseIntegrations
 from nativespeaker.api.auth.invariants import (
     DevicePlatform,
     GateAlreadyConsumedError,
@@ -132,6 +136,7 @@ from nativespeaker.api.auth.proof_adapters import (
     ReleaseRecallPolicy,
 )
 from nativespeaker.api.auth.proof_endpoints import ClaimBranch, GateDenied, ProofArtifact
+from nativespeaker.api.auth.tokens import InvalidExternalJwtError
 from nativespeaker.api.quota.grants import (
     GrantRow,
     TooManyActiveGrantsError,
@@ -166,6 +171,8 @@ ANDROID_EVIDENCE = ClaimEvidence(play_integrity_token="integrity-token")
 WEB_EVIDENCE = ClaimEvidence(turnstile_token="cf-token")
 GOOGLE_PROVIDER_DATA: list[Any] = [{"providerId": "google.com", "uid": "google-account-1"}]
 FREE_TIER = "free_anonymous"
+ISSUER = "https://securetoken.google.com/test-project"
+OTHER_ISSUER = "https://securetoken.google.com/other-project"
 
 
 # --- fixtures and doubles -----------------------------------------------------------------------
@@ -198,6 +205,43 @@ def context_for(row: ExternalIdentityRow,
     return VerifiedIdentityContext(issuer=row.issuer, subject=row.subject, outcome=outcome,
                                    user_id=row.user_id, external_identity_id=row.id,
                                    provider=row.provider)
+
+
+ADMIN_CLIENT = object()
+
+
+class _Verifier:
+    """The web gate never verifies a token itself; the verifier only makes the integration
+    well-formed."""
+
+    def verify_id_token(self, token: str) -> Any:  # pragma: no cover - never called here
+        raise AssertionError("the web gate verifies no token")
+
+
+def integrations(issuer: str = ISSUER) -> FirebaseIntegrations:
+    return FirebaseIntegrations([FirebaseIntegration(issuer=issuer, project_id="test-project",
+                                                    verifier=_Verifier(),
+                                                    admin_client=ADMIN_CLIENT)])
+
+
+def web_gate_read(row: ExternalIdentityRow,
+                  *,
+                  bot_check: bool = True,
+                  provider_data: list[Any] | None = None,
+                  issuer: str | None = None,
+                  configured: FirebaseIntegrations | None = None,
+                  clients: list[Any] | None = None) -> WebGateRead:
+    """The web branch's gate inputs: the `providerData` read runs through whichever Admin client
+    the request's backend-verified issuer selects, and records it."""
+    def read(client: Any) -> list[Any] | None:
+        if clients is not None:
+            clients.append(client)
+        return GOOGLE_PROVIDER_DATA if provider_data is None else provider_data
+
+    return WebGateRead(row=row, bot_check=lambda: bot_check,
+                       integrations=configured if configured is not None else integrations(),
+                       issuer=issuer if issuer is not None else row.issuer,
+                       read_provider_data=read)
 
 
 def alias_index() -> IdpAccountAliasIndex:
@@ -273,8 +317,8 @@ def run_native_claim(adapter: Any,
     challenge = challenge or FakeChallenge()
     claim = AnonymousGrantClaim()
     claim.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    claim.claim_challenge(challenge)
     claim.resolve_identity(context_for(row), row)
+    claim.claim_challenge(challenge)
     claim.select_branch(evidence, row, verified=verified)
     ledger = NativeClaimLedger()
     claim.read_platform_gate(native=(adapter, material, ledger))
@@ -284,7 +328,8 @@ def run_native_claim(adapter: Any,
     activated = claim.activate(user_id=row.user_id, grant_id=uuid7(), tier_id=FREE_TIER,
                                transaction=transaction,
                                locks=LockLedger(LockingPath.claim_anonymous_grant_completion),
-                               reconfirm=lambda: True, challenge=challenge, write=write, now=NOW)
+                               reconfirm=lambda: True, challenge=challenge, write=write,
+                               identity_row=row, now=NOW)
     return claim, activated
 
 
@@ -300,12 +345,11 @@ def run_web_claim(*,
     challenge = challenge or FakeChallenge()
     claim = AnonymousGrantClaim()
     claim.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    claim.claim_challenge(challenge)
     claim.resolve_identity(context_for(row), row)
+    claim.claim_challenge(challenge)
     claim.select_branch(WEB_EVIDENCE, row, verified=("hostname", "action"))
     reading = claim.read_platform_gate(
-        web=(row, lambda: bot_check,
-             provider_data if provider_data is not None else GOOGLE_PROVIDER_DATA),
+        web=web_gate_read(row, bot_check=bot_check, provider_data=provider_data),
         index=index)
     claim.check_database_eligibility(committed_free_sources=committed)
     transaction = object()
@@ -460,8 +504,8 @@ def test_two_per_device_states_and_the_non_accusatory_exhausted_copy():
 # [utest->req~grants-grant-ordering-two-ledgers~2]
 def test_the_web_ordering_runs_admission_gate_eligibility_then_activation():
     claim, activated = run_web_claim()
-    assert claim.steps == [ClaimStep.admission, ClaimStep.challenge_claim,
-                           ClaimStep.identity_barrier, ClaimStep.branch_selection,
+    assert claim.steps == [ClaimStep.admission, ClaimStep.identity_barrier,
+                           ClaimStep.challenge_claim, ClaimStep.branch_selection,
                            ClaimStep.platform_gate, ClaimStep.database_eligibility,
                            ClaimStep.activation]
     assert activated.alias is not None
@@ -469,9 +513,11 @@ def test_the_web_ordering_runs_admission_gate_eligibility_then_activation():
     # No step may run out of that order: the gate cannot be read before the branch is selected.
     out_of_order = AnonymousGrantClaim()
     out_of_order.admit(pre_consumption_passed=True, handler_admission_passed=True)
+    row = google_row()
+    out_of_order.resolve_identity(context_for(row), row)
     out_of_order.claim_challenge(FakeChallenge())
     with pytest.raises(FreeGrantError):
-        out_of_order.read_platform_gate(web=(google_row(), lambda: True, GOOGLE_PROVIDER_DATA))
+        out_of_order.read_platform_gate(web=web_gate_read(row))
 
 
 # [utest->req~grants-anonymous-exhausted-registered-backstop~1]
@@ -791,28 +837,46 @@ def test_the_android_gate_reads_recall_then_writes_and_awaits_googles_confirmati
 # [utest->req~grants-platform-gate-web~1]
 def test_the_web_gate_classifies_matches_and_derives_with_the_stored_provider():
     row = google_row()
-    account, alias = read_web_gate(row, bot_check=lambda: True,
-                                   provider_data=GOOGLE_PROVIDER_DATA, index=alias_index())
+    clients: list[Any] = []
+    account, alias = read_web_gate(web_gate_read(row, clients=clients), index=alias_index())
     assert account.provider is IdentityProvider.google
     assert account.canonical_provider_account_id == "google-account-1"
     assert alias is not None and alias.key_version == 1
     assert web_hash_provider_component(row, account) is row.provider
+    # The `providerData` result came from the Admin client the request's backend-verified issuer
+    # selected, not from anything the caller handed in.
+    assert clients == [ADMIN_CLIENT]
     # A bot check that does not pass denies the grant before the classifier runs.
     with pytest.raises(GateDenied):
-        read_web_gate(row, bot_check=lambda: False, provider_data=GOOGLE_PROVIDER_DATA)
+        read_web_gate(web_gate_read(row, bot_check=False))
     # A live record whose uid does not equal the stored provider_uid is denied.
     with pytest.raises(GateDenied):
-        read_web_gate(row, bot_check=lambda: True,
-                      provider_data=[{"providerId": "google.com", "uid": "someone-else"}])
+        read_web_gate(web_gate_read(
+            row, provider_data=[{"providerId": "google.com", "uid": "someone-else"}]))
     # And so is a shape the closed classifier rejects.
     with pytest.raises(GateDenied):
-        read_web_gate(row, bot_check=lambda: True,
-                      provider_data=[{"providerId": "google.com", "uid": "google-account-1"},
-                                     {"providerId": "apple.com", "uid": "apple-1"}])
+        read_web_gate(web_gate_read(
+            row, provider_data=[{"providerId": "google.com", "uid": "google-account-1"},
+                                {"providerId": "apple.com", "uid": "apple-1"}]))
     with pytest.raises(GateDenied):
         web_hash_provider_component(
             row, WebGateAccount(provider=IdentityProvider.apple,
                                 canonical_provider_account_id="apple-1"))
+
+
+# [utest->req~grants-platform-gate-web~1]
+# [utest->req~grants-anon-rule-web-classifier-and-hash~1]
+# [utest->req~grants-vendor-state-never-client-supplied~1]
+def test_an_issuer_that_matches_no_configured_integration_never_reaches_the_classifier():
+    row = google_row()
+    clients: list[Any] = []
+    # The read runs through the Admin client of the single configured integration the request's
+    # backend-verified issuer selects, so a mismatched issuer fails before the classifier — and
+    # before any `providerData` is read at all.
+    with pytest.raises(InvalidExternalJwtError):
+        read_web_gate(web_gate_read(row, issuer=OTHER_ISSUER, clients=clients),
+                      index=alias_index())
+    assert clients == []
 
 
 # [utest->req~grants-no-gate-bypass~1]
@@ -945,24 +1009,56 @@ def test_branch_selection_reads_only_the_evidence_the_request_carries():
 # [utest->req~grants-branch-pinning-and-shared-admission~1]
 def test_an_anonymous_identity_is_pinned_to_one_native_branch_and_shares_one_budget():
     fresh = identity_row()
-    assert (pin_native_platform(fresh, ClaimBranch.native_ios)
-            is NativeClaimPlatform.ios_devicecheck)
+    # The pin is set once, when the device attestation verifies, and the decision belongs to the
+    # `native_claim_platform` column's owner.
+    pinned_row = pin_native_platform(fresh, ClaimBranch.native_ios, attestation_verified=True)
+    assert pinned_row.native_claim_platform is NativeClaimPlatform.ios_devicecheck
+    assert pin_native_claim_platform(fresh, NativeClaimPlatform.ios_devicecheck,
+                                     attestation_verified=True).native_claim_platform \
+        is pinned_row.native_claim_platform
     pinned = identity_row(native_claim_platform=NativeClaimPlatform.ios_devicecheck)
-    assert pin_native_platform(pinned, ClaimBranch.native_ios) is NativeClaimPlatform.ios_devicecheck
-    with pytest.raises(FreeGrantRejected):
-        # The same anonymous identity cannot switch to the other platform's material.
-        pin_native_platform(pinned, ClaimBranch.native_android)
-    with pytest.raises(FreeGrantRejected):
-        # An anonymous identity may use only the device-attestation branches.
-        pin_native_platform(fresh, ClaimBranch.web)
+    assert pin_native_platform(pinned, ClaimBranch.native_ios,
+                               attestation_verified=True).native_claim_platform \
+        is NativeClaimPlatform.ios_devicecheck
+    for check in (assert_pinned_platform_matches,
+                  lambda row, branch: pin_native_platform(row, branch, attestation_verified=True)):
+        with pytest.raises(FreeGrantRejected):
+            # The same anonymous identity cannot switch to the other platform's material.
+            check(pinned, ClaimBranch.native_android)
+        with pytest.raises(FreeGrantRejected):
+            # An anonymous identity may use only the device-attestation branches.
+            check(fresh, ClaimBranch.web)
     with pytest.raises(ProofRejected):
         pin_native_platform(fresh, ClaimBranch.native_ios, attestation_verified=False)
     # A registered claimant is not pinned and may use the web gate from any surface.
-    assert pin_native_platform(google_row(), ClaimBranch.web) is None
+    registered = google_row()
+    assert assert_pinned_platform_matches(registered, ClaimBranch.web) is None
+    assert pin_native_platform(registered, ClaimBranch.web,
+                               attestation_verified=False) is registered
     # Every branch shares the one endpoint-level admission pair.
     pairs = {claim_admission_pair(branch) for branch in ClaimBranch}
     assert pairs == {ANONYMOUS_GRANT_ADMISSION["complete"]}
     assert claim_admission_pair(ClaimBranch.web, "prepare") == ANONYMOUS_GRANT_ADMISSION["prepare"]
+
+
+# [utest->req~grants-branch-pinning-and-shared-admission~1]
+def test_the_pin_is_written_by_the_activation_transaction_after_the_attestation_verified():
+    row = identity_row()
+    claim, activated = run_native_claim(DeviceCheckAdapter(APPLE, FakeDeviceCheck()), IOS_MATERIAL,
+                                        IOS_EVIDENCE,
+                                        ("apple_team_id", "devicecheck_environment"), row=row)
+    # Branch selection only enforced the pin; the transaction that commits the grant is what
+    # writes it, once this attempt's attestation and vendor write were confirmed.
+    assert row.native_claim_platform is None
+    assert activated.identity is not None
+    assert activated.identity.native_claim_platform is NativeClaimPlatform.ios_devicecheck
+    # A second attempt by the same identity on the other platform is rejected, not re-pinned.
+    with pytest.raises(FreeGrantRejected):
+        run_native_claim(PlayIntegrityAdapter(GOOGLE, FakePlayIntegrity(),
+                                              release_policy=RECALL_POLICY),
+                         ANDROID_MATERIAL, ANDROID_EVIDENCE,
+                         ("package_name", "signing_certificate_digest"),
+                         row=activated.identity)
 
 
 # --- The required rules for `claim_anonymous_grant` -----------------------------------------------
@@ -970,7 +1066,10 @@ def test_an_anonymous_identity_is_pinned_to_one_native_branch_and_shares_one_bud
 
 # [utest->req~grants-anon-rule-pre-consumption-then-challenge~1]
 def test_admission_and_the_challenge_claim_precede_every_vendor_call():
-    assert ANONYMOUS_CLAIM_STEPS[:2] == (ClaimStep.admission, ClaimStep.challenge_claim)
+    # The shared pre-consumption checks and handler-side admission come first, then the barrier's
+    # identity, and only then the challenge claim — which is still ahead of every vendor call.
+    assert ANONYMOUS_CLAIM_STEPS[:3] == (ClaimStep.admission, ClaimStep.identity_barrier,
+                                        ClaimStep.challenge_claim)
     claim = AnonymousGrantClaim()
     with pytest.raises(FreeGrantError):
         # No vendor call, Cloudflare validation or Admin lookup precedes admission.
@@ -981,13 +1080,31 @@ def test_admission_and_the_challenge_claim_precede_every_vendor_call():
         refused.admit(pre_consumption_passed=True, handler_admission_passed=False)
     ordered = AnonymousGrantClaim()
     ordered.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    with pytest.raises(FreeGrantError):
-        # The identity step cannot run before the challenge is claimed.
-        ordered.resolve_identity(context_for(identity_row()), identity_row())
     challenge = FakeChallenge(outcome=ClaimOutcome.already_used)
+    with pytest.raises(FreeGrantError):
+        # The challenge cannot be claimed before the barrier's identity step has run.
+        ordered.claim_challenge(challenge)
+    assert challenge.claims == 0
+    row = identity_row()
+    ordered.resolve_identity(context_for(row), row)
     with pytest.raises(FreeGrantError):
         ordered.claim_challenge(challenge)
     assert challenge.claims == 1
+
+
+# [utest->req~grants-anon-rule-pre-consumption-then-challenge~1]
+# [utest->req~grants-anon-mutation-challenge-claim-order~1]
+def test_an_identity_the_barrier_refuses_leaves_the_challenge_unclaimed():
+    for row, outcome in ((identity_row(), ResolutionOutcome.pre_auth),
+                         (identity_row(identity_state=IdentityState.historical),
+                          ResolutionOutcome.linked)):
+        challenge = FakeChallenge()
+        claim = AnonymousGrantClaim()
+        claim.admit(pre_consumption_passed=True, handler_admission_passed=True)
+        with pytest.raises(FreeGrantRejected):
+            claim.resolve_identity(context_for(row, outcome), row)
+        # The claimant learns nothing about whether the challenge exists or was already used.
+        assert challenge.claims == 0 and challenge.consumes == 0
 
 
 # [utest->req~grants-anon-rule-identity-barrier~1]
@@ -995,21 +1112,23 @@ def test_the_claim_takes_its_identity_from_the_shared_barrier():
     row = identity_row()
     claim = AnonymousGrantClaim()
     claim.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    claim.claim_challenge(FakeChallenge())
     assert claim.resolve_identity(context_for(row), row) is row
+    claim.claim_challenge(FakeChallenge())
     # A pre-auth context never reaches the claim's rules.
     unlinked = AnonymousGrantClaim()
     unlinked.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    unlinked.claim_challenge(FakeChallenge())
-    with pytest.raises(FreeGrantRejected):
+    with pytest.raises(FreeGrantRejected) as preauth:
         unlinked.resolve_identity(context_for(row, ResolutionOutcome.pre_auth), row)
-    # Nor does a historical identity row.
+    assert preauth.value.error_code == "preauth_identity_not_allowed"
+    # Nor does a historical identity row: it keeps the barrier's own result under the shared
+    # account-unavailable class, never a free-credit policy block.
     historical = identity_row(identity_state=IdentityState.historical)
     another = AnonymousGrantClaim()
     another.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    another.claim_challenge(FakeChallenge())
-    with pytest.raises(FreeGrantRejected):
+    with pytest.raises(FreeGrantRejected) as retired:
         another.resolve_identity(context_for(historical), historical)
+    assert retired.value.result is AuthEventResult.historical_identity
+    assert retired.value.error_code == "account_unavailable"
     # Web requires a registered claimant; the native branches also accept the anonymous one.
     with pytest.raises(FreeGrantRejected):
         claim.select_branch(WEB_EVIDENCE, row, verified=("hostname", "action"))
@@ -1026,13 +1145,13 @@ def test_the_claim_reads_the_platform_gate_of_the_branch_it_selected():
     # A native branch cannot be read through the web gate's inputs, and vice versa.
     native_only = AnonymousGrantClaim()
     native_only.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    native_only.claim_challenge(FakeChallenge())
     row = identity_row()
     native_only.resolve_identity(context_for(row), row)
+    native_only.claim_challenge(FakeChallenge())
     native_only.select_branch(IOS_EVIDENCE, row,
                               verified=("apple_team_id", "devicecheck_environment"))
     with pytest.raises(FreeGrantError):
-        native_only.read_platform_gate(web=(google_row(), lambda: True, GOOGLE_PROVIDER_DATA))
+        native_only.read_platform_gate(web=web_gate_read(google_row()))
 
 
 # [utest->req~grants-anon-rule-web-classifier-and-hash~1]
@@ -1045,16 +1164,14 @@ def test_the_web_branch_persists_the_derived_hash_and_key_version_on_its_row():
     assert activated.anti_abuse["native_claim_provider"] is None
     # The hash is derived with the stored provider as the HMAC provider component.
     row = google_row()
-    account, alias = read_web_gate(row, bot_check=lambda: True,
-                                   provider_data=GOOGLE_PROVIDER_DATA, index=index)
+    account, alias = read_web_gate(web_gate_read(row), index=index)
     expected = index.alias(ProviderAccount(provider=IdentityProvider.google,
                                            provider_uid="google-account-1"))
     assert alias is not None and alias.digest == expected.digest
     # A live record that classifies as the other provider never reaches the derivation.
     apple_row = identity_row(provider=IdentityProvider.apple, provider_uid="apple-1")
     with pytest.raises(GateDenied):
-        read_web_gate(apple_row, bot_check=lambda: True, provider_data=GOOGLE_PROVIDER_DATA,
-                      index=index)
+        read_web_gate(web_gate_read(apple_row), index=index)
 
 
 # [utest->req~grants-anon-rule-already-consumed-rejects~1]
@@ -1105,9 +1222,9 @@ def test_any_committed_free_grant_refuses_the_claim_and_is_never_an_idempotent_s
     assert LIFETIME_FREE_GRANTS_PER_ACCOUNT == 1
     claim = AnonymousGrantClaim()
     claim.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    claim.claim_challenge(FakeChallenge())
     row = identity_row()
     claim.resolve_identity(context_for(row), row)
+    claim.claim_challenge(FakeChallenge())
     claim.select_branch(IOS_EVIDENCE, row, verified=("apple_team_id", "devicecheck_environment"))
     ledger = NativeClaimLedger()
     claim.read_platform_gate(native=(DeviceCheckAdapter(APPLE, FakeDeviceCheck()), IOS_MATERIAL,
@@ -1130,9 +1247,9 @@ def test_only_a_vendor_confirmed_write_permits_activation():
     # The write step cannot run before the database eligibility check.
     claim = AnonymousGrantClaim()
     claim.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    claim.claim_challenge(FakeChallenge())
     row = identity_row()
     claim.resolve_identity(context_for(row), row)
+    claim.claim_challenge(FakeChallenge())
     claim.select_branch(IOS_EVIDENCE, row, verified=("apple_team_id", "devicecheck_environment"))
     ledger = NativeClaimLedger()
     adapter = DeviceCheckAdapter(APPLE, FakeDeviceCheck())
@@ -1171,8 +1288,8 @@ def test_the_live_state_is_reconfirmed_inside_the_activation_transaction():
     challenge = FakeChallenge()
     row = identity_row()
     claim.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    claim.claim_challenge(challenge)
     claim.resolve_identity(context_for(row), row)
+    claim.claim_challenge(challenge)
     claim.select_branch(IOS_EVIDENCE, row, verified=("apple_team_id", "devicecheck_environment"))
     ledger = NativeClaimLedger()
     adapter = DeviceCheckAdapter(APPLE, FakeDeviceCheck())
@@ -1180,12 +1297,16 @@ def test_the_live_state_is_reconfirmed_inside_the_activation_transaction():
     claim.check_database_eligibility(committed_free_sources=(), ledger=ledger)
     write = claim.write_native_bit(adapter, IOS_MATERIAL, ledger=ledger)
     transaction = object()
-    with pytest.raises(ClaimRejection):
+    with pytest.raises(ClaimRejection) as rejected:
         claim.activate(user_id=row.user_id, grant_id=uuid7(), tier_id=FREE_TIER,
                        transaction=transaction,
                        locks=LockLedger(LockingPath.claim_anonymous_grant_completion),
                        reconfirm=lambda: False, challenge=challenge, write=write, now=NOW)
-    assert challenge.consumes == 0
+    # This attempt held the claim, so a claimed challenge is dead: it is consumed exactly once,
+    # atomically with the rejection's own audit record, whatever check failed.
+    assert challenge.consumes == 1
+    assert rejected.value.audit is not None
+    assert rejected.value.audit.result is rejected.value.result
 
 
 # [utest->req~grants-anon-rule-uncancellable-context~1]
@@ -1194,8 +1315,8 @@ def test_the_read_write_activate_sequence_runs_in_a_disconnect_shielded_context(
     challenge = FakeChallenge()
     row = identity_row()
     claim.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    claim.claim_challenge(challenge)
     claim.resolve_identity(context_for(row), row)
+    claim.claim_challenge(challenge)
     claim.select_branch(IOS_EVIDENCE, row, verified=("apple_team_id", "devicecheck_environment"))
     ledger = NativeClaimLedger()
     adapter = DeviceCheckAdapter(APPLE, FakeDeviceCheck())

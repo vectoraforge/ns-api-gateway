@@ -1,6 +1,7 @@
 """Sign-out everywhere, as `01-sessions-and-identity-resolution.md` states it: one endpoint, one
 unconditional Firebase revocation, one audit row per attempt, and success only on a confirmed
-revocation. Plus the client responsibilities and the accepted risks the endpoint carries.
+revocation. Plus the accepted risks the endpoint carries. The client-side sign-out
+responsibilities belong to `ns-ios` and are not modelled here.
 """
 
 import asyncio
@@ -10,9 +11,12 @@ from uuid import uuid4
 import pytest
 
 from nativespeaker.api.auth.audit import (
+    AuditAlreadyWrittenError,
     AuthActor,
     AuthAttempt,
+    AuthAuditWriter,
     AuthEventResult,
+    AuthResultCounter,
     InvalidTerminalOutcomeError,
     RevocationErrorCategory,
 )
@@ -30,10 +34,8 @@ from nativespeaker.api.auth.operations import (
     supports_prepare,
 )
 from nativespeaker.api.auth.sign_out import (
-    ANONYMOUS_SIGN_OUT_WARNING,
     DURABLE_REVOCATION_STATE,
     LOCAL_SIGN_OUT_BACKEND_CALLS,
-    LOCAL_SIGN_OUT_CLEARS,
     MAX_REVOCATION_ATTEMPTS,
     PER_DEVICE_SIGN_OUT_ENDPOINTS,
     PER_REQUEST_REVOCATION_CHECKS,
@@ -45,8 +47,6 @@ from nativespeaker.api.auth.sign_out import (
     SIGN_OUT_ALL_PATH,
     SIGN_OUT_ENDPOINTS,
     SUCCESS_INVALIDATES_MINTED_ID_TOKENS,
-    ClientSignOutDisposition,
-    ClientSignOutScope,
     CoalescedRevocation,
     RevocationAttempt,
     RevocationDependencyError,
@@ -62,8 +62,6 @@ from nativespeaker.api.auth.sign_out import (
     assert_one_row_per_attempt,
     assert_provider_not_consulted,
     barrier_rejection_event_result,
-    client_sign_out_outcome,
-    client_sign_out_plan,
     compromised_install_in_scope,
     leaked_token_escalates_privilege,
     may_share_revocation_result,
@@ -140,6 +138,34 @@ def attempt() -> AuthAttempt:
     return AuthAttempt(SIGN_OUT_ALL_METHOD, SIGN_OUT_ALL_PATH)
 
 
+class RecordingSink:
+    """The `audit.auth_events` sink, recording the rows the shared writer appends."""
+
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+
+    async def insert(self, session, row) -> None:
+        self.rows.append(dict(row))
+
+
+class FakeSession:
+    def __init__(self) -> None:
+        self.committed = False
+
+    async def commit(self) -> None:
+        self.committed = True
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        return None
+
+
+def make_writer(sink: RecordingSink) -> AuthAuditWriter:
+    return AuthAuditWriter(sink=sink, counter=AuthResultCounter(), session_factory=FakeSession)
+
+
 class TestOneEndpoint:
     # [utest->req~sessions-single-sign-out-endpoint~1]
     def test_the_backend_exposes_exactly_one_sign_out_endpoint(self):
@@ -149,13 +175,10 @@ class TestOneEndpoint:
     # [utest->req~sessions-no-per-device-backend-sign-out~1]
     def test_there_is_no_per_device_backend_sign_out(self):
         assert PER_DEVICE_SIGN_OUT_ENDPOINTS == frozenset()
-        # Current-device sign-out calls no backend endpoint at all; it clears local state only.
+        # Current-device sign-out calls no backend endpoint at all.
         assert LOCAL_SIGN_OUT_BACKEND_CALLS == ()
-        plan = client_sign_out_plan(ClientSignOutScope.current_device)
-        assert plan.backend_call is None
-        # A client that wants to sign out everywhere calls the one endpoint.
-        assert client_sign_out_plan(ClientSignOutScope.everywhere).backend_call == \
-            ("POST", "/auth/sign-out-all")
+        # A client that wants to sign out everywhere has this one endpoint to call.
+        assert sign_out_endpoint() == ("POST", "/auth/sign-out-all")
 
     # [utest->req~sessions-single-sign-out-endpoint~1]
     # [utest->req~sessions-no-per-device-backend-sign-out~1]
@@ -406,7 +429,10 @@ class TestAuditRow:
         for offending in ({"failure": {"firebase_message": "boom"}},
                           {"failure": {"stack_trace": "..."}},
                           {"failure": {"outcome": "revoked"}},
-                          {"failure": {"revocation_status": "unknown"}}):
+                          {"failure": {"revocation_status": "unknown"}},
+                          # `result` is the row's own outcome column: a copy in `details` would
+                          # be the second outcome field the row must not carry.
+                          {"failure": {"result": "revoked"}}):
             with pytest.raises(InvalidTerminalOutcomeError):
                 sign_out_all_attempt_event(
                     actor=actor(), request_id=REQUEST_ID,
@@ -439,13 +465,28 @@ class TestAuditRow:
             assert admission_rejection_writes_row(rejection) is False
 
     # [utest->req~sessions-api-sign-out-all-canonical-operation~1]
-    def test_a_second_row_for_one_attempt_is_refused(self):
+    async def test_a_second_row_for_one_attempt_is_refused(self):
         one = attempt()
         assert_one_row_per_attempt(one)
-        one.audited = True
+        sink = RecordingSink()
+        writer = make_writer(sink)
+        event = sign_out_all_attempt_event(
+            actor=actor(), request_id=REQUEST_ID,
+            attempt=RevocationAttempt(RevocationOutcome.confirmed, 1))
+        await writer.write_standalone(one, event)
+        assert len(sink.rows) == 1
+        # The attempt now owes no second row: both the shared writer and this endpoint's own
+        # precondition refuse one.
+        with pytest.raises(AuditAlreadyWrittenError):
+            await writer.write_standalone(one, event)
+        with pytest.raises(SignOutError):
+            assert_one_row_per_attempt(one)
+        assert len(sink.rows) == 1
         # Each retry is a new attempt with its own single row, so the claim is per attempt.
         fresh = attempt()
-        assert fresh.audited is False
+        assert_one_row_per_attempt(fresh)
+        await writer.write_standalone(fresh, event)
+        assert len(sink.rows) == 2
 
 
 class TestNoBusinessMutation:
@@ -491,90 +532,6 @@ class TestAnonymousOneWayDoor:
             anonymous_revocation_consequence(IdentityProvider.anonymous)
 
 
-class TestClientResponsibilities:
-    # [utest->req~sessions-client-local-sign-out~1]
-    def test_current_device_sign_out_clears_local_state_and_calls_no_backend(self):
-        plan = client_sign_out_plan(ClientSignOutScope.current_device,
-                                    provider=IdentityProvider.google)
-        assert plan.backend_call is None
-        assert plan.clears == LOCAL_SIGN_OUT_CLEARS
-        assert "local_client_session_state" in plan.clears
-        assert "local_idp_session" in plan.clears
-        assert plan.clear_after_success is False
-
-    # [utest->req~sessions-client-anonymous-local-sign-out~1]
-    def test_current_device_anonymous_sign_out_is_local_only_too(self):
-        plan = client_sign_out_plan(ClientSignOutScope.current_device,
-                                    provider=IdentityProvider.anonymous)
-        assert plan.backend_call is None
-        assert plan.clears == LOCAL_SIGN_OUT_CLEARS
-        assert plan.warning is None
-
-    # [utest->req~sessions-client-sign-out-everywhere-order~1]
-    def test_sign_out_everywhere_clears_local_state_only_after_success(self):
-        plan = client_sign_out_plan(ClientSignOutScope.everywhere,
-                                    provider=IdentityProvider.apple)
-        assert plan.backend_call == ("POST", "/auth/sign-out-all")
-        assert plan.clear_after_success is True
-        assert plan.clears == LOCAL_SIGN_OUT_CLEARS
-
-    # [utest->req~sessions-client-anonymous-sign-out-warning~1]
-    def test_an_anonymous_session_is_warned_before_it_signs_out_everywhere(self):
-        plan = client_sign_out_plan(ClientSignOutScope.everywhere,
-                                    provider=IdentityProvider.anonymous)
-        assert plan.warning == ANONYMOUS_SIGN_OUT_WARNING
-        assert "chat history" in plan.warning
-        assert "credits" in plan.warning
-        assert "every device" in plan.warning
-        assert "Google" in plan.warning and "Apple" in plan.warning
-        # A registered session gets no such warning: it has nothing to lose here.
-        assert client_sign_out_plan(ClientSignOutScope.everywhere,
-                                    provider=IdentityProvider.google).warning is None
-
-    # [utest->req~sessions-client-sign-out-everywhere-order~1]
-    def test_a_success_lets_the_client_report_signed_out_everywhere(self):
-        outcome = client_sign_out_outcome(success=True)
-        assert outcome.disposition is ClientSignOutDisposition.signed_out_everywhere
-        assert outcome.report_signed_out_everywhere is True
-
-    # [utest->req~sessions-client-non-success-sign-out-handling~1]
-    @pytest.mark.parametrize("client_class", [None, "service_unavailable", "internal_error",
-                                              ClientErrorClass.auth_required,
-                                              ClientErrorClass.invalid_request])
-    def test_a_non_success_other_than_account_unavailable_keeps_the_credential(self,
-                                                                              client_class):
-        outcome = client_sign_out_outcome(success=False, client_class=client_class)
-        assert outcome.disposition is ClientSignOutDisposition.unconfirmed_retryable
-        assert outcome.keep_credential is True
-        assert outcome.may_retry is True
-        # It never reports that the user is signed out everywhere, and a local-only sign-out
-        # offered alongside it must say so.
-        assert outcome.report_signed_out_everywhere is False
-        assert outcome.local_only_must_be_labeled is True
-
-    # [utest->req~sessions-client-account-unavailable-terminal~1]
-    def test_account_unavailable_is_terminal_and_discards_the_credential(self):
-        outcome = client_sign_out_outcome(success=False,
-                                          client_class=ClientErrorClass.account_unavailable)
-        assert outcome.disposition is ClientSignOutDisposition.account_unavailable_terminal
-        assert outcome.keep_credential is False
-        assert outcome.may_retry is False
-        assert outcome.report_signed_out_everywhere is False
-
-    # [utest->req~sessions-client-account-unavailable-terminal~1]
-    def test_sign_out_everywhere_is_never_offered_as_recovery_from_that_class(self):
-        from nativespeaker.api.auth.sign_out import (
-            account_unavailable_offers_sign_out_everywhere,
-        )
-        assert account_unavailable_offers_sign_out_everywhere() is False
-
-    # [utest->req~sessions-client-sign-out-everywhere-order~1]
-    def test_a_success_carrying_an_error_class_is_a_contradiction(self):
-        with pytest.raises(SignOutError):
-            client_sign_out_outcome(success=True,
-                                    client_class=ClientErrorClass.account_unavailable)
-
-
 class TestAcceptedRisk:
     # [utest->req~sessions-risk-leaked-token-usable~1]
     def test_the_returned_store_tokens_add_no_authority_a_bearer_lacked(self):
@@ -615,24 +572,37 @@ class TestTheWholeEndpoint:
     # [utest->req~sessions-api-sign-out-all-canonical-operation~1]
     # [utest->req~sessions-sign-out-all-step-02~1]
     async def test_a_confirmed_attempt_audits_success_and_returns_success(self):
+        sink = RecordingSink()
+        audit_attempt = attempt()
         result = await sign_out_all(integrations(), linked(),
                                     actor=actor(), request_id=REQUEST_ID,
-                                    audit_attempt=attempt(), revoker=Revoker())
+                                    audit_attempt=audit_attempt, audit=make_writer(sink),
+                                    revoker=Revoker())
         assert result.succeeded is True
         assert result.event.result is AuthEventResult.succeeded
         assert result.attempt.outcome is RevocationOutcome.confirmed
+        # The response cannot be produced without the row: it was appended, through the shared
+        # writer, before this returned.
+        assert [row["result"] for row in sink.rows] == [AuthEventResult.succeeded]
+        assert sink.rows[0]["operation"] is AuthOperation.sign_out_all
+        assert audit_attempt.audited is True
 
     # [utest->req~sessions-sign-out-all-step-02~1]
     # [utest->req~sessions-sign-out-all-step-03~1]
     async def test_an_unconfirmed_attempt_still_audits_and_never_returns_success(self):
         revoker = Revoker(errors=[RuntimeError("firebase said no")])
+        sink = RecordingSink()
         result = await sign_out_all(integrations(), linked(),
                                     actor=actor(), request_id=REQUEST_ID,
-                                    audit_attempt=attempt(), revoker=revoker)
+                                    audit_attempt=attempt(), audit=make_writer(sink),
+                                    revoker=revoker)
         assert result.succeeded is False
         assert result.event.result is AuthEventResult.revocation_unconfirmed
         assert result.event.details["failure"]["error_category"] == \
             str(RevocationErrorCategory.definitive_failure)
+        # The unconfirmed outcome is appended too, before the response.
+        assert [row["result"] for row in sink.rows] == \
+            [AuthEventResult.revocation_unconfirmed]
 
     # [utest->req~sessions-api-sign-out-all-purpose~1]
     async def test_the_endpoint_revokes_for_the_verified_subject_whatever_the_stored_provider(self):
@@ -640,7 +610,8 @@ class TestTheWholeEndpoint:
             revoker = Revoker()
             result = await sign_out_all(integrations(), linked(provider),
                                         actor=actor(), request_id=REQUEST_ID,
-                                        audit_attempt=attempt(), revoker=revoker)
+                                        audit_attempt=attempt(),
+                                        audit=make_writer(RecordingSink()), revoker=revoker)
             assert result.succeeded is True
             assert revoker.calls == [(SUBJECT, ADMIN_CLIENT)]
 

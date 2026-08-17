@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from nativespeaker.api.auth.audit import (
@@ -28,9 +28,13 @@ from nativespeaker.api.auth.audit import (
     AuthActor,
     AuthEvent,
     AuthEventResult,
+    SubjectHasher,
     terminal_event,
 )
-from nativespeaker.api.auth.barrier import ResolutionOutcome, VerifiedIdentityContext
+from nativespeaker.api.auth.barrier import (
+    VerifiedIdentityContext,
+    barrier_result_for,
+)
 from nativespeaker.api.auth.challenges import ClaimOutcome
 from nativespeaker.api.auth.derived_identifiers import (
     UNIQUENESS_ANCHOR,
@@ -38,6 +42,7 @@ from nativespeaker.api.auth.derived_identifiers import (
     DerivedValue,
     IdpAccountAliasIndex,
     UniquenessAnchor,
+    actor_subject_preimage,
     assert_persisted_key_version,
     assert_uniqueness_anchor,
     domain_label,
@@ -77,9 +82,10 @@ from nativespeaker.api.auth.invariants import (
     assert_same_transaction,
 )
 from nativespeaker.api.auth.locks import LockLedger, lock_grant_set
-from nativespeaker.api.auth.operations import AuthOperation, IdentityProvider
+from nativespeaker.api.auth.operations import AuthOperation, IdentityProvider, route_for
 from nativespeaker.api.auth.proof_adapters import (
     CLAIM_EXECUTION_CONTEXT,
+    ClaimRejection,
     DeviceGrantExhausted,
     DeviceStateAdapter,
     ExecutionContext,
@@ -87,6 +93,8 @@ from nativespeaker.api.auth.proof_adapters import (
     NativeClaimStep,
     ReleaseKey,
     ReleasePolicyRegistry,
+    TurnstileDenied,
+    TurnstileUnavailable,
     assert_execution_context,
     claim_state_for,
     devicecheck_bit_for,
@@ -112,6 +120,9 @@ from nativespeaker.api.auth.taxonomy import ClientErrorClass, remediation_for
 from nativespeaker.api.quota.grants import GrantRow, assert_billing_separation, is_effective
 from nativespeaker.api.quota.usage import NewUsageRow, new_usage_row
 from nativespeaker.api.ratelimit.ordering import DeviceBitWrite, assert_grant_row_permitted
+
+if TYPE_CHECKING:  # `registered_grant_failures` sits below this module in the import graph.
+    from nativespeaker.api.auth.registered_grant_failures import RegClaimCondition
 
 # --- The operation, as this section defines it ----------------------------------------------------
 
@@ -728,14 +739,45 @@ def registered_audit_details(row: ExternalIdentityRow,
     return details
 
 
+def registered_claim_rejected(result: AuthEventResult, message: str = "") -> FreeGrantRejected:
+    """One rejection of this claim, by audited internal result. The result-to-class mapping and
+    the condition table belong to `registered_grant_failures`, which sits below this module in
+    the import graph, so it is read at call time rather than at module import — there is still
+    only one mapping."""
+    # [impl->req~grants-reg-failure-classes~1]
+    from nativespeaker.api.auth.registered_grant_failures import (  # noqa: PLC0415
+        registered_claim_rejected as classify,
+    )
+
+    return classify(result, message)
+
+
+def registered_condition_rejected(condition: RegClaimCondition,
+                                  message: str = "") -> FreeGrantRejected:
+    """One rejection of this claim, by the failure-table condition it is. Same owner, same
+    deferred read: the audited result and the client class both come from that table."""
+    # [impl->req~grants-reg-failure-classes~1]
+    from nativespeaker.api.auth.registered_grant_failures import (  # noqa: PLC0415
+        registered_condition_rejected as classify,
+    )
+
+    return classify(condition, message)
+
+
 # --- The rules, in the one order they run in --------------------------------------------------------
 
 
 class RegisteredClaimStep(StrEnum):
-    """The steps of one `claim_registered_grant` attempt, in the one order they may run in."""
+    """The steps of one `claim_registered_grant` attempt, in the one order they may run in.
+
+    The shared pre-consumption checks — the barrier's four checks, each rejected before every
+    challenge check — and handler-side completion admission come first, and the challenge claim
+    follows them: an identity the barrier refuses is rejected before the claim and leaves the
+    challenge unclaimed.
+    """
     admission = "admission"
-    challenge_claim = "challenge_claim"
     identity_barrier = "identity_barrier"
+    challenge_claim = "challenge_claim"
     claim_kind = "claim_kind"
     provider_data_confirmation = "provider_data_confirmation"
     device_state_read = "device_state_read"
@@ -777,6 +819,11 @@ class RegisteredGrantClaim:
         self.registered_claimed: bool | None = None
         self.provider_data_lookups = 0
         self.vendor_calls = 0
+        # What this attempt resolved, for the audit details every outcome of it owes, and whether
+        # the claim kind carries a registered-claimed bit at all.
+        self.row: ExternalIdentityRow | None = None
+        self.alias: DerivedValue | None = None
+        self.durable_bit: bool = True
 
     # --- ordering ---------------------------------------------------------------------------
 
@@ -796,6 +843,18 @@ class RegisteredGrantClaim:
             raise FreeGrantError("the claim kind is resolved before the gate is read")
         return self.kind
 
+    def _rejected[E: (FreeGrantRejected, ClaimRejection)](self, exc: E) -> E:
+        """One rejection of this claim, carrying the audit details a rejected attempt owes: the
+        stored-column provider, the `idp_account_hash_key_version`, and the non-secret account
+        context support correlates on. They are available from the confirmation step onwards; a
+        rejection taken before the alias exists carries what the row alone can say."""
+        # [impl->req~grants-reg-audit-details~1]
+        if self.row is not None:
+            exc.audit_details = (registered_audit_details(self.row, alias=self.alias)
+                                 if self.alias is not None
+                                 else {"identity": {"provider": str(self.row.provider)}})
+        return exc
+
     # --- the rules --------------------------------------------------------------------------
 
     def admit(self, *, pre_consumption_passed: bool, handler_admission_passed: bool) -> None:
@@ -806,9 +865,9 @@ class RegisteredGrantClaim:
             raise FreeGrantError("the shared and handler-side admission checks must pass first")
 
     def claim_challenge(self, claim: Callable[[], ClaimOutcome]) -> ClaimOutcome:
-        """The operation challenge is claimed under the shared completion requirements, still
-        before any vendor call."""
-        self._require(RegisteredClaimStep.admission)
+        """The operation challenge is claimed under the shared completion requirements — after the
+        barrier's checks and completion admission, and still before any vendor call."""
+        self._require(RegisteredClaimStep.admission, RegisteredClaimStep.identity_barrier)
         self._record(RegisteredClaimStep.challenge_claim)
         if self.vendor_calls or self.provider_data_lookups:
             raise FreeGrantError("no vendor or Firebase call precedes the challenge claim")
@@ -825,20 +884,30 @@ class RegisteredGrantClaim:
         """The shared mandatory pre-handler authentication-and-identity-resolution barrier must
         produce the backend-verified Firebase ID token's `(issuer, subject)` from the
         `Authorization` header and resolve it to a linked identity for an active user and active
-        external identity."""
+        external identity.
+
+        Which outcomes are admitted, and what each refused one audits as, is the barrier's own
+        predicate: a blocked user or a historical identity keeps its distinct internal result
+        under the shared `account_unavailable` class and never receives
+        `preauth_identity_not_allowed`, which would send the client into create-user.
+        """
         # [impl->req~grants-reg-rule-identity-barrier~1]
-        self._require(RegisteredClaimStep.challenge_claim)
+        # [impl->req~grants-reg-class-account-unavailable~1]
+        self._require(RegisteredClaimStep.admission)
         self._record(RegisteredClaimStep.identity_barrier)
         if not context.issuer or not context.subject:
             raise FreeGrantError("the barrier resolved no verified issuer and subject")
         assert_no_device_proof_as_identity(evaluated=offered_identity_inputs)
-        if context.outcome is not ResolutionOutcome.linked:
-            raise FreeGrantRejected(AuthEventResult.preauth_identity_not_allowed,
-                                    "preauth_identity_not_allowed",
-                                    "this linked-only endpoint needs the barrier's linked identity")
+        self.row = row
+        result = barrier_result_for(context.outcome,
+                                   *route_for(AuthOperation.claim_registered_grant))
+        if result is not None:
+            raise self._rejected(
+                registered_claim_rejected(result, f"the barrier refused {context.outcome}"))
         if row.identity_state is not IdentityState.active:
-            raise FreeGrantRejected(AuthEventResult.historical_identity, "account_unavailable",
-                                    "the claim needs an active external identity")
+            raise self._rejected(registered_claim_rejected(
+                AuthEventResult.historical_identity,
+                "the claim needs an active external identity"))
         if context.external_identity_id is not None and context.external_identity_id != row.id:
             raise FreeGrantError("the resolved context and the identity row must be the same row")
         # The stored provider is the classifier, read from the row and from nothing else.
@@ -883,7 +952,9 @@ class RegisteredGrantClaim:
         if canonical != account.provider_uid:
             raise FreeGrantError("the confirmed account is the stored binding's own account")
         self.account = account
-        return account, registered_account_alias(index, account)
+        self.row = row
+        self.alias = registered_account_alias(index, account)
+        return account, self.alias
 
     def read_registered_state(self,
                               *,
@@ -892,11 +963,14 @@ class RegisteredGrantClaim:
                               turnstile: Callable[[], bool] | None = None) -> bool:
         """On the iOS and Android device-checked kinds, verify the proof and read the
         registered-claimed bit; an already-set bit returns `device_grant_exhausted`. On Android
-        the read runs where the checked-in release policy classes the release
-        `device_recall_required`, and a `no_device_recall` release carries no bit at all, so the
-        claim rests on the account-level rules alone. The web kind has no such bit and relies on
-        the account-level rules plus the mandatory Turnstile pass."""
+        the read-check-write-confirm sequence runs where the checked-in release policy classes the
+        release `device_recall_required`; a Play Integrity verdict is still required on every
+        Android claim, but a `no_device_recall` release carries no registered-claimed bit at all,
+        so nothing is read or written for it and the claim rests on the account-level rules alone.
+        The web kind has no such bit and relies on the account-level rules plus the mandatory
+        Turnstile pass, whose denial and dependency failure are the adapter's own outcomes."""
         # [impl->req~grants-reg-rule-device-checked-kinds-bit~1]
+        # [impl->req~grants-reg-gate-resolve-claim-kind~1]
         self._require(RegisteredClaimStep.provider_data_confirmation)
         self._record(RegisteredClaimStep.device_state_read)
         kind = self._kind()
@@ -905,22 +979,54 @@ class RegisteredGrantClaim:
                 raise FreeGrantError(f"{kind} reads its registered-claimed state")
             adapter, material, ledger = native
             operation = AuthOperation.claim_registered_grant
-            registered_claim_bit(kind)
             self.vendor_calls += 1
             adapter.verify_material(operation, material, ledger)
             already = adapter.read_claimed(operation, material, ledger)
-            # The same durable-state meaning on every participating platform: this durable
-            # device state already claimed a registered account grant.
-            if already:
-                raise DeviceGrantExhausted(non_accusatory_copy())
+            # Whether this platform carries a registered-claimed bit is the checked-in release
+            # policy's answer, which the vendor read consulted; the claim reads it from the
+            # attempt's own ledger rather than keeping a second copy of that policy.
+            self.durable_bit = ledger.durable_bit_participates
+            if self.durable_bit:
+                registered_claim_bit(kind)
+                # The same durable-state meaning on every participating platform: this durable
+                # device state already claimed a registered account grant.
+                if already:
+                    raise self._rejected(DeviceGrantExhausted(non_accusatory_copy()))
             self.registered_claimed = already
             return already
-        if turnstile is None or not turnstile():
-            raise FreeGrantRejected(AuthEventResult.policy_rejected, "verification_required",
-                                    "the web kind needs a passing Turnstile validation")
+        self.durable_bit = False
         self.vendor_calls += 1
+        self._validate_turnstile(turnstile)
         self.registered_claimed = False
         return False
+
+    def _validate_turnstile(self, turnstile: Callable[[], bool] | None) -> None:
+        """The web kind's mandatory Turnstile pass. `siteverify`'s own outcomes decide: a denial
+        — invalid, expired, duplicate or replayed token, or a hostname mismatch — is the
+        durable `verification_required` sign-in-gate rejection, and a dependency failure or
+        misconfiguration is the transient one. Neither class is invented here."""
+        # [impl->req~grants-reg-gate-resolve-claim-kind~1]
+        # [impl->req~grants-reg-rule-device-checked-kinds-bit~1]
+        from nativespeaker.api.auth.registered_grant_failures import (  # noqa: PLC0415
+            RegClaimCondition,
+        )
+
+        if turnstile is None:
+            raise FreeGrantError("the web kind needs its Turnstile validation")
+        try:
+            passed = turnstile()
+        except TurnstileDenied as denied:
+            raise self._rejected(
+                registered_condition_rejected(RegClaimCondition.turnstile_denied,
+                                              str(denied))) from None
+        except TurnstileUnavailable as unavailable:
+            raise self._rejected(
+                registered_condition_rejected(RegClaimCondition.turnstile_dependency_failed,
+                                              str(unavailable))) from None
+        if not passed:
+            raise self._rejected(
+                registered_condition_rejected(RegClaimCondition.turnstile_denied,
+                                              "the web kind needs a passing Turnstile validation"))
 
     def check_database_eligibility(self,
                                    *,
@@ -938,11 +1044,16 @@ class RegisteredGrantClaim:
         self._record(RegisteredClaimStep.database_eligibility)
         if ledger is not None:
             ledger.record(NativeClaimStep.database_eligibility)
-        decision = select_destination(grants=grants,
-                                     committed_free_sources=committed_free_sources, now=now,
-                                     gate_consumption_grant_id=gate_consumption_grant_id,
-                                     registered_bit_written=(
-                                         RegisteredClaimStep.registered_bit_write in self.steps))
+        try:
+            decision = select_destination(grants=grants,
+                                         committed_free_sources=committed_free_sources, now=now,
+                                         gate_consumption_grant_id=gate_consumption_grant_id,
+                                         registered_bit_written=(
+                                             RegisteredClaimStep.registered_bit_write in self.steps))
+        except FreeGrantRejected as blocked:
+            # A rejected attempt owes the same audit details a successful one does.
+            # [impl->req~grants-reg-audit-details~1]
+            raise self._rejected(blocked) from None
         self.decision = decision
         return decision
 
@@ -955,9 +1066,12 @@ class RegisteredGrantClaim:
         confirmation before activation. Any failed, timed-out, cancelled, ambiguous or
         unattemptable write rejects before activation with no grant."""
         # [impl->req~grants-reg-rule-device-checked-kinds-bit~1]
+        # [impl->req~grants-reg-gate-write-registered-bit~1]
         self._require(RegisteredClaimStep.database_eligibility)
         if self._kind() not in DEVICE_CHECKED_KINDS:
             raise FreeGrantError("only a device-checked kind writes a registered-claimed bit")
+        if not self.durable_bit:
+            raise FreeGrantError("a no_device_recall release carries no registered-claimed bit")
         self._record(RegisteredClaimStep.registered_bit_write)
         self.vendor_calls += 1
         write = adapter.write_claimed(AuthOperation.claim_registered_grant, material, ledger)
@@ -973,6 +1087,7 @@ class RegisteredGrantClaim:
                  transaction: object,
                  locks: LockLedger,
                  consume_challenge: Callable[[], bool],
+                 subject_hasher: SubjectHasher,
                  carried_usage: tuple[str, int] | None = None,
                  write: DeviceBitWrite | None = None,
                  context: ExecutionContext = CLAIM_EXECUTION_CONTEXT,
@@ -996,12 +1111,17 @@ class RegisteredGrantClaim:
         if decision is None or account is None:
             raise FreeGrantError("the destination and the confirmed account precede activation")
         kind = self._kind()
-        if kind in DEVICE_CHECKED_KINDS:
+        # A kind that carries durable device state activates only behind this attempt's own
+        # vendor-confirmed write. An Android release classed `no_device_recall` carries none, so
+        # it has no write to confirm and rests on the account-level rules alone.
+        if kind in DEVICE_CHECKED_KINDS and self.durable_bit:
             self._require(RegisteredClaimStep.registered_bit_write)
             assert_native_claim_written_before_grant(
                 native_claim_written=bool(write is not None and write.confirmed),
                 same_attempt=True)
             assert_grant_row_permitted(write)
+        elif write is not None:
+            raise FreeGrantError(f"{kind} carries no registered-claimed bit to confirm")
         self._record(RegisteredClaimStep.activation)
         assert_execution_context(context)
         if decision.destination is RegisteredDestination.idempotent_repeat:
@@ -1055,8 +1175,15 @@ class RegisteredGrantClaim:
                             is RegisteredDestination.supersession_conversion else 0)
         assert_one_active_grant(active_after=1 + decision.effective_grants - superseded_count,
                                 second_allowance=False)
-        alias = consume_registered_gate(alias_index, account, grant_id, transaction=transaction,
-                                        grant_transaction=transaction)
+        try:
+            alias = consume_registered_gate(alias_index, account, grant_id,
+                                            transaction=transaction,
+                                            grant_transaction=transaction)
+        except FreeGrantRejected as conflict:
+            # `idp_account_already_claimed` is exactly the rejection support correlates back to a
+            # provider account and a key version, so it carries this attempt's audit details.
+            # [impl->req~grants-reg-audit-details~1]
+            raise self._rejected(conflict) from None
         anti_abuse = free_grant_anti_abuse_row(
             grant_id=grant_id, source=REGISTERED_GRANT_SOURCE,
             idp_account_hash=alias.digest,
@@ -1070,7 +1197,7 @@ class RegisteredGrantClaim:
             raise FreeGrantError("the challenge this attempt claimed is consumed exactly once")
         audit = terminal_event(AttemptPhase.success, AuthEventResult.succeeded,
                                operation=AuthOperation.claim_registered_grant,
-                               actor=_actor_for(row, alias),
+                               actor=_actor_for(row, alias, subject_hasher),
                                details=registered_audit_details(
                                    row, alias=alias, destination=decision.destination,
                                    grant_id=grant_id))
@@ -1083,7 +1210,8 @@ class RegisteredGrantClaim:
                row: ExternalIdentityRow,
                *,
                alias: DerivedValue,
-               grant: GrantRow) -> AuthEvent:
+               grant: GrantRow,
+               subject_hasher: SubjectHasher) -> AuthEvent:
         """The idempotent repeat's outcome: the held registered grant is returned unchanged, after
         the same mandatory live confirmation every other branch performs."""
         # [impl->req~grants-dest-idempotent-repeat~1]
@@ -1095,21 +1223,28 @@ class RegisteredGrantClaim:
             raise FreeGrantError("the repeat returns the user's own registered grant")
         return terminal_event(AttemptPhase.success, AuthEventResult.succeeded,
                               operation=AuthOperation.claim_registered_grant,
-                              actor=_actor_for(row, alias),
+                              actor=_actor_for(row, alias, subject_hasher),
                               details=registered_audit_details(
                                   row, alias=alias,
                                   destination=RegisteredDestination.idempotent_repeat,
                                   grant_id=grant.grant_id))
 
 
-def _actor_for(row: ExternalIdentityRow, alias: DerivedValue) -> AuthActor:
-    """The barrier actor context the audit row carries: the issuer and the stored provider, with
-    no raw subject and no raw provider account identifier."""
+def _actor_for(row: ExternalIdentityRow, alias: DerivedValue,
+               subject_hasher: SubjectHasher) -> AuthActor:
+    """The barrier actor context the audit row carries: the issuer, the stored provider, and the
+    backend-verified subject as the shared keyed hash with the version of the key that produced
+    it — the one derivation every actor-populating event producer shares. No raw subject exists to
+    carry: `AuthActor` has no field for one, and no raw provider account identifier appears
+    either."""
     # [impl->req~grants-reg-audit-details~1]
+    # [impl->req~shared-auth-events-actor-subject-hash~1]
     assert_persisted_key_version(alias)
-    actor = AuthActor(issuer=row.issuer, provider=row.provider)
-    if actor.subject_hash is not None or actor.provider is not row.provider:
-        raise FreeGrantError("the actor carries the stored provider and no raw subject")
+    subject_hash, key_version = subject_hasher(actor_subject_preimage(row.issuer, row.subject))
+    actor = AuthActor(issuer=row.issuer, subject_hash=subject_hash,
+                      subject_hash_key_version=key_version, provider=row.provider)
+    if actor.subject_hash is None or actor.provider is not row.provider:
+        raise FreeGrantError("the actor carries the stored provider and the hashed subject")
     return actor
 
 

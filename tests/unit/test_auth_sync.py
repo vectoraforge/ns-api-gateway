@@ -9,9 +9,12 @@ from uuid import uuid4
 import pytest
 
 from nativespeaker.api.auth.audit import (
+    AuditAlreadyWrittenError,
     AuthActor,
     AuthAttempt,
+    AuthAuditWriter,
     AuthEventResult,
+    AuthResultCounter,
     InvalidTerminalOutcomeError,
     sync_event,
 )
@@ -372,13 +375,14 @@ class TestEndpointContract:
             assert raised.value.result is result
 
     # [utest->req~sessions-api-sync-handler-returns-state~1]
-    def test_the_handler_returns_entitlement_state_from_the_three_tables(self):
+    async def test_the_handler_returns_entitlement_state_from_the_three_tables(self):
         rows = (active_grant(status=AccessGrantStatus.active, tier_id="silver",
                              monthly_credits=50, source=AccessGrantSource.subscription),)
-        body = sync_handler(linked(IdentityProvider.google),
-                            session(rows=rows, usage=("2026-03", 7),
-                                    provider=IdentityProvider.google),
-                            now=NOW)
+        body = await sync_handler(linked(IdentityProvider.google),
+                                  session(rows=rows, usage=("2026-03", 7),
+                                          provider=IdentityProvider.google),
+                                  audit_attempt=sync_attempt(), audit=make_writer(RecordingSink()),
+                                  actor=_actor(), now=NOW)
         assert body["entitlement"]["tier_id"] == "silver"
         assert body["entitlement"]["monthly_credits"] == 50
         assert body["entitlement"]["monthly_used"] == 7
@@ -389,23 +393,31 @@ class TestEndpointContract:
         assert SYNC_BUSINESS_WRITES == frozenset()
 
     # [utest->req~sessions-api-sync-handler-returns-state~1]
-    def test_the_handler_runs_the_admission_precondition_before_reading(self):
+    async def test_the_handler_runs_the_admission_precondition_before_reading(self):
         handle = session()
+        sink = RecordingSink()
         with pytest.raises(BarrierRejectionError):
-            sync_handler(VerifiedIdentityContext(issuer=ISSUER, subject="sub-1",
-                                                 outcome=ResolutionOutcome.blocked_user),
-                         handle, now=NOW)
+            await sync_handler(VerifiedIdentityContext(issuer=ISSUER, subject="sub-1",
+                                                       outcome=ResolutionOutcome.blocked_user),
+                               handle, audit_attempt=sync_attempt(), audit=make_writer(sink),
+                               actor=_actor(), now=NOW)
         assert handle.reads == []
+        # The barrier owns that rejection's row; the handler wrote none of its own.
+        assert sink.rows == []
 
     # [utest->req~sessions-api-sync-no-client-snapshot-trust~1]
-    def test_an_offered_client_snapshot_is_refused_rather_than_merged(self):
+    async def test_an_offered_client_snapshot_is_refused_rather_than_merged(self):
         for field in ("client_snapshot", "cached_entitlement", "last_known_tier",
                       "cached_identity_provider"):
             with pytest.raises(SyncError):
-                sync_handler(linked(), session(), now=NOW, request_body={field: "anything"})
+                await sync_handler(linked(), session(), audit_attempt=sync_attempt(),
+                                   audit=make_writer(RecordingSink()), actor=_actor(), now=NOW,
+                                   request_body={field: "anything"})
         # A body carrying nothing the snapshot list names is simply not read.
-        assert sync_handler(linked(), session(), now=NOW,
-                            request_body={"unrelated": 1})["identity_provider"] == "anonymous"
+        body = await sync_handler(linked(), session(), audit_attempt=sync_attempt(),
+                                  audit=make_writer(RecordingSink()), actor=_actor(), now=NOW,
+                                  request_body={"unrelated": 1})
+        assert body["identity_provider"] == "anonymous"
         assert SYNC_RESPONSE_IS_ADVISORY is True
 
     # The endpoint's purpose and the completeness of its must-not list are reference statements
@@ -414,6 +426,35 @@ class TestEndpointContract:
     def test_the_prohibitions_are_exactly_the_read_only_contract_must_not_list(self):
         assert FORBIDDEN_EFFECTS == frozenset(SyncEffect)
         assert set(PROHIBITED_CALLS.values()) <= FORBIDDEN_EFFECTS
+
+
+class RecordingSink:
+    """The `audit.auth_events` sink, recording the rows the shared writer appends."""
+
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+
+    async def insert(self, session, row) -> None:
+        self.rows.append(dict(row))
+
+
+class FakeSession:
+    async def commit(self) -> None:
+        return None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        return None
+
+
+def make_writer(sink: RecordingSink) -> AuthAuditWriter:
+    return AuthAuditWriter(sink=sink, counter=AuthResultCounter(), session_factory=FakeSession)
+
+
+def sync_attempt() -> AuthAttempt:
+    return AuthAttempt("POST", "/auth/sync")
 
 
 class TestAuditedAttemptPath:
@@ -444,6 +485,26 @@ class TestAuditedAttemptPath:
         # And no result outside the endpoint's terminal outcomes can be recorded for it.
         with pytest.raises(InvalidTerminalOutcomeError):
             sync_attempt_event(AuthEventResult.revocation_unconfirmed, actor=_actor())
+
+    # [utest->req~sessions-api-sync-audited-attempt-path~1]
+    async def test_the_response_is_not_produced_without_the_attempts_one_row(self):
+        sink = RecordingSink()
+        writer = make_writer(sink)
+        attempt = sync_attempt()
+        body = await sync_handler(linked(IdentityProvider.google),
+                                  session(provider=IdentityProvider.google),
+                                  audit_attempt=attempt, audit=writer, actor=_actor(), now=NOW)
+        assert body["identity_provider"] == "google"
+        # Exactly one row, with `operation = 'sync'`, appended before the response was returned.
+        assert [(row["operation"], row["result"]) for row in sink.rows] == \
+            [(AuthOperation.sync, AuthEventResult.succeeded)]
+        assert sink.rows[0]["challenge_row_id"] is None
+        assert sink.rows[0]["details"]["mutation"] == {}
+        # A second row for the same attempt is refused rather than appended.
+        with pytest.raises(AuditAlreadyWrittenError):
+            await sync_handler(linked(), session(), audit_attempt=attempt, audit=writer,
+                               actor=_actor(), now=NOW)
+        assert len(sink.rows) == 1
 
     # [utest->req~sessions-api-sync-audited-attempt-path~1]
     def test_an_admission_rejection_ahead_of_the_route_match_writes_no_row(self):

@@ -8,14 +8,19 @@ from uuid import UUID, uuid7
 import pytest
 from pydantic import SecretStr
 
-from nativespeaker.api.auth.audit import AuthEventResult
-from nativespeaker.api.auth.barrier import ResolutionOutcome, VerifiedIdentityContext
+from nativespeaker.api.auth.audit import AuthEventResult, KeyedSubjectHasher
+from nativespeaker.api.auth.barrier import (
+    ResolutionOutcome,
+    VerifiedIdentityContext,
+    barrier_result_for,
+)
 from nativespeaker.api.auth.challenges import ClaimOutcome
 from nativespeaker.api.auth.derived_identifiers import (
     HmacKey,
     IdpAccountAliasIndex,
     KeyFamily,
     KeyRing,
+    actor_subject_preimage,
     idp_account_hash,
 )
 from nativespeaker.api.auth.entitlement import AccessGrantSource, AccessGrantStatus
@@ -31,14 +36,14 @@ from nativespeaker.api.auth.free_grants import (
     FreeGrantError,
     FreeGrantRejected,
 )
-from nativespeaker.api.auth.grant_failures import GrantFailureError
+from nativespeaker.api.auth.grant_failures import GrantFailureError, grants_client_class
 from nativespeaker.api.auth.invariants import (
     GateConsumptionKind,
     ProviderAccount,
     ProviderAccountGates,
 )
 from nativespeaker.api.auth.locks import LockingPath, LockLedger
-from nativespeaker.api.auth.operations import AuthOperation, IdentityProvider
+from nativespeaker.api.auth.operations import AuthOperation, IdentityProvider, route_for
 from nativespeaker.api.auth.proof_adapters import (
     AndroidClaimMaterial,
     AppleCredentials,
@@ -52,8 +57,14 @@ from nativespeaker.api.auth.proof_adapters import (
     ReleaseKey,
     ReleasePolicyRegistry,
     ReleaseRecallPolicy,
+    TurnstileDenied,
+    TurnstileUnavailable,
 )
 from nativespeaker.api.auth.proof_endpoints import ClaimBranch
+from nativespeaker.api.auth.registered_grant_failures import (
+    RegClaimCondition,
+    classify_registered_failure,
+)
 from nativespeaker.api.auth.registered_grants import (
     ACCOUNT_LAYER_BINDINGS,
     CLIENT_REACHABLE_GRANT_ENDERS,
@@ -89,6 +100,7 @@ from nativespeaker.api.auth.registered_grants import (
     select_destination,
     supersession_write_order,
 )
+from nativespeaker.api.auth.taxonomy import ClientErrorClass, remediation_for
 from nativespeaker.api.quota.grants import GrantRow
 
 NOW = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
@@ -139,6 +151,9 @@ def key_ring() -> KeyRing:
     return KeyRing(KeyFamily.k_idp_account, current=HmacKey(version=1, secret=b"i" * 32))
 
 
+SUBJECT_HASHER = KeyedSubjectHasher(key=b"s" * 32, key_version=3)
+
+
 def alias_index(ring: KeyRing | None = None,
                 gates: ProviderAccountGates | None = None) -> IdpAccountAliasIndex:
     return IdpAccountAliasIndex(gates or ProviderAccountGates(), ring or key_ring())
@@ -171,12 +186,21 @@ class FakeDeviceCheck:
         return {"acknowledged": self.acknowledged}
 
 
+DEFAULT_RECALL: dict[str, Any] = {"registered_account_grant_recall": False}
+
+
 class FakePlayIntegrity:
-    def __init__(self, *, recall: dict[str, Any] | None = None):
-        self.recall = {"registered_account_grant_recall": False} if recall is None else recall
+    def __init__(self, *, recall: dict[str, Any] | None = DEFAULT_RECALL):
+        # `recall=None` is a verdict carrying no Device Recall block at all, as a release the
+        # checked-in policy classes `no_device_recall` produces.
+        self.recall = recall
         self.writes: list[dict[str, Any]] = []
+        self.decodes: list[str] = []
 
     def decode_verdict(self, *, integrity_token: str, credentials: Any) -> Any:
+        self.decodes.append(integrity_token)
+        if self.recall is None:
+            return {"appIntegrity": APP_INTEGRITY}
         return {"appIntegrity": APP_INTEGRITY, "deviceRecall": self.recall}
 
     def write_recall(self, *, integrity_token: str, credentials: Any, state: Any,
@@ -196,8 +220,8 @@ def claim_to_kind(kind: ClaimBranch,
                 ClaimBranch.web: WEB_EVIDENCE}[kind]
     claim = RegisteredGrantClaim()
     claim.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    claim.claim_challenge(lambda: ClaimOutcome.claimed)
     claim.resolve_identity(context_for(row), row)
+    claim.claim_challenge(lambda: ClaimOutcome.claimed)
     claim.resolve_kind(evidence)
     claim.confirm_binding(row, provider_data or GOOGLE_PROVIDER_DATA, index)
     return claim
@@ -219,7 +243,8 @@ def run_web_claim(*,
     return claim, claim.activate(row=row, grant_id=grant_id or uuid7(), tier_id=FREE_TIER,
                                  alias_index=index, transaction=transaction,
                                  locks=LockLedger(LockingPath.claim_registered_grant_completion),
-                                 consume_challenge=lambda: True, carried_usage=carried_usage,
+                                 consume_challenge=lambda: True,
+                                 subject_hasher=SUBJECT_HASHER, carried_usage=carried_usage,
                                  now=NOW)
 
 
@@ -241,7 +266,8 @@ def run_ios_claim(*,
     activation = claim.activate(row=row, grant_id=uuid7(), tier_id=FREE_TIER, alias_index=index,
                                 transaction=transaction,
                                 locks=LockLedger(LockingPath.claim_registered_grant_completion),
-                                consume_challenge=lambda: True, write=write, now=NOW)
+                                consume_challenge=lambda: True,
+                                 subject_hasher=SUBJECT_HASHER, write=write, now=NOW)
     return claim, transport, activation
 
 
@@ -289,14 +315,14 @@ def test_the_barrier_supplies_the_linked_active_identity_and_nothing_else_does()
     row = google_row()
     claim = RegisteredGrantClaim()
     claim.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    claim.claim_challenge(lambda: ClaimOutcome.claimed)
     assert claim.resolve_identity(context_for(row), row) is row
-    assert claim.steps[-1] is RegisteredClaimStep.identity_barrier
+    claim.claim_challenge(lambda: ClaimOutcome.claimed)
+    assert claim.steps[-2:] == [RegisteredClaimStep.identity_barrier,
+                                RegisteredClaimStep.challenge_claim]
 
     # A pre-auth caller of this linked-only endpoint is refused.
     unlinked = RegisteredGrantClaim()
     unlinked.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    unlinked.claim_challenge(lambda: ClaimOutcome.claimed)
     with pytest.raises(FreeGrantRejected) as refused:
         unlinked.resolve_identity(context_for(row, ResolutionOutcome.pre_auth), row)
     assert refused.value.error_code == "preauth_identity_not_allowed"
@@ -305,21 +331,36 @@ def test_the_barrier_supplies_the_linked_active_identity_and_nothing_else_does()
     historical = google_row(identity_state=IdentityState.historical)
     stale = RegisteredGrantClaim()
     stale.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    stale.claim_challenge(lambda: ClaimOutcome.claimed)
     with pytest.raises(FreeGrantRejected) as unavailable:
         stale.resolve_identity(context_for(historical), historical)
     assert unavailable.value.error_code == "account_unavailable"
+    assert unavailable.value.result is AuthEventResult.historical_identity
+
+    # A blocked user and a historical-identity *outcome* keep their own distinct internal results
+    # under that same shared class, and neither is ever sent into create-user.
+    for outcome, result in ((ResolutionOutcome.blocked_user, AuthEventResult.blocked_user),
+                            (ResolutionOutcome.historical_identity,
+                             AuthEventResult.historical_identity)):
+        refused_account = RegisteredGrantClaim()
+        refused_account.admit(pre_consumption_passed=True, handler_admission_passed=True)
+        with pytest.raises(FreeGrantRejected) as barred:
+            refused_account.resolve_identity(context_for(row, outcome), row)
+        assert barred.value.result is result
+        assert barred.value.error_code == "account_unavailable"
+        assert remediation_for(ClientErrorClass.account_unavailable).next_route \
+            != "/auth/create-user"
+        # Every enforcement point reads the barrier's own predicate for this decision.
+        assert barrier_result_for(outcome, *route_for(AuthOperation.claim_registered_grant)) \
+            is result
 
     # The barrier's `(issuer, subject)` is mandatory, and the resolved row is the same row.
     empty = RegisteredGrantClaim()
     empty.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    empty.claim_challenge(lambda: ClaimOutcome.claimed)
     with pytest.raises(FreeGrantError):
         empty.resolve_identity(
             VerifiedIdentityContext(issuer="", subject="", outcome=ResolutionOutcome.linked), row)
     other = RegisteredGrantClaim()
     other.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    other.claim_challenge(lambda: ClaimOutcome.claimed)
     with pytest.raises(FreeGrantError):
         other.resolve_identity(context_for(google_row()), row)
 
@@ -338,7 +379,6 @@ def test_no_device_proof_is_identity_ownership_or_account_resolution_evidence():
     row = google_row()
     claim = RegisteredGrantClaim()
     claim.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    claim.claim_challenge(lambda: ClaimOutcome.claimed)
     with pytest.raises(FreeGrantError):
         claim.resolve_identity(context_for(row), row,
                                offered_identity_inputs=["app_attest_attestation"])
@@ -550,8 +590,9 @@ def test_eligibility_reads_stored_state_and_never_registered_at_or_live_state():
 # [utest->req~grants-reg-rule-device-checked-kinds-bit~1]
 def test_the_device_checked_kinds_read_check_write_then_activate_and_a_set_bit_is_exhausted():
     claim, transport, activation = run_ios_claim()
-    assert claim.steps == [RegisteredClaimStep.admission, RegisteredClaimStep.challenge_claim,
-                           RegisteredClaimStep.identity_barrier, RegisteredClaimStep.claim_kind,
+    assert claim.steps == [RegisteredClaimStep.admission,
+                           RegisteredClaimStep.identity_barrier,
+                           RegisteredClaimStep.challenge_claim, RegisteredClaimStep.claim_kind,
                            RegisteredClaimStep.provider_data_confirmation,
                            RegisteredClaimStep.device_state_read,
                            RegisteredClaimStep.database_eligibility,
@@ -586,6 +627,75 @@ def test_the_device_checked_kinds_read_check_write_then_activate_and_a_set_bit_i
     with pytest.raises(FreeGrantRejected) as turnstile:
         denied.read_registered_state(turnstile=lambda: False)
     assert turnstile.value.error_code == "verification_required"
+    # Anything re-deriving the class from the audited result gets the same answer, so the row and
+    # the response can never disagree about one event.
+    assert grants_client_class(turnstile.value.result,
+                              operation=AuthOperation.claim_registered_grant) \
+        is ClientErrorClass.verification_required
+    assert classify_registered_failure(RegClaimCondition.turnstile_denied).result \
+        is turnstile.value.result
+    # The adapter's own denial and its dependency failure keep their distinct classes.
+    def raise_denied() -> bool:
+        raise TurnstileDenied("timeout-or-duplicate")
+
+    def raise_unavailable() -> bool:
+        raise TurnstileUnavailable("siteverify is unreachable")
+
+    for failing, expected in ((raise_denied, "verification_required"),
+                              (raise_unavailable, "verification_temporarily_unavailable")):
+        web_kind = claim_to_kind(ClaimBranch.web, google_row(), alias_index())
+        with pytest.raises(FreeGrantRejected) as rejected:
+            web_kind.read_registered_state(turnstile=failing)
+        assert rejected.value.error_code == expected
+        # A rejected attempt's audit details carry the stored provider and the key version.
+        assert rejected.value.audit_details is not None
+        details = rejected.value.audit_details
+        assert details["identity"]["provider"] == str(IdentityProvider.google)
+        assert details["anti_abuse"]["idp_account_hash_key_version"] == 1
+        assert "google-account-1" not in str(details)
+
+
+# [utest->req~grants-reg-rule-device-checked-kinds-bit~1]
+# [utest->req~grants-reg-gate-write-registered-bit~1]
+def test_an_android_release_without_device_recall_rests_on_the_account_rules_alone():
+    # A Play Integrity verdict is still required, and it still decides; but a release the
+    # checked-in policy classes `no_device_recall` carries no registered-claimed bit, so nothing
+    # is read from one, nothing is written to one, and no recall slot is burned.
+    row = google_row(native_claim_platform=NativeClaimPlatform.android_play_integrity)
+    index = alias_index()
+    claim = claim_to_kind(ClaimBranch.native_android, row, index)
+    transport = FakePlayIntegrity(recall=None)
+    adapter = PlayIntegrityAdapter(GOOGLE, transport, release_policy=NO_RECALL)
+    ledger = NativeClaimLedger()
+    assert claim.read_registered_state(native=(adapter, ANDROID_MATERIAL, ledger)) is False
+    assert transport.decodes, "the Play Integrity verdict is required regardless"
+    assert claim.durable_bit is False
+    claim.check_database_eligibility(grants=(), committed_free_sources=(), now=NOW)
+    # There is no bit to write, and the claim activates on the account rules alone.
+    with pytest.raises(FreeGrantError):
+        claim.write_registered_bit(adapter, ANDROID_MATERIAL, ledger=ledger)
+    activation = claim.activate(row=row, grant_id=uuid7(), tier_id=FREE_TIER, alias_index=index,
+                                transaction=object(),
+                                locks=LockLedger(LockingPath.claim_registered_grant_completion),
+                                consume_challenge=lambda: True, subject_hasher=SUBJECT_HASHER,
+                                now=NOW)
+    assert activation.grant["source"] is AccessGrantSource.registered_account_grant
+    assert transport.writes == []
+    # A `device_recall_required` release still performs the whole read-check-write-confirm
+    # sequence before activation.
+    required_row = google_row(native_claim_platform=NativeClaimPlatform.android_play_integrity)
+    required = claim_to_kind(ClaimBranch.native_android, required_row, alias_index())
+    recall_transport = FakePlayIntegrity()
+    recall_adapter = PlayIntegrityAdapter(GOOGLE, recall_transport,
+                                         release_policy=RECALL_REQUIRED)
+    recall_ledger = NativeClaimLedger()
+    assert required.read_registered_state(
+        native=(recall_adapter, ANDROID_MATERIAL, recall_ledger)) is False
+    assert required.durable_bit is True
+    required.check_database_eligibility(grants=(), committed_free_sources=(), now=NOW,
+                                       ledger=recall_ledger)
+    write = required.write_registered_bit(recall_adapter, ANDROID_MATERIAL, ledger=recall_ledger)
+    assert write.confirmed and recall_transport.writes
 
 
 # [utest->req~grants-reg-rule-one-active-grant~1]
@@ -615,7 +725,8 @@ def test_the_operation_never_leaves_two_active_grants_or_two_allowances():
         claim.activate(row=row, grant_id=uuid7(), tier_id=FREE_TIER, alias_index=index,
                        transaction=object(),
                        locks=LockLedger(LockingPath.claim_registered_grant_completion),
-                       consume_challenge=lambda: True, now=NOW)
+                       consume_challenge=lambda: True,
+                                 subject_hasher=SUBJECT_HASHER, now=NOW)
 
 
 # --- The destination rules -------------------------------------------------------------------------
@@ -701,13 +812,14 @@ def test_the_idempotent_repeat_returns_the_same_grant_and_a_foreign_consumption_
         now=NOW, gate_consumption_grant_id=own.grant_id)
     assert repeat.destination is RegisteredDestination.idempotent_repeat
     alias = registered_account_alias(index, registered_provider_account(row))
-    event = claim.repeat(row, alias=alias, grant=own)
+    event = claim.repeat(row, alias=alias, grant=own, subject_hasher=SUBJECT_HASHER)
     assert event.result is AuthEventResult.succeeded
     with pytest.raises(FreeGrantError):
         claim.activate(row=row, grant_id=uuid7(), tier_id=FREE_TIER, alias_index=index,
                        transaction=object(),
                        locks=LockLedger(LockingPath.claim_registered_grant_completion),
-                       consume_challenge=lambda: True, now=NOW)
+                       consume_challenge=lambda: True,
+                                 subject_hasher=SUBJECT_HASHER, now=NOW)
 
 
 # [utest->req~grants-dest-supersession-conversion~1]
@@ -797,5 +909,10 @@ def test_the_audit_details_carry_the_stored_provider_and_key_version_and_no_raw_
     _claim, activation = run_web_claim(row=row)
     assert activation.audit.details["identity"]["provider"] == "google"
     assert activation.audit.actor.issuer == row.issuer
-    assert activation.audit.actor.subject_hash is None
+    # The actor carries the backend-verified subject as the shared keyed hash, with the version of
+    # the key that produced it, so this row correlates with the same subject's other rows.
+    assert activation.audit.actor.subject_hash == SUBJECT_HASHER(
+        actor_subject_preimage(row.issuer, row.subject))[0]
+    assert activation.audit.actor.subject_hash_key_version == 3
+    assert row.subject not in str(activation.audit.details)
     assert activation.audit.operation is AuthOperation.claim_registered_grant

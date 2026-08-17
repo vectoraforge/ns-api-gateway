@@ -371,3 +371,74 @@ class TestProhibitions:
         handle = session()
         users_me_state(linked(), handle)
         assert handle.reads == ["profile_row", "store_tokens", "stored_provider"]
+
+
+class TestTheRegisteredRoute:
+    """The endpoint the app actually serves, not only the module that decides its payload."""
+
+    # [utest->req~sessions-api-users-me-fixed-response-shape~1]
+    # [utest->req~sessions-users-me-step-02~1]
+    # [utest->req~sessions-users-me-step-03~1]
+    def test_the_served_response_carries_every_store_entry_and_the_stored_provider(self, client):
+        from unit.conftest import TEST_STORE_TOKENS
+
+        response = client.get("/users/me")
+        assert response.status_code == 200
+        body = response.json()
+        # The stored registration state, under the same name `POST /auth/sync` reports it under.
+        assert body[REGISTRATION_STATE_FIELD] == IdentityProvider.anonymous.value
+        # An entry for every store provider, each carrying that store's persisted token by the
+        # field name that store's API uses, with no `null` anywhere.
+        assert set(body["store_purchase_tokens"]) == {str(store) for store in StoreProvider}
+        for store in StoreProvider:
+            entry = body["store_purchase_tokens"][str(store)]
+            assert entry == {ATTRIBUTION_FIELD_BY_STORE[store]: TEST_STORE_TOKENS[store]}
+        # The iOS client reads the Apple `app_account_token` straight out of this response.
+        assert storekit_app_account_token(body) == TEST_STORE_TOKENS[StoreProvider.apple]
+
+    # [utest->req~sessions-api-users-me-fixed-response-shape~1]
+    def test_no_client_supplied_signal_changes_what_the_served_response_carries(self, client):
+        plain = client.get("/users/me").json()
+        signalled = client.get("/users/me?platform=android",
+                               headers={"User-Agent": "ios/1.0", "X-Platform": "ios"}).json()
+        assert signalled["store_purchase_tokens"] == plain["store_purchase_tokens"]
+        assert signalled[REGISTRATION_STATE_FIELD] == plain[REGISTRATION_STATE_FIELD]
+
+    # [utest->req~sessions-api-users-me-fixed-response-shape~1]
+    # [utest->req~sessions-api-users-me-no-token-rotation~1]
+    def test_a_missing_token_row_fails_rather_than_returning_a_null_entry(self):
+        """A store with no `core.store_purchase_tokens` row is an internal invariant failure on
+        the served route too — never a `null` entry, and never a lazily minted replacement."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        import nativespeaker.api.routers.users as users_module
+        from nativespeaker.api.app.dependencies import (
+            get_current_user,
+            get_db,
+            get_identity_context,
+        )
+        from nativespeaker.api.app.errors import register_exception_handlers
+        from nativespeaker.api.routers import users_router
+        from unit.conftest import TEST_GRANT, TEST_IDENTITY, TEST_USER, store_tokens_db
+
+        usage = MagicMock()
+        usage.get_usage = AsyncMock(return_value=0)
+        grants = MagicMock()
+        grants.effective_grant = AsyncMock(return_value=TEST_GRANT)
+        only_apple = store_tokens_db({StoreProvider.apple: APPLE_TOKEN})
+        with (patch.object(users_module, "UsageDB", return_value=usage),
+              patch.object(users_module, "GrantsDB", return_value=grants),
+              patch.object(users_module, "StorePurchaseTokensDB", return_value=only_apple)):
+            app = FastAPI()
+            app.include_router(users_router)
+            register_exception_handlers(app)
+            app.dependency_overrides[get_current_user] = lambda: TEST_USER
+            app.dependency_overrides[get_identity_context] = lambda: TEST_IDENTITY
+            app.dependency_overrides[get_db] = lambda: MagicMock()
+            with TestClient(app, raise_server_exceptions=False) as served:
+                response = served.get("/users/me")
+        assert response.status_code == 500
+        assert "app_account_token" not in response.text

@@ -52,3 +52,10 @@ class UserProfileResponse(BaseModel):
     requests_used: int
     monthly_limit: int
     resets_at: datetime
+    # The account's stored registration state, under the same name `POST /auth/sync` reports it
+    # under, and one entry per store provider carrying that store's persisted attribution token.
+    # The shape is fixed: every store provider appears, on every platform, with no null case.
+    # [impl->req~sessions-api-users-me-fixed-response-shape~1]
+    # [impl->req~sessions-users-me-step-03~1]
+    identity_provider: str
+    store_purchase_tokens: dict[str, dict[str, str]]

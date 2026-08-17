@@ -661,16 +661,20 @@ class RevocationErrorCategory(StrEnum):
     ambiguous_outcome = "ambiguous_outcome"
 
 
-# A second outcome field beside `result` would split the outcome across two places.
+# A second outcome field beside `result` would split the outcome across two places. `result`
+# itself is one of them: the row's own column carries the outcome, so a `details.failure.result`
+# would be a second copy of it.
 _SECOND_OUTCOME_FIELDS: frozenset[str] = frozenset({
     "outcome", "revoked", "revocation_result", "revocation_status", "status", "succeeded",
+    "result",
 })
 
-# The whole of `details.failure` on a `revocation_unconfirmed` row. The set is an allowlist, not
-# a denylist, so raw Firebase messages, credentials, tokens, stack traces, high-cardinality
-# exception text and vendor response payloads are not expressible here whatever they are named.
+# The whole of `details.failure` on a `revocation_unconfirmed` row: the sanitized error category
+# and nothing else. The set is an allowlist, not a denylist, so raw Firebase messages,
+# credentials, tokens, stack traces, high-cardinality exception text and vendor response payloads
+# are not expressible here whatever they are named.
 # [impl->req~schema-auth-events-sign-out-all-row~1]
-REVOCATION_FAILURE_FIELDS: frozenset[str] = frozenset({"error_category", "result"})
+REVOCATION_FAILURE_FIELDS: frozenset[str] = frozenset({"error_category"})
 
 
 def sign_out_all_event(*,

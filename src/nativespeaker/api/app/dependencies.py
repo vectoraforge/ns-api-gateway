@@ -5,6 +5,7 @@ from fastapi import Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth import verified_identity
+from nativespeaker.api.auth.barrier import VerifiedIdentityContext
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.database.usage import QuotaStoreDB
 from nativespeaker.api.exceptions import AuthenticationError
@@ -54,6 +55,17 @@ def get_subscription_service(request: Request,
         firebase_service=request.app.state.firebase_service,
         product_id_to_plan=config.apple.product_id_to_plan,
     )
+
+
+def get_identity_context(request: Request) -> VerifiedIdentityContext:
+    """The barrier's typed verified identity context, as a dependency a handler can declare.
+
+    A handler that needs the resolved identity itself — its stored provider, its external
+    identity row — reads it here rather than accepting any client-supplied claim about it.
+    """
+    # [impl->req~shared-prehandler-barrier~1]
+    # [impl->req~shared-identity-from-verified-claims-only~1]
+    return verified_identity(request)
 
 
 async def get_current_user(request: Request,

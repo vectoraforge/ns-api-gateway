@@ -19,12 +19,16 @@ from nativespeaker.api.app.dependencies import (
     get_config,
     get_current_user,
     get_db,
+    get_identity_context,
     get_subscription_service,
     require_quota,
 )
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth import UserIdentity
+from nativespeaker.api.auth.barrier import ResolutionOutcome, VerifiedIdentityContext
 from nativespeaker.api.auth.entitlement import AccessGrantSource, AccessGrantStatus
+from nativespeaker.api.auth.invariants import StoreProvider
+from nativespeaker.api.auth.operations import IdentityProvider
 from nativespeaker.api.database import ChatsDB
 from nativespeaker.api.database.usage import EffectiveGrant
 from nativespeaker.api.exceptions import AuthenticationError
@@ -146,6 +150,27 @@ TEST_USER = User(
 # The effective grant the test user holds, and the tier allowance it points at.
 TEST_GRANT = EffectiveGrant(grant_id=uuid7(), tier_id="free", monthly_credits=10)
 
+# The barrier's typed verified identity context for the test user: the resolved linked identity
+# and the stored `core.external_identities.provider` column it carries.
+TEST_IDENTITY = VerifiedIdentityContext(issuer=TEST_ISSUER,
+                                        subject="test-user",
+                                        outcome=ResolutionOutcome.linked,
+                                        user_id=TEST_USER.id,
+                                        external_identity_id=uuid7(),
+                                        provider=IdentityProvider.anonymous)
+
+# The test user's persisted purchase-attribution tokens, one per store provider, as
+# `core.store_purchase_tokens` holds them.
+TEST_STORE_TOKENS = {StoreProvider.apple: str(uuid7()),
+                     StoreProvider.google_play: str(uuid7())}
+
+
+def store_tokens_db(tokens=None):
+    """A stand-in for the `core.store_purchase_tokens` read `GET /users/me` performs."""
+    db = AsyncMock()
+    db.tokens_for = AsyncMock(return_value=dict(TEST_STORE_TOKENS if tokens is None else tokens))
+    return db
+
 
 @pytest.fixture
 def mock_chats_db():
@@ -195,9 +220,11 @@ def client(mock_chats_db, mock_usage_db, mock_grants_db):
                           SubscriptionPlan.gold: 200,
                           SubscriptionPlan.platinum: 1000}
 
-    # Patch UsageDB/GrantsDB in users router (GET /users/me creates both directly)
+    # Patch UsageDB/GrantsDB/StorePurchaseTokensDB in users router (GET /users/me creates them
+    # directly)
     with (patch.object(users_module, "UsageDB", return_value=mock_usage_db),
-          patch.object(users_module, "GrantsDB", return_value=mock_grants_db)):
+          patch.object(users_module, "GrantsDB", return_value=mock_grants_db),
+          patch.object(users_module, "StorePurchaseTokensDB", return_value=store_tokens_db())):
         app = FastAPI()
         app.include_router(root_router)
         app.include_router(chats_router)
@@ -217,6 +244,7 @@ def client(mock_chats_db, mock_usage_db, mock_grants_db):
 
         app.dependency_overrides[get_db] = lambda: MagicMock()
         app.dependency_overrides[get_current_user] = lambda: TEST_USER
+        app.dependency_overrides[get_identity_context] = lambda: TEST_IDENTITY
         app.dependency_overrides[get_chat_service] = lambda: svc
         app.dependency_overrides[get_config] = lambda: mock_config
         app.dependency_overrides[require_quota] = lambda: None

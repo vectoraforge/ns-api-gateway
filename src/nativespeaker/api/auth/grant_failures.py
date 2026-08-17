@@ -608,21 +608,36 @@ def retry_budget_exhausted(step: RetryableStep, *, grants_written: int = 0) -> C
                                           f"{ANON_RETRY_TOTAL_ATTEMPTS} attempts")
 
 
+# The branches that carry a per-device bit, and so a write the vendor must confirm before a grant
+# row exists. The web branch has no such bit: its gate is the stored-binding match plus the bot
+# check, so a web retry has no write to confirm.
+DEVICE_BIT_BRANCHES: frozenset[ClaimBranch] = frozenset({ClaimBranch.native_ios,
+                                                         ClaimBranch.native_android})
+
+
 def whole_claim_retry(material: Any,
                       *,
+                      branch: ClaimBranch = ClaimBranch.native_ios,
                       previous_material: Any = None,
                       challenge_id: Any,
                       previous_challenge_id: Any = None,
                       write: DeviceBitWrite | None = None) -> Any:
     """A client retries a failed claim only as a whole new claim, with a fresh operation
-    challenge and fresh vendor material. The server never activates around a failed or ambiguous
-    write: only this attempt's own vendor-confirmed write permits a grant row."""
+    challenge and fresh platform proof material. The server never activates around a failed or
+    ambiguous write: on a branch that carries a per-device bit, only this attempt's own
+    vendor-confirmed write permits a grant row. The web branch carries no such bit — its retry
+    brings fresh Turnstile and `providerData` material and no write to confirm."""
     # [impl->req~grants-anon-retry-whole-claim~1]
+    if branch not in set(ClaimBranch):
+        raise GrantFailureError(f"{branch} is no claim branch")
     if previous_challenge_id is not None and challenge_id == previous_challenge_id:
         raise GrantFailureError("a retry is a whole new claim with a fresh operation challenge")
     fresh = retry_after_failed_claim(material, previous_material=previous_material)
-    # Never around the failed write: the grant row hangs on a confirmed write of this attempt.
-    assert_grant_row_permitted(write)
+    if branch in DEVICE_BIT_BRANCHES:
+        # Never around the failed write: the grant row hangs on a confirmed write of this attempt.
+        assert_grant_row_permitted(write)
+    elif write is not None:
+        raise GrantFailureError(f"{branch} carries no per-device bit write")
     return fresh
 
 
@@ -886,10 +901,12 @@ SHARED_CATALOG_CLASSES: frozenset[ClientErrorClass] = frozenset({
 })
 
 # `policy_rejected` is the one internal result whose class is not a function of the result alone.
-# On `claim_anonymous_grant` an anonymous-grant policy block is a durable free-credit block, while
-# a structural completion-time invariant violation is `operation_not_allowed`; `create-user`,
-# `upgrade-anonymous` and the registered claim are not free-credit paths, so their policy
-# rejection is structural either way.
+# On the two free-credit claims a structural completion-time invariant violation is
+# `operation_not_allowed` and everything else the result covers is that claim's own durable
+# free-credit block: the anonymous claim's unsatisfied web sign-in gate and Cloudflare denial, and
+# the registered claim's web-kind Turnstile denial, which `03` maps to `verification_required`.
+# `create-user` and `upgrade-anonymous` are not free-credit paths, so their policy rejection is
+# structural either way.
 _POLICY_REJECTED_CLASS: dict[AuthOperation, ClientErrorClass] = {
     # [impl->req~grants-class-verification-required~1]
     # [impl->req~grants-vr-cond-policy-rejected~1]
@@ -898,8 +915,8 @@ _POLICY_REJECTED_CLASS: dict[AuthOperation, ClientErrorClass] = {
     AuthOperation.create_user: ClientErrorClass.operation_not_allowed,
     # [impl->req~grants-class-operation-not-allowed~1]
     AuthOperation.upgrade_anonymous_to_registered: ClientErrorClass.operation_not_allowed,
-    # [impl->req~grants-class-operation-not-allowed~1]
-    AuthOperation.claim_registered_grant: ClientErrorClass.operation_not_allowed,
+    # [impl->req~grants-reg-gate-resolve-claim-kind~1]
+    AuthOperation.claim_registered_grant: ClientErrorClass.verification_required,
 }
 
 

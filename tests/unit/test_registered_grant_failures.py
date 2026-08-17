@@ -11,6 +11,7 @@ from nativespeaker.api.auth.external_identities import (
     ExternalIdentityRow,
     IdentityState,
     NativeClaimPlatform,
+    ProviderLookupFailedError,
 )
 from nativespeaker.api.auth.free_grants import FreeGrantError
 from nativespeaker.api.auth.grant_failures import (
@@ -35,6 +36,7 @@ from nativespeaker.api.auth.registered_grant_failures import (
     REG_CLIENT_CLASSES,
     REG_RETRY_ADDITIONAL_ATTEMPTS,
     REG_RETRY_TOTAL_ATTEMPTS,
+    REG_STEP_EXHAUSTED,
     RegClaimCondition,
     RegisteredStepFailed,
     RegRetryableStep,
@@ -279,6 +281,21 @@ def test_an_exhausted_retry_budget_rejects_temporarily_and_creates_no_grant():
     # The Firebase confirmation's own budget audits its own dependency result.
     firebase = registered_retry_budget_exhausted(RegRetryableStep.firebase_provider_data)
     assert firebase.result is AuthEventResult.firebase_lookup_unavailable
+    # A pre-activation *write* whose budget is spent audits the distinct write result: only the
+    # write can have burned the device slot, so a read outage and a burned slot stay tellable
+    # apart. The client class is the same for both.
+    for read_step, write_step in ((RegRetryableStep.devicecheck_read,
+                                   RegRetryableStep.devicecheck_write),
+                                  (RegRetryableStep.device_recall_read,
+                                   RegRetryableStep.device_recall_write)):
+        read = registered_retry_budget_exhausted(read_step)
+        write = registered_retry_budget_exhausted(write_step)
+        assert read.result is AuthEventResult.native_claim_unavailable
+        assert write.result is AuthEventResult.native_claim_write_failed
+        assert read.error_code == write.error_code \
+            == ClientErrorClass.verification_temporarily_unavailable
+        assert classify_registered_failure(
+            REG_STEP_EXHAUSTED[write_step]).result is AuthEventResult.native_claim_write_failed
     # A spent budget never leaves a grant behind.
     with pytest.raises(GrantFailureError):
         registered_retry_budget_exhausted(RegRetryableStep.devicecheck_write, grants_written=1)
@@ -392,23 +409,34 @@ def test_an_already_set_anonymous_device_state_closes_the_path_and_names_the_alt
 # [utest->req~grants-alt-cond-web-stored-binding~1]
 def test_the_web_alternate_path_needs_a_confirmed_stored_binding():
     row = google_row()
-    assert web_stored_binding_closure(row, classifier_passed=True, live_provider_matches=True,
-                                     live_uid_matches=True) \
-        is ClientErrorClass.device_grant_exhausted
+    matching = [{"providerId": "google.com", "uid": "google-account-1"}]
+    assert web_stored_binding_closure(row, matching) is ClientErrorClass.device_grant_exhausted
     # An empty, invalid-shape or mismatching result follows the durable sign-in-gate path
     # instead of the duplicate branch.
-    for kwargs in ({"classifier_passed": False, "live_provider_matches": True,
-                    "live_uid_matches": True},
-                   {"classifier_passed": True, "live_provider_matches": False,
-                    "live_uid_matches": True},
-                   {"classifier_passed": True, "live_provider_matches": True,
-                    "live_uid_matches": False}):
-        assert web_stored_binding_closure(row, **kwargs) \
-            is ClientErrorClass.verification_required
+    for result in ([],
+                   [{"providerId": "google.com", "uid": "someone-else"}],
+                   [{"providerId": "apple.com", "uid": "apple-1"}],
+                   [{"providerId": "google.com", "uid": "google-account-1"},
+                    {"providerId": "apple.com", "uid": "apple-1"}],
+                   [{"providerId": "password", "uid": "google-account-1"}]):
+        assert web_stored_binding_closure(row, result) is ClientErrorClass.verification_required
     anonymous = google_row(provider=IdentityProvider.anonymous, provider_uid=None)
-    assert web_stored_binding_closure(anonymous, classifier_passed=True,
-                                     live_provider_matches=True, live_uid_matches=True) \
+    assert web_stored_binding_closure(anonymous, matching) \
         is ClientErrorClass.verification_required
+    # An entry whose `uid` is empty is a malformed Admin record, which the identity file classes
+    # as an unavailable lookup rather than a client-caused denial.
+    assert web_stored_binding_closure(row, [{"providerId": "google.com", "uid": ""}]) \
+        is ClientErrorClass.verification_temporarily_unavailable
+    # An indeterminate lookup is not an empty, invalid-shape or mismatching result: it keeps the
+    # transient class rather than reporting the durable sign-in-gate one.
+    unavailable = web_stored_binding_closure(row, None)
+    assert unavailable is ClientErrorClass.verification_temporarily_unavailable
+    assert web_stored_binding_closure(
+        row, None,
+        lookup_failure=ProviderLookupFailedError(AuthEventResult.firebase_user_unresolved,
+                                                 ClientErrorClass.auth_required,
+                                                 retryable=False)) \
+        is ClientErrorClass.auth_required
 
 
 # [utest->req~grants-alt-cond-web-gate-conflict~1]

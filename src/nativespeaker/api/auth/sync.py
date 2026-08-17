@@ -23,6 +23,8 @@ import structlog
 from nativespeaker.api.auth.audit import (
     NO_ACTOR,
     AuthActor,
+    AuthAttempt,
+    AuthAuditWriter,
     AuthEvent,
     AuthEventResult,
     sync_event,
@@ -450,17 +452,21 @@ def assert_no_client_snapshot_trusted(request_body: Mapping[str, Any] | None = N
         raise SyncError(f"/auth/sync trusts no earlier client snapshot: {offered}")
 
 
-def sync_handler(context: VerifiedIdentityContext,
-                 session: ReadOnlySyncSession,
-                 *,
-                 now: datetime | None = None,
-                 request_body: Mapping[str, Any] | None = None) -> dict[str, Any]:
+async def sync_handler(context: VerifiedIdentityContext,
+                       session: ReadOnlySyncSession,
+                       *,
+                       audit_attempt: AuthAttempt,
+                       audit: AuthAuditWriter,
+                       actor: AuthActor,
+                       now: datetime | None = None,
+                       request_body: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The handler: it returns the current backend state for the resolved user — including the
     effective entitlement state derived from `core.access_grants`, `core.access_tiers` and
     `core.user_monthly_usage` — and performs no business-state mutation.
 
-    The admission precondition runs first, then the three reads, then the fixed response shape. No
-    client snapshot participates in any of it.
+    The admission precondition runs first, then the three reads, then the attempt's single
+    `audit.auth_events` row, and only then the fixed response shape. No client snapshot
+    participates in any of it.
     """
     # [impl->req~sessions-api-sync-handler-returns-state~1]
     # [impl->req~sessions-api-sync-no-client-snapshot-trust~1]
@@ -471,7 +477,15 @@ def sync_handler(context: VerifiedIdentityContext,
     if set(ENTITLEMENT_SOURCE_TABLES) != {"core.access_grants", "core.access_tiers",
                                           "core.user_monthly_usage"}:
         raise SyncError(f"the reported entitlement derives from {ENTITLEMENT_SOURCE_TABLES}")
-    return sync_response(sync_state(context, session, now=now))
+    state = sync_state(context, session, now=now)
+    # The attempt's one row, appended through the shared writer before the response is returned.
+    # The endpoint opens no transaction of its own — it mutates nothing — so the row is the
+    # standalone durable write of this attempt, and the writer's per-attempt claim is what makes
+    # a second row for one attempt impossible.
+    # [impl->req~sessions-api-sync-audited-attempt-path~1]
+    await audit.write_standalone(audit_attempt,
+                                 sync_attempt_event(sync_terminal_result(None), actor=actor))
+    return sync_response(state)
 
 
 # --- the audited attempt path ---------------------------------------------------------------------
