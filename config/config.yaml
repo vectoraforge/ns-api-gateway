@@ -30,3 +30,143 @@ quotas:
   silver: 50
   gold: 200
   platinum: 1000
+
+# The limits Envoy enforces. Declared here because the application configuration file is the
+# source of truth for every limit; the backend evaluates none of them.
+gateway_rate_limits:
+  upgrade_anonymous:
+    route: "POST /auth/upgrade-anonymous"
+    limit: "3/hour"
+    key: "issuer+subject_hash"
+    evaluate_after: "envoy_jwt_verification"
+
+# Every backend rate limit and admission control. The recommended values shipped here are
+# initial deployment policy; this file remains the source of truth.
+# [impl->req~ratelimit-config-shape-and-defaults~1]
+# [impl->req~ratelimit-recommended-values-are-initial-policy~1]
+# [impl->req~ratelimit-all-limits-in-config-no-hardcoding~1]
+rate_limits:
+  # [impl->req~ratelimit-config-key-enabled~1]
+  enabled: true
+  # Shared Redis or Valkey in production, so counters apply across all backend replicas.
+  # [impl->req~ratelimit-config-key-storage-uri~1]
+  # [impl->req~ratelimit-shared-storage-in-production~1]
+  storage_uri: "${RATE_LIMIT_STORAGE_URI}"
+  # [impl->req~ratelimit-config-key-strategy~1]
+  strategy: moving-window
+  environment: "${APP_ENVIRONMENT}"
+  client_address:
+    ipv6_prefix: 64
+    unresolved_limit: "10/minute"
+  # [impl->req~ratelimit-config-key-default~1]
+  default:
+    limit: "120/minute"
+    key: "ip"
+    failure_mode: fail_closed
+  auth_sync:
+    limit: "60/minute"
+    key: "issuer+subject_hash"
+  users_me:
+    limit: "30/minute"
+    key: "issuer+subject_hash"
+  create_user_prepare:
+    limit: "10/minute"
+    key: "ip"
+  create_user:
+    limit: "10/minute"
+    key: "ip"
+  create_user_firebase_identity_lookup:
+    limit: "60/minute"
+    key: "deployment"
+    failure_mode: fail_closed
+  create_user_firebase_identity_lookup_ip:
+    limit: "10/minute"
+    key: "ip"
+    failure_mode: fail_closed
+  upgrade_anonymous_prepare:
+    limit: "5/minute; 20/hour"
+    key: "ip+issuer+subject_hash"
+  upgrade_anonymous_to_registered_firebase_identity_lookup:
+    limit: "3/minute; 10/hour"
+    key: "deployment+firebase_project_id+issuer+subject_hash"
+    failure_mode: fail_closed
+  claim_anonymous_grant_prepare:
+    limit: "5/minute; 20/hour"
+    key: "user"
+  claim_anonymous_grant_prepare_ip:
+    limit: "10/minute; 60/hour"
+    key: "ip"
+  claim_anonymous_grant:
+    limit: "2/minute; 6/hour; 20/day"
+    key: "user"
+  claim_anonymous_grant_ip:
+    limit: "10/minute; 30/hour; 100/day"
+    key: "ip"
+  claim_registered_grant_prepare:
+    limit: "5/minute; 20/hour"
+    key: "user"
+  claim_registered_grant:
+    limit: "2/minute; 6/hour; 20/day"
+    key: "user+idp_account_hash"
+  restore_subscription_user:
+    limit: "10/day"
+    key: "user"
+  restore_subscription_subject:
+    limit: "20/day"
+    key: "issuer+subject_hash"
+  restore_subscription_proof_fingerprint_failed:
+    limit: "5/hour"
+    key: "restore_proof_fingerprint"
+  restore_subscription_proof_fingerprint_total:
+    limit: "20/day"
+    key: "restore_proof_fingerprint"
+  restore_subscription_store_subscription_cross_account:
+    limit: "3/hour"
+    key: "provider+external_id"
+  restore_subscription_store_subscription_live_verification:
+    limit: "1/minute"
+    key: "provider+external_id"
+  restore_subscription_destination_rejected_cross_account:
+    limit: "3/day"
+    key: "user"
+  quota_checked_request:
+    limit: "120/minute"
+    key: "user"
+  adapter_play_integrity_verify:
+    limit: "60/minute"
+    key: "deployment+package_name"
+  adapter_devicecheck_read:
+    limit: "30/minute"
+    key: "deployment+apple_team_id"
+    failure_mode: fail_closed
+  adapter_devicecheck_write:
+    limit: "20/minute"
+    key: "deployment+apple_team_id"
+    failure_mode: fail_closed
+  adapter_play_integrity_device_recall_read:
+    limit: "30/minute"
+    key: "deployment+package_name"
+    failure_mode: fail_closed
+  adapter_play_integrity_device_recall_write:
+    limit: "20/minute"
+    key: "deployment+package_name"
+    failure_mode: fail_closed
+  adapter_cloudflare_turnstile_siteverify:
+    limit: "60/minute"
+    key: "deployment"
+    failure_mode: fail_closed
+  adapter_firebase_lookup:
+    limit: "30/minute"
+    key: "deployment+firebase_project_id"
+  adapter_apple_store_status:
+    limit: "30/minute"
+    key: "deployment+bundle_id"
+  adapter_google_play_subscription_status:
+    limit: "30/minute"
+    key: "deployment+package_name"
+  provider_apple_store_live_verification_global:
+    limit: "300/minute"
+    key: "deployment"
+  provider_google_play_live_verification_global:
+    limit: "300/minute"
+    key: "deployment"

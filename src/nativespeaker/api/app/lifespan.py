@@ -14,6 +14,7 @@ from nativespeaker.api.auth.routes import assert_route_categories
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.logs import setup_logging
 from nativespeaker.api.models import User  # noqa: F401  (registers the mapped tables)
+from nativespeaker.api.ratelimit import RateLimiter, assert_rate_limit_config
 from nativespeaker.api.services import FirebaseService, LLMService, create_apple_verifier
 
 logger = structlog.get_logger()
@@ -21,7 +22,8 @@ logger = structlog.get_logger()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    config = EnvironmentConfig().app_config
+    environment = EnvironmentConfig()
+    config = environment.app_config
     if config is None:
         raise RuntimeError("Configuration failed to load")
     app.state.config = config
@@ -32,6 +34,13 @@ async def lifespan(app: FastAPI):
     # Fail closed on route-category and ownership-key violations before serving traffic
     assert_route_categories(app)
     assert_ownership_keys(SQLModel.metadata)
+
+    # Fail closed on a rate-limit configuration this specification cannot serve: a missing
+    # named entry, a forbidden one, or a security-sensitive control configured fail-open.
+    # [impl->req~ratelimit-config-must-include-at-least~1]
+    # [impl->req~ratelimit-config-turnstile-siteverify-entry~1]
+    assert_rate_limit_config(config.rate_limits, raw=(environment.raw_config or {}).get("rate_limits"))
+    app.state.rate_limiter = RateLimiter(config.rate_limits)
 
     # Initialize database
     db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)

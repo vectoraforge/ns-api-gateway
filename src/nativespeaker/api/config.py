@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from nativespeaker.api.models import SubscriptionPlan
+from nativespeaker.api.ratelimit.config import GatewayRateLimitsConfig, RateLimitsConfig
 
 LogLevel = StrEnum("LogLevel", {k: k for k in logging.getLevelNamesMapping()})
 
@@ -82,6 +83,13 @@ class AppConfig(BaseConfig):
     apple: AppleConfig = Field(default_factory=AppleConfig)
     quotas: dict[SubscriptionPlan, int]
 
+    # Every rate limit and admission control is exposed here: no endpoint hard-codes its limit
+    # string, storage URI, key function, cost, strategy, enabled state, or failure behaviour.
+    # [impl->req~ratelimit-all-limits-in-config-no-hardcoding~1]
+    # [impl->req~ratelimit-config-must-include-at-least~1]
+    rate_limits: RateLimitsConfig
+    gateway_rate_limits: GatewayRateLimitsConfig | None = None
+
     chats_limit: int = Field(default=50, ge=1)
     messages_limit: int = Field(default=50, ge=1)
 
@@ -96,6 +104,7 @@ class EnvironmentConfig(BaseConfig):
     examples_filename: str = Field(default="examples.yaml")
 
     app_config: AppConfig | None = None
+    raw_config: dict | None = None
 
     @model_validator(mode="after")
     def load_config(self):
@@ -103,6 +112,7 @@ class EnvironmentConfig(BaseConfig):
         prompt_path = self.config_dir / self.prompt_filename
         examples_path = self.config_dir / self.examples_filename
         yaml_data = yaml.safe_load(config_path.read_text())
+        self.raw_config = yaml_data
         self.app_config = AppConfig(**yaml_data,
                                     prompt=prompt_path.read_text(),
                                     examples=yaml.safe_load(examples_path.read_text()))

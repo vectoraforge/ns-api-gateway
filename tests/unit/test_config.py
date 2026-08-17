@@ -58,6 +58,13 @@ quotas:
   silver: 50
   gold: 200
   platinum: 1000
+rate_limits:
+  enabled: true
+  storage_uri: "memory://"
+  strategy: moving-window
+  default:
+    limit: "120/minute"
+    key: "ip"
 """
     prompt_content = "Analyze {lang} phrase: {phrase}"
     examples_content = """
