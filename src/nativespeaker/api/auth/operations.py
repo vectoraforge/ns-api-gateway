@@ -103,6 +103,12 @@ def variants_for(operation: AuthOperation) -> tuple[IdentityProvider, ...]:
     return _BY_OPERATION[operation].variants
 
 
+def route_for(operation: AuthOperation) -> tuple[str, str]:
+    """The method and path the inventory names for this operation."""
+    entry = _BY_OPERATION[operation]
+    return entry.method, entry.path
+
+
 class InvalidOperationVariantError(ValueError):
     """The client-declared operation variant is not one this operation defines."""
 

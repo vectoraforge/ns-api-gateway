@@ -256,12 +256,12 @@ class _RecordingShared:
     def __init__(self):
         self.calls: list[tuple] = []
 
-    async def prepare(self, operation, variant, identity, endpoint):
+    async def prepare(self, operation, variant, identity, endpoint, **_):
         endpoint.calls.append("shared-prepare")
         self.calls.append(("prepare", operation, variant))
         return {"challenge_id": "issued"}
 
-    async def complete(self, operation, declared_variant, challenge_id, identity, endpoint):
+    async def complete(self, operation, declared_variant, challenge_id, identity, endpoint, **_):
         endpoint.calls.append("shared-complete")
         self.calls.append(("complete", operation, declared_variant, challenge_id))
         return {"completed": challenge_id}

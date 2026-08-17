@@ -9,7 +9,9 @@ from nativespeaker.api.app.main import app as real_app
 CONTRACT_CODES = {"invalid_request", "validation_error", "unauthorized", "not_found",
                   "service_unavailable", "internal_error", "quota_exceeded", "out_of_scope",
                   # Shared client-visible auth classes
-                  "auth_required", "preauth_identity_not_allowed", "account_unavailable"}
+                  "auth_required", "preauth_identity_not_allowed", "account_unavailable",
+                  "identity_already_linked", "challenge_required", "proof_rejected",
+                  "operation_not_allowed", "verification_temporarily_unavailable"}
 CONTRACT_STATUSES = {400, 401, 403, 404, 422, 429, 500, 503}
 
 

@@ -12,7 +12,12 @@ ErrorCode = Literal["invalid_request",
                     # Shared client-visible auth classes
                     "auth_required",
                     "preauth_identity_not_allowed",
-                    "account_unavailable"]
+                    "account_unavailable",
+                    "identity_already_linked",
+                    "challenge_required",
+                    "proof_rejected",
+                    "operation_not_allowed",
+                    "verification_temporarily_unavailable"]
 
 
 class ServiceError(Exception):
