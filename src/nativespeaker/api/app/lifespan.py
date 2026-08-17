@@ -5,11 +5,15 @@ import structlog
 from fastapi import FastAPI
 from firebase_admin import credentials
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth import JWTVerifier
+from nativespeaker.api.auth.ownership import assert_ownership_keys
+from nativespeaker.api.auth.routes import assert_route_categories
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.logs import setup_logging
+from nativespeaker.api.models import User  # noqa: F401  (registers the mapped tables)
 from nativespeaker.api.services import FirebaseService, LLMService, create_apple_verifier
 
 logger = structlog.get_logger()
@@ -24,6 +28,10 @@ async def lifespan(app: FastAPI):
 
     # Setup logging
     setup_logging(log_level=config.log_level)
+
+    # Fail closed on route-category and ownership-key violations before serving traffic
+    assert_route_categories(app)
+    assert_ownership_keys(SQLModel.metadata)
 
     # Initialize database
     db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)

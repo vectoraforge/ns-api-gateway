@@ -7,8 +7,10 @@ from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.app.main import app as real_app
 
 CONTRACT_CODES = {"invalid_request", "validation_error", "unauthorized", "not_found",
-                  "service_unavailable", "internal_error", "quota_exceeded", "out_of_scope"}
-CONTRACT_STATUSES = {400, 401, 404, 422, 429, 500, 503}
+                  "service_unavailable", "internal_error", "quota_exceeded", "out_of_scope",
+                  # Shared client-visible auth classes
+                  "auth_required", "preauth_identity_not_allowed", "account_unavailable"}
+CONTRACT_STATUSES = {400, 401, 403, 404, 422, 429, 500, 503}
 
 
 @pytest.fixture(scope="module")
