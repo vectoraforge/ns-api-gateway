@@ -190,6 +190,7 @@ def assert_stays_with_grant(*,
     existing counter; it never re-points the row and never mints a fresh counter for the same
     paid entitlement."""
     # [impl->req~schema-user-monthly-usage-stays-with-grant~1]
+    # [impl->req~restore-usage-row-stays-with-grant~1]
     if row_grant_id != stored_grant_id:
         raise UsageRowError("a monthly usage row stays attached to its own grant_id")
     if minted_fresh:

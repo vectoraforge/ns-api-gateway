@@ -296,6 +296,46 @@ def apply_lifetime_binding(*,
         raise
 
 
+# --- Owner changes ---------------------------------------------------------------------------------
+
+# The one branch that may change a store subscription's current owner. Manual binding repair
+# changes no owner directly: it returns the row to unclaimed and leaves this same path to set the
+# new one.
+OWNER_CHANGING_BRANCHES: frozenset[RestoreBranch] = frozenset({RestoreBranch.adoption})
+
+# Paths that move an existing subscription-backed grant to a different user: none.
+GRANT_REASSIGNMENT_PATHS: frozenset[str] = frozenset()
+
+
+def assert_owner_change_only_by_adoption(*,
+                                         branch: RestoreBranch,
+                                         grant_created_for: UUID | None,
+                                         destination_user_id: UUID,
+                                         subscription_transaction: object,
+                                         grant_transaction: object,
+                                         moved_grant_user_id: UUID | None = None) -> UUID:
+    """For subscription-backed access, a store subscription's current owner changes only when
+    restore adopts an unclaimed subscription, and that adoption creates the subscription-backed
+    grant for the destination user in the same transaction.
+
+    No path moves an existing subscription-backed grant to a different user, so a reassignment is
+    refused here rather than represented as an owner change.
+    """
+    # [impl->req~restore-owner-changes-only-by-adoption~1]
+    if GRANT_REASSIGNMENT_PATHS or moved_grant_user_id is not None:
+        raise RestoreContractError(
+            "no path moves an existing subscription-backed grant to a different user")
+    if branch not in OWNER_CHANGING_BRANCHES:
+        raise RestoreContractError(f"{branch} changes no store subscription's owner")
+    if subscription_transaction is not grant_transaction:
+        raise RestoreContractError(
+            "adoption creates the subscription-backed grant in the same transaction")
+    if grant_created_for != destination_user_id:
+        raise RestoreContractError(
+            f"adoption creates the grant for {destination_user_id}, not {grant_created_for}")
+    return destination_user_id
+
+
 # --- Step 6: product-entitled state ---------------------------------------------------------------
 
 

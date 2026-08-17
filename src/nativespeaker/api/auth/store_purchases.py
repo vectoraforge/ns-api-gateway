@@ -117,8 +117,14 @@ def upsert_canonical_subscription(rows: Sequence[SubscriptionRow],
     store subscription as exactly one row, updated in place across renewals, grace-period and
     billing-retry transitions, expirations, revocations, tier changes and restore-driven owner
     changes. The append-only history of accepted provider state observations is recorded separately
-    in `audit.subscription_events`."""
+    in `audit.subscription_events`.
+
+    Paid billing records live here and only here, as the canonical current state: one row per
+    `(provider, external_id)` store subscription, which is what the duplicate refusal below
+    enforces.
+    """
     # [impl->req~restore-subscriptions-canonical-current-state~1]
+    # [impl->req~restore-paid-billing-in-subscriptions~1]
     del now
     if transition is not None and transition not in IN_PLACE_TRANSITIONS:
         raise StorePurchaseError(f"{transition} is no in-place canonical-row transition")
@@ -347,8 +353,15 @@ def ingest_verified_purchase(*,
     row is created unclaimed and the purchase row unattributed, recording a server-generated
     internal purchase UUID where the store supplies no usable echoed value, with no grant and no
     usage row.
+
+    Verified purchase ingestion creates the subscription-backed grant and its usage row in its own
+    transaction — the same one that upserts `core.subscriptions` and inserts `core.store_purchases`
+    — one grant row per paid term under the flip-then-insert renewal flow, expiring any
+    index-blocking grant first (never deleting it) and resolving the tier at creation from the
+    server-controlled store-product-ID-to-tier mapping.
     """
     # [impl->req~restore-purchase-flow-04-ingestion-resolves-and-creates~1]
+    # [impl->req~restore-purchase-ingestion-creates-grant-and-usage~1]
     from nativespeaker.api.auth.grant_schema import (  # noqa: PLC0415
         GrantSchemaError,
         resolve_subscription_tier,

@@ -51,7 +51,12 @@ class MissingTierError(EntitlementError):
 # paid billing records are the subscription table, the numbers are the tier table, and
 # consumption is the usage table keyed by `grant_id`. There is no second entitlement table and
 # no fake-subscription representation of a free grant.
+# This file is where the grant-and-usage ownership model lives — `core.access_grants` as the
+# single entitlement table, each active grant belonging to one `core.users.id` and one
+# `core.access_tiers.id`, `core.user_monthly_usage` as per-grant rather than per-user state, and
+# the single-effective-grant rule. The restore document points here and restates none of it.
 # [impl->req~quota-access-grants-single-entitlement-table~1]
+# [impl->req~restore-grant-usage-model-owned-by-quota-spec~1]
 ENTITLEMENT_TABLE = "core.access_grants"
 BILLING_TABLE = "core.subscriptions"
 TIER_TABLE = "core.access_tiers"
@@ -92,8 +97,15 @@ PER_DEVICE_STATE_INPUTS: frozenset[str] = frozenset({
 
 def is_product_entitled(status: SubscriptionStatus) -> bool:
     """Whether a subscription row is product-entitled — exactly the statuses the generated
-    column's `CASE` arm selects. `billing_retry`, `expired` and `revoked` are not."""
+    column's `CASE` arm selects. `billing_retry`, `expired` and `revoked` are not.
+
+    The product-entitled subscription statuses are exactly `active` and `grace_period`, and the
+    `product_entitled_subscription_id` generated-column expression on `core.subscriptions` is the
+    single authoritative source of truth for that set: the frozenset above cites it rather than
+    holding a second opinion.
+    """
     # [impl->req~quota-product-entitled-status-set~2]
+    # [impl->req~restore-product-entitled-statuses~1]
     return status in PRODUCT_ENTITLED_SUBSCRIPTION_STATUSES
 
 
@@ -377,6 +389,7 @@ def settle_subscription_grant(grant: GrantRow,
     subscription-backed grant unless the canonical subscription row is currently
     product-entitled."""
     # [impl->req~quota-restore-requires-entitled-subscription~1]
+    # [impl->req~restore-must-not-activate-non-entitled-grant~1]
     if not is_product_entitled(subscription_status):
         raise EntitlementError(
             f"restore activates no subscription-backed grant while its subscription is "
@@ -423,13 +436,21 @@ def assert_status_writer_settled_grant(*,
     Lifecycle ingestion's same-transaction obligation is the schema fact
     `req~schema-access-grants-lifecycle-same-transaction~1`.
     """
+    # Store subscription ingestion updates the canonical `core.subscriptions` row and the
+    # corresponding subscription-backed grant in the same transaction whenever the update changes
+    # the current entitlement state or owner.
     # [impl->req~quota-lifecycle-ingestion-single-transaction~2]
     # [impl->req~schema-access-grants-lifecycle-same-transaction~1]
+    # [impl->req~restore-ingestion-updates-subscription-and-grant-same-transaction~1]
     if subscription_transaction is not grant_transaction:
         raise EntitlementError(
             "a subscription status change and its grant settlement share one transaction")
+    # A `source = 'subscription'` grant may stand `active` only while the current
+    # `core.subscriptions` state for its store subscription is product-entitled, so a transition
+    # out of that set settles the grant here rather than leaving it active.
     # [impl->req~quota-status-writer-owns-grant-deactivation~1]
     # [impl->req~quota-subscription-grant-active-requires-entitled~2]
+    # [impl->req~restore-subscription-grant-active-only-when-entitled~1]
     if (is_product_entitled(old_status)
             and not is_product_entitled(new_status)
             and active_grant_id is not None
