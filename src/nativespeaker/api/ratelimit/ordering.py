@@ -11,11 +11,20 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from nativespeaker.api.auth.operations import is_on_audited_path
+from nativespeaker.api.auth.challenges import ChallengeState, advance_state
+from nativespeaker.api.auth.modes import RequestMode
+from nativespeaker.api.auth.operations import (
+    AuthOperation,
+    is_challenge_bearing,
+    is_on_audited_path,
+    match_operation,
+)
 from nativespeaker.api.ratelimit.config import (
     DEVICE_BIT_BUDGET_ENTRIES,
     FIREBASE_LOOKUP_ENTRY_KEYS,
+    complete_entries,
     is_blocking,
+    prepare_entries,
 )
 from nativespeaker.api.ratelimit.keys import IDENTITY_COMPONENTS, KeyComponent
 
@@ -74,22 +83,52 @@ WRITE_CALLS: frozenset[DeviceBitCall] = frozenset(set(DeviceBitCall) - READ_CALL
 class AdmissionLedger:
     """One request's admission order."""
 
-    def __init__(self, method: str, path: str):
+    def __init__(self, method: str, path: str, *, mode: RequestMode | None = None):
         # The audited attempt path's boundary is the single route-scoped entry rule in
         # `00-overview-and-shared-contracts.md`. Nothing here defines an audit boundary of its
         # own: this ledger reads the shared rule and never restates it.
         # [impl->req~ratelimit-audit-boundary-owned-by-shared-contract~1]
+        self.method = method.upper()
+        self.path = path
+        self.mode = mode
+        self.operation: AuthOperation | None = match_operation(self.method, self.path)
         self.on_audited_path = is_on_audited_path(method, path)
         self.jwt_verified = False
         self.barrier_admitted = False
-        self.challenge_issued = False
-        self.challenge_claimed = False
+        # The challenge lifecycle is `auth.challenges.ChallengeState` and nothing else: this
+        # ledger tracks the state the shared module defines instead of keeping its own flags.
+        self.challenge_state: ChallengeState | None = None
         self.challenge_failed = False
         self.refused = False
         self.evaluated: list[str] = []
         self.budgets_checked: list[str] = []
         self.device_bit_calls: list[DeviceBitCall] = []
         self.expensive_steps: list[ExpensiveStep] = []
+
+    @property
+    def challenge_issued(self) -> bool:
+        return self.challenge_state is not None
+
+    @property
+    def challenge_claimed(self) -> bool:
+        return self.challenge_state is ChallengeState.claimed
+
+    def applicable_entries(self) -> tuple[str, ...]:
+        """Every blocking named entry this route's operation configures for the phase the
+        request has reached, derived from the route itself. A caller declares nothing: the
+        rejection must precede the expensive step whenever the configured key is available, so
+        the applicable set is the ledger's to compute, not the caller's to remember."""
+        # [impl->req~ratelimit-reject-before-expensive-steps~1]
+        if self.operation is None:
+            return ()
+        if not is_challenge_bearing(self.operation):
+            # No prepare phase and no challenge: every named entry the operation carries.
+            return (*prepare_entries(self.operation), *complete_entries(self.operation))
+        if self.mode is RequestMode.prepare:
+            return prepare_entries(self.operation)
+        # A completion, and the conservative default: expensive work lives in the completion,
+        # so an undeclared mode is guarded by the completion's counters, not the weaker set.
+        return complete_entries(self.operation)
 
     # --- what the layers establish ---------------------------------------------------------
 
@@ -156,7 +195,7 @@ class AdmissionLedger:
         self._require_evaluated(prepare_limits, "before an operation challenge is issued")
         if self.refused:
             raise AdmissionOrderError("a refused request issues no operation challenge")
-        self.challenge_issued = True
+        self.challenge_state = ChallengeState.issued
 
     def fail_challenge_validation(self) -> None:
         """The presented challenge failed validation. It is handled and audited as that
@@ -177,17 +216,20 @@ class AdmissionLedger:
         if self.expensive_steps:
             raise AdmissionOrderError(
                 "the completion claims the challenge before any provider call")
-        self.challenge_claimed = True
+        # The claim moves the row along the one-way lifecycle the shared challenge module owns.
+        self.challenge_state = advance_state(self.challenge_state or ChallengeState.issued,
+                                             ChallengeState.claimed)
 
     # --- expensive work --------------------------------------------------------------------
 
     def expensive_step(self, step: ExpensiveStep, *, guarded_by: Sequence[str] = ()) -> None:
         """Take an expensive step. Every limit whose configured key was available at this point
-        has already been evaluated, and a rejected request never gets here."""
+        has already been evaluated, and a rejected request never gets here. The guarding set is
+        derived from the ledger's own route; `guarded_by` only adds to it."""
         # [impl->req~ratelimit-reject-before-expensive-steps~1]
         if self.refused:
             raise AdmissionOrderError(f"{step} runs only for an admitted request")
-        self._require_evaluated(guarded_by, f"before {step}")
+        self._require_evaluated((*self.applicable_entries(), *guarded_by), f"before {step}")
         self.expensive_steps.append(step)
 
     def _require_evaluated(self, names: Sequence[str], where: str) -> None:

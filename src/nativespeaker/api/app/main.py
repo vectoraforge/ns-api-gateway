@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.app.lifespan import lifespan
+from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
 from nativespeaker.api.logs import RequestLoggingMiddleware
 from nativespeaker.api.models.api import ErrorResponse
 from nativespeaker.api.routers import (
@@ -41,4 +42,10 @@ app.include_router(webhooks_router)
 register_exception_handlers(app)
 # ty cannot match a BaseHTTPMiddleware subclass against Starlette's
 # _MiddlewareFactory ParamSpec protocol; this is the documented usage.
+# Middleware runs outermost-last, so the barrier is added after the request logger and
+# therefore runs inside it: every authenticated route, declared or not, passes the shared
+# pre-handler barrier before its handler is reached.
+# [impl->req~shared-prehandler-barrier~1]
+# [impl->req~shared-route-categories~1]
 app.add_middleware(RequestLoggingMiddleware)  # ty: ignore[invalid-argument-type]
+app.add_middleware(AuthBarrierMiddleware)  # ty: ignore[invalid-argument-type]

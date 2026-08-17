@@ -375,6 +375,25 @@ def applies_default_entry(operation: AuthOperation) -> bool:
     return operation not in DEFAULT_ENTRY_EXEMPT
 
 
+# Prepare-phase entries name themselves: every prepare-phase counter carries this marker, so
+# the phase split is read off the configured names rather than declared a second time.
+_PREPARE_ENTRY_MARKER = "_prepare"
+
+
+def prepare_entries(operation: AuthOperation) -> tuple[str, ...]:
+    """The blocking prepare-phase entries this operation configures."""
+    # [impl->req~ratelimit-config-named-entry-per-operation~1]
+    return tuple(name for name in REQUIRED_OPERATION_ENTRIES[operation]
+                 if _PREPARE_ENTRY_MARKER in name and is_blocking(name))
+
+
+def complete_entries(operation: AuthOperation) -> tuple[str, ...]:
+    """The blocking entries this operation configures outside its prepare phase."""
+    # [impl->req~ratelimit-config-named-entry-per-operation~1]
+    return tuple(name for name in REQUIRED_OPERATION_ENTRIES[operation]
+                 if _PREPARE_ENTRY_MARKER not in name and is_blocking(name))
+
+
 def is_blocking(name: str) -> bool:
     """Whether a configured entry can reject a request. The advisory secondary counters are
     abuse telemetry and soft dampeners, never required for admission."""

@@ -1,4 +1,7 @@
-"""Comprehensive JWT security tests for JWTVerifier."""
+"""Comprehensive security tests for the shipped Firebase ID token verifier.
+
+The barrier accepts external JWTs through `FirebaseIdTokenVerifier` and nothing else,
+so these are the assertions that guard the one acceptance path."""
 
 import time
 
@@ -8,12 +11,13 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from nativespeaker.api.exceptions import AuthenticationError
-from unit.conftest import PRIVATE_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_test_verifier, make_token
+from unit.conftest import PRIVATE_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_token
+from unit.test_auth_barrier import make_verifier
 
 
 @pytest.fixture
 def verifier():
-    return make_test_verifier()
+    return make_verifier()
 
 
 class TestAlgorithmSecurity:
@@ -29,7 +33,7 @@ class TestAlgorithmSecurity:
         }
         token = pyjwt.encode(payload, None, algorithm="none")  # type: ignore[invalid-argument-type]
         with pytest.raises(AuthenticationError):
-            verifier.verify(token)
+            verifier.verify_id_token(token)
 
     def test_rejects_hs256_token(self, verifier):
         """HS256-signed tokens must be rejected (only RS256 accepted)."""
@@ -43,7 +47,7 @@ class TestAlgorithmSecurity:
         }
         token = pyjwt.encode(payload, "secret-key", algorithm="HS256")
         with pytest.raises(AuthenticationError):
-            verifier.verify(token)
+            verifier.verify_id_token(token)
 
 
 class TestSignatureVerification:
@@ -61,7 +65,7 @@ class TestSignatureVerification:
         tampered_payload = base64.urlsafe_b64encode(json.dumps(payload_data).encode()).rstrip(b"=").decode()
         tampered_token = f"{parts[0]}.{tampered_payload}.{parts[2]}"
         with pytest.raises(AuthenticationError):
-            verifier.verify(tampered_token)
+            verifier.verify_id_token(tampered_token)
 
     def test_rejects_token_signed_with_different_key(self, verifier):
         """Token signed with an unknown private key must be rejected."""
@@ -71,38 +75,38 @@ class TestSignatureVerification:
                                             encryption_algorithm=serialization.NoEncryption())
         token = make_token("user1", private_key=other_pem)
         with pytest.raises(AuthenticationError):
-            verifier.verify(token)
+            verifier.verify_id_token(token)
 
 
 class TestTokenExpiry:
     def test_rejects_expired_token(self, verifier):
         token = make_token("user1", exp=time.time() - 3600)
         with pytest.raises(AuthenticationError):
-            verifier.verify(token)
+            verifier.verify_id_token(token)
 
     def test_accepts_token_within_leeway(self, verifier):
         """Token expired <30s ago should still be accepted (leeway=30)."""
         token = make_token("user1", exp=time.time() - 10)
-        result = verifier.verify(token)
-        assert result.sub == "user1"
+        result = verifier.verify_id_token(token)
+        assert result.subject == "user1"
 
     def test_rejects_token_past_leeway(self, verifier):
         """Token expired >30s ago must be rejected."""
         token = make_token("user1", exp=time.time() - 60)
         with pytest.raises(AuthenticationError):
-            verifier.verify(token)
+            verifier.verify_id_token(token)
 
 
 class TestClaimValidation:
     def test_rejects_wrong_audience(self, verifier):
         token = make_token("user1", aud="wrong-project")
         with pytest.raises(AuthenticationError):
-            verifier.verify(token)
+            verifier.verify_id_token(token)
 
     def test_rejects_wrong_issuer(self, verifier):
         token = make_token("user1", iss="https://evil.example.com")
         with pytest.raises(AuthenticationError):
-            verifier.verify(token)
+            verifier.verify_id_token(token)
 
     def test_rejects_missing_sub(self, verifier):
         """Token without sub claim must be rejected."""
@@ -116,7 +120,7 @@ class TestClaimValidation:
         }
         token = pyjwt.encode(payload, PRIVATE_KEY_PEM, algorithm="RS256")
         with pytest.raises(AuthenticationError):
-            verifier.verify(token)
+            verifier.verify_id_token(token)
 
     def test_rejects_missing_exp(self, verifier):
         """Token without exp claim must be rejected."""
@@ -130,7 +134,7 @@ class TestClaimValidation:
         }
         token = pyjwt.encode(payload, PRIVATE_KEY_PEM, algorithm="RS256", headers={"alg": "RS256"})
         with pytest.raises(AuthenticationError):
-            verifier.verify(token)
+            verifier.verify_id_token(token)
 
     def test_rejects_missing_iat(self, verifier):
         """Token without iat claim must be rejected."""
@@ -144,40 +148,40 @@ class TestClaimValidation:
         }
         token = pyjwt.encode(payload, PRIVATE_KEY_PEM, algorithm="RS256")
         with pytest.raises(AuthenticationError):
-            verifier.verify(token)
+            verifier.verify_id_token(token)
 
 class TestMalformedTokens:
     def test_rejects_empty_string(self, verifier):
         with pytest.raises(AuthenticationError):
-            verifier.verify("")
+            verifier.verify_id_token("")
 
     def test_rejects_garbage(self, verifier):
         with pytest.raises(AuthenticationError):
-            verifier.verify("not.a.jwt.at.all")
+            verifier.verify_id_token("not.a.jwt.at.all")
 
     def test_rejects_just_dots(self, verifier):
         with pytest.raises(AuthenticationError):
-            verifier.verify("...")
+            verifier.verify_id_token("...")
 
 
 class TestCrossUserIsolation:
     def test_different_sub_returns_different_user(self, verifier):
         token_a = make_token("user-a")
         token_b = make_token("user-b")
-        assert verifier.verify(token_a).sub == "user-a"
-        assert verifier.verify(token_b).sub == "user-b"
+        assert verifier.verify_id_token(token_a).subject == "user-a"
+        assert verifier.verify_id_token(token_b).subject == "user-b"
 
     def test_sub_is_returned_as_string(self, verifier):
         token = make_token("12345")
-        assert verifier.verify(token).sub == "12345"
+        assert verifier.verify_id_token(token).subject == "12345"
 
 
 class TestValidToken:
     def test_accepts_valid_token(self, verifier):
         token = make_token("user1")
-        assert verifier.verify(token).sub == "user1"
+        assert verifier.verify_id_token(token).subject == "user1"
 
     def test_accepts_token_with_extra_claims(self, verifier):
         """Extra claims are ignored -- token is still valid."""
         token = make_token("user1", extra_claims={"custom": "value", "firebase": {"sign_in_provider": "google.com"}})
-        assert verifier.verify(token).sub == "user1"
+        assert verifier.verify_id_token(token).subject == "user1"

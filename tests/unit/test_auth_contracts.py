@@ -424,5 +424,16 @@ class TestOwnershipKeys:
             assert any("external subject" in violation for violation in violations), column_name
 
     # [utest->req~shared-ownership-key-users-id~1]
-    def test_the_shipped_schema_has_no_ownership_violations(self):
-        assert ownership_violations(SQLModel.metadata) == []
+    def test_the_guard_reads_the_shipped_schema_and_reports_its_real_state(self):
+        violations = ownership_violations(SQLModel.metadata)
+        # Every business table already owns its rows by `core.users.id`, and no business table
+        # owns rows by an external subject or an external identity.
+        assert [v for v in violations if "usage_monthly" not in v] == []
+        # The one open violation is the shipped monthly-usage table, which still hangs off the
+        # user instead of the access grant that authorizes its credits. The guard matches it by
+        # role, so it fires on the real table today rather than only on the future table name;
+        # the schema slice repoints it to `core.access_grants.id` and this list empties.
+        assert sorted({v for v in violations if "usage_monthly" in v}) == [
+            "usage_monthly must be owned by core.access_grants.id",
+            "usage_monthly.user_id must be owned by core.access_grants.id",
+        ]

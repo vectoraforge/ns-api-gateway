@@ -163,18 +163,49 @@ def assert_movement_details_minimum(details: dict[str, Any]) -> None:
 
 def assert_destination_anchored(context: MovementContext) -> None:
     """Destination or issuing context is anchored by resolved destination identity fields for
-    linked flows. `POST /auth/upgrade-anonymous` operates on an existing linked identity rather
-    than a pre-auth actor, so its destination context is anchored by the resolved destination
-    identity fields on the same identity row before and after the in-place provider flip."""
+    linked flows. Both movement operations are linked flows: a restore's destination is a
+    registered user's resolved identity, and `POST /auth/upgrade-anonymous` operates on an
+    existing linked identity rather than a pre-auth actor, so its destination context is
+    anchored by the resolved destination identity fields on the same identity row before and
+    after the in-place provider flip."""
     # [impl->req~shared-movement-destination-anchoring~1]
+    # [impl->req~shared-movement-detail-destination-context~1]
+    if context.destination_user_id is None:
+        raise MovementError("a movement anchors its destination on the resolved user")
+    if context.destination_external_identity_id is None:
+        raise MovementError(
+            "a movement anchors its destination on the resolved destination identity")
     if context.kind is not MovementKind.identity_upgrade:
         return
-    if context.destination_external_identity_id is None or context.source_external_identity_id is None:
+    if context.source_external_identity_id is None:
         raise MovementError("an upgrade anchors its destination on a resolved linked identity")
     if context.destination_external_identity_id != context.source_external_identity_id:
         raise MovementError("an upgrade's destination identity is the same row before and after")
-    if context.destination_user_id is None:
-        raise MovementError("an upgrade anchors its destination on the resolved user")
+
+
+def unresolved_movement_context(operation: AuthOperation,
+                                result: AuthEventResult,
+                                occurred_at: datetime,
+                                *,
+                                challenge_row_id: UUID | None = None) -> MovementContext:
+    """The movement context of an attempt rejected before anything was resolved — a barrier
+    rejection, or any other pre-resolution rejection. Every field the attempt could not resolve
+    is `NULL`, and the classification is the kind's own unresolved value: `unclassified` for a
+    restore that never reached branch determination, `upgrade` for the upgrade, whose kind
+    admits no other classification. The row is still written: the movement context is owed for
+    every attempt, successful or rejected."""
+    # [impl->req~shared-upgrade-movement-context-required~1]
+    # [impl->req~shared-restore-movement-classification~1]
+    kind = movement_kind_of(operation)
+    classification = (MovementClassification.upgrade if kind is MovementKind.identity_upgrade
+                      else MovementClassification.unclassified)
+    if result is AuthEventResult.succeeded:
+        raise MovementError("a succeeded movement resolves its own context")
+    return MovementContext(operation=operation,
+                           result=result,
+                           classification=classification,
+                           occurred_at=occurred_at,
+                           challenge_row_id=challenge_row_id)
 
 
 def upgrade_movement_context(*,

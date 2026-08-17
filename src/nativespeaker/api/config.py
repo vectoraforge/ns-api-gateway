@@ -56,6 +56,17 @@ class JWTConfig(BaseModel):
         return  f"https://securetoken.google.com/{self.project_id}"
 
 
+class AuthConfig(BaseModel):
+    """The shared auth barrier's own configuration."""
+    # Actor subject material is stored only as its derived HMAC hash, keyed by a server-side
+    # secret and stamped with the version of the key that produced it.
+    # [impl->req~shared-auth-events-actor-subject-hash~1]
+    subject_hash_key: SecretStr = Field(
+        description="HMAC key for derived subject identifiers")
+    subject_hash_key_version: int = Field(default=1, ge=1,
+                                          description="Version of the subject hash key in use")
+
+
 class AppleConfig(BaseModel):
     environment: str = Field(default="sandbox", description="Apple environment: sandbox or production")
     bundle_id: str = Field(description="App bundle identifier")
@@ -80,6 +91,7 @@ class AppConfig(BaseConfig):
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
     jwt: JWTConfig = Field(default_factory=JWTConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
     apple: AppleConfig = Field(default_factory=AppleConfig)
     quotas: dict[SubscriptionPlan, int]
 

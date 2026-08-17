@@ -1,13 +1,10 @@
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-import nativespeaker.api.app.dependencies as deps_module
-from nativespeaker.api.app.dependencies import get_current_user, get_db
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.exceptions import (
     AuthenticationError,
@@ -23,8 +20,8 @@ from nativespeaker.api.exceptions import (
     TransientLLMError,
     UnsupportedLanguageError,
 )
-from nativespeaker.api.models import User
-from unit.conftest import make_test_verifier, make_token
+from unit.conftest import make_token
+from unit.test_auth_barrier import FakeResolver, build_app, make_writer
 
 CASES = [
     ("missing_token", AuthenticationError("Missing Bearer token"), 401),
@@ -98,29 +95,18 @@ def test_validation_error_handler(handler_client):
 
 @pytest.fixture(scope="module")
 def dep_client():
-    mock_user = User(jwt_sub="u1", email="u1@example.com", name="User 1")
-    mock_db = MagicMock()
-
-    app = FastAPI()
-    register_exception_handlers(app)
-    app.state.jwt_verifier = make_test_verifier()
-    app.dependency_overrides[get_db] = lambda: mock_db
-
-    @app.get("/protected")
-    async def _protected(user: User = Depends(get_current_user)):
-        return {"user_id": str(user.id)}
-
-    with patch.object(deps_module, "UserService") as mock_user_svc_cls:
-        mock_user_svc_cls.return_value.get_or_create = AsyncMock(return_value=mock_user)
-        with TestClient(app, raise_server_exceptions=False) as client:
-            yield client
+    """A route behind the shared barrier. Token acceptance is the barrier's, so these are the
+    responses the barrier produces, surfaced through the shared error taxonomy."""
+    app = build_app([("GET", "/protected")], resolver=FakeResolver(), writer=make_writer())
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield client
 
 
 def test_missing_auth_header_returns_401(dep_client):
     response = dep_client.get("/protected")
     assert response.status_code == 401
     body = response.json()
-    assert body["code"] == "unauthorized"
+    assert body["code"] == "auth_required"
 
 
 def test_invalid_bearer_token_returns_401(dep_client):
@@ -133,7 +119,7 @@ def test_valid_bearer_token_resolves_user(dep_client):
     response = dep_client.get("/protected", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200
     body = response.json()
-    assert "user_id" in body
+    assert body["subject"] == "u1"
 
 
 def test_expired_token_returns_401(dep_client):
@@ -141,42 +127,20 @@ def test_expired_token_returns_401(dep_client):
     response = dep_client.get("/protected", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 401
     body = response.json()
-    assert body["code"] == "unauthorized"
+    # Every failure branch returns the same class: the response names no failed check.
+    assert body["code"] == "auth_required"
 
 
-@pytest.fixture(scope="module")
-def state_client():
-    """Confirms verifier is resolved from app.state -- swapping it changes behavior."""
-    from nativespeaker.api.auth import UserIdentity
-
-    mock_user = User(jwt_sub="hardcoded-user", email="hw@example.com", name="Hardcoded")
-    mock_db = MagicMock()
-
-    class _AlwaysUser:
-        def verify(self, token: str) -> UserIdentity:
-            return UserIdentity(sub="hardcoded-user", email="hw@example.com",
-                                name="Hardcoded")
-
-    app = FastAPI()
-    register_exception_handlers(app)
-    app.state.jwt_verifier = _AlwaysUser()
-    app.dependency_overrides[get_db] = lambda: mock_db
-
-    @app.get("/whoami")
-    async def _whoami(user: User = Depends(get_current_user)):
-        return {"user_id": user.jwt_sub}
-
-    with patch.object(deps_module, "UserService") as mock_user_svc_cls:
-        mock_user_svc_cls.return_value.get_or_create = AsyncMock(return_value=mock_user)
-        with TestClient(app, raise_server_exceptions=False) as client:
-            yield client
-
-
-def test_verifier_swappable_via_state(state_client):
-    """Any token resolves to hardcoded-user -- proves verifier comes from app.state."""
-    response = state_client.get("/whoami", headers={"Authorization": "Bearer any.token.here"})
-    assert response.status_code == 200
-    assert response.json()["user_id"] == "hardcoded-user"
+def test_a_handler_outside_the_barrier_fails_closed():
+    """A route wired without the barrier has no identity context, so it refuses rather than
+    running open."""
+    app = build_app([("GET", "/protected")], resolver=FakeResolver(), writer=make_writer(),
+                    with_barrier=False)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/protected",
+                              headers={"Authorization": f"Bearer {make_token('u1')}"})
+    assert response.status_code == 401
+    assert response.json()["code"] == "auth_required"
 
 
 class TestRetryAfterHeaders:

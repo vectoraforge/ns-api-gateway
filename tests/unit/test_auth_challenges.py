@@ -9,13 +9,18 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid7
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from nativespeaker.api.auth.audit import (
     AuthAuditWriter,
     AuthEventResult,
     AuthResultCounter,
 )
-from nativespeaker.api.auth.barrier import ResolutionOutcome, VerifiedIdentityContext
+from nativespeaker.api.auth.barrier import (
+    ResolutionOutcome,
+    ResolvedIdentity,
+    VerifiedIdentityContext,
+)
 from nativespeaker.api.auth.challenges import (
     CHALLENGE_TTL_SECONDS,
     ChallengeError,
@@ -77,6 +82,15 @@ def verifier(subject: str) -> bytes:
     return hashlib.sha256(b"test-key|" + subject.encode()).digest()
 
 
+SUBJECT_HASH_KEY_VERSION = 3
+
+
+def hasher(subject: str) -> tuple[bytes, int]:
+    """The keyed subject hasher the audit actor is built from: the derived digest plus the
+    version of the key that produced it."""
+    return hashlib.sha256(b"audit-key|" + subject.encode()).digest(), SUBJECT_HASH_KEY_VERSION
+
+
 class FakeClock:
     def __init__(self) -> None:
         self.now = datetime(2026, 8, 16, 12, 0, tzinfo=UTC)
@@ -89,11 +103,16 @@ class FakeClock:
 
 
 class FakeSession:
-    def __init__(self, log: list[str]) -> None:
+    def __init__(self, log: list[str], commit_failures: list[BaseException] | None = None) -> None:
         self.log = log
         self.committed = False
+        self.commit_failures = commit_failures if commit_failures is not None else []
 
     async def commit(self) -> None:
+        if self.commit_failures:
+            # A commit whose acknowledgment never arrived: the driver raises, and the caller
+            # cannot tell whether the transaction landed.
+            raise self.commit_failures.pop(0)
         self.committed = True
         self.log.append("commit")
 
@@ -106,6 +125,7 @@ class FakeSessionFactory:
         self.opened = 0
         self.open_now = 0
         self.sessions: list[FakeSession] = []
+        self.commit_failures: list[BaseException] = []
 
     def __call__(self):
         return self._session()
@@ -115,7 +135,7 @@ class FakeSessionFactory:
         self.opened += 1
         self.open_now += 1
         self.log.append("open")
-        session = FakeSession(self.log)
+        session = FakeSession(self.log, self.commit_failures)
         self.sessions.append(session)
         try:
             yield session
@@ -139,14 +159,17 @@ class _Calls(list):
 
 
 class FakeSink:
-    def __init__(self) -> None:
-        self.events: list = []
+    """The writer builds and validates the `audit.auth_events` row, so a sink only ever sees a
+    finished row."""
 
-    async def insert(self, session, event) -> None:
-        self.events.append(event)
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    async def insert(self, session, row) -> None:
+        self.events.append(dict(row))
 
     def results(self) -> list[AuthEventResult]:
-        return [event.result for event in self.events]
+        return [event["result"] for event in self.events]
 
 
 class FakeStore(ChallengeStore):
@@ -258,7 +281,15 @@ class FakeEndpoint:
         return {"ran": str(self.operation)}
 
 
+# What the shared procedures' resolver reports for a subject when it re-resolves the identity
+# inside the consuming transaction. The context factories below register themselves here, so by
+# default the live state agrees with the barrier's; a test drives the step 11 race by changing
+# an entry, or the resolver's override, between the claim and that transaction.
+CONTEXT_OUTCOMES: dict[str, ResolutionOutcome] = {}
+
+
 def linked_context(external_identity_id=None) -> VerifiedIdentityContext:
+    CONTEXT_OUTCOMES["linked-subject"] = ResolutionOutcome.linked
     return VerifiedIdentityContext(issuer=TEST_ISSUER, subject="linked-subject",
                                    outcome=ResolutionOutcome.linked,
                                    user_id=uuid7(),
@@ -267,8 +298,25 @@ def linked_context(external_identity_id=None) -> VerifiedIdentityContext:
 
 
 def preauth_context(subject: str = "preauth-subject") -> VerifiedIdentityContext:
+    CONTEXT_OUTCOMES[subject] = ResolutionOutcome.pre_auth
     return VerifiedIdentityContext(issuer=TEST_ISSUER, subject=subject,
                                    outcome=ResolutionOutcome.pre_auth)
+
+
+class FakeResolver:
+    """The barrier's identity resolver, as the shared procedures see it. It agrees with the
+    request's own context until a test changes `override`, which is how the step 11 race — a
+    user blocked or retired between the barrier and the consuming transaction — is driven.
+    """
+
+    def __init__(self) -> None:
+        self.override: ResolutionOutcome | None = None
+        self.calls: list[tuple[str, str]] = []
+
+    async def resolve(self, issuer: str, subject: str) -> ResolvedIdentity:
+        self.calls.append((issuer, subject))
+        outcome = self.override or CONTEXT_OUTCOMES.get(subject, ResolutionOutcome.linked)
+        return ResolvedIdentity(outcome=outcome)
 
 
 class Harness:
@@ -278,11 +326,14 @@ class Harness:
         self.store = FakeStore(self.clock, self.trace)
         self.factory = FakeSessionFactory()
         self.sink = FakeSink()
+        self.resolver = FakeResolver()
         self.audit = AuthAuditWriter(sink=self.sink, counter=AuthResultCounter(),
-                                     session_factory=self.factory)
+                                     session_factory=self.factory, clock=self.clock)
         self.service = SharedChallengeService(store=self.store, audit=self.audit,
                                               session_factory=self.factory,
-                                              subject_verifier=verifier, clock=self.clock)
+                                              subject_verifier=verifier,
+                                              subject_hasher=hasher,
+                                              resolver=self.resolver, clock=self.clock)
 
     def endpoint(self, operation: AuthOperation, **kwargs) -> FakeEndpoint:
         return FakeEndpoint(operation, factory=self.factory, trace=self.trace, **kwargs)
@@ -526,12 +577,26 @@ class TestWireContract:
                                       body={"provider": "google"}, shared=h.service)
         assert h.store.only().operation_variant is IdentityProvider.google
 
-        with pytest.raises(InvalidOperationVariantError):
+        # A declaration that is not an exact match is a request-shape rejection carrying the
+        # shared `invalid_request` class, never an unhandled error that becomes a 500.
+        with pytest.raises(InvalidOperationVariantError) as excinfo:
             await dispatch_state_changing(operation=AuthOperation.create_user,
                                           endpoint=h.endpoint(AuthOperation.create_user),
                                           identity=preauth_context(),
                                           query_items=[("challenge", "true")],
                                           body={"provider": "Google"}, shared=h.service)
+        assert excinfo.value.error_code == "invalid_request"
+        assert excinfo.value.status_code == 400
+        # A variant-defining operation with no default and no declaration is the same class.
+        with pytest.raises(InvalidOperationVariantError) as missing:
+            await dispatch_state_changing(
+                operation=AuthOperation.upgrade_anonymous_to_registered,
+                endpoint=h.endpoint(AuthOperation.upgrade_anonymous_to_registered),
+                identity=linked_context(), query_items=[("challenge", "true")],
+                body={}, shared=h.service)
+        assert missing.value.error_code == "invalid_request"
+        # No challenge was issued by either rejection.
+        assert len(h.store.rows) == 1
         # The default is applied at prepare and persisted like any other declaration.
         h.store.rows.clear()
         await dispatch_state_changing(operation=AuthOperation.create_user,
@@ -1017,18 +1082,46 @@ class TestCompletionSteps:
         assert h.factory.opened == 1
         assert h.store.rows[row.challenge_id].state is ChallengeState.consumed
 
-        # Historical and blocked state is re-verified there too, to close the race, and that
-        # rejection is audited and consumes the claimed row like any other.
-        h.store.rows.clear()
+    # [utest->req~shared-completion-step-11~1]
+    @pytest.mark.parametrize("outcome, result", [
+        (ResolutionOutcome.blocked_user, AuthEventResult.blocked_user),
+        (ResolutionOutcome.historical_identity, AuthEventResult.historical_identity),
+    ])
+    async def test_historical_and_blocked_state_is_re_verified_to_close_the_race(
+            self, h, outcome, result):
+        # The endpoint's own live-state hook succeeds; the race is driven from the shared side
+        # by flipping what the resolver reports between the claim and the consuming transaction,
+        # so this proves the shared code re-verifies rather than the mock rejecting itself.
         row = await h.prepared(AuthOperation.claim_anonymous_grant)
         context = linked_context(row.binding.bound_external_identity_id)
-        endpoint = h.endpoint(AuthOperation.claim_anonymous_grant,
-                              live=AuthEventResult.blocked_user)
+        endpoint = h.endpoint(AuthOperation.claim_anonymous_grant)
+        h.resolver.override = outcome
         with pytest.raises(ChallengeRejection) as excinfo:
             await h.service.complete(AuthOperation.claim_anonymous_grant, None, row.challenge_id,
                                      context, endpoint)
+        assert excinfo.value.result is result
         assert excinfo.value.error_code == "account_unavailable"
-        assert h.sink.results()[-1] is AuthEventResult.blocked_user
+        # Rejected before the endpoint's live-state hook and its mutation ever ran.
+        assert endpoint.calls == ["verify_proof"]
+        # Audited, and the claimed row is consumed like any other terminal outcome.
+        assert h.sink.results()[-1] is result
+        assert h.store.rows[row.challenge_id].state is ChallengeState.consumed
+
+    # [utest->req~shared-completion-step-11~1]
+    async def test_a_preauth_bound_create_user_subject_that_became_linked_is_rejected(self, h):
+        # Same race, third clause: the pre-auth subject the challenge is bound to has become
+        # actively linked since prepare. The endpoint hooks all succeed.
+        context = preauth_context()
+        row = await h.prepared(AuthOperation.create_user, context)
+        endpoint = h.endpoint(AuthOperation.create_user)
+        CONTEXT_OUTCOMES[context.subject] = ResolutionOutcome.linked
+        with pytest.raises(ChallengeRejection) as excinfo:
+            await h.service.complete(AuthOperation.create_user, "anonymous", row.challenge_id,
+                                     context, endpoint)
+        assert excinfo.value.result is AuthEventResult.identity_already_linked
+        assert excinfo.value.error_code == "identity_already_linked"
+        assert endpoint.calls == ["verify_proof"]
+        assert h.sink.results()[-1] is AuthEventResult.identity_already_linked
         assert h.store.rows[row.challenge_id].state is ChallengeState.consumed
 
     # [utest->req~shared-completion-step-12~1]
@@ -1049,6 +1142,33 @@ class TestCompletionSteps:
         # One audit row, written inside the transaction that consumed the challenge.
         assert h.sink.results() == [AuthEventResult.succeeded]
         assert h.factory.sessions[-1].committed is True
+
+    # [utest->req~shared-completion-step-12~1]
+    async def test_a_lost_commit_acknowledgment_is_retried_under_the_same_claim(self, h):
+        # The failure is the transaction's own, not an endpoint hook's: the commit raises the
+        # driver error a lost acknowledgment produces, and the attempt retries it.
+        row = await h.prepared(AuthOperation.claim_anonymous_grant)
+        context = linked_context(row.binding.bound_external_identity_id)
+        endpoint = h.endpoint(AuthOperation.claim_anonymous_grant)
+        h.factory.commit_failures = [OperationalError("COMMIT", {}, Exception("connection lost"))]
+        await h.service.complete(AuthOperation.claim_anonymous_grant, None, row.challenge_id,
+                                 context, endpoint)
+        assert h.factory.opened == 2
+        # The provider call that already ran is never repeated.
+        assert endpoint.calls.count("verify_proof") == 1
+        assert h.store.rows[row.challenge_id].state is ChallengeState.consumed
+        assert h.sink.results() == [AuthEventResult.succeeded]
+
+    # [utest->req~shared-completion-step-12~1]
+    async def test_a_permanent_commit_failure_is_not_retried(self, h):
+        row = await h.prepared(AuthOperation.claim_anonymous_grant)
+        context = linked_context(row.binding.bound_external_identity_id)
+        endpoint = h.endpoint(AuthOperation.claim_anonymous_grant)
+        h.factory.commit_failures = [ValueError("a constraint this attempt can never satisfy")]
+        with pytest.raises(ValueError):
+            await h.service.complete(AuthOperation.claim_anonymous_grant, None,
+                                     row.challenge_id, context, endpoint)
+        assert h.factory.opened == 1
 
     # [utest->req~shared-completion-step-13~1]
     async def test_the_mutation_runs_only_when_the_live_state_still_allows_it(self, h):
@@ -1480,9 +1600,9 @@ class TestChallengeNotFoundScope:
         # The malformed-versus-unknown detail belongs in `details`, and the raw identifier the
         # client sent is never part of the record.
         assert unknown.value.detail == "unknown_challenge_id"
-        assert h.sink.events[-1].details["reason"] == "unknown_challenge_id"
+        assert h.sink.events[-1]["details"]["failure"]["reason"] == "unknown_challenge_id"
         assert challenge_id_shape("not a challenge id!") == "malformed_challenge_id"
-        assert all("AAAAAAAAAAAAAAAAAAAAAA" not in str(event.details)
+        assert all("AAAAAAAAAAAAAAAAAAAAAA" not in str(event["details"])
                    for event in h.sink.events)
 
     # [utest->req~shared-challenge-not-found-scope~1]

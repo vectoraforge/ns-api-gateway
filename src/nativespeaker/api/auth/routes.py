@@ -42,8 +42,6 @@ class ProviderCallbackRoute:
 PROVIDER_CALLBACK_ROUTES: tuple[ProviderCallbackRoute, ...] = (
     ProviderCallbackRoute("POST", "/webhooks/app-store", "apple_signed_payload"),
     ProviderCallbackRoute("POST", "/webhooks/google-play/rtdn", "pubsub_oidc"),
-    # Pre-refactor path for Apple's notifications; renamed with the sessions split file.
-    ProviderCallbackRoute("POST", "/webhooks/apple", "apple_signed_payload"),
 )
 
 NAMED_VERIFIERS: frozenset[str] = frozenset({"apple_signed_payload", "pubsub_oidc"})

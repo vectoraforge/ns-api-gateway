@@ -19,6 +19,10 @@ class JwtRejectionReason(StrEnum):
     audience_mismatch = "audience_mismatch"
     expired = "expired"
     empty_subject = "empty_subject"
+    # A Google signing key could not be resolved at all. The enumeration is open-ended ("at
+    # least" the eight above), and a key-fetch outage is a systemic backend-verification break
+    # rather than a client-side malformed token, so it carries its own bounded reason.
+    signing_key_unavailable = "signing_key_unavailable"
 
 
 class InvalidExternalJwtError(AuthenticationError):
@@ -42,6 +46,23 @@ class IdTokenVerifier(Protocol):
         ...
 
 
+class CachedGoogleSigningKeys:
+    """The cached Google signing keys an RS256 Firebase ID token is verified against. One JWKS
+    client per integration, caching the key set for the configured TTL, so the hot path resolves
+    a key without an outbound fetch."""
+
+    # [impl->req~shared-verify-id-token~1]
+    def __init__(self, *, jwks_url: str, cache_ttl_seconds: float = 3600.0):
+        self._client = PyJWKClient(jwks_url, cache_jwk_set=True, lifespan=cache_ttl_seconds)
+
+    def warm(self) -> None:
+        """Fetch the key set once at startup, so a misconfigured JWKS endpoint fails fast."""
+        self._client.get_signing_keys()
+
+    def __call__(self, token: str) -> Any:
+        return self._client.get_signing_key_from_jwt(token)
+
+
 class FirebaseIdTokenVerifier:
     """JWKS-backed Firebase ID token verifier: RS256 signature, exact issuer and audience,
     temporal validity, non-empty subject. Claims are never read without verification."""
@@ -59,10 +80,20 @@ class FirebaseIdTokenVerifier:
     def verify_id_token(self, token: str) -> VerifiedClaims:
         if not token:
             raise InvalidExternalJwtError(JwtRejectionReason.missing_token)
+        # The signing key is resolved from the cached Google key set outside the decode below:
+        # a key-fetch outage is a systemic backend-verification break and must not be recorded
+        # and counted as a client-side `malformed` token.
+        # [impl->req~shared-verify-id-token~1]
+        try:
+            signing_key = self._key_resolver(token)
+        except InvalidExternalJwtError:
+            raise
+        except Exception:
+            raise InvalidExternalJwtError(JwtRejectionReason.signing_key_unavailable) from None
         # [impl->req~shared-verify-id-token~1]
         try:
             claims = jwt.decode(token,
-                                self._key_resolver(token),
+                                signing_key,
                                 algorithms=["RS256"],
                                 audience=self._audience,
                                 issuer=self._issuer,
@@ -93,50 +124,3 @@ class UserIdentity:
     sub: str
     email: str
     name: str | None = None
-
-
-class TokenVerifier(Protocol):
-    def verify(self, token: str) -> UserIdentity:
-        """Decode token and return user identity. Raise AuthenticationError on failure."""
-        ...
-
-
-class JWTVerifier:
-    """Verifies RS256-signed JWTs using JWKS-fetched signing keys."""
-
-    def __init__(self, *,
-                 jwks_url: str,
-                 audience: str,
-                 issuer: str,
-                 leeway: int = 30,
-                 cache_ttl_seconds: float = 3600):
-        self._jwks_client = PyJWKClient(jwks_url,
-                                        cache_jwk_set=True,
-                                        lifespan=cache_ttl_seconds)
-        self._audience = audience
-        self._issuer = issuer
-        self._leeway = leeway
-        # Warm up JWKS cache — crashes startup if endpoint unreachable (fail-fast)
-        self._jwks_client.get_signing_keys()
-
-    def verify(self, token: str) -> UserIdentity:
-        try:
-            signing_key = self._jwks_client.get_signing_key_from_jwt(token)
-            payload = jwt.decode(token,
-                                 signing_key,
-                                 algorithms=["RS256"],
-                                 audience=self._audience,
-                                 issuer=self._issuer,
-                                 leeway=self._leeway,
-                                 options={"require": ["exp", "iat", "aud", "iss", "sub"]})
-        except Exception as exc:
-            raise AuthenticationError(f"Token verification failed: {exc}") from None
-
-        sub = payload.get("sub")
-        if not sub:
-            raise AuthenticationError("Missing sub claim")
-        return UserIdentity(
-            sub=str(sub),
-            email=payload.get("email", ""),
-            name=payload.get("name"),
-        )

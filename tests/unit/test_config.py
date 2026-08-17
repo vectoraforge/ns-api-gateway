@@ -48,6 +48,8 @@ db:
 jwt:
   project_id: test-project
   api_key: test-api-key
+auth:
+  subject_hash_key: test-subject-hash-key
 apple:
   bundle_id: com.example.test
   certs_dir: /tmp/certs

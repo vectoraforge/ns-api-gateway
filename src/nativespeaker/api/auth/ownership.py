@@ -11,8 +11,11 @@ USER_OWNERSHIP_KEY = "core.users.id"
 GRANT_OWNERSHIP_KEY = "core.access_grants.id"
 
 # Monthly usage rows are owned by the access grant, so usage stays with the entitlement grant
-# that authorizes it for the life of that grant.
-GRANT_OWNED_TABLES: frozenset[str] = frozenset({"user_monthly_usage"})
+# that authorizes it for the life of that grant. The set is matched by role rather than by one
+# future table name: whatever a monthly usage table is called, it owes the grant ownership key.
+GRANT_OWNED_TABLES: frozenset[str] = frozenset({
+    "user_monthly_usage", "usage_monthly", "monthly_usage", "user_usage_monthly",
+})
 
 # Columns that carry an external subject (`sub`, `uid`, ...). They may exist only on the
 # identity tables, which map external identities onto internal users.

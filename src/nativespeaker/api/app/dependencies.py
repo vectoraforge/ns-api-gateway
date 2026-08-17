@@ -2,10 +2,10 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 
 import structlog
-from fastapi import Depends, Header, Request
+from fastapi import Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.auth import TokenVerifier
+from nativespeaker.api.auth import verified_identity
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.database import UsageDB
 from nativespeaker.api.exceptions import AuthenticationError, QuotaExceededError
@@ -49,18 +49,22 @@ def get_subscription_service(request: Request,
 
 
 async def get_current_user(request: Request,
-                           authorization: str | None = Header(None),
                            db: AsyncSession = Depends(get_db)) -> User:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise AuthenticationError("Missing Bearer token")
-    token = authorization.split(" ", 1)[1].strip()
-    if not token:
-        raise AuthenticationError("Missing Bearer token")
-    verifier: TokenVerifier = request.app.state.jwt_verifier
-    identity = verifier.verify(token)
-    user_service = UserService(db)
-    user = await user_service.get_or_create(identity)
-    if not user.active:
+    """The handler-side view of the barrier's typed verified identity context.
+
+    This dependency accepts no external JWT, reads no `Authorization` header and resolves no
+    identity: the shared pre-handler barrier already did all three, once, for every
+    authenticated route. All that is left here is loading the business row the barrier's
+    resolved user id names.
+    """
+    # [impl->req~shared-prehandler-barrier~1]
+    # [impl->req~shared-identity-from-verified-claims-only~1]
+    context = verified_identity(request)
+    if context.user_id is None:
+        # A pre-auth identity reached a route the barrier admits it on; no business row exists.
+        raise AuthenticationError("Authentication failed")
+    user = await UserService(db).get_by_id(context.user_id)
+    if user is None or not user.active:
         raise AuthenticationError("Authentication failed")
     structlog.contextvars.bind_contextvars(user_id=str(user.id))
     return user

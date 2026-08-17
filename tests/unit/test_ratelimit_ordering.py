@@ -2,6 +2,9 @@
 
 import pytest
 
+from nativespeaker.api.auth.challenges import ChallengeState
+from nativespeaker.api.auth.modes import RequestMode
+from nativespeaker.api.auth.operations import AuthOperation
 from nativespeaker.api.ratelimit.config import RateLimitsConfig
 from nativespeaker.api.ratelimit.keys import KeyComponent
 from nativespeaker.api.ratelimit.limiter import RateLimiter
@@ -36,11 +39,18 @@ def admitted(method: str = "POST", path: str = "/auth/claim-anonymous-grant") ->
 # [utest->req~ratelimit-reject-before-expensive-steps~1]
 @pytest.mark.parametrize("step", list(ExpensiveStep))
 def test_an_expensive_step_runs_only_after_the_limits_that_guard_it(step):
+    # The guarding set is the route's own: a caller that declares nothing still cannot take an
+    # expensive step before the entries this operation configures have been evaluated.
     ledger = admitted()
+    assert set(ledger.applicable_entries()) == {"claim_anonymous_grant",
+                                                "claim_anonymous_grant_ip"}
     with pytest.raises(AdmissionOrderError, match="must be evaluated"):
-        ledger.expensive_step(step, guarded_by=["claim_anonymous_grant"])
+        ledger.expensive_step(step)
+    ledger.evaluate("claim_anonymous_grant_ip", (KeyComponent.ip,))
+    with pytest.raises(AdmissionOrderError, match="must be evaluated"):
+        ledger.expensive_step(step)
     ledger.evaluate("claim_anonymous_grant", (KeyComponent.user,))
-    ledger.expensive_step(step, guarded_by=["claim_anonymous_grant"])
+    ledger.expensive_step(step)
     assert ledger.expensive_steps == [step]
 
 
@@ -49,8 +59,20 @@ def test_a_rejected_request_takes_no_expensive_step():
     ledger = admitted()
     ledger.evaluate("claim_anonymous_grant", (KeyComponent.user,), allowed=False)
     with pytest.raises(AdmissionOrderError, match="only for an admitted request"):
-        ledger.expensive_step(ExpensiveStep.firebase_lookup,
-                              guarded_by=["claim_anonymous_grant"])
+        ledger.expensive_step(ExpensiveStep.firebase_lookup)
+
+
+# [utest->req~ratelimit-reject-before-expensive-steps~1]
+def test_the_guarding_entries_come_from_the_route_and_the_phase():
+    # A prepare is guarded by the prepare-phase counters, a completion by its own.
+    prepare = AdmissionLedger(*CLAIM, mode=RequestMode.prepare)
+    assert set(prepare.applicable_entries()) == {"claim_anonymous_grant_prepare",
+                                                 "claim_anonymous_grant_prepare_ip"}
+    # An operation with no challenge is guarded by every entry it configures.
+    sync = AdmissionLedger("POST", "/auth/sync")
+    assert sync.applicable_entries() == ("auth_sync",)
+    # A route outside the inventory configures no named entry, so it derives none.
+    assert AdmissionLedger("GET", "/chats").applicable_entries() == ()
 
 
 # --- Identity- and user-keyed limits --------------------------------------------------------------
@@ -98,6 +120,8 @@ def test_a_coarse_limit_may_precede_the_endpoint_specific_one():
         ("claim_anonymous_grant_ip", (KeyComponent.ip,)),
         ("claim_registered_grant", (KeyComponent.user, KeyComponent.idp_account_hash)))
     assert ledger.evaluated == ["claim_anonymous_grant_ip", "claim_registered_grant"]
+    ledger.evaluate("claim_anonymous_grant", (KeyComponent.user,))
+    # `guarded_by` only adds to the set the route already requires.
     ledger.expensive_step(ExpensiveStep.proof_verification,
                           guarded_by=["claim_registered_grant"])
     # The coarse limit is an IP, verified-token-subject or user limit, never something stronger.
@@ -376,3 +400,72 @@ def test_the_grant_row_needs_its_own_read_and_a_confirmed_write():
     fresh = _claimed()
     with pytest.raises(AdmissionOrderError, match="performs its own vendor bit read first"):
         fresh.check_device_bit_budget(DeviceBitCall.devicecheck_write)
+
+
+# --- The challenge decision points -----------------------------------------------------------
+
+class _Endpoint:
+    """A minimal challenge endpoint whose hooks all succeed."""
+
+    def __init__(self, operation):
+        self.operation = operation
+
+    async def check_prepare_eligibility(self, identity, variant):
+        return None
+
+    async def verify_proof(self, identity, challenge, body):
+        return {}
+
+    async def confirm_live_state(self, session, identity, challenge):
+        return {}
+
+    async def mutate(self, session, identity, challenge, proof, live):
+        return {"ok": True}
+
+
+# [utest->req~ratelimit-prepare-limits-before-challenge-issue~1]
+async def test_the_shared_prepare_cannot_issue_a_challenge_before_its_prepare_limits():
+    from unit.test_auth_challenges import Harness, linked_context
+
+    harness = Harness()
+    operation = AuthOperation.claim_anonymous_grant
+    endpoint = _Endpoint(operation)
+    ledger = AdmissionLedger(*CLAIM, mode=RequestMode.prepare)
+    ledger.verify_jwt()
+    ledger.admit_barrier()
+    # No prepare-phase limit has been evaluated, so no challenge row may be created.
+    with pytest.raises(AdmissionOrderError, match="before an operation challenge is issued"):
+        await harness.service.prepare(operation, None, linked_context(), endpoint,
+                                      admission=ledger)
+    assert harness.store.rows == {}
+
+    anonymous_grant_admission(ledger, "prepare")
+    await harness.service.prepare(operation, None, linked_context(), endpoint, admission=ledger)
+    assert len(harness.store.rows) == 1
+    assert ledger.challenge_issued
+
+
+# [utest->req~ratelimit-complete-limits-before-challenge-claim~1]
+async def test_the_shared_completion_cannot_claim_a_challenge_before_its_complete_limits():
+    from unit.test_auth_challenges import Harness, linked_context
+
+    harness = Harness()
+    operation = AuthOperation.claim_anonymous_grant
+    endpoint = _Endpoint(operation)
+    await harness.service.prepare(operation, None, linked_context(), endpoint)
+    row = next(iter(harness.store.rows.values()))
+    context = linked_context(row.binding.bound_external_identity_id)
+
+    ledger = AdmissionLedger(*CLAIM, mode=RequestMode.completion)
+    ledger.verify_jwt()
+    ledger.admit_barrier()
+    with pytest.raises(AdmissionOrderError, match="before the operation challenge is claimed"):
+        await harness.service.complete(operation, None, row.challenge_id, context, endpoint,
+                                       admission=ledger)
+    # Nothing claimed it, so the row is still issued and a properly admitted retry works.
+    assert harness.store.rows[row.challenge_id].state is ChallengeState.issued
+    anonymous_grant_admission(ledger, "complete")
+    await harness.service.complete(operation, None, row.challenge_id, context, endpoint,
+                                   admission=ledger)
+    assert ledger.challenge_claimed
+    assert harness.store.rows[row.challenge_id].state is ChallengeState.consumed

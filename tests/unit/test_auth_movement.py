@@ -100,7 +100,7 @@ class TestSingleAuditRow:
         session = FakeSession()
 
         await record_movement_attempt(writer, attempt, event, session=session)
-        assert [row.operation for row in sink.rows] == [AuthOperation.restore_subscription]
+        assert [row["operation"] for row in sink.rows] == [AuthOperation.restore_subscription]
 
         with pytest.raises(AuditAlreadyWrittenError):
             await record_movement_attempt(writer, attempt, event, session=session)
@@ -118,7 +118,7 @@ class TestSingleAuditRow:
                                                  error=RuntimeError("rejected"))
         assert isinstance(returned, RuntimeError)
         assert len(sink.rows) == 1
-        assert sink.rows[0].result is AuthEventResult.provider_transition_not_allowed
+        assert sink.rows[0]["result"] is AuthEventResult.provider_transition_not_allowed
 
     # [utest->req~shared-movement-single-audit-row~1]
     async def test_only_the_two_movement_operations_use_the_movement_path(self):
@@ -248,11 +248,42 @@ class TestDestinationAnchoring:
             assert_destination_anchored(unanchored)
 
     # [utest->req~shared-movement-destination-anchoring~1]
+    # [utest->req~shared-movement-detail-destination-context~1]
     def test_a_restore_is_anchored_on_its_own_destination_identity(self):
         recorded = flat(movement_audit_details(restore_context()))
         assert recorded["destination_external_identity_id"] == IDENTITY
-        # A restore is not an upgrade, so the same-row anchoring rule does not bind it.
+        # A restore is not an upgrade, so the same-row anchoring rule does not bind it: its
+        # destination is its own resolved identity, not the source row.
         assert_destination_anchored(restore_context(source_user_id=None))
+
+    # [utest->req~shared-movement-destination-anchoring~1]
+    # [utest->req~shared-movement-detail-destination-context~1]
+    def test_a_successful_restore_with_no_resolved_destination_is_refused(self):
+        # A restore is a linked flow too: its destination is a registered user's resolved
+        # identity, so a success that resolved neither is not a row this contract will build.
+        no_identity = restore_movement_context(
+            result=AuthEventResult.succeeded, occurred_at=NOW,
+            classification=MovementClassification.adoption,
+            destination_user_id=USER, destination_external_identity_id=None)
+        with pytest.raises(MovementError):
+            assert_destination_anchored(no_identity)
+        with pytest.raises(MovementError):
+            movement_event(AttemptPhase.success, no_identity, actor=actor())
+
+        no_user = restore_movement_context(
+            result=AuthEventResult.succeeded, occurred_at=NOW,
+            classification=MovementClassification.adoption,
+            destination_user_id=None, destination_external_identity_id=IDENTITY)
+        with pytest.raises(MovementError):
+            assert_destination_anchored(no_user)
+
+        # A rejected restore resolves nothing and is still recorded, classification included.
+        unresolved = restore_movement_context(
+            result=AuthEventResult.invalid_restore_proof, occurred_at=NOW,
+            destination_user_id=None, destination_external_identity_id=None)
+        row = auth_event_row(movement_event(AttemptPhase.business, unresolved, actor=actor()),
+                             created_at=NOW)
+        assert flat(row["details"])["movement_classification"] == "unclassified"
 
 
 class TestUpgradePreservesUser:

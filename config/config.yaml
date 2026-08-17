@@ -15,6 +15,9 @@ resilience:
   circuit_breaker_reset_seconds: 60
 jwt:
   jwks_cache_ttl_seconds: 3600
+auth:
+  subject_hash_key: "${AUTH_SUBJECT_HASH_KEY}"
+  subject_hash_key_version: 1
 chats_limit: 50
 messages_limit: 50
 apple:

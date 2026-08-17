@@ -15,7 +15,13 @@ from nativespeaker.api.auth.audit import AuthEventResult
 from nativespeaker.api.auth.barrier import ResolutionOutcome
 from nativespeaker.api.auth.entitlement import AccessGrantSource
 from nativespeaker.api.auth.operations import AuthOperation, IdentityProvider
-from nativespeaker.api.auth.taxonomy import REMEDIATIONS, ClientErrorClass
+from nativespeaker.api.auth.taxonomy import (
+    REMEDIATIONS,
+    RESULT_TO_CLASS,
+    ClientErrorClass,
+    register_client_class,
+    surface,
+)
 
 
 class InvariantError(RuntimeError):
@@ -241,21 +247,10 @@ def _assert_failure_classes_distinct() -> None:
 _assert_failure_classes_distinct()
 
 
-def free_grant_failure_class(*,
-                             transient: bool,
-                             durable_state_observed: bool = False,
-                             verification_gate: bool = False) -> ClientErrorClass:
-    """Pick the client-visible class for a free-grant failure. A transient verification failure
-    must not be surfaced as a durable class unless durable state has independently been
-    observed."""
-    # [impl->req~shared-invariant-06~1]
-    if verification_gate:
-        if transient:
-            raise InvariantError("a transient failure is not a verification gate")
-        return ClientErrorClass.verification_required
-    if transient and not durable_state_observed:
-        return ClientErrorClass.verification_temporarily_unavailable
-    return ClientErrorClass.device_grant_exhausted
+# Which internal result surfaces as which of the three classes, and the rule that a transient
+# failure is never surfaced as a durable class unless durable state was independently observed,
+# both belong to the grant material in `03-free-credit-grants-and-anti-abuse.md`. This invariant
+# owns only the distinctness above; there is no second decider here.
 
 
 # --- 7. One free-credit claim per provider account ---------------------------------------------
@@ -274,22 +269,42 @@ class ProviderAccount:
     provider_uid: str
 
 
+# The grants domain's own additions to the one shared internal-result-to-class mapping, made
+# through the taxonomy's declared extension point. There is no second result-to-class registry:
+# every class below is read back out of `taxonomy.surface`.
+_GRANT_GATE_CLASSES: dict[AuthEventResult, ClientErrorClass] = {
+    AuthEventResult.idp_account_already_claimed: ClientErrorClass.account_already_claimed,
+    AuthEventResult.anti_abuse_already_claimed: ClientErrorClass.device_grant_exhausted,
+    AuthEventResult.native_claim_already_claimed: ClientErrorClass.device_grant_exhausted,
+}
+
+for _result, _class in _GRANT_GATE_CLASSES.items():
+    if _result not in RESULT_TO_CLASS:
+        register_client_class(_result, _class.value, REMEDIATIONS[_class].http_status)
+
+
+def _conflict(result: AuthEventResult) -> tuple[AuthEventResult, ClientErrorClass]:
+    """The internal result together with the shared class it surfaces as, read from the one
+    registry rather than restated here."""
+    return result, ClientErrorClass(surface(result)[0])
+
+
 # Each gate's conflict, with its internal result and its client-visible class. A duplicate
 # registered gate is not the same thing as a per-device anonymous-grant block: the two are
 # enforced by different mechanisms, audit differently, and surface as different classes.
 # [impl->req~shared-invariant-07~1]
 GATE_CONFLICTS: dict[GateConsumptionKind, tuple[AuthEventResult, ClientErrorClass]] = {
-    GateConsumptionKind.registered_account_grant: (AuthEventResult.idp_account_already_claimed,
-                                                   ClientErrorClass.account_already_claimed),
-    GateConsumptionKind.web_anonymous_gate: (AuthEventResult.anti_abuse_already_claimed,
-                                             ClientErrorClass.device_grant_exhausted),
+    GateConsumptionKind.registered_account_grant: _conflict(
+        AuthEventResult.idp_account_already_claimed),
+    GateConsumptionKind.web_anonymous_gate: _conflict(
+        AuthEventResult.anti_abuse_already_claimed),
 }
 
 # The durable per-device anonymous-grant block, enforced by the per-device device-check state
 # rather than by a provider-account gate row.
 # [impl->req~shared-invariant-07~1]
-DEVICE_GRANT_BLOCK: tuple[AuthEventResult, ClientErrorClass] = (
-    AuthEventResult.native_claim_already_claimed, ClientErrorClass.device_grant_exhausted)
+DEVICE_GRANT_BLOCK: tuple[AuthEventResult, ClientErrorClass] = _conflict(
+    AuthEventResult.native_claim_already_claimed)
 
 
 class GateAlreadyConsumedError(InvariantError):
@@ -408,10 +423,16 @@ class AttributionTokens:
         self._by_token: dict[tuple[StoreProvider, str], UUID] = {}
 
     def mint(self, user_id: UUID, provider: StoreProvider, identity_value: str) -> None:
-        """Minted once at `create_user`, for the life of the user."""
+        """Minted once at `create_user`, for the life of the user. The binding is keyed by the
+        store provider and that token, so a token already bound to one user is never rebound to
+        another: verified-purchase ingestion resolving through it must find one owner or none."""
         # [impl->req~shared-invariant-10~1]
         if (user_id, provider) in self._by_user:
             raise InvariantError("a user mints one lifetime attribution token per store")
+        owner = self._by_token.get((provider, identity_value))
+        if owner is not None and owner != user_id:
+            raise InvariantError(
+                f"{provider} attribution token is already bound to another user")
         self._by_user[(user_id, provider)] = identity_value
         self._by_token[(provider, identity_value)] = user_id
 

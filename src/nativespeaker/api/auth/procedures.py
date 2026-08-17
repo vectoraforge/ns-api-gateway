@@ -7,15 +7,18 @@ the numbered order is the rejection precedence.
 """
 
 import re
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID, uuid7
 
+from sqlalchemy.exc import DBAPIError, InterfaceError, InternalError, OperationalError
+
 from nativespeaker.api.auth.audit import (
     BARRIER_RESULTS,
+    MOVEMENT_OPERATIONS,
     NO_ACTOR,
     AttemptPhase,
     AuthActor,
@@ -23,9 +26,15 @@ from nativespeaker.api.auth.audit import (
     AuthAuditWriter,
     AuthEvent,
     AuthEventResult,
+    SubjectHasher,
     terminal_event,
 )
-from nativespeaker.api.auth.barrier import ResolutionOutcome, VerifiedIdentityContext
+from nativespeaker.api.auth.barrier import (
+    IdentityResolver,
+    ResolutionOutcome,
+    VerifiedIdentityContext,
+    barrier_result_for,
+)
 from nativespeaker.api.auth.challenges import (
     ChallengeError,
     ChallengeRow,
@@ -47,6 +56,7 @@ from nativespeaker.api.auth.challenges import (
 )
 from nativespeaker.api.auth.flow import OperationMismatchError, assert_challenge_bearing
 from nativespeaker.api.auth.modes import CHALLENGE_QUERY_PARAM, CHALLENGE_QUERY_VALUE
+from nativespeaker.api.auth.movement import movement_audit_details, unresolved_movement_context
 from nativespeaker.api.auth.operations import (
     AuthOperation,
     IdentityProvider,
@@ -54,13 +64,14 @@ from nativespeaker.api.auth.operations import (
     route_for,
     variants_for,
 )
-from nativespeaker.api.auth.routes import is_pre_auth_callable, requires_id_token
+from nativespeaker.api.auth.routes import requires_id_token
 from nativespeaker.api.auth.taxonomy import (
     UnsurfacedResultError,
     register_client_class,
     surface,
 )
 from nativespeaker.api.exceptions import ErrorCode, ServiceError
+from nativespeaker.api.ratelimit.config import complete_entries, prepare_entries
 
 __all__ = ["ChallengeLookupUnavailableError", "ChallengeRejection", "SharedChallengeService",
            "TransientTransactionError", "UnsurfacedResultError", "challenge_id_shape",
@@ -91,6 +102,26 @@ class ChallengeRejection(ServiceError):
 
 class TransientTransactionError(RuntimeError):
     """The consuming transaction failed transiently — a lost commit acknowledgment included."""
+
+
+# Driver-level failures of the short consuming transaction that are transient by nature: a
+# dropped or reset connection, a serialization or deadlock abort, a statement or lock timeout,
+# and a commit whose acknowledgment never arrived. Each is retried as the same local
+# transaction under the same `claim_attempt_id`.
+# [impl->req~shared-completion-step-12~1]
+TRANSIENT_DATABASE_ERRORS: tuple[type[BaseException], ...] = (
+    OperationalError, InterfaceError, InternalError, TimeoutError, ConnectionError,
+)
+
+
+def is_transient_database_failure(error: BaseException) -> bool:
+    """Whether a database failure of the consuming transaction is transient, so the attempt
+    retries it instead of surfacing it as a terminal outcome."""
+    # [impl->req~shared-completion-step-12~1]
+    if isinstance(error, (TransientTransactionError, *TRANSIENT_DATABASE_ERRORS)):
+        return True
+    # A driver error the dialect flagged as a lost connection is transient whatever its class.
+    return isinstance(error, DBAPIError) and bool(getattr(error, "connection_invalidated", False))
 
 
 class ChallengeLookupUnavailableError(ServiceError):
@@ -142,12 +173,27 @@ class ChallengeEndpoint(Protocol):
 
     async def confirm_live_state(self, session: Any, identity: VerifiedIdentityContext,
                                  challenge: ChallengeRow) -> Any:
-        """Re-resolve all endpoint-required state inside the consuming transaction."""
+        """Re-resolve all endpoint-required state inside the consuming transaction. The shared
+        historical, blocked and already-linked re-checks are the shared procedures' own and are
+        not this hook's to repeat."""
         ...
 
     async def mutate(self, session: Any, identity: VerifiedIdentityContext,
                      challenge: ChallengeRow, proof: Any, live: Any) -> Any:
         """Perform the mutation and return the resulting backend state."""
+        ...
+
+
+class ChallengeAdmission(Protocol):
+    """The admission ledger's two challenge-lifecycle gates, as the shared procedures see them.
+    `ratelimit.ordering.AdmissionLedger` satisfies this protocol."""
+
+    def issue_challenge(self, prepare_limits: Sequence[str]) -> None:
+        """Assert that the endpoint's prepare-phase limits ran before the challenge is issued."""
+        ...
+
+    def claim_challenge(self, complete_limits: Sequence[str]) -> None:
+        """Assert that the endpoint's complete-phase limits ran before the challenge is claimed."""
         ...
 
 
@@ -167,12 +213,23 @@ class SharedChallengeService:
                  audit: AuthAuditWriter,
                  session_factory: Callable[[], AbstractAsyncContextManager[Any]],
                  subject_verifier: SubjectVerifier,
+                 subject_hasher: SubjectHasher,
+                 resolver: IdentityResolver,
                  clock: Callable[[], datetime] | None = None,
                  transaction_attempts: int = 3):
         self._store = store
         self._audit = audit
         self._session_factory = session_factory
         self._subject_verifier = subject_verifier
+        # The same keyed hasher the barrier uses, so both event producers populate all three
+        # actor columns identically. Without the key version every row this service writes
+        # would be refused by the audit row contract.
+        # [impl->req~shared-auth-events-actor-subject-hash~1]
+        # [impl->req~shared-auth-events-actor-fields-null~1]
+        self._subject_hasher = subject_hasher
+        # The barrier's own resolver, reused for the step 11 race re-check rather than a third
+        # copy of the identity-resolution rules.
+        self._resolver = resolver
         self._clock = clock or (lambda: datetime.now(UTC))
         self._transaction_attempts = transaction_attempts
         self._open_sessions = 0
@@ -186,7 +243,8 @@ class SharedChallengeService:
                       endpoint: ChallengeEndpoint,
                       *,
                       attempt: AuthAttempt | None = None,
-                      body: Mapping[str, Any] | None = None) -> PrepareResponse:
+                      body: Mapping[str, Any] | None = None,
+                      admission: ChallengeAdmission | None = None) -> PrepareResponse:
         """Prepare mode, in the order the obligations are numbered."""
         # [impl->req~shared-prepare-mode-obligations~1]
         # [impl->req~shared-challenge-wire-contract~1]
@@ -232,7 +290,13 @@ class SharedChallengeService:
         assert_no_proof_material_bound(row, body)
 
         # 7. persist it server-side as one `core.auth_challenges` row keyed by `challenge_id`.
+        # The prepare-phase limits this endpoint configures must already have been evaluated:
+        # this is the point at which a challenge comes into existence, so it is the point the
+        # ordering rule binds.
         # [impl->req~shared-prepare-step-07~1]
+        # [impl->req~ratelimit-prepare-limits-before-challenge-issue~1]
+        if admission is not None:
+            admission.issue_challenge(prepare_entries(operation))
         await self._store.insert(row)
 
         # 8. return `challenge_id` and `expires_at`, and nothing else.
@@ -294,7 +358,8 @@ class SharedChallengeService:
                        endpoint: ChallengeEndpoint,
                        *,
                        attempt: AuthAttempt | None = None,
-                       body: Mapping[str, Any] | None = None) -> Any:
+                       body: Mapping[str, Any] | None = None,
+                       admission: ChallengeAdmission | None = None) -> Any:
         """The completion procedure. The numbered order below is the rejection precedence: when
         several conditions hold, the earliest failed step is the one that rejects."""
         # [impl->req~shared-completion-backend-obligations~1]
@@ -364,7 +429,13 @@ class SharedChallengeService:
         # claims the row, or it fails as already used right here.
         # [impl->req~shared-completion-step-08~1]
         # [impl->req~shared-single-use-completion-outcomes~1]
+        # The complete-phase limits ran before this point and neither claimed, consumed,
+        # reinterpreted nor modified the challenge; the claim happens here and before any
+        # provider call.
+        # [impl->req~ratelimit-complete-limits-before-challenge-claim~1]
         claim_attempt_id = uuid7()
+        if admission is not None:
+            admission.claim_challenge(complete_entries(operation))
         outcome = await self._store.claim(row.challenge_id, claim_attempt_id)
         if outcome is not ClaimOutcome.claimed:
             # The already-used branch: it fails at the claim, before any proof verification or
@@ -443,7 +514,13 @@ class SharedChallengeService:
             try:
                 return await self._run_consuming_transaction(attempt, endpoint, context, row,
                                                              claim_attempt_id, proof)
-            except TransientTransactionError:
+            except Exception as error:
+                # A transient failure of the transaction itself — a dropped connection, a
+                # serialization abort, a statement timeout, or a commit whose acknowledgment
+                # was lost — is retried here, not surfaced.
+                # [impl->req~shared-completion-step-12~1]
+                if not is_transient_database_failure(error):
+                    raise
                 if remaining <= 0:
                     raise
                 # The attempt recognizes its own claim on retry instead of reading it as a
@@ -457,6 +534,11 @@ class SharedChallengeService:
         result: Any = None
         async with self._open_session() as session:
             try:
+                # 11. re-verify the shared historical and blocked state to close the race the
+                # barrier opened, and reject a pre-auth-bound `create_user` subject that has
+                # become actively linked, before any endpoint-required state is re-resolved.
+                # [impl->req~shared-completion-step-11~1]
+                await self._reconfirm_shared_state(context, row)
                 # 11. re-resolve all endpoint-required state and confirm the live state still
                 # satisfies the endpoint's rules.
                 # [impl->req~shared-completion-step-11~1]
@@ -486,13 +568,38 @@ class SharedChallengeService:
                 event = self._event(AttemptPhase.success, AuthEventResult.succeeded, attempt,
                                     context, row=row)
                 await self._audit.write_in_transaction(session, attempt, event)
-            await session.commit()
+            # The commit is inside the retry envelope: a lost or ambiguous acknowledgment is
+            # the transient failure this step names, not a terminal one.
+            # [impl->req~shared-completion-step-12~1]
+            try:
+                await session.commit()
+            except Exception as cause:
+                if is_transient_database_failure(cause):
+                    raise TransientTransactionError(type(cause).__name__) from cause
+                raise
 
         if rejection is not None:
             raise rejection
         # 14. return the resulting backend state. No backend token is reissued.
         # [impl->req~shared-completion-step-14~1]
         return result
+
+    async def _reconfirm_shared_state(self, context: VerifiedIdentityContext,
+                                      row: ChallengeRow) -> None:
+        """Step 11's two shared obligations, run inside the consuming transaction: re-verify
+        historical and blocked state to close the race the barrier opened, then reject with
+        `identity_already_linked` if a pre-auth-bound `create_user` subject has become actively
+        linked since prepare. The identity is re-resolved through the barrier's own resolver and
+        judged by the barrier's own predicate, so no third copy of these rules exists."""
+        # [impl->req~shared-completion-step-11~1]
+        resolved = await self._resolver.resolve(context.issuer, context.subject)
+        result = barrier_result_for(resolved.outcome, *route_for(row.operation))
+        if result is not None:
+            raise ChallengeRejection(result)
+        if (row.operation is AuthOperation.create_user
+                and row.is_preauth_bound
+                and resolved.outcome is ResolutionOutcome.linked):
+            raise ChallengeRejection(AuthEventResult.identity_already_linked)
 
     async def _consume_after_rejection(self, attempt: AuthAttempt, context: VerifiedIdentityContext,
                                        row: ChallengeRow, claim_attempt_id: UUID,
@@ -538,29 +645,26 @@ class SharedChallengeService:
 
     async def _require_barrier_outcome(self, attempt: AuthAttempt, operation: AuthOperation,
                                        context: VerifiedIdentityContext) -> None:
-        """The barrier's route-admission, historical-identity and blocked-user rules, in that
-        order, all of them before any challenge check."""
+        """The barrier's route-admission, historical-identity and blocked-user rules, all of
+        them before any challenge check. The rules themselves live in `barrier.py` and are
+        evaluated by its own predicate here, so this defence-in-depth re-check can never drift
+        from the barrier that owns them."""
         # [impl->req~shared-completion-step-02~1]
-        # [impl->req~shared-prepare-step-03~1]
-        if (context.outcome is ResolutionOutcome.pre_auth
-                and not is_pre_auth_callable(*route_for(operation))):
-            raise await self._reject(attempt, AttemptPhase.barrier,
-                                     AuthEventResult.preauth_identity_not_allowed, context)
         # [impl->req~shared-completion-step-03~1]
-        # [impl->req~shared-prepare-step-04~1]
-        if context.outcome is ResolutionOutcome.historical_identity:
-            raise await self._reject(attempt, AttemptPhase.barrier,
-                                     AuthEventResult.historical_identity, context)
         # [impl->req~shared-completion-step-04~1]
-        if context.outcome is ResolutionOutcome.blocked_user:
-            raise await self._reject(attempt, AttemptPhase.barrier,
-                                     AuthEventResult.blocked_user, context)
+        # [impl->req~shared-prepare-step-03~1]
+        # [impl->req~shared-prepare-step-04~1]
+        result = barrier_result_for(context.outcome, *route_for(operation))
+        if result is not None:
+            raise await self._reject(attempt, AttemptPhase.barrier, result, context)
 
     def _actor(self, context: VerifiedIdentityContext | None) -> AuthActor:
         if context is None:
             return NO_ACTOR
+        subject_hash, key_version = self._subject_hasher(context.subject)
         return AuthActor(issuer=context.issuer,
-                         subject_hash=self._subject_verifier(context.subject),
+                         subject_hash=subject_hash,
+                         subject_hash_key_version=key_version,
                          provider=context.provider)
 
     def _event(self, phase: AttemptPhase, result: AuthEventResult, attempt: AuthAttempt,
@@ -571,9 +675,20 @@ class SharedChallengeService:
         if result in BARRIER_RESULTS:
             phase = AttemptPhase.barrier
         # `challenge_row_id` is the internal row id; the public handle is never recorded.
-        details = {"route": attempt.route}
+        details: dict[str, Any] = {"route": attempt.route}
         if detail:
             details["reason"] = detail
+        if attempt.operation in MOVEMENT_OPERATIONS and result is not AuthEventResult.succeeded:
+            # An account-movement attempt owes the movement context on its single row whatever
+            # its outcome. The shared procedures resolve none of it, so a rejection here carries
+            # the all-`NULL` context with the route's unresolved classification; the movement
+            # endpoint supplies the resolved context on the paths that have one.
+            # [impl->req~shared-upgrade-movement-context-required~1]
+            # [impl->req~shared-restore-movement-classification~1]
+            movement = unresolved_movement_context(
+                attempt.operation, result, self._clock(),
+                challenge_row_id=row.id if row is not None else None)
+            details = {**movement_audit_details(movement), **details}
         return terminal_event(phase, result, operation=attempt.operation,
                               actor=self._actor(context),
                               challenge_row_id=row.id if row is not None else None,

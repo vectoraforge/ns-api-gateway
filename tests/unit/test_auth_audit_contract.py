@@ -34,7 +34,13 @@ from unit.test_auth_barrier import (
     make_session_factory,
     make_writer,
 )
-from unit.test_auth_challenges import Harness, linked_context, preauth_context, verifier
+from unit.test_auth_challenges import (
+    Harness,
+    hasher,
+    linked_context,
+    preauth_context,
+    verifier,
+)
 
 NOW = datetime(2026, 8, 16, 12, 0, tzinfo=UTC)
 SUBJECT_HASH = bytes(range(32))
@@ -56,14 +62,14 @@ class TracingSink:
         self.attempts = 0
         self.fail = False
 
-    async def insert(self, session: Any, event: Any) -> None:
+    async def insert(self, session: Any, row: Any) -> None:
         self.attempts += 1
         if self.fail:
             raise RuntimeError("audit insert failed")
         self.trace.append("audit_insert")
         self.sessions.append(session)
         self.committed_at_insert.append(session.committed)
-        self.events.append(event)
+        self.events.append(dict(row))
 
 
 class AuditHarness(Harness):
@@ -74,10 +80,12 @@ class AuditHarness(Harness):
         self.sink = TracingSink(self.trace)
         self.counter = AuthResultCounter()
         self.audit = AuthAuditWriter(sink=self.sink, counter=self.counter,
-                                     session_factory=self.factory)
+                                     session_factory=self.factory, clock=self.clock)
         self.service = SharedChallengeService(store=self.store, audit=self.audit,
                                               session_factory=self.factory,
-                                              subject_verifier=verifier, clock=self.clock)
+                                              subject_verifier=verifier,
+                                              subject_hasher=hasher,
+                                              resolver=self.resolver, clock=self.clock)
 
 
 @pytest.fixture
@@ -98,8 +106,8 @@ class TestRejectionAuditRequirements:
                 response = client.request(entry.method, entry.path,
                                           headers={"Authorization": f"Bearer {make_token('u')}"})
             assert response.status_code == 403
-            assert [row.operation for row in sink.rows] == [entry.operation]
-            assert [row.result for row in sink.rows] == [AuthEventResult.blocked_user]
+            assert [row["operation"] for row in sink.rows] == [entry.operation]
+            assert [row["result"] for row in sink.rows] == [AuthEventResult.blocked_user]
 
     # [utest->req~shared-rejection-audit-required~1]
     async def test_a_prepare_phase_rejection_is_audited_too(self, h):
@@ -108,11 +116,12 @@ class TestRejectionAuditRequirements:
         with pytest.raises(ChallengeRejection):
             await h.service.prepare(AuthOperation.create_user, IdentityProvider.anonymous,
                                     linked_context(), h.endpoint(AuthOperation.create_user))
-        assert [event.result for event in h.sink.events] == \
+        assert [event["result"] for event in h.sink.events] == \
             [AuthEventResult.identity_already_linked]
         assert h.store.rows == {}
 
     # [utest->req~shared-rejection-audit-scope~1]
+    # [utest->req~shared-auth-events-scope~1]
     def test_only_requests_on_the_audited_path_are_in_scope(self):
         sink = RecordingSink()
         counter = AuthResultCounter()
@@ -156,7 +165,7 @@ class TestFailClosedWriting:
         assert h.sink.committed_at_insert == [False]
         assert h.factory.sessions[-1].committed is True
         assert h.factory.log[-3:] == ["open", "commit", "close"]
-        assert [event.result for event in h.sink.events] == [AuthEventResult.succeeded]
+        assert [event["result"] for event in h.sink.events] == [AuthEventResult.succeeded]
 
     # [utest->req~shared-audit-fail-closed~1]
     # [utest->req~shared-audit-fail-closed-rejection~1]
@@ -173,7 +182,7 @@ class TestFailClosedWriting:
         assert h.sink.committed_at_insert == [False]
         assert h.sink.sessions == [h.factory.sessions[-1]]
         assert h.factory.sessions[-1].committed is True
-        assert [event.result for event in h.sink.events] == \
+        assert [event["result"] for event in h.sink.events] == \
             [AuthEventResult.preauth_identity_not_allowed]
 
     # [utest->req~shared-audit-fail-closed-not-best-effort~1]
@@ -185,7 +194,7 @@ class TestFailClosedWriting:
                                  session_factory=make_session_factory([]))
         attempt = AuthAttempt("POST", "/auth/sync")
         event = terminal_event(AttemptPhase.barrier, AuthEventResult.blocked_user,
-                               operation=AuthOperation.sync)
+                               operation=AuthOperation.sync, actor=actor())
         earned = ChallengeRejection(AuthEventResult.blocked_user)
         with structlog.testing.capture_logs() as logs:
             returned = await writer.record_rejection(attempt, event, earned)
@@ -199,7 +208,6 @@ class TestFailClosedWriting:
 
 
 class TestTheAuthEventsRow:
-    # [utest->req~shared-auth-events-scope~1]
     def test_the_row_is_a_chronological_record_of_on_path_attempts(self):
         for result in (AuthEventResult.succeeded, AuthEventResult.policy_rejected):
             phase = (AttemptPhase.success if result is AuthEventResult.succeeded
@@ -425,3 +433,85 @@ class TestTheAuthEventsRow:
             auth_event_row(terminal_event(AttemptPhase.success, AuthEventResult.succeeded,
                                           operation=operation, actor=actor()),
                            created_at=NOW)
+
+
+class TestTheWritePathBuildsTheRow:
+    """Every durable write goes through `auth_event_row`, so nothing a sink is handed can carry
+    material the row contract forbids."""
+
+    # [utest->req~shared-auth-events-details-redaction~1]
+    async def test_a_secret_in_the_events_details_never_reaches_the_sink(self):
+        trace: list[str] = []
+        sink = TracingSink(trace)
+        writer = AuthAuditWriter(sink=sink, counter=AuthResultCounter(),
+                                 session_factory=make_session_factory([]))
+        event = terminal_event(
+            AttemptPhase.business, AuthEventResult.invalid_restore_proof,
+            operation=AuthOperation.restore_subscription, actor=actor(),
+            details={"id_token": "leaked.jwt.value",
+                     "restore_proof": "raw-receipt-bytes",
+                     "challenge_id": "public-capability-handle",
+                     "reason": "proof_rejected",
+                     **movement_details(movement_classification="unclassified")})
+        await writer.write_standalone(AuthAttempt("POST", "/auth/restore-subscription"), event)
+        written = str(sink.events[0])
+        for secret in ("leaked.jwt.value", "raw-receipt-bytes", "public-capability-handle"):
+            assert secret not in written
+        assert sink.events[0]["details"]["context"]["id_token"] == "[redacted]"
+
+    # [utest->req~shared-auth-events-actor-subject-hash~1]
+    # [utest->req~shared-auth-events-actor-fields-null~1]
+    async def test_a_challenge_service_rejection_carries_all_three_actor_columns(self, h):
+        # The challenge service and the barrier build their actor from the same keyed hasher,
+        # so a rejection this service writes carries the key version too and the row is
+        # buildable at all.
+        with pytest.raises(ChallengeRejection):
+            await h.service.prepare(AuthOperation.create_user, IdentityProvider.anonymous,
+                                    linked_context(), h.endpoint(AuthOperation.create_user))
+        row = h.sink.events[-1]
+        assert row["actor_issuer"] == linked_context().issuer
+        assert row["actor_subject_hash"] == hasher(linked_context().subject)[0]
+        assert row["actor_subject_hash_key_version"] == hasher(linked_context().subject)[1]
+
+    # [utest->req~shared-audit-outcome-barrier-rejection~1]
+    def test_a_barrier_rejection_row_is_built_with_its_actor_columns(self):
+        sink = RecordingSink()
+        app = build_app([("POST", "/auth/sync")],
+                        resolver=FakeResolver(ResolutionOutcome.blocked_user),
+                        writer=make_writer(sink=sink))
+        with TestClient(app, raise_server_exceptions=False) as client:
+            client.post("/auth/sync", headers={"Authorization": f"Bearer {make_token('u1')}"})
+        # The row exists at all — building it would have raised without a keyed subject hasher,
+        # and the writer would then have lost the attempt's mandatory single row.
+        assert len(sink.rows) == 1
+        row = sink.rows[0]
+        assert row["actor_issuer"] is not None
+        assert len(row["actor_subject_hash"]) == 32
+        assert row["actor_subject_hash_key_version"] is not None
+
+    # [utest->req~shared-upgrade-movement-context-required~1]
+    # [utest->req~shared-restore-movement-classification~1]
+    # [utest->req~shared-movement-single-audit-row~1]
+    @pytest.mark.parametrize("path, operation, classification", [
+        ("/auth/restore-subscription", AuthOperation.restore_subscription, "unclassified"),
+        ("/auth/upgrade-anonymous", AuthOperation.upgrade_anonymous_to_registered, "upgrade"),
+    ])
+    def test_a_barrier_rejected_movement_attempt_still_carries_its_movement_context(
+            self, path, operation, classification):
+        sink = RecordingSink()
+        app = build_app([("POST", path)],
+                        resolver=FakeResolver(ResolutionOutcome.blocked_user),
+                        writer=make_writer(sink=sink))
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.post(path,
+                                   headers={"Authorization": f"Bearer {make_token('u1')}"})
+        assert response.status_code == 403
+        assert len(sink.rows) == 1
+        row = sink.rows[0]
+        assert row["operation"] is operation
+        # Nothing was resolved yet, so every movement field is NULL — but the context is there,
+        # with the classification the route owes even before branch determination.
+        assert row["details"]["mutation"]["movement_classification"] == classification
+        assert row["details"]["resolved"]["destination_user_id"] is None
+        assert row["details"]["resolved"]["source_user_id"] is None
+        assert row["details"]["verification"]["store_state_verification"] is None

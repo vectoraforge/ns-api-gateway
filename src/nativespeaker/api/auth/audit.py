@@ -1,10 +1,12 @@
 """The shared auth audit contract: `audit.auth_events` rows for the audited attempt path,
 and the bounded counter metric that carries barrier results everywhere else."""
 
+import hashlib
+import hmac
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID, uuid7
@@ -88,6 +90,28 @@ class AuthActor:
 
 
 NO_ACTOR = AuthActor()
+
+# The keyed subject hasher every actor-populating event producer shares: the derived HMAC hash
+# of the backend-verified subject together with the version of the key that produced it.
+# [impl->req~shared-auth-events-actor-subject-hash~1]
+SubjectHasher = Callable[[str], tuple[bytes, int]]
+
+
+class KeyedSubjectHasher:
+    """HMAC-SHA-256 over the backend-verified subject under a versioned server-side key. The raw
+    subject is never stored, and every hash carries the version of the key that produced it so a
+    key rotation stays reconstructible."""
+
+    # [impl->req~shared-auth-events-actor-subject-hash~1]
+    def __init__(self, *, key: bytes, key_version: int = 1):
+        if not key:
+            raise ValueError("the subject hash key must not be empty")
+        self._key = key
+        self._key_version = key_version
+
+    def __call__(self, subject: str) -> tuple[bytes, int]:
+        digest = hmac.new(self._key, subject.encode("utf-8"), hashlib.sha256).digest()
+        return digest, self._key_version
 
 
 def resolved_actor(issuer: str,
@@ -441,8 +465,10 @@ def _assert_record_sufficient(row: dict[str, Any]) -> None:
 
 
 class AuthEventSink(Protocol):
-    async def insert(self, session: Any, event: AuthEvent) -> None:
-        """Append one durable `audit.auth_events` row using the given session."""
+    async def insert(self, session: Any, row: Mapping[str, Any]) -> None:
+        """Append one durable `audit.auth_events` row using the given session. The row arrives
+        already built, redacted and validated by `auth_event_row`, so a sink has nothing left to
+        decide and no way to write an event's raw `details`."""
         ...
 
 
@@ -495,10 +521,19 @@ class AuthAuditWriter:
                  *,
                  sink: AuthEventSink,
                  counter: AuthResultCounter,
-                 session_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None):
+                 session_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
+                 clock: Callable[[], datetime] | None = None):
         self._sink = sink
         self._counter = counter
         self._session_factory = session_factory
+        self._clock = clock or (lambda: datetime.now(UTC))
+
+    def row_for(self, event: AuthEvent) -> dict[str, Any]:
+        """Build the durable row this event becomes. Every write goes through `auth_event_row`,
+        so redaction and the whole row contract are enforced on the write path itself rather
+        than in a builder a sink might not call."""
+        # [impl->req~shared-auth-events-details-redaction~1]
+        return auth_event_row(event, created_at=self._clock())
 
     def _claim(self, attempt: AuthAttempt) -> None:
         """Only requests routed to a canonical state-changing auth operation reach the table.
@@ -526,7 +561,7 @@ class AuthAuditWriter:
         # [impl->req~shared-audit-fail-closed~1]
         # [impl->req~shared-audit-fail-closed-success~1]
         self._claim(attempt)
-        await self._sink.insert(session, event)
+        await self._sink.insert(session, self.row_for(event))
         self._count(attempt, event)
 
     async def write_standalone(self, attempt: AuthAttempt, event: AuthEvent) -> None:
@@ -539,8 +574,9 @@ class AuthAuditWriter:
         if self._session_factory is None:
             raise RuntimeError("no session factory configured for standalone audit writes")
         self._claim(attempt)
+        row = self.row_for(event)
         async with self._session_factory() as session:
-            await self._sink.insert(session, event)
+            await self._sink.insert(session, row)
             await session.commit()
         self._count(attempt, event)
 

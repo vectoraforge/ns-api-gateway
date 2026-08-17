@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from nativespeaker.api.auth.tokens import (
+    CachedGoogleSigningKeys,
+    FirebaseIdTokenVerifier,
     IdTokenVerifier,
     InvalidExternalJwtError,
     JwtRejectionReason,
@@ -76,3 +78,26 @@ class FirebaseIntegrations:
         if len(recognized) != 1 or len(provider_ids) != len(recognized):
             raise UnrecognizedProviderError("unrecognized providerData shape")
         return recognized.pop()
+
+
+def build_firebase_integrations(*,
+                                issuer: str,
+                                project_id: str,
+                                jwks_url: str,
+                                admin_client: Any,
+                                leeway: int = 30,
+                                jwks_cache_ttl_seconds: float = 3600.0,
+                                warm: bool = True) -> FirebaseIntegrations:
+    """The one configured Firebase integration: its expected issuer, its project ID as the
+    accepted audience, a JWKS-backed verifier over the cached Google signing keys, and the
+    named Admin client every Admin call for that issuer selects. There is no default client."""
+    # [impl->req~shared-single-firebase-integration~1]
+    keys = CachedGoogleSigningKeys(jwks_url=jwks_url, cache_ttl_seconds=jwks_cache_ttl_seconds)
+    if warm:
+        keys.warm()
+    verifier = FirebaseIdTokenVerifier(issuer=issuer, audience=project_id,
+                                       key_resolver=keys, leeway=leeway)
+    return FirebaseIntegrations([FirebaseIntegration(issuer=issuer,
+                                                     project_id=project_id,
+                                                     verifier=verifier,
+                                                     admin_client=admin_client)])

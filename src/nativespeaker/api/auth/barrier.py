@@ -7,7 +7,7 @@ themselves.
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID
@@ -17,15 +17,19 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 from nativespeaker.api.auth.audit import (
+    MOVEMENT_OPERATIONS,
     NO_ACTOR,
     AttemptPhase,
     AuthActor,
     AuthAttempt,
     AuthAuditWriter,
+    AuthEvent,
     AuthEventResult,
+    SubjectHasher,
     terminal_event,
 )
 from nativespeaker.api.auth.integration import FirebaseIntegrations
+from nativespeaker.api.auth.movement import movement_event, unresolved_movement_context
 from nativespeaker.api.auth.operations import IdentityProvider
 from nativespeaker.api.auth.routes import (
     RouteCategory,
@@ -101,6 +105,29 @@ class IdentityResolver(Protocol):
         ...
 
 
+def barrier_result_for(outcome: ResolutionOutcome,
+                       method: str,
+                       path: str) -> AuthEventResult | None:
+    """The barrier's three identity-policy rules, in one place: the historical-identity rule,
+    the blocked-user rule, and the route-admission rule for a pre-auth identity. `None` means
+    the outcome is admitted. Every enforcement point — the barrier itself and the completion
+    procedure's re-checks — reads this predicate rather than restating the rules, so an
+    account-blocking rule can never drift between two copies."""
+    # [impl->req~shared-prehandler-barrier~1]
+    # [impl->req~shared-invariant-03~1]
+    match outcome:
+        case ResolutionOutcome.historical_identity:
+            # Once an external identity has transitioned to `historical`, every subsequent
+            # request for it is rejected here, at per-request resolution.
+            return AuthEventResult.historical_identity
+        case ResolutionOutcome.blocked_user:
+            return AuthEventResult.blocked_user
+        case ResolutionOutcome.pre_auth:
+            if not is_pre_auth_callable(method, path):
+                return AuthEventResult.preauth_identity_not_allowed
+    return None
+
+
 def extract_bearer_token(authorization_values: Sequence[str]) -> str:
     """The `Authorization` header is the sole identity carrier: exactly one field, `Bearer`
     scheme, non-empty token."""
@@ -128,11 +155,20 @@ class AuthBarrier:
                  integrations: FirebaseIntegrations,
                  resolver: IdentityResolver,
                  audit: AuthAuditWriter,
-                 subject_hasher: Callable[[str], tuple[bytes, int]] | None = None):
+                 subject_hasher: SubjectHasher,
+                 clock: Callable[[], datetime] | None = None):
+        # The keyed subject hasher is a hard dependency, not an option: without it every
+        # non-`invalid_external_jwt` rejection would build a row the audit contract refuses,
+        # and the attempt's mandatory single audit row would be lost.
+        # [impl->req~shared-audit-outcome-barrier-rejection~1]
+        # [impl->req~shared-auth-events-actor-fields-null~1]
+        if subject_hasher is None:
+            raise ValueError("the barrier requires a keyed subject hasher for its audit actor")
         self._integrations = integrations
         self._resolver = resolver
         self._audit = audit
         self._subject_hasher = subject_hasher
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     async def admit(self,
                     attempt: AuthAttempt,
@@ -154,19 +190,10 @@ class AuthBarrier:
         resolved = await self._resolver.resolve(claims.issuer, claims.subject)
         actor = self._actor(claims.issuer, claims.subject, resolved)
 
-        match resolved.outcome:
-            case ResolutionOutcome.historical_identity:
-                # Once an external identity has transitioned to `historical`, every subsequent
-                # request for it is rejected here, at per-request resolution.
-                # [impl->req~shared-invariant-03~1]
-                raise await self._reject(attempt, AuthEventResult.historical_identity, actor=actor)
-            case ResolutionOutcome.blocked_user:
-                raise await self._reject(attempt, AuthEventResult.blocked_user, actor=actor)
-            case ResolutionOutcome.pre_auth:
-                if not is_pre_auth_callable(attempt.method, attempt.route):
-                    raise await self._reject(attempt,
-                                             AuthEventResult.preauth_identity_not_allowed,
-                                             actor=actor)
+        # [impl->req~shared-invariant-03~1]
+        result = barrier_result_for(resolved.outcome, attempt.method, attempt.route)
+        if result is not None:
+            raise await self._reject(attempt, result, actor=actor)
 
         return VerifiedIdentityContext(issuer=claims.issuer,
                                        subject=claims.subject,
@@ -177,10 +204,7 @@ class AuthBarrier:
                                        registered_at=resolved.registered_at)
 
     def _actor(self, issuer: str, subject: str, resolved: ResolvedIdentity) -> AuthActor:
-        subject_hash: bytes | None = None
-        key_version: int | None = None
-        if self._subject_hasher is not None:
-            subject_hash, key_version = self._subject_hasher(subject)
+        subject_hash, key_version = self._subject_hasher(subject)
         return AuthActor(issuer=issuer,
                          subject_hash=subject_hash,
                          subject_hash_key_version=key_version,
@@ -201,9 +225,23 @@ class AuthBarrier:
             self._audit.record_off_path(attempt, result, reason=reason)
             return error
         details = {"reason": reason, "route": attempt.route} if reason else {"route": attempt.route}
-        event = terminal_event(AttemptPhase.barrier, result,
-                               operation=attempt.operation, actor=actor, details=details)
-        return await self._audit.record_rejection(attempt, event, error)
+        return await self._audit.record_rejection(
+            attempt, self._event(attempt, result, actor, details), error)
+
+    def _event(self, attempt: AuthAttempt, result: AuthEventResult, actor: AuthActor,
+               details: dict[str, Any]) -> AuthEvent:
+        """The single row the attempt owes. On the two account-movement routes that row carries
+        the movement context for every attempt, rejected ones included: nothing is resolved yet
+        at the barrier, so the context is the all-`NULL` one with the route's own unresolved
+        classification rather than an omitted section."""
+        # [impl->req~shared-upgrade-movement-context-required~1]
+        # [impl->req~shared-restore-movement-classification~1]
+        # [impl->req~shared-movement-single-audit-row~1]
+        if attempt.operation in MOVEMENT_OPERATIONS:
+            context = unresolved_movement_context(attempt.operation, result, self._clock())
+            return movement_event(AttemptPhase.barrier, context, actor=actor, details=details)
+        return terminal_event(AttemptPhase.barrier, result,
+                              operation=attempt.operation, actor=actor, details=details)
 
 
 class AuthBarrierMiddleware(BaseHTTPMiddleware):

@@ -3,8 +3,21 @@ from uuid import uuid4
 
 import pytest
 
+from nativespeaker.api.auth.integration import FirebaseIntegration, FirebaseIntegrations
 from nativespeaker.api.models import Subscription, SubscriptionPlan, SubscriptionStatus
 from nativespeaker.api.services import FirebaseService, SubscriptionService
+
+TEST_ISSUER = "https://securetoken.google.com/test-project"
+
+
+def _firebase_service() -> FirebaseService:
+    """The service bound to the one configured integration: every Admin call selects its
+    client by the matched issuer, and there is no default app to fall back to."""
+    integrations = FirebaseIntegrations([FirebaseIntegration(issuer=TEST_ISSUER,
+                                                            project_id="test-project",
+                                                            verifier=MagicMock(),
+                                                            admin_client=MagicMock())])
+    return FirebaseService(integrations=integrations, issuer=TEST_ISSUER)
 
 # --- Helpers for building mock Apple payloads ---
 
@@ -299,17 +312,21 @@ class TestFirebaseSync:
     @pytest.mark.asyncio
     async def test_uses_to_thread(self):
         """SUBS-07: FirebaseService.set_plan_claim uses asyncio.to_thread."""
-        firebase_service = FirebaseService()
+        firebase_service = _firebase_service()
 
         with patch("nativespeaker.api.services.firebase.asyncio.to_thread",
                     new_callable=AsyncMock) as mock_to_thread:
             await firebase_service.set_plan_claim("uid-123", SubscriptionPlan.gold)
             mock_to_thread.assert_called_once()
+            # The Admin call runs on the client the integration selects by matched issuer.
+            # [utest->req~shared-single-firebase-integration~1]
+            expected = firebase_service._integrations.sole.admin_client   # noqa: SLF001
+            assert mock_to_thread.call_args.kwargs["app"] is expected
 
     @pytest.mark.asyncio
     async def test_firebase_failure_does_not_raise(self):
         """SUBS-07: Firebase sync failure is swallowed (best-effort)."""
-        firebase_service = FirebaseService()
+        firebase_service = _firebase_service()
 
         with patch("nativespeaker.api.services.firebase.asyncio.to_thread",
                     side_effect=Exception("Firebase down")):

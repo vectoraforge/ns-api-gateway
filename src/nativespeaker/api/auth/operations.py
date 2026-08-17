@@ -7,6 +7,8 @@ whether a handler writes business state.
 from dataclasses import dataclass
 from enum import StrEnum
 
+from nativespeaker.api.exceptions import ErrorCode, ServiceError
+
 
 class AuthOperation(StrEnum):
     """`core.auth_operation`."""
@@ -109,8 +111,18 @@ def route_for(operation: AuthOperation) -> tuple[str, str]:
     return entry.method, entry.path
 
 
-class InvalidOperationVariantError(ValueError):
-    """The client-declared operation variant is not one this operation defines."""
+class InvalidOperationVariantError(ServiceError, ValueError):
+    """The client-declared operation variant is not one this operation defines.
+
+    The request's shape is wrong before any operation-specific meaning can be assigned to it,
+    so it takes the shared `invalid_request` class under the request-shape partition rather
+    than escaping as an unhandled error and becoming a 500. Like every other request-shape
+    rejection it carries no internal `core.auth_event_result`."""
+    # [impl->req~shared-error-class-invalid-request~1]
+    # [impl->req~shared-error-classes-govern-all-routes~1]
+    # [impl->req~shared-invalid-request-remediation~1]
+    status_code = 400
+    error_code: ErrorCode = "invalid_request"
 
 
 def normalize_variant(operation: AuthOperation,

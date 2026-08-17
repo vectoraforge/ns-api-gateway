@@ -6,12 +6,14 @@ from uuid import uuid7
 import pytest
 from fastapi.testclient import TestClient
 
+import nativespeaker.api.auth.invariants as invariants
 from nativespeaker.api.auth.audit import AuthEventResult
 from nativespeaker.api.auth.barrier import ResolutionOutcome
 from nativespeaker.api.auth.entitlement import AccessGrantSource
 from nativespeaker.api.auth.invariants import (
     CROSS_CUTTING_INVARIANTS,
     DEVICE_CHECK_MECHANISM,
+    DISTINCT_FAILURE_CLASSES,
     ENUM_TYPED_FIELDS,
     AttributionSource,
     AttributionTokens,
@@ -34,7 +36,6 @@ from nativespeaker.api.auth.invariants import (
     assert_provider_uid_immutable,
     assert_same_transaction,
     assert_stated_here,
-    free_grant_failure_class,
     normative_home,
     provider_uid_from_provider_data,
     provider_uid_reserved,
@@ -50,7 +51,7 @@ from nativespeaker.api.auth.locks import (
     takes_user_row_lock,
 )
 from nativespeaker.api.auth.operations import AuthOperation, IdentityProvider
-from nativespeaker.api.auth.taxonomy import ClientErrorClass
+from nativespeaker.api.auth.taxonomy import REMEDIATIONS, ClientErrorClass
 from unit.conftest import make_token
 from unit.test_auth_barrier import FakeResolver, RecordingSink, build_app, make_writer
 
@@ -128,7 +129,7 @@ class TestHistoricalIdentity:
         assert first.json()["code"] == "account_unavailable"
         # Both requests reached per-request resolution; neither reached a handler.
         assert len(resolver.seen) == 2
-        assert [row.result for row in sink.rows] == [AuthEventResult.historical_identity]
+        assert [row["result"] for row in sink.rows] == [AuthEventResult.historical_identity]
 
 
 class TestEnumTypedFields:
@@ -175,22 +176,27 @@ class TestEntitlementOnlyGrantRow:
 class TestDistinctFailureClasses:
     # [utest->req~shared-invariant-06~1]
     def test_durable_exhaustion_a_gate_and_an_outage_are_three_classes(self):
-        assert free_grant_failure_class(transient=False) \
-            is ClientErrorClass.device_grant_exhausted
-        assert free_grant_failure_class(transient=False, verification_gate=True) \
-            is ClientErrorClass.verification_required
-        assert free_grant_failure_class(transient=True) \
-            is ClientErrorClass.verification_temporarily_unavailable
+        assert set(DISTINCT_FAILURE_CLASSES) == {
+            ClientErrorClass.device_grant_exhausted,
+            ClientErrorClass.verification_required,
+            ClientErrorClass.verification_temporarily_unavailable,
+        }
+        # Three classes, three remediations: none of them can be collapsed into another, which
+        # is the whole content of this invariant.
+        actions = [REMEDIATIONS[klass].action for klass in DISTINCT_FAILURE_CLASSES]
+        assert len(set(actions)) == len(actions)
+        assert REMEDIATIONS[ClientErrorClass.verification_temporarily_unavailable].transient
+        assert not REMEDIATIONS[ClientErrorClass.device_grant_exhausted].transient
+        assert not REMEDIATIONS[ClientErrorClass.verification_required].transient
 
     # [utest->req~shared-invariant-06~1]
-    def test_a_transient_failure_is_not_surfaced_as_durable_without_durable_state(self):
-        assert free_grant_failure_class(transient=True, durable_state_observed=False) \
-            is ClientErrorClass.verification_temporarily_unavailable
-        # Only an independently observed durable state may promote it.
-        assert free_grant_failure_class(transient=True, durable_state_observed=True) \
-            is ClientErrorClass.device_grant_exhausted
-        with pytest.raises(InvariantError):
-            free_grant_failure_class(transient=True, verification_gate=True)
+    def test_the_selection_rule_lives_with_the_grant_material_not_here(self):
+        # Which internal result maps to which of the three classes, and the rule that a
+        # transient failure is never surfaced as a durable class unless durable state was
+        # independently observed, belong to the grant material. This module owns only the
+        # distinctness above, so it exposes no second decider for anyone to drift from.
+        assert not [name for name in dir(invariants)
+                   if "failure_class" in name and not name.startswith("_assert")]
 
 
 class TestProviderAccountGates:
@@ -284,6 +290,19 @@ class TestPurchaseAttribution:
         assert tokens.owner_of(StoreProvider.apple, "shared-value") == owner
         assert tokens.owner_of(StoreProvider.google_play, "shared-value") == other
         assert tokens.owner_of(StoreProvider.apple, "unknown") is None
+
+    # [utest->req~shared-invariant-10~1]
+    def test_one_store_token_binds_to_one_user_only(self):
+        # The binding is keyed by the store provider and that token, so a token already bound
+        # to one user is never rebound: verified-purchase ingestion resolving through it must
+        # never find a second owner.
+        tokens = AttributionTokens()
+        owner, thief = uuid7(), uuid7()
+        tokens.mint(owner, StoreProvider.apple, "tok")
+        with pytest.raises(InvariantError):
+            tokens.mint(thief, StoreProvider.apple, "tok")
+        assert tokens.owner_of(StoreProvider.apple, "tok") == owner
+        assert tokens.token_for(thief, StoreProvider.apple) is None
 
     # [utest->req~shared-invariant-10~1]
     def test_attribution_never_comes_from_the_request_identity(self):

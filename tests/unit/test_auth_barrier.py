@@ -1,6 +1,7 @@
 """The shared pre-handler barrier, the route partition, the single Firebase integration,
 ID-token verification, and the shared auth audit contract."""
 
+import hashlib
 import time
 from contextlib import asynccontextmanager
 from typing import Any
@@ -55,6 +56,7 @@ from nativespeaker.api.auth.routes import (
     is_pre_auth_callable,
 )
 from nativespeaker.api.auth.tokens import (
+    CachedGoogleSigningKeys,
     FirebaseIdTokenVerifier,
     InvalidExternalJwtError,
     JwtRejectionReason,
@@ -77,17 +79,36 @@ def make_integrations(**kwargs) -> FirebaseIntegrations:
                                                      admin_client=ADMIN_CLIENT)])
 
 
+# A subject hasher with the shape the audit contract requires: a 32-byte HMAC digest plus the
+# version of the key that produced it.
+TEST_SUBJECT_HASH_KEY_VERSION = 7
+
+
+def subject_hasher(subject: str) -> tuple[bytes, int]:
+    return hashlib.sha256(b"barrier-test-key|" + subject.encode()).digest(), \
+        TEST_SUBJECT_HASH_KEY_VERSION
+
+
+def verified_test_actor(provider: IdentityProvider | None = None) -> AuthActor:
+    digest, key_version = subject_hasher("actor-subject")
+    return AuthActor(issuer=TEST_ISSUER, subject_hash=digest,
+                     subject_hash_key_version=key_version, provider=provider)
+
+
 class RecordingSink:
+    """The writer hands a sink the built `audit.auth_events` row, never the raw event, so a
+    sink cannot write anything `auth_event_row` did not redact and validate."""
+
     def __init__(self, fail: bool = False):
-        self.rows: list[Any] = []
+        self.rows: list[dict[str, Any]] = []
         self.sessions: list[Any] = []
         self.fail = fail
 
-    async def insert(self, session: Any, event: Any) -> None:
+    async def insert(self, session: Any, row: Any) -> None:
         if self.fail:
             raise RuntimeError("audit insert failed")
         self.sessions.append(session)
-        self.rows.append(event)
+        self.rows.append(dict(row))
 
 
 class FakeSession:
@@ -148,7 +169,8 @@ def build_app(routes, *, resolver: FakeResolver, writer: AuthAuditWriter,
         app.add_middleware(AuthBarrierMiddleware)  # ty: ignore[invalid-argument-type]
     app.state.auth_barrier = AuthBarrier(integrations=make_integrations(),
                                          resolver=resolver,
-                                         audit=writer)
+                                         audit=writer,
+                                         subject_hasher=subject_hasher)
     return app
 
 
@@ -188,6 +210,44 @@ class TestIdTokenVerification:
         with pytest.raises(InvalidExternalJwtError) as unsigned_error:
             make_verifier().verify_id_token(unsigned)
         assert unsigned_error.value.reason is JwtRejectionReason.malformed
+
+    # [utest->req~shared-verify-id-token~1]
+    def test_the_signing_key_comes_from_the_cached_google_key_set(self):
+        # The verifier resolves its key through the JWKS client rather than a constant, and it
+        # resolves it once per verification.
+        keys = CachedGoogleSigningKeys(jwks_url="https://example.invalid/jwks")
+        keys._client = _StubJwkClient(PUBLIC_KEY_PEM)   # noqa: SLF001
+        verifier = FirebaseIdTokenVerifier(issuer=TEST_ISSUER, audience=TEST_PROJECT_ID,
+                                           key_resolver=keys)
+        assert verifier.verify_id_token(make_token("user-1")).subject == "user-1"
+        assert keys._client.calls == 1                  # noqa: SLF001
+
+    # [utest->req~shared-verify-id-token~1]
+    # [utest->req~shared-invalid-external-jwt-reasons~1]
+    def test_a_key_fetch_outage_is_not_a_malformed_token(self):
+        # A JWKS outage is a systemic backend-verification break. It must not be recorded and
+        # counted as a client-side `malformed` token, which is what a resolver call inside the
+        # decode's catch-all would make it.
+        def unavailable(_token):
+            raise ConnectionError("jwks endpoint unreachable")
+
+        verifier = FirebaseIdTokenVerifier(issuer=TEST_ISSUER, audience=TEST_PROJECT_ID,
+                                           key_resolver=unavailable)
+        with pytest.raises(InvalidExternalJwtError) as exc:
+            verifier.verify_id_token(make_token("user-1"))
+        assert exc.value.reason is JwtRejectionReason.signing_key_unavailable
+
+
+class _StubJwkClient:
+    """Stands in for `PyJWKClient`, counting how often a key is resolved."""
+
+    def __init__(self, key):
+        self.key = key
+        self.calls = 0
+
+    def get_signing_key_from_jwt(self, token):
+        self.calls += 1
+        return self.key
 
 
 class TestSingleFirebaseIntegration:
@@ -439,7 +499,7 @@ class TestAuditContract:
         writer = make_writer(sink=sink)
         attempt = AuthAttempt("POST", "/auth/sync")
         event = terminal_event(AttemptPhase.success, AuthEventResult.succeeded,
-                               operation=AuthOperation.sync)
+                               operation=AuthOperation.sync, actor=verified_test_actor())
         await writer.write_standalone(attempt, event)
         assert len(sink.rows) == 1
         with pytest.raises(AuditAlreadyWrittenError):
@@ -483,9 +543,9 @@ class TestAuditContract:
         writer = make_writer(sink=sink)
         attempt = AuthAttempt("POST", "/auth/sign-out-all")
         event = terminal_event(AttemptPhase.later, AuthEventResult.revocation_unconfirmed,
-                               operation=AuthOperation.sign_out_all)
+                               operation=AuthOperation.sign_out_all, actor=verified_test_actor())
         await writer.write_standalone(attempt, event)
-        assert [row.result for row in sink.rows] == [AuthEventResult.revocation_unconfirmed]
+        assert [row["result"] for row in sink.rows] == [AuthEventResult.revocation_unconfirmed]
         with pytest.raises(InvalidTerminalOutcomeError):
             terminal_event(AttemptPhase.later, AuthEventResult.succeeded)
 
@@ -506,7 +566,8 @@ class TestAuditContract:
         await writer.write_in_transaction(session, AuthAttempt("POST", "/auth/claim-anonymous-grant"),
                                           terminal_event(AttemptPhase.success,
                                                          AuthEventResult.succeeded,
-                                                         operation=AuthOperation.claim_anonymous_grant))
+                                                         operation=AuthOperation.claim_anonymous_grant,
+                                                         actor=verified_test_actor()))
         # Written on the caller's session, committed by that same transaction.
         assert sink.sessions == [session]
         assert session.committed == 0
@@ -520,7 +581,8 @@ class TestAuditContract:
         await writer.write_standalone(AuthAttempt("POST", "/auth/sync"),
                                       terminal_event(AttemptPhase.barrier,
                                                      AuthEventResult.blocked_user,
-                                                     operation=AuthOperation.sync))
+                                                     operation=AuthOperation.sync,
+                                                     actor=verified_test_actor()))
         assert len(sessions) == 1
         assert sessions[0].committed == 1
         assert sink.sessions == [sessions[0]]
@@ -538,9 +600,9 @@ class TestAuditContract:
                                    headers={"Authorization": f"Bearer {make_token('u1')}"})
         # The audit obligation is the path's, not challenge consumption's: `sync` carries no
         # challenge and still writes its row before the rejection is returned.
-        assert [row.result for row in sink.rows] == [AuthEventResult.blocked_user]
-        assert sink.rows[0].operation is AuthOperation.sync
-        assert sink.rows[0].challenge_row_id is None
+        assert [row["result"] for row in sink.rows] == [AuthEventResult.blocked_user]
+        assert sink.rows[0]["operation"] is AuthOperation.sync
+        assert sink.rows[0]["challenge_row_id"] is None
         assert response.status_code == 403
 
         # A failed audit write is logged, and the client still gets the rejection it earned.
@@ -590,7 +652,7 @@ class TestAuditContract:
         with TestClient(on_path, raise_server_exceptions=False) as client:
             client.post("/auth/sync", headers={"Authorization": f"Bearer {make_token('u1')}"})
         # On the path: its own stored result, never collapsed into a generic 401 log line.
-        assert [row.result for row in sink.rows] == [AuthEventResult.historical_identity]
+        assert [row["result"] for row in sink.rows] == [AuthEventResult.historical_identity]
 
         off_counter = AuthResultCounter()
         off_path = build_app([("GET", "/chats/{chat_id}")],
@@ -644,3 +706,52 @@ def test_barrier_rejection_never_exposes_the_internal_result():
     error = BarrierRejectionError(AuthEventResult.blocked_user)
     assert error.error_code == "account_unavailable"
     assert error.result is AuthEventResult.blocked_user
+
+
+class TestTheShippedApp:
+    """The barrier is not a library the shipped app could forget to mount: these tests drive
+    requests through `nativespeaker.api.app.main.app` itself."""
+
+    @staticmethod
+    def _shipped_app(resolver: FakeResolver, sink: RecordingSink, counter: AuthResultCounter):
+        from nativespeaker.api.app.main import app
+
+        app.state.auth_barrier = AuthBarrier(
+            integrations=make_integrations(), resolver=resolver,
+            audit=make_writer(sink=sink, counter=counter), subject_hasher=subject_hasher)
+        return app
+
+    # [utest->req~shared-prehandler-barrier~1]
+    def test_the_shipped_app_runs_the_barrier_on_an_authenticated_route(self):
+        counter = AuthResultCounter()
+        app = self._shipped_app(FakeResolver(), RecordingSink(), counter)
+        # TestClient is used without its context manager on purpose: the shipped lifespan wants
+        # a database, a Firebase credential and a JWKS endpoint, none of which a unit test has.
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/health/ready")
+        assert response.status_code == 200      # public: the barrier passes it through
+
+        response = client.get("/")
+        assert response.status_code == 401
+        assert response.json()["code"] == "auth_required"
+        assert counter.value(result=AuthEventResult.invalid_external_jwt,
+                             route="/", reason="missing_token") == 1
+
+    # [utest->req~shared-prehandler-barrier~1]
+    def test_the_shipped_app_rejects_a_blocked_user_before_the_handler(self):
+        app = self._shipped_app(FakeResolver(ResolutionOutcome.blocked_user),
+                                RecordingSink(), AuthResultCounter())
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/examples?lang=en",
+                              headers={"Authorization": f"Bearer {make_token('u1')}"})
+        # No handler ran: the route needs a chat service the test never wired, so a 403 here is
+        # proof the barrier rejected ahead of the handler and its dependencies.
+        assert response.status_code == 403
+        assert response.json()["code"] == "account_unavailable"
+
+    # [utest->req~shared-route-categories~1]
+    def test_every_shipped_route_is_in_exactly_one_category(self):
+        from nativespeaker.api.app.main import app
+
+        # The startup assertion the shipped app runs, against the shipped router.
+        assert_route_categories(app)
