@@ -464,6 +464,8 @@ def provider_uid_from_provider_data(provider: IdentityProvider,
     entry matching the confirmed provider — never from client input, headers, token claims, email
     or display name. It is `NULL` for `anonymous` and non-empty for `google` and `apple`."""
     # [impl->req~shared-invariant-11~1]
+    # [impl->req~schema-external-identities-provider-uid-source~1]
+    # [impl->req~schema-external-identities-provider-uid-never-client-input~1]
     if provider is IdentityProvider.anonymous:
         return None
     matching = [entry for entry in provider_data
@@ -517,8 +519,12 @@ class ProviderAccountReservations:
 
     def bind(self, *, operation: AuthOperation, issuer: str, provider: IdentityProvider,
              provider_uid: str | None, user_id: UUID) -> None:
-        """Reserve the provider account for this user inside the provider-binding transaction."""
+        """Reserve the provider account for this user inside the provider-binding transaction.
+        The partial index makes each registered Google or Apple provider account usable by at
+        most one internal user ever."""
         # [impl->req~shared-invariant-11~1]
+        # [impl->req~schema-external-identities-provider-account-reservation-index~1]
+        # [impl->req~schema-external-identities-provider-account-already-linked~1]
         if operation not in PROVIDER_BINDING_OPERATIONS:
             raise InvariantError(f"{operation} performs no provider binding")
         if not provider_uid_reserved(provider, provider_uid):
@@ -533,8 +539,10 @@ class ProviderAccountReservations:
 
     def retire(self, *, issuer: str, provider: IdentityProvider, provider_uid: str) -> None:
         """Retire the identity row to `historical`. The index spans `active` and `historical`
-        rows alike, so the reservation stays exactly where it was."""
+        rows alike, so the reservation stays exactly where it was: administrative retirement does
+        not free that provider account for reuse."""
         # [impl->req~shared-invariant-11~1]
+        # [impl->req~schema-external-identities-provider-account-reservation-index~1]
         if (issuer, provider, provider_uid) not in self._reserved:
             raise InvariantError("no reservation to retire")
         self._historical.add((issuer, provider, provider_uid))

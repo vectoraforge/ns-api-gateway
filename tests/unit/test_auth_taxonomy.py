@@ -124,7 +124,7 @@ class TestTheClassesGovernEveryRoute:
         distinct = Remediation(action="do_something_else_entirely", http_status=409)
         try:
             # An endpoint-specific class is allowed where its remediation is genuinely its own.
-            register_client_class(AuthEventResult.provider_transition_not_allowed,
+            register_client_class(AuthEventResult.revocation_unconfirmed,
                                   "create_flow_mismatch", 409,  # type: ignore[invalid-argument-type]
                                   remediation=distinct)
             assert remediation_for("create_flow_mismatch") is distinct
@@ -137,7 +137,7 @@ class TestTheClassesGovernEveryRoute:
             with pytest.raises(UnsurfacedResultError):
                 register_client_class(AuthEventResult.challenge_expired, "invalid_request", 400)
         finally:
-            RESULT_TO_CLASS.pop(AuthEventResult.provider_transition_not_allowed, None)
+            RESULT_TO_CLASS.pop(AuthEventResult.revocation_unconfirmed, None)
 
     # [utest->req~shared-error-no-internal-results-exposed~1]
     def test_no_internal_result_value_reaches_the_client(self):

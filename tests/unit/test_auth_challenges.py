@@ -1396,14 +1396,14 @@ class TestCompletionSteps:
 
         # An endpoint may add its own post-barrier case, but never redefine a shared one.
         try:
-            register_client_class(AuthEventResult.provider_transition_not_allowed,
+            register_client_class(AuthEventResult.revocation_unconfirmed,
                                   "operation_not_allowed", 403)
-            assert surface(AuthEventResult.provider_transition_not_allowed) == \
+            assert surface(AuthEventResult.revocation_unconfirmed) == \
                 ("operation_not_allowed", 403)
             with pytest.raises(UnsurfacedResultError):
                 register_client_class(AuthEventResult.challenge_expired, "invalid_request", 400)
         finally:
-            RESULT_TO_CLASS.pop(AuthEventResult.provider_transition_not_allowed, None)
+            RESULT_TO_CLASS.pop(AuthEventResult.revocation_unconfirmed, None)
 
         # And a real rejection carries the specific internal result to the audit row while the
         # client sees only the shared class.

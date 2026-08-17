@@ -17,6 +17,7 @@ from nativespeaker.api.auth.challenges import (
     ClaimOutcome,
     ConsumeOutcome,
     IdentityBinding,
+    challenge_state_from_columns,
 )
 from nativespeaker.api.auth.operations import AuthOperation, IdentityProvider
 
@@ -37,8 +38,12 @@ SELECT_CHALLENGE = text(f"SELECT {_COLUMNS} FROM core.auth_challenges WHERE chal
 # The serialization point. One conditional update, conditioned on the row still being `issued`
 # and on its `expires_at` still being in the future — the only place expiry is ever evaluated.
 # The condition is also what keeps the lifecycle one-way: no update ever moves a row back.
+# The stored row is the server source of truth for replay prevention: the `claimed_at IS NULL`
+# predicate is what a replay loses against, and nothing the client holds is consulted.
 # [impl->req~shared-completion-step-08~1]
 # [impl->req~shared-challenge-lifecycle-one-way~1]
+# [impl->req~schema-auth-challenges-source-of-truth-replay~1]
+# [impl->req~schema-auth-challenges-no-purge-indefinite-retention~1]
 CLAIM_CHALLENGE = text("""
     UPDATE core.auth_challenges
        SET claimed_at = now(), claim_attempt_id = :claim_attempt_id
@@ -65,9 +70,11 @@ CONSUME_CHALLENGE = text("""
 
 
 def _to_row(record: Any) -> ChallengeRow:
-    state = (ChallengeState.consumed if record.consumed_at is not None
-             else ChallengeState.claimed if record.claimed_at is not None
-             else ChallengeState.issued)
+    # The lifecycle state is a reading of the three columns that carry it and of nothing else.
+    # [impl->req~schema-auth-challenges-binds-lifecycle-state~2]
+    state = challenge_state_from_columns(claimed_at=record.claimed_at,
+                                         claim_attempt_id=record.claim_attempt_id,
+                                         consumed_at=record.consumed_at)
     # A consumed pre-auth row keeps its plaintext issuer and carries a cleared verifier.
     binding = IdentityBinding(bound_external_identity_id=record.bound_external_identity_id,
                               preauth_issuer=record.preauth_issuer,
