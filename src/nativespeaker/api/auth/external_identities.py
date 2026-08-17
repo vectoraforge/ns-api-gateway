@@ -83,7 +83,9 @@ if AuthEventResult.provider_transition_not_allowed not in RESULT_TO_CLASS:
 
 class IdentityState(StrEnum):
     """`core.identity_state`: an identity is `active` or `historical`."""
+    # The identity lifecycle state the table carries, and the whole domain of it.
     # [impl->req~users-rule-identity-lifecycle-state~1]
+    # [impl->req~sessions-identity-lifecycle-state-added~1]
     active = "active"
     historical = "historical"
 
@@ -107,6 +109,9 @@ def assert_provider_uid_check(provider: IdentityProvider, provider_uid: str | No
     # `provider_uid` when `provider IN ('google', 'apple')`.
     # [impl->req~schema-external-identities-reservation-not-null-semantics~1]
     # [impl->req~users-rule-provider-uid-nullability~1]
+    # `provider` is derived metadata stored alongside `provider_uid`, the provider-side account
+    # identifier for a registered provider and `NULL` for `anonymous`.
+    # [impl->req~sessions-provider-and-provider-uid-metadata~1]
     if provider is IdentityProvider.anonymous:
         if provider_uid is not None:
             raise IdentityError("an anonymous identity carries no provider_uid")
@@ -119,7 +124,10 @@ def assert_provider_uid_check(provider: IdentityProvider, provider_uid: str | No
 class ExternalIdentityRow:
     """One `core.external_identities` row: a verified external identity and the internal user it
     maps to. `user_id` is that mapping and the only one; nothing else resolves an owner."""
+    # The table stores verified external identities: a row exists only for an identity the
+    # backend itself verified, and every field below belongs to that verified identity.
     # [impl->req~schema-external-identities-purpose~1]
+    # [impl->req~sessions-external-identities-stores-verified-identities~1]
     id: UUID
     user_id: UUID
     issuer: str
@@ -132,8 +140,11 @@ class ExternalIdentityRow:
 
     def __post_init__(self) -> None:
         # `provider` is stored as `core.identity_provider`, not free text, so a string that
-        # merely looks like a provider never reaches the column.
+        # merely looks like a provider never reaches the column. It is authorization-relevant
+        # metadata, and the value that reaches it is only ever the one the Firebase Admin
+        # `providerData` lookup classified — `assert_provider_source` is that gate.
         # [impl->req~schema-external-identities-provider-enum-typed~1]
+        # [impl->req~sessions-provider-stored-as-enum~1]
         if not isinstance(self.provider, IdentityProvider):
             raise IdentityError("provider is stored as core.identity_provider, not free text")
         if not isinstance(self.identity_state, IdentityState):
@@ -187,7 +198,12 @@ def identity_key(issuer: str, subject: str, *, source: IdentityFieldSource) -> t
     """`issuer` and `subject` are exactly the backend-verified Firebase ID token's `iss` and
     `sub` claims. They are never reconstructed from transport metadata, headers, cookies, or
     client-supplied fields."""
+    # The backend derives `issuer` and `subject` only from the claims of the token it verified.
+    # The other half of the derivation rule — `provider` and `provider_uid` from the Firebase
+    # Admin `getUser(subject)` `providerData` read at the enumerated write points — is
+    # `assert_provider_source` and `provider_uid_for` below.
     # [impl->req~schema-external-identities-issuer-subject-from-verified-token~1]
+    # [impl->req~sessions-derivation-sources-for-identity-fields~1]
     if source is not IdentityFieldSource.verified_id_token:
         raise IdentityError(f"{source} is not a source for issuer and subject")
     if not issuer or not subject:
@@ -195,14 +211,22 @@ def identity_key(issuer: str, subject: str, *, source: IdentityFieldSource) -> t
     return issuer, subject
 
 
-# Identity lookup is by exact `(issuer, subject)` and by nothing else.
-IDENTITY_LOOKUP_KEY: tuple[str, str] = ("issuer", "subject")
+# Identity lookup is by exact `(issuer, subject)` and by nothing else: those two fields are the
+# whole of the lookup key.
+# [impl->req~sessions-identity-lookup-fields~1]
+IDENTITY_LOOKUP_KEY: tuple[str, str] = (
+    # [impl->req~sessions-lookup-field-issuer~1]
+    "issuer",
+    # [impl->req~sessions-lookup-field-subject~1]
+    "subject",
+)
 
 
 def assert_lookup_fields(fields: Iterable[str]) -> None:
     """Identity lookup is done by exact `(issuer, subject)`: not by subject alone, not by a
     stored email, and not by any normalized or folded variant of either."""
     # [impl->req~schema-external-identities-lookup-by-issuer-subject~1]
+    # [impl->req~sessions-identity-lookup-fields~1]
     if sorted(fields) != sorted(IDENTITY_LOOKUP_KEY):
         raise IdentityError(f"identity lookup is by {IDENTITY_LOOKUP_KEY} exactly")
 
@@ -375,6 +399,12 @@ def create_account(*, user_id: UUID, identity: ExternalIdentityRow, user_transac
     # one identity row.
     # [impl->req~users-account-and-identity-row-atomic~1]
     # [impl->req~users-rule-unique-user-id~1]
+    # One transaction on every account-creating path, anonymous and registered alike, so a
+    # failure of either insert leaves no account at all — and because identity rows are never
+    # deleted, that one row is the account's identity row for the life of the account.
+    # [impl->req~sessions-account-creation-single-transaction~1]
+    # [impl->req~sessions-one-user-one-identity-row~1]
+    # [impl->req~sessions-unique-user-id~1]
     if user_transaction is not identity_transaction:
         raise IdentityError("the user row and its identity row are written in one transaction")
     if PAIRING_ENFORCEMENT_MECHANISMS:
@@ -495,12 +525,20 @@ class ExternalIdentities:
         row, and `(issuer, subject)` is the lookup key auth-time resolution uses — a separate
         rule from the `(issuer, provider, provider_uid)` reservation, which reserves external
         provider accounts only."""
+        # `(issuer, subject)` is unique across every row, anonymous and registered alike, and it
+        # is the lookup key per-request resolution uses — a rule kept separate from the
+        # `(issuer, provider, provider_uid)` provider-account reservation below.
         # [impl->req~schema-external-identities-unique-issuer-subject~1]
         # [impl->req~users-rule-unique-issuer-subject~1]
         # [impl->req~users-rule-unique-user-id~1]
+        # [impl->req~sessions-issuer-subject-unique~1]
+        # [impl->req~sessions-unique-issuer-subject-kept~1]
         assert_no_sentinel_provider_uid(row)
         if (row.issuer, row.subject) in self._by_pair:
             raise IdentityAlreadyLinkedError("this external identity already belongs to a user")
+        # `UNIQUE (user_id)` caps a user at one identity row.
+        # [impl->req~sessions-unique-user-id~1]
+        # [impl->req~sessions-one-user-one-identity-row~1]
         if row.user_id in self._by_user:
             raise IdentityError("UNIQUE (user_id) caps a user at one identity row")
         self._by_pair[(row.issuer, row.subject)] = row
@@ -599,7 +637,11 @@ class ProviderSource(StrEnum):
 def assert_provider_source(source: ProviderSource) -> None:
     """`provider` is derived exclusively from the Firebase Admin `getUser(subject)` `providerData`
     lookup. Token claims and HTTP headers are never a provider source."""
+    # Any value persisted in `core.identity_provider` is derived only from this lookup — never
+    # from raw client input, token claims, or request headers.
     # [impl->req~schema-external-identities-provider-closed-classifier~1]
+    # [impl->req~sessions-provider-stored-as-enum~1]
+    # [impl->req~sessions-derivation-sources-for-identity-fields~1]
     if source is not ProviderSource.firebase_admin_provider_data:
         raise ProviderClassificationError(f"{source} is not a provider source")
 
@@ -795,6 +837,7 @@ def assert_provider_uid_source(source: ProviderUidSource) -> None:
     """`provider_uid` is never taken from client input, headers, token claims, email, or display
     name."""
     # [impl->req~schema-external-identities-provider-uid-never-client-input~1]
+    # [impl->req~sessions-derivation-sources-for-identity-fields~1]
     if source is not ProviderUidSource.firebase_provider_data:
         raise IdentityError(f"provider_uid is never taken from {source}")
 
@@ -916,6 +959,9 @@ def write_provider_uid(row: ExternalIdentityRow, provider_uid: str | None, *,
     transaction, so stored `provider` and `registered_at` are aligned by construction."""
     # [impl->req~schema-external-identities-provider-uid-same-transaction~1]
     # [impl->req~sessions-provider-persistence-single-transaction~1]
+    # Every write that creates or transitions an identity persists `provider_uid` in the same
+    # transaction as that creation or transition, so a reserved account is never half-bound.
+    # [impl->req~sessions-provider-account-reservation-unique~1]
     provider_derivation_stage("persistence")
     if row_transaction is not uid_transaction:
         raise IdentityError("provider_uid is written in the identity row's own transaction")
@@ -968,6 +1014,9 @@ def assert_reservation_index(*, columns: Sequence[str], predicate: str,
     # [impl->req~schema-external-identities-provider-account-reservation-index~1]
     # [impl->req~schema-external-identities-reservation-not-null-semantics~1]
     # [impl->req~users-rule-partial-unique-provider-account~1]
+    # One provider account maps to at most one user: `(issuer, provider, provider_uid)` unique,
+    # enforced by this partial index restricted to rows whose `provider_uid` is not `NULL`.
+    # [impl->req~sessions-provider-account-reservation-unique~1]
     if table_wide_unique:
         raise IdentityError("the reservation is a partial unique index, not a table-wide UNIQUE")
     if tuple(columns) != RESERVATION_INDEX_COLUMNS:
@@ -988,6 +1037,8 @@ def in_reservation_scope(row: ExternalIdentityRow) -> bool:
     # a provider account for reuse.
     # [impl->req~schema-external-identities-reservation-not-null-semantics~1]
     # [impl->req~users-rule-partial-unique-provider-account~1]
+    # The reservation spans historical identities and constrains no anonymous row.
+    # [impl->req~sessions-provider-account-reservation-unique~1]
     if row.identity_state not in RESERVED_IDENTITY_STATES:
         raise IdentityError("the reservation applies to active and historical rows alike")
     return provider_uid_reserved(row.provider, row.provider_uid)
@@ -1012,6 +1063,9 @@ def provider_account_conflict(operation: AuthOperation) -> ProviderAccountAlread
     shared `operation_not_allowed` client class, leaving identity, user, grant and profile state
     exactly as they were."""
     # [impl->req~schema-external-identities-provider-account-already-linked~1]
+    # A uniqueness conflict on the reservation rejects the operation as
+    # `provider_account_already_linked` without mutating user, identity, grant or profile state.
+    # [impl->req~sessions-provider-account-reservation-unique~1]
     if operation not in PROVIDER_BINDING_WRITES:
         raise IdentityError(f"{operation} performs no provider binding")
     if PROVIDER_CONFLICT_MUTATIONS:
@@ -1066,6 +1120,9 @@ def authorizes(identity_state: IdentityState) -> bool:
     means the identity is retained for audit but must not."""
     # [impl->req~schema-external-identities-state-active-authorizes~1]
     # [impl->req~schema-external-identities-state-historical-no-authorize~1]
+    # A historical identity authorizes no normal authenticated API access; the barrier's
+    # `historical_identity` rejection is where that answer is enforced per request.
+    # [impl->req~sessions-historical-no-api-access~1]
     return identity_state is IdentityState.active
 
 
@@ -1091,8 +1148,10 @@ IDENTITY_STATE_TRANSITIONS: frozenset[tuple[IdentityState, IdentityState]] = fro
     {(IdentityState.active, IdentityState.historical)})
 
 
-# Flows that change `identity_state` on their own: none. `/auth/sync` and every auth-completion
-# path leave it exactly as it was.
+# Flows that change `identity_state` on their own: none. No user-driven flow marks an identity
+# `historical` automatically — `/auth/sync` and every auth-completion path leave it exactly as it
+# was — so the set is empty and `transition_identity_state` fails closed if it ever is not.
+# [impl->req~sessions-no-user-driven-historical~1]
 IDENTITY_STATE_CHANGING_FLOWS: frozenset[str] = frozenset()
 
 
@@ -1107,6 +1166,10 @@ def transition_identity_state(current: IdentityState, target: IdentityState, *,
     # [impl->req~schema-external-identities-state-transition-one-way~1]
     # [impl->req~sessions-identity-state-transition-set~1]
     # [impl->req~sessions-historical-administrative-only~1]
+    # No user-driven flow reaches `historical`: the transition is administrative-only, and
+    # `historical` is retained purely as that administrative or abuse-retirement state.
+    # [impl->req~sessions-no-user-driven-historical~1]
+    # [impl->req~sessions-historical-retention-administrative~1]
     if IDENTITY_STATE_CHANGING_FLOWS:
         raise IdentityError("no user-driven flow changes identity_state")
     if (current, target) not in IDENTITY_STATE_TRANSITIONS:
@@ -1169,6 +1232,10 @@ def retire(row: ExternalIdentityRow, *, administrative: bool = True) -> External
     # [impl->req~users-identity-rows-never-deleted~1]
     # [impl->req~sessions-historical-administrative-only~1]
     # [impl->req~sessions-identity-rows-never-deleted~1]
+    # `historical` is retained only as an administrative or abuse-retirement state, and no
+    # user-driven flow reaches it: retirement is this call, with `administrative` set.
+    # [impl->req~sessions-historical-retention-administrative~1]
+    # [impl->req~sessions-no-user-driven-historical~1]
     state = transition_identity_state(row.identity_state, IdentityState.historical,
                                       administrative=administrative)
     retired = replace(row, identity_state=state)
@@ -1455,6 +1522,9 @@ def upgrade_to_registered(row: ExternalIdentityRow, *, provider: IdentityProvide
     # entry; no additional identity row is created and no source identity is marked `historical`.
     # [impl->req~schema-external-identities-upgrade-in-place~1]
     # [impl->req~users-upgrade-flips-provider-in-place~1]
+    # An in-place anonymous-to-registered provider flip produces no historical rows: the row
+    # keeps its `identity_state`, and no second row is written for the old provider.
+    # [impl->req~sessions-in-place-flip-no-historical-rows~1]
     assert_provider_transition(row.provider, provider)
     if provider not in REGISTERED_PROVIDERS:
         raise IdentityError("the upgrade binds a registered provider")

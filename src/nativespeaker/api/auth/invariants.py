@@ -562,9 +562,13 @@ class ProviderAccountReservations:
         """Reserve the provider account for this user inside the provider-binding transaction.
         The partial index makes each registered Google or Apple provider account usable by at
         most one internal user ever."""
+        # One provider account maps to at most one user, and the reservation spans historical
+        # rows, so administrative retirement frees nothing for reuse. An anonymous row carries a
+        # `NULL` `provider_uid`, falls outside the index, and is constrained not at all.
         # [impl->req~shared-invariant-11~1]
         # [impl->req~schema-external-identities-provider-account-reservation-index~1]
         # [impl->req~schema-external-identities-provider-account-already-linked~1]
+        # [impl->req~sessions-provider-account-reservation-unique~1]
         if operation not in PROVIDER_BINDING_OPERATIONS:
             raise InvariantError(f"{operation} performs no provider binding")
         if not provider_uid_reserved(provider, provider_uid):

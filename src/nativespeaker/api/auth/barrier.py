@@ -170,6 +170,8 @@ def barrier_result_for(outcome: ResolutionOutcome,
         # send the client into create-user, and it never reaches a success path.
         # [impl->req~sessions-resolution-outcome-02~1]
         # [impl->req~sessions-reject-historical-identity~1]
+        # A historical identity authorizes no normal authenticated API access.
+        # [impl->req~sessions-historical-no-api-access~1]
         return AuthEventResult.historical_identity
     if outcome is ResolutionOutcome.blocked_user:
         # A blocked user is already linked and never legitimately reaches a pre-auth route; it is

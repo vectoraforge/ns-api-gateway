@@ -24,9 +24,15 @@ class AuthOperation(StrEnum):
 class IdentityProvider(StrEnum):
     """`core.identity_provider`; also the domain of the client-selected operation variant. The
     only allowed provider values are `anonymous`, `google` and `apple`."""
+    # The closed set of allowed `provider` values, and the whole of it: a fourth member would be
+    # a fourth allowed value, which this enumeration is what forbids.
     # [impl->req~users-allowed-provider-values~1]
+    # [impl->req~sessions-provider-allowed-values~1]
+    # [impl->req~sessions-provider-value-anonymous~1]
     anonymous = "anonymous"
+    # [impl->req~sessions-provider-value-google~1]
     google = "google"
+    # [impl->req~sessions-provider-value-apple~1]
     apple = "apple"
 
 

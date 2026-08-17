@@ -101,6 +101,11 @@ class AuthenticatedRoute:
 AUTHENTICATED_ROUTES: tuple[AuthenticatedRoute, ...] = (
     # [impl->req~shared-id-token-endpoint-auth-sync~1]
     # [impl->req~sessions-authfamily-auth-sync~1]
+    # An authenticated route, so the barrier admits and resolves before its handler runs, and it
+    # declares no pre-auth admission: a pre-auth (unlinked) identity is rejected here as
+    # `preauth_identity_not_allowed`, having no linked user to report on.
+    # [impl->req~sessions-sync-runs-after-barrier~1]
+    # [impl->req~sessions-sync-not-preauth-callable~1]
     AuthenticatedRoute("POST", "/auth/sync"),
     # Auth challenge prepare calls and auth completion calls are the same four challenge-bearing
     # endpoint URLs, selected by the mode-signal partition.

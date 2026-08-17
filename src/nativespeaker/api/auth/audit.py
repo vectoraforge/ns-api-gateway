@@ -731,6 +731,9 @@ def sync_event(result: AuthEventResult,
     if result is not AuthEventResult.succeeded and result not in BARRIER_RESULTS:
         raise InvalidTerminalOutcomeError(f"/auth/sync has no terminal outcome {result}")
     body = dict(details or {})
+    # Sync appends no audit event that implies mutation: the attempt row it owes carries an empty
+    # `details.mutation`, and a caller offering one is refused rather than trimmed.
+    # [impl->req~sessions-sync-must-not-append-mutation-audit~1]
     if body.get("mutation"):
         raise InvalidTerminalOutcomeError("/auth/sync records no mutation")
     body["mutation"] = {}
