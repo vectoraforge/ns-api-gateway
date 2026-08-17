@@ -32,6 +32,7 @@ from nativespeaker.api.auth.challenges import (
     IdentityBinding,
     NonceConvention,
     PrepareResponse,
+    actor_subject_preimage,
     advance_state,
     assert_no_proof_material_bound,
     assert_nothing_serialized,
@@ -78,8 +79,11 @@ VARIANT_FOR = {AuthOperation.create_user: IdentityProvider.anonymous,
                AuthOperation.claim_registered_grant: None}
 
 
-def verifier(subject: str) -> bytes:
-    return hashlib.sha256(b"test-key|" + subject.encode()).digest()
+def verifier(issuer: str, subject: str) -> bytes:
+    """The pre-auth verifier the service derives: the injected keyed hasher over this family's
+    domain-separated input, and nothing separately keyed."""
+    digest, _version = hasher(actor_subject_preimage(issuer, subject))
+    return digest
 
 
 SUBJECT_HASH_KEY_VERSION = 3
@@ -331,7 +335,6 @@ class Harness:
                                      session_factory=self.factory, clock=self.clock)
         self.service = SharedChallengeService(store=self.store, audit=self.audit,
                                               session_factory=self.factory,
-                                              subject_verifier=verifier,
                                               subject_hasher=hasher,
                                               resolver=self.resolver, clock=self.clock)
 
@@ -408,7 +411,7 @@ class TestPrepareMode:
         pre = preauth_context()
         row = await h.prepared(AuthOperation.create_user, pre)
         assert row.binding.preauth_issuer == TEST_ISSUER
-        assert row.binding.preauth_subject_hash == verifier(pre.subject)
+        assert row.binding.preauth_subject_hash == verifier(TEST_ISSUER, pre.subject)
         # The raw subject is never bound.
         assert pre.subject.encode() not in row.binding.preauth_subject_hash
 

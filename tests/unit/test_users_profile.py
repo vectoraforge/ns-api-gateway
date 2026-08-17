@@ -80,7 +80,8 @@ def test_both_kinds_of_user_are_classified_from_one_shared_ownership_model():
 def test_email_and_display_name_are_the_canonical_backend_profile_fields():
     assert PROFILE_FIELDS == ("email", "display_name")
     changes = profile_changes(ProfileWriter.user_profile_update,
-                              {"email": "new@example.com", "display_name": "Ada"})
+                              {"email": "new@example.com", "display_name": "Ada"},
+                              control_verified=True)
     assert changes == {"email": "new@example.com", "display_name": "Ada"}
     with pytest.raises(ProfileError):
         profile_changes(ProfileWriter.user_profile_update, {"registered_at": NOW})
@@ -116,6 +117,19 @@ def test_security_sensitive_email_operations_verify_current_control_independentl
     with pytest.raises(ProfileError):
         assert_email_control_verified(use, control_verified=False)
     assert_email_control_verified(use, control_verified=True)
+
+
+# [utest->req~schema-users-email-control-verification~1]
+def test_the_write_decision_point_refuses_an_email_change_without_verified_control():
+    # `profile_changes` is the one path that can change a stored address, so the verification
+    # is demanded there and not only in the isolated helper.
+    with pytest.raises(ProfileError, match="verified current control"):
+        profile_changes(ProfileWriter.user_profile_update, {"email": "new@example.com"})
+    assert profile_changes(ProfileWriter.user_profile_update, {"email": "new@example.com"},
+                           control_verified=True) == {"email": "new@example.com"}
+    # A display-name-only update carries no address change and needs no such proof.
+    assert profile_changes(ProfileWriter.user_profile_update,
+                           {"display_name": "Ada"}) == {"display_name": "Ada"}
 
 
 # --- Copying an address in -----------------------------------------------------------------------
@@ -219,9 +233,19 @@ def test_anonymous_user_rows_have_no_scheduled_deletion():
 
 # [utest->req~schema-users-created-with-identity-row~1]
 def test_a_user_row_is_created_in_the_same_transaction_as_its_identity_row():
-    assert_user_created_with_identity(identity_row_written=True)
+    transaction = object()
+    assert_user_created_with_identity(identity_row_written=True,
+                                      user_transaction=transaction,
+                                      identity_transaction=transaction)
     with pytest.raises(ProfileError):
-        assert_user_created_with_identity(identity_row_written=False)
+        assert_user_created_with_identity(identity_row_written=False,
+                                          user_transaction=transaction,
+                                          identity_transaction=transaction)
+    # Two rows written in two transactions are not one transaction, however true the flag is.
+    with pytest.raises(ProfileError, match="same transaction"):
+        assert_user_created_with_identity(identity_row_written=True,
+                                          user_transaction=transaction,
+                                          identity_transaction=object())
 
 
 # [utest->req~schema-users-created-with-identity-row~1]

@@ -1,5 +1,6 @@
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid7
 
 import jwt as pyjwt
 import pytest
@@ -20,6 +21,7 @@ from nativespeaker.api.app.dependencies import (
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth import UserIdentity
 from nativespeaker.api.database import ChatsDB
+from nativespeaker.api.database.usage import EffectiveGrant
 from nativespeaker.api.exceptions import AuthenticationError
 from nativespeaker.api.models import SubscriptionPlan, User
 from nativespeaker.api.routers import (
@@ -124,12 +126,13 @@ def make_test_verifier() -> _FixedKeyVerifier:
 
 
 TEST_USER = User(
-    jwt_sub="test-user",
     email="test@example.com",
-    name="Test User",
-    subscription_plan=SubscriptionPlan.free,
+    display_name="Test User",
     active=True,
 )
+
+# The effective grant the test user holds, and the tier allowance it points at.
+TEST_GRANT = EffectiveGrant(grant_id=uuid7(), tier_id="free", monthly_credits=10)
 
 
 @pytest.fixture
@@ -154,6 +157,13 @@ def mock_usage_db():
 
 
 @pytest.fixture
+def mock_grants_db():
+    db = AsyncMock()
+    db.effective_grant = AsyncMock(return_value=TEST_GRANT)
+    return db
+
+
+@pytest.fixture
 def service(mock_chats_db):
     llm_service = AsyncMock()
     svc = ChatService(db=MagicMock(),
@@ -167,15 +177,16 @@ def service(mock_chats_db):
 
 
 @pytest.fixture
-def client(mock_chats_db, mock_usage_db):
+def client(mock_chats_db, mock_usage_db, mock_grants_db):
     mock_config = MagicMock()
     mock_config.quotas = {SubscriptionPlan.free: 10,
                           SubscriptionPlan.silver: 50,
                           SubscriptionPlan.gold: 200,
                           SubscriptionPlan.platinum: 1000}
 
-    # Patch UsageDB in users router (GET /users/me creates UsageDB directly)
-    with patch.object(users_module, "UsageDB", return_value=mock_usage_db):
+    # Patch UsageDB/GrantsDB in users router (GET /users/me creates both directly)
+    with (patch.object(users_module, "UsageDB", return_value=mock_usage_db),
+          patch.object(users_module, "GrantsDB", return_value=mock_grants_db)):
         app = FastAPI()
         app.include_router(root_router)
         app.include_router(chats_router)

@@ -4,7 +4,6 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from nativespeaker.api.exceptions import ErrorCode
-from nativespeaker.api.models.subscriptions import SubscriptionPlan
 
 
 class ErrorResponse(BaseModel):
@@ -45,9 +44,10 @@ class ExamplesResponse(BaseModel):
 
 
 class UserProfileResponse(BaseModel):
-    email: str
+    email: str | None = None
     name: str | None = None
-    subscription_plan: SubscriptionPlan
+    # The effective access grant's tier, or `none` where the user holds no effective grant.
+    subscription_plan: str
     created_at: datetime
     requests_used: int
     monthly_limit: int

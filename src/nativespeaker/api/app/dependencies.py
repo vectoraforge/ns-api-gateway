@@ -8,6 +8,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from nativespeaker.api.auth import verified_identity
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.database import UsageDB
+from nativespeaker.api.database.usage import GrantsDB, current_period
 from nativespeaker.api.exceptions import AuthenticationError, QuotaExceededError
 from nativespeaker.api.models import User
 from nativespeaker.api.services import ChatService, SubscriptionService, UserService
@@ -71,11 +72,15 @@ async def get_current_user(request: Request,
 
 
 async def require_quota(user: User = Depends(get_current_user),
-                        db: AsyncSession = Depends(get_db),
-                        config: AppConfig = Depends(get_config)) -> None:
-    """Atomically increment usage counter; raise 429 if monthly quota exhausted."""
-    month = datetime.now(UTC).strftime("%Y-%m")
-    monthly_quota = config.quotas[user.subscription_plan]
+                        db: AsyncSession = Depends(get_db)) -> None:
+    """Atomically increment the effective grant's usage counter; raise 429 when the monthly
+    allowance is exhausted. The allowance is the tier of the user's single effective access
+    grant, and a user with no effective grant has an allowance of zero."""
+    now = datetime.now(UTC)
+    grant = await GrantsDB(db).effective_grant(user.id, now)
+    if grant is None or grant.monthly_credits <= 0:
+        raise QuotaExceededError("Monthly quota exceeded")
     usage_db = UsageDB(db)
-    if not await usage_db.try_increment(user.id, month, monthly_quota):
+    if not await usage_db.try_increment(grant.grant_id, current_period(now),
+                                        grant.monthly_credits):
         raise QuotaExceededError("Monthly quota exceeded")

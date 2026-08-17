@@ -3,7 +3,8 @@ __all__ = [
     "ErrorResponse", "ExamplesResponse", "FollowUpInput", "FollowUpResponse", "Issue",
     "Message", "MessageRequest", "MessageResponse", "RejectResponse", "Subscription",
     "SubscriptionEvent", "SubscriptionPlan", "SubscriptionProvider", "SubscriptionStatus",
-    "UsageMonthly", "User", "UserProfileResponse",
+    "AccessGrant", "AccessTier", "ExternalIdentity", "User", "UserMonthlyUsage",
+    "UserProfileResponse",
 ]
 
 from nativespeaker.api.models.api import (
@@ -31,4 +32,10 @@ from nativespeaker.api.models.subscriptions import (
     SubscriptionProvider,
     SubscriptionStatus,
 )
-from nativespeaker.api.models.users import UsageMonthly, User
+from nativespeaker.api.models.users import (
+    AccessGrant,
+    AccessTier,
+    ExternalIdentity,
+    User,
+    UserMonthlyUsage,
+)

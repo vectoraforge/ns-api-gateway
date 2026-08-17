@@ -9,14 +9,30 @@ four free-grant device-bit budgets it is durably audited, because those budgets 
 after the operation challenge has been claimed.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any, cast
+from uuid import UUID
 
-from nativespeaker.api.auth.audit import AuthAttempt, AuthEventResult
+from nativespeaker.api.auth.audit import (
+    NO_ACTOR,
+    AttemptPhase,
+    AuthActor,
+    AuthAttempt,
+    AuthAuditWriter,
+    AuthEvent,
+    AuthEventResult,
+    terminal_event,
+)
 from nativespeaker.api.auth.challenges import ChallengeState, advance_state
 from nativespeaker.api.auth.operations import AuthOperation
-from nativespeaker.api.auth.taxonomy import ClientErrorClass, ClientRejection, client_response
+from nativespeaker.api.auth.taxonomy import (
+    RATE_LIMITED_CLASS,
+    ClientErrorClass,
+    ClientRejection,
+    client_response,
+)
 from nativespeaker.api.exceptions import ErrorCode, ServiceError
 from nativespeaker.api.ratelimit.config import (
     DEVICE_BIT_BUDGET_ENTRIES,
@@ -32,15 +48,29 @@ ADMISSION_REJECTION_STATUS = 429
 class AdmissionRejected(ServiceError):
     """A rate-limit or admission-control rejection: `429 Too Many Requests`, carrying
     `Retry-After` when the `limits` backend could compute a reset time and nothing else. The
-    body names the shared class alone and never the limiter that fired."""
+    body and headers are built by the shared error contract in `auth/taxonomy.py`, so the body
+    names a registered client class alone and never the limiter that fired."""
 
     # [impl->req~ratelimit-reject-429-with-retry-after~1]
     status_code = ADMISSION_REJECTION_STATUS
-    error_code: ErrorCode = "quota_exceeded"
+    error_code: ErrorCode = "rate_limited"
 
-    def __init__(self, limiter: str, retry_after_seconds: int | None = None):
+    def __init__(self,
+                 limiter: str,
+                 retry_after_seconds: int | None = None,
+                 *,
+                 client_class: str = RATE_LIMITED_CLASS,
+                 waits: Sequence[int] = ()):
         self.limiter = limiter
-        self.retry_after_seconds = retry_after_seconds
+        self.client_class = client_class
+        waits = tuple(waits) or ((retry_after_seconds,) if retry_after_seconds is not None else ())
+        # The header reflects the limiting bucket's true wait — the longest known wait when more
+        # than one limit applies — which the shared contract computes.
+        # [impl->req~ratelimit-reject-429-with-retry-after~1]
+        self.client: ClientRejection = client_response(client_class, retry_after_seconds=waits)
+        self.retry_after_seconds = max(waits) if waits else None
+        self.status_code = self.client.status
+        self.error_code = cast(ErrorCode, client_class)
         super().__init__("rate limited")
 
     def extra_headers(self) -> dict[str, str] | None:
@@ -48,17 +78,21 @@ class AdmissionRejected(ServiceError):
         rejection the backend could not compute a reset for carries no header rather than a
         fabricated one."""
         # [impl->req~ratelimit-reject-429-with-retry-after~1]
-        if self.retry_after_seconds is None:
-            return None
-        return {"Retry-After": str(self.retry_after_seconds)}
+        return dict(self.client.headers) or None
 
 
-def admission_rejection(decision: LimitDecision) -> AdmissionRejected:
-    """Turn a refusing limiter verdict into the rejection the client receives."""
+def admission_rejection(decision: LimitDecision,
+                        *more: LimitDecision,
+                        client_class: str = RATE_LIMITED_CLASS) -> AdmissionRejected:
+    """Turn one or more refusing limiter verdicts into the rejection the client receives. Where
+    several limiters are exhausted the longest known wait is the one reported."""
     # [impl->req~ratelimit-reject-429-with-retry-after~1]
-    if decision.allowed:
-        raise ValueError(f"{decision.limiter} admitted the request")
-    return AdmissionRejected(decision.limiter, decision.retry_after_seconds)
+    decisions = (decision, *more)
+    admitted = [one.limiter for one in decisions if one.allowed]
+    if admitted:
+        raise ValueError(f"{', '.join(admitted)} admitted the request")
+    waits = [one.retry_after_seconds for one in decisions if one.retry_after_seconds is not None]
+    return AdmissionRejected(decision.limiter, client_class=client_class, waits=waits)
 
 
 # --- Budget exhaustion: a verification-capacity condition, never a `429` -----------------------
@@ -140,6 +174,18 @@ def assert_fail_closed_scope(entry: str, operation: AuthOperation) -> None:
         raise FailClosedScopeError(f"{entry} never blocks {operation}")
 
 
+class DeviceBitBudgetExhausted(ServiceError):
+    """The client-visible rejection an exhausted free-grant device-bit budget earns. It is a
+    server-side verification-capacity condition, never the generic admission `429`."""
+
+    error_code: ErrorCode = "verification_temporarily_unavailable"
+
+    def __init__(self, rejection: DeviceBitBudgetRejection):
+        self.rejection = rejection
+        self.status_code = rejection.client.status
+        super().__init__("verification capacity exhausted")
+
+
 @dataclass(frozen=True, slots=True)
 class DeviceBitBudgetRejection:
     """An exhausted free-grant device-bit budget. The attempt is already on the audited attempt
@@ -151,15 +197,23 @@ class DeviceBitBudgetRejection:
     result: AuthEventResult
     client: ClientRejection
     challenge_state: ChallengeState
-    audit_rows: int = 1
+    event: AuthEvent
     grant_issued: bool = False
     vendor_call_performed: bool = False
+
+    @property
+    def audit_rows(self) -> int:
+        """One row for the attempt, and the writer is what enforces that it is only one."""
+        return 1
 
 
 def device_bit_budget_rejection(entry: str,
                                 operation: AuthOperation,
                                 *,
-                                challenge_state: ChallengeState) -> DeviceBitBudgetRejection:
+                                challenge_state: ChallengeState,
+                                actor: AuthActor = NO_ACTOR,
+                                challenge_row_id: UUID | None = None
+                                ) -> DeviceBitBudgetRejection:
     """Refuse a claim whose device-bit budget is exhausted."""
     # [impl->req~ratelimit-device-bit-budget-exhaustion-class~1]
     result = DEVICE_BIT_BUDGET_RESULTS.get(entry)
@@ -175,10 +229,31 @@ def device_bit_budget_rejection(entry: str,
     # Consumed with the rejection: the claimed challenge is never returned to `issued`, and the
     # client retries the whole claim with a fresh challenge and fresh vendor material.
     consumed = advance_state(challenge_state, ChallengeState.consumed)
+    # The durable record the attempt owes: one `audit.auth_events` row whose internal result
+    # names the exhausted budget. It is built here and written by `AuthAuditWriter`, the one
+    # write path every other on-path rejection uses.
+    # [impl->req~ratelimit-device-bit-budget-exhaustion-class~1]
+    event = terminal_event(AttemptPhase.business, result, operation=operation, actor=actor,
+                           challenge_row_id=challenge_row_id,
+                           details={"failure": {"budget": entry}})
     return DeviceBitBudgetRejection(entry=entry,
                                     result=result,
                                     client=client_response(client_class),
-                                    challenge_state=consumed)
+                                    challenge_state=consumed,
+                                    event=event)
+
+
+async def record_device_bit_budget_rejection(writer: AuthAuditWriter,
+                                             attempt: AuthAttempt,
+                                             rejection: DeviceBitBudgetRejection,
+                                             *,
+                                             session: Any) -> Exception:
+    """Durably audit the rejection inside the transaction that consumes the claimed challenge,
+    and hand back the client-visible error. The attempt is claimed by the writer, so no later
+    path can write a second row for the same attempt."""
+    # [impl->req~ratelimit-device-bit-budget-exhaustion-class~1]
+    return await writer.record_rejection(attempt, rejection.event,
+                                         DeviceBitBudgetExhausted(rejection), session=session)
 
 
 def _assert_budget_results_ordered() -> None:
@@ -272,8 +347,9 @@ class AdmissionPhase:
 
     def reject(self,
                decision: LimitDecision,
-               *,
-               actor: CoarseActor = CoarseActor.anonymous) -> AdmissionRejection:
+               *more: LimitDecision,
+               actor: CoarseActor = CoarseActor.anonymous,
+               client_class: str = RATE_LIMITED_CLASS) -> AdmissionRejection:
         """Reject in the admission phase. The rejection belongs to that phase wherever in the
         request path its check sits — on a canonical state-changing route as much as anywhere
         else — so it consumes no operation challenge and creates no `audit.auth_events` row."""
@@ -287,7 +363,8 @@ class AdmissionPhase:
         record = self._telemetry.record(route=self.attempt.route,
                                         reason=decision.limiter,
                                         actor=actor)
-        rejection = AdmissionRejection(error=admission_rejection(decision),
+        rejection = AdmissionRejection(error=admission_rejection(decision, *more,
+                                                                client_class=client_class),
                                        telemetry=record,
                                        # Untouched: the challenge stays in whatever state it was
                                        # already in, and is neither claimed nor consumed here.

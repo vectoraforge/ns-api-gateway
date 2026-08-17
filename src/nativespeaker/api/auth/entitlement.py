@@ -13,6 +13,14 @@ class AccessGrantSource(StrEnum):
     manual = "manual"
 
 
+class AccessGrantStatus(StrEnum):
+    """`core.access_grant_status`. A grant's status is authorization-relevant, so it is written
+    as this schema-typed enum and never as free text."""
+    active = "active"
+    revoked = "revoked"
+    expired = "expired"
+
+
 # Introductory entitlement is exactly what `claim_anonymous_grant` and `claim_registered_grant`
 # create, through those two free-credit grant sources and nothing else.
 # [impl->req~shared-introductory-entitlement-definition~1]

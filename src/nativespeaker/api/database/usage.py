@@ -1,11 +1,71 @@
-from uuid import UUID, uuid7
+"""Monthly usage, owned by the access grant that authorizes the credits it counts.
+
+Consumption is a `core.user_monthly_usage` row keyed by `grant_id`, never by user and never by
+a plan column on `core.users`: a user's allowance comes from the tier their effective grant
+points at, and the counter that spends it hangs off that same grant.
+"""
+
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from uuid import UUID
 
 from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.models.users import UsageMonthly
+from nativespeaker.api.auth.entitlement import AccessGrantStatus
+from nativespeaker.api.models.users import AccessGrant, AccessTier, UserMonthlyUsage
+
+
+def current_period(now: datetime | None = None) -> str:
+    """The current monthly period, computed from the clock."""
+    return (now or datetime.now(UTC)).strftime("%Y-%m")
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveGrant:
+    """The user's single effective access grant and the allowance its tier configures."""
+    grant_id: UUID
+    tier_id: str
+    monthly_credits: int
+
+
+class TooManyActiveGrantsError(RuntimeError):
+    """More than one active grant was found for one user: an invariant violation, not a choice
+    between them."""
+
+
+class GrantsDB:
+    """Reads the effective access grant. Read paths own no repair: nothing here mutates grant
+    state, and no path selects a grant by `status` alone."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def effective_grant(self,
+                              user_id: UUID,
+                              now: datetime | None = None) -> EffectiveGrant | None:
+        """The active grant for this user under the shared effective-grant predicate — `status =
+        'active'` and `starts_at <= now` and (`ends_at IS NULL OR ends_at > now`) — joined to its
+        tier. More than one is an invariant violation; none means an allowance of zero."""
+        moment = now or datetime.now(UTC)
+        result = await self.session.exec(
+            select(AccessGrant.id, AccessGrant.tier_id, AccessTier.monthly_credits)
+            .join(AccessTier, col(AccessTier.id) == col(AccessGrant.tier_id))
+            .where(col(AccessGrant.user_id) == user_id,
+                   col(AccessGrant.status) == AccessGrantStatus.active,
+                   col(AccessGrant.starts_at) <= moment,
+                   (col(AccessGrant.ends_at).is_(None)) | (col(AccessGrant.ends_at) > moment))
+        )
+        rows = result.all()
+        if not rows:
+            return None
+        if len(rows) > 1:
+            raise TooManyActiveGrantsError(f"{user_id} has {len(rows)} active access grants")
+        grant_id, tier_id, monthly_credits = rows[0]
+        return EffectiveGrant(grant_id=grant_id, tier_id=tier_id,
+                              monthly_credits=monthly_credits)
 
 
 class UsageDB:
@@ -14,39 +74,51 @@ class UsageDB:
         self.session = session
 
     async def try_increment(self,
-                            user_id: UUID,
-                            month: str,
+                            grant_id: UUID,
+                            period: str,
                             monthly_quota: int) -> bool:
-        """Atomically increment usage if under quota. Returns True if allowed."""
+        """Atomically increment this grant's usage if under its allowance. Returns True if
+        allowed. A row whose stored period is not the current one is rolled over in place rather
+        than carried forward."""
+        now = datetime.now(UTC)
         await self.session.exec(
-            pg_insert(UsageMonthly)
-            .values(id=uuid7(), user_id=user_id, month=month, used=0)
-            .on_conflict_do_nothing(index_elements=["user_id", "month"])
+            pg_insert(UserMonthlyUsage)
+            .values(grant_id=grant_id, monthly_period=period, monthly_used=0,
+                    created_at=now, updated_at=now)
+            .on_conflict_do_nothing(index_elements=["grant_id"])
         )
-
+        await self.session.exec(
+            update(UserMonthlyUsage)
+            .where(col(UserMonthlyUsage.grant_id) == grant_id,
+                   col(UserMonthlyUsage.monthly_period) != period)
+            .values(monthly_period=period, monthly_used=0, updated_at=now)
+        )
         result = await self.session.exec(
-            update(UsageMonthly)
-            .where(col(UsageMonthly.user_id) == user_id,
-                   col(UsageMonthly.month) == month,
-                   col(UsageMonthly.used) < monthly_quota)
-            .values(used=col(UsageMonthly.used) + 1)
-            .returning(col(UsageMonthly.used))
+            update(UserMonthlyUsage)
+            .where(col(UserMonthlyUsage.grant_id) == grant_id,
+                   col(UserMonthlyUsage.monthly_period) == period,
+                   col(UserMonthlyUsage.monthly_used) < monthly_quota)
+            .values(monthly_used=col(UserMonthlyUsage.monthly_used) + 1, updated_at=now)
+            .returning(col(UserMonthlyUsage.monthly_used))
         )
         return result.first() is not None
 
-    async def get_usage(self, user_id: UUID, month: str) -> int:
-        """Get current usage count for a user in a given month."""
+    async def get_usage(self, grant_id: UUID, period: str) -> int:
+        """This grant's consumption in the given period. A stored row for another period counts
+        as zero for this one."""
         result = await self.session.exec(
-            select(UsageMonthly.used)
-            .where(UsageMonthly.user_id == user_id, UsageMonthly.month == month)
+            select(UserMonthlyUsage.monthly_used)
+            .where(UserMonthlyUsage.grant_id == grant_id,
+                   UserMonthlyUsage.monthly_period == period)
         )
         used = result.first()
         return used if used is not None else 0
 
-    async def reset_usage(self, user_id: UUID, month: str) -> None:
-        """Zero out usage counter (called on plan change)."""
+    async def reset_usage(self, grant_id: UUID, period: str) -> None:
+        """Zero out this grant's counter for the period (called on a tier change)."""
         await self.session.exec(
-            update(UsageMonthly)
-            .where(col(UsageMonthly.user_id) == user_id, col(UsageMonthly.month) == month)
-            .values(used=0)
+            update(UserMonthlyUsage)
+            .where(col(UserMonthlyUsage.grant_id) == grant_id,
+                   col(UserMonthlyUsage.monthly_period) == period)
+            .values(monthly_used=0, updated_at=datetime.now(UTC))
         )

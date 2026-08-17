@@ -16,10 +16,12 @@ from nativespeaker.api.ratelimit.ordering import (
     AdmissionLedger,
     AdmissionOrderError,
     DeviceBitCall,
+    DeviceBitWriteError,
     ExpensiveStep,
     GetUserCallSite,
     anonymous_grant_admission,
     assert_budgets_gate_getuser,
+    assert_grant_row_permitted,
     evaluate_getuser_budgets,
     gate_getuser_call,
 )
@@ -400,6 +402,23 @@ def test_the_grant_row_needs_its_own_read_and_a_confirmed_write():
     fresh = _claimed()
     with pytest.raises(AdmissionOrderError, match="performs its own vendor bit read first"):
         fresh.check_device_bit_budget(DeviceBitCall.devicecheck_write)
+
+
+# The ledger owns the vendor-confirmation rule, so an unconfirmed write is refused at the one
+# guard the adapter layer shares with it.
+# [utest->req~ratelimit-device-bit-write-load-bearing~1]
+def test_an_unconfirmed_vendor_write_permits_no_grant_row():
+    ledger = _claimed()
+    ledger.check_device_bit_budget(DeviceBitCall.devicecheck_read)
+    ledger.vendor_device_bit_call(DeviceBitCall.devicecheck_read)
+    ledger.check_device_bit_budget(DeviceBitCall.devicecheck_write)
+    write = ledger.vendor_device_bit_call(DeviceBitCall.devicecheck_write, confirmed=False)
+    assert write is not None and write.confirmed is False
+    assert ledger.confirmed_write() is None
+    with pytest.raises(DeviceBitWriteError, match="confirms the bit write"):
+        ledger.insert_grant_row()
+    with pytest.raises(DeviceBitWriteError):
+        assert_grant_row_permitted(write)
 
 
 # --- The challenge decision points -----------------------------------------------------------

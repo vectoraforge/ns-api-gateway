@@ -4,15 +4,18 @@ reservation, and the one-way lifecycle."""
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 
+import nativespeaker.api.auth.external_identities as ei_module
 from nativespeaker.api.auth.audit import AuthEventResult
 from nativespeaker.api.auth.external_identities import (
     DELETE_PERMITTED_ROLES,
     FIREBASE_DELETION_SYNC_MECHANISMS,
     FORBIDDEN_RESERVATION_OPTIONS,
+    IDENTITY_PII_COLUMNS,
     IDENTITY_ROW_DELETERS,
     LOOKUP_FAILURE_PERSISTS,
     PAIRING_ENFORCEMENT_MECHANISMS,
@@ -27,6 +30,7 @@ from nativespeaker.api.auth.external_identities import (
     SCRUB_EXEMPT_COLUMNS,
     STALE_ID_TOKEN_WINDOW,
     TOMBSTONE_DISCLOSURE_REQUIRED,
+    TOMBSTONE_RETAINED_COLUMNS,
     AdministrativeAction,
     AlreadyLinkedSite,
     BindingDivergenceError,
@@ -379,6 +383,28 @@ class TestProviderLookupFailsClosed:
                 ClientErrorClass.verification_temporarily_unavailable
             assert excinfo.value.retryable is True
 
+    # A malformed record — not a `LookupFailure` handed in by the caller — is detected here and
+    # audited as `firebase_lookup_unavailable` rather than escaping as a bare shape error.
+    # [utest->req~schema-external-identities-provider-lookup-fail-closed~1]
+    def test_a_malformed_record_is_detected_and_audited_as_lookup_unavailable(self):
+        for record in ("google.com", b"google.com", object()):
+            with pytest.raises(ProviderLookupFailedError) as excinfo:
+                provider_from_lookup(record)  # type: ignore[arg-type]
+            assert excinfo.value.result is AuthEventResult.firebase_lookup_unavailable
+            assert excinfo.value.client_class is \
+                ClientErrorClass.verification_temporarily_unavailable
+
+    # A record that classifies but carries no usable uid is the same malformed-response case, on
+    # the uid side of the very same call sequence.
+    # [utest->req~schema-external-identities-provider-lookup-fail-closed~1]
+    def test_a_record_that_classifies_but_carries_no_uid_fails_the_same_way(self):
+        record = [{"provider_id": "google.com", "uid": ""}]
+        confirmed = provider_from_lookup(record)
+        assert confirmed is IdentityProvider.google
+        with pytest.raises(ProviderLookupFailedError) as excinfo:
+            provider_uid_for(confirmed, record)
+        assert excinfo.value.result is AuthEventResult.firebase_lookup_unavailable
+
     # [utest->req~schema-external-identities-provider-lookup-fail-closed~1]
     def test_a_failed_lookup_is_never_read_as_an_empty_provider_data_result(self):
         with pytest.raises(ProviderLookupFailedError):
@@ -417,12 +443,35 @@ class TestProviderUid:
         assert provider_uid_for(IdentityProvider.apple,
                                 [{"provider_id": "apple.com", "uid": "a-1"}]) == "a-1"
 
+    # A record that classifies but carries no readable uid is a malformed lookup response, and
+    # is audited and surfaced as one rather than escaping as a bare shape error.
     # [utest->req~schema-external-identities-provider-uid-source~1]
+    # [utest->req~schema-external-identities-provider-lookup-fail-closed~1]
     def test_a_missing_or_empty_uid_is_refused(self):
-        with pytest.raises(InvariantError):
-            provider_uid_for(IdentityProvider.google, [{"provider_id": "google.com", "uid": ""}])
-        with pytest.raises(InvariantError):
-            provider_uid_for(IdentityProvider.google, [{"provider_id": "apple.com", "uid": "a"}])
+        for entries in ([{"provider_id": "google.com", "uid": ""}],
+                        [{"provider_id": "apple.com", "uid": "a"}],
+                        [{"provider_id": "google.com"}]):
+            with pytest.raises(ProviderLookupFailedError) as raised:
+                provider_uid_for(IdentityProvider.google, entries)
+            assert raised.value.result is AuthEventResult.firebase_lookup_unavailable
+            assert raised.value.client_class is \
+                ClientErrorClass.verification_temporarily_unavailable
+            assert raised.value.retryable is True
+
+    # Classification and uid derivation accept exactly the same `providerData` shapes: the
+    # firebase-admin SDK returns objects, and camelCase keys appear too.
+    # [utest->req~schema-external-identities-provider-uid-source~1]
+    def test_classify_and_uid_agree_on_every_provider_data_shape(self):
+        class _Entry:
+            def __init__(self, provider_id, uid):
+                self.provider_id = provider_id
+                self.uid = uid
+
+        for entries in ([_Entry("google.com", "g-1")],
+                        [{"providerId": "google.com", "uid": "g-1"}],
+                        [{"provider_id": "google.com", "uid": "g-1"}]):
+            assert classify_provider(entries) is IdentityProvider.google
+            assert provider_uid_for(IdentityProvider.google, entries) == "g-1"
 
     # [utest->req~schema-external-identities-provider-uid-never-client-input~1]
     def test_no_other_source_may_supply_the_uid(self):
@@ -715,7 +764,22 @@ class TestRetentionAndErasure:
         scrubbed = erase_pii(row)
         assert (scrubbed.id, scrubbed.user_id) == (row.id, row.user_id)
         assert scrubbed.identity_state is IdentityState.historical
-        assert scrubbed.native_claim_platform is None
+        # The native-claim pin is immutable once set and is no PII column: erasure keeps it, so
+        # the retired identity cannot switch native branches afterwards.
+        # [utest->req~schema-external-identities-native-claim-platform-pinned~1]
+        assert scrubbed.native_claim_platform is NativeClaimPlatform.ios_devicecheck
+
+    # [utest->req~schema-external-identities-historical-tombstone-scrub-exception~1]
+    def test_a_retained_tombstone_column_can_never_be_added_to_the_scrub_set(self):
+        row = google_row(identity_state=IdentityState.historical,
+                         native_claim_platform=NativeClaimPlatform.ios_devicecheck)
+        assert set(SCRUB_EXEMPT_COLUMNS) <= set(TOMBSTONE_RETAINED_COLUMNS)
+        assert "native_claim_platform" in TOMBSTONE_RETAINED_COLUMNS
+        assert "free_grant_consumed_at" in TOMBSTONE_RETAINED_COLUMNS
+        assert set(IDENTITY_PII_COLUMNS) & set(TOMBSTONE_RETAINED_COLUMNS) == set()
+        with patch.object(ei_module, "IDENTITY_PII_COLUMNS", ("native_claim_platform",)):
+            with pytest.raises(IdentityError, match="retained by the tombstone"):
+                erase_pii(row)
 
     # [utest->req~schema-external-identities-historical-tombstone-scrub-exception~1]
     def test_the_tombstone_retains_its_uniqueness_reservations(self):

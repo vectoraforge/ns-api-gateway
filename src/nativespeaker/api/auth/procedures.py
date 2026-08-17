@@ -44,7 +44,6 @@ from nativespeaker.api.auth.challenges import (
     ConsumeOutcome,
     IdentityBinding,
     PrepareResponse,
-    SubjectVerifier,
     advance_state,
     assert_no_proof_material_bound,
     assert_nothing_serialized,
@@ -52,6 +51,8 @@ from nativespeaker.api.auth.challenges import (
     challenge_expires_at,
     challenge_ids_equal,
     new_challenge_id,
+    preauth_binding,
+    preauth_subject_matches,
     variants_equal,
 )
 from nativespeaker.api.auth.flow import OperationMismatchError, assert_challenge_bearing
@@ -212,7 +213,6 @@ class SharedChallengeService:
                  store: ChallengeStore,
                  audit: AuthAuditWriter,
                  session_factory: Callable[[], AbstractAsyncContextManager[Any]],
-                 subject_verifier: SubjectVerifier,
                  subject_hasher: SubjectHasher,
                  resolver: IdentityResolver,
                  clock: Callable[[], datetime] | None = None,
@@ -220,9 +220,10 @@ class SharedChallengeService:
         self._store = store
         self._audit = audit
         self._session_factory = session_factory
-        self._subject_verifier = subject_verifier
         # The same keyed hasher the barrier uses, so both event producers populate all three
-        # actor columns identically. Without the key version every row this service writes
+        # actor columns identically, and so the pre-auth challenge binding is derived under the
+        # `actor_subject_hash` family and key rather than under a second, separately injected
+        # verifier that nothing ties to it. Without the key version every row this service writes
         # would be refused by the audit row contract.
         # [impl->req~shared-auth-events-actor-subject-hash~1]
         # [impl->req~shared-auth-events-actor-fields-null~1]
@@ -318,8 +319,8 @@ class SharedChallengeService:
             if context.external_identity_id is None:
                 raise ChallengeError("a linked identity context carries an external identity id")
             return IdentityBinding(bound_external_identity_id=context.external_identity_id)
-        return IdentityBinding(preauth_issuer=context.issuer,
-                               preauth_subject_hash=self._subject_verifier(context.subject))
+        # [impl->req~schema-auth-challenges-preauth-subject-hash-derivation~1]
+        return preauth_binding(context.issuer, context.subject, self._subject_hasher)
 
     def _validated_variant(self, operation: AuthOperation,
                            variant: IdentityProvider | None) -> IdentityProvider | None:
@@ -497,8 +498,13 @@ class SharedChallengeService:
         if row.binding.bound_external_identity_id is not None:
             return (context.outcome is ResolutionOutcome.linked
                     and context.external_identity_id == row.binding.bound_external_identity_id)
+        # The verifier is recomputed under the current active key alone, so a challenge
+        # prepared before a key rotation no longer matches.
+        # [impl->req~schema-auth-challenges-preauth-subject-hash-derivation~1]
+        # [impl->req~schema-auth-challenges-no-key-version-recorded~1]
         return (row.binding.preauth_issuer == context.issuer
-                and row.binding.preauth_subject_hash == self._subject_verifier(context.subject))
+                and preauth_subject_matches(row, context.issuer, context.subject,
+                                            self._subject_hasher))
 
     async def _consuming_transaction(self, attempt: AuthAttempt, endpoint: ChallengeEndpoint,
                                      context: VerifiedIdentityContext, row: ChallengeRow,

@@ -17,8 +17,19 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from nativespeaker.api.ratelimit.config import FailureMode, RateLimitConfigError
+from nativespeaker.api.ratelimit.config import (
+    TURNSTILE_ENTRY,
+    FailureMode,
+    RateLimitConfigError,
+)
 from nativespeaker.api.ratelimit.limiter import LimitDecision, RateLimiter
+from nativespeaker.api.ratelimit.ordering import (
+    DEVICE_BIT_BUDGET,
+    WRITE_CALLS,
+    DeviceBitCall,
+    DeviceBitWrite,
+    DeviceBitWriteError,
+)
 from nativespeaker.api.ratelimit.rejection import RateLimitMetrics
 
 
@@ -39,6 +50,21 @@ class ProviderDampingError(RuntimeError):
     """A provider call was about to be made outside the damping the configuration fixes."""
 
 
+# The free-grant device-bit reads and writes. Which calls they are, and which budget entry each
+# runs under, are `ratelimit/ordering.py`'s to state: this file names the outbound call and
+# borrows the mapping rather than keeping a second copy of it.
+DEVICE_BIT_PROVIDER_CALLS: dict[ProviderCall, DeviceBitCall] = {
+    ProviderCall.devicecheck_read: DeviceBitCall.devicecheck_read,
+    ProviderCall.devicecheck_write: DeviceBitCall.devicecheck_write,
+    ProviderCall.device_recall_read: DeviceBitCall.device_recall_read,
+    ProviderCall.device_recall_write: DeviceBitCall.device_recall_write,
+}
+
+DEVICE_BIT_CALLS: frozenset[ProviderCall] = frozenset(DEVICE_BIT_PROVIDER_CALLS)
+
+DEVICE_BIT_WRITES: frozenset[ProviderCall] = frozenset(
+    call for call, bit in DEVICE_BIT_PROVIDER_CALLS.items() if bit in WRITE_CALLS)
+
 # Global provider-call budgets, configured separately from every endpoint request limit. Apple
 # and Google Play live store-state verification carry separate budgets of their own.
 # [impl->req~ratelimit-global-provider-call-budgets~1]
@@ -47,25 +73,14 @@ GLOBAL_PROVIDER_CALL_BUDGETS: dict[ProviderCall, str] = {
     ProviderCall.google_play_live_store_verification:
         "provider_google_play_live_verification_global",
     ProviderCall.firebase_lookup: "adapter_firebase_lookup",
-    ProviderCall.devicecheck_read: "adapter_devicecheck_read",
-    ProviderCall.devicecheck_write: "adapter_devicecheck_write",
-    ProviderCall.device_recall_read: "adapter_play_integrity_device_recall_read",
-    ProviderCall.device_recall_write: "adapter_play_integrity_device_recall_write",
     ProviderCall.play_integrity_verify: "adapter_play_integrity_verify",
-    ProviderCall.turnstile_siteverify: "adapter_cloudflare_turnstile_siteverify",
+    ProviderCall.turnstile_siteverify: TURNSTILE_ENTRY,
+    **{call: DEVICE_BIT_BUDGET[bit] for call, bit in DEVICE_BIT_PROVIDER_CALLS.items()},
 }
 
 # The calls that run on a completion path, after the operation challenge has been claimed.
 # [impl->req~ratelimit-provider-attempt-timeouts~1]
 COMPLETION_PATH_CALLS: frozenset[ProviderCall] = frozenset(ProviderCall)
-
-# The free-grant device-bit reads and writes.
-DEVICE_BIT_CALLS: frozenset[ProviderCall] = frozenset({
-    ProviderCall.devicecheck_read, ProviderCall.devicecheck_write,
-    ProviderCall.device_recall_read, ProviderCall.device_recall_write})
-
-DEVICE_BIT_WRITES: frozenset[ProviderCall] = frozenset({
-    ProviderCall.devicecheck_write, ProviderCall.device_recall_write})
 
 # Live store-state verification. Its per-restore call count is owned normatively by
 # `04-subscription-restore-and-entitlement-transfer.md`, so no retry budget is configured for it
@@ -221,6 +236,18 @@ def assert_second_layer(*, endpoint_admission_passed: bool, budget_entry: str) -
 # --- Global provider-call budgets ----------------------------------------------------------------
 
 
+# The Firebase Admin `getUser` budget is not charged here. `adapter_firebase_lookup` is one of
+# several budgets guarding the same call, and they are reserved jointly and non-destructively by
+# `ratelimit/ordering.gate_getuser_call`: a rejection at either layer must charge neither, which
+# a lone destructive consume cannot honour. One counter, one charging path.
+# [impl->req~ratelimit-getuser-budget-evaluation-order~1]
+JOINTLY_RESERVED_CALLS: frozenset[ProviderCall] = frozenset({ProviderCall.firebase_lookup})
+
+
+class JointlyReservedBudgetError(ProviderDampingError):
+    """A budget reserved jointly with others was about to be charged on its own."""
+
+
 def budget_entry_for(call: ProviderCall) -> str:
     """The global provider-call budget this call is metered by."""
     # [impl->req~ratelimit-global-provider-call-budgets~1]
@@ -242,6 +269,10 @@ def consume_budget_unit(limiter: RateLimiter,
     """
     # [impl->req~ratelimit-global-provider-call-budgets~1]
     entry = budget_entry_for(call)
+    # [impl->req~ratelimit-getuser-budget-evaluation-order~1]
+    if call in JOINTLY_RESERVED_CALLS:
+        raise JointlyReservedBudgetError(
+            f"{entry} is reserved jointly with its endpoint-layer budgets by gate_getuser_call")
     # [impl->req~ratelimit-adapter-limits-second-layer~1]
     assert_second_layer(endpoint_admission_passed=endpoint_admission_passed, budget_entry=entry)
     decision = limiter.consume(entry, key)
@@ -313,17 +344,6 @@ def attempt_plan(config: ProviderDampingConfig,
 # --- The load-bearing device-bit write ---------------------------------------------------------
 
 
-class DeviceBitWriteError(RuntimeError):
-    """The device-bit write was about to be treated as anything other than load-bearing."""
-
-
-@dataclass(frozen=True, slots=True)
-class DeviceBitWrite:
-    """One vendor device-bit write and the vendor's confirmation of it."""
-    call: ProviderCall
-    confirmed: bool
-
-
 def device_bit_write(config: ProviderDampingConfig,
                      call: ProviderCall,
                      *,
@@ -351,16 +371,9 @@ def device_bit_write(config: ProviderDampingConfig,
     # Dispatched here and awaited here: nothing is queued and nothing is handed to a background
     # worker to finish later.
     confirmed = bool(dispatch(plan))
-    return DeviceBitWrite(call=call, confirmed=confirmed)
-
-
-def assert_grant_row_permitted(write: DeviceBitWrite | None) -> None:
-    """A grant row is inserted only behind a vendor-confirmed device-bit write. After a failed
-    claim the client may retry only by submitting a whole new claim with fresh vendor
-    material — never by having the backend finish this write later."""
-    # [impl->req~ratelimit-device-bit-write-load-bearing~1]
-    if write is None or not write.confirmed:
-        raise DeviceBitWriteError("the vendor confirms the bit write before the grant row")
+    # Whether that confirmation permits a grant row is `ratelimit/ordering.py`'s single guard,
+    # `assert_grant_row_permitted`, re-exported here rather than restated.
+    return DeviceBitWrite(call=DEVICE_BIT_PROVIDER_CALLS[call], confirmed=confirmed)
 
 
 # --- Coalescing --------------------------------------------------------------------------------

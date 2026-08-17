@@ -657,6 +657,12 @@ _SECOND_OUTCOME_FIELDS: frozenset[str] = frozenset({
     "outcome", "revoked", "revocation_result", "revocation_status", "status", "succeeded",
 })
 
+# The whole of `details.failure` on a `revocation_unconfirmed` row. The set is an allowlist, not
+# a denylist, so raw Firebase messages, credentials, tokens, stack traces, high-cardinality
+# exception text and vendor response payloads are not expressible here whatever they are named.
+# [impl->req~schema-auth-events-sign-out-all-row~1]
+REVOCATION_FAILURE_FIELDS: frozenset[str] = frozenset({"error_category", "result"})
+
 
 def sign_out_all_event(*,
                        actor: AuthActor,
@@ -690,6 +696,13 @@ def sign_out_all_event(*,
     offending = sorted(_SECOND_OUTCOME_FIELDS & {str(key) for key in failure})
     if offending:
         raise InvalidTerminalOutcomeError(f"{offending} would be a second outcome field")
+    # Raw Firebase messages, credentials, tokens, stack traces, high-cardinality exception text
+    # and vendor response payloads are never stored, so the caller's failure keys are checked
+    # against the bounded set rather than merged through.
+    unbounded = sorted({str(key) for key in failure} - REVOCATION_FAILURE_FIELDS)
+    if unbounded:
+        raise InvalidTerminalOutcomeError(
+            f"{unbounded} are not among the bounded revocation failure fields")
     body.update({"context": context, "failure": failure})
     # The operation mutates no business-state table, so the row carries no mutation.
     body["mutation"] = {}

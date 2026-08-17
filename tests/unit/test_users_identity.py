@@ -132,6 +132,7 @@ from nativespeaker.api.ratelimit.limiter import LimitDecision
 from nativespeaker.api.ratelimit.ordering import (
     AdmissionLedger,
     AdmissionOrderError,
+    BudgetVerdict,
     ExpensiveStep,
     GetUserCallSite,
 )
@@ -808,6 +809,45 @@ class TestFirebaseLookup:
             await firebase_identity_lookup(lookup)
         assert len(calls) == 1
 
+    # The applicable budgets meter calls actually issued, so every attempt is charged — not one
+    # charge per logical read.
+    # [utest->req~users-firebase-lookup-admission-and-retry~1]
+    # [utest->req~ratelimit-getuser-budget-evaluation-order~1]
+    async def test_every_permitted_retry_is_charged_before_it_goes_out(self):
+        charges: list[int] = []
+        calls: list[int] = []
+
+        def admit() -> BudgetVerdict:
+            charges.append(1)
+            return BudgetVerdict(allowed=True, charged=("adapter_firebase_lookup",))
+
+        async def lookup():
+            calls.append(1)
+            raise users_module.lookup_unavailable()
+
+        with pytest.raises(ProviderLookupFailedError):
+            await firebase_identity_lookup(lookup, ledger=self.admitted_ledger(), admit=admit)
+        assert len(calls) == 3
+        assert len(charges) == 3
+
+    # [utest->req~users-firebase-lookup-admission-and-retry~1]
+    async def test_a_retry_that_cannot_be_admitted_is_refused_rather_than_issued(self):
+        calls: list[int] = []
+        verdicts = iter([BudgetVerdict(allowed=True, charged=("adapter_firebase_lookup",)),
+                         BudgetVerdict(allowed=False, primary="adapter_firebase_lookup",
+                                       exhausted=("adapter_firebase_lookup",))])
+
+        async def lookup():
+            calls.append(1)
+            raise users_module.lookup_unavailable()
+
+        with pytest.raises(ProviderLookupFailedError) as raised:
+            await firebase_identity_lookup(lookup, ledger=self.admitted_ledger(),
+                                           admit=lambda: next(verdicts))
+        assert raised.value.result is AuthEventResult.firebase_lookup_unavailable
+        # The second attempt never went out: an exhausted budget refuses it.
+        assert len(calls) == 1
+
     # [utest->req~users-firebase-lookup-admission-and-retry~1]
     async def test_the_lookup_runs_after_admission_and_before_the_write_transaction(self):
         unadmitted = AdmissionLedger(*CREATE_USER_ROUTE, mode=RequestMode.completion)
@@ -924,6 +964,16 @@ class TestCreateUserIdentityConstraints:
                                                live=ResolutionOutcome.pre_auth)
         assert raised.value.result is AuthEventResult.challenge_operation_mismatch
 
+    # The variant comparison is shared completion step 09 and the live re-resolution step 11, so
+    # a mismatched variant is the reported rejection even when the live state also conflicts.
+    # [utest->req~users-create-user-identity-constraints~1]
+    # [utest->req~shared-completion-rejection-precedence~1]
+    def test_the_variant_comparison_precedes_the_live_re_resolution(self):
+        with pytest.raises(ChallengeRejection) as raised:
+            create_user_completion_constraints(preauth_ctx(), self.challenge, "google",
+                                               live=ResolutionOutcome.linked)
+        assert raised.value.result is AuthEventResult.challenge_operation_mismatch
+
     # [utest->req~users-create-user-identity-constraints~1]
     def test_an_unavailable_account_is_rejected_before_either_phase(self):
         for outcome, expected in ((ResolutionOutcome.historical_identity,
@@ -982,6 +1032,17 @@ class TestUpgradeIdentityConstraints:
                                         provider_data=provider_data("google.com"))
         assert second.value.result is AuthEventResult.provider_transition_not_allowed
         assert different_provider.provider is IdentityProvider.apple
+
+        # A stored registered binding whose live classification does not confirm the declaration
+        # is the same conflict, never the mutable path's `provider_not_linked`.
+        unconfirming = identity_row(provider=IdentityProvider.google,
+                                    provider_uid="provider-account-uid")
+        with pytest.raises(ChallengeRejection) as third:
+            upgrade_completion_decision(unconfirming, IdentityProvider.google,
+                                        provider_data=provider_data("apple.com"))
+        assert third.value.result is AuthEventResult.provider_transition_not_allowed
+        assert unconfirming.provider is IdentityProvider.google
+        assert unconfirming.provider_uid == "provider-account-uid"
 
     # [utest->req~users-upgrade-identity-constraints~1]
     def test_an_unconfirmed_declaration_never_mutates_the_row(self):

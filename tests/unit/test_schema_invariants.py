@@ -21,7 +21,7 @@ from nativespeaker.api.auth.audit import (
     AuthResultCounter,
     terminal_event,
 )
-from nativespeaker.api.auth.entitlement import AccessGrantSource
+from nativespeaker.api.auth.entitlement import AccessGrantSource, AccessGrantStatus
 from nativespeaker.api.auth.external_identities import (
     PAIRING_ENFORCEMENT_MECHANISMS,
     IdentityError,
@@ -208,15 +208,20 @@ def test_authorization_relevant_fields_are_schema_typed_enums(applied: Schema):
 
 # [utest->req~schema-invariant-03~1]
 def test_a_free_text_value_never_reaches_a_categorical_field():
-    assert set(ENUM_TYPED_FIELDS) >= {"core.external_identities.provider",
-                                      "core.access_grants.source",
-                                      "audit.auth_events.actor_provider"}
+    # All four authorization-relevant categorical fields the requirement names are policed.
+    assert {"core.external_identities.provider",
+            "core.access_grants.source",
+            "core.access_grants.status",
+            "audit.auth_events.actor_provider"} <= set(ENUM_TYPED_FIELDS)
     assert_enum_typed("core.external_identities.provider", IdentityProvider.google)
+    assert_enum_typed("core.access_grants.status", AccessGrantStatus.active)
     assert_enum_typed("audit.auth_events.actor_provider", None)
     with pytest.raises(InvariantError):
         assert_enum_typed("core.external_identities.provider", "google")
     with pytest.raises(InvariantError):
         assert_enum_typed("core.access_grants.source", "anonymous_device_grant")
+    with pytest.raises(InvariantError):
+        assert_enum_typed("core.access_grants.status", "active")
     with pytest.raises(InvariantError):
         assert_enum_typed("core.users.display_name", "not a categorical field")
 

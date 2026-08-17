@@ -175,9 +175,17 @@ def sync_mutations(requested: Mapping[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def profile_changes(writer: ProfileWriter, requested: Mapping[str, Any]) -> dict[str, Any]:
+def profile_changes(writer: ProfileWriter,
+                    requested: Mapping[str, Any],
+                    *,
+                    control_verified: bool = False) -> dict[str, Any]:
     """The single decision point for writes to `email` and `display_name`. Only user-facing
-    profile update logic changes them; every other writer leaves them exactly as they are."""
+    profile update logic changes them; every other writer leaves them exactly as they are.
+
+    A change to `email` is an address change, which is security-sensitive: the caller must have
+    independently verified current control of the new address, and the address already stored on
+    the row proves nothing about that.
+    """
     # [impl->req~schema-users-profile-fields-explicit-update-only~1]
     if writer is not ProfileWriter.user_profile_update:
         # A name the client showed from the current verified IDP account is presentation only:
@@ -187,6 +195,10 @@ def profile_changes(writer: ProfileWriter, requested: Mapping[str, Any]) -> dict
     unknown = sorted(set(requested) - set(PROFILE_FIELDS))
     if unknown:
         raise ProfileError(f"{unknown} are not canonical backend profile fields")
+    if "email" in requested:
+        # [impl->req~schema-users-email-control-verification~1]
+        assert_email_control_verified(EmailUse.address_change,
+                                      control_verified=control_verified)
     # [impl->req~schema-users-email-display-name-canonical~1]
     return dict(requested)
 
@@ -245,12 +257,20 @@ def assert_hard_delete_allowed(*, has_external_identity: bool) -> None:
 ORPHAN_USER_SWEEPS: frozenset[str] = frozenset()
 
 
-def assert_user_created_with_identity(*, identity_row_written: bool) -> None:
+def assert_user_created_with_identity(*,
+                                      identity_row_written: bool,
+                                      user_transaction: object = None,
+                                      identity_transaction: object = None) -> None:
     """Enforcement is creation-time only: a `core.users` row is written in the same transaction
-    as its `core.external_identities` row."""
+    as its `core.external_identities` row. Two rows written in two transactions do not satisfy
+    the rule, so the two transactions must be the same object — the same test
+    `external_identities.create_account` applies."""
     # [impl->req~schema-users-created-with-identity-row~1]
     if not identity_row_written:
         raise ProfileError("a core.users row is created with its external identity row")
+    if user_transaction is not identity_transaction:
+        raise ProfileError(
+            "a core.users row is created in the same transaction as its identity row")
 
 
 def read_orphan_user(user_id: UUID | None = None) -> NoReturn:

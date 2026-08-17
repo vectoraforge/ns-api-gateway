@@ -40,7 +40,6 @@ from nativespeaker.api.auth.routes import (
 from nativespeaker.api.auth.taxonomy import client_response, surface
 from nativespeaker.api.auth.tokens import InvalidExternalJwtError, JwtRejectionReason
 from nativespeaker.api.exceptions import ServiceError
-from nativespeaker.api.models.api import ErrorResponse
 
 BEARER_PREFIX = "Bearer "
 
@@ -272,6 +271,9 @@ class AuthBarrierMiddleware(BaseHTTPMiddleware):
                 return JSONResponse(status_code=exc.rejection.status, content=exc.body(),
                                     headers=exc.rejection.headers or None)
             except ServiceError as exc:
+                # Imported here: the mapped models pull in this module's own package, so a
+                # module-level import would close an import cycle.
+                from nativespeaker.api.models.api import ErrorResponse
                 return JSONResponse(status_code=exc.status_code,
                                     content=ErrorResponse(code=exc.error_code).model_dump(),
                                     headers=exc.extra_headers())

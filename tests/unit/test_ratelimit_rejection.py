@@ -2,10 +2,22 @@
 
 import pytest
 
-from nativespeaker.api.auth.audit import AuthAttempt, AuthEventResult
+from nativespeaker.api.auth.audit import (
+    AuditAlreadyWrittenError,
+    AuthActor,
+    AuthAttempt,
+    AuthAuditWriter,
+    AuthEventResult,
+    AuthResultCounter,
+)
 from nativespeaker.api.auth.challenges import ChallengeState
 from nativespeaker.api.auth.operations import AuthOperation
-from nativespeaker.api.auth.taxonomy import ClientErrorClass
+from nativespeaker.api.auth.taxonomy import (
+    RATE_LIMITED_CLASS,
+    ClientErrorClass,
+    remediation_for,
+)
+from nativespeaker.api.auth.users import admission_phase_rejection
 from nativespeaker.api.ratelimit.config import DEVICE_BIT_BUDGET_ENTRIES, TURNSTILE_ENTRY
 from nativespeaker.api.ratelimit.limiter import LimitDecision
 from nativespeaker.api.ratelimit.rejection import (
@@ -16,6 +28,7 @@ from nativespeaker.api.ratelimit.rejection import (
     AdmissionPhaseError,
     BudgetExhaustionError,
     CoarseActor,
+    DeviceBitBudgetExhausted,
     FailClosedScopeError,
     RateLimitMetrics,
     SecurityTelemetry,
@@ -25,6 +38,7 @@ from nativespeaker.api.ratelimit.rejection import (
     budget_denies,
     budget_exhaustion_class,
     device_bit_budget_rejection,
+    record_device_bit_budget_rejection,
 )
 
 RESTORE = ("POST", "/auth/restore-subscription")
@@ -60,6 +74,38 @@ def test_no_retry_after_when_the_backend_cannot_compute_a_reset_time():
 def test_an_admitted_verdict_is_no_rejection():
     with pytest.raises(ValueError, match="admitted"):
         admission_rejection(LimitDecision(allowed=True, limiter="create_user"))
+
+
+# [utest->req~ratelimit-reject-429-with-retry-after~1]
+# [utest->req~shared-error-registry-exhaustive~1]
+def test_the_rejection_body_names_a_registered_class_and_never_the_limiter():
+    error = admission_rejection(refused(limiter="claim_anonymous_grant_ip"))
+    # The body carries the class alone: no limiter name, no bucket, no internal result. And the
+    # class is a registered one, never the monthly entitlement code `quota_exceeded`.
+    assert error.client.body == {"code": RATE_LIMITED_CLASS}
+    assert error.error_code == RATE_LIMITED_CLASS != "quota_exceeded"
+    assert remediation_for(RATE_LIMITED_CLASS).http_status == 429
+    assert "claim_anonymous_grant_ip" not in str(error.client.body)
+
+
+# [utest->req~ratelimit-reject-429-with-retry-after~1]
+def test_the_longest_known_wait_is_reported_when_several_limiters_are_exhausted():
+    error = admission_rejection(refused(limiter="create_user_ip", retry_after=7),
+                                refused(limiter="create_user", retry_after=91),
+                                refused(limiter="create_user_subject", retry_after=None))
+    assert error.extra_headers() == {"Retry-After": "91"}
+
+
+# An over-limit `create_user` names the shared registration class, never the verification one.
+# [utest->req~shared-registration-temporarily-unavailable-remediation~1]
+def test_an_over_limit_create_user_names_the_registration_class():
+    attempt = AuthAttempt("POST", "/auth/create-user")
+    rejection = admission_phase_rejection(attempt, SecurityTelemetry(), refused("create_user"))
+    assert rejection.error.client.body == {
+        "code": ClientErrorClass.registration_temporarily_unavailable}
+    assert rejection.error.status_code == 429
+    assert rejection.error.extra_headers() == {"Retry-After": "42"}
+    assert rejection.audit_rows == 0 and attempt.audited is False
 
 
 # --- Budget exhaustion classes ------------------------------------------------------------------
@@ -101,6 +147,40 @@ def test_each_budget_names_its_own_internal_result_in_order():
 
 
 # [utest->req~ratelimit-device-bit-budget-exhaustion-class~1]
+async def test_the_rejection_writes_its_one_audit_row_naming_the_exhausted_budget():
+    rows: list[dict] = []
+
+    class _Sink:
+        async def insert(self, session, row):
+            rows.append(dict(row))
+
+    writer = AuthAuditWriter(sink=_Sink(), counter=AuthResultCounter())
+    attempt = AuthAttempt(*CLAIM)
+    actor = AuthActor(issuer="https://securetoken.google.com/ns",
+                      subject_hash=bytes(32), subject_hash_key_version=1)
+    rejection = device_bit_budget_rejection("adapter_play_integrity_device_recall_read",
+                                            AuthOperation.claim_anonymous_grant,
+                                            challenge_state=ChallengeState.claimed,
+                                            actor=actor)
+    error = await record_device_bit_budget_rejection(writer, attempt, rejection,
+                                                     session=object())
+    assert isinstance(error, DeviceBitBudgetExhausted)
+    # A row actually reached the sink, and its internal result names the exhausted budget.
+    assert len(rows) == 1
+    assert rows[0]["result"] is AuthEventResult.device_recall_read_budget_exhausted
+    assert rows[0]["details"]["failure"]["budget"] == "adapter_play_integrity_device_recall_read"
+    assert rows[0]["operation"] is AuthOperation.claim_anonymous_grant
+    # The client sees the verification-capacity class, and the attempt is claimed, so no later
+    # path can write a second row for it.
+    assert error.rejection.client.body["code"] == \
+        ClientErrorClass.verification_temporarily_unavailable
+    assert attempt.audited is True
+    with pytest.raises(AuditAlreadyWrittenError):
+        await record_device_bit_budget_rejection(writer, attempt, rejection, session=object())
+    assert len(rows) == 1
+
+
+# [utest->req~ratelimit-device-bit-budget-exhaustion-class~1]
 def test_the_rejection_is_audited_consumes_the_challenge_and_issues_no_grant():
     rejection = device_bit_budget_rejection("adapter_devicecheck_write",
                                             AuthOperation.claim_anonymous_grant,
@@ -108,6 +188,7 @@ def test_the_rejection_is_audited_consumes_the_challenge_and_issues_no_grant():
     # Already on the audited attempt path: one row for the attempt, naming the exhausted budget.
     assert rejection.audit_rows == 1
     assert rejection.result is AuthEventResult.devicecheck_write_budget_exhausted
+    assert rejection.event.result is AuthEventResult.devicecheck_write_budget_exhausted
     # Fails closed against the free grant alone, and the call whose budget was unavailable is
     # not performed.
     assert rejection.grant_issued is False

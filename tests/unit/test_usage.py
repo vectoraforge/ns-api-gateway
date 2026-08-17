@@ -6,8 +6,7 @@ import pytest
 import nativespeaker.api.app.dependencies as dep_module
 from nativespeaker.api.app.dependencies import require_quota
 from nativespeaker.api.exceptions import QuotaExceededError
-from nativespeaker.api.models import SubscriptionPlan
-from unit.conftest import TEST_USER
+from unit.conftest import TEST_GRANT, TEST_USER
 
 
 class TestQuotaExceededError:
@@ -28,56 +27,69 @@ class TestRequireQuota:
     """require_quota dependency raises QuotaExceededError when quota exhausted, passes silently otherwise."""
 
     @pytest.fixture
-    def mock_config(self):
-        config = MagicMock()
-        config.quotas = {SubscriptionPlan.free: 10,
-                         SubscriptionPlan.silver: 50,
-                         SubscriptionPlan.gold: 200,
-                         SubscriptionPlan.platinum: 1000}
-        return config
-
-    @pytest.fixture
     def mock_db(self):
         return MagicMock()
 
+    @pytest.fixture
+    def grants(self):
+        db = AsyncMock()
+        db.effective_grant = AsyncMock(return_value=TEST_GRANT)
+        return db
+
     @pytest.mark.asyncio
-    async def test_require_quota_raises_when_exhausted(self, mock_db, mock_config):
+    async def test_require_quota_raises_when_exhausted(self, mock_db, grants):
         """require_quota raises QuotaExceededError when try_increment returns False."""
         mock_usage = AsyncMock()
         mock_usage.try_increment = AsyncMock(return_value=False)
-        with patch.object(dep_module, "UsageDB", return_value=mock_usage):
+        with (patch.object(dep_module, "UsageDB", return_value=mock_usage),
+              patch.object(dep_module, "GrantsDB", return_value=grants)):
             with pytest.raises(QuotaExceededError):
-                await require_quota(user=TEST_USER, db=mock_db, config=mock_config)
+                await require_quota(user=TEST_USER, db=mock_db)
 
     @pytest.mark.asyncio
-    async def test_require_quota_passes_when_under_limit(self, mock_db, mock_config):
+    async def test_require_quota_raises_when_no_effective_grant_exists(self, mock_db, grants):
+        """No effective grant means an allowance of zero, and no counter is touched."""
+        grants.effective_grant = AsyncMock(return_value=None)
+        mock_usage = AsyncMock()
+        with (patch.object(dep_module, "UsageDB", return_value=mock_usage),
+              patch.object(dep_module, "GrantsDB", return_value=grants)):
+            with pytest.raises(QuotaExceededError):
+                await require_quota(user=TEST_USER, db=mock_db)
+        mock_usage.try_increment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_require_quota_passes_when_under_limit(self, mock_db, grants):
         """require_quota completes silently when under quota."""
         mock_usage = AsyncMock()
         mock_usage.try_increment = AsyncMock(return_value=True)
-        with patch.object(dep_module, "UsageDB", return_value=mock_usage):
-            result = await require_quota(user=TEST_USER, db=mock_db, config=mock_config)
+        with (patch.object(dep_module, "UsageDB", return_value=mock_usage),
+              patch.object(dep_module, "GrantsDB", return_value=grants)):
+            result = await require_quota(user=TEST_USER, db=mock_db)
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_require_quota_calls_try_increment_with_correct_args(self, mock_db, mock_config):
-        """require_quota passes user_id, current month, and monthly_quota to try_increment."""
+    async def test_require_quota_meters_the_grant_not_the_user(self, mock_db, grants):
+        """The counter is keyed by the effective grant, and the allowance is its tier's."""
         mock_usage = AsyncMock()
         mock_usage.try_increment = AsyncMock(return_value=True)
-        with patch.object(dep_module, "UsageDB", return_value=mock_usage):
-            await require_quota(user=TEST_USER, db=mock_db, config=mock_config)
+        with (patch.object(dep_module, "UsageDB", return_value=mock_usage),
+              patch.object(dep_module, "GrantsDB", return_value=grants)):
+            await require_quota(user=TEST_USER, db=mock_db)
         mock_usage.try_increment.assert_called_once()
         call_args = mock_usage.try_increment.call_args
-        assert call_args.args[0] == TEST_USER.id  # user_id
-        assert isinstance(call_args.args[1], str)  # month string like "2026-03"
-        assert call_args.args[2] == 10  # free tier quota
+        assert call_args.args[0] == TEST_GRANT.grant_id
+        assert call_args.args[0] != TEST_USER.id
+        assert isinstance(call_args.args[1], str)  # period string like "2026-03"
+        assert call_args.args[2] == TEST_GRANT.monthly_credits
 
     @pytest.mark.asyncio
-    async def test_require_quota_creates_usage_db_with_session(self, mock_db, mock_config):
+    async def test_require_quota_creates_usage_db_with_session(self, mock_db, grants):
         """require_quota creates UsageDB with the injected db session."""
         mock_usage = AsyncMock()
         mock_usage.try_increment = AsyncMock(return_value=True)
-        with patch.object(dep_module, "UsageDB", return_value=mock_usage) as MockUsageDB:
-            await require_quota(user=TEST_USER, db=mock_db, config=mock_config)
+        with (patch.object(dep_module, "UsageDB", return_value=mock_usage) as MockUsageDB,
+              patch.object(dep_module, "GrantsDB", return_value=grants)):
+            await require_quota(user=TEST_USER, db=mock_db)
         MockUsageDB.assert_called_once_with(mock_db)
 
 

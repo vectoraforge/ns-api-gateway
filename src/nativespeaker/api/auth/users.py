@@ -68,7 +68,7 @@ from nativespeaker.api.auth.operations import (
 )
 from nativespeaker.api.auth.procedures import ChallengeRejection
 from nativespeaker.api.auth.routes import is_pre_auth_callable
-from nativespeaker.api.auth.taxonomy import ClientErrorClass, surface
+from nativespeaker.api.auth.taxonomy import RATE_LIMITED_CLASS, ClientErrorClass, surface
 from nativespeaker.api.auth.tokens import InvalidExternalJwtError
 from nativespeaker.api.exceptions import ErrorCode
 from nativespeaker.api.ratelimit.config import (
@@ -704,6 +704,7 @@ def lookup_unavailable() -> ProviderLookupFailedError:
 
 async def firebase_identity_lookup(lookup: Callable[[], Awaitable[Any]], *,
                                    ledger: AdmissionLedger | None = None,
+                                   admit: Callable[[], BudgetVerdict] | None = None,
                                    attempts: int = FIREBASE_LOOKUP_ATTEMPTS) -> Any:
     """Every `create_user` completion, anonymous or registered, and every
     `upgrade_anonymous_to_registered` completion performs one mandatory Firebase Admin lookup
@@ -712,8 +713,15 @@ async def firebase_identity_lookup(lookup: Callable[[], Awaitable[Any]], *,
     reuse the existing failure machinery: a retryable Firebase Admin outage, a malformed or
     indeterminate response and a backend integration-authentication failure are retried within
     that same logical read up to two additional times, three attempts in all; a non-retryable
-    cause rejects immediately and consumes no retry budget."""
+    cause rejects immediately and consumes no retry budget.
+
+    `admit` is the applicable budgets' joint gate. It runs immediately before every outbound
+    attempt — including before each permitted retry — because the budgets meter calls actually
+    issued, not logical reads: without that, one admitted request could fan three calls out
+    against one unit during a Firebase outage.
+    """
     # [impl->req~users-firebase-lookup-admission-and-retry~1]
+    # [impl->req~ratelimit-getuser-budget-evaluation-order~1]
     if ledger is not None:
         if ExpensiveStep.firebase_lookup not in ledger.expensive_steps:
             raise UsersError("the Firebase-lookup admission check runs before getUser")
@@ -722,6 +730,10 @@ async def firebase_identity_lookup(lookup: Callable[[], Awaitable[Any]], *,
     remaining = attempts
     while True:
         remaining -= 1
+        if admit is not None and not admit().allowed:
+            # An exhausted budget refuses the attempt the same way an exhausted lookup does.
+            # [impl->req~ratelimit-firebase-budget-exhaustion-class~1]
+            raise lookup_unavailable()
         try:
             return await lookup()
         except ProviderLookupFailedError as failure:
@@ -733,7 +745,8 @@ async def firebase_identity_lookup(lookup: Callable[[], Awaitable[Any]], *,
 
 
 def admission_phase_rejection(attempt: AuthAttempt, telemetry: SecurityTelemetry,
-                              decision: LimitDecision) -> AdmissionRejection:
+                              decision: LimitDecision,
+                              *more: LimitDecision) -> AdmissionRejection:
     """Admission-control rejections that happen before the endpoint enters its normal audited
     attempt path use the shared rejection behaviour defined in `08` and are outside the
     state-changing audit attempt path. Requests turned away that way follow the shared
@@ -742,7 +755,14 @@ def admission_phase_rejection(attempt: AuthAttempt, telemetry: SecurityTelemetry
     # [impl->req~users-admission-rejections-no-audit-row~1]
     if not is_admission_phase(AdmissionRejectionKind.backend_rate_limited):
         raise UsersError("an admission rejection belongs to the admission phase")
-    rejection = AdmissionPhase(attempt, telemetry).reject(decision)
+    # An over-limit `create_user` names the shared registration class; every other operation
+    # takes the generic admission class. Neither is ever `quota_exceeded`, which is monthly
+    # entitlement quota and a different condition entirely.
+    # [impl->req~shared-registration-temporarily-unavailable-remediation~1]
+    client_class = (ClientErrorClass.registration_temporarily_unavailable
+                    if attempt.operation is AuthOperation.create_user else RATE_LIMITED_CLASS)
+    rejection = AdmissionPhase(attempt, telemetry).reject(decision, *more,
+                                                          client_class=client_class)
     if rejection.audit_rows or rejection.database_rows or attempt.audited:
         raise UsersError("an admission rejection creates no state-changing audit row")
     return rejection
@@ -804,9 +824,14 @@ def create_user_completion_constraints(context: VerifiedIdentityContext, row: Ch
     completion and must equal the challenge-bound variant byte-for-byte."""
     # [impl->req~users-create-user-identity-constraints~1]
     _assert_create_user_admissible(context.outcome)
-    _assert_create_user_admissible(live)
+    # The shared completion order is normative and a rejection names the earliest failed step:
+    # step 09 compares the variant, before the step 10 Firebase Admin lookup and the step 11
+    # re-resolution `live` can only be known after.
+    # [impl->req~shared-completion-rejection-precedence~1]
+    # [impl->req~users-challenge-bound-provider-variant~1]
     if not completion_variant_matches(row, declared):
         raise ChallengeRejection(variant_mismatch().result)
+    _assert_create_user_admissible(live)
     variant = row.operation_variant
     if variant is None:
         raise UsersError("a create_user challenge binds its normalized provider variant")
@@ -864,21 +889,33 @@ def upgrade_completion_decision(row: ExternalIdentityRow, declared: IdentityProv
     # [impl->req~users-upgrade-identity-constraints~1]
     if row.identity_state is not IdentityState.active:
         raise ChallengeRejection(AuthEventResult.historical_identity)
+    if row.provider is not IdentityProvider.anonymous:
+        # A stored registered binding is confirmed against the live one and never rewritten.
+        # Every divergence on this branch — a different declared provider, a live classification
+        # that does not confirm the declaration, or a different live provider UID — is the one
+        # distinct `provider_transition_not_allowed` conflict, never `provider_not_linked`.
+        if row.provider is not declared:
+            raise ChallengeRejection(AuthEventResult.provider_transition_not_allowed)
+        try:
+            confirmed = upgrade_target_provider(declared, list(provider_data))
+        except ProviderNotConfirmedError:
+            raise ChallengeRejection(
+                AuthEventResult.provider_transition_not_allowed) from None
+        live_uid = provider_uid_for(confirmed, provider_data)
+        if not live_uid:
+            raise lookup_unavailable()
+        try:
+            confirm_stored_binding(row, live_provider=confirmed, live_provider_uid=live_uid)
+        except BindingDivergenceError as divergence:
+            raise ChallengeRejection(divergence.result) from None
+        return UpgradeDecision(UpgradeBranch.idempotent, row.provider, live_uid)
+    # The mutable path: a stored `anonymous` binding, where an unconfirming live classification
+    # is the ordinary `provider_not_linked` rejection.
     confirmed = upgrade_target_provider(declared, list(provider_data))
     live_uid = provider_uid_for(confirmed, provider_data)
     if not live_uid:
         raise lookup_unavailable()
-    if row.provider is IdentityProvider.anonymous:
-        return UpgradeDecision(UpgradeBranch.mutable, confirmed, live_uid)
-    # A stored registered binding is confirmed against the live one and never rewritten: a
-    # different stored provider, or a different live provider UID, is the same distinct conflict.
-    if row.provider is not declared:
-        raise ChallengeRejection(AuthEventResult.provider_transition_not_allowed)
-    try:
-        confirm_stored_binding(row, live_provider=confirmed, live_provider_uid=live_uid)
-    except BindingDivergenceError as divergence:
-        raise ChallengeRejection(divergence.result) from None
-    return UpgradeDecision(UpgradeBranch.idempotent, row.provider, live_uid)
+    return UpgradeDecision(UpgradeBranch.mutable, confirmed, live_uid)
 
 
 def apply_upgrade(row: ExternalIdentityRow, decision: UpgradeDecision, *,

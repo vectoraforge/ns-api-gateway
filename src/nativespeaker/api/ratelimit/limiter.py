@@ -87,10 +87,10 @@ class RateLimiter:
     def consume(self, name: str, key: str, *, cost: int | None = None) -> LimitDecision:
         """Atomically check and consume one unit of the entry.
 
-        The check and the consumption are one operation against the configured storage — the
-        `limits` strategy's own `hit` — so the unit is taken atomically across every backend
-        replica and no second replica can dispatch between a separate check and charge. This is
-        what a global provider-call budget meters an outbound attempt with.
+        For a single-window entry the check and the consumption are one operation against the
+        configured storage — the `limits` strategy's own `hit` — so the unit is taken atomically
+        across every backend replica and no second replica can dispatch between a separate check
+        and charge. This is what a global provider-call budget meters an outbound attempt with.
         """
         # [impl->req~ratelimit-global-provider-call-budgets~1]
         entry = self.entry(name)
@@ -98,11 +98,21 @@ class RateLimiter:
         if not self._config.enabled or not entry.enabled:
             return LimitDecision(allowed=True, limiter=name)
         charged_cost = entry.cost if cost is None else cost
+        windows = entry.parsed
         try:
-            # Evaluated over the whole configured window set, one atomic hit per window.
+            # Every configured window must admit the dispatch, and a refusal charges none of
+            # them: no unit is consumed unless an outbound call actually follows. A single
+            # window — the shape a budget is normally configured in — takes the atomic
+            # check-and-consume; a window set is tested in full before any counter moves.
             # [impl->req~ratelimit-parse-many-multi-window-strings~1]
-            allowed = all([self._strategy.hit(window, key, cost=charged_cost)
-                           for window in entry.parsed])
+            if len(windows) == 1:
+                allowed = self._strategy.hit(windows[0], key, cost=charged_cost)
+            else:
+                allowed = all(self._strategy.test(window, key, cost=charged_cost)
+                              for window in windows)
+                if allowed:
+                    for window in windows:
+                        self._strategy.hit(window, key, cost=charged_cost)
         except Exception:
             # [impl->req~ratelimit-entry-failure-behavior~1]
             # [impl->req~ratelimit-default-fail-closed-unless-configured~1]
@@ -110,9 +120,10 @@ class RateLimiter:
             return LimitDecision(allowed=open_, limiter=name, storage_failed=True)
         if allowed:
             return LimitDecision(allowed=True, limiter=name, charged=True)
+        # A refused dispatch charges nothing: `charged` reports whether a counter actually moved.
         return LimitDecision(allowed=False, limiter=name,
                              retry_after_seconds=self._retry_after(entry, key),
-                             charged=True, exhausted=(name,))
+                             charged=False, exhausted=(name,))
 
     def _evaluate(self, name: str, key: str, *, charge: bool, cost: int | None) -> LimitDecision:
         entry = self.entry(name)

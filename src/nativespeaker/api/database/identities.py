@@ -1,8 +1,8 @@
 """Per-request identity resolution for the shared pre-handler barrier.
 
-The barrier resolves a backend-verified `(issuer, subject)` here and nowhere else. Until the
-schema slice introduces `core.external_identities`, the mapping lives on `core.users` and this
-module reads it there; the four resolution outcomes the barrier acts on are unchanged.
+The barrier resolves a backend-verified `(issuer, subject)` here and nowhere else. The mapping
+lives on `core.external_identities`, which the applied schema keys by `(issuer, subject)`; the
+four resolution outcomes the barrier acts on are read from that row and the user row it owns.
 """
 
 from typing import Any
@@ -10,13 +10,19 @@ from typing import Any
 from sqlalchemy import text
 
 from nativespeaker.api.auth.barrier import ResolutionOutcome, ResolvedIdentity
+from nativespeaker.api.auth.external_identities import IdentityState
 
-# One row per verified subject. `active = false` is a blocked user; no row at all is a pre-auth
-# identity that has not completed `create_user`.
+# One row per verified `(issuer, subject)`. `identity_state = 'historical'` is a retired
+# identity, `users.active = false` a blocked user, and no row at all a pre-auth identity that
+# has not completed `create_user`.
 SELECT_IDENTITY = text("""
-    SELECT id, active
-      FROM core.users
-     WHERE jwt_sub = :subject
+    SELECT ei.id AS external_identity_id,
+           ei.identity_state AS identity_state,
+           u.id AS user_id,
+           u.active AS active
+      FROM core.external_identities AS ei
+      JOIN core.users AS u ON u.id = ei.user_id
+     WHERE ei.issuer = :issuer AND ei.subject = :subject
 """)
 
 
@@ -31,12 +37,19 @@ class IdentityResolverDB:
         """The four per-request identity-resolution outcomes. Identity comes from the verified
         claims alone: the only inputs are the issuer and subject the barrier verified."""
         async with self._session_factory() as session:
-            result = await session.execute(SELECT_IDENTITY, {"subject": subject})
+            result = await session.execute(SELECT_IDENTITY,
+                                           {"issuer": issuer, "subject": subject})
             row = result.first()
         if row is None:
             return ResolvedIdentity(outcome=ResolutionOutcome.pre_auth)
+        if str(row.identity_state) == IdentityState.historical:
+            return ResolvedIdentity(outcome=ResolutionOutcome.historical_identity,
+                                    user_id=row.user_id,
+                                    external_identity_id=row.external_identity_id)
         if not row.active:
-            return ResolvedIdentity(outcome=ResolutionOutcome.blocked_user, user_id=row.id)
+            return ResolvedIdentity(outcome=ResolutionOutcome.blocked_user,
+                                    user_id=row.user_id,
+                                    external_identity_id=row.external_identity_id)
         return ResolvedIdentity(outcome=ResolutionOutcome.linked,
-                                user_id=row.id,
-                                external_identity_id=row.id)
+                                user_id=row.user_id,
+                                external_identity_id=row.external_identity_id)

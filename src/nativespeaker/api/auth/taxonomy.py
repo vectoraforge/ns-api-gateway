@@ -149,7 +149,19 @@ REMEDIATIONS: dict[ClientErrorClass, Remediation] = {
 
 # Operation-specific classes an endpoint contract adds under the extension rule. They live
 # outside the shared registry and are part of the same response shape, never a second contract.
-_ENDPOINT_REMEDIATIONS: dict[str, Remediation] = {}
+# [impl->req~shared-error-classes-govern-all-routes~1]
+RATE_LIMITED_CLASS = "rate_limited"
+
+_ENDPOINT_REMEDIATIONS: dict[str, Remediation] = {
+    # The generic backend admission-control rejection. Its remediation is genuinely distinct
+    # from `registration_temporarily_unavailable`, which tells the client to retry registration
+    # specifically, and from `verification_temporarily_unavailable`, which is a verification-path
+    # failure this must never be confused with.
+    # [impl->req~ratelimit-reject-429-with-retry-after~1]
+    RATE_LIMITED_CLASS: Remediation(
+        action="wait_for_retry_after_then_retry_request", http_status=429,
+        transient=True, sends_retry_after=True, retry_same_request=True),
+}
 
 
 def remediation_for(client_class: str) -> Remediation:

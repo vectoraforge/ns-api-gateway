@@ -297,14 +297,13 @@ class TestFirebaseSync:
         mock_subscriptions_db.get_subscription_by_external_id.return_value = existing_sub
         mock_subscriptions_db.insert_event_idempotent.return_value = True
 
-        mock_user = MagicMock()
-        mock_user.jwt_sub = "firebase-uid-456"
-        mock_result = MagicMock()
-        mock_result.first.return_value = mock_user
-        mock_db_session.exec = AsyncMock(return_value=mock_result)
+        # The external subject comes from `core.external_identities`, not from a column on
+        # `core.users`.
+        mock_subscriptions_db.external_subject.return_value = "firebase-uid-456"
 
         await subscription_service.process_apple_notification("signed.payload")
 
+        mock_subscriptions_db.external_subject.assert_awaited_once_with(user_id)
         mock_firebase.set_plan_claim.assert_called_once_with(
             "firebase-uid-456", SubscriptionPlan.gold
         )

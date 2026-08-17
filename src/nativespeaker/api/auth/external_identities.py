@@ -9,18 +9,20 @@ migration that ships it; rules with a complete normative home elsewhere are dele
 home rather than restated here.
 """
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Any, NoReturn, cast
+from typing import Any, NoReturn
 from uuid import UUID
 
 from nativespeaker.api.auth.audit import AuthEventResult
 from nativespeaker.api.auth.integration import FirebaseIntegrations, UnrecognizedProviderError
 from nativespeaker.api.auth.invariants import (
+    InvariantError,
     ProviderAccountAlreadyLinkedError,
     assert_provider_uid_immutable,
+    provider_data_id,
     provider_uid_from_provider_data,
     provider_uid_reserved,
 )
@@ -471,11 +473,9 @@ class _ProviderDataEntry:
         self.provider_id = provider_id
 
 
-def _provider_id(entry: object) -> str:
-    if isinstance(entry, Mapping):
-        values = cast(Mapping[str, object], entry)
-        return str(values.get("provider_id") or values.get("providerId") or "")
-    return str(getattr(entry, "provider_id", None) or getattr(entry, "providerId", None) or "")
+# Entry normalization is the invariants module's, shared with `provider_uid_from_provider_data`
+# so classification and uid derivation accept exactly the same `providerData` shapes.
+_provider_id = provider_data_id
 
 
 def classify_provider(provider_data: Sequence[object]) -> IdentityProvider:
@@ -528,6 +528,10 @@ def provider_from_lookup(record: Sequence[object] | None, *,
     # [impl->req~schema-external-identities-provider-lookup-fail-closed~1]
     if failure is not None or record is None:
         raise _lookup_failure(failure or LookupFailure.indeterminate)
+    # A malformed record is detected here, not left to escape as a bare shape error: anything
+    # that is not a sequence of readable entries is a malformed response.
+    if isinstance(record, str | bytes) or not isinstance(record, Sequence):
+        raise _lookup_failure(LookupFailure.malformed_response)
     return classify_provider(record)
 
 
@@ -598,7 +602,7 @@ def assert_provider_uid_source(source: ProviderUidSource) -> None:
 
 
 def provider_uid_for(provider: IdentityProvider,
-                     provider_data: Sequence[Mapping[str, object]]) -> str | None:
+                     provider_data: Sequence[object]) -> str | None:
     """`provider_uid` is `NULL` for `anonymous` identities and, for `google` or `apple`, the
     non-empty stable `uid` from the `providerData` entry whose `providerId` matches the confirmed
     provider: the Google account ID for Google and the per-app Apple user identifier for Apple."""
@@ -608,7 +612,14 @@ def provider_uid_for(provider: IdentityProvider,
     # [impl->req~schema-external-identities-provider-uid-source~1]
     # [impl->req~users-provider-uid-source-and-immutability~1]
     assert_provider_uid_source(ProviderUidSource.firebase_provider_data)
-    return provider_uid_from_provider_data(provider, provider_data)
+    try:
+        return provider_uid_from_provider_data(provider, provider_data)
+    except InvariantError:
+        # A record that classified but carries no readable uid for the confirmed provider is a
+        # malformed lookup response, not a bare shape error: it is audited as
+        # `firebase_lookup_unavailable` and surfaces `verification_temporarily_unavailable`.
+        # [impl->req~schema-external-identities-provider-lookup-fail-closed~1]
+        raise _lookup_failure(LookupFailure.malformed_response) from None
 
 
 # The two read points that may write the stored `provider` or `provider_uid`.
@@ -899,6 +910,19 @@ def retire(row: ExternalIdentityRow, *, administrative: bool = True) -> External
 # account rejectable, and they are retained for that purpose alone.
 SCRUB_EXEMPT_COLUMNS: tuple[str, ...] = ("issuer", "subject", "provider", "provider_uid")
 
+# Everything the tombstone keeps. Beyond the uniqueness reservations that is the non-PII
+# `free_grant_consumed_at` marker and the `native_claim_platform` pin, which is immutable once
+# set: clearing it would re-open the native-branch switch the pin exists to prevent on a row
+# that is never deleted.
+# [impl->req~schema-external-identities-native-claim-platform-pinned~1]
+TOMBSTONE_RETAINED_COLUMNS: tuple[str, ...] = (
+    *SCRUB_EXEMPT_COLUMNS, "identity_state", "native_claim_platform", "free_grant_consumed_at")
+
+# The PII columns erasure clears on this row: none. The user's personal data — `email` and
+# `display_name` — are `core.users` columns and are scrubbed there; every column on the identity
+# row is either a uniqueness reservation or non-PII lifecycle state.
+IDENTITY_PII_COLUMNS: tuple[str, ...] = ()
+
 # The exception is deliberate and disclosed: the erasure rules in
 # `01-sessions-and-identity-resolution.md` require the same disclosure to the user.
 TOMBSTONE_DISCLOSURE_REQUIRED: bool = True
@@ -913,10 +937,15 @@ def erase_pii(row: ExternalIdentityRow) -> ExternalIdentityRow:
     # [impl->req~schema-external-identities-retirement-erasure-keep-pair~1]
     if not TOMBSTONE_DISCLOSURE_REQUIRED:
         raise IdentityError("the retained tombstone columns are a disclosed exception")
-    scrubbed = replace(row, native_claim_platform=None)
-    for column in SCRUB_EXEMPT_COLUMNS:
+    # A retained column is never also a scrubbed one. This is what keeps the pin and the
+    # uniqueness reservations out of the erasure set rather than trusting the call below.
+    overlap = sorted(set(IDENTITY_PII_COLUMNS) & set(TOMBSTONE_RETAINED_COLUMNS))
+    if overlap:
+        raise IdentityError(f"{', '.join(overlap)} are retained by the tombstone, never scrubbed")
+    scrubbed = replace(row, **dict.fromkeys(IDENTITY_PII_COLUMNS))
+    for column in TOMBSTONE_RETAINED_COLUMNS:
         if getattr(scrubbed, column) != getattr(row, column):
-            raise IdentityError(f"{column} is retained as a uniqueness reservation")
+            raise IdentityError(f"{column} is retained by the identity tombstone")
     if scrubbed.id != row.id or scrubbed.user_id != row.user_id:
         raise IdentityError("erasure retains the row and its owner")
     return scrubbed

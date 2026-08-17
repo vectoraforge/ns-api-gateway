@@ -39,7 +39,6 @@ from unit.test_auth_challenges import (
     hasher,
     linked_context,
     preauth_context,
-    verifier,
 )
 
 NOW = datetime(2026, 8, 16, 12, 0, tzinfo=UTC)
@@ -83,7 +82,6 @@ class AuditHarness(Harness):
                                      session_factory=self.factory, clock=self.clock)
         self.service = SharedChallengeService(store=self.store, audit=self.audit,
                                               session_factory=self.factory,
-                                              subject_verifier=verifier,
                                               subject_hasher=hasher,
                                               resolver=self.resolver, clock=self.clock)
 

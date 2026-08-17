@@ -10,7 +10,7 @@ nothing else.
 import base64
 import hashlib
 import secrets
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -311,9 +311,6 @@ class ChallengeStore(Protocol):
         ...
 
 
-SubjectVerifier = Callable[[str], bytes]
-
-
 # --- `core.auth_challenges` column semantics -----------------------------------------------
 
 # The persisted columns of one `core.auth_challenges` row.
@@ -389,15 +386,27 @@ OUTCOME_COLUMN_NAMES: frozenset[str] = frozenset({
 CONSUMED_OUTCOME_LOG: str = "audit.auth_events"
 
 
-def preauth_subject_hash(subject: str, hasher: SubjectHasher) -> bytes:
+# The `actor_subject_hash` derivation family's domain separator. `preauth_subject_hash` is that
+# family, unchanged: same key, same prefix, same `issuer || ":" || subject` input.
+ACTOR_SUBJECT_DOMAIN = "actor-subject:v1:"
+
+
+def actor_subject_preimage(issuer: str, subject: str) -> str:
+    """`"actor-subject:v1:" || issuer || ":" || canonical_subject`, the input the family HMACs."""
+    # [impl->req~schema-auth-challenges-preauth-subject-hash-derivation~1]
+    return f"{ACTOR_SUBJECT_DOMAIN}{issuer}:{subject}"
+
+
+def preauth_subject_hash(issuer: str, subject: str, hasher: SubjectHasher) -> bytes:
     """`preauth_subject_hash` is `HMAC-SHA-256` of the backend-verified subject under the
-    `actor_subject_hash` derivation family and key. Prepare computes and stores it, and the raw
-    subject is never written to this table."""
+    `actor_subject_hash` derivation family and key — the same injected keyed hasher, over this
+    family's domain-separated input. Prepare computes and stores it, and the raw subject is never
+    written to this table."""
     # [impl->req~schema-auth-challenges-preauth-subject-hash-derivation~1]
     # The row records no HMAC key version: the version the shared hasher reports is discarded
     # here rather than persisted, so verification has only the current active key to work with.
     # [impl->req~schema-auth-challenges-no-key-version-recorded~1]
-    digest, _key_version = hasher(subject)
+    digest, _key_version = hasher(actor_subject_preimage(issuer, subject))
     return digest
 
 
@@ -407,20 +416,23 @@ def preauth_binding(issuer: str, subject: str, hasher: SubjectHasher) -> Identit
     stored only as its keyed verifier."""
     # [impl->req~schema-auth-challenges-preauth-subject-hash-derivation~1]
     return IdentityBinding(preauth_issuer=issuer,
-                           preauth_subject_hash=preauth_subject_hash(subject, hasher))
+                           preauth_subject_hash=preauth_subject_hash(issuer, subject, hasher))
 
 
-def preauth_subject_matches(row: ChallengeRow, subject: str, hasher: SubjectHasher) -> bool:
-    """Completion recomputes the verifier from that request's verified subject and compares it
-    against the stored value. Verification uses the current active key alone, so a challenge
-    prepared before a key rotation fails its identity comparison afterwards and the client
-    prepares a fresh one."""
+def preauth_subject_matches(row: ChallengeRow,
+                            issuer: str,
+                            subject: str,
+                            hasher: SubjectHasher) -> bool:
+    """Completion recomputes the verifier from that request's verified issuer and subject and
+    compares it against the stored value. Verification uses the current active key alone, so a
+    challenge prepared before a key rotation fails its identity comparison afterwards and the
+    client prepares a fresh one."""
     # [impl->req~schema-auth-challenges-preauth-subject-hash-derivation~1]
     # [impl->req~schema-auth-challenges-no-key-version-recorded~1]
     stored = row.binding.preauth_subject_hash
     if stored is None:
         return False
-    return secrets.compare_digest(stored, preauth_subject_hash(subject, hasher))
+    return secrets.compare_digest(stored, preauth_subject_hash(issuer, subject, hasher))
 
 
 def assert_no_raw_subject_column(columns: Iterable[str] = AUTH_CHALLENGE_COLUMNS) -> None:

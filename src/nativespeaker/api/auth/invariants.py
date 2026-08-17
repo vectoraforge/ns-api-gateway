@@ -9,11 +9,12 @@ second rule.
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import cast
 from uuid import UUID
 
 from nativespeaker.api.auth.audit import AuthEventResult
 from nativespeaker.api.auth.barrier import ResolutionOutcome
-from nativespeaker.api.auth.entitlement import AccessGrantSource
+from nativespeaker.api.auth.entitlement import AccessGrantSource, AccessGrantStatus
 from nativespeaker.api.auth.operations import AuthOperation, IdentityProvider
 from nativespeaker.api.auth.taxonomy import (
     REMEDIATIONS,
@@ -134,6 +135,7 @@ def assert_grant_creator(creator: GrantCreator | str, source: AccessGrantSource)
 ENUM_TYPED_FIELDS: dict[str, type[StrEnum]] = {
     "core.external_identities.provider": IdentityProvider,
     "core.access_grants.source": AccessGrantSource,
+    "core.access_grants.status": AccessGrantStatus,
     "audit.auth_events.operation": AuthOperation,
     "audit.auth_events.result": AuthEventResult,
     "audit.auth_events.actor_provider": IdentityProvider,
@@ -470,8 +472,28 @@ _PROVIDER_DATA_IDS: dict[str, IdentityProvider] = {
 }
 
 
+def provider_data_field(entry: object, *names: str) -> str:
+    """One field of a `providerData` entry, whatever shape the Admin SDK handed back: a mapping
+    or an object, `snake_case` or `camelCase`. Classification and `provider_uid` derivation read
+    entries through this one normalizer, so they can never disagree about which shapes are
+    valid."""
+    # [impl->req~schema-external-identities-provider-uid-source~1]
+    if isinstance(entry, Mapping):
+        values = cast(Mapping[str, object], entry)
+        found = next((values[name] for name in names if values.get(name)), None)
+    else:
+        found = next((getattr(entry, name) for name in names if getattr(entry, name, None)), None)
+    return str(found) if found is not None else ""
+
+
+def provider_data_id(entry: object) -> str:
+    """The entry's `providerId`."""
+    # [impl->req~schema-external-identities-provider-uid-source~1]
+    return provider_data_field(entry, "provider_id", "providerId")
+
+
 def provider_uid_from_provider_data(provider: IdentityProvider,
-                                    provider_data: Sequence[Mapping[str, object]]) -> str | None:
+                                    provider_data: Sequence[object]) -> str | None:
     """`core.external_identities.provider_uid` comes only from the Firebase Admin `providerData`
     entry matching the confirmed provider — never from client input, headers, token claims, email
     or display name. It is `NULL` for `anonymous` and non-empty for `google` and `apple`."""
@@ -481,11 +503,11 @@ def provider_uid_from_provider_data(provider: IdentityProvider,
     if provider is IdentityProvider.anonymous:
         return None
     matching = [entry for entry in provider_data
-                if _PROVIDER_DATA_IDS.get(str(entry.get("provider_id"))) is provider]
+                if _PROVIDER_DATA_IDS.get(provider_data_id(entry)) is provider]
     if len(matching) != 1:
         raise InvariantError(f"no single providerData entry confirms {provider}")
-    uid = matching[0].get("uid")
-    if not isinstance(uid, str) or not uid:
+    uid = provider_data_field(matching[0], "uid")
+    if not uid:
         raise InvariantError(f"{provider} carries a non-empty provider_uid")
     return uid
 

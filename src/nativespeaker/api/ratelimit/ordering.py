@@ -80,6 +80,29 @@ READ_CALLS: frozenset[DeviceBitCall] = frozenset({
 WRITE_CALLS: frozenset[DeviceBitCall] = frozenset(set(DeviceBitCall) - READ_CALLS)
 
 
+class DeviceBitWriteError(AdmissionOrderError):
+    """The device-bit write was about to be treated as anything other than load-bearing."""
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceBitWrite:
+    """One vendor device-bit write and the vendor's confirmation of it."""
+    call: DeviceBitCall
+    confirmed: bool
+
+
+def assert_grant_row_permitted(write: DeviceBitWrite | None) -> None:
+    """A grant row is inserted only behind a vendor-confirmed device-bit write. This is the one
+    guard for that rule: the adapter layer dispatches the write and reports the vendor's
+    confirmation, and the decision is taken here. After a failed claim the client may retry only
+    by submitting a whole new claim with fresh vendor material — never by having the backend
+    finish this write later."""
+    # [impl->req~ratelimit-device-bit-write-load-bearing~1]
+    # [impl->req~ratelimit-free-grant-device-bit-budget-ordering~1]
+    if write is None or write.call not in WRITE_CALLS or not write.confirmed:
+        raise DeviceBitWriteError("the vendor confirms the bit write before the grant row")
+
+
 class AdmissionLedger:
     """One request's admission order."""
 
@@ -103,6 +126,7 @@ class AdmissionLedger:
         self.evaluated: list[str] = []
         self.budgets_checked: list[str] = []
         self.device_bit_calls: list[DeviceBitCall] = []
+        self.device_bit_writes: list[DeviceBitWrite] = []
         self.expensive_steps: list[ExpensiveStep] = []
 
     @property
@@ -258,16 +282,31 @@ class AdmissionLedger:
         if not allowed:
             self.refused = True
 
-    def vendor_device_bit_call(self, call: DeviceBitCall) -> None:
+    def vendor_device_bit_call(self,
+                               call: DeviceBitCall,
+                               *,
+                               confirmed: bool = True) -> DeviceBitWrite | None:
         """Perform the vendor device-bit read or write. Its budget was checked immediately
-        before it, and no cached or coalesced value substitutes for the call."""
+        before it, and no cached or coalesced value substitutes for the call. A write also
+        records whether the vendor confirmed it, because that confirmation is what the grant
+        row hangs on."""
         # [impl->req~ratelimit-free-grant-device-bit-budget-ordering~1]
+        # [impl->req~ratelimit-device-bit-write-load-bearing~1]
         if self.refused:
             raise AdmissionOrderError("an exhausted budget prevents the call it budgets")
         if not self.budgets_checked or self.budgets_checked[-1] != DEVICE_BIT_BUDGET[call]:
             raise AdmissionOrderError(
                 f"{DEVICE_BIT_BUDGET[call]} is checked immediately before {call}")
         self.device_bit_calls.append(call)
+        if call not in WRITE_CALLS:
+            return None
+        write = DeviceBitWrite(call=call, confirmed=confirmed)
+        self.device_bit_writes.append(write)
+        return write
+
+    def confirmed_write(self) -> DeviceBitWrite | None:
+        """The vendor-confirmed device-bit write this claim performed, if any."""
+        return next((write for write in self.device_bit_writes if write.confirmed), None)
 
     def insert_grant_row(self) -> None:
         """Insert the grant row. The claim performed its own vendor bit read and obtained
@@ -278,8 +317,9 @@ class AdmissionLedger:
             raise AdmissionOrderError("a refused claim creates no grant row")
         if not any(call in READ_CALLS for call in self.device_bit_calls):
             raise AdmissionOrderError("the claim performs its own vendor bit read")
-        if not any(call in WRITE_CALLS for call in self.device_bit_calls):
-            raise AdmissionOrderError("the vendor confirms the bit write before the grant row")
+        # The one guard for the vendor-confirmed write, shared with the adapter layer.
+        # [impl->req~ratelimit-device-bit-write-load-bearing~1]
+        assert_grant_row_permitted(self.confirmed_write())
 
 
 # --- the anonymous-grant admission pair -------------------------------------------------------

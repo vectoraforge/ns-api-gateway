@@ -9,8 +9,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.app.main import app
+from nativespeaker.api.auth.operations import IdentityProvider
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.models import Chat, ChatRole, Message, User
+
+TEST_ISSUER = "https://securetoken.google.com/test-project"
 
 
 @pytest.fixture(scope="session")
@@ -98,11 +101,21 @@ async def create_chat(factory, user_id: str):
     async with factory() as session:
         # Ensure user exists (JIT-like provisioning for test data)
         from sqlmodel import select
-        result = await session.exec(select(User).where(User.jwt_sub == user_id))
+
+        from nativespeaker.api.models.users import ExternalIdentity
+        result = await session.exec(
+            select(User)
+            .join(ExternalIdentity,
+                  ExternalIdentity.user_id == User.id)  # type: ignore[arg-type]
+            .where(ExternalIdentity.subject == user_id))
         user = result.first()
         if user is None:
-            user = User(jwt_sub=user_id, email=f"{user_id}@test.example.com")
+            user = User(email=f"{user_id}@test.example.com")
             session.add(user)
+            await session.flush()
+            session.add(ExternalIdentity(user_id=user.id, issuer=TEST_ISSUER,
+                                         subject=user_id,
+                                         provider=IdentityProvider.anonymous))
             await session.flush()
 
         chat_id = uuid4()

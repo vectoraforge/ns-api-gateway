@@ -5,16 +5,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import nativespeaker.api.routers.users as users_module
-from nativespeaker.api.app.dependencies import get_config, get_current_user, get_db
+from nativespeaker.api.app.dependencies import get_current_user, get_db
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth import UserIdentity
 from nativespeaker.api.models import SubscriptionPlan, User
 from nativespeaker.api.routers import users_router
-
-TEST_QUOTAS = {SubscriptionPlan.free: 10,
-               SubscriptionPlan.silver: 50,
-               SubscriptionPlan.gold: 200,
-               SubscriptionPlan.platinum: 1000}
+from unit.conftest import TEST_GRANT
 
 
 class TestGetUsersMe:
@@ -41,27 +37,25 @@ class TestGetUsersMe:
     def test_profile_nullable_name(self):
         """Name can be None for Firebase accounts without name claim."""
         nameless_user = User(
-            jwt_sub="nameless-user",
             email="nameless@example.com",
-            name=None,
-            subscription_plan=SubscriptionPlan.free,
+            display_name=None,
             active=True,
         )
 
-        with patch.object(users_module, "UsageDB") as MockUsageDB:
+        with (patch.object(users_module, "UsageDB") as MockUsageDB,
+              patch.object(users_module, "GrantsDB") as MockGrantsDB):
             mock_instance = MagicMock()
             mock_instance.get_usage = AsyncMock(return_value=0)
             MockUsageDB.return_value = mock_instance
-
-            mock_config = MagicMock()
-            mock_config.quotas = TEST_QUOTAS
+            grants = MagicMock()
+            grants.effective_grant = AsyncMock(return_value=TEST_GRANT)
+            MockGrantsDB.return_value = grants
 
             app = FastAPI()
             app.include_router(users_router)
             register_exception_handlers(app)
             app.dependency_overrides[get_current_user] = lambda: nameless_user
             app.dependency_overrides[get_db] = lambda: MagicMock()
-            app.dependency_overrides[get_config] = lambda: mock_config
 
             with TestClient(app, raise_server_exceptions=False) as test_client:
                 response = test_client.get("/users/me")
@@ -115,19 +109,40 @@ class TestUserIdentity:
             identity.sub = "changed"  # type: ignore[misc]
 
 
+def _table(name: str):
+    """The mapped table, read from the shipped SQLModel metadata."""
+    from sqlmodel import SQLModel
+    return SQLModel.metadata.tables[name]
+
+
 class TestUserModel:
     """USER-01: User model defaults and constraints."""
 
-    def test_default_plan_is_free(self):
-        user = User(jwt_sub="test", email="test@example.com")
-        assert user.subscription_plan == SubscriptionPlan.free
+    def test_no_plan_free_access_or_tier_column_is_stored_on_the_user(self):
+        # Subscription plan, free access and tier are not `core.users` columns: access is the
+        # state of the user's `core.access_grants` rows.
+        # [utest->req~schema-users-no-plan-fields~1]
+        columns = {column.name for column in _table("core.users").columns}
+        assert columns == {"id", "email", "display_name", "registered_at", "active",
+                           "created_at", "updated_at"}
+        for forbidden in ("subscription_plan", "plan", "tier", "tier_id", "free_access"):
+            assert forbidden not in columns
+
+    def test_monthly_usage_is_keyed_by_the_grant_that_authorizes_it(self):
+        # [utest->req~schema-users-usage-via-user-monthly-usage~1]
+        usage = _table("core.user_monthly_usage")
+        columns = {column.name for column in usage.columns}
+        assert "user_id" not in columns
+        grant_id = usage.columns["grant_id"]
+        assert grant_id.primary_key
+        assert {fk.target_fullname for fk in grant_id.foreign_keys} == {"core.access_grants.id"}
 
     def test_default_active_is_true(self):
-        user = User(jwt_sub="test", email="test@example.com")
+        user = User(email="test@example.com")
         assert user.active is True
 
     def test_uuid7_id_generated(self):
-        user = User(jwt_sub="test", email="test@example.com")
+        user = User(email="test@example.com")
         assert user.id is not None
 
     def test_subscription_plan_values(self):

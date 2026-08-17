@@ -8,6 +8,7 @@ ErrorCode = Literal["invalid_request",
                     "service_unavailable",
                     "internal_error",
                     "quota_exceeded",
+                    "rate_limited",
                     "out_of_scope",
                     # Shared client-visible auth classes
                     "auth_required",

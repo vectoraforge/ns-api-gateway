@@ -183,15 +183,39 @@ class TestPreauthSubjectHash:
     def test_prepare_stores_a_keyed_verifier_and_a_plaintext_issuer(self):
         binding = preauth_binding(ISSUER, "sub-1", hasher(b"key-a"))
         assert binding.preauth_issuer == ISSUER
-        assert binding.preauth_subject_hash == preauth_subject_hash("sub-1", hasher(b"key-a"))
+        assert binding.preauth_subject_hash == preauth_subject_hash(ISSUER, "sub-1",
+                                                                    hasher(b"key-a"))
         assert b"sub-1" not in (binding.preauth_subject_hash or b"")
+        # The `actor_subject_hash` family, unchanged: same key, same domain separator, and the
+        # issuer is part of the input rather than discarded.
+        expected, _version = hasher(b"key-a")(f"actor-subject:v1:{ISSUER}:sub-1")
+        assert binding.preauth_subject_hash == expected
+        other_issuer = preauth_binding("https://other", "sub-1", hasher(b"key-a"))
+        assert other_issuer.preauth_subject_hash != binding.preauth_subject_hash
 
     # [utest->req~schema-auth-challenges-preauth-subject-hash-derivation~1]
     def test_completion_recomputes_and_compares(self):
         current = hasher(b"key-a")
         stored = row(binding=preauth_binding(ISSUER, "sub-1", current))
-        assert preauth_subject_matches(stored, "sub-1", current) is True
-        assert preauth_subject_matches(stored, "other-subject", current) is False
+        assert preauth_subject_matches(stored, ISSUER, "sub-1", current) is True
+        assert preauth_subject_matches(stored, ISSUER, "other-subject", current) is False
+        assert preauth_subject_matches(stored, "https://other", "sub-1", current) is False
+
+    # The live prepare and completion path derives the binding from the one injected
+    # `actor_subject_hash` hasher, so a key or input divergence fails here and not only in the
+    # helper.
+    # [utest->req~schema-auth-challenges-preauth-subject-hash-derivation~1]
+    def test_the_service_derives_the_binding_from_the_actor_subject_hasher(self):
+        from unit.test_auth_challenges import TEST_ISSUER, Harness, preauth_context
+
+        service = Harness().service
+        context = preauth_context()
+        binding = service.derive_binding(context)
+        assert binding.preauth_issuer == TEST_ISSUER
+        assert binding.preauth_subject_hash == preauth_subject_hash(
+            TEST_ISSUER, context.subject, service._subject_hasher)
+        stored = row(binding=binding)
+        assert service.binding_matches(stored, context) is True
 
     # [utest->req~schema-auth-challenges-preauth-subject-hash-derivation~1]
     def test_the_raw_subject_is_never_a_column_on_this_table(self):
@@ -208,8 +232,21 @@ class TestPreauthSubjectHash:
     # [utest->req~schema-auth-challenges-no-key-version-recorded~1]
     def test_a_challenge_prepared_before_a_rotation_fails_its_identity_comparison(self):
         stored = row(binding=preauth_binding(ISSUER, "sub-1", hasher(b"old-key")))
-        assert preauth_subject_matches(stored, "sub-1", hasher(b"new-key")) is False
-        assert preauth_subject_matches(stored, "sub-1", hasher(b"old-key")) is True
+        assert preauth_subject_matches(stored, ISSUER, "sub-1", hasher(b"new-key")) is False
+        assert preauth_subject_matches(stored, ISSUER, "sub-1", hasher(b"old-key")) is True
+
+    # The same rotation, through the service that actually compares at completion.
+    # [utest->req~schema-auth-challenges-no-key-version-recorded~1]
+    def test_the_service_compares_under_the_current_active_key_alone(self):
+        from unit.test_auth_challenges import Harness, preauth_context
+
+        service = Harness().service
+        context = preauth_context()
+        prepared = row(binding=service.derive_binding(context))
+        assert service.binding_matches(prepared, context) is True
+        rotated = row(binding=preauth_binding(context.issuer, context.subject,
+                                              hasher(b"a-different-key")))
+        assert service.binding_matches(rotated, context) is False
 
 
 class TestRowIdAndReplay:

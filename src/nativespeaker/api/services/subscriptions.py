@@ -1,4 +1,3 @@
-from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -7,13 +6,13 @@ from appstoreserverlibrary.models.Environment import Environment
 from appstoreserverlibrary.models.NotificationTypeV2 import NotificationTypeV2
 from appstoreserverlibrary.models.Subtype import Subtype
 from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier, VerificationException
-from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.config import AppleConfig
 from nativespeaker.api.database import SubscriptionDB, UsageDB
+from nativespeaker.api.database.usage import current_period
 from nativespeaker.api.exceptions import WebhookVerificationError
-from nativespeaker.api.models import SubscriptionPlan, SubscriptionProvider, SubscriptionStatus, User
+from nativespeaker.api.models import SubscriptionPlan, SubscriptionProvider, SubscriptionStatus
 from nativespeaker.api.services.firebase import FirebaseService
 
 logger = structlog.get_logger()
@@ -147,7 +146,7 @@ class SubscriptionService:
                 old_plan=None,
                 new_plan=plan,
             )
-            await self.subscriptions_db.update_user_plan(
+            grant_id = await self.subscriptions_db.update_user_plan(
                 user_id=subscription.user_id, plan=plan
             )
         else:
@@ -166,23 +165,19 @@ class SubscriptionService:
             await self.subscriptions_db.update_subscription(
                 subscription=subscription, plan=plan, status=status
             )
-            await self.subscriptions_db.update_user_plan(
+            grant_id = await self.subscriptions_db.update_user_plan(
                 user_id=subscription.user_id, plan=plan
             )
 
         # Usage reset + Firebase sync -- only if plan changed
         if old_plan != plan:
-            month = datetime.now(UTC).strftime("%Y-%m")
-            await self.usage_db.reset_usage(subscription.user_id, month)
+            # The counter that is reset is the one owned by the grant whose tier moved.
+            if grant_id is not None:
+                await self.usage_db.reset_usage(grant_id, current_period())
 
-            result = await self.db.exec(
-                select(User).where(User.id == subscription.user_id)
-            )
-            user = result.first()
-            if user:
-                await self.firebase_service.set_plan_claim(
-                    user.jwt_sub, plan
-                )
+            subject = await self.subscriptions_db.external_subject(subscription.user_id)
+            if subject:
+                await self.firebase_service.set_plan_claim(subject, plan)
 
     def _map_lifecycle_event(self,
                              notification_type: str,

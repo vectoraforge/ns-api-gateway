@@ -9,6 +9,11 @@ from pydantic import ValidationError
 
 from nativespeaker.api.ratelimit.config import RateLimitEntry, RateLimitsConfig, Strategy
 from nativespeaker.api.ratelimit.limiter import RateLimiter
+from nativespeaker.api.ratelimit.ordering import (
+    DEVICE_BIT_BUDGET,
+    DeviceBitCall,
+    assert_grant_row_permitted,
+)
 from nativespeaker.api.ratelimit.providers import (
     COMPLETION_PATH_CALLS,
     DEVICE_BIT_CALLS,
@@ -18,13 +23,13 @@ from nativespeaker.api.ratelimit.providers import (
     CoalescingError,
     DeviceBitWriteError,
     EndpointLimitsBypassed,
+    JointlyReservedBudgetError,
     NoRetryBudgetError,
     ProviderCall,
     ProviderCoalescer,
     ProviderDampingConfig,
     ProviderDampingEntry,
     ProviderDampingError,
-    assert_grant_row_permitted,
     assert_provider_damping,
     assert_turnstile_budget,
     attempt_plan,
@@ -86,14 +91,38 @@ def test_a_total_budget_must_admit_one_full_attempt():
 
 # [utest->req~ratelimit-adapter-limits-second-layer~1]
 def test_a_provider_budget_never_stands_in_for_the_endpoint_limits():
-    backend = limiter(adapter_firebase_lookup="10/minute")
+    backend = limiter(adapter_play_integrity_verify="10/minute")
     with pytest.raises(EndpointLimitsBypassed):
-        consume_budget_unit(backend, ProviderCall.firebase_lookup, "deployment",
+        consume_budget_unit(backend, ProviderCall.play_integrity_verify, "deployment",
                             endpoint_admission_passed=False)
     # Nothing was spent: the budget was never even consulted.
-    assert backend.test("adapter_firebase_lookup", "deployment").allowed
-    assert consume_budget_unit(backend, ProviderCall.firebase_lookup, "deployment",
+    assert backend.test("adapter_play_integrity_verify", "deployment").allowed
+    assert consume_budget_unit(backend, ProviderCall.play_integrity_verify, "deployment",
                                endpoint_admission_passed=True).allowed
+
+
+# The Firebase lookup budget is reserved jointly with its endpoint-layer entries, so it has one
+# charging path and this destructive one is not it.
+# [utest->req~ratelimit-getuser-budget-evaluation-order~1]
+def test_the_firebase_lookup_budget_is_never_charged_on_its_own():
+    backend = limiter(adapter_firebase_lookup="10/minute")
+    with pytest.raises(JointlyReservedBudgetError, match="gate_getuser_call"):
+        consume_budget_unit(backend, ProviderCall.firebase_lookup, "deployment",
+                            endpoint_admission_passed=True)
+    # Refused before anything moved: the endpoint-layer entries were never consulted, so the
+    # global counter must not have been charged behind their back either.
+    assert backend.test("adapter_firebase_lookup", "deployment").allowed
+
+
+# The device-bit budget names belong to the ordering file, which owns the four vendor calls.
+# [utest->req~ratelimit-device-bit-write-load-bearing~1]
+def test_the_device_bit_budgets_come_from_the_ordering_file():
+    for call, bit in (
+            (ProviderCall.devicecheck_read, DeviceBitCall.devicecheck_read),
+            (ProviderCall.devicecheck_write, DeviceBitCall.devicecheck_write),
+            (ProviderCall.device_recall_read, DeviceBitCall.device_recall_read),
+            (ProviderCall.device_recall_write, DeviceBitCall.device_recall_write)):
+        assert GLOBAL_PROVIDER_CALL_BUDGETS[call] == DEVICE_BIT_BUDGET[bit]
 
 
 # [utest->req~ratelimit-adapter-limits-second-layer~1]
@@ -138,6 +167,25 @@ def test_each_outbound_attempt_consumes_one_unit_whatever_it_returns():
                                 metrics=metrics)
     assert third.allowed is False
     assert metrics.counters()["provider_budget_rejections"] == 1
+
+
+# [utest->req~ratelimit-global-provider-call-budgets~1]
+# [utest->req~ratelimit-parse-many-multi-window-strings~1]
+def test_a_refused_multi_window_budget_charges_none_of_its_windows():
+    # The accounting unit is the actual outbound attempt, so a budget that refuses dispatches
+    # nothing and must therefore consume nothing — including on the windows that had capacity.
+    backend = limiter(provider_apple_store_live_verification_global="5/minute; 1/hour")
+    call = ProviderCall.apple_live_store_verification
+    first = consume_budget_unit(backend, call, "deployment", endpoint_admission_passed=True)
+    assert first.allowed and first.charged
+    minute, _hour = backend.windows("provider_apple_store_live_verification_global")
+    spent = backend.strategy.get_window_stats(minute, "deployment").remaining
+
+    refused = consume_budget_unit(backend, call, "deployment", endpoint_admission_passed=True)
+    assert refused.allowed is False
+    # No counter moved, so nothing was charged for a call that never went out.
+    assert refused.charged is False
+    assert backend.strategy.get_window_stats(minute, "deployment").remaining == spent
 
 
 # [utest->req~ratelimit-global-provider-call-budgets~1]

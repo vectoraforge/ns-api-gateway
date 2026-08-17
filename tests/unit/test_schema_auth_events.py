@@ -18,6 +18,7 @@ from nativespeaker.api.auth.audit import (
     MOVEMENT_OPERATIONS,
     NO_ACTOR,
     RESULT_PRODUCERS,
+    REVOCATION_FAILURE_FIELDS,
     AttemptPhase,
     AuditRowError,
     AuthActor,
@@ -490,6 +491,16 @@ def test_an_unconfirmed_revocation_carries_one_sanitized_category_and_no_second_
     # vocabulary; a raw Firebase message is not expressible.
     assert {str(entry) for entry in RevocationErrorCategory} == {
         "definitive_failure", "dependency_unavailable", "ambiguous_outcome"}
+    # And nothing else reaches the row: raw Firebase messages, stack traces and vendor response
+    # payloads are refused rather than merged through, whatever the caller calls them.
+    for forbidden in ({"firebase_message": "PERMISSION_DENIED: caller lacks permission"},
+                      {"stack_trace": "Traceback (most recent call last)..."},
+                      {"vendor_payload": {"code": 7}},
+                      {"exception": "GoogleAuthError(...)"}):
+        with pytest.raises(InvalidTerminalOutcomeError):
+            sign_out_all_event(actor=actor(), request_id="req-8", revoked=False,
+                               error_category=category, details={"failure": forbidden})
+    assert set(row["details"]["failure"]) <= REVOCATION_FAILURE_FIELDS
 
 
 # [utest->req~schema-auth-events-sign-out-all-row~1]
