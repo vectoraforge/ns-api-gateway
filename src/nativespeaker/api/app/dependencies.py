@@ -78,6 +78,9 @@ async def require_quota(user: User = Depends(get_current_user),
     grant, and a user with no effective grant has an allowance of zero."""
     now = datetime.now(UTC)
     grant = await GrantsDB(db).effective_grant(user.id, now)
+    # Entitlement is the grant. A user with no effective grant is refused here, before any
+    # usage row is read: a counter is not access and never stands in for one.
+    # [impl->req~schema-user-monthly-usage-grants-no-access~1]
     if grant is None or grant.monthly_credits <= 0:
         raise QuotaExceededError("Monthly quota exceeded")
     usage_db = UsageDB(db)

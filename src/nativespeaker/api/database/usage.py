@@ -16,11 +16,19 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.entitlement import AccessGrantStatus
 from nativespeaker.api.models.users import AccessGrant, AccessTier, UserMonthlyUsage
+from nativespeaker.api.quota.usage import (
+    NewUsageRow,
+    derived_allowance,
+    needs_rollover,
+    new_usage_row,
+    period_of,
+    require_usage_row,
+)
 
 
 def current_period(now: datetime | None = None) -> str:
     """The current monthly period, computed from the clock."""
-    return (now or datetime.now(UTC)).strftime("%Y-%m")
+    return period_of(now)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +56,13 @@ class GrantsDB:
                               now: datetime | None = None) -> EffectiveGrant | None:
         """The active grant for this user under the shared effective-grant predicate — `status =
         'active'` and `starts_at <= now` and (`ends_at IS NULL OR ends_at > now`) — joined to its
-        tier. More than one is an invariant violation; none means an allowance of zero."""
+        tier. More than one is an invariant violation; none means an allowance of zero.
+
+        The allowance comes from that join and from nothing else: it is a property of the tier
+        the grant points at, never a stored column on the usage row.
+        """
+        # [impl->req~schema-user-monthly-usage-allowance-derived-from-tier~1]
+        # [impl->req~schema-access-tiers-monthly-credits-allowance~1]
         moment = now or datetime.now(UTC)
         result = await self.session.exec(
             select(AccessGrant.id, AccessGrant.tier_id, AccessTier.monthly_credits)
@@ -65,7 +79,7 @@ class GrantsDB:
             raise TooManyActiveGrantsError(f"{user_id} has {len(rows)} active access grants")
         grant_id, tier_id, monthly_credits = rows[0]
         return EffectiveGrant(grant_id=grant_id, tier_id=tier_id,
-                              monthly_credits=monthly_credits)
+                              monthly_credits=derived_allowance(tier_id, monthly_credits))
 
 
 class UsageDB:
@@ -73,26 +87,56 @@ class UsageDB:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    async def create_for_grant(self,
+                               grant_id: UUID,
+                               *,
+                               transaction: object,
+                               now: datetime | None = None) -> NewUsageRow:
+        """Create this grant's usage row in the transaction that creates the grant itself —
+        purchase ingestion, either free-grant claim, or restore's adoption of an unclaimed
+        subscription. It initializes usage state only: the current accounting month and a zero
+        counter."""
+        # [impl->req~schema-user-monthly-usage-created-with-grant~1]
+        # [impl->req~schema-user-monthly-usage-row-initializes-usage-only~1]
+        stamp = now or datetime.now(UTC)
+        row = new_usage_row(grant_id, now=stamp,
+                            grant_transaction=transaction, usage_transaction=self.session)
+        await self.session.exec(
+            pg_insert(UserMonthlyUsage)
+            .values(grant_id=row.grant_id, monthly_period=row.monthly_period,
+                    monthly_used=row.monthly_used, created_at=stamp, updated_at=stamp)
+        )
+        return row
+
     async def try_increment(self,
                             grant_id: UUID,
                             period: str,
                             monthly_quota: int) -> bool:
         """Atomically increment this grant's usage if under its allowance. Returns True if
         allowed. A row whose stored period is not the current one is rolled over in place rather
-        than carried forward."""
+        than carried forward.
+
+        This path creates nothing: the row was written with the grant, so a grant without one is
+        a server-side data error and the request fails closed.
+        """
         now = datetime.now(UTC)
-        await self.session.exec(
-            pg_insert(UserMonthlyUsage)
-            .values(grant_id=grant_id, monthly_period=period, monthly_used=0,
-                    created_at=now, updated_at=now)
-            .on_conflict_do_nothing(index_elements=["grant_id"])
+        stored = await self.session.exec(
+            select(UserMonthlyUsage.monthly_period)
+            .where(col(UserMonthlyUsage.grant_id) == grant_id)
         )
-        await self.session.exec(
-            update(UserMonthlyUsage)
-            .where(col(UserMonthlyUsage.grant_id) == grant_id,
-                   col(UserMonthlyUsage.monthly_period) != period)
-            .values(monthly_period=period, monthly_used=0, updated_at=now)
-        )
+        # [impl->req~schema-user-monthly-usage-created-with-grant~1]
+        stored_period = require_usage_row(stored.first(), grant_id)
+        # The lazy monthly reset: the first quota-checked request of a new month advances
+        # `monthly_period` and zeroes `monthly_used` in place.
+        # [impl->req~schema-user-monthly-usage-lazy-monthly-reset~1]
+        if needs_rollover(stored_period, period):
+            await self.session.exec(
+                update(UserMonthlyUsage)
+                .where(col(UserMonthlyUsage.grant_id) == grant_id,
+                       col(UserMonthlyUsage.monthly_period) != period)
+                .values(monthly_period=period, monthly_used=0, updated_at=now)
+            )
+        # [impl->req~schema-user-monthly-usage-monthly-used-field~1]
         result = await self.session.exec(
             update(UserMonthlyUsage)
             .where(col(UserMonthlyUsage.grant_id) == grant_id,

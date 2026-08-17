@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from nativespeaker.api.models import SubscriptionPlan
+from nativespeaker.api.quota.tiers import AccessTierEntry, assert_tier_sizing
 from nativespeaker.api.ratelimit.config import GatewayRateLimitsConfig, RateLimitsConfig
 from nativespeaker.api.ratelimit.providers import ProviderDampingConfig
 
@@ -95,6 +96,20 @@ class AppConfig(BaseConfig):
     auth: AuthConfig = Field(default_factory=AuthConfig)
     apple: AppleConfig = Field(default_factory=AppleConfig)
     quotas: dict[SubscriptionPlan, int]
+
+    # The configured access tiers, keyed by the stable tier id grants and subscriptions point
+    # at. This is the catalogue startup writes into `core.access_tiers`.
+    access_tiers: dict[str, AccessTierEntry] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def check_tier_sizing(self):
+        """A catalogue whose registered tiers are sized below the anonymous tier is rejected at
+        configuration load: the service refuses to start rather than running in a state the
+        conversion carryover rule does not support."""
+        # [impl->req~schema-access-tiers-sizing-invariant-enforced~1]
+        # [impl->req~schema-access-tiers-registered-ge-anonymous~1]
+        assert_tier_sizing(self.access_tiers)
+        return self
 
     # Every rate limit and admission control is exposed here: no endpoint hard-codes its limit
     # string, storage URI, key function, cost, strategy, enabled state, or failure behaviour.

@@ -14,7 +14,7 @@ from nativespeaker.api.auth.integration import build_firebase_integrations
 from nativespeaker.api.auth.ownership import assert_ownership_keys
 from nativespeaker.api.auth.routes import assert_route_categories
 from nativespeaker.api.config import EnvironmentConfig
-from nativespeaker.api.database import AuthEventsDB, IdentityResolverDB
+from nativespeaker.api.database import AccessTiersDB, AuthEventsDB, IdentityResolverDB
 from nativespeaker.api.logs import setup_logging
 from nativespeaker.api.models import User  # noqa: F401  (registers the mapped tables)
 from nativespeaker.api.ratelimit import (
@@ -80,6 +80,16 @@ async def lifespan(app: FastAPI):
     session_factory = async_sessionmaker(db_engine, class_=SQLModelAsyncSession,
                                          expire_on_commit=False)
     app.state.session_factory = session_factory
+
+    # The access tiers are product configuration in PostgreSQL: startup writes the configured
+    # catalogue into `core.access_tiers`, and refuses to serve a catalogue whose registered
+    # tiers are sized below the anonymous tier.
+    # [impl->req~schema-access-tiers-product-configuration~1]
+    # [impl->req~schema-access-tiers-sizing-invariant-enforced~1]
+    if config.access_tiers:
+        async with session_factory() as session:
+            await AccessTiersDB(session).sync(config.access_tiers)
+            await session.commit()
 
     # Initialize token verifiers
     app.state.apple_verifier = create_apple_verifier(config.apple)

@@ -24,6 +24,7 @@ from nativespeaker.api.auth.proof_endpoints import (
     restore_proof_set,
 )
 from nativespeaker.api.exceptions import ServiceError
+from nativespeaker.api.quota.usage import UsageRowError, assert_stays_with_grant
 
 
 class RestoreProofError(RuntimeError):
@@ -229,8 +230,13 @@ def restore_data_movement(*, grant_id: UUID,
         raise RestoreProofError(f"restore proof authorizes no movement of {offending}")
     if set(moved) - {RESTORE_TOUCHED_USAGE}:
         raise RestoreProofError(f"restore moves nothing but {RESTORE_TOUCHED_USAGE}")
-    if usage_row_grant_id != grant_id:
-        raise RestoreProofError("the usage row stays attached to the same grant_id")
+    # The counter stays with its grant for the life of that grant, and restore mints no fresh
+    # one for a paid entitlement that already has one.
+    # [impl->req~schema-user-monthly-usage-stays-with-grant~1]
+    try:
+        assert_stays_with_grant(stored_grant_id=grant_id, row_grant_id=usage_row_grant_id)
+    except UsageRowError as error:
+        raise RestoreProofError(str(error)) from None
     return RestoreDataMovement(usage_state=RESTORE_TOUCHED_USAGE, grant_id=grant_id)
 
 

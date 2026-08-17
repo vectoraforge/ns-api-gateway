@@ -68,11 +68,18 @@ class ExternalIdentity(SQLModel, table=True):
 
 
 class AccessTier(SQLModel, table=True):
-    """The configured monthly allowance of a tier. Numeric monthly limits live here."""
+    """The configured access tiers and their monthly credit limits. Numeric monthly limits live
+    here, as product configuration, and nowhere else."""
+    # [impl->req~schema-access-tiers-purpose~1]
+    # [impl->req~schema-access-tiers-product-configuration~1]
     __tablename__ = "access_tiers"
     __table_args__ = {"schema": "core"}
 
+    # The stable tier identifier: what grants and subscriptions point at, and the key a tier's
+    # credit value is edited under rather than replaced.
+    # [impl->req~schema-access-tiers-id-stable-identifier~1]
     id: str = Field(primary_key=True)
+    # [impl->req~schema-access-tiers-monthly-credits-allowance~1]
     monthly_credits: int = Field()
     created_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
@@ -87,6 +94,8 @@ class AccessGrant(SQLModel, table=True):
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
     user_id: UUID = Field(foreign_key="core.users.id", index=True)
+    # A grant names its tier by that tier's stable `id`, never by a copy of its credit amount.
+    # [impl->req~schema-access-tiers-id-stable-identifier~1]
     tier_id: str = Field(foreign_key="core.access_tiers.id")
     source: AccessGrantSource = Field(sa_type=AccessGrantSourceType)
     subscription_id: UUID | None = Field(default=None)
@@ -97,14 +106,24 @@ class AccessGrant(SQLModel, table=True):
 
 
 class UserMonthlyUsage(SQLModel, table=True):
-    """Monthly consumption, owned by the grant that authorizes the credits it counts. There is
-    no `user_id` here: usage follows the grant, not the user."""
+    """Mutable monthly usage state for an access grant, owned by the grant that authorizes the
+    credits it counts. There is no `user_id` here: usage follows the grant, not the user. There
+    is no allowance column either — that is derived from the grant's tier.
+    """
     # [impl->req~schema-users-usage-via-user-monthly-usage~1]
+    # [impl->req~schema-user-monthly-usage-purpose~1]
+    # [impl->req~schema-user-monthly-usage-allowance-not-stored~1]
     __tablename__ = "user_monthly_usage"
     __table_args__ = {"schema": "core"}
 
+    # The grant whose credits are being consumed: the primary key of this table, so at most one
+    # row exists per grant, and a foreign key onto `core.access_grants.id`.
+    # [impl->req~schema-user-monthly-usage-grant-id-field~1]
+    # [impl->req~schema-user-monthly-usage-one-row-per-grant~1]
     grant_id: UUID = Field(foreign_key="core.access_grants.id", primary_key=True)
+    # [impl->req~schema-user-monthly-usage-monthly-period-field~1]
     monthly_period: str = Field()
+    # [impl->req~schema-user-monthly-usage-monthly-used-field~1]
     monthly_used: int = Field(default=0)
     created_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))

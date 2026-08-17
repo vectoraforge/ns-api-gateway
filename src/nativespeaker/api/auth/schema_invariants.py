@@ -7,20 +7,30 @@ a column the specification retains but never updates. Rules whose whole statemen
 in another module are enforced there and referenced here rather than restated.
 """
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
 from nativespeaker.api.auth.entitlement import AccessGrantSource
-from nativespeaker.api.auth.external_identities import NativeClaimPlatform
+from nativespeaker.api.auth.external_identities import (
+    PAIRING_ENFORCEMENT_MECHANISMS,
+    NativeClaimPlatform,
+)
 from nativespeaker.api.auth.invariants import (
     ENUM_TYPED_FIELDS,
     GRANT_CREATOR_SOURCES,
     GrantCreator,
     InvariantError,
 )
-from nativespeaker.api.auth.operations import AuthOperation
+from nativespeaker.api.auth.operations import AuthOperation, IdentityProvider
+from nativespeaker.api.auth.profile import (
+    AccountClass,
+    account_class,
+    assert_registered_at_pairing,
+)
+from nativespeaker.api.auth.upgrade import IDENTITY_LOCK_ORDER
 
 # --- Invariant 02: who may create a free-credit grant, and what its source may become ---------
 
@@ -77,6 +87,81 @@ def assert_registered_conversion(*,
         raise InvariantError("the conversion path creates a registered_account_grant row")
     if superseded_transaction is not created_transaction:
         raise InvariantError("supersession and creation commit in one transaction")
+
+
+# --- Invariant 04: the provider / `registered_at` pairing, and the transaction that keeps it --
+
+# The columns the classification commits as one unit. They are written by the single completion
+# transaction, so no partially classified account can be observed between them.
+CLASSIFICATION_COMMIT_SET: tuple[str, str, str] = (
+    "core.external_identities.provider",
+    "core.users.registered_at",
+    "core.users.email",
+)
+
+
+class LookupOutcome(StrEnum):
+    """What the Firebase Admin lookup that supplies the classification returned."""
+    classified = "classified"
+    failed = "failed"
+    indeterminate = "indeterminate"
+
+
+def assert_classification_pairing(provider: IdentityProvider,
+                                  registered_at: datetime | None) -> None:
+    """`registered_at IS NOT NULL` if and only if the stored `provider` is `google` or `apple`,
+    and there is no third classification state for authorization, grant class, or audit. The
+    pairing is enforced in code, by the transaction: no cross-table constraint trigger exists
+    and none is to be added."""
+    # [impl->req~schema-invariant-04~1]
+    if PAIRING_ENFORCEMENT_MECHANISMS:
+        raise InvariantError("no cross-table constraint trigger enforces this pairing")
+    assert_registered_at_pairing(provider, registered_at)
+    if account_class(provider) not in set(AccountClass):
+        raise InvariantError("there is no third classification state")
+
+
+def classification_write_set(outcome: LookupOutcome,
+                             *,
+                             provider: IdentityProvider | None = None,
+                             registered_at: datetime | None = None,
+                             email: str | None = None,
+                             transaction: object = None,
+                             identity_transaction: object = None,
+                             user_transaction: object = None) -> frozenset[str]:
+    """What the completion transaction commits, given the outcome of the Admin lookup that would
+    supply the classification.
+
+    A lookup that failed or came back indeterminate commits nothing across tables: no
+    `core.users` row, no `core.external_identities` row, no classification, no eligible email
+    copy, and no grant. A lookup that classified commits the provider, `registered_at` and any
+    eligible email copy together, in that one transaction.
+    """
+    # [impl->req~schema-invariant-04~1]
+    if outcome is not LookupOutcome.classified:
+        return frozenset()
+    if provider is None:
+        raise InvariantError("a classified outcome carries the classified provider")
+    assert_classification_pairing(provider, registered_at)
+    if identity_transaction is not transaction or user_transaction is not transaction:
+        raise InvariantError(
+            "the provider, registered_at and any email copy commit in one transaction")
+    written = set(CLASSIFICATION_COMMIT_SET)
+    if email is None:
+        written.discard("core.users.email")
+    return frozenset(written)
+
+
+def assert_upgrade_revalidates_under_lock(*,
+                                          locked: Sequence[str],
+                                          revalidated: bool) -> None:
+    """For an upgrade, that one transaction first locks the identity row and revalidates it,
+    before any classification is written."""
+    # [impl->req~schema-invariant-04~1]
+    if tuple(locked) != IDENTITY_LOCK_ORDER:
+        raise InvariantError(f"the upgrade transaction locks {IDENTITY_LOCK_ORDER} first")
+    if not revalidated:
+        raise InvariantError("the upgrade transaction revalidates the locked identity row")
 
 
 # --- Invariant 03: authorization-relevant categorical fields are schema-typed enums -----------

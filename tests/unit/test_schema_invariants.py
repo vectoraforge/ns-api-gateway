@@ -46,15 +46,17 @@ from nativespeaker.api.auth.invariants import (
 )
 from nativespeaker.api.auth.movement import movement_audit_details
 from nativespeaker.api.auth.operations import AuthOperation, IdentityProvider
-from nativespeaker.api.auth.profile import OrphanUserError
+from nativespeaker.api.auth.profile import AccountClass, OrphanUserError, ProfileError
 from nativespeaker.api.auth.schema_invariants import (
     FORBIDDEN_ANTI_ABUSE_COLUMNS,
     FREE_CREDIT_GRANT_SOURCES,
     NEVER_WRITTEN_COLUMNS,
     AntiAbuseEvidence,
     AttributionOutcome,
+    LookupOutcome,
     anti_abuse_evidence,
     assert_anti_abuse_pairing,
+    assert_classification_pairing,
     assert_enum_typed,
     assert_free_credit_creator,
     assert_grant_source_never_rewritten,
@@ -65,7 +67,9 @@ from nativespeaker.api.auth.schema_invariants import (
     assert_registered_conversion,
     assert_tokens_minted_at_creation,
     assert_tokens_survive_upgrade,
+    assert_upgrade_revalidates_under_lock,
     attribute_purchase,
+    classification_write_set,
     is_free_credit_source,
     requires_anti_abuse_row,
 )
@@ -224,6 +228,87 @@ def test_a_free_text_value_never_reaches_a_categorical_field():
         assert_enum_typed("core.access_grants.status", "active")
     with pytest.raises(InvariantError):
         assert_enum_typed("core.users.display_name", "not a categorical field")
+
+
+# --- 04. The provider / `registered_at` pairing -------------------------------------------------
+
+# [utest->req~schema-invariant-04~1]
+def test_registered_at_is_set_exactly_when_the_stored_provider_is_registered():
+    now = NOW
+    for provider in (IdentityProvider.google, IdentityProvider.apple):
+        assert_classification_pairing(provider, now)
+        with pytest.raises(ProfileError):
+            assert_classification_pairing(provider, None)
+    assert_classification_pairing(IdentityProvider.anonymous, None)
+    with pytest.raises(ProfileError):
+        assert_classification_pairing(IdentityProvider.anonymous, now)
+    # There is no third classification state for authorization, grant class, or audit.
+    assert {member.value for member in AccountClass} == {"anonymous", "registered"}
+
+
+# [utest->req~schema-invariant-04~1]
+def test_the_classification_and_any_email_copy_commit_in_one_transaction():
+    transaction = object()
+    written = classification_write_set(LookupOutcome.classified,
+                                       provider=IdentityProvider.google,
+                                       registered_at=NOW,
+                                       email="user@example.com",
+                                       transaction=transaction,
+                                       identity_transaction=transaction,
+                                       user_transaction=transaction)
+    assert written == {"core.external_identities.provider",
+                       "core.users.registered_at",
+                       "core.users.email"}
+    # With no eligible address, the other two still commit together.
+    assert classification_write_set(LookupOutcome.classified,
+                                    provider=IdentityProvider.anonymous,
+                                    registered_at=None,
+                                    transaction=transaction,
+                                    identity_transaction=transaction,
+                                    user_transaction=transaction) == {
+        "core.external_identities.provider", "core.users.registered_at"}
+    # Two transactions are not one transaction.
+    with pytest.raises(InvariantError):
+        classification_write_set(LookupOutcome.classified,
+                                 provider=IdentityProvider.google,
+                                 registered_at=NOW,
+                                 transaction=transaction,
+                                 identity_transaction=object(),
+                                 user_transaction=transaction)
+
+
+# [utest->req~schema-invariant-04~1]
+def test_a_failed_or_indeterminate_lookup_commits_nothing_across_tables():
+    transaction = object()
+    for outcome in (LookupOutcome.failed, LookupOutcome.indeterminate):
+        assert classification_write_set(outcome,
+                                        provider=IdentityProvider.google,
+                                        registered_at=NOW,
+                                        email="user@example.com",
+                                        transaction=transaction,
+                                        identity_transaction=transaction,
+                                        user_transaction=transaction) == frozenset()
+
+
+# [utest->req~schema-invariant-04~1]
+def test_the_upgrade_transaction_locks_and_revalidates_before_it_classifies():
+    assert_upgrade_revalidates_under_lock(
+        locked=("core.external_identities", "core.users"), revalidated=True)
+    with pytest.raises(InvariantError):
+        assert_upgrade_revalidates_under_lock(
+            locked=("core.users", "core.external_identities"), revalidated=True)
+    with pytest.raises(InvariantError):
+        assert_upgrade_revalidates_under_lock(
+            locked=("core.external_identities", "core.users"), revalidated=False)
+
+
+# [utest->req~schema-invariant-04~1]
+def test_no_cross_table_constraint_trigger_enforces_the_pairing():
+    """The transaction is the whole of the enforcement: the applied schema declares no trigger
+    for it, and no enforcement mechanism is registered beside the code."""
+    assert PAIRING_ENFORCEMENT_MECHANISMS == frozenset()
+    schema_sql = declarative_section(MIGRATION.read_text())
+    assert "CREATE TRIGGER" not in schema_sql.upper()
 
 
 # --- 07. The user row and its identity row are created together ---------------------------------

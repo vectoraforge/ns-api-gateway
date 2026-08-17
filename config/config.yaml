@@ -34,6 +34,29 @@ quotas:
   gold: 200
   platinum: 1000
 
+# The access tiers and their monthly credit limits, product configuration written into
+# `core.access_tiers` at startup. The key is the stable tier id grants and subscriptions point
+# at; a custom tier is one more entry here, never a per-user credit override. Every registered
+# tier sits at or above the anonymous tier's allowance, and a catalogue that breaks that is
+# refused at startup.
+# [impl->req~schema-access-tiers-registered-ge-anonymous~1]
+access_tiers:
+  anonymous:
+    tier_class: anonymous
+    monthly_credits: 10
+  free:
+    tier_class: registered
+    monthly_credits: 10
+  silver:
+    tier_class: registered
+    monthly_credits: 50
+  gold:
+    tier_class: registered
+    monthly_credits: 200
+  platinum:
+    tier_class: registered
+    monthly_credits: 1000
+
 # The limits Envoy enforces. Declared here because the application configuration file is the
 # source of truth for every limit; the backend evaluates none of them.
 gateway_rate_limits:
