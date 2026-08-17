@@ -1118,6 +1118,9 @@ class PlayIntegrityAdapter:
         # [impl->req~proof-native-claim-vendor-read~1]
         # [impl->req~proof-android-recall-from-decoded-verdict~1]
         # [impl->req~proof-android-release-policy-enumeration~1]
+        # The grants file's anonymous-claim rule reads the same fail-closed decision from here
+        # rather than growing a second copy of it.
+        # [impl->req~grants-anon-rule-device-recall-fails-closed~1]
         self._assert_mandatory(operation)
         ledger.require(NativeClaimStep.verify_vendor_material)
         ledger.record(NativeClaimStep.vendor_read)
