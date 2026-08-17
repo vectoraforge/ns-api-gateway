@@ -86,16 +86,21 @@ class AccessTier(SQLModel, table=True):
 
 
 class AccessGrant(SQLModel, table=True):
-    """One user's entitlement to one tier. This, not a column on `core.users`, is what says a
-    user has access."""
+    """One user's entitlement to one tier, free or paid. This, not a column on `core.users`, is
+    what says a user has access, and it carries entitlement state only: the anti-abuse evidence
+    of a free-credit grant lives on `core.access_grants_anti_abuse`."""
     # [impl->req~schema-users-access-via-access-grants~1]
+    # [impl->req~schema-access-grants-purpose~1]
     __tablename__ = "access_grants"
     __table_args__ = {"schema": "core"}
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
+    # Every grant belongs to one `core.users` row.
+    # [impl->req~schema-access-grants-one-user-per-grant~1]
     user_id: UUID = Field(foreign_key="core.users.id", index=True)
     # A grant names its tier by that tier's stable `id`, never by a copy of its credit amount.
     # [impl->req~schema-access-tiers-id-stable-identifier~1]
+    # [impl->req~schema-access-grants-one-tier-per-grant~1]
     tier_id: str = Field(foreign_key="core.access_tiers.id")
     source: AccessGrantSource = Field(sa_type=AccessGrantSourceType)
     subscription_id: UUID | None = Field(default=None)
@@ -118,8 +123,10 @@ class UserMonthlyUsage(SQLModel, table=True):
 
     # The grant whose credits are being consumed: the primary key of this table, so at most one
     # row exists per grant, and a foreign key onto `core.access_grants.id`.
+    # The grant row owns this usage state: consumption is keyed by `grant_id` and by nothing else.
     # [impl->req~schema-user-monthly-usage-grant-id-field~1]
     # [impl->req~schema-user-monthly-usage-one-row-per-grant~1]
+    # [impl->req~schema-access-grants-owns-monthly-usage~1]
     grant_id: UUID = Field(foreign_key="core.access_grants.id", primary_key=True)
     # [impl->req~schema-user-monthly-usage-monthly-period-field~1]
     monthly_period: str = Field()

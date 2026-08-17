@@ -163,6 +163,8 @@ def is_effective(grant: GrantRow, now: datetime) -> bool:
     # [impl->req~quota-shared-effective-grant-predicate~1]
     # [impl->req~quota-effective-tier-step-01~1]
     # [impl->req~quota-no-future-dating-lazy-expiry-flip~2]
+    # Only the active, non-expired grant participates in the access calculation.
+    # [impl->req~schema-access-grants-only-active-participates~1]
     return (grant.status is AccessGrantStatus.active
             and grant.starts_at <= now
             and (grant.ends_at is None or grant.ends_at > now))
@@ -256,6 +258,9 @@ def honor_grant(grant: GrantRow,
     """
     # [impl->req~quota-effective-tier-step-03~1]
     # [impl->req~quota-subscription-grant-active-requires-entitled~2]
+    # The deferrable foreign key is the sole enforcement mechanism, so no read path detects or
+    # repairs a non-entitled active subscription-backed grant: it cannot exist in committed data.
+    # [impl->req~schema-access-grants-active-requires-entitled-subscription~1]
     if subscription_status is not None:
         raise ReadPathRepairError(
             f"the deferrable foreign key to {PRODUCT_ENTITLED_GENERATED_COLUMN} already "
@@ -419,6 +424,7 @@ def assert_status_writer_settled_grant(*,
     `req~schema-access-grants-lifecycle-same-transaction~1`.
     """
     # [impl->req~quota-lifecycle-ingestion-single-transaction~2]
+    # [impl->req~schema-access-grants-lifecycle-same-transaction~1]
     if subscription_transaction is not grant_transaction:
         raise EntitlementError(
             "a subscription status change and its grant settlement share one transaction")

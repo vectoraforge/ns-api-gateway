@@ -215,6 +215,7 @@ def assert_no_raw_device_material(columns: Iterable[str]) -> None:
     # [impl->req~schema-invariant-08~2]
     # [impl->req~schema-invariant-09~1]
     # [impl->req~grants-invariant-03~2]
+    # [impl->req~schema-access-grants-anti-abuse-no-raw-material-stored~1]
     offending = sorted({column for column in columns
                         if column in FORBIDDEN_ANTI_ABUSE_COLUMNS})
     if offending:
@@ -229,6 +230,8 @@ def requires_anti_abuse_row(source: AccessGrantSource) -> bool:
     # [impl->req~schema-invariant-08~2]
     # [impl->req~grants-invariant-03~2]
     # [impl->req~grants-invariant-07~2]
+    # [impl->req~schema-access-grants-requires-anti-abuse-row~1]
+    # [impl->req~schema-access-grants-anti-abuse-purpose~1]
     return is_free_credit_source(source)
 
 
@@ -249,6 +252,11 @@ def anti_abuse_evidence(*,
     # [impl->req~schema-invariant-09~1]
     # [impl->req~grants-invariant-03~2]
     # [impl->req~grants-invariant-09~2]
+    # The per-source CHECK's two anonymous forms, and the registered shape's required
+    # `idp_account_hash` and key version with no `native_claim_provider`.
+    # [impl->req~schema-access-grants-anti-abuse-anonymous-shape-forms~1]
+    # [impl->req~schema-access-grants-anti-abuse-registered-shape-required~1]
+    # [impl->req~schema-access-grants-registered-grant-hash-required~1]
     if not requires_anti_abuse_row(grant_source):
         raise InvariantError(f"a {grant_source} grant has no anti-abuse row")
     idp = idp_account_hash is not None and idp_account_hash_key_version is not None
@@ -288,6 +296,8 @@ def assert_anti_abuse_pairing(grant_source: AccessGrantSource,
     # [impl->req~grants-invariant-06~2]
     # [impl->req~grants-invariant-07~2]
     # [impl->req~grants-invariant-09~2]
+    # [impl->req~schema-access-grants-requires-anti-abuse-row~1]
+    # [impl->req~schema-access-grants-anti-abuse-no-row-for-other-sources~1]
     if requires_anti_abuse_row(grant_source):
         if anti_abuse_grant_source is None:
             raise InvariantError(f"a {grant_source} grant requires an anti-abuse row")
@@ -304,6 +314,7 @@ def assert_native_claim_written_before_grant(*,
     the same attempt before creating the active anonymous grant. The ordering is an operation
     rule, not a schema constraint, so it is enforced here on the claim path."""
     # [impl->req~schema-invariant-09~1]
+    # [impl->req~schema-access-grants-native-write-before-activation~1]
     if not native_claim_written:
         raise InvariantError("native claimed state is written before the grant is created")
     if not same_attempt:

@@ -228,6 +228,7 @@ def assert_grant_columns_entitlement_only(columns: Iterable[str]) -> None:
     # [impl->req~shared-invariant-05~1]
     # [impl->req~schema-invariant-08~2]
     # [impl->req~grants-invariant-03~2]
+    # [impl->req~schema-access-grants-no-anti-abuse-columns~1]
     offending = sorted(set(columns) & FORBIDDEN_GRANT_COLUMNS)
     if offending:
         raise InvariantError(f"{offending} are not entitlement state on core.access_grants")
@@ -308,6 +309,11 @@ def _conflict(result: AuthEventResult) -> tuple[AuthEventResult, ClientErrorClas
 # class `account_already_claimed`; a web-gate conflict surfaces as `device_grant_exhausted`.
 # [impl->req~shared-invariant-07~1]
 # [impl->req~schema-invariant-10~1]
+# The audited result and client-visible class of each duplicate free-credit claim detected
+# through a provider-account gate.
+# [impl->req~schema-access-grants-duplicate-claim-rejection-results~1]
+# [impl->req~schema-access-grants-anti-abuse-web-duplicate-rollback~1]
+# [impl->req~schema-access-grants-anti-abuse-registered-duplicate-result~1]
 GATE_CONFLICTS: dict[GateConsumptionKind, tuple[AuthEventResult, ClientErrorClass]] = {
     GateConsumptionKind.registered_account_grant: _conflict(
         AuthEventResult.idp_account_already_claimed),
@@ -318,6 +324,7 @@ GATE_CONFLICTS: dict[GateConsumptionKind, tuple[AuthEventResult, ClientErrorClas
 # The durable per-device anonymous-grant block, enforced by the per-device device-check state
 # rather than by a provider-account gate row.
 # [impl->req~shared-invariant-07~1]
+# [impl->req~schema-access-grants-anti-abuse-native-duplicate-result~1]
 DEVICE_GRANT_BLOCK: tuple[AuthEventResult, ClientErrorClass] = _conflict(
     AuthEventResult.native_claim_already_claimed)
 
@@ -357,6 +364,10 @@ class ProviderAccountGates:
         # [impl->req~schema-invariant-10~1]
         # [impl->req~grants-invariant-06~2]
         # [impl->req~grants-invariant-08~2]
+        # Each gate's uniqueness is global per canonical provider account, and the two kinds are
+        # distinct rows.
+        # [impl->req~schema-access-grants-anti-abuse-registered-gate-global-uniqueness~1]
+        # [impl->req~schema-access-grants-anti-abuse-web-gate-uniqueness~1]
         key = (account.provider, account.provider_uid, kind)
         if key in self._consumed:
             result, client_class = GATE_CONFLICTS[kind]
