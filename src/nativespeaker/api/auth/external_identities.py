@@ -76,7 +76,8 @@ if AuthEventResult.provider_transition_not_allowed not in RESULT_TO_CLASS:
 
 
 class IdentityState(StrEnum):
-    """`core.identity_state`."""
+    """`core.identity_state`: an identity is `active` or `historical`."""
+    # [impl->req~users-rule-identity-lifecycle-state~1]
     active = "active"
     historical = "historical"
 
@@ -96,7 +97,10 @@ def assert_provider_uid_check(provider: IdentityProvider, provider_uid: str | No
     `provider = 'anonymous'`, non-empty for `google` and `apple`. It is what keeps every
     registered row inside the reservation index's scope, so a malformed registered row cannot
     store a `NULL` `provider_uid` and evade the reservation."""
+    # `provider_uid IS NULL` is required when `provider = 'anonymous'`, and a non-empty
+    # `provider_uid` when `provider IN ('google', 'apple')`.
     # [impl->req~schema-external-identities-reservation-not-null-semantics~1]
+    # [impl->req~users-rule-provider-uid-nullability~1]
     if provider is IdentityProvider.anonymous:
         if provider_uid is not None:
             raise IdentityError("an anonymous identity carries no provider_uid")
@@ -296,6 +300,10 @@ def create_account(*, user_id: UUID, identity: ExternalIdentityRow, user_transac
     # deferrable foreign key or scheduled healer backs it, and none is to be added.
     # [impl->req~schema-external-identities-user-and-identity-one-transaction~1]
     # [impl->req~schema-invariant-07~1]
+    # Every creating path writes the two rows together, and `UNIQUE (user_id)` caps a user at
+    # one identity row.
+    # [impl->req~users-account-and-identity-row-atomic~1]
+    # [impl->req~users-rule-unique-user-id~1]
     if user_transaction is not identity_transaction:
         raise IdentityError("the user row and its identity row are written in one transaction")
     if PAIRING_ENFORCEMENT_MECHANISMS:
@@ -311,8 +319,11 @@ def resolve_owner(row: ExternalIdentityRow | None, *, user_id: UUID) -> UUID:
     """Resolve the owner of a `core.users` row through its identity row. A user row found without
     one is an unresolvable owner and an internal error: the read path fails closed, and no path
     invents an identity row, reassigns the account, or repairs it in the background."""
+    # An account with zero identity rows is unresolvable by design: the path that meets one
+    # fails closed rather than inventing an identity row or reassigning the account.
     # [impl->req~schema-external-identities-orphan-user-internal-error~1]
     # [impl->req~schema-invariant-07~1]
+    # [impl->req~users-account-and-identity-row-atomic~1]
     if row is None:
         return _orphan(user_id)
     return row.user_id
@@ -394,6 +405,8 @@ class ExternalIdentities:
         rule from the `(issuer, provider, provider_uid)` reservation, which reserves external
         provider accounts only."""
         # [impl->req~schema-external-identities-unique-issuer-subject~1]
+        # [impl->req~users-rule-unique-issuer-subject~1]
+        # [impl->req~users-rule-unique-user-id~1]
         assert_no_sentinel_provider_uid(row)
         if (row.issuer, row.subject) in self._by_pair:
             raise IdentityAlreadyLinkedError("this external identity already belongs to a user")
@@ -589,7 +602,11 @@ def provider_uid_for(provider: IdentityProvider,
     """`provider_uid` is `NULL` for `anonymous` identities and, for `google` or `apple`, the
     non-empty stable `uid` from the `providerData` entry whose `providerId` matches the confirmed
     provider: the Google account ID for Google and the per-app Apple user identifier for Apple."""
+    # It is populated only from the `providerData` entry whose `providerId` matches the
+    # confirmed provider, and never from client input, headers, token claims, email or display
+    # name.
     # [impl->req~schema-external-identities-provider-uid-source~1]
+    # [impl->req~users-provider-uid-source-and-immutability~1]
     assert_provider_uid_source(ProviderUidSource.firebase_provider_data)
     return provider_uid_from_provider_data(provider, provider_data)
 
@@ -654,7 +671,10 @@ def assign_provider_uid(stored: str | None, incoming: str | None, *,
     """Once assigned, `provider_uid` is immutable. Its sole assignment transition is from `NULL`
     to the confirmed registered provider's UID during the in-place anonymous-to-registered
     upgrade."""
+    # Its sole assignment transition on an existing row is the in-place anonymous-to-registered
+    # upgrade; registered-to-registered rebinding is unsupported.
     # [impl->req~schema-external-identities-provider-uid-immutable~1]
+    # [impl->req~users-provider-uid-source-and-immutability~1]
     assert_provider_uid_immutable(stored, incoming)
     if stored is None and incoming is not None and operation is not PROVIDER_UID_ASSIGNING_OPERATION:
         raise IdentityError(f"{operation} does not assign provider_uid")
@@ -683,8 +703,11 @@ def assert_reservation_index(*, columns: Sequence[str], predicate: str,
     `(issuer, provider, provider_uid)` restricted to rows where `provider_uid IS NOT NULL`. The
     restriction states the business rule directly — the reservation covers registered provider
     accounts only — rather than leaning on the SQL rule that `NULL`s compare as distinct."""
+    # The reservation is a partial unique index, never a table-wide `UNIQUE`, and it leaves
+    # anonymous rows — whose `provider_uid` is `NULL` — outside it entirely.
     # [impl->req~schema-external-identities-provider-account-reservation-index~1]
     # [impl->req~schema-external-identities-reservation-not-null-semantics~1]
+    # [impl->req~users-rule-partial-unique-provider-account~1]
     if table_wide_unique:
         raise IdentityError("the reservation is a partial unique index, not a table-wide UNIQUE")
     if tuple(columns) != RESERVATION_INDEX_COLUMNS:
@@ -701,7 +724,10 @@ def in_reservation_scope(row: ExternalIdentityRow) -> bool:
     fall wholly outside the index, and coexist without limit, so a later `NULLS NOT DISTINCT`
     change, a port to another dialect, or a well-meant tightening cannot break anonymous account
     creation."""
+    # `historical` rows stay inside the reservation, so administrative retirement never frees
+    # a provider account for reuse.
     # [impl->req~schema-external-identities-reservation-not-null-semantics~1]
+    # [impl->req~users-rule-partial-unique-provider-account~1]
     if row.identity_state not in RESERVED_IDENTITY_STATES:
         raise IdentityError("the reservation applies to active and historical rows alike")
     return provider_uid_reserved(row.provider, row.provider_uid)
@@ -829,8 +855,12 @@ DELETE_PERMITTED_ROLES: frozenset[str] = frozenset()
 def assert_no_identity_delete(actor: str) -> NoReturn:
     """External-identity rows are never physically deleted, and no normal application or cleanup
     database role has permission to delete one."""
+    # Identity rows are never physically deleted; retirement and blocking are in-place state
+    # transitions, and every `historical` row stays as a permanent tombstone.
     # [impl->req~schema-external-identities-rows-never-deleted~1]
     # [impl->req~schema-external-identities-no-delete-permission~1]
+    # [impl->req~users-identity-rows-never-deleted~1]
+    # [impl->req~users-rule-no-physical-delete~1]
     raise IdentityError(f"{actor} may not delete a core.external_identities row")
 
 
@@ -838,6 +868,7 @@ def may_delete_identity_rows(role: str) -> bool:
     """Whether a database role may delete external-identity rows. No normal application or
     cleanup role may."""
     # [impl->req~schema-external-identities-no-delete-permission~1]
+    # [impl->req~users-rule-no-physical-delete~1]
     return role in DELETE_PERMITTED_ROLES
 
 
@@ -853,7 +884,11 @@ def never_linked(found: ExternalIdentityRow | None) -> bool:
 def retire(row: ExternalIdentityRow, *, administrative: bool = True) -> ExternalIdentityRow:
     """Administrative retirement transitions `identity_state` and deletes or reassigns neither
     side of the user/identity pair."""
+    # No flow in this split marks an identity `historical`: the transition stays administrative,
+    # and the tombstone's retained `(issuer, subject)` reservation keeps a retired subject out of
+    # pre-auth creation.
     # [impl->req~schema-external-identities-retirement-erasure-keep-pair~1]
+    # [impl->req~users-identity-rows-never-deleted~1]
     state = transition_identity_state(row.identity_state, IdentityState.historical,
                                       administrative=administrative)
     return replace(row, identity_state=state)
@@ -957,7 +992,11 @@ def upgrade_to_registered(row: ExternalIdentityRow, *, provider: IdentityProvide
                           provider_uid: str, transaction: object) -> ExternalIdentityRow:
     """The upgrade updates the existing identity row's `provider` and `provider_uid` in place. It
     produces no new identity row and marks no row `historical`."""
+    # The existing active row for the verified pair stays attached to the same user, flips its
+    # stored `provider` in place and takes its `provider_uid` from the matching `providerData`
+    # entry; no additional identity row is created and no source identity is marked `historical`.
     # [impl->req~schema-external-identities-upgrade-in-place~1]
+    # [impl->req~users-upgrade-flips-provider-in-place~1]
     assert_provider_transition(row.provider, provider)
     if provider not in REGISTERED_PROVIDERS:
         raise IdentityError("the upgrade binds a registered provider")

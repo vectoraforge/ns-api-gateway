@@ -22,7 +22,9 @@ class AuthOperation(StrEnum):
 
 
 class IdentityProvider(StrEnum):
-    """`core.identity_provider`; also the domain of the client-selected operation variant."""
+    """`core.identity_provider`; also the domain of the client-selected operation variant. The
+    only allowed provider values are `anonymous`, `google` and `apple`."""
+    # [impl->req~users-allowed-provider-values~1]
     anonymous = "anonymous"
     google = "google"
     apple = "apple"
