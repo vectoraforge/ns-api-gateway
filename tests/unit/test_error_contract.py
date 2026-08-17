@@ -15,7 +15,11 @@ CONTRACT_CODES = {"invalid_request", "validation_error", "unauthorized", "not_fo
                   "account_already_claimed", "verification_temporarily_unavailable",
                   "registration_temporarily_unavailable",
                   # Operation-specific auth classes
-                  "create_flow_mismatch"}
+                  "create_flow_mismatch",
+                  # Operation-specific `restore_subscription` classes
+                  "restore_proof_rejected", "restore_not_found", "restore_transfer_rejected",
+                  "restore_already_entitled", "restore_temporarily_unavailable",
+                  "restore_destination_anonymous"}
 CONTRACT_STATUSES = {400, 401, 403, 404, 422, 429, 500, 503}
 
 

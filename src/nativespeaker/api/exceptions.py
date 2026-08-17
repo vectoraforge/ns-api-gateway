@@ -24,7 +24,14 @@ ErrorCode = Literal["invalid_request",
                     "verification_temporarily_unavailable",
                     "registration_temporarily_unavailable",
                     # Operation-specific auth classes
-                    "create_flow_mismatch"]
+                    "create_flow_mismatch",
+                    # Operation-specific `restore_subscription` classes
+                    "restore_proof_rejected",
+                    "restore_not_found",
+                    "restore_transfer_rejected",
+                    "restore_already_entitled",
+                    "restore_temporarily_unavailable",
+                    "restore_destination_anonymous"]
 
 
 class ServiceError(Exception):

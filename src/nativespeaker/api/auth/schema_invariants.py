@@ -334,6 +334,7 @@ NEVER_WRITTEN_COLUMNS: frozenset[str] = frozenset({
 def assert_no_never_written_column(table: str, columns: Iterable[str]) -> None:
     """Fail closed on any write path that names a retained-but-never-written column."""
     # [impl->req~schema-invariant-13~1]
+    # [impl->req~restore-invariant-11~2]
     offending = sorted({column for column in columns
                         if f"{table}.{column}" in NEVER_WRITTEN_COLUMNS})
     if offending:

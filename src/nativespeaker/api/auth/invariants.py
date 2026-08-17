@@ -401,6 +401,7 @@ def assert_owner_agreement(*, grant_user_id: UUID | None, subscription_user_id: 
     row reaches that agreement by rewriting a grant's `user_id`."""
     # [impl->req~shared-invariant-08~2]
     # [impl->req~schema-invariant-11~1]
+    # [impl->req~restore-invariant-03~2]
     if grant_user_id != subscription_user_id:
         raise InvariantError("a subscription-backed grant and its subscription share one owner")
 

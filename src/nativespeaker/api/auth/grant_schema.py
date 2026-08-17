@@ -275,6 +275,7 @@ def assert_active_subscription_entitled(*,
     target row. This is that same condition, taken by the writer before it proposes the row."""
     # [impl->req~schema-access-grants-active-requires-entitled-subscription~1]
     # [impl->req~schema-access-grants-entitled-subscription-generated-fk~1]
+    # [impl->req~restore-invariant-04~2]
     if ENTITLED_SUBSCRIPTION_READ_PATH_REPAIRS:
         raise GrantSchemaError(
             "the deferrable foreign key is the sole enforcement mechanism; no read path repairs")

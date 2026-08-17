@@ -55,6 +55,7 @@ def ownership_violations(metadata: Any) -> list[str]:
             # [impl->req~sessions-users-id-sole-ownership-key~1]
             # [impl->req~schema-invariant-01~1]
             # [impl->req~grants-invariant-01~2]
+            # [impl->req~restore-invariant-01~2]
             if column.name.endswith(_OWNER_COLUMN_SUFFIX) and targets:
                 if name in GRANT_OWNED_TABLES:
                     violations.append(f"{name}.{column.name} must be owned by {GRANT_OWNERSHIP_KEY}")
@@ -65,6 +66,7 @@ def ownership_violations(metadata: Any) -> list[str]:
         # states no second ownership rule of its own.
         # [impl->req~schema-invariant-01~1]
         # [impl->req~grants-invariant-01~2]
+        # [impl->req~restore-invariant-01~2]
         if name in GRANT_OWNED_TABLES:
             grant_owned = any(GRANT_OWNERSHIP_KEY in {fk.target_fullname for fk in column.foreign_keys}
                               for column in table.columns)
