@@ -571,8 +571,13 @@ class SharedChallengeService:
                                     row=row, detail=rejection.detail)
                 await self._audit.record_rejection(attempt, event, rejection, session=session)
             else:
+                # A successful account movement resolved both ends of its own context, so the
+                # row carries the endpoint's resolved movement details rather than the
+                # all-`NULL` pre-resolution ones.
+                # [impl->req~shared-upgrade-movement-context-required~1]
                 event = self._event(AttemptPhase.success, AuthEventResult.succeeded, attempt,
-                                    context, row=row)
+                                    context, row=row,
+                                    movement=getattr(result, "audit_details", None))
                 await self._audit.write_in_transaction(session, attempt, event)
             # The commit is inside the retry envelope: a lost or ambiguous acknowledgment is
             # the transient failure this step names, not a terminal one.
@@ -675,7 +680,8 @@ class SharedChallengeService:
 
     def _event(self, phase: AttemptPhase, result: AuthEventResult, attempt: AuthAttempt,
                context: VerifiedIdentityContext | None, *, row: ChallengeRow | None = None,
-               detail: str | None = None) -> AuthEvent:
+               detail: str | None = None,
+               movement: Mapping[str, Any] | None = None) -> AuthEvent:
         # A race the consuming transaction closes can still land on a barrier state; the row
         # records it as the barrier result it is.
         if result in BARRIER_RESULTS:
@@ -691,10 +697,13 @@ class SharedChallengeService:
             # endpoint supplies the resolved context on the paths that have one.
             # [impl->req~shared-upgrade-movement-context-required~1]
             # [impl->req~shared-restore-movement-classification~1]
-            movement = unresolved_movement_context(
+            unresolved = unresolved_movement_context(
                 attempt.operation, result, self._clock(),
                 challenge_row_id=row.id if row is not None else None)
-            details = {**movement_audit_details(movement), **details}
+            details = {**movement_audit_details(unresolved), **details}
+        elif attempt.operation in MOVEMENT_OPERATIONS and movement is not None:
+            # [impl->req~shared-upgrade-movement-context-required~1]
+            details = {**movement, **details}
         return terminal_event(phase, result, operation=attempt.operation,
                               actor=self._actor(context),
                               challenge_row_id=row.id if row is not None else None,
