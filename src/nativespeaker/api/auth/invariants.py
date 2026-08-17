@@ -210,8 +210,14 @@ FORBIDDEN_GRANT_COLUMNS: frozenset[str] = frozenset({
 
 def assert_device_check_proof_use(use: ProofUse) -> None:
     """A device-check proof token gates free credit for a device and does nothing else: it is
-    never an identity, ownership, recovery or upgrade credential, and it resolves no account."""
+    never an identity, ownership, recovery or upgrade credential, and it resolves no account.
+
+    It is not an identity token: it is an untrusted request-body input used only to query the
+    device-check vendor, must never be read as a source of verified identity, and does not relax
+    the rule that verified `(issuer, subject)` comes from the backend-verified token claims alone
+    and never from client-supplied input."""
     # [impl->req~shared-invariant-05~1]
+    # [impl->req~sessions-device-check-token-not-identity~1]
     if use is not ProofUse.anti_abuse_gate:
         raise InvariantError(f"a device-check proof token is no {use} credential")
 

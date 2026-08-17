@@ -86,6 +86,12 @@ class FirebaseIdTokenVerifier:
     # [impl->req~sessions-backend-sole-jwt-verifier~1]
     # [impl->req~sessions-no-check-revoked~1]
     # [impl->req~sessions-no-azp-nbf-rules~1]
+    # A blocked or retired subject's in-flight ID token therefore stays cryptographically valid
+    # until its own `exp` and is rejected by per-request resolution rather than here: the backend
+    # adds no per-request revocation check, force-expires no ID token, and bans no subject at the
+    # network level.
+    # [impl->req~sessions-block-immediate-for-backend~1]
+    # [impl->req~sessions-no-per-request-firebase-existence-check~1]
 
     def __init__(self, *,
                  issuer: str,

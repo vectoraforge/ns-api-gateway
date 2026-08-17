@@ -44,11 +44,12 @@ from nativespeaker.api.auth.invariants import (
     assert_device_check_proof_use,
 )
 from nativespeaker.api.auth.modes import RequestMode
-from nativespeaker.api.auth.operations import AuthOperation, IdentityProvider
+from nativespeaker.api.auth.operations import AuthOperation, IdentityProvider, route_for
 from nativespeaker.api.auth.taxonomy import ClientErrorClass, ProviderDataReadPoint, surface
 from nativespeaker.api.auth.upgrade import UPGRADE_DEVICE_GRANT_BITS, UPGRADE_GRANT_WRITES
 from nativespeaker.api.auth.users import ATTESTATION_FIELDS
 from nativespeaker.api.exceptions import ServiceError
+from nativespeaker.api.ratelimit.config import CREATE_USER_GATEWAY_ENTRIES
 
 
 class ProofApplicabilityError(RuntimeError):
@@ -215,14 +216,27 @@ DEVICE_CHECK_GATES: frozenset[str] = frozenset({"free_credit_grant_eligibility"}
 DEVICE_CHECK_NEVER_GATES: frozenset[str] = frozenset({"account_creation_volume"})
 
 
+# What contains anonymous account-creation cost instead: the gateway limits on the route.
+CREATE_USER_VOLUME_CONTROLS: tuple[str, ...] = ("create_user_ip", "create_user_deployment")
+# Controls rejected for this route, so none of them may appear as one.
+REJECTED_CREATE_USER_CONTROLS: frozenset[str] = frozenset({
+    "captcha_on_every_creation", "proof_of_work", "mandatory_registration",
+    "second_identity_layer", "global_per_account_quota"})
+
+
 def create_user_takes_no_device_check(*,
                                       phase: RequestMode,
                                       variant: IdentityProvider,
                                       body: Mapping[str, Any] | None = None) -> frozenset[str]:
     """`POST /auth/create-user` requires no attestation proof, integrity proof, or device check in
-    either phase or in either its anonymous or registered form. The device-check signal gates
-    free-credit grant eligibility only and is never a control on account-creation volume."""
+    either phase or in either its anonymous or registered form: it may create the `core.users` and
+    `core.external_identities` rows without one. The device check gates the value of a free-credit
+    grant and is never the control on account-creation volume — anonymous creation cost is
+    contained by the route's gateway per-client-IP limit and deployment-wide ceiling. A CAPTCHA on
+    every creation, proof-of-work, mandatory registration, a second identity layer and global
+    per-account quotas are all rejected for this route."""
     # [impl->req~proof-create-user-no-device-check~1]
+    # [impl->req~sessions-create-user-no-device-check~1]
     if phase not in set(RequestMode) or variant not in set(IdentityProvider):
         raise ProofApplicabilityError("create-user has two phases and three variants")
     if requires_attestation(AuthOperation.create_user):
@@ -233,6 +247,41 @@ def create_user_takes_no_device_check(*,
     if DEVICE_CHECK_GATES & DEVICE_CHECK_NEVER_GATES:
         raise ProofApplicabilityError(
             "the device-check signal never controls account-creation volume")
+    if tuple(CREATE_USER_VOLUME_CONTROLS) != CREATE_USER_GATEWAY_ENTRIES:
+        raise ProofApplicabilityError(
+            "anonymous creation cost is contained by the two gateway limits on the route")
+    rejected = sorted(REJECTED_CREATE_USER_CONTROLS & set(CREATE_USER_VOLUME_CONTROLS))
+    if rejected:
+        raise ProofApplicabilityError(f"{rejected} are rejected for this route")
+    return frozenset()
+
+
+# The endpoints that verify no device check at all and neither read nor modify per-device grant
+# state: the read-only and profile surfaces, plus the in-place `linkWithCredential` flip and
+# subscription restore.
+DEVICE_CHECK_FREE_OPERATIONS: frozenset[AuthOperation] = frozenset({
+    AuthOperation.sync,
+    AuthOperation.upgrade_anonymous_to_registered,
+    AuthOperation.restore_subscription,
+})
+DEVICE_CHECK_FREE_ROUTES: tuple[tuple[str, str], ...] = (route_for(AuthOperation.sync),
+                                                         ("GET", "/users/me"))
+
+
+def takes_no_device_check(operation: AuthOperation, *,
+                          device_state_touched: Sequence[str] = ()) -> frozenset[str]:
+    """Read-only and profile endpoints, including `POST /auth/sync` and `GET /users/me`, perform no
+    device-check verification and neither read nor modify per-device grant state. The
+    `linkWithCredential` in-place flip performed by `POST /auth/upgrade-anonymous` and the
+    subscription restore performed by `POST /auth/restore-subscription` perform none either."""
+    # [impl->req~sessions-read-only-endpoints-no-device-check~1]
+    if operation not in DEVICE_CHECK_FREE_OPERATIONS:
+        raise ProofApplicabilityError(f"{operation} is not a device-check-free operation")
+    if requires_attestation(operation):
+        raise ProofApplicabilityError(f"{operation} requires no attestation or device check")
+    if set(device_state_touched) | UPGRADE_DEVICE_GRANT_BITS:
+        raise ProofApplicabilityError(
+            f"{operation} neither reads nor modifies per-device grant state")
     return frozenset()
 
 

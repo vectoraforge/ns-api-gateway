@@ -74,6 +74,7 @@ from nativespeaker.api.auth.taxonomy import RATE_LIMITED_CLASS, ClientErrorClass
 from nativespeaker.api.auth.tokens import InvalidExternalJwtError
 from nativespeaker.api.exceptions import ErrorCode
 from nativespeaker.api.ratelimit.config import (
+    CREATE_USER_PRIMARY_KEY_POLICY,
     CREATE_USER_SECONDARY_ENTRY,
     FIREBASE_LOOKUP_ENTRY_KEYS,
     GatewayRateLimitEntry,
@@ -671,24 +672,47 @@ def assert_upgrade_gateway_limit(entry: GatewayRateLimitEntry) -> None:
     linked subject as `issuer+subject_hash`. It is a standalone value, never defined by reference
     to another endpoint's quota, and it bounds the endpoint's outbound Firebase Admin fan-out;
     `08-rate-limits-and-admission-control.md` remains the source of truth for the configured
-    entry."""
+    entry.
+
+    Gateway (Envoy) limiting on this route is required on every deployment, not optional hardening.
+    The key is effective here because a linked subject is stable, unlike the freely replaceable
+    pre-auth subjects on `POST /auth/create-user`. The default is 3 requests per hour per linked
+    subject, tunable by configuration, and it is justified by this endpoint's outbound Firebase
+    Admin fan-out: every call, the idempotent repeat included, performs a remote `getUser(subject)`
+    against the shared Firebase project quota."""
     # [impl->req~users-standalone-gateway-upgrade-limit~1]
+    # [impl->req~sessions-upgrade-gateway-rate-limit~1]
     method, path = UPGRADE_ROUTE
     if entry.route != f"{method} {path}":
         raise UsersError(f"the standalone limit is the one on {method} {path}")
     if parse_key_policy(entry.key) != UPGRADE_GATEWAY_KEY_POLICY:
         raise UsersError("the standalone limit is keyed per linked subject as issuer+subject_hash")
+    if entry.limit != UPGRADE_GATEWAY_DEFAULT_LIMIT:
+        raise UsersError(f"the shipped default is {UPGRADE_GATEWAY_DEFAULT_LIMIT} per linked subject")
+    if entry.evaluate_after != GATEWAY_JWT_VERIFICATION:
+        raise UsersError("the linked-subject key exists only after Envoy JWT verification")
+    if CREATE_USER_PRIMARY_KEY_POLICY == UPGRADE_GATEWAY_KEY_POLICY:
+        raise UsersError("a replaceable pre-auth subject is not an effective limit key")
     if complete_entries(AuthOperation.upgrade_anonymous_to_registered):
         raise UsersError("the standalone limit stands alone: no backend counter sits behind it")
+
+
+# Nothing larger is built around that fan-out bound: there is no project-wide Firebase
+# quota-management system.
+FIREBASE_QUOTA_MANAGEMENT_SYSTEMS: frozenset[str] = frozenset()
 
 
 def upgrade_gateway_admission(ledger: AdmissionLedger, *, jwt_filter_verified: bool,
                               allowed: bool = True) -> None:
     """The standalone limit runs before the endpoint's Firebase Admin call; an over-limit request
-    receives the normal rate-limit response and never reaches Firebase."""
+    receives the normal rate-limit response and never reaches Firebase. Nothing larger stands
+    behind it: no project-wide Firebase quota-management system exists."""
     # [impl->req~users-standalone-gateway-upgrade-limit~1]
+    # [impl->req~sessions-upgrade-limit-before-admin-call~1]
     if not jwt_filter_verified:
         raise UsersError("an identity-keyed gateway limit evaluates after JWT-filter verification")
+    if FIREBASE_QUOTA_MANAGEMENT_SYSTEMS:
+        raise UsersError("no project-wide Firebase quota-management system is built")
     if ledger.expensive_steps:
         raise UsersError("the standalone limit runs before the endpoint's Firebase Admin call")
     if not allowed:

@@ -329,9 +329,17 @@ class AuthBarrier:
 
         # Step three: enforce the four resolution outcomes. A rejection returns no context, so no
         # handler ever sees a historical identity or a blocked user as a principal.
+        # Identity lifecycle and blocked-user enforcement happens here, at per-request resolution:
+        # a `historical` identity row and a user whose `active` flag is `FALSE` are both rejected
+        # from this one enforcement point, on the tokens that follow the change.
         # [impl->req~shared-invariant-03~1]
         # [impl->req~sessions-barrier-step-enforce-outcomes~1]
         # [impl->req~sessions-no-principal-for-historical-or-blocked~1]
+        # [impl->req~sessions-lifecycle-enforced-at-resolution~1]
+        # [impl->req~sessions-historical-and-blocked-rejected-at-resolution~1]
+        # Resolution read live database state a moment ago, so a block takes effect on the very
+        # next backend request, independently of the token's own validity.
+        # [impl->req~sessions-block-immediate-for-backend~1]
         result = barrier_result_for(resolved.outcome, attempt.method, attempt.route)
         if result is not None:
             raise await self._reject(attempt, result, actor=actor)

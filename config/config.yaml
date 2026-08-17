@@ -60,10 +60,18 @@ access_tiers:
 # The limits Envoy enforces. Declared here because the application configuration file is the
 # source of truth for every limit; the backend evaluates none of them.
 gateway_rate_limits:
+  # The standalone per-linked-subject limit on the upgrade route: required on every deployment,
+  # keyed on the verified linked subject, 3 requests per hour by default and tunable here. It
+  # bounds this endpoint's outbound Firebase Admin fan-out, because every call — the idempotent
+  # repeat included — performs a remote `getUser(subject)`.
+  # [impl->req~sessions-upgrade-gateway-rate-limit~1]
   upgrade_anonymous:
     route: "POST /auth/upgrade-anonymous"
     limit: "3/hour"
     key: "issuer+subject_hash"
+    # The limit is evaluated after Envoy's JWT verification and before the backend reaches
+    # Firebase, so an exceeded limit returns the normal rate-limit response with no Admin call.
+    # [impl->req~sessions-upgrade-limit-before-admin-call~1]
     evaluate_after: "envoy_jwt_verification"
   # Gateway limiting on the pre-auth create-user route is required on every deployment: both
   # entries cover its prepare and complete phases, and neither is optional. Both are counters in

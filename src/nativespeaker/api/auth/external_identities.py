@@ -270,6 +270,45 @@ def admin_client_for_identity(integrations: FirebaseIntegrations,
         stored_issuer=row.issuer, site=ADMINISTRATIVE_ADMIN_CALL_SITES[action])
 
 
+# Both administrative actions revoke Firebase refresh tokens through the same Admin mechanism
+# `POST /auth/sign-out-all` uses. The coupling is normative: it is what makes the barrier's closure
+# of that route to a blocked or retired subject complete, because the revocation such a subject can
+# no longer request has already been performed for it. Revocation is defense-in-depth — it stops
+# that subject's refresh tokens from minting new ID tokens, while already-issued ID tokens run to
+# their own `exp`.
+REVOCATION_MECHANISM: str = "firebase_admin_refresh_token_revocation"
+REVOKING_ACTIONS: frozenset[AdministrativeAction] = frozenset(AdministrativeAction)
+
+
+def administrative_revocation(action: AdministrativeAction, row: ExternalIdentityRow, *,
+                              stored_provider_consulted: bool = False) -> str:
+    """Blocking a user and marking an identity `historical` must each also revoke Firebase refresh
+    tokens for the affected subject as part of that same operation, through the same Firebase Admin
+    refresh-token revocation mechanism `POST /auth/sign-out-all` uses and regardless of the
+    identity's stored provider classification."""
+    # [impl->req~sessions-block-and-retire-revoke-refresh-tokens~1]
+    if action not in REVOKING_ACTIONS:
+        raise IdentityError(f"{action} revokes no refresh tokens")
+    if stored_provider_consulted:
+        raise IdentityError("revocation is unconditional, never keyed on the stored provider")
+    if not revokes_refresh_tokens(row):
+        raise IdentityError("every account's refresh tokens are revoked")
+    return REVOCATION_MECHANISM
+
+
+def administrative_revocation_result(*, revoked: bool) -> AuthEventResult:
+    """Where these administrative paths audit their revocation outcome, they reuse the same
+    `revocation_unconfirmed` value for a failed or ambiguous revocation rather than minting a
+    parallel one."""
+    # [impl->req~sessions-block-and-retire-revoke-refresh-tokens~1]
+    parallel = sorted(result for result in AuthEventResult
+                      if "revocation" in str(result)
+                      and result is not AuthEventResult.revocation_unconfirmed)
+    if parallel:
+        raise IdentityError(f"{parallel} would be parallel revocation-outcome values")
+    return AuthEventResult.succeeded if revoked else AuthEventResult.revocation_unconfirmed
+
+
 def administrative_write(action: AdministrativeAction, *, revocation_failed: bool,
                          rollback_requested: bool = False) -> AdministrativeOutcome:
     """Commit the lifecycle write, then report the accompanying revocation. A revocation failure
@@ -279,9 +318,16 @@ def administrative_write(action: AdministrativeAction, *, revocation_failed: boo
 
     The lifecycle write commits first and stays authoritative: a revocation failure, a selection
     failure included, never undoes it, and it surfaces to the operator as an operational failure
-    rather than being swallowed."""
+    rather than being swallowed.
+
+    When the revocation fails or leaves the outcome ambiguous nothing further is done about the
+    surviving refresh tokens: no automated retry, no compensation machinery, no revocation-pending
+    marker, queue or scheduled job, and no user-visible partial-failure state. The account stays
+    blocked or retired and rejecting on every route whatever the revocation outcome was."""
     # [impl->req~schema-external-identities-stored-issuer-selects-admin-client~1]
     # [impl->req~sessions-database-change-first-on-revocation~1]
+    # [impl->req~sessions-block-and-retire-revoke-refresh-tokens~1]
+    # [impl->req~sessions-revocation-failure-no-compensation~1]
     if rollback_requested:
         raise IdentityError("a revocation failure never undoes the committed lifecycle write")
     if REVOCATION_FAILURE_MACHINERY:
@@ -684,17 +730,52 @@ def authoritative_provider(row: ExternalIdentityRow,
     grant-class and audit decision made per request: the linked user's `registered_at` is a
     reporting and profile timestamp and never a competing classifier, and no general authenticated
     request rederives the provider or the anonymous-versus-registered classification."""
+    # Every consumer of the classification reads the stored value: registered-grant gating and
+    # claim paths, authorization and audit branches on anonymous versus registered, and every
+    # other per-request decision.
     # [impl->req~schema-external-identities-stored-provider-authoritative~1]
     # [impl->req~sessions-stored-provider-sole-classifier~1]
+    # [impl->req~sessions-consumers-read-stored-classification~1]
     if consumer not in PROVIDER_CONSUMERS:
         raise IdentityError(f"{consumer} never reads the stored provider")
     return row.provider
 
 
 def revokes_refresh_tokens(row: ExternalIdentityRow) -> bool:
-    """Revocation is unconditional: it applies to every account whatever the stored provider."""
+    """Revocation is unconditional: it applies to every account whatever the stored provider.
+
+    `POST /auth/sign-out-all` is therefore explicitly not a consumer of the stored classification:
+    its revocation is unconditional for every account and is never keyed on the stored provider."""
     # [impl->req~schema-external-identities-stored-provider-authoritative~1]
+    # [impl->req~sessions-consumers-read-stored-classification~1]
+    if ProviderConsumer.refresh_token_revocation in PROVIDER_CONSUMERS:
+        raise IdentityError("refresh-token revocation never reads the stored classification")
     return True
+
+
+# What the stored `provider` is: a record of a server-confirmed registration transition. Live
+# `providerData` reports current links, which is why it is unsuitable as a permanent mirror, and
+# why an unlink or a bad write may leave the two disagreeing indefinitely.
+STORED_PROVIDER_SEMANTICS: str = "monotonic_server_confirmed_transition"
+STORED_PROVIDER_MIRRORS: frozenset[str] = frozenset()
+HOT_PATH_RECONCILIATION: frozenset[str] = frozenset()
+
+
+def assert_stored_provider_not_a_mirror(*, live_provider: IdentityProvider,
+                                        row: ExternalIdentityRow) -> ExternalIdentityRow:
+    """The stored `provider` records a monotonic, server-confirmed registration transition rather
+    than a mirror of the user's currently linked Firebase providers, so a Firebase-side unlink or a
+    bad write may leave the stored `provider` and `registered_at` disagreeing with live
+    `providerData` indefinitely. After write time the backend never reconciles the two on the hot
+    path: the divergence is tolerated and the row is returned unchanged."""
+    # [impl->req~sessions-stored-provider-not-a-mirror~1]
+    if STORED_PROVIDER_MIRRORS or STORED_PROVIDER_SEMANTICS != "monotonic_server_confirmed_transition":
+        raise IdentityError("the stored provider is no mirror of live providerData")
+    if HOT_PATH_RECONCILIATION or PROVIDER_RECONCILIATION_JOBS:
+        raise IdentityError("the backend never reconciles against providerData after write time")
+    if live_provider not in set(IdentityProvider):
+        raise IdentityError(f"{live_provider} is no classified live provider")
+    return row
 
 
 # --- `provider_uid` -------------------------------------------------------------------------------
@@ -785,6 +866,42 @@ def assert_may_write_provider_fields(point: ProviderDataReadPoint) -> None:
     assert_provider_data_read_point(point)
     if point not in PROVIDER_WRITING_READ_POINTS:
         raise IdentityError(f"{point} persists neither provider nor provider_uid")
+
+
+def assert_live_provider_data_scope(point: ProviderDataReadPoint) -> ProviderDataReadPoint:
+    """Deciding on the stored classification has exactly two exceptions, and both are free-grant
+    gates that read live `providerData`: the web anonymous-grant sign-in gate and the mandatory
+    `claim_registered_grant` confirmation. Each requires the live data to match both the stored
+    `provider` and the stored `provider_uid`, and a mismatch denies only the free grant — it
+    rewrites neither stored value and blocks neither login nor paid subscription access. The
+    upgrade endpoint is not among them: a divergent upgrade call is refused, never reconciled."""
+    # [impl->req~sessions-live-providerdata-only-at-grant-gates~1]
+    if point not in PROVIDER_READ_ONLY_READ_POINTS:
+        raise IdentityError(f"{point} is no live-providerData free-grant gate")
+    if PROVIDER_READ_ONLY_READ_POINTS & PROVIDER_WRITING_READ_POINTS:
+        raise IdentityError("a read-only gate never persists provider or provider_uid")
+    return assert_provider_data_read_point(point)
+
+
+def registered_grant_class_inputs(row: ExternalIdentityRow, *,
+                                  registered_at: datetime | None,
+                                  grant_history_exhausted: bool,
+                                  live_provider: IdentityProvider | None = None) -> bool:
+    """Registered-grant eligibility keys on backend-stored registration state — the stored
+    classification and `registered_at`, together with the account's own grant history — and never
+    on live Firebase state. A user who unlinks in Firebase stays in the registered grant class,
+    because the account did register and `registered_at` is set, and at most one registered grant
+    is ever claimable per account. The live `providerData` confirmation `claim_registered_grant`
+    performs on every call denies only the free grant on a mismatch: it never rewrites the stored
+    classification, and no automatic registered-to-anonymous downgrade exists anywhere."""
+    # [impl->req~sessions-registered-grant-keys-on-stored-state~1]
+    stored = authoritative_provider(row, ProviderConsumer.registered_grant_gating)
+    if stored not in REGISTERED_PROVIDERS or registered_at is None:
+        return False
+    if live_provider is not None:
+        # A divergent live result is a conflict against this claim alone; the stored row stands.
+        assert_stored_provider_not_a_mirror(live_provider=live_provider, row=row)
+    return not grant_history_exhausted
 
 
 def write_provider_uid(row: ExternalIdentityRow, provider_uid: str | None, *,
@@ -974,11 +1091,24 @@ IDENTITY_STATE_TRANSITIONS: frozenset[tuple[IdentityState, IdentityState]] = fro
     {(IdentityState.active, IdentityState.historical)})
 
 
+# Flows that change `identity_state` on their own: none. `/auth/sync` and every auth-completion
+# path leave it exactly as it was.
+IDENTITY_STATE_CHANGING_FLOWS: frozenset[str] = frozenset()
+
+
 def transition_identity_state(current: IdentityState, target: IdentityState, *,
                               administrative: bool) -> IdentityState:
     """The one-way `active` to `historical` transition. It is permanent and cannot be reversed,
-    and only an administrative action makes it."""
+    and only an administrative action makes it.
+
+    That pair is the complete `identity_state` transition set. Retirement is permanent: no
+    `historical` to `active` reversal exists, and no user-driven flow, `/auth/sync` or
+    auth-completion path changes `identity_state` at all."""
     # [impl->req~schema-external-identities-state-transition-one-way~1]
+    # [impl->req~sessions-identity-state-transition-set~1]
+    # [impl->req~sessions-historical-administrative-only~1]
+    if IDENTITY_STATE_CHANGING_FLOWS:
+        raise IdentityError("no user-driven flow changes identity_state")
     if (current, target) not in IDENTITY_STATE_TRANSITIONS:
         raise IdentityError(f"{current} to {target} is not an identity_state transition")
     if not administrative:
@@ -1026,15 +1156,62 @@ def never_linked(found: ExternalIdentityRow | None) -> bool:
 
 def retire(row: ExternalIdentityRow, *, administrative: bool = True) -> ExternalIdentityRow:
     """Administrative retirement transitions `identity_state` and deletes or reassigns neither
-    side of the user/identity pair."""
+    side of the user/identity pair.
+
+    No user-driven flow marks an identity `historical` automatically: the state is retained only as
+    an administrative or abuse-retirement state, and per-request resolution still rejects a
+    `historical` identity wherever it is encountered. Retirement is expressed exclusively by
+    setting the existing row's `identity_state` in place — never by removing a row."""
     # No flow in this split marks an identity `historical`: the transition stays administrative,
     # and the tombstone's retained `(issuer, subject)` reservation keeps a retired subject out of
     # pre-auth creation.
     # [impl->req~schema-external-identities-retirement-erasure-keep-pair~1]
     # [impl->req~users-identity-rows-never-deleted~1]
+    # [impl->req~sessions-historical-administrative-only~1]
+    # [impl->req~sessions-identity-rows-never-deleted~1]
     state = transition_identity_state(row.identity_state, IdentityState.historical,
                                       administrative=administrative)
-    return replace(row, identity_state=state)
+    retired = replace(row, identity_state=state)
+    if retired.id != row.id or retired.user_id != row.user_id:
+        raise IdentityError("retirement is a state transition on the existing row")
+    return retired
+
+
+def block_user(row: ExternalIdentityRow, *, active: bool = False) -> tuple[str, IdentityState]:
+    """Blocking is expressed exclusively by setting `core.users.active = FALSE`, which leaves the
+    identity row `active` and linked so per-request resolution rejects it on the blocked-user path.
+    Blocking a user does not mark that user's identity `historical`, and neither the `core.users`
+    row nor the identity row is ever hard-deleted: a blocked or retired user keeps both."""
+    # [impl->req~sessions-identity-rows-never-deleted~1]
+    # [impl->req~sessions-block-immediate-for-backend~1]
+    if active:
+        raise IdentityError("a block is core.users.active = FALSE")
+    if IDENTITY_ROW_DELETERS or row.identity_state is not IdentityState.active:
+        raise IdentityError("blocking leaves the identity row active, linked and present")
+    return LIFECYCLE_WRITES[AdministrativeAction.block_user], row.identity_state
+
+
+# What a block disables, and what it deliberately does not. Operator-facing wording must say so
+# rather than imply a durable ban on a person or a device.
+BLOCK_SCOPE: tuple[str, str] = ("one core.users row", "one core.external_identities row")
+BLOCK_NEVER_COVERS: frozenset[str] = frozenset({"person", "device", "fresh_anonymous_sign_in",
+                                                "another_registered_account"})
+# Evasion by minting a fresh anonymous subject is handled by the gateway limits on
+# `POST /auth/create-user` and by the device-gated free-credit grants, not by the `active` flag.
+BLOCK_EVASION_CONTROLS: tuple[str, ...] = ("create_user_gateway_limits",
+                                           "device_gated_free_credit_grants")
+
+
+def block_covers(target: str) -> bool:
+    """A block disables one `core.users` row and one external identity: it does not disable a
+    person and does not disable a device. A fresh anonymous sign-in, or another registered account,
+    is a new identity the block does not cover."""
+    # [impl->req~sessions-block-scope-one-account~1]
+    if target in BLOCK_NEVER_COVERS:
+        return False
+    if "active_flag" in BLOCK_EVASION_CONTROLS:
+        raise IdentityError("the active flag is not the anonymous-evasion control")
+    return target in BLOCK_SCOPE
 
 
 # The retained plaintext columns privacy erasure does not scrub: they are the uniqueness
@@ -1060,6 +1237,91 @@ IDENTITY_PII_COLUMNS: tuple[str, ...] = ()
 TOMBSTONE_DISCLOSURE_REQUIRED: bool = True
 
 
+# The `core.users` profile columns a privacy or data-erasure request scrubs, and the rows erasure
+# retains beside the identity tombstone: the canonical provider-account registry row and its
+# per-gate consumption rows, so free-grant finality survives erasure for the account and for the
+# Google or Apple provider account behind it.
+ERASED_PROFILE_COLUMNS: tuple[str, str] = ("email", "display_name")
+ERASURE_RETAINED_ROWS: tuple[str, ...] = ("core.external_identities",
+                                          "core.provider_accounts",
+                                          "core.provider_account_gate_consumptions")
+# No cleanup, cascade or erasure path may remove a tombstoned identity row.
+TOMBSTONE_REMOVERS: frozenset[str] = frozenset()
+
+
+def erase_account(row: ExternalIdentityRow, *,
+                  profile: dict[str, Any] | None = None) -> tuple[ExternalIdentityRow,
+                                                                  dict[str, Any]]:
+    """A privacy or data-erasure request scrubs PII — profile fields such as `email` and
+    `display_name` — and business data, but retains the `(issuer, subject)` row as a `historical`
+    tombstone. The retained `UNIQUE (issuer, subject)` constraint on that row is what keeps denying
+    the erased subject a fresh pre-auth `POST /auth/create-user`, and no cleanup, cascade or
+    erasure path may remove it. Erasure likewise retains the canonical `core.provider_accounts` row
+    and its gate-consumption rows, and the tombstone keeps its non-PII `free_grant_consumed_at`
+    marker, so neither the erased account nor its Google or Apple provider account may claim a free
+    grant again: free-grant finality survives erasure."""
+    # [impl->req~sessions-erasure-retains-tombstone~1]
+    if TOMBSTONE_REMOVERS or IDENTITY_ROW_DELETERS:
+        raise IdentityError("no cleanup, cascade or erasure path removes a tombstoned row")
+    tombstone = erase_pii(row if row.identity_state is IdentityState.historical else retire(row))
+    if tombstone.identity_state is not IdentityState.historical:
+        raise IdentityError("erasure retains the row as a historical tombstone")
+    if sorted(IDENTITY_LOOKUP_KEY) != sorted(("issuer", "subject")):
+        raise IdentityError("the retained uniqueness reservation is (issuer, subject)")
+    if tombstone.free_grant_consumed_at != row.free_grant_consumed_at:
+        raise IdentityError("the non-PII free-grant marker survives erasure")
+    if row.free_grant_consumed_at is not None and free_grant_available(
+            tombstone, AuthOperation.claim_registered_grant):
+        raise IdentityError("an erased account never claims a free grant again")
+    scrubbed = dict(profile or {})
+    for column in ERASED_PROFILE_COLUMNS:
+        scrubbed[column] = None
+    return tombstone, scrubbed
+
+
+@dataclass(frozen=True, slots=True)
+class ErasureDisclosure:
+    """What the user-facing erasure confirmation must say, and how it says it."""
+    retained_identifiers: tuple[str, ...]
+    retained_in: tuple[str, ...]
+    retained_purpose: tuple[str, ...]
+    no_raw_subject_elsewhere: tuple[str, ...]
+    display_only: bool
+
+
+# The tables that hold only keyed hashes of the subject, which is why no raw subject is kept
+# anywhere beyond the identity row and the provider-account registry.
+HASHED_SUBJECT_TABLES: tuple[str, str] = ("core.auth_challenges", "audit.auth_events")
+# The whole of why the retained identifiers are kept.
+RETENTION_PURPOSES: tuple[str, str] = ("keep_the_account_retired",
+                                       "reject_re_registration_of_the_same_provider_account")
+
+
+def erasure_disclosure() -> ErasureDisclosure:
+    """Erasure is deliberately not the removal of every personal identifier, and no erasure-facing
+    wording may claim that it is. What is kept, in plaintext and indefinitely, is named plainly: the
+    identity row's `issuer` and `subject`, and for a registered account the stored provider kind and
+    its `provider_uid` — the stable Google account ID or the per-app Apple user identifier — held on
+    the identity row and in the canonical `core.provider_accounts` registry. They are the uniqueness
+    reservations that make retirement permanent and re-registration of the same Google or Apple
+    account rejectable, and are retained for that purpose alone. The user-facing confirmation states
+    the same thing, including that no raw subject is kept anywhere else because
+    `core.auth_challenges` and `audit.auth_events` hold only keyed hashes of it; that copy is
+    display-only and adds no acknowledgment step."""
+    # [impl->req~sessions-erasure-retained-identifiers-disclosure~1]
+    if tuple(SCRUB_EXEMPT_COLUMNS) != ("issuer", "subject", "provider", "provider_uid"):
+        raise IdentityError("the disclosure names exactly the retained plaintext columns")
+    if RAW_PROVIDER_ACCOUNT_STORES != {"core.external_identities", "core.provider_accounts"}:
+        raise IdentityError("the retained identifiers live on the row and in the registry")
+    if not TOMBSTONE_DISCLOSURE_REQUIRED:
+        raise IdentityError("the retained identifiers are a disclosed exception")
+    return ErasureDisclosure(retained_identifiers=tuple(SCRUB_EXEMPT_COLUMNS),
+                             retained_in=tuple(sorted(RAW_PROVIDER_ACCOUNT_STORES)),
+                             retained_purpose=RETENTION_PURPOSES,
+                             no_raw_subject_elsewhere=HASHED_SUBJECT_TABLES,
+                             display_only=True)
+
+
 def erase_pii(row: ExternalIdentityRow) -> ExternalIdentityRow:
     """Privacy erasure scrubs PII around the `historical` identity tombstone while retaining the
     row and all of its uniqueness constraints. Neither retirement nor erasure deletes or
@@ -1067,6 +1329,7 @@ def erase_pii(row: ExternalIdentityRow) -> ExternalIdentityRow:
     survives."""
     # [impl->req~schema-external-identities-historical-tombstone-scrub-exception~1]
     # [impl->req~schema-external-identities-retirement-erasure-keep-pair~1]
+    # [impl->req~sessions-erasure-retains-tombstone~1]
     if not TOMBSTONE_DISCLOSURE_REQUIRED:
         raise IdentityError("the retained tombstone columns are a disclosed exception")
     # A retained column is never also a scrubbed one. This is what keeps the pin and the
@@ -1094,15 +1357,38 @@ def assert_no_firebase_deletion_sync(mechanism: str) -> NoReturn:
     """Deletion of a Firebase account at the provider causes no automatic database transition:
     no automatic change to `identity_state` or `core.users.active`."""
     # [impl->req~schema-external-identities-no-firebase-deletion-sync~1]
+    # [impl->req~sessions-upstream-deletion-no-backend-action~1]
     raise IdentityError(f"{mechanism} is not a provider-deletion synchronization mechanism")
 
 
 def deletion_sync_transition(row: ExternalIdentityRow) -> None:
-    """What an upstream Firebase deletion changes in the database: nothing."""
+    """What an upstream Firebase deletion changes in the database: nothing. There is no detection,
+    no synchronization, no background job, no webhook handling and no automatic flip to
+    `historical`."""
     # [impl->req~schema-external-identities-no-firebase-deletion-sync~1]
+    # [impl->req~sessions-upstream-deletion-no-backend-action~1]
     if FIREBASE_DELETION_SYNC_MECHANISMS:
         raise IdentityError("no deletion detection or reconciliation exists")
     return None
+
+
+# Firebase Admin reads stay confined to the enumerated `providerData` read points: no
+# user-existence or account-status check is added to the per-request path, because a per-request or
+# polling check would couple availability to Firebase Admin on every request.
+PER_REQUEST_FIREBASE_CHECKS: frozenset[str] = frozenset()
+
+
+def assert_no_per_request_firebase_check(check: str | None = None) -> None:
+    """No Firebase user-existence or account-status check runs on the per-request path, and every
+    Firebase Admin read the backend makes is one of the enumerated `providerData` read points."""
+    # [impl->req~sessions-no-per-request-firebase-existence-check~1]
+    if PER_REQUEST_FIREBASE_CHECKS:
+        raise IdentityError("no Firebase check is added to the per-request path")
+    if check is not None:
+        raise IdentityError(f"{check} is no enumerated providerData read point")
+    if PROVIDER_WRITING_READ_POINTS | PROVIDER_READ_ONLY_READ_POINTS != frozenset(
+            ProviderDataReadPoint):
+        raise IdentityError("Firebase Admin reads stay confined to the enumerated read points")
 
 
 # An already-minted ID token stays cryptographically valid until its own `exp`, for at most about
@@ -1114,8 +1400,15 @@ def resolves_through_stale_row(row: ExternalIdentityRow, *, token_exp: datetime,
                                now: datetime) -> bool:
     """After an upstream deletion, an already-minted ID token continues to resolve through the
     stale `active` identity row until its own `exp`. After those tokens expire the stale row may
-    remain `active` indefinitely as an inert leftover."""
+    remain `active` indefinitely as an inert leftover.
+
+    That is the accepted risk: verification checks signature, issuer, audience and temporal
+    validity only, so such a token keeps resolving as a linked identity for up to about an hour.
+    After that the subject can never present a valid token again, because deletion stops refresh
+    and Firebase does not reuse subjects within a project — the same residual token window the
+    specification already accepts for sign-out-everywhere refresh-token revocation."""
     # [impl->req~schema-external-identities-stale-token-window~1]
+    # [impl->req~sessions-upstream-deletion-token-window-risk~1]
     if row.identity_state is not IdentityState.active:
         return False
     return now < token_exp
@@ -1137,8 +1430,12 @@ class UpstreamDeletionRemedy(StrEnum):
 def assert_upstream_deletion_remedy(remedy: UpstreamDeletionRemedy | str) -> UpstreamDeletionRemedy:
     """Upstream deletion is an accepted lifecycle risk: the remedy is a manual administrative
     block (`core.users.active = FALSE`) or the permanent administrative `active` to `historical`
-    transition. No automatic provider-deletion machinery is added."""
+    transition. No automatic provider-deletion machinery is added.
+
+    That remedy is administrative and by hand, both to terminate access inside the remaining
+    ID-token window and for hygiene afterwards; nothing relies on the upstream deletion itself."""
     # [impl->req~schema-external-identities-upstream-deletion-manual-remedy~1]
+    # [impl->req~sessions-upstream-deletion-manual-remedy~1]
     if remedy not in set(UpstreamDeletionRemedy):
         raise IdentityError(f"{remedy} is not a defined upstream-deletion remedy")
     if FIREBASE_DELETION_SYNC_MECHANISMS:
