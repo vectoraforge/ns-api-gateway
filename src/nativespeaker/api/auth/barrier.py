@@ -156,6 +156,9 @@ class AuthBarrier:
 
         match resolved.outcome:
             case ResolutionOutcome.historical_identity:
+                # Once an external identity has transitioned to `historical`, every subsequent
+                # request for it is rejected here, at per-request resolution.
+                # [impl->req~shared-invariant-03~1]
                 raise await self._reject(attempt, AuthEventResult.historical_identity, actor=actor)
             case ResolutionOutcome.blocked_user:
                 raise await self._reject(attempt, AuthEventResult.blocked_user, actor=actor)

@@ -397,6 +397,9 @@ def _assert_actor_columns(row: dict[str, Any]) -> None:
     if not isinstance(subject_hash, bytes) or len(subject_hash) != SUBJECT_HASH_BYTES:
         raise AuditRowError("actor subject material is stored only as its derived HMAC hash")
     provider = row["actor_provider"]
+    # An authorization-relevant categorical field is schema-typed, never free text — the rule
+    # is the schema file's `req~schema-invariant-03~1`.
+    # [impl->req~shared-invariant-02~2]
     if provider is not None and not isinstance(provider, IdentityProvider):
         raise AuditRowError("actor_provider comes from the stored provider column")
 
