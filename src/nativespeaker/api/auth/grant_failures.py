@@ -339,6 +339,7 @@ def classify_anonymous_failure(condition: AnonFailureCondition) -> AnonFailure:
     # [impl->req~grants-anon-failure-classes~1]
     # [impl->req~grants-anon-failure-rejection-conditions~1]
     # [impl->req~grants-anon-failure-class-mapping~1]
+    # [impl->req~grants-invariant-05~1]
     assert_no_enrolled_key()
     failure = ANON_FAILURES.get(condition)
     if failure is None:
@@ -785,8 +786,10 @@ ANON_REMEDIATION: dict[ClientErrorClass, AnonRemediation] = {
     ClientErrorClass.verification_required: AnonRemediation(
         client_class=ClientErrorClass.verification_required,
         # The anonymous device grant path is durably closed for this user state, with no
-        # guaranteed free-credit alternate.
+        # guaranteed free-credit alternate: continued access then needs a subscription or another
+        # non-free entitlement.
         # [impl->req~grants-remediation-vr-durably-closed~1]
+        # [impl->req~grants-invariant-11~1]
         durably_closed=True,
         guaranteed_alternate=False,
         transient=False,
@@ -842,9 +845,13 @@ def exhausted_alternate_path(row: ExternalIdentityRow,
     """The specified alternate free-credit path after `device_grant_exhausted`: the registered
     account grant, which requires the current user to be linked to a Google or Apple identity and
     to satisfy the registered-grant gate rules. It is a path, not a guarantee."""
+    # A `device_grant_exhausted` rejection directs the client to complete registration or sign in
+    # with a Google or Apple account and then call `claim_registered_grant`.
     # [impl->req~grants-remediation-exhausted-alternate-path~1]
     # [impl->req~grants-anon-alt-exhausted-to-registered~1]
     # [impl->req~grants-anon-alt-not-guaranteed~1]
+    # [impl->req~grants-invariant-05~1]
+    # [impl->req~grants-invariant-11~1]
     remediation = anonymous_remediation(ClientErrorClass.device_grant_exhausted)
     if remediation.alternate_operation is None:
         raise GrantFailureError("device_grant_exhausted names an alternate free-credit path")
@@ -1025,6 +1032,7 @@ def transient_failure_class(condition: AnonFailureCondition,
     backend has independently observed durable state that denies the grant."""
     # [impl->req~grants-taxonomy-normative-remediation~1]
     # [impl->req~grants-class-verification-temporarily-unavailable~1]
+    # [impl->req~grants-invariant-05~1]
     failure = classify_anonymous_failure(condition)
     if failure.client_class is not ClientErrorClass.verification_temporarily_unavailable:
         raise GrantFailureError(f"{condition} is no transient dependency failure")

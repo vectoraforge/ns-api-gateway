@@ -387,8 +387,11 @@ class NativeClaimStep(StrEnum):
     insert_grant = "insert_grant"
 
 
-# The sequence itself. It is mandatory on both platforms and has no alternative ordering.
+# The sequence itself. It is mandatory on both platforms and has no alternative ordering. The
+# grants file states no second ordering: it refers the anonymous device grant's anti-abuse ordering
+# here.
 # [impl->req~proof-native-claim-sequence-mandatory~1]
+# [impl->req~grants-invariant-04~2]
 NATIVE_CLAIM_SEQUENCE: tuple[NativeClaimStep, ...] = tuple(NativeClaimStep)
 
 
@@ -566,7 +569,10 @@ VENDOR_STATE_TOUCHING_OPERATIONS: frozenset[AuthOperation] = NATIVE_CLAIM_OPERAT
 
 def assert_vendor_state_access(operation: AuthOperation) -> None:
     """The native claim sequence is the only place vendor per-device state is read or written."""
+    # The two-ledger model — the vendor's per-device state beside the database's own rows — is owned
+    # here; the grants file only points at it.
     # [impl->req~proof-two-authoritative-ledgers~1]
+    # [impl->req~grants-invariant-04~2]
     if operation not in VENDOR_STATE_TOUCHING_OPERATIONS:
         raise ProofAdapterError(f"{operation} never reads or writes vendor per-device state")
 
@@ -690,6 +696,7 @@ def assert_same_device_race_bounded(extra_grants: int) -> None:
     """Per-device enforcement accepts the narrow concurrent same-device race in which both
     attempts read the unclaimed state, bounded to at most one extra grant."""
     # [impl->req~proof-two-authoritative-ledgers~1]
+    # [impl->req~grants-invariant-04~2]
     if extra_grants > MAX_EXTRA_GRANTS_PER_SAME_DEVICE_RACE:
         raise ProofAdapterError("the same-device race is bounded to at most one extra grant")
 

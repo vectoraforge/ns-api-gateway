@@ -37,6 +37,7 @@ from nativespeaker.api.auth.upgrade import IDENTITY_LOCK_ORDER
 # The two free-credit grant sources, and the one operation each may be created by.
 # `subscription` and `manual` grants are not free credit and are created by neither claim.
 # [impl->req~schema-invariant-02~1]
+# [impl->req~grants-invariant-02~2]
 FREE_CREDIT_GRANT_SOURCES: dict[AccessGrantSource, GrantCreator] = {
     AccessGrantSource.anonymous_device_grant: GrantCreator.claim_anonymous_grant,
     AccessGrantSource.registered_account_grant: GrantCreator.claim_registered_grant,
@@ -47,6 +48,7 @@ def is_free_credit_source(source: AccessGrantSource) -> bool:
     """`anonymous_device_grant` and `registered_account_grant` are the only free-credit grant
     sources; `subscription` and `manual` are not."""
     # [impl->req~schema-invariant-02~1]
+    # [impl->req~grants-invariant-02~2]
     return source in FREE_CREDIT_GRANT_SOURCES
 
 
@@ -57,6 +59,7 @@ def assert_free_credit_creator(creator: GrantCreator | AuthOperation | str,
     `registered_account_grant` row. The creator-to-source table lives in `invariants`; this
     reads it rather than keeping a second copy."""
     # [impl->req~schema-invariant-02~1]
+    # [impl->req~grants-invariant-02~2]
     if not is_free_credit_source(source):
         raise InvariantError(f"{source} is not a free-credit grant source")
     allowed = FREE_CREDIT_GRANT_SOURCES[source]
@@ -190,6 +193,7 @@ def assert_enum_typed(field: str, value: object) -> None:
 # `core.external_identities` and the canonical `core.provider_accounts` registry.
 # [impl->req~schema-invariant-08~2]
 # [impl->req~schema-invariant-09~1]
+# [impl->req~grants-invariant-03~2]
 FORBIDDEN_ANTI_ABUSE_COLUMNS: frozenset[str] = frozenset({
     "devicecheck_token", "device_check_token", "device_check_state", "device_check_hash",
     "device_check_state_hash", "play_integrity_token", "device_recall_token",
@@ -210,6 +214,7 @@ def assert_no_raw_device_material(columns: Iterable[str]) -> None:
     or a synthetic stable provider device principal hash."""
     # [impl->req~schema-invariant-08~2]
     # [impl->req~schema-invariant-09~1]
+    # [impl->req~grants-invariant-03~2]
     offending = sorted({column for column in columns
                         if column in FORBIDDEN_ANTI_ABUSE_COLUMNS})
     if offending:
@@ -219,7 +224,11 @@ def assert_no_raw_device_material(columns: Iterable[str]) -> None:
 def requires_anti_abuse_row(source: AccessGrantSource) -> bool:
     """Every grant with a free-credit source has exactly one `core.access_grants_anti_abuse`
     row; a `subscription` or `manual` grant must not have one."""
+    # The declarative lower bound of `req~schema-invariant-14~1` (second sub-bullet) reads the same
+    # predicate: an anti-abuse-eligible grant is exactly a free-credit-source grant.
     # [impl->req~schema-invariant-08~2]
+    # [impl->req~grants-invariant-03~2]
+    # [impl->req~grants-invariant-07~2]
     return is_free_credit_source(source)
 
 
@@ -234,8 +243,12 @@ def anti_abuse_evidence(*,
     its key version; registered account grant rows carry IDP-account evidence and no
     `native_claim_provider`. `core.access_grants` itself stays entitlement state only, so none
     of this material sits on the grant row."""
+    # The per-source CHECK's evidence-shape half, which `req~schema-invariant-14~1`'s first
+    # continuation paragraph combines with the primary-key upper bound.
     # [impl->req~schema-invariant-08~2]
     # [impl->req~schema-invariant-09~1]
+    # [impl->req~grants-invariant-03~2]
+    # [impl->req~grants-invariant-09~2]
     if not requires_anti_abuse_row(grant_source):
         raise InvariantError(f"a {grant_source} grant has no anti-abuse row")
     idp = idp_account_hash is not None and idp_account_hash_key_version is not None
@@ -261,8 +274,20 @@ def assert_anti_abuse_pairing(grant_source: AccessGrantSource,
                               anti_abuse_grant_source: AccessGrantSource | None) -> None:
     """The composite foreign key binds the anti-abuse row to its grant's source: a free-credit
     grant has a row whose `grant_source` equals the grant's `source`, and a grant of any other
-    source has none."""
+    source has none.
+
+    This is the write-side half of the composite foreign key on `(grant_id, grant_source)` plus the
+    per-source CHECK — the same pair that, with `grant_id` being the anti-abuse table's primary key,
+    yields "exactly one anti-abuse row per eligible grant, none for any other source". Because the
+    foreign key is deferrable, the grant row and its anti-abuse row may be inserted in either order
+    inside the one transaction and are checked together at commit, and a deleted grant cascades to
+    its anti-abuse row rather than leaving it orphaned.
+    """
     # [impl->req~schema-invariant-08~2]
+    # [impl->req~grants-invariant-03~2]
+    # [impl->req~grants-invariant-06~2]
+    # [impl->req~grants-invariant-07~2]
+    # [impl->req~grants-invariant-09~2]
     if requires_anti_abuse_row(grant_source):
         if anti_abuse_grant_source is None:
             raise InvariantError(f"a {grant_source} grant requires an anti-abuse row")

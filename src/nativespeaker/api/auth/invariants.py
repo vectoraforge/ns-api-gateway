@@ -227,6 +227,7 @@ def assert_grant_columns_entitlement_only(columns: Iterable[str]) -> None:
     anti-abuse column on it."""
     # [impl->req~shared-invariant-05~1]
     # [impl->req~schema-invariant-08~2]
+    # [impl->req~grants-invariant-03~2]
     offending = sorted(set(columns) & FORBIDDEN_GRANT_COLUMNS)
     if offending:
         raise InvariantError(f"{offending} are not entitlement state on core.access_grants")
@@ -340,6 +341,7 @@ class ProviderAccountGates:
         # recorded beside the consumption, never as part of the key that enforces it, so a hash
         # key rotation never reopens the gate.
         # [impl->req~shared-invariant-07~1]
+        # [impl->req~grants-invariant-08~2]
         self._aliases: dict[tuple[IdentityProvider, str, GateConsumptionKind], tuple[bytes, int]] = {}
 
     def consume(self, account: ProviderAccount, kind: GateConsumptionKind, grant_id: UUID,
@@ -349,8 +351,12 @@ class ProviderAccountGates:
         provider account cannot back two successful registered free-credit claims, whatever
         Firebase account, external identity, internal user, reinstall or device asks. The two
         consumption kinds are distinct rows: the same account may hold one of each."""
+        # The registered gate and the web anonymous gate are both bounded here, on the stable
+        # provider UID and so regardless of which hash key version the alias was derived with.
         # [impl->req~shared-invariant-07~1]
         # [impl->req~schema-invariant-10~1]
+        # [impl->req~grants-invariant-06~2]
+        # [impl->req~grants-invariant-08~2]
         key = (account.provider, account.provider_uid, kind)
         if key in self._consumed:
             result, client_class = GATE_CONFLICTS[kind]
@@ -394,8 +400,10 @@ DEFERRED_CONSTRAINT_PATHS: frozenset[str] = frozenset({
 
 def assert_same_transaction(path: str, transaction_ids: Sequence[object]) -> None:
     """Every row a deferred-constraint path writes commits in one transaction, so the deferred
-    foreign keys hold at commit."""
+    foreign keys hold at commit. Both claim completions are such paths, the conversion inside
+    `claim_registered_grant` included."""
     # [impl->req~shared-invariant-09~2]
+    # [impl->req~grants-invariant-10~2]
     if path not in DEFERRED_CONSTRAINT_PATHS:
         raise InvariantError(f"{path} carries no deferred-constraint obligation")
     if len(set(map(id, transaction_ids))) > 1:

@@ -526,7 +526,10 @@ def assert_account_grant_history(committed_free_sources: Sequence[AccessGrantSou
     refuses a new issuance, the conversion of the user's active anonymous grant being the one
     permitted transition. An upgraded account cannot receive carried anonymous credits plus a
     fresh registered grant."""
+    # The alternate free-credit path is gated on this history and on the registered gate's own
+    # uniqueness domain, so it is never a way around the lifetime cap.
     # [impl->req~grants-reg-rule-account-grant-history~1]
+    # [impl->req~grants-invariant-11~1]
     held = [source for source in committed_free_sources if source in FREE_GRANT_SOURCES]
     if converting_active_anonymous:
         if any(source is not CONVERTIBLE_ACTIVE_SOURCE for source in held):
@@ -902,6 +905,9 @@ def reconfirm_registered_claimant(row: ExternalIdentityRow,
     """
     # [impl->req~grants-reg-txn-step-01-lock-and-reconfirm~1]
     # [impl->req~grants-reg-txn-step-02-select-destination~1]
+    # The user-level marker is what refuses this endpoint after a success on the other one, and the
+    # conversion is a transition of the same lineage rather than a second issuance.
+    # [impl->req~grants-invariant-12~1]
     if row.identity_state is not IdentityState.active:
         raise registered_claim_rejected(AuthEventResult.historical_identity,
                                         "the claimant identity is no longer active")
@@ -1320,6 +1326,9 @@ class RegisteredGrantClaim:
         assert_grant_columns_entitlement_only(grant)
         # The new row is the user's one active grant: the conversion deactivated the only other
         # effective one, and every other effective grant already blocked the destination.
+        # One lineage: the conversion leaves one active grant while the user's history counts both
+        # free sources — two consumed allowances, never a second issuance.
+        # [impl->req~grants-invariant-10~2]
         superseded_count = (1 if decision.destination
                             is RegisteredDestination.supersession_conversion else 0)
         assert_one_active_grant(active_after=1 + decision.effective_grants - superseded_count,
@@ -1352,6 +1361,9 @@ class RegisteredGrantClaim:
         # [impl->req~grants-reg-txn-step-05-gate-consumption~1]
         marked = mark_free_grant_consumed(row, now=moment, grant_transaction=transaction,
                                           marker_transaction=transaction)
+        # The supersession, the new grant, its anti-abuse and gate-consumption rows, the carried
+        # usage row and the marker are one transaction, conversion included.
+        # [impl->req~grants-invariant-10~2]
         assert_deferred_keys_checked_at_commit(transaction)
         assert_same_transaction("claim_registered_grant", [transaction] * 4)
         # [impl->req~grants-reg-txn-step-06-consume-challenge-audit~1]

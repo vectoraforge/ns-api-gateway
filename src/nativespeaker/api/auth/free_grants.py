@@ -274,7 +274,11 @@ def assert_claimant_eligible(branch: ClaimBranch, row: ExternalIdentityRow) -> I
     identity, or an active registered identity whose stored provider is `google` or `apple`,
     burning the device-ledger bit exactly as an anonymous claimant would; on web an active
     registered identity whose stored provider is `google` or `apple`."""
+    # Native paths admit an anonymous claimant or a registered claimant whose stored provider is
+    # `google` or `apple`; web admits only the latter, under the closed-classifier-and-stored-binding
+    # gate `read_web_gate` runs.
     # [impl->req~grants-claim-anonymous-operation~1]
+    # [impl->req~grants-invariant-05~1]
     # A non-`active` row is a historical identity, audited under its own barrier result and
     # surfaced through the shared `account_unavailable` class.
     # [impl->req~shared-audit-outcome-barrier-rejection~1]
@@ -510,6 +514,7 @@ def registered_backstop(row: ExternalIdentityRow,
     the alternate path is not a promise that it will issue a grant."""
     # [impl->req~grants-anonymous-exhausted-registered-backstop~1]
     # [impl->req~grants-anon-alt-not-guaranteed~1]
+    # [impl->req~grants-invariant-11~1]
     if not anonymous_gate_exhausted:
         raise FreeGrantError("the backstop applies once the anonymous gate is closed")
     if row.provider not in REGISTERED_PROVIDERS:
@@ -954,8 +959,14 @@ def free_grant_anti_abuse_row(*,
     platform device-check gate through `native_claim_provider` and persist no principal; web
     anonymous rows carry the derived provider-account `idp_account_hash` and its key version;
     registered account grant rows carry the same alias under their own uniqueness domain."""
+    # The row is built for its grant inside the grant's own transaction, carrying the grant's own
+    # `source`: the lower bound is met, the composite foreign key binds, and the evidence shape is
+    # the one this source's CHECK allows.
     # [impl->req~grants-anti-abuse-table-separate~1]
     # [impl->req~grants-anti-abuse-row-records-gate~1]
+    # [impl->req~grants-invariant-06~2]
+    # [impl->req~grants-invariant-07~2]
+    # [impl->req~grants-invariant-09~2]
     if source not in FREE_GRANT_SOURCES:
         raise FreeGrantError(f"a {source} grant has no anti-abuse row")
     assert_grant_columns_entitlement_only(grant_columns)
@@ -1029,8 +1040,10 @@ def consume_free_grant_gate(index: IdpAccountAliasIndex,
                             grant_transaction: object) -> DerivedValue:
     """Record this provider account's consumption of one free-grant gate, in the same transaction
     that inserts the grant. The conflict a repeat raises is the gate-consumption insert's, keyed
-    by the canonical provider account; the alias recorded beside it decides nothing."""
+    by the canonical provider account; the alias recorded beside it decides nothing — so neither
+    gate reopens when the hash key version rotates."""
     # [impl->req~grants-gate-uniqueness-on-stable-uid~1]
+    # [impl->req~grants-invariant-08~2]
     if IDP_ACCOUNT_HASH_IS_AUTHORITATIVE:
         raise FreeGrantError("idp_account_hash is a lookup and audit alias, never the authority")
     if transaction is not grant_transaction:
@@ -1442,9 +1455,12 @@ def read_web_gate(read: WebGateRead,
     client returned for this identity, and an issuer that matches no configured integration fails
     here, before the classifier runs.
     """
+    # The web gate's classifier-and-stored-binding rules are this file's own, and this is where
+    # they run.
     # [impl->req~grants-platform-gate-web~1]
     # [impl->req~grants-anon-rule-read-platform-gate~1]
     # [impl->req~grants-anon-rule-web-classifier-and-hash~1]
+    # [impl->req~grants-invariant-04~2]
     # [impl->req~grants-anon-step-02-read-platform-gate~1]
     # [impl->req~grants-vendor-state-never-client-supplied~1]
     row = read.row
@@ -1570,7 +1586,9 @@ def reconfirm_claimant(row: ExternalIdentityRow,
         raise ClaimRejection(AuthEventResult.historical_identity,
                              "the claimant identity is no longer active")
     if not free_grant_available(row, AuthOperation.claim_anonymous_grant):
-        # The marker is authoritative for the cross-endpoint refusal, and it is permanent.
+        # The marker is authoritative for the cross-endpoint refusal, and it is permanent: after a
+        # success on `claim_registered_grant` this endpoint refuses for that user, on every branch.
+        # [impl->req~grants-invariant-12~1]
         raise ClaimRejection(AuthEventResult.anti_abuse_already_claimed,
                              "this account already consumed its one lifetime free grant")
     if row.provider is IdentityProvider.anonymous:
@@ -1794,8 +1812,12 @@ class AnonymousGrantClaim:
         preflight: the activation transaction repeats the live checks under lock, where the lifetime
         index's unique violation is the concurrency-safe final eligibility check.
         """
+        # The lifetime cap is checked across all three ledgers before any grant is issued — the
+        # device or gate ledger in the platform-gate step this one requires, and the identity marker
+        # and grant history here — and a rejection burns neither a vendor bit nor a gate slot.
         # [impl->req~grants-anon-rule-db-eligibility-lifetime-slot~1]
         # [impl->req~grants-anon-step-04-db-eligibility~1]
+        # [impl->req~grants-invariant-12~1]
         self._require(ClaimStep.platform_gate)
         self._record(ClaimStep.database_eligibility)
         if ledger is not None:
@@ -1994,6 +2016,9 @@ class AnonymousGrantClaim:
                                               grant_transaction=transaction,
                                               marker_transaction=transaction)
         usage = free_grant_usage_row(grant_id, transaction=transaction, now=now)
+        # The grant, its anti-abuse row, any gate-consumption row and the usage row commit together,
+        # so the deferred foreign keys hold at commit.
+        # [impl->req~grants-invariant-10~2]
         assert_same_transaction("claim_anonymous_grant",
                                 [transaction, transaction, transaction, transaction])
         if not challenge.consume():

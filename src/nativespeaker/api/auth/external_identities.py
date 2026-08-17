@@ -1571,7 +1571,10 @@ def mark_free_grant_consumed(row: ExternalIdentityRow, *, now: datetime,
     """`free_grant_consumed_at` is the permanent, non-PII per-account marker that the account has
     consumed its one lifetime free grant. It is set atomically in the transaction that commits the
     grant and is never cleared; a retry never creates a second lineage."""
+    # The free entitlement is one per account for the account's lifetime, and this marker is the
+    # user-level half of that cap — the ledger rows beside it stay per-key abuse brakes.
     # [impl->req~schema-external-identities-free-grant-consumed-at-permanent~1]
+    # [impl->req~grants-invariant-12~1]
     if grant_transaction is not marker_transaction:
         raise IdentityError("the marker is set in the transaction that commits the grant")
     if row.free_grant_consumed_at is not None:
@@ -1584,6 +1587,7 @@ def clear_free_grant_marker(row: ExternalIdentityRow) -> NoReturn:
     """The marker is never cleared, and it survives grant expiration, consumption, conversion,
     sign-out, identity retirement and PII erasure alike."""
     # [impl->req~schema-external-identities-free-grant-consumed-at-permanent~1]
+    # [impl->req~grants-invariant-12~1]
     raise IdentityError("free_grant_consumed_at is never cleared")
 
 
@@ -1593,6 +1597,7 @@ def free_grant_available(row: ExternalIdentityRow, endpoint: AuthOperation) -> b
     brakes; a tombstoned grant still counts as consumed, because identity rows are never
     deleted."""
     # [impl->req~schema-external-identities-free-grant-consumed-at-permanent~1]
+    # [impl->req~grants-invariant-12~1]
     if endpoint not in FREE_GRANT_CLAIM_ENDPOINTS:
         raise IdentityError(f"{endpoint} is not a free-grant claim endpoint")
     return row.free_grant_consumed_at is None
@@ -1602,6 +1607,7 @@ def assert_conversion_same_lineage(row: ExternalIdentityRow, *, converted_at: da
     """Conversion through `claim_registered_grant` is a transition of the same lineage, never a
     second issuance."""
     # [impl->req~schema-external-identities-free-grant-consumed-at-permanent~1]
+    # [impl->req~grants-invariant-12~1]
     if row.free_grant_consumed_at is None:
         raise IdentityError("conversion transitions an already-consumed lineage")
     if converted_at < row.free_grant_consumed_at:
