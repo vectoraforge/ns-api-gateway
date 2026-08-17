@@ -26,6 +26,7 @@ from nativespeaker.api.auth.external_identities import (
     IdentityState,
     erase_account,
 )
+from nativespeaker.api.auth.grant_schema import FreeClaimOutcome, free_claim_outcome
 from nativespeaker.api.auth.invariants import (
     GATE_CONFLICTS,
     GateAlreadyConsumedError,
@@ -41,8 +42,6 @@ from nativespeaker.api.auth.manual_grants import (
 from nativespeaker.api.auth.operations import AuthOperation, IdentityProvider
 from nativespeaker.api.auth.registry_schema import (
     GATE_CLAIM_OPERATIONS,
-    GATE_ROLE,
-    GATE_ROLES_REFUSED,
     LINK_UNIQUENESS_KEY,
     LINK_UNIQUENESS_TABLE,
     MANUAL_ISSUANCE_AUDIT_EVENT_ROWS,
@@ -391,8 +390,6 @@ def test_each_gates_conflict_has_its_own_audited_result_and_client_class():
 
 # [utest->req~schema-provider-accounts-gates-are-abuse-brakes~1]
 def test_an_open_gate_is_an_abuse_brake_and_never_a_second_user_allowance():
-    assert GATE_ROLE == "per_key_abuse_brake"
-    assert "independent_user_allowance" in GATE_ROLES_REFUSED
     # A user who has committed no free grant is unconstrained by the open gates.
     assert_gate_is_no_second_allowance(
         open_gates=(GateConsumptionKind.web_anonymous_gate,), committed_free_sources=())
@@ -406,6 +403,16 @@ def test_an_open_gate_is_an_abuse_brake_and_never_a_second_user_allowance():
         assert_gate_is_no_second_allowance(
             open_gates=(GateConsumptionKind.web_anonymous_gate,),
             committed_free_sources=(AccessGrantSource.registered_account_grant,))
+    # The verdict is the user-level owner's, conversion included: an open registered gate for a
+    # user whose active anonymous grant is being converted is the same allowance, not a second one.
+    assert_gate_is_no_second_allowance(
+        open_gates=(GateConsumptionKind.registered_account_grant,),
+        committed_free_sources=(AccessGrantSource.anonymous_device_grant,),
+        converting_active_anonymous_grant=True)
+    assert free_claim_outcome(
+        str(AuthOperation.claim_registered_grant),
+        committed_sources=(AccessGrantSource.anonymous_device_grant,),
+        converting_active_anonymous_grant=True) is FreeClaimOutcome.converted
     # The two kinds really are distinct rows on the brake side: one account may spend one of each.
     gates = ProviderAccountGates()
     gates.consume(GOOGLE, GateConsumptionKind.web_anonymous_gate, uuid7())

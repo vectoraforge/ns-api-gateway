@@ -258,9 +258,12 @@ class TestStoreVerificationIsGroundTruth:
 
     def test_only_a_failed_store_verification_rejects_for_proof_reasons(self):
         # [utest->req~restore-store-verification-is-ground-truth~1]
-        with pytest.raises(InvalidRestoreProof):
+        # The split between "the row is missing" and "the proof failed verification" is
+        # `restore_flow.missing_purchase_row_path`'s, so this takes that one audited outcome.
+        with pytest.raises(RestoreRejection) as refused:
             reconcile_to_store(store_verified=False, subscription_row_exists=True,
                                purchase_row_exists=True, inside_locked_transaction=True)
+        assert refused.value.result is AuthEventResult.invalid_restore_proof
 
     def test_a_differing_carried_uuid_still_rejects(self):
         # [utest->req~restore-store-verification-is-ground-truth~1]

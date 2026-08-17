@@ -333,15 +333,22 @@ def reconcile_to_store(*,
     missing row(s) from the store-verified data inside the locked mutation transaction. Rejection
     for missing store rows is reserved for a proof that fails store verification itself. A carried
     purchase UUID that differs from the resolved row's recorded attribution still rejects.
+
+    Neither of those two rules is decided here. The missing-row-versus-failed-verification split is
+    `restore_flow.missing_purchase_row_path`'s and the carried-UUID comparison is its step 4, so
+    each condition has exactly one outcome wherever it is reached from.
     """
     # [impl->req~restore-store-verification-is-ground-truth~1]
+    from nativespeaker.api.auth.restore_flow import (  # noqa: PLC0415
+        assert_carried_uuid_matches_recorded,
+        missing_purchase_row_path,
+    )
+
     if not store_verified:
-        raise InvalidRestoreProof("the proof failed store verification itself")
-    if (purchase_row_exists and recorded_identity_value is not None
-            and carried_purchase_uuid is not None
-            and carried_purchase_uuid != recorded_identity_value):
-        raise RestoreRejection(AuthEventResult.restore_purchase_uuid_mismatch,
-                               "the subscription is attributed to a different token")
+        missing_purchase_row_path(None, store_verified=False)
+    if purchase_row_exists:
+        assert_carried_uuid_matches_recorded(carried=carried_purchase_uuid,
+                                             recorded=recorded_identity_value)
     missing = tuple(table for table, exists in
                     (("core.subscriptions", subscription_row_exists),
                      ("core.store_purchases", purchase_row_exists)) if not exists)

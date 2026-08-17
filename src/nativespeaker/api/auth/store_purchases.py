@@ -22,6 +22,7 @@ from nativespeaker.api.auth.restore_flow import (
     PurchaseRow,
     SubscriptionRow,
     VerifiedTransaction,
+    assert_carried_uuid_matches,
 )
 from nativespeaker.api.auth.routes import (
     ID_TOKEN_REQUIRED_ROUTES,
@@ -180,17 +181,25 @@ def build_purchase_row(*,
     the `core.users.id` the attribution resolved to where one did, and the store subscription the
     purchase produced.
 
+    Where the attribution resolved to a user, the token it resolved through is recorded as
+    `resolved_token_value` — the same value as `identity_value`, which is what the schema's own
+    CHECK requires. An unattributed row records none.
+
     This is a purchase-attribution table, not a separate audit row per lifecycle event: the store
     itself remains the source of lifecycle history.
     """
     # [impl->req~restore-store-purchases-attribution-table~1]
+    # [impl->req~restore-purchase-flow-04-ingestion-resolves-and-creates~1]
     if any(row.key == (provider, external_id) for row in existing):
         raise StorePurchaseError(
             f"{(provider, external_id)} already holds its one purchase-attribution row")
-    del store_transaction_id, store_original_transaction_id
     attribution_field(provider)
     return PurchaseRow(purchase_id=uuid4(), provider=provider, external_id=external_id,
-                       identity_value=identity_value, purchase_user_id=purchase_user_id)
+                       identity_value=identity_value, purchase_user_id=purchase_user_id,
+                       store_transaction_id=store_transaction_id,
+                       store_original_transaction_id=store_original_transaction_id,
+                       resolved_token_value=(identity_value if purchase_user_id is not None
+                                             else None))
 
 
 # --- The echoed UUID is evidence, not identity ------------------------------------------------------
@@ -226,14 +235,17 @@ def resolve_or_create_purchase_row(rows: Sequence[PurchaseRow],
                                   destination_user_id: UUID | None = None) -> PurchaseRow:
     """Restore resolves the row for the verified store subscription by `(provider, external_id)`,
     verifies any carried purchase UUID against its recorded `identity_value`, and creates the missing
-    row once, from store-verified data, where none exists."""
+    row once, from store-verified data, where none exists.
+
+    The verification of the carried value is not decided here: it is `restore_flow`'s step 4, so a
+    mismatch takes that one audited `restore_purchase_uuid_mismatch` rejection rather than an
+    internal contract error that would surface as `internal_error`.
+    """
     # [impl->req~restore-echoed-uuid-is-evidence-not-identity~1]
     matches = [row for row in rows if row.key == verified.key]
     if matches:
         row = matches[0]
-        carried = verified.carried_purchase_uuid
-        if carried is not None and carried != row.identity_value:
-            raise StorePurchaseError("the carried purchase UUID is not this row's attribution")
+        assert_carried_uuid_matches(verified, row)
         return row
     identity_value = verified.carried_purchase_uuid or str(uuid4())
     return build_purchase_row(provider=verified.provider,
@@ -301,6 +313,12 @@ class IngestionLedger:
         self.statements.append(statement)
 
 
+def _store_value(verified_purchase: Mapping[str, Any], field_name: str) -> str | None:
+    """One store transaction identifier off the verified purchase, where the store supplied it."""
+    value = verified_purchase.get(field_name)
+    return str(value) if value else None
+
+
 def ingest_verified_purchase(*,
                              provider: StoreProvider,
                              external_id: str,
@@ -331,24 +349,36 @@ def ingest_verified_purchase(*,
     usage row.
     """
     # [impl->req~restore-purchase-flow-04-ingestion-resolves-and-creates~1]
-    if client_supplied_tier is not None:
-        raise StorePurchaseError("the tier is resolved from the server-controlled mapping")
+    from nativespeaker.api.auth.grant_schema import (  # noqa: PLC0415
+        GrantSchemaError,
+        resolve_subscription_tier,
+    )
+
     steps = ledger or IngestionLedger()
     echoed = store_echoed_token(provider, verified_purchase)
     owner = tokens.owner_of(provider, echoed) if echoed else None
     resolved_token = echoed if owner is not None else None
-    tier_id = product_tier_map.get(product_id)
-    if tier_id is None:
-        raise StorePurchaseError(f"{product_id} maps to no tier")
+    # The tier a subscription-backed grant is created at, and the prohibition on taking it from
+    # client input, are the grant schema's; this flow resolves it through that owner.
+    try:
+        tier_id = resolve_subscription_tier(product_id, product_tier_map,
+                                            client_supplied_tier_id=client_supplied_tier)
+    except GrantSchemaError as refused:
+        raise StorePurchaseError(str(refused)) from None
 
     steps.record("upsert_subscription")
     subscription = upsert_canonical_subscription(subscriptions, provider=provider,
                                                  external_id=external_id, status=status,
                                                  tier_id=tier_id, user_id=owner, now=now)
     steps.record("insert_store_purchase")
-    purchase = build_purchase_row(provider=provider, external_id=external_id,
-                                  identity_value=echoed or str(uuid4()),
-                                  purchase_user_id=owner, existing=purchases)
+    # The store transaction identifiers travel onto the row wherever the verified purchase carries
+    # them, and the resolved token is recorded only where the attribution resolved to a user.
+    purchase = build_purchase_row(
+        provider=provider, external_id=external_id,
+        identity_value=echoed or str(uuid4()), purchase_user_id=owner,
+        store_transaction_id=_store_value(verified_purchase, "transactionId"),
+        store_original_transaction_id=_store_value(verified_purchase, "originalTransactionId"),
+        existing=purchases)
     if owner is None:
         # Unclaimed and unattributed: no grant, no usage row. Restore's adoption links it later.
         return IngestedPurchase(subscription=subscription, purchase=purchase, grant_id=None,

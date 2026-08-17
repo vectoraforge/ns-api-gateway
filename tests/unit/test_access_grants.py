@@ -405,6 +405,14 @@ def test_the_conversion_is_a_transition_of_the_same_allowance_not_a_second_issua
     with pytest.raises(GrantSchemaError):
         free_claim_outcome("claim_registered_grant", committed_sources=[],
                            converting_active_anonymous_grant=True)
+    # The conversion transitions the one allowance once: a repeat call for a user whose registered
+    # grant is already committed is refused, not converted a second time.
+    assert free_claim_outcome("claim_registered_grant",
+                              committed_sources=[FREE[0], FREE[1]],
+                              converting_active_anonymous_grant=True) is FreeClaimOutcome.refused
+    assert free_claim_outcome("claim_registered_grant",
+                              committed_sources=[FREE[1]],
+                              converting_active_anonymous_grant=True) is FreeClaimOutcome.refused
 
 
 # --- Subscription-backed grants ----------------------------------------------------------------
@@ -426,6 +434,7 @@ def test_ingestion_creates_the_grant_and_its_zeroed_usage_row_in_one_transaction
     assert term.grant.source is AccessGrantSource.subscription
     assert term.grant.subscription_id == subscription_id
     assert term.grant.tier_id == "gold"
+    assert term.usage is not None
     assert term.usage.grant_id == term.grant.id
     assert term.usage.monthly_used == 0
     assert term.usage.monthly_period == "2026-08"
@@ -498,7 +507,8 @@ def test_a_redelivered_same_term_event_is_an_idempotent_no_op():
     assert term.idempotent_no_op is True
     assert term.grant.id == existing  # no second grant for the term
     assert term.expired_grant_ids == ()
-    assert term.usage.monthly_used == 0  # and no reset of the live counter
+    # It writes no usage row at all, so the live counter cannot be reset — not even to zero.
+    assert term.usage is None
 
 
 # [utest->req~schema-access-grants-ingestion-creates-subscription-grant~1]

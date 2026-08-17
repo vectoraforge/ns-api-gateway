@@ -1,6 +1,5 @@
 """`claim_registered_grant`: its required rules, its three destinations, and its audit details."""
 
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid7
@@ -100,6 +99,7 @@ from nativespeaker.api.auth.registered_grants import (
     select_destination,
     supersession_write_order,
 )
+from nativespeaker.api.auth.registry_schema import RegistryError
 from nativespeaker.api.auth.taxonomy import ClientErrorClass, remediation_for
 from nativespeaker.api.quota.grants import GrantRow
 
@@ -524,8 +524,9 @@ def test_the_registered_gate_is_consumable_once_per_provider_account():
                                 grant_transaction=transaction)
     assert conflict.value.result is AuthEventResult.idp_account_already_claimed
     assert conflict.value.error_code == "account_already_claimed"
-    # The consumption is inserted with its grant, in one transaction.
-    with pytest.raises(FreeGrantError):
+    # The consumption is inserted with its grant, in one transaction — the registry's own rule for
+    # the resolve-or-create it runs first, so that is the guard that speaks.
+    with pytest.raises(RegistryError):
         consume_registered_gate(alias_index(), account, uuid7(), transaction=object(),
                                 grant_transaction=object())
 
@@ -714,19 +715,23 @@ def test_the_operation_never_leaves_two_active_grants_or_two_allowances():
     assert activation.superseded is not None
     assert activation.superseded["status"] is AccessGrantStatus.expired
     assert activation.grant["status"] is AccessGrantStatus.active
-    # And a destination that would leave another effective grant standing never activates.
+    # And a destination that would leave another effective grant standing never activates: the
+    # locked grant history is what the transaction selects from, so a grant that commits between
+    # the preflight and the lock is rejected there rather than inserted alongside.
     row = google_row()
     index = alias_index()
     claim = claim_to_kind(ClaimBranch.web, row, index)
     claim.read_registered_state(turnstile=lambda: True)
-    decision = claim.check_database_eligibility(grants=(), committed_free_sources=(), now=NOW)
-    claim.decision = replace(decision, effective_grants=1)
-    with pytest.raises(FreeGrantError):
+    claim.check_database_eligibility(grants=(), committed_free_sources=(), now=NOW)
+    appeared = grant_row(AccessGrantSource.subscription, ends_at=NOW + timedelta(days=20))
+    with pytest.raises(RegisteredDestinationBlocked) as blocked:
         claim.activate(row=row, grant_id=uuid7(), tier_id=FREE_TIER, alias_index=index,
                        transaction=object(),
                        locks=LockLedger(LockingPath.claim_registered_grant_completion),
-                       consume_challenge=lambda: True,
-                                 subject_hasher=SUBJECT_HASHER, now=NOW)
+                       consume_challenge=lambda: True, subject_hasher=SUBJECT_HASHER,
+                       locked_grants=(appeared,), now=NOW)
+    assert blocked.value.result is AuthEventResult.registered_grant_destination_incompatible
+    assert blocked.value.error_code == "operation_not_allowed"
 
 
 # --- The destination rules -------------------------------------------------------------------------

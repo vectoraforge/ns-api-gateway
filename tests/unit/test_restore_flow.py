@@ -42,9 +42,13 @@ VERIFIED = VerifiedTransaction(provider=StoreProvider.apple, external_id=EXTERNA
                                carried_purchase_uuid=TOKEN)
 
 
+VERIFIED_UUID = uuid7()
+
+
 def fake_verifier(provider: StoreProvider, artifact: str) -> VerifiedStoreProof:
     del artifact
-    return VerifiedStoreProof(provider=provider, external_id=EXTERNAL_ID, purchase_uuid=uuid7())
+    return VerifiedStoreProof(provider=provider, external_id=EXTERNAL_ID,
+                              purchase_uuid=VERIFIED_UUID)
 
 
 def subscription(*, user_id: UUID | None = None,
@@ -69,13 +73,44 @@ class TestStep01VerifySignedTransaction:
     def test_the_backend_verifies_the_artifact_server_side(self):
         # [utest->req~restore-flow-01-verify-signed-transaction~1]
         verified = verify_signed_transaction(DevicePlatform.ios,
-                                            {"restore_proof": "signed.storekit.tx",
-                                             "carried_purchase_uuid": TOKEN},
+                                            {"restore_proof": "signed.storekit.tx"},
                                             fake_verifier,
                                             performed_checks=APPLE_CHECKS)
         assert verified.provider is StoreProvider.apple
         assert verified.external_id == EXTERNAL_ID
-        assert verified.carried_purchase_uuid == TOKEN
+        # The carried purchase UUID is the one the verified signed transaction carried, and the
+        # client's copy of it is not accepted at all.
+        assert verified.carried_purchase_uuid == str(VERIFIED_UUID)
+        with pytest.raises(RestoreRejection) as refused:
+            verify_signed_transaction(DevicePlatform.ios,
+                                      {"restore_proof": "signed.storekit.tx",
+                                       "carried_purchase_uuid": TOKEN},
+                                      fake_verifier, performed_checks=APPLE_CHECKS)
+        assert refused.value.result is AuthEventResult.invalid_restore_proof
+
+    def test_a_store_initiated_transaction_carries_no_purchase_uuid(self):
+        # [utest->req~restore-flow-01-verify-signed-transaction~1]
+        # [utest->req~restore-policy-missing-echoed-token-not-rejected~1]
+        def unattributed(provider: StoreProvider, artifact: str) -> VerifiedStoreProof:
+            del artifact
+            return VerifiedStoreProof(provider=provider, external_id=EXTERNAL_ID)
+
+        verified = verify_signed_transaction(DevicePlatform.ios,
+                                            {"restore_proof": "signed.storekit.tx"},
+                                            unattributed, performed_checks=APPLE_CHECKS)
+        assert verified.carried_purchase_uuid is None
+
+    def test_the_verified_value_alone_decides_the_mismatch_check(self):
+        """A verified transaction carrying X against a row recording Y rejects even though the
+        request body carries nothing at all."""
+        # [utest->req~restore-flow-01-verify-signed-transaction~1]
+        # [utest->req~restore-policy-purchase-uuid-mismatch-rejects~1]
+        verified = verify_signed_transaction(DevicePlatform.ios,
+                                            {"restore_proof": "signed.storekit.tx"},
+                                            fake_verifier, performed_checks=APPLE_CHECKS)
+        with pytest.raises(RestoreRejection) as caught:
+            assert_carried_uuid_matches(verified, purchase(identity_value=TOKEN))
+        assert caught.value.result is AuthEventResult.restore_purchase_uuid_mismatch
 
     def test_an_unverifiable_artifact_yields_nothing(self):
         # [utest->req~restore-flow-01-verify-signed-transaction~1]
@@ -246,6 +281,28 @@ class TestLifetimeBindingAppliesToEveryAttempt:
         state = CurrentSubscriptionState(subscription(user_id=None, bound=None))
         assert apply_lifetime_binding(subscription=state,
                                      destination_user_id=DESTINATION) is BindingOutcome.bound
+
+    def test_a_binding_mismatch_with_an_inactive_source_audits_source_user_inactive(self):
+        """The substitution is unconditional: wherever an attempt is rejected because the store
+        transaction is linked to a different account, an inactive linked source audits as
+        `restore_source_user_inactive`. The binding half is no exception."""
+        # [utest->req~restore-policy-lifetime-binding-applies-to-every-attempt~1]
+        # [utest->req~restore-policy-different-owner-rejects~1]
+        state = CurrentSubscriptionState(subscription(user_id=OTHER, bound=OTHER))
+        with pytest.raises(RestoreRejection) as caught:
+            apply_lifetime_binding(subscription=state, destination_user_id=DESTINATION,
+                                   source_user_active=False)
+        assert caught.value.result is AuthEventResult.restore_source_user_inactive
+        # And through the whole authorization, where the binding is evaluated first.
+        with pytest.raises(RestoreRejection) as through:
+            authorize_restore(subscription=state, purchase_row=purchase(),
+                              verified=VERIFIED, destination_user_id=DESTINATION,
+                              source_user_active=False)
+        assert through.value.result is AuthEventResult.restore_source_user_inactive
+        # An active linked source still audits as already-linked.
+        with pytest.raises(RestoreRejection) as active:
+            apply_lifetime_binding(subscription=state, destination_user_id=DESTINATION)
+        assert active.value.result is AuthEventResult.store_transaction_already_linked
 
 
 class TestStep06ProductEntitled:

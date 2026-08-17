@@ -33,13 +33,22 @@ def mock_subscriptions_db():
 
 
 @pytest.fixture
-def subscription_service(mock_verifier, mock_subscriptions_db):
+def mock_purchase_tokens_db():
+    """The token-binding lookup the echoed value is resolved through."""
+    tokens = AsyncMock()
+    tokens.owner_of.return_value = uuid4()
+    return tokens
+
+
+@pytest.fixture
+def subscription_service(mock_verifier, mock_subscriptions_db, mock_purchase_tokens_db):
     """The real service, with the store verifier and the two tables mocked out."""
     service = SubscriptionService(db=AsyncMock(),
                                  verifier=mock_verifier,
                                  firebase_service=AsyncMock(spec=FirebaseService),
                                  product_id_to_plan=PRODUCT_TO_PLAN)
     service.subscriptions_db = mock_subscriptions_db
+    service.purchase_tokens_db = mock_purchase_tokens_db
     return service
 
 

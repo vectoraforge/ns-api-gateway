@@ -41,6 +41,7 @@ from nativespeaker.api.auth.derived_identifiers import (
     DerivationFamily,
     DerivedValue,
     IdpAccountAliasIndex,
+    IdpInputSource,
     UniquenessAnchor,
     actor_subject_preimage,
     assert_persisted_key_version,
@@ -478,11 +479,22 @@ def consume_registered_gate(index: IdpAccountAliasIndex,
     """The registered gate's per-provider-account bound, enforced on the stable UID: the
     completion transaction resolves-or-creates the canonical `core.provider_accounts` row and
     inserts the `registered_account_grant` gate-consumption row. A consumption conflict is audited
-    as `idp_account_already_claimed` and rejected with `account_already_claimed`."""
+    as `idp_account_already_claimed` and rejected with `account_already_claimed`.
+
+    The registry row's own rules — immutable binding, never deleted or reassigned, resolved-or-
+    created under the stable uniqueness constraint in this same transaction — are
+    `registry_schema`'s, and this is where the registered claim runs them."""
     # [impl->req~grants-reg-rule-gate-consumption-uniqueness~1]
     # [impl->req~grants-reg-txn-step-05-gate-consumption~1]
     # [impl->req~grants-reg-id-gate-conflict-mapping~1]
-    index.register(account)
+    from nativespeaker.api.auth.registry_schema import (  # noqa: PLC0415
+        resolve_or_create_provider_account,
+    )
+    resolve_or_create_provider_account(index, account,
+                                       source=IdpInputSource.stored_identity_binding,
+                                       transaction=transaction,
+                                       grant_transaction=grant_transaction,
+                                       consumption_transaction=transaction)
     try:
         return consume_free_grant_gate(index, account, REGISTERED_GRANT_GATE, grant_id,
                                        transaction=transaction,
@@ -954,6 +966,11 @@ class RegisteredGrantClaim:
         self.row: ExternalIdentityRow | None = None
         self.alias: DerivedValue | None = None
         self.durable_bit: bool = True
+        # What the preflight's destination selection read, kept so the activation transaction can
+        # repeat that selection under the lock.
+        self.grants: tuple[GrantRow, ...] = ()
+        self.committed_free_sources: tuple[AccessGrantSource, ...] = ()
+        self.gate_consumption_grant_id: UUID | None = None
 
     # --- ordering ---------------------------------------------------------------------------
 
@@ -1201,6 +1218,45 @@ class RegisteredGrantClaim:
             # [impl->req~grants-reg-audit-details~1]
             raise self._rejected(blocked) from None
         self.decision = decision
+        # What the preflight looked at, so the activation transaction can repeat the same selection
+        # against the locked grant history rather than reuse this pre-lock verdict.
+        self.grants = tuple(grants)
+        self.committed_free_sources = tuple(committed_free_sources)
+        self.gate_consumption_grant_id = gate_consumption_grant_id
+        return decision
+
+    def _reselect_destination(self,
+                              locked: Sequence[GrantRow],
+                              preflight: RegisteredDecision,
+                              *,
+                              now: datetime) -> RegisteredDecision:
+        """Step 2 again, inside the transaction: reconfirm from the locked grant history that
+        issuing would violate neither the one-free-grant-per-account rule nor the lifetime
+        `(user, source)` slots, and select exactly one destination from it.
+
+        The locked history is authoritative — the committed free sources it shows are added to what
+        the preflight read — so a grant that committed in between takes its own audited rejection
+        here instead of slipping past a stale count. A locked history that selects a different
+        destination than the preflight did is not activated on either: it fails closed, having
+        mutated nothing.
+        """
+        # [impl->req~grants-reg-txn-step-02-select-destination~1]
+        # [impl->req~grants-reg-gate-db-history-destination~1]
+        committed = dict.fromkeys((*self.committed_free_sources,
+                                   *(held.source for held in locked
+                                     if held.source in FREE_GRANT_SOURCES)))
+        try:
+            decision = select_destination(
+                grants=locked, committed_free_sources=tuple(committed), now=now,
+                gate_consumption_grant_id=self.gate_consumption_grant_id)
+        except FreeGrantRejected as blocked:
+            # [impl->req~grants-reg-audit-details~1]
+            raise self._rejected(blocked) from None
+        if decision.destination is not preflight.destination:
+            raise FreeGrantError(
+                f"the locked grant history selects {decision.destination}, not "
+                f"{preflight.destination}")
+        self.decision = decision
         return decision
 
     def write_registered_bit(self,
@@ -1236,9 +1292,10 @@ class RegisteredGrantClaim:
                  subject_hasher: SubjectHasher,
                  carried_usage: tuple[str, int] | None = None,
                  write: DeviceBitWrite | None = None,
+                 locked_grants: Sequence[GrantRow] | None = None,
                  context: ExecutionContext = CLAIM_EXECUTION_CONTEXT,
                  now: datetime | None = None) -> RegisteredActivation:
-        """One completion transaction, for the destination the preflight selected.
+        """One completion transaction, for the destination it selects again under the lock.
 
         Supersession conversion moves the active anonymous grant to `expired` with `ends_at` set
         to the conversion time, leaves its `source` and its anti-abuse row untouched, and inserts
@@ -1247,6 +1304,13 @@ class RegisteredGrantClaim:
         creation inserts the same rows with a fresh usage row for the current period and
         `monthly_used = 0`. Either way exactly one destination executes, and the whole transaction
         rolls back on any insertion failure or uniqueness conflict.
+
+        The preflight's verdict does not carry into the transaction: with the user and every live
+        grant row locked, the destination is selected again from that locked history and the
+        identity's permanent free-grant-consumed marker, so a grant that committed between the
+        preflight and the lock takes its own audited rejection — a subscription or manual grant that
+        appeared in between rejects as `registered_grant_destination_incompatible` rather than
+        being inserted alongside.
 
         It is entered only after the confirmed write on a device-checked kind, or after the database
         preflight and the mandatory Turnstile validation on the web kind.
@@ -1286,11 +1350,18 @@ class RegisteredGrantClaim:
                 and decision.destination is not RegisteredDestination.supersession_conversion):
             raise FreeGrantError("only the conversion path carries an existing usage row across")
         locks.lock_user(row.user_id)
+        # Step 1's lock covers every live grant row, and step 2 then repeats its selection against
+        # that locked history rather than reusing the pre-lock decision.
+        # [impl->req~grants-reg-txn-step-01-lock-and-reconfirm~1]
+        # [impl->req~grants-reg-txn-step-02-select-destination~1]
+        # [impl->req~grants-reg-gate-db-history-destination~1]
+        locked = tuple(locked_grants) if locked_grants is not None else self.grants
+        lock_grant_set(locks, sorted({held.grant_id for held in locked} | {grant_id}))
+        decision = self._reselect_destination(locked, decision, now=moment)
         superseded = decision.grant
         if decision.destination is RegisteredDestination.supersession_conversion:
             if superseded is None:
                 raise FreeGrantError("the conversion path supersedes one anonymous grant")
-            lock_grant_set(locks, sorted({superseded.grant_id, grant_id}))
             reconfirm_registered_claimant(row, account, moment,
                                           destination=decision.destination)
             assert_grant_source_never_rewritten(superseded.source, superseded.source)
@@ -1311,7 +1382,6 @@ class RegisteredGrantClaim:
                     "monthly_used across unchanged")
             carried = carried_usage
         else:
-            lock_grant_set(locks, [grant_id])
             reconfirm_registered_claimant(row, account, moment,
                                           destination=decision.destination)
         grant: dict[str, Any] = {

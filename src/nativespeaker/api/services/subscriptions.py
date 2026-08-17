@@ -8,8 +8,9 @@ from appstoreserverlibrary.models.Subtype import Subtype
 from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier, VerificationException
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from nativespeaker.api.auth.invariants import StoreProvider
 from nativespeaker.api.config import AppleConfig
-from nativespeaker.api.database import SubscriptionDB
+from nativespeaker.api.database import StorePurchaseTokensDB, SubscriptionDB
 from nativespeaker.api.exceptions import WebhookVerificationError
 from nativespeaker.api.models import SubscriptionPlan, SubscriptionProvider, SubscriptionStatus
 from nativespeaker.api.quota.grants import (
@@ -74,6 +75,7 @@ class SubscriptionService:
                  product_id_to_plan: dict[str, SubscriptionPlan]):
         self.db = db
         self.subscriptions_db = SubscriptionDB(db)
+        self.purchase_tokens_db = StorePurchaseTokensDB(db)
         self.verifier = verifier
         self.firebase_service = firebase_service
         self.product_id_to_plan = product_id_to_plan
@@ -165,15 +167,24 @@ class SubscriptionService:
         old_status = subscription.status if subscription else None
 
         if subscription is None:
-            app_account_token = transaction.appAccountToken
-            if not app_account_token:
-                logger.error("apple_notification_no_user",
+            # The owning user is resolved by matching the store-echoed token through
+            # `core.store_purchase_tokens` by `(provider, identity_value)`. The echoed value is
+            # purchase evidence about an attribution, never an active user identity, so it is never
+            # read as a user id: a token that is absent or resolves to no binding leaves the
+            # subscription unclaimed for restore's adoption path rather than attributing it.
+            # [impl->req~restore-purchase-flow-04-ingestion-resolves-and-creates~1]
+            # [impl->req~restore-echoed-uuid-is-evidence-not-identity~1]
+            echoed = transaction.appAccountToken
+            owner = (await self.purchase_tokens_db.owner_of(StoreProvider.apple, str(echoed))
+                     if echoed else None)
+            if owner is None:
+                logger.error("apple_notification_unattributed",
                              transaction_id=original_transaction_id,
                              uuid=notification_uuid)
                 return
 
             subscription = await self.subscriptions_db.create_subscription(
-                user_id=UUID(app_account_token),
+                user_id=owner,
                 provider=SubscriptionProvider.apple,
                 external_id=original_transaction_id,
                 plan=plan,

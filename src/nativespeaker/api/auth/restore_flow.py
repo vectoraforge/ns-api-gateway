@@ -67,12 +67,19 @@ class SubscriptionRow:
 
 @dataclass(frozen=True, slots=True)
 class PurchaseRow:
-    """The `core.store_purchases` row for one accepted store subscription."""
+    """The `core.store_purchases` row for one accepted store subscription: the attribution token
+    value or the server-generated internal purchase UUID recorded in its place, the store
+    transaction identifiers where the store supplied them, the user the attribution resolved to,
+    and — where it resolved to one — the token it resolved through, which is that same
+    `identity_value`."""
     purchase_id: UUID
     provider: StoreProvider
     external_id: str
     identity_value: str
     purchase_user_id: UUID | None = None
+    store_transaction_id: str | None = None
+    store_original_transaction_id: str | None = None
+    resolved_token_value: str | None = None
 
     @property
     def key(self) -> tuple[StoreProvider, str]:
@@ -87,14 +94,24 @@ def verify_signed_transaction(platform: Any,
                               verifier: StoreVerifier,
                               *,
                               performed_checks: Iterable[str]) -> VerifiedTransaction:
-    """Step 1: the backend verifies the supplied StoreKit signed transaction server-side."""
+    """Step 1: the backend verifies the supplied StoreKit signed transaction server-side.
+
+    Everything downstream reads what that verification returned and nothing else — the store
+    subscription's stable identity and the purchase UUID the same verified signed transaction
+    carried. The client cannot supply that carried value, so it cannot decide whether the step-4
+    comparison fires; a `carried_purchase_uuid` field in the request body is refused outright.
+    """
     # [impl->req~restore-flow-01-verify-signed-transaction~1]
+    if "carried_purchase_uuid" in dict(body or {}):
+        raise RestoreRejection(AuthEventResult.invalid_restore_proof,
+                               "the carried purchase UUID comes from the verified transaction")
     verified: VerifiedStoreProof = verify_store_artifact(platform, body, verifier,
                                                          performed_checks=performed_checks)
-    carried = dict(body or {}).get("carried_purchase_uuid")
-    return VerifiedTransaction(provider=StoreProvider(str(verified.provider)),
-                               external_id=verified.external_id,
-                               carried_purchase_uuid=str(carried) if carried else None)
+    return VerifiedTransaction(
+        provider=StoreProvider(str(verified.provider)),
+        external_id=verified.external_id,
+        carried_purchase_uuid=(str(verified.purchase_uuid)
+                               if verified.purchase_uuid is not None else None))
 
 
 # --- Step 2: resolve the canonical subscription --------------------------------------------------
@@ -161,6 +178,22 @@ def resolve_purchase_row(rows: Sequence[PurchaseRow],
 # --- Step 4: the carried purchase UUID ------------------------------------------------------------
 
 
+def assert_carried_uuid_matches_recorded(*,
+                                         carried: str | None,
+                                         recorded: str | None) -> str | None:
+    """The one comparison behind step 4, wherever it is reached from: a carried purchase UUID that
+    differs from the recorded attribution rejects with `restore_purchase_uuid_mismatch`, and no
+    other outcome stands for that condition."""
+    # [impl->req~restore-flow-04-carried-uuid-must-match-identity-value~1]
+    # [impl->req~restore-policy-purchase-uuid-mismatch-rejects~1]
+    if carried is None or recorded is None:
+        return carried
+    if carried != recorded:
+        raise RestoreRejection(AuthEventResult.restore_purchase_uuid_mismatch,
+                               "the subscription is attributed to a different token")
+    return carried
+
+
 def assert_carried_uuid_matches(verified: VerifiedTransaction,
                                 purchase_row: PurchaseRow | None) -> str | None:
     """Step 4: where the same verified signed transaction carries a purchase UUID value, it must
@@ -169,13 +202,9 @@ def assert_carried_uuid_matches(verified: VerifiedTransaction,
     token."""
     # [impl->req~restore-flow-04-carried-uuid-must-match-identity-value~1]
     # [impl->req~restore-policy-purchase-uuid-mismatch-rejects~1]
-    carried = verified.carried_purchase_uuid
-    if carried is None or purchase_row is None:
-        return carried
-    if carried != purchase_row.identity_value:
-        raise RestoreRejection(AuthEventResult.restore_purchase_uuid_mismatch,
-                               "the subscription is attributed to a different token")
-    return carried
+    return assert_carried_uuid_matches_recorded(
+        carried=verified.carried_purchase_uuid,
+        recorded=purchase_row.identity_value if purchase_row is not None else None)
 
 
 def internal_purchase_uuid(verified: VerifiedTransaction) -> str:
@@ -189,6 +218,22 @@ def internal_purchase_uuid(verified: VerifiedTransaction) -> str:
 
 
 # --- Step 5: branch selection ---------------------------------------------------------------------
+
+
+def already_linked_rejection(*, source_user_active: bool) -> RestoreRejection:
+    """The rejection every attempt refused because the store transaction is linked to a different
+    account takes — the owner branch and the lifetime binding alike.
+
+    The source-owner-active precondition is retained inside it: a linked source account that is
+    inactive, blocked or retired, audits as `restore_source_user_inactive` in place of
+    `store_transaction_already_linked`. Both surface as transfer-not-allowed.
+    """
+    # [impl->req~restore-policy-different-owner-rejects~1]
+    if not source_user_active:
+        return RestoreRejection(AuthEventResult.restore_source_user_inactive,
+                                "the linked source account is not active")
+    return RestoreRejection(AuthEventResult.store_transaction_already_linked,
+                            "this store transaction is already linked to another account")
 
 
 def select_branch(*,
@@ -225,23 +270,30 @@ def select_branch(*,
             ) from None
     if owner == destination_user_id:
         return RestoreBranch.same_account
-    if not source_user_active:
-        raise RestoreRejection(AuthEventResult.restore_source_user_inactive,
-                               "the linked source account is not active")
-    raise RestoreRejection(AuthEventResult.store_transaction_already_linked,
-                           "this store transaction is already linked to another account")
+    raise already_linked_rejection(source_user_active=source_user_active)
 
 
 def apply_lifetime_binding(*,
                            subscription: CurrentSubscriptionState,
-                           destination_user_id: UUID) -> BindingOutcome:
+                           destination_user_id: UUID,
+                           source_user_active: bool = True) -> BindingOutcome:
     """Independently of branch selection, the lifetime store-transaction-to-account binding applies
     to every attempt: a destination equal to a non-NULL binding proceeds as idempotent re-restore, a
-    destination that differs rejects with `store_transaction_already_linked` and is never silently
-    re-linked, and a successful restore of either branch sets the binding where it is still NULL."""
+    destination that differs rejects and is never silently re-linked, and a successful restore of
+    either branch sets the binding where it is still NULL.
+
+    A binding mismatch is one of the attempts this document rejects because the store transaction is
+    linked to a different account, so it takes the same substitution: an inactive linked source
+    account audits as `restore_source_user_inactive` rather than `store_transaction_already_linked`.
+    """
     # [impl->req~restore-policy-lifetime-binding-applies-to-every-attempt~1]
-    return bind_store_transaction(restore_bound_user_id=subscription.restore_bound_user_id,
-                                  destination_user_id=destination_user_id)
+    try:
+        return bind_store_transaction(restore_bound_user_id=subscription.restore_bound_user_id,
+                                      destination_user_id=destination_user_id)
+    except RestoreRejection as rejection:
+        if rejection.result is AuthEventResult.store_transaction_already_linked:
+            raise already_linked_rejection(source_user_active=source_user_active) from None
+        raise
 
 
 # --- Step 6: product-entitled state ---------------------------------------------------------------
@@ -354,7 +406,8 @@ def authorize_restore(*,
     """
     # [impl->req~restore-ownership-authorization-conjunction~1]
     binding = apply_lifetime_binding(subscription=subscription,
-                                     destination_user_id=destination_user_id)
+                                     destination_user_id=destination_user_id,
+                                     source_user_active=source_user_active)
     branch = select_branch(subscription=subscription,
                            destination_user_id=destination_user_id,
                            grant_user_id=grant_user_id,

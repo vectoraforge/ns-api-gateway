@@ -24,11 +24,12 @@ from uuid import UUID
 
 from nativespeaker.api.auth.audit import AttemptPhase, AuthEvent, AuthEventResult, terminal_event
 from nativespeaker.api.auth.barrier import ResolutionOutcome, VerifiedIdentityContext
-from nativespeaker.api.auth.challenges import ChallengeRow, ChallengeState, ClaimOutcome
+from nativespeaker.api.auth.challenges import ClaimOutcome
 from nativespeaker.api.auth.derived_identifiers import (
     UNIQUENESS_ANCHOR,
     DerivedValue,
     IdpAccountAliasIndex,
+    IdpInputSource,
     WebGateAccount,
     assert_uniqueness_anchor,
 )
@@ -1508,42 +1509,6 @@ def recall_absence_alternate() -> AuthOperation:
     return AuthOperation.claim_registered_grant
 
 
-# --- The operation challenge this attempt claims ---------------------------------------------------
-
-
-def assert_challenge_valid_for_claim(row: ChallengeRow,
-                                    context: VerifiedIdentityContext,
-                                    *,
-                                    now: datetime,
-                                    operation: AuthOperation =
-                                    AuthOperation.claim_anonymous_grant) -> ChallengeRow:
-    """The operation challenge the completion presents must be valid for this operation: issued
-    for it, bound to the barrier-verified identity, unexpired, and not already claimed or
-    consumed.
-
-    Every one of these is checked before the atomic claim, so a challenge that fails them is left
-    unclaimed — the identity- and operation-mismatch cases included, which reject here having made
-    no vendor call, no Cloudflare validation and no Firebase lookup. Each keeps its own specific
-    internal result under the shared `challenge_required` class.
-    """
-    # [impl->req~grants-anon-entry-challenge-valid~1]
-    if row.operation is not operation:
-        raise FreeGrantRejected(AuthEventResult.challenge_operation_mismatch, "challenge_required",
-                                f"the challenge was issued for {row.operation}")
-    bound = row.binding.bound_external_identity_id
-    if bound is None or (context.external_identity_id is not None
-                         and bound != context.external_identity_id):
-        raise FreeGrantRejected(AuthEventResult.challenge_identity_mismatch, "challenge_required",
-                                "the challenge binds another identity")
-    if row.state is not ChallengeState.issued:
-        raise FreeGrantRejected(AuthEventResult.challenge_consumed, "challenge_required",
-                                f"a {row.state} challenge cannot be claimed again")
-    if row.expires_at <= now:
-        raise FreeGrantRejected(AuthEventResult.challenge_expired, "challenge_required",
-                                "the operation challenge expired")
-    return row
-
-
 # --- The database eligibility preflight, and the invariant paths it takes --------------------------
 
 
@@ -1621,6 +1586,10 @@ class AnonymousGrantClaim:
         self.steps: list[ClaimStep] = []
         self.branch: ClaimBranch | None = None
         self.vendor_calls = 0
+        # The claimant identity row the barrier resolved. Every later step reads it from here, so
+        # the marker check, the under-lock reconfirmation and the marker write cannot be skipped by
+        # a caller that simply omits an argument.
+        self.row: ExternalIdentityRow | None = None
 
     # --- ordering -------------------------------------------------------------------------
 
@@ -1634,6 +1603,13 @@ class AnonymousGrantClaim:
         missing = [step for step in steps if step not in self.steps]
         if missing:
             raise FreeGrantError(f"{missing} must run first")
+
+    def _identity(self) -> ExternalIdentityRow:
+        """The claimant identity the barrier resolved. The eligibility check and the activation
+        transaction both read it from here, so neither can run without it."""
+        if self.row is None:
+            raise FreeGrantError("the barrier resolves the claimant identity before every check")
+        return self.row
 
     # --- the rules ------------------------------------------------------------------------
 
@@ -1652,27 +1628,22 @@ class AnonymousGrantClaim:
         if not pre_consumption_passed or not handler_admission_passed:
             raise FreeGrantError("the shared and handler-side admission checks must pass first")
 
-    def claim_challenge(self, gate: ChallengeGate,
-                        *,
-                        row: ChallengeRow | None = None,
-                        context: VerifiedIdentityContext | None = None,
-                        now: datetime | None = None) -> ClaimOutcome:
+    def claim_challenge(self, gate: ChallengeGate) -> ClaimOutcome:
         """The operation challenge is then claimed under the shared completion requirements —
         after the barrier's checks and handler-side admission, and still before any vendor call.
 
-        Where the presented row is available, it is checked for validity for
-        `claim_anonymous_grant` first: a challenge issued for another operation, bound to another
-        identity, expired, or already claimed or consumed is rejected here and left unclaimed.
+        Whether the challenge is valid for `claim_anonymous_grant` at all — issued for this
+        operation, bound to the barrier-verified identity, still `issued`, and unexpired — is the
+        shared completion path's decision and not a second one taken here: steps 6 and 7 reject a
+        wrong-operation or wrong-identity presentation before the claim and leave the row
+        unclaimed, and the atomic conditional update of step 8 is the one place expiry and the
+        already-used state are ever evaluated. This entry condition is that path, reached through
+        the thin no-vendor-call-before-the-claim guard the proof adapters own.
         """
         # [impl->req~grants-anon-rule-pre-consumption-then-challenge~1]
         # [impl->req~grants-anon-mutation-challenge-claim-order~1]
         # [impl->req~grants-anon-entry-challenge-valid~1]
         self._require(ClaimStep.admission, ClaimStep.identity_barrier)
-        if row is not None:
-            if context is None:
-                raise FreeGrantError("the challenge is checked against the barrier's own identity")
-            assert_challenge_valid_for_claim(
-                row, context, now=now if now is not None else datetime.now(UTC))
         self._record(ClaimStep.challenge_claim)
         claim = claim_challenge_before_vendor(gate.claim, vendor_calls_made=self.vendor_calls)
         if not claim.vendor_calls_allowed:
@@ -1709,6 +1680,10 @@ class AnonymousGrantClaim:
                                     "the claim needs an active identity")
         if context.external_identity_id is not None and context.external_identity_id != row.id:
             raise FreeGrantError("the resolved context and the identity row must be the same row")
+        # The barrier's row is this attempt's claimant from here on: the eligibility check reads
+        # its permanent free-grant-consumed marker, and the activation transaction reconfirms it
+        # under the lock and sets that marker.
+        self.row = row
         return row
 
     def select_branch(self,
@@ -1792,9 +1767,7 @@ class AnonymousGrantClaim:
     def check_database_eligibility(self,
                                    *,
                                    committed_free_sources: Sequence[AccessGrantSource],
-                                   active_grants: int = 0,
                                    active_sources: Sequence[AccessGrantSource] = (),
-                                   identity: ExternalIdentityRow | None = None,
                                    reconcile_vendor_state: bool = False,
                                    ledger: NativeClaimLedger | None = None) -> None:
         """After an unset native bit or a satisfied web gate, check database per-user eligibility
@@ -1811,6 +1784,10 @@ class AnonymousGrantClaim:
         and the backend must not infer, repair or reconcile vendor state from a grant. This is a
         preflight: the activation transaction repeats the live checks under lock, where the lifetime
         index's unique violation is the concurrency-safe final eligibility check.
+
+        Both halves of the lookup are mandatory: the marker is read from the claimant row the
+        barrier resolved, never from an optional argument, and an active grant is reported as its
+        source so it always takes the audited active-grant invariant path.
         """
         # The lifetime cap is checked across all three ledgers before any grant is issued — the
         # device or gate ledger in the platform-gate step this one requires, and the identity marker
@@ -1829,20 +1806,20 @@ class AnonymousGrantClaim:
         # burns neither.
         if ClaimStep.native_bit_write in self.steps:
             raise FreeGrantError("eligibility is checked before the device bit is burned")
+        active = list(active_sources)
+        if active:
+            # The specific active-grant invariant path, an active anonymous grant included, taken
+            # however the live grant set reports it.
+            raise active_grant_invariant_rejection(active[0])
         assert_database_bounds(committed_free_sources=committed_free_sources,
-                               active_grants=active_grants)
-        if identity is not None and not free_grant_available(
-                identity, AuthOperation.claim_anonymous_grant):
+                               active_grants=len(active))
+        if not free_grant_available(self._identity(), AuthOperation.claim_anonymous_grant):
             raise ClaimRejection(AuthEventResult.anti_abuse_already_claimed,
                                  "the permanent free-grant-consumed marker is already set")
         held = [source for source in committed_free_sources if source in FREE_GRANT_SOURCES]
         if len(held) >= LIFETIME_FREE_GRANTS_PER_ACCOUNT:
             raise ClaimRejection(AuthEventResult.anti_abuse_already_claimed,
                                  f"a committed {held[0]} grant refuses this claim")
-        active = [source for source in active_sources]
-        if active:
-            # The specific active-grant invariant path, an active anonymous grant included.
-            raise active_grant_invariant_rejection(active[0])
 
     def write_native_bit(self,
                          adapter: DeviceStateAdapter,
@@ -1878,7 +1855,7 @@ class AnonymousGrantClaim:
                  write: DeviceBitWrite | None = None,
                  web_account: WebGateAccount | None = None,
                  index: IdpAccountAliasIndex | None = None,
-                 identity_row: ExternalIdentityRow | None = None,
+                 locked_identity_row: ExternalIdentityRow | None = None,
                  context: ExecutionContext = CLAIM_EXECUTION_CONTEXT,
                  now: datetime | None = None) -> ActivatedGrant:
         """One activation transaction: the `core.access_grants` row with
@@ -1891,7 +1868,10 @@ class AnonymousGrantClaim:
 
         It is entered only after the confirmed native write, or after the web gates pass, and it
         re-resolves and locks the current user, identity and live grant set before reconfirming
-        them.
+        them. The claimant it reconfirms and marks is the identity re-resolved under the lock where
+        the caller supplies it, and otherwise the row the barrier resolved and this attempt holds —
+        never nothing, so no branch can commit a grant without the step-6 reconfirmation and the
+        step-7 marker write.
 
         A rejection taken inside this transaction consumes the claimed challenge too, atomically
         with its own rejection audit: a claimed challenge is dead whatever later check failed.
@@ -1912,7 +1892,10 @@ class AnonymousGrantClaim:
             return self._activate(user_id=user_id, grant_id=grant_id, tier_id=tier_id,
                                   transaction=transaction, locks=locks, reconfirm=reconfirm,
                                   challenge=challenge, write=write, web_account=web_account,
-                                  index=index, identity_row=identity_row, branch=branch, now=now)
+                                  index=index, branch=branch, now=now,
+                                  identity_row=(locked_identity_row
+                                                if locked_identity_row is not None
+                                                else self._identity()))
         except (ClaimRejection, FreeGrantRejected) as rejection:
             # This attempt holds the claim, so its challenge is consumed exactly once here —
             # atomically with the rejection audit — however late the check that failed was.
@@ -1937,7 +1920,7 @@ class AnonymousGrantClaim:
                   write: DeviceBitWrite | None,
                   web_account: WebGateAccount | None,
                   index: IdpAccountAliasIndex | None,
-                  identity_row: ExternalIdentityRow | None,
+                  identity_row: ExternalIdentityRow,
                   branch: ClaimBranch,
                   now: datetime | None) -> ActivatedGrant:
         """The transaction's own body. Every rejection it raises leaves through `activate`, which
@@ -1958,10 +1941,11 @@ class AnonymousGrantClaim:
         locks.lock_user(user_id)
         lock_grant_set(locks, [grant_id])
         # Under the lock: the user and identity are still active, the identity is still the same
-        # identity the gate ran against, and the free-grant-consumed marker is still unset.
+        # identity the gate ran against, and the free-grant-consumed marker is still unset. Every
+        # branch runs this reconfirmation, web included.
         # [impl->req~grants-anon-step-06-activation-transaction~1]
-        if identity_row is not None:
-            reconfirm_claimant(identity_row, branch, web_account=web_account)
+        # [impl->req~grants-invariant-12~1]
+        reconfirm_claimant(identity_row, branch, web_account=web_account)
         grant: dict[str, Any] = {
             "id": grant_id,
             "user_id": user_id,
@@ -1977,8 +1961,8 @@ class AnonymousGrantClaim:
         # attestation has verified and the vendor has confirmed the write, so this is the point
         # the identity record takes the pin, in the transaction that commits the grant.
         # [impl->req~grants-branch-pinning-and-shared-admission~1]
-        pinned: ExternalIdentityRow | None = identity_row
-        if identity_row is not None and branch in NATIVE_BRANCHES:
+        pinned: ExternalIdentityRow = identity_row
+        if branch in NATIVE_BRANCHES:
             pinned = pin_native_platform(identity_row, branch, attestation_verified=True)
         alias: DerivedValue | None = None
         if branch is ClaimBranch.web:
@@ -1990,9 +1974,17 @@ class AnonymousGrantClaim:
             # `web_anonymous_gate` consumption row. A conflict on the stable provider UID rolls the
             # transaction back, audits `anti_abuse_already_claimed` and surfaces
             # `device_grant_exhausted` — never `account_already_claimed`, which belongs to the
-            # registered gate.
+            # registered gate. The registry's own resolve-or-create rules are `registry_schema`'s,
+            # and this is where the web claim runs them.
             # [impl->req~grants-anon-step-07-insert-rows~1]
-            index.register(account)
+            from nativespeaker.api.auth.registry_schema import (  # noqa: PLC0415
+                resolve_or_create_provider_account,
+            )
+            resolve_or_create_provider_account(
+                index, account,
+                source=IdpInputSource.web_gate_validated_provider_data_entry,
+                transaction=transaction, grant_transaction=transaction,
+                consumption_transaction=transaction)
             try:
                 alias = consume_free_grant_gate(index, account,
                                                 GateConsumptionKind.web_anonymous_gate, grant_id,
@@ -2008,13 +2000,14 @@ class AnonymousGrantClaim:
             idp_account_hash_key_version=alias.key_version if alias is not None else None,
             created_at=now, grant_columns=grant)
         # The claimant identity's permanent free-grant-consumed marker, set in the transaction that
-        # commits the grant and never cleared.
+        # commits the grant and never cleared — on every branch of this endpoint, so a web-claimed
+        # free grant refuses `claim_registered_grant` for that user afterwards.
         # [impl->req~grants-anon-step-07-insert-rows~1]
-        if pinned is not None:
-            pinned = mark_free_grant_consumed(pinned, now=now if now is not None
-                                              else datetime.now(UTC),
-                                              grant_transaction=transaction,
-                                              marker_transaction=transaction)
+        # [impl->req~grants-invariant-12~1]
+        pinned = mark_free_grant_consumed(pinned, now=now if now is not None
+                                          else datetime.now(UTC),
+                                          grant_transaction=transaction,
+                                          marker_transaction=transaction)
         usage = free_grant_usage_row(grant_id, transaction=transaction, now=now)
         # The grant, its anti-abuse row, any gate-consumption row and the usage row commit together,
         # so the deferred foreign keys hold at commit.

@@ -1098,6 +1098,46 @@ class TestCompletionSteps:
         assert excinfo.value.result is AuthEventResult.challenge_consumed
         assert excinfo.value.error_code == "challenge_required"
 
+    # The anonymous claim's entry condition "the operation challenge is valid for
+    # `claim_anonymous_grant`" is this path and no separate check: `free_grants` reaches it through
+    # the claim and adds only the no-vendor-call-before-the-claim guard.
+    # [utest->req~grants-anon-entry-challenge-valid~1]
+    async def test_a_challenge_invalid_for_the_anonymous_claim_never_reaches_endpoint_work(self, h):
+        operation = AuthOperation.claim_anonymous_grant
+        # Issued for another operation.
+        other = await h.prepared(AuthOperation.claim_registered_grant)
+        endpoint = h.endpoint(operation)
+        with pytest.raises(ChallengeRejection) as excinfo:
+            await h.service.complete(operation, None, other.challenge_id,
+                                     linked_context(other.binding.bound_external_identity_id),
+                                     endpoint)
+        assert excinfo.value.result is AuthEventResult.challenge_operation_mismatch
+        # Bound to another identity.
+        h.store.rows.clear()
+        row = await h.prepared(operation)
+        with pytest.raises(ChallengeRejection) as excinfo:
+            await h.service.complete(operation, None, row.challenge_id, linked_context(), endpoint)
+        assert excinfo.value.result is AuthEventResult.challenge_identity_mismatch
+        # Neither mismatch claimed or consumed the row, and neither reached the endpoint.
+        assert h.store.rows[row.challenge_id].state is ChallengeState.issued
+        assert endpoint.calls == []
+        # Already claimed, and expired: both are the atomic claim's own verdicts.
+        context = linked_context(row.binding.bound_external_identity_id)
+        await h.store.claim(row.challenge_id, uuid7())
+        with pytest.raises(ChallengeRejection) as excinfo:
+            await h.service.complete(operation, None, row.challenge_id, context, endpoint)
+        assert excinfo.value.result is AuthEventResult.challenge_consumed
+        h.store.rows.clear()
+        fresh = await h.prepared(operation)
+        h.clock.advance(CHALLENGE_TTL_SECONDS + 1)
+        with pytest.raises(ChallengeRejection) as excinfo:
+            await h.service.complete(operation, None, fresh.challenge_id,
+                                     linked_context(fresh.binding.bound_external_identity_id),
+                                     endpoint)
+        assert excinfo.value.result is AuthEventResult.challenge_expired
+        assert excinfo.value.error_code == "challenge_required"
+        assert endpoint.calls == []
+
     # [utest->req~shared-completion-step-09~1]
     async def test_the_variant_comparison_runs_on_the_claimed_row_and_consumes_it(self, h):
         context = preauth_context()

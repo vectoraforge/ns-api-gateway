@@ -30,6 +30,7 @@ from nativespeaker.api.auth.grant_schema import (
     IDP_ACCOUNT_HASH_IS_AUTHORITATIVE,
     MALFORMED_EVIDENCE_TUPLES,
     NATIVE_CLAIM_PROVIDERS,
+    REGISTERED_ACCOUNT_GRANT_COLUMN,
     REGISTERED_ACTIVATION_RULES_OWNER,
     VALID_EVIDENCE_TUPLES,
     VENDOR_BIT_COMPENSATIONS,
@@ -173,9 +174,12 @@ def test_created_at_is_the_insert_timestamp():
 def test_the_declared_column_set_is_the_applied_column_set():
     declared = {column.name for column in ANTI_ABUSE_COLUMNS}
     applied = set(ANTI_ABUSE.columns)
-    # The one extra applied column is the generated key the registered gate's uniqueness uses.
-    assert applied - declared == {"registered_account_grant_id"}
-    assert declared - applied == set()
+    assert declared == applied
+    # The generated key the registered gate's uniqueness uses is part of that set, with the arm
+    # that populates it and the UNIQUE constraint the applied schema gives it.
+    assert REGISTERED_ACCOUNT_GRANT_COLUMN.expression in ANTI_ABUSE.columns[
+        REGISTERED_ACCOUNT_GRANT_COLUMN.name].replace("\n", " ").replace("  ", " ")
+    assert f"UNIQUE ({REGISTERED_ACCOUNT_GRANT_COLUMN.name})" in " ".join(ANTI_ABUSE.constraints)
 
 
 # --- The evidence shapes the per-source CHECK admits ---------------------------------------------

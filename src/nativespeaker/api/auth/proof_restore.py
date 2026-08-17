@@ -57,10 +57,13 @@ CLIENT_ASSERTED_VERIFICATION: frozenset[str] = frozenset()
 
 @dataclass(frozen=True, slots=True)
 class VerifiedStoreProof:
-    """What server-side verification of the store artifact yields."""
+    """What server-side verification of the store artifact yields: the store subscription's stable
+    identity, and the purchase UUID the same verified signed transaction carried. A store-initiated
+    transaction carries none, so that value may be absent — but it is never taken from the request
+    body."""
     provider: StoreProvider
     external_id: str
-    purchase_uuid: UUID
+    purchase_uuid: UUID | None = None
 
 
 StoreVerifier = Callable[[StoreProvider, str], VerifiedStoreProof]

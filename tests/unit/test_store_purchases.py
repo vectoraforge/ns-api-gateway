@@ -5,9 +5,10 @@ from uuid import UUID, uuid4, uuid7
 
 import pytest
 
+from nativespeaker.api.auth.audit import AuthEventResult
 from nativespeaker.api.auth.entitlement import AccessGrantSource, AccessGrantStatus
 from nativespeaker.api.auth.invariants import AttributionTokens, StoreProvider
-from nativespeaker.api.auth.restore import RestoreContractError
+from nativespeaker.api.auth.restore import RestoreContractError, RestoreRejection
 from nativespeaker.api.auth.restore_flow import PurchaseRow, SubscriptionRow, VerifiedTransaction
 from nativespeaker.api.auth.store_purchases import (
     INGESTION_AUDIT_ROWS,
@@ -149,6 +150,41 @@ class TestStorePurchasesAttributionTable:
         row = build_purchase_row(provider=StoreProvider.apple, external_id=EXTERNAL_ID,
                                 identity_value=str(uuid4()), purchase_user_id=None)
         assert row.purchase_user_id is None
+        # And no resolved token: the row is attributed to nobody.
+        assert row.resolved_token_value is None
+
+    def test_the_row_records_the_store_transaction_identifiers_and_resolved_token(self):
+        # [utest->req~restore-store-purchases-attribution-table~1]
+        # [utest->req~restore-purchase-flow-04-ingestion-resolves-and-creates~1]
+        row = build_purchase_row(provider=StoreProvider.apple, external_id=EXTERNAL_ID,
+                                identity_value=TOKEN, purchase_user_id=BUYER,
+                                store_transaction_id="2000000999",
+                                store_original_transaction_id=EXTERNAL_ID)
+        assert row.store_transaction_id == "2000000999"
+        assert row.store_original_transaction_id == EXTERNAL_ID
+        # Where the attribution resolved, the resolved token is that same `identity_value` — which
+        # is exactly what the applied CHECK admits.
+        assert row.resolved_token_value == row.identity_value
+        # The ingestion transaction carries them through from the verified purchase.
+        ingested = ingest_verified_purchase(
+            provider=StoreProvider.apple, external_id=EXTERNAL_ID,
+            verified_purchase={"appAccountToken": TOKEN, "transactionId": "2000000999",
+                               "originalTransactionId": EXTERNAL_ID},
+            tokens=tokens_for(), product_id=PRODUCT, product_tier_map=TIER_MAP,
+            status=SubscriptionStatus.active, transaction=object(), now=NOW)
+        assert ingested.purchase.store_transaction_id == "2000000999"
+        assert ingested.purchase.store_original_transaction_id == EXTERNAL_ID
+        assert ingested.purchase.resolved_token_value == TOKEN
+        assert ingested.resolved_token_value == TOKEN
+        # An echoed token that resolves to nobody leaves the row unattributed on all three.
+        unresolved = ingest_verified_purchase(
+            provider=StoreProvider.apple, external_id=EXTERNAL_ID,
+            verified_purchase={"appAccountToken": str(uuid4()), "transactionId": "2000001000"},
+            tokens=tokens_for(), product_id=PRODUCT, product_tier_map=TIER_MAP,
+            status=SubscriptionStatus.active, transaction=object(), now=NOW)
+        assert unresolved.purchase.purchase_user_id is None
+        assert unresolved.purchase.resolved_token_value is None
+        assert unresolved.purchase.store_transaction_id == "2000001000"
 
     def test_the_table_carries_no_lifecycle_history(self):
         # [utest->req~restore-store-purchases-attribution-table~1]
@@ -189,11 +225,15 @@ class TestEchoedUuidIsEvidence:
 
     def test_a_carried_uuid_that_is_not_the_row_s_attribution_is_refused(self):
         # [utest->req~restore-echoed-uuid-is-evidence-not-identity~1]
+        # [utest->req~restore-policy-purchase-uuid-mismatch-rejects~1]
         existing = PurchaseRow(purchase_id=uuid7(), provider=StoreProvider.apple,
                                external_id=EXTERNAL_ID, identity_value=TOKEN)
         verified = VerifiedTransaction(StoreProvider.apple, EXTERNAL_ID, "another")
-        with pytest.raises(StorePurchaseError):
+        # It takes step 4's own audited rejection, not an internal contract error: the condition
+        # has one outcome wherever it is reached from.
+        with pytest.raises(RestoreRejection) as refused:
             resolve_or_create_purchase_row([existing], verified)
+        assert refused.value.result is AuthEventResult.restore_purchase_uuid_mismatch
 
 
 class TestPurchaseFlowClientSteps:

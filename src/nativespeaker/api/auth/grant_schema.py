@@ -578,14 +578,21 @@ def free_claim_outcome(endpoint: str,
     if source is None:
         raise GrantSchemaError(f"{endpoint} is not a free-credit claim endpoint")
     committed = set(committed_sources)
+    if source in committed or len(committed & FREE_GRANT_SOURCES) >= FREE_GRANTS_PER_ACCOUNT:
+        # The allowance is already accounted for. The conversion is a transition of that same
+        # allowance and can happen at most once, so a repeat call for a user who already holds the
+        # committed registered grant is refused here rather than converting a second time.
+        if (converting_active_anonymous_grant
+                and source is not AccessGrantSource.registered_account_grant):
+            raise GrantSchemaError("only claim_registered_grant converts an anonymous grant")
+        if (converting_active_anonymous_grant and source not in committed
+                and AccessGrantSource.anonymous_device_grant in committed):
+            return FreeClaimOutcome.converted
+        return FreeClaimOutcome.refused
     if converting_active_anonymous_grant:
         if source is not AccessGrantSource.registered_account_grant:
             raise GrantSchemaError("only claim_registered_grant converts an anonymous grant")
-        if AccessGrantSource.anonymous_device_grant not in committed:
-            raise GrantSchemaError("the conversion path needs the user's active anonymous grant")
-        return FreeClaimOutcome.converted
-    if len(committed & FREE_GRANT_SOURCES) >= FREE_GRANTS_PER_ACCOUNT:
-        return FreeClaimOutcome.refused
+        raise GrantSchemaError("the conversion path needs the user's active anonymous grant")
     return FreeClaimOutcome.issued
 
 
@@ -604,9 +611,10 @@ SUBSCRIPTION_GRANT_CREATORS: tuple[GrantCreator, ...] = (
 
 @dataclass(frozen=True, slots=True)
 class IngestedTerm:
-    """The rows one paid term's ingestion transaction writes."""
+    """The rows one paid term's ingestion transaction writes. A redelivered term writes none, so
+    it carries no usage row at all: the live counter is left exactly as it stands."""
     grant: GrantRowProposal
-    usage: NewUsageRow
+    usage: NewUsageRow | None = None
     expired_grant_ids: tuple[UUID, ...] = ()
     idempotent_no_op: bool = False
     deleted_grant_ids: tuple[UUID, ...] = field(default_factory=tuple)
@@ -643,15 +651,29 @@ def ingest_subscription_term(*,
                             existing_term_grant_id: UUID | None = None,
                             client_supplied_tier_id: str | None = None,
                             free_tier_monthly_used: int | None = None) -> IngestedTerm:
-    """Verified purchase ingestion, as one transaction.
+    """Verified purchase ingestion, as one transaction — the grant-side view of the flow
+    `store_purchases` owns end to end.
 
     One grant row per paid term under the flip-then-insert renewal flow: any index-blocking grant
     is expired first — never deleted — then the new grant and its `core.user_monthly_usage` row,
     seeded `monthly_used = 0`, are inserted. Free-tier usage is never copied into the paid
     counter. The tier comes from the server-controlled store-product mapping. A redelivered
-    same-term event is an idempotent no-op: it duplicates no grant and resets no usage.
+    same-term event is an idempotent no-op: it duplicates no grant and writes no usage row, so the
+    live counter cannot be reset by one.
+
+    The ordering rules themselves are not restated here: the redelivery no-op is
+    `store_purchases.renew_per_term`'s and the expire-before-insert half, with its reason and its
+    "no insert has been recorded yet" check, is `store_purchases.expire_before_insert`'s. What this
+    function adds is the schema's own facts — which creators may produce a subscription-backed
+    grant, which paths may flip a time-ended row, and the grant and usage row shapes.
     """
     # [impl->req~schema-access-grants-ingestion-creates-subscription-grant~1]
+    from nativespeaker.api.auth.store_purchases import (  # noqa: PLC0415
+        IngestionLedger,
+        expire_before_insert,
+        renew_per_term,
+    )
+
     if creator not in SUBSCRIPTION_GRANT_CREATORS:
         raise GrantSchemaError(f"{creator} does not create a subscription-backed grant")
     assert_grant_creator(creator, AccessGrantSource.subscription)
@@ -663,16 +685,20 @@ def ingest_subscription_term(*,
                                        client_supplied_tier_id=client_supplied_tier_id)
     # A redelivery of the term that already has its grant changes nothing at all.
     if existing_term_grant_id is not None:
+        renewal = renew_per_term(active_grant_id=existing_term_grant_id, time_ended=False,
+                                 already_applied=True)
+        if not renewal.idempotent_no_op or renewal.new_grant_id is not None:
+            raise GrantSchemaError("a redelivered term duplicates no grant and writes no usage")
         return IngestedTerm(
             grant=GrantRowProposal(id=existing_term_grant_id, user_id=user_id, tier_id=tier_id,
                                    source=AccessGrantSource.subscription,
                                    status=AccessGrantStatus.active, starts_at=starts_at,
                                    ends_at=ends_at, subscription_id=subscription_id),
-            usage=NewUsageRow(grant_id=existing_term_grant_id, monthly_period="", monthly_used=0),
-            idempotent_no_op=True)
-    # The flip half of flip-then-insert: the blocking row is expired, never deleted.
-    expired = lazy_expiry_flip(path="grant_issuance_or_replacement",
-                              ended_grant_ids=blocking_grant_ids)
+            usage=None, idempotent_no_op=True)
+    # The flip half of flip-then-insert: the blocking row is expired, never deleted, and recorded
+    # with its reason before any insert statement.
+    lazy_expiry_flip(path="grant_issuance_or_replacement", ended_grant_ids=blocking_grant_ids)
+    expired = expire_before_insert(blocking_grant_ids, ledger=IngestionLedger())
     assert_active_subscription_entitled(status=AccessGrantStatus.active,
                                        subscription_status=subscription_status)
     grant = access_grant_row(grant_id=grant_id, user_id=user_id, tier_id=tier_id,
@@ -790,9 +816,21 @@ ANTI_ABUSE_COLUMNS: tuple[AntiAbuseColumn, ...] = (
     # [impl->req~schema-access-grants-anti-abuse-idp-hash-key-version-field~1]
     AntiAbuseColumn("idp_account_hash_key_version", "SMALLINT", True,
                     "the HMAC key version the alias was derived with"),
+    # The generated key the registered gate's uniqueness and the grant side's foreign key hang off;
+    # it is part of the row shape this file owns.
+    # [impl->req~schema-access-grants-anti-abuse-sole-row-shape-owner~1]
+    AntiAbuseColumn("registered_account_grant_id", "UUID", True,
+                    "generated: the grant id on registered-account-grant rows, unique"),
     # [impl->req~schema-access-grants-anti-abuse-created-at-field~1]
     AntiAbuseColumn("created_at", "TIMESTAMPTZ", False, "insert timestamp"),
 )
+
+# The generated column above, with the arm that populates it and the uniqueness it carries.
+# [impl->req~schema-access-grants-anti-abuse-sole-row-shape-owner~1]
+REGISTERED_ACCOUNT_GRANT_COLUMN = GeneratedColumn(
+    "registered_account_grant_id",
+    "CASE WHEN grant_source = 'registered_account_grant' THEN grant_id END")
+REGISTERED_ACCOUNT_GRANT_UNIQUE_ON: tuple[str, ...] = (REGISTERED_ACCOUNT_GRANT_COLUMN.name,)
 
 # The composite foreign key that binds the row to its grant, with the three declarative
 # properties it supplies at once: source agreement, cascade on delete, and either-order insertion

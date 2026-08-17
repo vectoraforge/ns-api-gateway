@@ -71,11 +71,35 @@ SELECT_STORE_PURCHASE_TOKENS = text("""
 """)
 
 
+# The owner resolution ingestion performs: a store-echoed token is matched to its binding through
+# `(provider, identity_value)`. The echoed value is evidence about an attribution, never a user id.
+SELECT_STORE_PURCHASE_TOKEN_OWNER = text("""
+    SELECT user_id
+      FROM core.store_purchase_tokens
+     WHERE provider = :provider AND identity_value = :identity_value
+""")
+
+
 class StorePurchaseTokensDB:
-    """The `core.store_purchase_tokens` read behind `GET /users/me`."""
+    """The `core.store_purchase_tokens` reads: the per-user tokens behind `GET /users/me`, and the
+    reverse lookup verified purchase ingestion resolves an echoed token through."""
 
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    async def owner_of(self, provider: StoreProvider, identity_value: str) -> UUID | None:
+        """The user a store-echoed token binds to, matched through `core.store_purchase_tokens` by
+        `(provider, identity_value)`. A token that matches no binding resolves to no user, and the
+        echoed value is never used as an ownership selector in its own right."""
+        # [impl->req~restore-purchase-flow-04-ingestion-resolves-and-creates~1]
+        # [impl->req~restore-echoed-uuid-is-evidence-not-identity~1]
+        if not identity_value:
+            return None
+        result = await self.session.execute(
+            SELECT_STORE_PURCHASE_TOKEN_OWNER,
+            {"provider": str(provider), "identity_value": identity_value})
+        row = result.first()
+        return row.user_id if row is not None else None
 
     async def tokens_for(self, user_id: UUID) -> dict[StoreProvider, str]:
         """The user's stored attribution token per store provider. A store with no row is simply

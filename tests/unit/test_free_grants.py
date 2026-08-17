@@ -1,7 +1,8 @@
 """Free-credit grants and anti-abuse: the two claim operations and the anonymous claim's rules."""
 
 import re
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid7
@@ -24,6 +25,7 @@ from nativespeaker.api.auth.external_identities import (
     ExternalIdentityRow,
     IdentityState,
     NativeClaimPlatform,
+    free_grant_available,
     pin_native_claim_platform,
 )
 from nativespeaker.api.auth.free_grants import (
@@ -184,13 +186,15 @@ def identity_row(*,
                  native_claim_platform: NativeClaimPlatform | None = None,
                  identity_state: IdentityState = IdentityState.active,
                  row_id: UUID | None = None,
-                 user_id: UUID | None = None) -> ExternalIdentityRow:
+                 user_id: UUID | None = None,
+                 free_grant_consumed_at: datetime | None = None) -> ExternalIdentityRow:
     return ExternalIdentityRow(id=row_id or uuid7(), user_id=user_id or uuid7(),
                                issuer="https://securetoken.google.com/test-project",
                                subject="firebase-subject",
                                provider=provider, provider_uid=provider_uid,
                                identity_state=identity_state,
-                               native_claim_platform=native_claim_platform)
+                               native_claim_platform=native_claim_platform,
+                               free_grant_consumed_at=free_grant_consumed_at)
 
 
 def google_row(**overrides: Any) -> ExternalIdentityRow:
@@ -329,7 +333,7 @@ def run_native_claim(adapter: Any,
                                transaction=transaction,
                                locks=LockLedger(LockingPath.claim_anonymous_grant_completion),
                                reconfirm=lambda: True, challenge=challenge, write=write,
-                               identity_row=row, now=NOW)
+                               now=NOW)
     return claim, activated
 
 
@@ -1280,6 +1284,50 @@ def test_the_activation_transaction_writes_every_row_and_consumes_the_challenge(
     _, web = run_web_claim()
     assert web.anti_abuse["native_claim_provider"] is None
     assert web.anti_abuse["idp_account_hash"] is not None
+
+
+# [utest->req~grants-invariant-12~1]
+# [utest->req~grants-anon-step-07-insert-rows~1]
+def test_every_branch_marks_the_claimant_and_a_marked_claimant_is_refused():
+    """The permanent free-grant-consumed marker is checked and set in the transaction that commits
+    the grant on every branch of this endpoint, the web branch included: no activation can complete
+    without it, and no caller can omit the claimant."""
+    _, web = run_web_claim()
+    assert web.identity is not None
+    assert web.identity.free_grant_consumed_at is not None
+    assert free_grant_available(web.identity, AuthOperation.claim_anonymous_grant) is False
+    _, native = run_native_claim(DeviceCheckAdapter(APPLE, FakeDeviceCheck()), IOS_MATERIAL,
+                                IOS_EVIDENCE, ("apple_team_id", "devicecheck_environment"))
+    assert native.identity is not None and native.identity.free_grant_consumed_at is not None
+    # An already-marked claimant is refused on the web branch too, in the preflight and again
+    # under the lock.
+    consumed = google_row(free_grant_consumed_at=NOW - timedelta(days=30))
+    with pytest.raises(ClaimRejection) as refused:
+        run_web_claim(row=consumed)
+    assert refused.value.result is AuthEventResult.anti_abuse_already_claimed
+    claim = AnonymousGrantClaim()
+    challenge = FakeChallenge()
+    row = google_row()
+    index = alias_index()
+    claim.admit(pre_consumption_passed=True, handler_admission_passed=True)
+    claim.resolve_identity(context_for(row), row)
+    claim.claim_challenge(challenge)
+    claim.select_branch(WEB_EVIDENCE, row, verified=("hostname", "action"))
+    reading = claim.read_platform_gate(web=web_gate_read(row), index=index)
+    claim.check_database_eligibility(committed_free_sources=())
+    with pytest.raises(ClaimRejection) as under_lock:
+        claim.activate(user_id=row.user_id, grant_id=uuid7(), tier_id=FREE_TIER,
+                       transaction=object(),
+                       locks=LockLedger(LockingPath.claim_anonymous_grant_completion),
+                       reconfirm=lambda: True, challenge=challenge,
+                       web_account=reading.web_account, index=index,
+                       locked_identity_row=replace(row, free_grant_consumed_at=NOW), now=NOW)
+    assert under_lock.value.result is AuthEventResult.anti_abuse_already_claimed
+    # A claim whose barrier step never ran holds no claimant, so it cannot activate at all.
+    unresolved = AnonymousGrantClaim()
+    unresolved.admit(pre_consumption_passed=True, handler_admission_passed=True)
+    with pytest.raises(FreeGrantError):
+        unresolved.check_database_eligibility(committed_free_sources=())
 
 
 # [utest->req~grants-anon-rule-reconfirm-in-transaction~1]

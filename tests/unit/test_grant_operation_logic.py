@@ -65,7 +65,6 @@ from nativespeaker.api.auth.free_grants import (
     android_anonymous_path_available,
     anonymous_claim_gating,
     anonymous_claim_source,
-    assert_challenge_valid_for_claim,
     assert_no_enrolled_key,
     device_check_bypass_enabled,
     recall_absence_alternate,
@@ -346,15 +345,14 @@ def activate_native(claim: AnonymousGrantClaim,
                     ledger: NativeClaimLedger,
                     challenge: FakeChallenge,
                     *,
-                    identity_row: ExternalIdentityRow | None = None) -> Any:
+                    locked_identity_row: ExternalIdentityRow | None = None) -> Any:
     write = claim.write_native_bit(adapter, material, ledger=ledger)
     transaction = object()
     return claim.activate(user_id=row.user_id, grant_id=uuid7(), tier_id=FREE_TIER,
                           transaction=transaction,
                           locks=LockLedger(LockingPath.claim_anonymous_grant_completion),
                           reconfirm=lambda: True, challenge=challenge, write=write,
-                          identity_row=identity_row if identity_row is not None else row,
-                          now=NOW)
+                          locked_identity_row=locked_identity_row, now=NOW)
 
 
 def web_claim(*,
@@ -497,35 +495,33 @@ def test_the_anonymous_claim_request_carries_no_restore_proof() -> None:
 
 # [utest->req~grants-anon-entry-challenge-valid~1]
 def test_the_challenge_must_be_valid_for_this_operation_before_it_is_claimed() -> None:
+    """Validity for `claim_anonymous_grant` is the shared completion path's verdict, taken from
+    the one atomic claim and never re-derived here. `test_auth_challenges.py` drives that path for
+    this operation; what this endpoint adds is that no vendor work precedes it and that a row it
+    does not hold is never treated as claimed."""
     row = identity_row()
     context = context_for(row)
-    assert assert_challenge_valid_for_claim(challenge_row(row), context, now=NOW).challenge_id \
-        == "ch-1"
-    cases = {
-        AuthEventResult.challenge_operation_mismatch:
-            challenge_row(row, operation=AuthOperation.claim_registered_grant),
-        AuthEventResult.challenge_identity_mismatch: challenge_row(row, bound=uuid7()),
-        AuthEventResult.challenge_consumed: challenge_row(row, state=ChallengeState.claimed),
-        AuthEventResult.challenge_expired:
-            challenge_row(row, expires_at=NOW - timedelta(seconds=1)),
-    }
-    for result, presented in cases.items():
-        with pytest.raises(FreeGrantRejected) as refused:
-            assert_challenge_valid_for_claim(presented, context, now=NOW)
-        assert refused.value.result is result
-        assert refused.value.error_code == "challenge_required"
-    # The mismatching cases reject before the claim, so nothing is claimed or consumed.
-    challenge = FakeChallenge()
-    claim = AnonymousGrantClaim()
-    claim.admit(pre_consumption_passed=True, handler_admission_passed=True)
-    claim.resolve_identity(context, row)
-    with pytest.raises(FreeGrantRejected):
-        claim.claim_challenge(challenge,
-                              row=challenge_row(row,
-                                                operation=AuthOperation.claim_registered_grant),
-                              context=context, now=NOW)
-    assert (challenge.claims, challenge.consumes) == (0, 0)
-    assert ClaimStep.challenge_claim not in claim.steps
+    for outcome in (ClaimOutcome.expired, ClaimOutcome.already_used, ClaimOutcome.not_found):
+        challenge = FakeChallenge(outcome=outcome)
+        claim = AnonymousGrantClaim()
+        claim.admit(pre_consumption_passed=True, handler_admission_passed=True)
+        claim.resolve_identity(context, row)
+        with pytest.raises(FreeGrantError):
+            claim.claim_challenge(challenge)
+        # The attempt that did not claim the row performs no vendor work at all.
+        assert (challenge.claims, challenge.consumes) == (1, 0)
+        assert claim.vendor_calls == 0
+        with pytest.raises(FreeGrantError):
+            claim.read_platform_gate(
+                native=(DeviceCheckAdapter(APPLE, FakeDeviceCheck()), IOS_MATERIAL,
+                        NativeClaimLedger()))
+    # The claim itself is the endpoint's only challenge check, and it precedes every vendor call.
+    won = FakeChallenge()
+    claimed = AnonymousGrantClaim()
+    claimed.admit(pre_consumption_passed=True, handler_admission_passed=True)
+    claimed.resolve_identity(context, row)
+    assert claimed.claim_challenge(won) is ClaimOutcome.claimed
+    assert ClaimStep.challenge_claim in claimed.steps
 
 
 # [utest->req~grants-anon-entry-vendor-material~1]
@@ -721,8 +717,7 @@ def test_step_04_checks_the_marker_and_the_history_before_any_slot_is_burned() -
     claim, _, ledger, _ = native_claim(adapter, IOS_MATERIAL, IOS_EVIDENCE, IOS_VERIFIED,
                                        row=consumed)
     with pytest.raises(ClaimRejection) as refused:
-        claim.check_database_eligibility(committed_free_sources=(), identity=consumed,
-                                         ledger=ledger)
+        claim.check_database_eligibility(committed_free_sources=(), ledger=ledger)
     assert refused.value.result is AuthEventResult.anti_abuse_already_claimed
     assert transport.updates == []
     # Any committed free grant of either source refuses it too.
@@ -813,7 +808,7 @@ def test_step_06_locks_and_reconfirms_the_claimant_under_the_lock() -> None:
     claim.check_database_eligibility(committed_free_sources=(), ledger=ledger)
     with pytest.raises(ClaimRejection):
         activate_native(claim, row, adapter, IOS_MATERIAL, ledger, challenge,
-                        identity_row=replace(row, free_grant_consumed_at=NOW))
+                        locked_identity_row=replace(row, free_grant_consumed_at=NOW))
     assert challenge.consumes == 1
 
 
@@ -827,8 +822,7 @@ def test_step_07_writes_every_row_sets_the_marker_and_maps_the_gate_conflict() -
                                transaction=transaction,
                                locks=LockLedger(LockingPath.claim_anonymous_grant_completion),
                                reconfirm=lambda: True, challenge=challenge,
-                               web_account=reading.web_account, index=index, identity_row=row,
-                               now=NOW)
+                               web_account=reading.web_account, index=index, now=NOW)
     assert activated.grant["source"] is AccessGrantSource.anonymous_device_grant
     assert activated.grant["tier_id"] == FREE_TIER
     assert activated.anti_abuse["idp_account_hash"] is not None
@@ -860,8 +854,7 @@ def test_step_07_writes_every_row_sets_the_marker_and_maps_the_gate_conflict() -
                         transaction=object(),
                         locks=LockLedger(LockingPath.claim_anonymous_grant_completion),
                         reconfirm=lambda: True, challenge=second_challenge,
-                        web_account=second_reading.web_account, index=race,
-                        identity_row=second_row, now=NOW)
+                        web_account=second_reading.web_account, index=race, now=NOW)
     assert conflict.value.result is AuthEventResult.anti_abuse_already_claimed
     assert conflict.value.error_code == ClientErrorClass.device_grant_exhausted
     assert conflict.value.error_code != ClientErrorClass.account_already_claimed
@@ -1459,6 +1452,34 @@ def test_txn_step_02_reconfirms_the_marker_then_selects_exactly_one_destination(
     assert conflict.value.result is AuthEventResult.idp_account_already_claimed
     assert reconfirm_registered_claimant(row, account, NOW,
                                          destination=RegisteredDestination.new_grant) is row
+    # The transaction repeats the selection against the locked grant history rather than reusing the
+    # preflight's verdict: a grant that commits in between rejects here, mutating nothing.
+    index = alias_index()
+    claim = registered_claim(ClaimBranch.web, row, index)
+    claim.read_registered_state(turnstile=lambda: True)
+    claim.check_database_eligibility(grants=(), committed_free_sources=(), now=NOW)
+    appeared = grant_row(AccessGrantSource.subscription, user_id=row.user_id,
+                         ends_at=NOW + timedelta(days=30))
+    with pytest.raises(FreeGrantRejected) as blocked:
+        claim.activate(row=row, grant_id=uuid7(), tier_id=FREE_TIER, alias_index=index,
+                       transaction=object(),
+                       locks=LockLedger(LockingPath.claim_registered_grant_completion),
+                       consume_challenge=lambda: True, subject_hasher=SUBJECT_HASHER,
+                       locked_grants=(appeared,), now=NOW)
+    assert blocked.value.result is AuthEventResult.registered_grant_destination_incompatible
+    assert index.consumed(registered_provider_account(row),
+                          GateConsumptionKind.registered_account_grant) is None
+    # A locked history that would select another destination altogether activates neither.
+    other = registered_claim(ClaimBranch.web, google_row(), index)
+    other.read_registered_state(turnstile=lambda: True)
+    other.check_database_eligibility(grants=(), committed_free_sources=(), now=NOW)
+    anonymous = grant_row(AccessGrantSource.anonymous_device_grant, user_id=row.user_id)
+    with pytest.raises(FreeGrantError):
+        other.activate(row=row, grant_id=uuid7(), tier_id=FREE_TIER, alias_index=index,
+                       transaction=object(),
+                       locks=LockLedger(LockingPath.claim_registered_grant_completion),
+                       consume_challenge=lambda: True, subject_hasher=SUBJECT_HASHER,
+                       locked_grants=(anonymous,), now=NOW)
 
 
 # [utest->req~grants-reg-txn-step-03-supersession-conversion~1]

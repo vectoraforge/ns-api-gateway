@@ -75,7 +75,17 @@ def mock_subscriptions_db():
 
 
 @pytest.fixture
-def subscription_service(mock_db_session, mock_verifier, mock_firebase, mock_subscriptions_db):
+def mock_purchase_tokens_db():
+    """The `core.store_purchase_tokens` reverse lookup ingestion resolves the echoed token
+    through. By default no token resolves to a user."""
+    tokens = AsyncMock()
+    tokens.owner_of.return_value = None
+    return tokens
+
+
+@pytest.fixture
+def subscription_service(mock_db_session, mock_verifier, mock_firebase, mock_subscriptions_db,
+                         mock_purchase_tokens_db):
     svc = SubscriptionService(
         db=mock_db_session,
         verifier=mock_verifier,
@@ -83,6 +93,7 @@ def subscription_service(mock_db_session, mock_verifier, mock_firebase, mock_sub
         product_id_to_plan=PRODUCT_TO_PLAN,
     )
     svc.subscriptions_db = mock_subscriptions_db
+    svc.purchase_tokens_db = mock_purchase_tokens_db
     return svc
 
 
@@ -477,11 +488,13 @@ class TestNewSubscription:
                                                      subscription_service,
                                                      mock_verifier,
                                                      mock_db_session,
-                                                     mock_subscriptions_db):
+                                                     mock_subscriptions_db,
+                                                     mock_purchase_tokens_db):
         """SUBSCRIBED with no existing sub creates new subscription."""
         from appstoreserverlibrary.models.NotificationTypeV2 import NotificationTypeV2
 
         user_id = uuid4()
+        echoed = str(uuid4())
         payload = _make_mock_payload(
             notification_type=NotificationTypeV2.SUBSCRIBED,
             notification_uuid="new-sub-uuid",
@@ -490,9 +503,11 @@ class TestNewSubscription:
         mock_verifier.verify_and_decode_signed_transaction.return_value = (
             _make_mock_transaction(
                 product_id="com.example.nativespeaker.gold",
-                app_account_token=str(user_id),
+                app_account_token=echoed,
             )
         )
+        # The owner comes from the token binding, not from the echoed value itself.
+        mock_purchase_tokens_db.owner_of.return_value = user_id
 
         mock_subscriptions_db.get_subscription_by_external_id.return_value = None
         new_sub = MagicMock()
@@ -510,9 +525,32 @@ class TestNewSubscription:
         await subscription_service.process_apple_notification("signed.payload")
 
         mock_subscriptions_db.create_subscription.assert_called_once()
+        assert mock_subscriptions_db.create_subscription.call_args.kwargs["user_id"] == user_id
+        assert mock_purchase_tokens_db.owner_of.call_args.args[1] == echoed
         mock_subscriptions_db.update_user_plan.assert_called_once_with(
             user_id=user_id, plan=SubscriptionPlan.gold
         )
+
+    @pytest.mark.asyncio
+    async def test_an_echoed_token_that_resolves_to_nobody_attributes_nothing(
+            self, subscription_service, mock_verifier, mock_subscriptions_db,
+            mock_purchase_tokens_db):
+        """The echoed value is purchase evidence, never a user id: a token with no binding leaves
+        the subscription unclaimed rather than attributing it to the value itself."""
+        # [utest->req~restore-echoed-uuid-is-evidence-not-identity~1]
+        from appstoreserverlibrary.models.NotificationTypeV2 import NotificationTypeV2
+
+        mock_verifier.verify_and_decode_notification.return_value = _make_mock_payload(
+            notification_type=NotificationTypeV2.SUBSCRIBED, notification_uuid="unbound-uuid")
+        mock_verifier.verify_and_decode_signed_transaction.return_value = _make_mock_transaction(
+            product_id="com.example.nativespeaker.gold", app_account_token=str(uuid4()))
+        mock_purchase_tokens_db.owner_of.return_value = None
+        mock_subscriptions_db.get_subscription_by_external_id.return_value = None
+
+        await subscription_service.process_apple_notification("signed.payload")
+
+        mock_subscriptions_db.create_subscription.assert_not_called()
+        mock_subscriptions_db.update_user_plan.assert_not_called()
 
 
 class TestMissingAppAccountToken:

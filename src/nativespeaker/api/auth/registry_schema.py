@@ -27,10 +27,11 @@ from nativespeaker.api.auth.derived_identifiers import (
 )
 from nativespeaker.api.auth.entitlement import AccessGrantSource
 from nativespeaker.api.auth.grant_schema import (
-    FREE_GRANTS_PER_ACCOUNT,
     GATE_CONSUMPTIONS_KEY,
     GATE_CONSUMPTIONS_TABLE,
     IDP_ACCOUNT_HASH_IS_AUTHORITATIVE,
+    FreeClaimOutcome,
+    free_claim_outcome,
 )
 from nativespeaker.api.auth.invariants import (
     GateConsumptionKind,
@@ -256,14 +257,9 @@ def resolve_or_create_provider_account(index: IdpAccountAliasIndex,
             "the canonical row is resolved-or-created with the grant and consumption inserts")
     assert_idp_input_source(source)
     requested = canonical_account(account.provider, account.provider_uid)
-    known = {(row.provider, row.provider_uid) for row in index.accounts}
-    canonical = index.register(requested)
-    assert_stable_binding_immutable(canonical, requested)
-    if (requested.provider, requested.provider_uid) in known \
-            and len(index.accounts) > len(known):
-        raise RegistryError(
-            "the stable UID already has a canonical row; no second row is created for it")
-    return canonical
+    # The registry itself is keyed on `(provider, provider_uid)`, so registering a stable UID that
+    # already has a row returns that row rather than minting a second one.
+    return index.register(requested)
 
 
 # --- `idp_account_hash` as a lookup and audit alias ---------------------------------------------
@@ -290,11 +286,7 @@ def assert_alias_never_mints_a_row(index: IdpAccountAliasIndex,
     """
     # [impl->req~schema-provider-accounts-hash-non-authoritative-alias~1]
     requested = canonical_account(account.provider, account.provider_uid)
-    known = {(row.provider, row.provider_uid) for row in index.accounts}
     canonical = index.register(requested)
-    if (requested.provider, requested.provider_uid) in known \
-            and len(index.accounts) > len(known):
-        raise RegistryError("a missing current-version hash creates no second canonical row")
     if current_version_hash is not None:
         resolved = resolve_through_retained_version(index, current_version_hash)
         if resolved is not None and resolved != canonical:
@@ -304,30 +296,34 @@ def assert_alias_never_mints_a_row(index: IdpAccountAliasIndex,
 
 # --- The gates are abuse brakes, not allowances -------------------------------------------------
 
-# What a gate-consumption row is, and what it is not. Two open gates are not two user-level
-# allowances: the user-level rule is `grant_schema`'s one free grant per account across both claim
-# endpoints, and the per-gate rows only stop one provider account from spending a gate twice.
+# What a gate-consumption row is: a per-key brake on one provider account spending one gate twice.
+# It is not a user-level allowance — that rule is `grant_schema.free_claim_outcome`'s one free grant
+# per account across both claim endpoints, which this helper asks rather than re-derives.
 # [impl->req~schema-provider-accounts-gates-are-abuse-brakes~1]
 GATE_ROLE: str = "per_key_abuse_brake"
-GATE_ROLES_REFUSED: frozenset[str] = frozenset({"independent_user_allowance"})
 
 
 def assert_gate_is_no_second_allowance(*,
                                        open_gates: Iterable[GateConsumptionKind],
-                                       committed_free_sources: Sequence[AccessGrantSource]) -> None:
-    """An open gate never adds a user-level allowance. A user who already holds a committed
-    free-credit grant is refused a second one even where the other endpoint's gate is untouched,
-    because the per-gate rows are abuse brakes on one provider account's keys, not per-endpoint
-    entitlements."""
+                                       committed_free_sources: Sequence[AccessGrantSource],
+                                       converting_active_anonymous_grant: bool = False) -> None:
+    """An open gate never adds a user-level allowance. Whether the endpoint behind an open gate may
+    still issue is the owner's verdict: a user whose free allowance is already accounted for is
+    refused even where that endpoint's gate is untouched, while `claim_registered_grant`'s
+    conversion of the user's active anonymous grant is a transition of the same allowance and is
+    permitted."""
     # [impl->req~schema-provider-accounts-gates-are-abuse-brakes~1]
-    if GATE_ROLE in GATE_ROLES_REFUSED:
-        raise RegistryError("a gate-consumption row is no independent user allowance")
-    committed = {source for source in committed_free_sources
-                 if source in {AccessGrantSource.anonymous_device_grant,
-                               AccessGrantSource.registered_account_grant}}
-    if len(committed) >= FREE_GRANTS_PER_ACCOUNT and set(open_gates):
-        raise RegistryError(
-            "one free grant per account across both claim endpoints; an open gate adds none")
+    for kind in set(open_gates):
+        operation = GATE_CLAIM_OPERATIONS[kind]
+        converting = (converting_active_anonymous_grant
+                      and operation is AuthOperation.claim_registered_grant)
+        outcome = free_claim_outcome(str(operation),
+                                     committed_sources=committed_free_sources,
+                                     converting_active_anonymous_grant=converting)
+        if outcome is FreeClaimOutcome.refused:
+            raise RegistryError(
+                f"one free grant per account across both claim endpoints; the open {kind} "
+                "gate adds none")
 
 
 # --- Pre-launch migration onto the stable UID ---------------------------------------------------
