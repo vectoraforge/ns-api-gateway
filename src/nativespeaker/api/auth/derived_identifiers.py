@@ -497,7 +497,9 @@ class IdpInputSource(StrEnum):
 
 # The two permitted sources: the stored identity binding, and — for the web anonymous-grant
 # sign-in gate alone — the sole server-side Firebase Admin entry that survived the closed
-# classifier and the stored-binding equality checks.
+# classifier and the stored-binding equality checks. Both are backend-verified, which is also what
+# makes them the only two sources the canonical registry's stable UID may be obtained from.
+# [impl->req~schema-provider-accounts-uid-source-backend-verified~1]
 IDP_INPUT_SOURCES: frozenset[IdpInputSource] = frozenset({
     IdpInputSource.stored_identity_binding,
     IdpInputSource.web_gate_validated_provider_data_entry,
@@ -509,6 +511,9 @@ def assert_idp_input_source(source: IdpInputSource) -> IdpInputSource:
     input, request headers, token claims including any sign-in-provider claim, email, or display
     name."""
     # [impl->req~proof-idp-hmac-inputs-not-from-client~1]
+    # The stable UID the canonical registry is keyed on comes from the backend-verified stored
+    # identity binding or the mandatory Firebase Admin `providerData` read, and from nowhere else.
+    # [impl->req~schema-provider-accounts-uid-source-backend-verified~1]
     if source not in IDP_INPUT_SOURCES:
         raise DerivationError(f"an idp-account HMAC input never comes from {source}")
     return source
@@ -645,6 +650,11 @@ class IdpAccountAliasIndex:
 
     def _accounts(self) -> tuple[ProviderAccount, ...]:
         return self._known
+
+    @property
+    def accounts(self) -> tuple[ProviderAccount, ...]:
+        """The canonical `core.provider_accounts` rows the registry holds."""
+        return self._accounts()
 
     def register(self, account: ProviderAccount) -> ProviderAccount:
         """Reserve the canonical `core.provider_accounts` row for a stable provider UID."""

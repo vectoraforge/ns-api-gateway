@@ -1170,6 +1170,9 @@ def transition_identity_state(current: IdentityState, target: IdentityState, *,
     # `historical` is retained purely as that administrative or abuse-retirement state.
     # [impl->req~sessions-no-user-driven-historical~1]
     # [impl->req~sessions-historical-retention-administrative~1]
+    # The permanent `historical` tombstone is the only end state an identity row has: there is no
+    # transition out of it, and no transition to a removed row.
+    # [impl->req~schema-invariant-06~1]
     if IDENTITY_STATE_CHANGING_FLOWS:
         raise IdentityError("no user-driven flow changes identity_state")
     if (current, target) not in IDENTITY_STATE_TRANSITIONS:
@@ -1197,6 +1200,10 @@ def assert_no_identity_delete(actor: str) -> NoReturn:
     # [impl->req~schema-external-identities-no-delete-permission~1]
     # [impl->req~users-identity-rows-never-deleted~1]
     # [impl->req~users-rule-no-physical-delete~1]
+    # Identity rows are immortal: neither an identity row nor the `core.users` row it links is ever
+    # hard-deleted, and the delete-restricting `user_id` foreign key is the declarative backstop
+    # behind this refusal.
+    # [impl->req~schema-invariant-06~1]
     raise IdentityError(f"{actor} may not delete a core.external_identities row")
 
 
@@ -1205,6 +1212,7 @@ def may_delete_identity_rows(role: str) -> bool:
     cleanup role may."""
     # [impl->req~schema-external-identities-no-delete-permission~1]
     # [impl->req~users-rule-no-physical-delete~1]
+    # [impl->req~schema-invariant-06~1]
     return role in DELETE_PERMITTED_ROLES
 
 
@@ -1309,6 +1317,9 @@ TOMBSTONE_DISCLOSURE_REQUIRED: bool = True
 # per-gate consumption rows, so free-grant finality survives erasure for the account and for the
 # Google or Apple provider account behind it.
 ERASED_PROFILE_COLUMNS: tuple[str, str] = ("email", "display_name")
+# The anti-abuse uniqueness record survives the PII scrub: an erased Google or Apple provider
+# account may not claim a free grant again, so free-grant finality does not end at erasure.
+# [impl->req~schema-provider-accounts-survives-erasure~1]
 ERASURE_RETAINED_ROWS: tuple[str, ...] = ("core.external_identities",
                                           "core.provider_accounts",
                                           "core.provider_account_gate_consumptions")
@@ -1328,6 +1339,9 @@ def erase_account(row: ExternalIdentityRow, *,
     marker, so neither the erased account nor its Google or Apple provider account may claim a free
     grant again: free-grant finality survives erasure."""
     # [impl->req~sessions-erasure-retains-tombstone~1]
+    # A privacy or data-erasure request removes neither the canonical `core.provider_accounts` row
+    # nor its gate-consumption rows.
+    # [impl->req~schema-provider-accounts-survives-erasure~1]
     if TOMBSTONE_REMOVERS or IDENTITY_ROW_DELETERS:
         raise IdentityError("no cleanup, cascade or erasure path removes a tombstoned row")
     tombstone = erase_pii(row if row.identity_state is IdentityState.historical else retire(row))

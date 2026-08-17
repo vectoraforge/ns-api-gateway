@@ -24,6 +24,7 @@ from nativespeaker.api.auth.external_identities import IdentityState
 from nativespeaker.api.auth.invariants import assert_grant_columns_entitlement_only
 from nativespeaker.api.auth.locks import LockingPath, LockLedger, lock_grant_set, takes_user_row_lock
 from nativespeaker.api.auth.operations import AuthOperation
+from nativespeaker.api.auth.registry_schema import RegistryError, manual_issuance_row
 from nativespeaker.api.auth.routes import (
     AUTHENTICATED_ROUTES,
     PROVIDER_CALLBACK_ROUTES,
@@ -319,6 +320,9 @@ class ManualGrantIssuance:
         that original result and issues nothing further, so a retried or repeated issuance for the
         same case never yields a second grant."""
         # [impl->req~grants-manual-step-01-resolve-case~1]
+        # `case_id` is the table's primary key, so the repeat cannot insert a second row: the
+        # recorded grant comes back instead of a new issuance.
+        # [impl->req~schema-manual-grant-issuances-case-id-primary-key~1]
         self._record(ManualStep.resolve_case)
         if not self.request.case_id:
             raise ManualGrantError("the issuance resolves a support case identifier")
@@ -444,20 +448,21 @@ class ManualGrantIssuance:
         # [impl->req~grants-manual-step-07-record-issuance~1]
         self._require(ManualStep.insert_grant)
         self._record(ManualStep.record_issuance)
-        if grant.get("source") is not AccessGrantSource.manual:
-            raise ManualGrantError("the issuance row records the manual grant it produced")
-        if grant.get("user_id") != self.request.user_id:
-            raise ManualGrantError("the issuance row's target owner is the grant's owner")
         # The same transaction as the grant and its usage row: one commit or none.
         if usage_transaction is not None and usage_transaction is not transaction:
             raise ManualGrantError("the issuance row is written in the grant's own transaction")
-        return {
-            "case_id": self.request.case_id,
-            "grant_id": grant["id"],
-            "user_id": self.request.user_id,
-            "operator": self.request.operator,
-            "reason": self.request.reason,
-        }
+        # The row's own contract — the `case_id` primary key, the unique `grant_id`, the target
+        # owner and the required non-empty audit trail — belongs to `registry_schema`.
+        try:
+            return manual_issuance_row(case_id=self.request.case_id,
+                                       grant=grant,
+                                       operator=self.request.operator,
+                                       reason=self.request.reason,
+                                       target_user_id=self.request.user_id,
+                                       transaction=transaction,
+                                       grant_transaction=transaction)
+        except RegistryError as refusal:
+            raise ManualGrantError(str(refusal)) from None
 
     def leave_vendor_state(self, *,
                            read: Sequence[str] = (),
@@ -526,6 +531,8 @@ def assert_excluded_from_anti_abuse(*,
     """A `manual` grant has no `core.access_grants_anti_abuse` row and no
     `core.provider_account_gate_consumptions` row."""
     # [impl->req~grants-manual-excluded-from-anti-abuse~1]
+    # The grant an issuance row names always has `source = 'manual'`, and therefore neither row.
+    # [impl->req~schema-manual-grant-issuances-grant-id-unique~1]
     assert_anti_abuse_pairing(AccessGrantSource.manual, anti_abuse_grant_source)
     if gate_consumption_rows or MANUAL_ANTI_ABUSE_ROWS or MANUAL_GATE_CONSUMPTION_ROWS:
         raise ManualGrantError("a manual grant consumes no provider-account gate")

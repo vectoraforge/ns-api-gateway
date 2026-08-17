@@ -314,6 +314,9 @@ def _conflict(result: AuthEventResult) -> tuple[AuthEventResult, ClientErrorClas
 # [impl->req~schema-access-grants-duplicate-claim-rejection-results~1]
 # [impl->req~schema-access-grants-anti-abuse-web-duplicate-rollback~1]
 # [impl->req~schema-access-grants-anti-abuse-registered-duplicate-result~1]
+# A stable-key uniqueness conflict on a gate-consumption insert means already consumed, and each
+# gate's conflict has its own audited result and client-visible class.
+# [impl->req~schema-provider-accounts-gate-conflict-results~1]
 GATE_CONFLICTS: dict[GateConsumptionKind, tuple[AuthEventResult, ClientErrorClass]] = {
     GateConsumptionKind.registered_account_grant: _conflict(
         AuthEventResult.idp_account_already_claimed),
@@ -368,6 +371,9 @@ class ProviderAccountGates:
         # distinct rows.
         # [impl->req~schema-access-grants-anti-abuse-registered-gate-global-uniqueness~1]
         # [impl->req~schema-access-grants-anti-abuse-web-gate-uniqueness~1]
+        # The conflict is raised on the stable key, so it means already consumed whichever hash
+        # version was presented, and it carries that gate's own audited result and client class.
+        # [impl->req~schema-provider-accounts-gate-conflict-results~1]
         key = (account.provider, account.provider_uid, kind)
         if key in self._consumed:
             result, client_class = GATE_CONFLICTS[kind]
@@ -549,6 +555,8 @@ def provider_uid_reserved(provider: IdentityProvider, provider_uid: str | None) 
     `(issuer, provider, provider_uid)`. It covers registered rows only: an anonymous row's
     `provider_uid` is `NULL`, so the index constrains it not at all."""
     # [impl->req~shared-invariant-11~1]
+    # Anonymous rows fall outside the index and are never constrained by it.
+    # [impl->req~schema-invariant-05~1]
     return provider is not IdentityProvider.anonymous and provider_uid is not None
 
 
@@ -588,6 +596,11 @@ class ProviderAccountReservations:
         # [impl->req~schema-external-identities-provider-account-reservation-index~1]
         # [impl->req~schema-external-identities-provider-account-already-linked~1]
         # [impl->req~sessions-provider-account-reservation-unique~1]
+        # One provider account binds to at most one user ever, and an already-attached account is
+        # rejected here rather than silently moved to the second user — a rule of its own, separate
+        # from the per-gate consumption uniqueness of `core.provider_account_gate_consumptions`.
+        # [impl->req~schema-invariant-05~1]
+        # [impl->req~schema-provider-accounts-link-uniqueness-separate~1]
         if operation not in PROVIDER_BINDING_OPERATIONS:
             raise InvariantError(f"{operation} performs no provider binding")
         if not provider_uid_reserved(provider, provider_uid):
@@ -606,6 +619,9 @@ class ProviderAccountReservations:
         not free that provider account for reuse."""
         # [impl->req~shared-invariant-11~1]
         # [impl->req~schema-external-identities-provider-account-reservation-index~1]
+        # The index spans `active` and `historical` rows, so administrative retirement never frees
+        # a Google or Apple provider account for reuse.
+        # [impl->req~schema-invariant-05~1]
         if (issuer, provider, provider_uid) not in self._reserved:
             raise InvariantError("no reservation to retire")
         self._historical.add((issuer, provider, provider_uid))

@@ -257,6 +257,9 @@ def assert_hard_delete_allowed(*, has_external_identity: bool) -> None:
     """A `core.users` row that has a `core.external_identities` row is never hard-deleted:
     blocked and retired users retain a minimal user row."""
     # [impl->req~schema-users-never-hard-deleted~1]
+    # The `core.users` rows an identity row links are immortal too, and the delete-restricting
+    # `core.external_identities.user_id` foreign key is the declarative backstop behind this guard.
+    # [impl->req~schema-invariant-06~1]
     if has_external_identity:
         raise ProfileError("a user row with an external identity row is never hard-deleted")
 

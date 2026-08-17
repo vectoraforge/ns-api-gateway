@@ -23,11 +23,18 @@ from nativespeaker.api.auth.audit import (
 )
 from nativespeaker.api.auth.entitlement import AccessGrantSource, AccessGrantStatus
 from nativespeaker.api.auth.external_identities import (
+    DELETE_PERMITTED_ROLES,
+    IDENTITY_ROW_DELETERS,
     PAIRING_ENFORCEMENT_MECHANISMS,
     IdentityError,
+    IdentityState,
     NativeClaimPlatform,
+    assert_no_identity_delete,
     create_account,
+    may_delete_identity_rows,
     resolve_owner,
+    retire,
+    transition_identity_state,
 )
 from nativespeaker.api.auth.invariants import (
     ENUM_TYPED_FIELDS,
@@ -38,15 +45,23 @@ from nativespeaker.api.auth.invariants import (
     GrantCreator,
     InvariantError,
     ProviderAccount,
+    ProviderAccountAlreadyLinkedError,
     ProviderAccountGates,
+    ProviderAccountReservations,
     StoreProvider,
     assert_attribution_source,
     assert_grant_columns_entitlement_only,
     assert_owner_agreement,
+    provider_uid_reserved,
 )
 from nativespeaker.api.auth.movement import movement_audit_details
 from nativespeaker.api.auth.operations import AuthOperation, IdentityProvider
-from nativespeaker.api.auth.profile import AccountClass, OrphanUserError, ProfileError
+from nativespeaker.api.auth.profile import (
+    AccountClass,
+    OrphanUserError,
+    ProfileError,
+    assert_hard_delete_allowed,
+)
 from nativespeaker.api.auth.schema_invariants import (
     FORBIDDEN_ANTI_ABUSE_COLUMNS,
     FREE_CREDIT_GRANT_SOURCES,
@@ -73,7 +88,7 @@ from nativespeaker.api.auth.schema_invariants import (
     is_free_credit_source,
     requires_anti_abuse_row,
 )
-from unit.test_schema_auth_events import NOW, FakeSession, RecordingSink, actor
+from unit.test_schema_auth_events import ISSUER, NOW, FakeSession, RecordingSink, actor
 from unit.test_schema_ddl import MIGRATION, Schema, declarative_section, parse
 
 SRC = Path(__file__).resolve().parents[2] / "src"
@@ -309,6 +324,85 @@ def test_no_cross_table_constraint_trigger_enforces_the_pairing():
     assert PAIRING_ENFORCEMENT_MECHANISMS == frozenset()
     schema_sql = declarative_section(MIGRATION.read_text())
     assert "CREATE TRIGGER" not in schema_sql.upper()
+
+
+# --- 05. One provider account, at most one user, ever -------------------------------------------
+
+# [utest->req~schema-invariant-05~1]
+def test_one_provider_account_binds_to_at_most_one_user_ever(applied: Schema):
+    reservations = ProviderAccountReservations()
+    first, second = uuid4(), uuid4()
+    reservations.bind(operation=AuthOperation.create_user, issuer=ISSUER,
+                      provider=IdentityProvider.google, provider_uid="g-1", user_id=first)
+    # A second internal user may never take that provider account.
+    with pytest.raises(ProviderAccountAlreadyLinkedError):
+        reservations.bind(operation=AuthOperation.upgrade_anonymous_to_registered, issuer=ISSUER,
+                          provider=IdentityProvider.google, provider_uid="g-1", user_id=second)
+    assert reservations.holder(ISSUER, IdentityProvider.google, "g-1") == first
+    # The index spans `active` and `historical` rows, so administrative retirement frees nothing.
+    reservations.retire(issuer=ISSUER, provider=IdentityProvider.google, provider_uid="g-1")
+    assert reservations.is_historical(ISSUER, IdentityProvider.google, "g-1") is True
+    with pytest.raises(ProviderAccountAlreadyLinkedError):
+        reservations.bind(operation=AuthOperation.create_user, issuer=ISSUER,
+                          provider=IdentityProvider.google, provider_uid="g-1", user_id=second)
+    # It is a partial unique index over the rows where `provider_uid IS NOT NULL`, and it has no
+    # `identity_state` predicate that could let a retired row out of it.
+    index = applied.indexes["ix_external_identities_provider_account"]
+    assert "ON core.external_identities (issuer, provider, provider_uid)" in index
+    assert index.endswith("WHERE provider_uid IS NOT NULL")
+    assert "identity_state" not in index
+
+
+# [utest->req~schema-invariant-05~1]
+def test_anonymous_rows_fall_outside_the_reservation_index():
+    # An anonymous row's `provider_uid` is `NULL`, so the index does not constrain it at all...
+    assert provider_uid_reserved(IdentityProvider.anonymous, None) is False
+    for provider in (IdentityProvider.google, IdentityProvider.apple):
+        assert provider_uid_reserved(provider, "uid-1") is True
+        assert provider_uid_reserved(provider, None) is False
+    # ...so any number of anonymous rows may be bound under one issuer without conflict.
+    reservations = ProviderAccountReservations()
+    for _ in range(3):
+        reservations.bind(operation=AuthOperation.create_user, issuer=ISSUER,
+                          provider=IdentityProvider.anonymous, provider_uid=None,
+                          user_id=uuid4())
+
+
+# --- 06. Identity rows are immortal -------------------------------------------------------------
+
+# [utest->req~schema-invariant-06~1]
+def test_neither_the_identity_row_nor_its_user_row_is_ever_hard_deleted(applied: Schema):
+    # No path and no role deletes an identity row.
+    assert IDENTITY_ROW_DELETERS == frozenset()
+    assert DELETE_PERMITTED_ROLES == frozenset()
+    for role in ("api", "cleanup", "migrator", "postgres"):
+        assert may_delete_identity_rows(role) is False
+    with pytest.raises(IdentityError):
+        assert_no_identity_delete("cleanup")
+    # The linked `core.users` row is not hard-deleted either, while an identity row exists.
+    assert_hard_delete_allowed(has_external_identity=False)
+    with pytest.raises(ProfileError):
+        assert_hard_delete_allowed(has_external_identity=True)
+    # The declarative backstop: the identity row's `user_id` foreign key restricts the delete.
+    assert applied.tables["core.external_identities"].columns["user_id"] == \
+        "UUID NOT NULL REFERENCES core.users (id) ON DELETE RESTRICT"
+
+
+# [utest->req~schema-invariant-06~1]
+def test_the_historical_tombstone_is_the_only_end_state():
+    from unit.test_external_identities import google_row
+
+    row = google_row()
+    retired = retire(row)
+    # Retirement is a state transition on the existing row, not a removal and not a reassignment.
+    assert retired.identity_state is IdentityState.historical
+    assert (retired.id, retired.user_id) == (row.id, row.user_id)
+    # There is no way out of `historical`, and no transition to a removed row.
+    with pytest.raises(IdentityError):
+        transition_identity_state(IdentityState.historical, IdentityState.active,
+                                  administrative=True)
+    assert transition_identity_state(IdentityState.active, IdentityState.historical,
+                                     administrative=True) is IdentityState.historical
 
 
 # --- 07. The user row and its identity row are created together ---------------------------------
