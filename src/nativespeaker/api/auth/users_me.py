@@ -279,6 +279,10 @@ def attribution_tokens(session: ReadOnlyUsersMeSession,
     """
     # [impl->req~sessions-users-me-step-02~1]
     # [impl->req~sessions-api-users-me-fixed-response-shape~1]
+    # Step 1 of the purchase flow: the client obtains the user's already-persisted store
+    # purchase-attribution token from this call. The tokens were minted once at user creation, so
+    # this read generates nothing fresh.
+    # [impl->req~restore-purchase-flow-01-client-obtains-token~1]
     assert_no_client_signal_consulted(request_signals)
     stored = session.read_store_tokens()
     entries: dict[str, str] = {}
@@ -363,6 +367,9 @@ def storekit_app_account_token(response: Mapping[str, Any]) -> str:
     """The exact stored Apple `app_account_token` the iOS client passes into the StoreKit purchase
     API. Read straight out of the response, never regenerated or reformatted."""
     # [impl->req~sessions-api-users-me-purpose~1]
+    # Step 2 of the purchase flow, iOS half: the value read here is what goes into the StoreKit
+    # purchase API.
+    # [impl->req~restore-purchase-flow-02-client-passes-token-to-store~1]
     entry = response["store_purchase_tokens"][str(StoreProvider.apple)]
     return entry[IOS_PURCHASE_TOKEN_FIELD]
 

@@ -538,6 +538,9 @@ def mint_attribution_tokens() -> dict[str, str]:
     A user has at most one token per store for the life of the account, and this applies to
     anonymous and registered first-time users alike."""
     # [impl->req~users-create-user-step-09~1]
+    # These are the tokens `GET /users/me` later returns: minted once here, at user creation, and
+    # never generated fresh on that call.
+    # [impl->req~restore-purchase-flow-01-client-obtains-token~1]
     tokens = {store: str(uuid4()) for store in ATTRIBUTION_TOKEN_FIELDS}
     if len(set(tokens.values())) != len(ATTRIBUTION_TOKEN_FIELDS):
         raise CreateUserError("each store gets its own random attribution token")

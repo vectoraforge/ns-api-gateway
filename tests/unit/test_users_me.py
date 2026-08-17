@@ -263,12 +263,26 @@ class TestPurpose:
             assert set(body["store_purchase_tokens"]) == {str(p) for p in StoreProvider}
 
     # [utest->req~sessions-api-users-me-purpose~1]
+    # Step 2 of the purchase flow, iOS half: the value the client passes into StoreKit is exactly
+    # the one this response carried.
+    # [utest->req~restore-purchase-flow-02-client-passes-token-to-store~1]
     def test_the_ios_client_reads_the_exact_stored_apple_app_account_token(self):
         assert IOS_PURCHASE_TOKEN_FIELD == "app_account_token"
         assert ATTRIBUTION_FIELD_BY_STORE[StoreProvider.apple] == "app_account_token"
         body = users_me_response(state())
         # The exact stored value, passed straight into StoreKit — never regenerated.
         assert storekit_app_account_token(body) == APPLE_TOKEN
+
+    def test_the_client_obtains_the_already_persisted_tokens_from_this_call(self):
+        """Step 1 of the purchase flow: the tokens come back as stored, minted at user creation."""
+        # [utest->req~restore-purchase-flow-01-client-obtains-token~1]
+        handle = session()
+        returned = attribution_tokens(handle, USER_ID)
+        assert returned == {str(StoreProvider.apple): APPLE_TOKEN,
+                            str(StoreProvider.google_play): GOOGLE_TOKEN}
+        # The call reads the stored rows and generates nothing fresh on the way out.
+        assert handle.reads == ["store_tokens"]
+        assert attribution_tokens(session(), USER_ID) == returned
 
 
 class TestProhibitions:

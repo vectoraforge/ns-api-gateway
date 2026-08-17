@@ -44,7 +44,15 @@ def _load_apple_root_certificates(cert_dir: str) -> list[bytes]:
 
 
 def create_apple_verifier(config: AppleConfig) -> SignedDataVerifier:
-    """Create and return a SignedDataVerifier from AppleConfig."""
+    """Create and return a SignedDataVerifier from AppleConfig.
+
+    Apple's own App Store Server Library performs the chain verification, given Apple's root
+    certificates; there is no hand-written certificate-chain logic here. The same object carries the
+    configured bundle ID, environment and App Apple ID, so every decode it performs validates the
+    decoded payload against those configured values.
+    """
+    # [impl->req~restore-apple-verify-jws-chain~1]
+    # [impl->req~restore-apple-validate-bundle-environment~1]
     environment = (Environment.PRODUCTION
                    if config.environment == "production"
                    else Environment.SANDBOX)
@@ -70,8 +78,23 @@ class SubscriptionService:
         self.firebase_service = firebase_service
         self.product_id_to_plan = product_id_to_plan
 
+    async def commit(self) -> None:
+        """Make everything this notification applied durable.
+
+        The webhook route awaits this before answering 200, so a persistence failure raises here and
+        surfaces as 5xx instead: Apple then retries on its own schedule.
+        """
+        # [impl->req~restore-apple-200-only-after-durable~1]
+        await self.db.commit()
+
     async def process_apple_notification(self, signed_payload: str) -> None:
         """Verify, decode, and process an Apple Store Server Notification V2."""
+        # The `signedPayload` JWS signature and its `x5c` certificate chain are verified up to
+        # Apple's Root CA before the notification is treated as authentic, by Apple's own App Store
+        # Server Library. The same call validates the decoded bundle ID and environment against the
+        # configured values, and the App Apple ID where the notification carries one.
+        # [impl->req~restore-apple-verify-jws-chain~1]
+        # [impl->req~restore-apple-validate-bundle-environment~1]
         try:
             payload = self.verifier.verify_and_decode_notification(signed_payload)
         except VerificationException:
@@ -100,9 +123,22 @@ class SubscriptionService:
                            type=notification_type, uuid=notification_uuid)
             return
 
-        transaction = self.verifier.verify_and_decode_signed_transaction(
-            signed_transaction
-        )
+        # Each nested signed payload is verified on its own before it is used as purchase evidence:
+        # verifying the outer envelope is not sufficient. The signed renewal information is verified
+        # the same way wherever the notification carries it.
+        # [impl->req~restore-apple-verify-nested-payloads~1]
+        try:
+            transaction = self.verifier.verify_and_decode_signed_transaction(
+                signed_transaction
+            )
+            signed_renewal = data.signedRenewalInfo if data else None
+            if signed_renewal:
+                self.verifier.verify_and_decode_renewal_info(signed_renewal)
+        except VerificationException:
+            # A nested payload that does not verify is an invalid payload, exactly like a bad
+            # envelope: no ingestion and no entitlement effect.
+            # [impl->req~restore-apple-invalid-payload-401~1]
+            raise WebhookVerificationError("Invalid nested signed payload") from None
         original_transaction_id = transaction.originalTransactionId
         product_id = transaction.productId
 
@@ -143,17 +179,26 @@ class SubscriptionService:
                 plan=plan,
                 status=status,
             )
-            await self.subscriptions_db.insert_event_idempotent(
+            # Redelivery is idempotent, keyed on Apple's notification UUID recorded as
+            # `audit.subscription_events.notification_uuid`: a valid replay is acknowledged again and
+            # repeats no side effect. That holds on this branch too, so a replay that races the first
+            # delivery cannot apply the entitlement effect twice.
+            # [impl->req~restore-apple-redelivery-idempotent~1]
+            first_delivery = await self.subscriptions_db.insert_event_idempotent(
                 subscription_id=subscription.id,
                 event_type=notification_type,
                 notification_uuid=notification_uuid,
                 old_plan=None,
                 new_plan=plan,
             )
+            if not first_delivery:
+                logger.info("apple_notification_duplicate", uuid=notification_uuid)
+                return
             await self.subscriptions_db.update_user_plan(
                 user_id=subscription.user_id, plan=plan
             )
         else:
+            # [impl->req~restore-apple-redelivery-idempotent~1]
             inserted = await self.subscriptions_db.insert_event_idempotent(
                 subscription_id=subscription.id,
                 event_type=notification_type,

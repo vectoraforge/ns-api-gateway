@@ -10,11 +10,10 @@ linkage, and not authority to move any app-owned data.
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from nativespeaker.api.auth.invariants import DevicePlatform, ProofUse
+from nativespeaker.api.auth.invariants import DevicePlatform, ProofUse, StoreProvider
 from nativespeaker.api.auth.operations import AuthOperation
 from nativespeaker.api.auth.proof_endpoints import (
     ProofArtifact,
@@ -40,11 +39,10 @@ class InvalidRestoreProof(ServiceError):
 # --- Server-verifiable store proof ----------------------------------------------------------
 
 
-class StoreProvider(StrEnum):
-    """The two stores whose artifacts restore accepts, one per native platform."""
-    apple = "apple"
-    google_play = "google_play"
-
+# The two stores whose artifacts restore accepts, one per native platform: exactly
+# `core.subscription_provider`, taken from the invariants file that defines it rather than declared a
+# second time here, so no two distinct enumerations of the same column can drift apart or compare
+# unequal by identity across modules.
 
 # The store each calling platform fixes. Restore is native-only, so the web platform has none.
 PLATFORM_STORE: dict[DevicePlatform, StoreProvider] = {
