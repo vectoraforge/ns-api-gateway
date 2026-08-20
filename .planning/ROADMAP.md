@@ -129,13 +129,3 @@ Archive: `.planning/milestones/v1.6-ROADMAP.md`
 | 31. Move Quota Check to Dependency | v1.6 | 2/2 | Complete | 2026-03-25 |
 | 32. Rewrite Models to Match Prompt Schema | v1.6 | 3/3 | Complete | 2026-03-26 |
 | 33. Propagate quota_exceeded Rename | v1.6 | 1/1 | Complete | 2026-03-26 |
-
-### Phase 1: Replace transparent user registration with dedicated /users/new endpoint using Apple DeviceCheck
-
-**Goal:** [To be planned]
-**Requirements**: TBD
-**Depends on:** Phase 0
-**Plans:** 0 plans
-
-Plans:
-- [ ] TBD (run /gsd:plan-phase 1 to break down)
