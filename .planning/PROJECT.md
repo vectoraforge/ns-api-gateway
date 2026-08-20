@@ -8,6 +8,24 @@ A FastAPI-based linguistic analysis API service that accepts text phrases and re
 
 The analysis pipeline must work reliably — correct LLM invocation, proper resilience under load, and safe per-user data isolation.
 
+## Current Milestone: v2.0 Authentication & Entitlements
+
+**Goal:** Replace JIT JWT provisioning with a full backend-verified identity system — a mandatory pre-handler auth barrier, explicit account creation, an access-grant entitlement model, and dual-store subscription ingestion.
+
+**Target features:**
+- Rewritten initial migration: identity, tiers, access grants, per-grant monthly usage, store purchase tokens, challenges, `audit.auth_events`
+- Shared foundation: pre-handler auth barrier, route registry with startup enumeration assertion, one error registry, audit writer, `limits`-based rate-limit engine, challenge store, adapter interfaces
+- `POST /auth/create-user` — the only pre-auth-callable route
+- `POST /auth/sync` — read-only auth-state reconciliation
+- `GET /users/me` — rewritten profile with registration state and purchase-attribution tokens
+- `POST /auth/upgrade-anonymous` — anonymous → registered identity transition
+- `POST /auth/claim-anonymous-grant` and `POST /auth/claim-registered-grant` — the only free-grant creators
+- `POST /webhooks/app-store` and `POST /webhooks/google-play/rtdn` — the two provider-callback routes
+- `POST /auth/restore-subscription` — native store artifact verification
+- `POST /auth/sign-out-all` — Firebase refresh-token revocation
+
+**Specification:** `/home/init/native-speaker/specs/auth-refactor-phases/` — one file per phase. `SHARED-INVARIANTS.md` binds every phase and wins over any phase brief on conflict.
+
 ## Requirements
 
 ### Validated
@@ -70,29 +88,55 @@ The analysis pipeline must work reliably — correct LLM invocation, proper resi
 
 ### Active
 
-None — planning next milestone.
+Scoped in `.planning/REQUIREMENTS.md` for v2.0. Summary:
+
+- [ ] Single rewritten initial migration delivering the full auth schema (no incremental migrations)
+- [ ] Mandatory default-on pre-handler auth barrier — the only place identity resolution happens
+- [ ] Route registry with three closed categories and a startup/CI enumeration assertion
+- [ ] One shared error registry owning every client-visible response shape
+- [ ] `audit.auth_events` writer — exactly one durable row per on-path attempt
+- [ ] Config-driven backend rate limiting via the `limits` library (moving-window, Redis/Valkey)
+- [ ] Challenge store with claim/consume protocol for challenge-bearing operations
+- [ ] Explicit account creation replacing JIT provisioning (`POST /auth/create-user`)
+- [ ] Access-grant entitlement model — exactly one active grant per user, four enumerated sources
+- [ ] Anonymous and registered free-grant claim flows with supersession
+- [ ] Dual-store subscription ingestion (App Store notifications + Google Play RTDN)
+- [ ] Store-artifact subscription restore and Firebase refresh-token revocation
 
 ### Out of Scope
 
 - LangChain/OpenAI provider abstraction — no multi-provider requirement yet
 - Message content encryption-at-rest — defer to infrastructure layer
 - Load/stress tests — not a current priority
-- Application-level rate limiting (slowapi) — Envoy Gateway owns rate limiting
+- ~~Application-level rate limiting (slowapi) — Envoy Gateway owns rate limiting~~ — **reversed in v2.0**: auth surfaces need identity-keyed and user-keyed limits the gateway cannot express. Backend limiting uses the `limits` library (moving-window, Redis/Valkey); Envoy limiting remains as defense-in-depth
 - CORS middleware / security headers — Envoy Gateway handles at infrastructure level
 - Trusted host validation — Envoy Gateway perimeter control
 - Redis-backed circuit breaker — single-instance deployment; migration path documented in code
 - CI linting gate — ruff enforced locally; CI gate can be added later
 - Token creation endpoint — this service is not an identity provider
 - Per-request Firebase claim reads — adds 100-300ms latency; JWT already carries the plan claim
-- New HTTP status codes or error codes — contract locked at 5 codes (400/401/404/429/500)
-- Multi-provider identity support — Firebase only; no requirement for other IdPs
+- ~~New HTTP status codes or error codes — contract locked at 5 codes (400/401/404/429/500)~~ — **reversed in v2.0**: the auth error registry is materially larger. The locked-contract principle survives in stricter form — one shared registry module owns every client-visible shape, and within an error class the body, status, and copy are identical across every triggering branch (anti-oracle)
+- Multi-provider identity support — exactly one configured Firebase integration; still holds in v2.0. The `core.identity_provider` values and the second store webhook are Firebase sign-in providers and payment stores, not additional IdPs
 - Payment refund processing — Apple handles refunds; app reacts to revocation notifications
-- User registration endpoint — JIT provisioning from JWT; Firebase handles account creation
+- ~~User registration endpoint — JIT provisioning from JWT; Firebase handles account creation~~ — **reversed in v2.0**: JIT provisioning cannot establish the `(issuer, subject)` → `core.users` linkage the barrier requires. `POST /auth/create-user` is now the only pre-auth-callable route and the sole creator of identity rows
 - Admin user management — own profile only (`GET /users/me`); no admin listing or management
+
+Added in v2.0 (from `SHARED-INVARIANTS.md` "Global deletions" — build none of these, in any phase):
+
+- Backend-minted tokens or sessions — authentication is per-request via the Firebase ID token only; no cookie, no secondary auth state, no generation counter
+- `checkRevoked` / per-request revocation checks — already-minted ID tokens are never force-expired
+- `promo` grant source — deleted from the enum and from every rule that referenced it
+- Scheduled cleanup, purge, reconciliation, recovery-scan, or background-healer jobs of any kind — indefinite retention
+- Device-fingerprint or device-check components in any rate-limit key
+- Claim-header authentication or header-derived identity — the gateway forwards `Authorization` unchanged and injects no identity headers
+- Distributed locks, leases, or multi-phase-commit machinery
+- Wildcard or path-prefix membership for the provider-callback route category — callback routes are named individually by exact path
+- Identity row deletion — rows are tombstones; retirement is permanent and irreversible
+- Data migration, backfill, compatibility shims, dual-write windows, or deprecated aliases — pre-launch DB with disposable data
 
 ## Current State
 
-Shipped v1.6. All milestones through v1.6 complete. 46,702 LOC Python across 33 phases.
+Shipped v1.6. All milestones through v1.6 complete. 46,702 LOC Python across 33 phases. v2.0 (Authentication & Entitlements) planning started — 12 phases, 34–45.
 
 ## Context
 
@@ -110,9 +154,13 @@ Endpoints:
 - `GET /health/ready` — health probe
 - `GET /` — API root
 
+v2.0 adds: Firebase Admin SDK (issuer-selected client, no ambient default), the `limits` library with Redis/Valkey for backend rate limiting, Google Play RTDN ingestion via Cloud Pub/Sub push, and `audit.auth_events` as a first-class audit surface.
+
+v2.0 endpoint changes: `POST /webhooks/apple` → `POST /webhooks/app-store`; `GET /users/me` rewritten; nine new `/auth/*` routes. The analysis routes (`POST /chats`, `GET /chats`, etc.) are rebound onto the barrier in phase 35 but keep their behavior.
+
 Known areas for future work:
 - Proactive quota warnings via `X-RateLimit-Remaining` header
-- Grace period transparency in `GET /users/me`
+- Grace period transparency in `GET /users/me` — `core.subscriptions.status` models `grace_period`, but `04-users-me.md` does not surface it in the response
 - Webhook retry reconciliation via App Store Server API polling
 - Startup exhaustiveness check for quota config (QUOTA-06)
 
@@ -121,7 +169,9 @@ Known areas for future work:
 - **Tech stack**: Python 3.12, FastAPI, LangChain, SQLAlchemy async — no stack changes
 - **Auth**: PyJWT with Firebase JWKS — TokenVerifier protocol remains pluggable
 - **Error contract**: Exactly 5 status codes (400/401/404/429/500), 5 opaque error codes — no new codes without contract review
-- **Rate limiting**: Envoy Gateway owns rate limiting; PostgreSQL quota is authoritative
+- **Rate limiting**: backend `limits` engine owns identity/user-keyed limits (v2.0); Envoy Gateway limiting is defense-in-depth. Every limit value lives in config; security-sensitive entries default fail-closed
+- **Spec authority**: `/home/init/native-speaker/specs/auth-refactor-phases/` is the binding specification for v2.0. `SHARED-INVARIANTS.md` overrides any conflicting phase brief — flag conflicts, never resolve them silently
+- **Migrations**: pre-launch DB with no data. One initial migration file, rewritten in place — never add incremental migrations during v2.0
 
 ## Key Decisions
 
@@ -159,6 +209,10 @@ Known areas for future work:
 | LLM validation models in `models/llm.py`, API schemas in `models/api.py` | Separate concerns; LLM contract vs API contract | ✓ Good — v1.6 |
 | `require_quota` FastAPI dependency for quota enforcement | ChatService single-responsibility; quota is cross-cutting concern | ✓ Good — v1.6 |
 | `OutOfScopeError` for LLM reject responses | Clean error contract for out-of-scope input; dispatches on `resolved_mode` | ✓ Good — v1.6 |
+| Rewrite `20260322_01_initial-release.sql` in place instead of the six-migration sequence in `00-schema.md §1`/`§2` | Pre-launch DB with no data; teardown-then-rebuild SQL is pure waste. Overrides the phase brief — recorded per SHARED-INVARIANTS conflict rule | — Pending — v2.0 |
+| Schema (34) and foundation (35) stay separate phases | Foundation is already the heaviest phase (8 subsystems); the two have genuinely different acceptance gates — "migration applies, constraints exist" vs "app starts, route assertion passes". Accepts one knowingly-broken intermediate commit | — Pending — v2.0 |
+| Phase numbering continues at 34–45 rather than resetting to 1 | Avoids colliding with the 33 phases already in MILESTONES.md; spec-file number maps to GSD phase by a fixed +34 offset | — Pending — v2.0 |
+| Roadmap built from spec metadata; each phase reads its own spec file at plan time | The spec dir is ~90k tokens — too large for one context, and unnecessary: the roadmapper needs dependency edges, not SQL DDL | — Pending — v2.0 |
 
 ## Evolution
 
@@ -178,4 +232,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-26 after v1.6 milestone*
+*Last updated: 2026-08-19 after starting v2.0 milestone*

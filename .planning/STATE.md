@@ -1,40 +1,42 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.6
-milestone_name: Schema Hardening
-status: v1.6 milestone archived
-stopped_at: Milestone v1.6 archived
-last_updated: "2026-03-26T22:30:00.000Z"
-last_activity: 2026-03-26
+milestone: v2.0
+milestone_name: Authentication & Entitlements
+status: planning
+last_updated: "2026-08-20T00:43:51.953Z"
+last_activity: 2026-08-19
 progress:
-  total_phases: 9
-  completed_phases: 9
-  total_plans: 16
-  completed_plans: 16
+  total_phases: 13
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-26)
+See: .planning/PROJECT.md (updated 2026-08-19)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Planning next milestone
+**Current focus:** v2.0 Phase 34 — Schema
 
 ## Current Position
 
-Phase: None (milestone complete)
-Plan: None
+Phase: 34 — Schema (not started)
+Plan: —
+Status: Roadmap approved; ready to plan Phase 34
+Last activity: 2026-08-19 — Milestone v2.0 started
 
 ## Accumulated Context
 
 ### Key Decisions (carry forward)
 
-- Error contract: 5 status codes (400/401/404/429/500), 5 opaque error codes
+- Error contract: 5 status codes / 5 opaque codes — SUPERSEDED in v2.0 by the shared auth error registry (anti-oracle within class)
 - All FastAPI dependencies in app/dependencies.py; routes use Depends() only
 - Session-in-init DB pattern for all DB classes
-- CORS, rate limiting, security headers deferred to Envoy Gateway
+- CORS and security headers deferred to Envoy Gateway; rate limiting SUPERSEDED in v2.0 by the backend `limits` engine (Envoy = defense-in-depth)
 - HTTP metadata on exception classes; single data-driven service_error_handler
 - Firebase claim propagation delay (up to 1hr) accepted -- DB is authoritative
 - Per-test transaction rollback via join_transaction_mode=create_savepoint
@@ -50,13 +52,26 @@ Plan: None
 - require_quota FastAPI dependency for quota enforcement -- ChatService single-responsibility
 - OutOfScopeError for LLM reject responses with resolved_mode dispatch
 
+**v2.0 (Authentication & Entitlements):**
+
+- Spec authority: /home/init/native-speaker/specs/auth-refactor-phases/ — SHARED-INVARIANTS.md binds every phase and overrides any conflicting phase brief; flag conflicts, never resolve silently
+- One initial migration rewritten in place; never add incremental migrations during v2.0 (overrides 00-schema.md §1/§2)
+- Schema (34) and foundation (35) stay separate phases — different acceptance gates; Phase 34 knowingly leaves the app non-starting
+- Phase numbering continues at 34–45; spec file number + 34 = phase number
+- Roadmap built from spec metadata; each phase reads only its own spec file + SHARED-INVARIANTS.md at plan time (~90k tokens total, never loaded at once)
+- One endpoint = one phase = one REQ-ID prefix; no requirement spans phases
+- Identity is only backend-verified (issuer, subject); core.users.id is never an authentication key
+- The pre-handler barrier is the only place identity resolution happens; handlers never re-verify
+- Fixed global lock order on every grant path: grant rows FOR UPDATE ascending by id, then their usage rows
+- No network call while any DB lock is held or a consuming transaction is open
+
 ### Pending Todos
 
 None.
 
 ### Roadmap Evolution
 
-- Phase 1 added: Replace transparent user registration with dedicated /users/new endpoint using Apple DeviceCheck
+None.
 
 ### Blockers/Concerns
 
