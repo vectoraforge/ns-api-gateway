@@ -117,7 +117,27 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 **Goal:** Rewrite `migrations/20260322_01_initial-release.sql` in place so it delivers the complete v2.0 auth schema in one apply against an empty database.
 **Requirements:** SCHEMA-01 … SCHEMA-08
 **Depends on:** nothing — root of the graph
+**Plans:** 1/4 plans executed
+
+Plans:
+**Wave 1**
+
+- [x] 34-01-PLAN.md — Provision a reachable, empty PostgreSQL 17 and gate the phase on it (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 34-02-PLAN.md — Tracer: the single v2.0 initial migration, applied and rolled back end-to-end; close CONFLICT-1 in the three docs naming the old file (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 34-03-PLAN.md — tests/schema harness, apply/rollback proof, and the exact-set object inventory captured from real PostgreSQL 17 (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 34-04-PLAN.md — Constraint conformance: every §10 rejection case, the four valid anti-abuse tuples, and D-16 (wave 4)
+
 **Success criteria:**
+
 1. A fresh `pogo apply` against an empty database produces the full schema with no error and no second migration file present
 2. `(issuer, subject)` → `core.users` resolution works through `core.external_identities`, with `identity_state` and tombstone retention expressible
 3. At most one `status='active'` grant per user is enforceable, and `core.user_monthly_usage` is keyed by grant id
@@ -132,6 +152,7 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 **Requirements:** FOUND-01 … FOUND-09
 **Depends on:** 34
 **Success criteria:**
+
 1. The route-enumeration assertion passes, and a route declared in zero or in two categories fails it
 2. Zero, duplicate, comma-joined, empty, and trailing-content Authorization values each reject as `auth_required` with identical body, status, and copy
 3. The barrier admits only `identity_state='active'` AND `users.active` TRUE; every other combination rejects with nothing falling through to pre-auth
@@ -146,6 +167,7 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 **Requirements:** REBIND-01 … REBIND-06
 **Depends on:** 34, 35
 **Success criteria:**
+
 1. The application starts and every pre-existing route serves as it did in v1.6, apart from auth rejections now using the shared error classes
 2. `GET /health/ready` is reachable unauthenticated; `GET /`, `GET /examples`, and all five `/chats` routes reject an unauthenticated caller
 3. No `audit.auth_events` row is written by any of these routes, including on barrier rejection — the bounded counter metric increments instead
@@ -158,6 +180,7 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 **Requirements:** CREATE-01 … CREATE-04
 **Depends on:** 34, 35
 **Success criteria:**
+
 1. An unlinked caller succeeds here and is rejected with `preauth_identity_not_allowed` on every other route
 2. Prepare mode and completion mode partition correctly on the mode signal
 3. One transaction produces the user row, exactly one ACTIVE identity row, and both store purchase-attribution tokens — a forced mid-transaction failure leaves no partial account
@@ -169,6 +192,7 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 **Requirements:** SYNC-01 … SYNC-03
 **Depends on:** 34, 35 (soft: 37)
 **Success criteria:**
+
 1. Grant, `current_period`, and `monthly_used` all derive from one evaluation time and match what quota enforcement would independently act on at the same instant
 2. Zero effective grants and a lapsed grant return byte-identical responses
 3. Table state is unchanged across a request — verified by comparing `core.*` before and after
@@ -180,6 +204,7 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 **Requirements:** PROF-01, PROF-02
 **Depends on:** 34, 35 (soft: 37)
 **Success criteria:**
+
 1. The response carries an entry for every store provider regardless of client platform, User-Agent, or any client-supplied signal
 2. `identity_provider` comes from the stored column and matches what `/auth/sync` reports
 3. No `audit.auth_events` row is ever written by this route, including on barrier rejection
@@ -191,6 +216,7 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 **Requirements:** UPGRADE-01, UPGRADE-02
 **Depends on:** 34, 35, 37
 **Success criteria:**
+
 1. The existing `core.external_identities` row's provider flips in place — no new identity row, no user merge, no row deletion
 2. Prepare and completion modes both work; only an authenticated linked identity may call it
 3. `GET /users/me` and `/auth/sync` report the new provider afterward
@@ -202,6 +228,7 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 **Requirements:** ANONGRANT-01 … ANONGRANT-03
 **Depends on:** 34, 35, 37
 **Success criteria:**
+
 1. This is the only code path that writes a grant row with `source='anonymous_device_grant'`
 2. The grant transaction locks grant rows ascending by id, then their usage rows, with no network call while any lock is held
 3. A second claim on an account that already holds a free grant does not allocate a second one
@@ -213,6 +240,7 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 **Requirements:** REGGRANT-01 … REGGRANT-03
 **Depends on:** 34, 35, 40, 41
 **Success criteria:**
+
 1. This is the only code path that writes a grant row with `source='registered_account_grant'`
 2. Superseding an active anonymous grant happens in one transaction and never leaves two `status='active'` grants
 3. The supersession honors the same fixed global lock order as Phase 41
@@ -224,6 +252,7 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 **Requirements:** APPLEHOOK-01, APPLEHOOK-02
 **Depends on:** 34, 35
 **Success criteria:**
+
 1. The route sits outside the barrier and authenticates solely by verifying Apple's `signedPayload` JWS
 2. A payload with an invalid or absent signature is rejected without touching subscription state
 3. The route appears in the provider-callback category by exact path and the enumeration assertion still passes
@@ -235,6 +264,7 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 **Requirements:** PLAYHOOK-01 … PLAYHOOK-03
 **Depends on:** 34, 35 (soft: 43)
 **Success criteria:**
+
 1. The route authenticates solely by backend verification of Google's signed OIDC push token
 2. It calls Phase 43's shared ingestion module rather than a forked copy
 3. The provider-callback category contains exactly these two routes, both by exact path
@@ -246,6 +276,7 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 **Requirements:** RESTORE-01, RESTORE-02
 **Depends on:** 34, 35, 37, 43, 44
 **Success criteria:**
+
 1. A valid Apple artifact and a valid Google artifact each attach entitlement through their server-determined branch
 2. All store verification completes before the mutating transaction opens — no network call under lock
 3. A non-native surface receives `operation_not_allowed`
@@ -257,6 +288,7 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 **Requirements:** SIGNOUT-01, SIGNOUT-02
 **Depends on:** 34, 35
 **Success criteria:**
+
 1. Success is returned only after Firebase confirms revocation
 2. An indeterminate or failed revocation fails closed — never a success response
 3. Exactly one `audit.auth_events` row is written per attempt
@@ -299,7 +331,7 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 | 31. Move Quota Check to Dependency | v1.6 | 2/2 | Complete | 2026-03-25 |
 | 32. Rewrite Models to Match Prompt Schema | v1.6 | 3/3 | Complete | 2026-03-26 |
 | 33. Propagate quota_exceeded Rename | v1.6 | 1/1 | Complete | 2026-03-26 |
-| 34. Schema | v2.0 | 0/? | Pending | — |
+| 34. Schema | v2.0 | 1/4 | In Progress|  |
 | 35. Foundation | v2.0 | 0/? | Pending | — |
 | 36. Rebind Pre-existing Routes | v2.0 | 0/? | Pending | — |
 | 37. POST /auth/create-user | v2.0 | 0/? | Pending | — |
