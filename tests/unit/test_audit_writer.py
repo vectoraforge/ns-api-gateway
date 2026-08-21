@@ -25,7 +25,7 @@ from uuid import UUID, uuid7
 import pytest
 from sqlalchemy import CheckConstraint
 
-from nativespeaker.api.auth import audit
+from nativespeaker.api.auth import audit, barrier
 from nativespeaker.api.auth.audit import AuditWriter, build_details
 from nativespeaker.api.auth.keys import HmacConfig, HmacKeyring
 from nativespeaker.api.models.auth import AuthEvent, AuthEventResult, AuthOperation
@@ -425,3 +425,68 @@ class TestAFailedWriteNeverChangesTheOutcome:
         rendered = str(log.calls[0][1])
         assert SUBJECT not in rendered
         assert "missing_token" not in rendered
+
+
+class TestTheBarriersAuditHook:
+    """Three properties of the hook that **no input can distinguish**, so they are asserted against
+    the source rather than through a request.
+
+    Two of them survived a mutation battery that every behavioural case here and in
+    `tests/e2e/test_audit_writer.py` passed: writing the row *after* the response was sent, and
+    deriving `created_at` from a fresh `now()` instead of the request's single captured evaluation
+    time. Both are real §4.1 / §1.4 requirements and both are invisible to a test that drives the
+    barrier over `ASGITransport`, which runs the whole application coroutine before the client sees
+    a byte. The assertions are on the AST, not on the source text: a substring check for
+    `datetime.now` finds itself inside its own docstring, which is how the first version of this
+    class passed vacuously.
+    """
+
+    def _function(self, name: str) -> ast.FunctionDef:
+        tree = ast.parse(inspect.getsource(barrier))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef) and node.name == name:
+                return node
+        raise AssertionError(f"{name} not found in barrier.py")
+
+    def _contains_call_to(self, node: ast.AST, attribute: str) -> bool:
+        return any(isinstance(inner, ast.Call)
+                   and isinstance(inner.func, ast.Attribute)
+                   and inner.func.attr == attribute
+                   for inner in ast.walk(node))
+
+    def test_the_row_is_written_before_the_response_is_sent(self):
+        """§4.1: "the row is written before the response is returned". A hook that audits after
+        the send still audits -- and loses the row on any disconnect between the two."""
+        body = self._function("_reject").body
+        audit_at = [i for i, stmt in enumerate(body) if self._contains_call_to(stmt, "_audit")]
+        send_at = [i for i, stmt in enumerate(body)
+                   if any(isinstance(inner, ast.Name) and inner.id == "response"
+                          for inner in ast.walk(stmt))
+                   and isinstance(stmt, ast.Expr)]
+        assert audit_at, "_reject makes no call to _audit"
+        assert send_at, "_reject never awaits the response"
+        assert max(audit_at) < min(send_at)
+
+    def test_created_at_is_the_requests_single_captured_evaluation_time(self):
+        """§1.4: one evaluation time per request, and later phases must not recompute it. A fresh
+        `now()` here would put the row's timestamp after the work it describes."""
+        audit = self._function("_audit")
+        assert "evaluated_at" in {arg.arg for arg in audit.args.kwonlyargs}
+        created = [kw.value for node in ast.walk(audit) if isinstance(node, ast.Call)
+                   for kw in node.keywords if kw.arg == "created_at"]
+        assert created, "_audit passes no created_at"
+        assert all(isinstance(value, ast.Name) and value.id == "evaluated_at"
+                   for value in created)
+
+    def test_the_hook_computes_no_clock_of_its_own(self):
+        """The positive control on the case above: `datetime.now` appears in `__call__`, where the
+        single capture is taken, and must appear nowhere else."""
+        assert self._contains_call_to(self._function("__call__"), "now")
+        assert not self._contains_call_to(self._function("_audit"), "now")
+        assert not self._contains_call_to(self._function("_reject"), "now")
+
+    def test_the_registry_is_read_from_application_state_per_request(self):
+        """The seam that makes the audited-path branch reachable from a test at all -- and read
+        per request, like the verifier and the session factory, never captured in `__init__`."""
+        assert "route_registry" in inspect.getsource(barrier.AuthBarrierMiddleware)
+        assert "state" not in inspect.getsource(barrier.AuthBarrierMiddleware.__init__)

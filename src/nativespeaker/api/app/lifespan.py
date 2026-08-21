@@ -7,7 +7,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth.audit import AuditWriter
 from nativespeaker.api.auth.keys import HmacKeyring
-from nativespeaker.api.auth.registry import assert_route_enumeration
+from nativespeaker.api.auth.registry import REGISTRY, assert_route_enumeration
 from nativespeaker.api.auth.telemetry import RejectionCounter
 from nativespeaker.api.auth.verification import JWTVerifier
 from nativespeaker.api.config import EnvironmentConfig
@@ -28,9 +28,12 @@ async def lifespan(app: FastAPI):
     # Setup logging
     setup_logging(log_level=config.log_level)
 
-    # Validate the error registry and the route registry -- both fail closed before serving traffic
+    # Validate the error registry and the route registry -- both fail closed before serving traffic.
+    # The route registry goes onto app.state first and the assertion runs against *that* object, so
+    # the table the barrier reads per request is provably the table boot checked.
     assert_registry_total()
-    assert_route_enumeration(app)
+    app.state.route_registry = REGISTRY
+    assert_route_enumeration(app, app.state.route_registry)
 
     # The §1.2 / §8.2 bounded-cardinality rejection counter. Every route this phase registers is
     # off the audited attempt path, so this counter plus the structured security log is the whole

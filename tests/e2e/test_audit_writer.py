@@ -34,14 +34,21 @@ pytestmark = pytest.mark.e2e
 
 DETAILS_TOP_LEVEL = ["context", "failure", "mutation", "resolved", "schema_version", "verification"]
 
-# The one route in this module that carries an operation, and is therefore on the audited path.
+# The two routes in this module that carry an operation, and are therefore on the audited path.
 AUDITED_ROUTE = RouteMetadata(method="POST", path="/auth/sync", category=Category.authenticated,
                               operation=AuthOperation.sync)
+# Carries a path parameter on purpose. Without one, a row labelled with `scope["path"]` and a row
+# labelled with the registry template are byte-identical, and the difference between them is a
+# caller-influenced value landing in a durable audit row.
+PARAMETERIZED_ROUTE = RouteMetadata(method="POST", path="/auth/claim/{grant_id}",
+                                    category=Category.authenticated,
+                                    operation=AuthOperation.claim_registered_grant)
+GRANT_ID = "0198f0d2-dead-7000-8000-00000000beef"
 
 
 @pytest.fixture
 def audited_app(_app_lifespan, _db_transaction, stub_verifier):
-    """A test-local app whose single route declares `operation = AuthOperation.sync`.
+    """A test-local app whose routes declare an operation, unlike every production one.
 
     Every route the real application registers declares `operation = None`, so the audited-path
     branch is unreachable from a production route this phase. The barrier reads its registry from
@@ -60,8 +67,12 @@ def audited_app(_app_lifespan, _db_transaction, stub_verifier):
     async def _sync():
         return {"reached": True}
 
+    @app.post("/auth/claim/{grant_id}")
+    async def _claim(grant_id: str):
+        return {"reached": grant_id}
+
     app.add_middleware(AuthBarrierMiddleware)  # ty: ignore[invalid-argument-type]
-    app.state.route_registry = (AUDITED_ROUTE,)
+    app.state.route_registry = (AUDITED_ROUTE, PARAMETERIZED_ROUTE)
     app.state.session_factory = _db_transaction
     app.state.jwt_verifier = stub_verifier
     app.state.hmac_keyring = _app_lifespan.state.hmac_keyring
@@ -166,6 +177,40 @@ class TestAnOnPathRejectionWritesExactlyOneRow:
         assert context["client_ip_bucket_kind"] in {"ipv4", "ipv6", "unresolved"}
         assert "attempt_id" in context
         assert not any("addr" in key or key == "client_ip" for key in context)
+
+    async def test_the_route_recorded_is_the_template_never_the_request_path(
+            self, audited_client, _db_transaction):
+        """The same bounded-cardinality rule the counter label follows, and here it is durable: a
+        request path carries caller-influenced ids, and `audit.auth_events` keeps them for good."""
+        async with audited_client as client:
+            response = await client.post(f"/auth/claim/{GRANT_ID}")
+
+        assert response.status_code == 401
+        written = await rows(_db_transaction)
+        assert len(written) == 1
+        assert written[0].details["context"]["route"] == "/auth/claim/{grant_id}"
+        assert written[0].operation is AuthOperation.claim_registered_grant
+
+    async def test_the_path_parameter_appears_nowhere_in_the_row(
+            self, audited_client, _db_transaction):
+        async with audited_client as client:
+            await client.post(f"/auth/claim/{GRANT_ID}")
+
+        row = (await rows(_db_transaction))[0]
+        assert GRANT_ID not in str(row.details)
+        assert GRANT_ID not in str(row.actor_issuer)
+
+    @pytest.mark.parametrize("subobject", ("context", "verification", "resolved", "mutation"))
+    async def test_the_bounded_reason_is_recorded_under_failure_and_nowhere_else(
+            self, audited_client, _db_transaction, subobject):
+        """One home in the stored row, not just in the object the builder returned. A duplicate
+        under `context` is where a later phase would read it from and then widen it."""
+        async with audited_client as client:
+            await client.post("/auth/sync")
+
+        details = (await rows(_db_transaction))[0].details
+        assert details["failure"]["reason"] == "missing_token"
+        assert "missing_token" not in str(details[subobject])
 
     async def test_a_malformed_credential_also_writes_exactly_one_row(
             self, audited_client, _db_transaction):
@@ -415,15 +460,3 @@ class TestTheRollbackStillIsolatesIt:
         finally:
             await outside.dispose()
         assert visible == 0
-
-
-class TestTheRegistryIsReadPerRequest:
-    """The seam that makes the audited-path branch reachable from a test at all."""
-
-    def test_the_barrier_reads_its_registry_from_application_state(self):
-        import inspect
-
-        from nativespeaker.api.auth.barrier import AuthBarrierMiddleware as Barrier
-        source = inspect.getsource(Barrier)
-        assert "route_registry" in source
-        assert "state" not in inspect.getsource(Barrier.__init__)

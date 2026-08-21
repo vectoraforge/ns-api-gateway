@@ -79,9 +79,19 @@ REGISTRY: tuple[RouteMetadata, ...] = (
 _INDEX: dict[tuple[str, str], RouteMetadata] = {(e.method, e.path): e for e in REGISTRY}
 
 
-def lookup(method: str, path: str) -> RouteMetadata | None:
-    """Resolve declared metadata for a matched route. `None` means undeclared -- treat as strictest."""
-    return _INDEX.get((method, path))
+def lookup(method: str, path: str,
+           registry: tuple[RouteMetadata, ...] = REGISTRY) -> RouteMetadata | None:
+    """Resolve declared metadata for a matched route. `None` means undeclared -- treat as strictest.
+
+    The barrier passes the registry it read from `scope["app"].state.route_registry` per request,
+    so a test app can declare a route carrying an `operation` -- every route this phase registers
+    declares `operation = None`, which would otherwise leave the audited-path branch unreachable
+    from anything. The default keeps the production lookup on the prebuilt index and keeps this one
+    function the only place a `(method, path)` resolves, so the two cannot drift.
+    """
+    if registry is REGISTRY:
+        return _INDEX.get((method, path))
+    return next((e for e in registry if e.method == method and e.path == path), None)
 
 
 def enumerate_registered(app: Any) -> tuple[set[tuple[str, str]], list[str]]:

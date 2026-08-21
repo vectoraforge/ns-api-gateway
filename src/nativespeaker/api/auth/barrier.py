@@ -19,6 +19,12 @@ Every rejection at steps 2-5 returns the identical body its class declares and i
 audit row's `details.failure`. The client response names no issuer, no integration, and no failed
 check -- and for §8.2 routes, which is every route this phase registers, no audit row is written.
 
+**Entry to the audited path depends on one thing only**: whether the matched route+method carries
+a non-`None` `operation` in its metadata. Never on how far the request got, never on which step
+refused. All eight routes foundation registers declare `operation = None`, so no production request
+in this phase writes a row; the registry is read from `scope["app"].state.route_registry` per
+request precisely so a test can declare a route that does, and phases 37-45 supply the real ones.
+
 The typed context travels on `scope["state"]`, which stays visible to the handler through
 `request.state` and to the outer `RequestLoggingMiddleware` after `call_next`. Contextvars bound
 below a `BaseHTTPMiddleware` never propagate back up, so binding identity to `structlog.contextvars`
@@ -26,11 +32,13 @@ and expecting the request log line to carry it would silently produce nothing (D
 """
 from datetime import UTC, datetime
 from ipaddress import IPv6Address, ip_address
-from uuid import uuid7
+from uuid import UUID, uuid7
 
+import structlog
 from starlette.routing import Match
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from nativespeaker.api.auth.audit import build_details
 from nativespeaker.api.auth.context import (
     REQUEST_CONTEXT_SCOPE_KEY,
     ClientIpBucketKind,
@@ -42,6 +50,8 @@ from nativespeaker.api.auth.telemetry import record_rejection
 from nativespeaker.api.auth.wire import BoundedReason, extract_bearer
 from nativespeaker.api.errors import AUTH_REQUIRED, ErrorClass, error_response
 from nativespeaker.api.models.auth import AuthEventResult
+
+logger = structlog.get_logger()
 
 
 class AuthBarrierMiddleware:
@@ -75,8 +85,11 @@ class AuthBarrierMiddleware:
         # Step 1 -- route metadata, read before dispatch. An undeclared route aborts boot via the
         # §2.3 assertion, so `None` is unreachable in a started process; it is answered with the
         # strictest disposition anyway, because a route carrying no declaration must never
-        # silently become public.
-        meta = lookup(scope["method"], route.path) or _strictest(scope["method"], route.path)
+        # silently become public. The registry comes off application state per request, like the
+        # verifier and the session factory -- never captured in `__init__`.
+        registry = scope["app"].state.route_registry
+        meta = (lookup(scope["method"], route.path, registry)
+                or _strictest(scope["method"], route.path))
         if meta.category is not Category.authenticated:
             await self.app(scope, receive, send)
             return
@@ -91,7 +104,8 @@ class AuthBarrierMiddleware:
         if token is None:
             await self._reject(scope, receive, send, error_class=AUTH_REQUIRED,
                                result=AuthEventResult.invalid_external_jwt,
-                               bounded_reason=reason, route=meta.path)
+                               bounded_reason=reason, meta=meta,
+                               evaluated_at=evaluated_at, attempt_id=attempt_id)
             return
 
         # Step 3 -- verification. `verify` returns rather than raises, for the same reason this
@@ -100,7 +114,8 @@ class AuthBarrierMiddleware:
         if claims is None:
             await self._reject(scope, receive, send, error_class=AUTH_REQUIRED,
                                result=AuthEventResult.invalid_external_jwt,
-                               bounded_reason=reason, route=meta.path)
+                               bounded_reason=reason, meta=meta,
+                               evaluated_at=evaluated_at, attempt_id=attempt_id)
             return
 
         # Step 4 -- resolution. Exactly one short session, closed before dispatch: no lock is held
@@ -111,8 +126,13 @@ class AuthBarrierMiddleware:
 
         # Step 5 -- the admission matrix.
         if isinstance(decision, Reject):
+            # Every branch reachable here ran after verification, so the actor is known -- which is
+            # the shape `audit.auth_events` requires for every result but `invalid_external_jwt`.
             await self._reject(scope, receive, send, error_class=decision.error_class,
-                               result=decision.result, bounded_reason=None, route=meta.path)
+                               result=decision.result, bounded_reason=None, meta=meta,
+                               evaluated_at=evaluated_at, attempt_id=attempt_id,
+                               actor_issuer=decision.actor_issuer,
+                               actor_subject=decision.actor_subject)
             return
 
         # Step 6 -- attach and dispatch.
@@ -129,12 +149,68 @@ class AuthBarrierMiddleware:
                       error_class: ErrorClass,
                       result: AuthEventResult,
                       bounded_reason: BoundedReason | None,
-                      route: str) -> None:
-        """Record the rejection, then *return* the shared response -- never raise it (D-01)."""
+                      meta: RouteMetadata,
+                      evaluated_at: datetime,
+                      attempt_id: UUID,
+                      actor_issuer: str | None = None,
+                      actor_subject: str | None = None) -> None:
+        """Record the rejection, then *return* the shared response -- never raise it (D-01).
+
+        Telemetry fires for every rejection, on the audited path and off it. The audit row is
+        written only when the matched route carries an operation, and is written **before** the
+        response goes out -- `§4.1` is explicit that the row is not a side effect of the response
+        having been sent.
+        """
         record_rejection(scope["app"].state, result=result,
-                         bounded_reason=bounded_reason, route=route)
+                         bounded_reason=bounded_reason, route=meta.path)
+        if meta.operation is not None:
+            await self._audit(scope, result=result, bounded_reason=bounded_reason, meta=meta,
+                              evaluated_at=evaluated_at, attempt_id=attempt_id,
+                              actor_issuer=actor_issuer, actor_subject=actor_subject)
         response = error_response(error_class)
         await response(scope, receive, send)
+
+    async def _audit(self, scope: Scope, *,
+                     result: AuthEventResult,
+                     bounded_reason: BoundedReason | None,
+                     meta: RouteMetadata,
+                     evaluated_at: datetime,
+                     attempt_id: UUID,
+                     actor_issuer: str | None,
+                     actor_subject: str | None) -> None:
+        """Write the §4 row for an on-path rejection, standalone-durable (§4.1).
+
+        Standalone because a barrier rejection happens before any consuming or mutating transaction
+        exists; there is nothing to be atomic with. `actor_provider` is NULL on every branch that
+        reaches here: `§4.2` permits it only from the stored `core.external_identities.provider`
+        column of a resolved linked identity, and a rejection resolved none.
+
+        Wrapped whole. `AuditWriter` already swallows a database failure, but a missing writer, an
+        absent factory, or a caller-contract error would otherwise escape and turn a 401 into a
+        500 -- telling the caller something the 401 does not, which is both an availability
+        regression and an anti-oracle break.
+        """
+        try:
+            await scope["app"].state.audit_writer.write_standalone(
+                scope["app"].state.session_factory,
+                operation=meta.operation,
+                result=result,
+                actor_issuer=actor_issuer,
+                actor_subject=actor_subject,
+                actor_provider=None,
+                challenge_row_id=None,
+                details=build_details(
+                    context={"route": meta.path,
+                             "method": scope["method"],
+                             "operation": meta.operation,
+                             "attempt_id": attempt_id,
+                             "client_ip_bucket_kind": _bucket_kind(scope.get("client"))},
+                    failure={"stage": "barrier",
+                             "reason": None if bounded_reason is None else str(bounded_reason),
+                             "retryable": False}),
+                created_at=evaluated_at)
+        except Exception:
+            logger.exception("audit_write_skipped", result=str(result), route=meta.path)
 
 
 def _match_full(scope: Scope):

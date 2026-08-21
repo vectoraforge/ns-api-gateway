@@ -62,14 +62,24 @@ def barrier_client():
     app.state.jwt_verifier = make_test_verifier()
     app.state.session_factory = _NoIdentitySession
     app.state.rejection_counter = RejectionCounter()
+    # An empty registry, which is what makes /probe undeclared *to this app* rather than merely
+    # absent from the production table. It also keeps every case here off the audited attempt path:
+    # a route with no declaration has no operation, so no rejection below writes an audit row and
+    # none of them needs a writer.
+    app.state.route_registry = ()
 
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client
 
 
 def test_the_probe_route_is_undeclared(barrier_client):
-    """Guards this module's premise: /probe carries no registry declaration."""
+    """Guards this module's premise: /probe carries no registry declaration.
+
+    Asserted against both tables the barrier could consult -- the production one and the empty one
+    this app puts on its own state -- so the premise cannot survive a change to either.
+    """
     assert lookup("GET", "/probe") is None
+    assert lookup("GET", "/probe", ()) is None
 
 
 class TestBearerTokenEdgeCases:
