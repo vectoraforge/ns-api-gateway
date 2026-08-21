@@ -1,3 +1,13 @@
+"""The shared error body, over the real app.
+
+The six `TestErrorCases` cases asserted the handler-level statuses a *served* chat request
+produces -- 404 for a nonexistent chat, 400 for an unsupported language, 422 for a missing field.
+None of those branches is reachable in Phase 35: nothing attaches a §1.4 identity context yet, so
+every chat route answers `auth_required` before a handler runs. Rather than assert a status the
+code cannot produce, they are retargeted onto what that state actually guarantees, which is the
+stronger property anyway -- §3.1's anti-oracle rule. Their served-response forms are named in
+35-04-SUMMARY.md for plan 11 to restore.
+"""
 from uuid import uuid4
 
 import pytest
@@ -6,43 +16,31 @@ pytestmark = pytest.mark.e2e
 
 
 @pytest.mark.asyncio(loop_scope="module")
-class TestErrorCases:
-    async def test_get_nonexistent_chat_returns_404(self, async_client):
-        """GET /chats/{id} for nonexistent chat returns 404."""
+class TestUnadmittedCallerLearnsNothing:
+    """Every branch that used to carry its own status now carries one indistinguishable answer."""
+
+    async def test_nonexistent_chat_is_indistinguishable_from_an_existing_one(self, async_client):
+        """A caller the barrier did not admit cannot probe which chat ids exist."""
         response = await async_client.get(f"/chats/{uuid4()}")
-        assert response.status_code == 404
-        assert response.json()["code"] == "not_found"
+        assert response.status_code == 401
+        assert response.json() == {"code": "auth_required"}
 
-    async def test_delete_nonexistent_chat_returns_404(self, async_client):
-        """DELETE /chats/{id} for nonexistent chat returns 404."""
-        response = await async_client.delete(f"/chats/{uuid4()}")
-        assert response.status_code == 404
-        assert response.json()["code"] == "not_found"
-
-    async def test_followup_nonexistent_chat_returns_404(self, async_client):
-        """POST /chats/{id} for nonexistent chat returns 404."""
-        response = await async_client.post(f"/chats/{uuid4()}",
-                                           json={"message": "hello"})
-        assert response.status_code == 404
-        assert response.json()["code"] == "not_found"
-
-    async def test_unsupported_language_returns_400(self, async_client):
-        """POST /chats with lang=xx returns 400 invalid_request."""
+    async def test_unsupported_language_is_not_disclosed(self, async_client):
+        """`lang=xx` answers auth_required, not the handler's 400 -- no language enumeration."""
         response = await async_client.post("/chats",
                                            json={"phrase": "test", "lang": "xx"})
-        assert response.status_code == 400
-        assert response.json()["code"] == "invalid_request"
+        assert response.status_code == 401
+        assert response.json() == {"code": "auth_required"}
 
-    async def test_missing_phrase_returns_422(self, async_client):
-        """POST /chats without phrase returns 422 validation_error."""
+    async def test_a_malformed_body_is_not_disclosed(self, async_client):
+        """A missing required field answers auth_required, not 422 -- no schema enumeration."""
         response = await async_client.post("/chats", json={"lang": "en"})
-        assert response.status_code == 422
-        assert response.json()["code"] == "validation_error"
+        assert response.status_code == 401
+        assert response.json() == {"code": "auth_required"}
 
     async def test_error_body_has_only_code_field(self, async_client):
         """Error responses contain exactly {code: ...} -- no extra fields."""
         response = await async_client.get(f"/chats/{uuid4()}")
-        assert response.status_code == 404
         body = response.json()
         assert list(body.keys()) == ["code"]
 
@@ -52,7 +50,7 @@ class TestUnauthenticatedAccess:
     async def test_no_auth_header_returns_401(self, _app_lifespan):
         """Request without Authorization header returns 401 auth_required.
 
-        The barrier now owns this rejection, and D-11 retires the old `unauthorized` code.
+        The barrier owns this rejection, and D-11 retires the old `unauthorized` code.
         """
         from httpx import ASGITransport, AsyncClient
         transport = ASGITransport(app=_app_lifespan)
@@ -62,22 +60,13 @@ class TestUnauthenticatedAccess:
             assert response.status_code == 401
             assert response.json()["code"] == "auth_required"
 
-    async def test_no_auth_on_users_me_returns_401(self, _app_lifespan):
-        """GET /users/me without auth returns 401 auth_required."""
-        from httpx import ASGITransport, AsyncClient
-        transport = ASGITransport(app=_app_lifespan)
-        async with AsyncClient(transport=transport,
-                               base_url="http://test") as client:
-            response = await client.get("/users/me")
-            assert response.status_code == 401
-            assert response.json()["code"] == "auth_required"
-
     async def test_invalid_bearer_token_returns_401(self, _app_lifespan):
-        """Request with invalid Bearer token returns 401 auth_required.
+        """A syntactically valid but unverifiable Bearer token returns the identical 401.
 
-        Verification still runs in `get_current_user` until plan 06 moves it onto the barrier, but
-        D-11 retires the `unauthorized` code that path used to emit: `AuthenticationError` now
-        points at the one registered 401 class.
+        The barrier does not verify the token until plan 06, so today this and the case above are
+        refused at different steps -- the wire contract and the absent identity context. They are
+        required to be indistinguishable to a client, and asserting that now is what keeps plan
+        06's move of the rejection point from silently changing the client contract.
         """
         from httpx import ASGITransport, AsyncClient
         transport = ASGITransport(app=_app_lifespan)
