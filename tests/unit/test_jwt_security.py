@@ -30,6 +30,27 @@ def verifier():
     return make_test_verifier()
 
 
+def hs256_over(secret: bytes, payload: dict) -> str:
+    """Hand-build an HS256 token keyed on `secret`.
+
+    PyJWT refuses to *encode* HS256 with a PEM key, so the classic confusion attack cannot be
+    expressed through `pyjwt.encode`. An attacker has no such guard -- they emit the compact form
+    directly, which is what this reproduces.
+    """
+    import base64
+    import hashlib
+    import hmac
+    import json
+
+    def seg(raw: bytes) -> bytes:
+        return base64.urlsafe_b64encode(raw).rstrip(b"=")
+
+    signing_input = seg(json.dumps({"alg": "HS256", "typ": "JWT"}).encode()) + b"." + \
+        seg(json.dumps(payload).encode())
+    signature = hmac.new(secret, signing_input, hashlib.sha256).digest()
+    return (signing_input + b"." + seg(signature)).decode()
+
+
 def rejected(verifier, token) -> BoundedReason:
     """Assert the two-tuple rejection shape and return the single bounded reason."""
     claims, reason = verifier.verify(token)
@@ -82,7 +103,7 @@ class TestAlgorithmSecurity:
             "exp": time.time() + 3600,
             "iat": time.time(),
         }
-        token = pyjwt.encode(payload, PUBLIC_KEY_PEM.decode(), algorithm="HS256")
+        token = hs256_over(PUBLIC_KEY_PEM, payload)
         assert rejected(verifier, token) is BoundedReason.bad_signature
 
 
@@ -307,7 +328,7 @@ class TestProductionVerifier:
         """`algorithms=["RS256"]` is passed explicitly, so confusion lands on bad_signature."""
         payload = {"sub": "u", "aud": TEST_PROJECT_ID, "iss": TEST_ISSUER,
                    "exp": time.time() + 3600, "iat": time.time()}
-        token = pyjwt.encode(payload, PUBLIC_KEY_PEM.decode(), algorithm="HS256")
+        token = hs256_over(PUBLIC_KEY_PEM, payload)
         assert rejected(real_verifier, token) is BoundedReason.bad_signature
 
     def test_pins_the_issuer_to_the_one_configured_integration(self, real_verifier):

@@ -7,8 +7,8 @@ from firebase_admin import credentials
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth import JWTVerifier
 from nativespeaker.api.auth.registry import assert_route_enumeration
+from nativespeaker.api.auth.verification import JWTVerifier
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.errors import assert_registry_total
 from nativespeaker.api.logs import setup_logging

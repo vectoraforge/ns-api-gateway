@@ -1,13 +1,11 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import nativespeaker.api.routers.users as users_module
 from nativespeaker.api.app.dependencies import get_config, get_current_user, get_db
 from nativespeaker.api.app.errors import register_exception_handlers
-from nativespeaker.api.auth import UserIdentity
 from nativespeaker.api.models import SubscriptionPlan, User
 from nativespeaker.api.routers import users_router
 
@@ -96,23 +94,8 @@ class TestInactiveUser:
             assert "deactivated" not in str(data).lower()
 
 
-class TestUserIdentity:
-    """USER-01: UserIdentity extracted from JWT claims."""
-
-    def test_user_identity_fields(self):
-        identity = UserIdentity(sub="abc123", email="test@example.com", name="Test")
-        assert identity.sub == "abc123"
-        assert identity.email == "test@example.com"
-        assert identity.name == "Test"
-
-    def test_user_identity_name_optional(self):
-        identity = UserIdentity(sub="abc123", email="test@example.com")
-        assert identity.name is None
-
-    def test_user_identity_frozen(self):
-        identity = UserIdentity(sub="abc123", email="test@example.com")
-        with pytest.raises(AttributeError):
-            identity.sub = "changed"  # type: ignore[misc]
+# USER-01's identity value object is now `VerifiedClaims`, carrying only the verified (iss, sub).
+# Its coverage lives beside the verification rules, in test_jwt_security.py::TestVerifiedClaims.
 
 
 class TestUserModel:

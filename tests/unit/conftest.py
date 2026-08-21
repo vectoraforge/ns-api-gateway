@@ -18,9 +18,8 @@ from nativespeaker.api.app.dependencies import (
     require_quota,
 )
 from nativespeaker.api.app.errors import register_exception_handlers
-from nativespeaker.api.auth import UserIdentity
+from nativespeaker.api.auth.verification import VerificationResult, bounded_reason_for, claims_from_payload
 from nativespeaker.api.database import ChatsDB
-from nativespeaker.api.errors import AuthenticationError
 from nativespeaker.api.models import SubscriptionPlan, User
 from nativespeaker.api.routers import (
     chats_router,
@@ -77,7 +76,13 @@ def make_token(sub: str = "test-user", *,
 
 
 class _FixedKeyVerifier:
-    """Standalone verifier that uses a fixed public key instead of fetching JWKS."""
+    """Standalone verifier that uses a fixed public key instead of fetching JWKS.
+
+    It differs from `JWTVerifier` in exactly one respect -- where the key comes from. The
+    algorithm pin, the `require` list, the exception -> bounded-reason mapping and the
+    non-empty-`sub` rule are the production ones, imported rather than reimplemented, so this stub
+    cannot drift away from what it stands in for.
+    """
 
     def __init__(self):
         self._audience = TEST_PROJECT_ID
@@ -85,7 +90,7 @@ class _FixedKeyVerifier:
         self._leeway = 30
         self._public_key = PUBLIC_KEY_PEM
 
-    def verify(self, token: str) -> UserIdentity:
+    def verify(self, token: str) -> VerificationResult:
         try:
             payload = pyjwt.decode(token,
                                    self._public_key,
@@ -94,28 +99,10 @@ class _FixedKeyVerifier:
                                    issuer=self._issuer,
                                    leeway=self._leeway,
                                    options={"require": ["exp", "iat", "aud", "iss", "sub"]})
-        except pyjwt.ExpiredSignatureError:
-            raise AuthenticationError("Token expired") from None
-        except pyjwt.InvalidAudienceError:
-            raise AuthenticationError("Invalid audience") from None
-        except pyjwt.InvalidIssuerError:
-            raise AuthenticationError("Invalid issuer") from None
-        except pyjwt.DecodeError:
-            raise AuthenticationError("Token decode failed") from None
-        except pyjwt.InvalidAlgorithmError:
-            raise AuthenticationError("Invalid algorithm") from None
-        except pyjwt.MissingRequiredClaimError as exc:
-            raise AuthenticationError(f"Missing claim: {exc}") from None
-        except Exception as exc:
-            raise AuthenticationError(f"Token verification failed: {exc}") from None
+        except pyjwt.PyJWTError as exc:
+            return None, bounded_reason_for(exc)
 
-        sub = payload.get("sub")
-        if not sub:
-            raise AuthenticationError("Missing sub claim")
-
-        return UserIdentity(sub=str(sub),
-                            email=payload.get("email", ""),
-                            name=payload.get("name"))
+        return claims_from_payload(payload)
 
 
 def make_test_verifier() -> _FixedKeyVerifier:

@@ -5,7 +5,7 @@ import structlog
 from fastapi import Depends, Header, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.auth import TokenVerifier
+from nativespeaker.api.auth.verification import TokenVerifier
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.database import UsageDB
 from nativespeaker.api.errors import AuthenticationError, QuotaExceededError
@@ -57,9 +57,13 @@ async def get_current_user(request: Request,
     if not token:
         raise AuthenticationError("Missing Bearer token")
     verifier: TokenVerifier = request.app.state.jwt_verifier
-    identity = verifier.verify(token)
+    # §1.2: the verifier returns a bounded reason rather than raising. The reason is never
+    # client-visible -- every failure branch surfaces the identical auth_required response.
+    claims, _reason = verifier.verify(token)
+    if claims is None:
+        raise AuthenticationError("Authentication failed")
     user_service = UserService(db)
-    user = await user_service.get_or_create(identity)
+    user = await user_service.get_or_create(claims.subject)
     if not user.active:
         raise AuthenticationError("Authentication failed")
     structlog.contextvars.bind_contextvars(user_id=str(user.id))

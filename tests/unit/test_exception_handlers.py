@@ -147,15 +147,15 @@ def test_expired_token_returns_401(dep_client):
 @pytest.fixture(scope="module")
 def state_client():
     """Confirms verifier is resolved from app.state -- swapping it changes behavior."""
-    from nativespeaker.api.auth import UserIdentity
+    from nativespeaker.api.auth.verification import VerificationResult, VerifiedClaims
 
     mock_user = User(jwt_sub="hardcoded-user", email="hw@example.com", name="Hardcoded")
     mock_db = MagicMock()
 
     class _AlwaysUser:
-        def verify(self, token: str) -> UserIdentity:
-            return UserIdentity(sub="hardcoded-user", email="hw@example.com",
-                                name="Hardcoded")
+        def verify(self, token: str) -> VerificationResult:
+            return VerifiedClaims(issuer="https://securetoken.google.com/test-project",
+                                  subject="hardcoded-user"), None
 
     app = FastAPI()
     register_exception_handlers(app)
