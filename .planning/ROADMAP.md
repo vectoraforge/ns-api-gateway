@@ -156,16 +156,45 @@ Plans:
 **Plans:** 11 plans across 10 waves
 
 Plans:
+**Wave 1**
+
 - [ ] 35-01-PLAN.md — Tracer: unauthenticated request rejected end-to-end at real startup
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 35-02-PLAN.md — Error registry completion (D-09/D-11/D-12) and the §1.2 verification module
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 35-03-PLAN.md — Typed identity context (§1.4) and the fail-loudly `Depends()` accessors
-- [ ] 35-04-PLAN.md — Dead-surface deletion (D-16) in one atomic sweep, and the suite back to green
-- [ ] 35-05-PLAN.md — v2.0 model layer repair and removal of the Apple/quota config surface
-- [ ] 35-06-PLAN.md — Barrier identity resolution, admission matrix, telemetry, and the e2e harness
 - [ ] 35-07-PLAN.md — Provider-call budget seam and adapter interfaces (zero implementations)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 35-04-PLAN.md — Dead-surface deletion (D-16) in one atomic sweep, and the suite back to green
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 35-05-PLAN.md — v2.0 model layer repair and removal of the Apple/quota config surface
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [ ] 35-06-PLAN.md — Barrier identity resolution, admission matrix, telemetry, and the e2e harness
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
 - [ ] 35-08-PLAN.md — Shared HMAC keyring and its fail-closed startup policy
+
+**Wave 8** *(blocked on Wave 7 completion)*
+
 - [ ] 35-09-PLAN.md — `audit.auth_events` writer: two modes, details shape, redaction, barrier hook
+
+**Wave 9** *(blocked on Wave 8 completion)*
+
 - [ ] 35-10-PLAN.md — Challenge store, claim/consume atomicity, and the §6.5 mode-signal check
+
+**Wave 10** *(blocked on Wave 9 completion)*
+
 - [ ] 35-11-PLAN.md — Publish the `auth/` seam, restore e2e coverage, gate the suite green, COVERAGE.md
 
 **Success criteria:**
