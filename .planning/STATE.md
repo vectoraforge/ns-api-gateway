@@ -1,21 +1,21 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Authentication & Entitlements (Phases 34-46)
+milestone_name: Authentication & Entitlements
 current_phase: 34
 current_phase_name: schema
 status: executing
-stopped_at: Completed 34-02-PLAN.md
-last_updated: "2026-08-21T00:43:43.913Z"
+stopped_at: Completed 34-03-PLAN.md
+last_updated: "2026-08-21T00:58:48.020Z"
 last_activity: 2026-08-19
 last_activity_desc: Milestone v2.0 started
-state_head: 6b1c5114a2244164bce88a13b108fb80acdd1fe0
 progress:
   total_phases: 13
   completed_phases: 0
   total_plans: 4
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
+state_head: 6b1c5114a2244164bce88a13b108fb80acdd1fe0
 ---
 
 # Project State
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 34 (schema) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-08-19 — Phase 34 execution started
 
@@ -95,10 +95,10 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-21T00:43:10.566Z
+**Last session:** 2026-08-21T00:58:26.768Z
 
 Last activity: 2026-03-26
-Stopped at: Completed 34-02-PLAN.md
+Stopped at: Completed 34-03-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -108,6 +108,7 @@ Resume file: None
 | Phase 34 P01 | 3m | 1 tasks | 1 files |
 | Phase 34 P01 | 10m | 2 tasks | 1 files |
 | Phase 34 P02 | ~25 min | 3 tasks | 6 files |
+| Phase 34 P03 | 42min | 3 tasks | 8 files |
 
 ## Decisions
 
@@ -116,3 +117,6 @@ Resume file: None
 - [Phase ?]: core.users is taken from the §2 TARGET-shape table at 00-schema.md:84-94, never from the baseline CREATE TABLE — the baseline shape would reintroduce jwt_sub and violate SCHEMA-07 while the apply still succeeds
 - [Phase ?]: Migration rollback is two DROP SCHEMA … CASCADE statements rather than a reverse-order object list, because the list drifts out of sync with the apply body and the two-statement form cannot
 - [Phase ?]: PostgreSQL 17.11 reproduced every 16.2-derived constant this plan could check (54 indexes, 104 internal triggers, 0 user triggers/views/matviews) — corroborating evidence for RESEARCH.md A1, not its closure; 34-03 still re-captures
+- [Phase ?]: 34-03: registered the `schema` pytest marker and extended addopts to -m 'not e2e and not schema' -- every schema command must now pass -m schema explicitly
+- [Phase ?]: 34-03: PostgreSQL 17.11 capture matched RESEARCH.md's PG 16.2 constants exactly across all six groups -- assumption A1 closed as confirmed, OQ-1 answered 'no divergence'
+- [Phase ?]: 34-03: index-predicate assertions pin search_path to the asyncpg default rather than normalizing pg_get_expr output, keeping expected strings literal (P-5)

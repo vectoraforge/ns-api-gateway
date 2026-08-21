@@ -117,7 +117,7 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 **Goal:** Deliver the complete v2.0 auth schema in one apply against an empty database as `migrations/20260818_01_initial-release.sql`, which replaces the deleted `20260322_01_initial-release.sql`.
 **Requirements:** SCHEMA-01 … SCHEMA-08
 **Depends on:** nothing — root of the graph
-**Plans:** 2/4 plans executed
+**Plans:** 3/4 plans executed
 
 Plans:
 **Wave 1**
@@ -130,7 +130,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 34-03-PLAN.md — tests/schema harness, apply/rollback proof, and the exact-set object inventory captured from real PostgreSQL 17 (wave 3)
+- [x] 34-03-PLAN.md — tests/schema harness, apply/rollback proof, and the exact-set object inventory captured from real PostgreSQL 17 (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -331,7 +331,7 @@ Plans:
 | 31. Move Quota Check to Dependency | v1.6 | 2/2 | Complete | 2026-03-25 |
 | 32. Rewrite Models to Match Prompt Schema | v1.6 | 3/3 | Complete | 2026-03-26 |
 | 33. Propagate quota_exceeded Rename | v1.6 | 1/1 | Complete | 2026-03-26 |
-| 34. Schema | v2.0 | 2/4 | In Progress|  |
+| 34. Schema | v2.0 | 3/4 | In Progress|  |
 | 35. Foundation | v2.0 | 0/? | Pending | — |
 | 36. Rebind Pre-existing Routes | v2.0 | 0/? | Pending | — |
 | 37. POST /auth/create-user | v2.0 | 0/? | Pending | — |

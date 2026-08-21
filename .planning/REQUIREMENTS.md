@@ -20,7 +20,7 @@
 - [x] **SCHEMA-05**: `core.auth_challenges` supports the claim/consume protocol for challenge-bearing operations
 - [x] **SCHEMA-06**: `audit.auth_events` enforces the actor-field CHECK constraints and the `core.auth_operation` / `core.auth_event_result` enums in full
 - [x] **SCHEMA-07**: Legacy structures are gone — `core.users.jwt_sub`, `core.users.subscription_plan`, `core.usage_monthly`, `core.subscription_events`, the `core.subscription_plan` enum, and the `promo` grant source
-- [ ] **SCHEMA-08**: Every acceptance check in `00-schema.md §10` passes against a freshly migrated database
+- [x] **SCHEMA-08**: Every acceptance check in `00-schema.md §10` passes against a freshly migrated database
 
 ### FOUND — Phase 35 (`01-foundation.md §1–§7, §9`)
 
