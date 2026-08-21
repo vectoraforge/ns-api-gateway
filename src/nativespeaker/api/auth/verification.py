@@ -96,10 +96,15 @@ class JWTVerifier:
                  audience: str,
                  issuer: str,
                  leeway: int = 30,
-                 cache_ttl_seconds: float = 3600):
+                 cache_ttl_seconds: float = 3600,
+                 fetch_timeout_seconds: float = 3.0):
+        # `timeout=` is explicit because PyJWT 2.12.1 defaults it to 30 seconds. That default is the
+        # operative bound on a blocking `urlopen`, so a hung endpoint would pin a worker for half a
+        # minute per request; three seconds frees it while leaving ample room for a healthy fetch.
         self._jwks_client = PyJWKClient(jwks_url,
                                         cache_jwk_set=True,
-                                        lifespan=cache_ttl_seconds)
+                                        lifespan=cache_ttl_seconds,
+                                        timeout=fetch_timeout_seconds)
         self._audience = audience
         self._issuer = issuer
         self._leeway = leeway

@@ -310,12 +310,27 @@ class TestProductionVerifier:
         JWTVerifier(jwks_url="https://jwks.invalid/keys",
                     audience=TEST_PROJECT_ID,
                     issuer=TEST_ISSUER,
-                    cache_ttl_seconds=1234)
+                    cache_ttl_seconds=1234,
+                    fetch_timeout_seconds=2.5)
         mock_cls.assert_called_once_with("https://jwks.invalid/keys",
                                          cache_jwk_set=True,
-                                         lifespan=1234)
+                                         lifespan=1234,
+                                         timeout=2.5)
         # Fail-fast warm-up: an unreachable JWKS endpoint crashes startup, not the first request.
         instance.get_signing_keys.assert_called_once_with()
+
+    def test_the_default_fetch_timeout_is_bounded(self, jwks_client):
+        """The bound has to hold for the call site that passes nothing -- which is the real one.
+
+        `app/lifespan.py` constructs the verifier without the keyword, so pinning only the explicit
+        value would leave production on PyJWT 2.12.1's 30-second default with a green test beside it.
+        """
+        mock_cls, _ = jwks_client
+        JWTVerifier(jwks_url="https://jwks.invalid/keys",
+                    audience=TEST_PROJECT_ID,
+                    issuer=TEST_ISSUER)
+        timeout = mock_cls.call_args.kwargs["timeout"]
+        assert timeout is not None and timeout <= 5
 
     def test_two_verifications_issue_no_additional_jwks_fetch(self, real_verifier, jwks_client):
         """§1.2: a request costs one local RSA verification and no per-request network call."""

@@ -35,6 +35,7 @@ from ipaddress import IPv6Address, ip_address
 from uuid import UUID, uuid7
 
 import structlog
+from starlette.concurrency import run_in_threadpool
 from starlette.routing import Match
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -110,7 +111,16 @@ class AuthBarrierMiddleware:
 
         # Step 3 -- verification. `verify` returns rather than raises, for the same reason this
         # middleware returns rather than raises.
-        claims, reason = scope["app"].state.jwt_verifier.verify(token)
+        #
+        # Off the loop, always. `verify` is synchronous, and on a `kid` the cached JWKS set does not
+        # match it performs a blocking `urlopen` inside PyJWT. Called directly from here that stalls
+        # every other coroutine in the process -- including `/health/ready`, served by this same loop
+        # -- for the length of one outbound round trip, at the choice of an unauthenticated caller
+        # who has not yet proven anything. Envoy bounds how many such requests arrive; it cannot
+        # un-block an event loop, and one request is enough. `run_in_threadpool` takes any
+        # synchronous callable, so the `TokenVerifier` Protocol is unchanged and `verify` keeps
+        # returning rather than raising (D-01).
+        claims, reason = await run_in_threadpool(scope["app"].state.jwt_verifier.verify, token)
         if claims is None:
             await self._reject(scope, receive, send, error_class=AUTH_REQUIRED,
                                result=AuthEventResult.invalid_external_jwt,
