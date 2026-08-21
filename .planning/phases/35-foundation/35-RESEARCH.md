@@ -841,27 +841,33 @@ app.add_middleware(RequestLoggingMiddleware)       # added SECOND → outermost 
 | A6 | `router.redirect_slashes = False` is desirable | § Pitfall 6 | Low. Removes a pre-barrier 307. If any client relies on trailing-slash redirects it would break — no client exists yet. |
 | A7 | The barrier passes through on `Match.PARTIAL` (405 stays the router's) rather than rejecting with `auth_required` | § Pattern 2 | Medium. `§4.1` names route/method mismatch as admission-phase, which supports pass-through, but a reviewer could read `§1.3`'s "no authenticated route may be registered outside the barrier" as covering wrong-method requests to an authenticated path. Confirm with the user if the 405-before-401 ordering matters. |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All four were closed before planning finished. No question below is live for an executor.
 
 1. **Does REBIND-01 formally move to Phase 35?**
    - What we know: D-14 makes the assertion run at real startup; `§2.3` fails on any undeclared registered route; the eight surviving routes are all registered.
    - What's unclear: whether `.planning/REQUIREMENTS.md` should re-label REBIND-01 as a Phase 35 requirement or add a FOUND-0x for it.
    - Recommendation: record it as a fourth scope move in the phase notes, mark REBIND-01 satisfied-by-35 in the traceability table, and leave REBIND-02/03/05 in Phase 36. Do this **before** planning — the planner needs the registry task in scope.
+   - **RESOLVED:** by developer decision — "leave it, the planner just does the work". REBIND-01 does **not** move into Phase 35's requirement set, `.planning/REQUIREMENTS.md` is not re-labelled, no FOUND-0x is minted, and **no requirement ID tracks the declaration work**. REBIND-01 stays a Phase 36 requirement. The work itself is planned regardless: plan 01 writes the ten route declarations and the enumeration assertion, and plan 04 narrows the declared set to the surviving eight in the same commit as the router deletions.
 
 2. **`GET /health/ready` returns a `JSONResponse` directly, not a model.**
    - What we know: `routers/health.py` returns `JSONResponse(status_code=200, content={"status": "up"})`; it is the sole public-allowlist member.
    - What's unclear: nothing blocking — noted so the planner does not "fix" it while touching the file.
    - Recommendation: leave it exactly as-is; only its registry declaration is added.
+   - **RESOLVED:** recommendation adopted verbatim. Recorded in plan 04's `<recorded_assumptions>` as a standing instruction not to "fix" it while touching neighbouring files; only its registry declaration (plan 01) matters.
 
 3. **Where do `core.access_tiers` rows come from?**
    - What we know: the migration seeds none, by design.
    - What's unclear: whether tier configuration is Phase 36's or a deployment task.
    - Recommendation: out of scope for Phase 35 (foundation reads no tier). Flag for Phase 36's discussion — REBIND-05 cannot resolve an allowance against an empty table.
+   - **RESOLVED:** out of scope for Phase 35. Carried as a Phase 36 flag in plan 04's `<recorded_assumptions>` and required in plan 04's SUMMARY output, so REBIND-05's empty-table problem reaches Phase 36's discussion rather than being rediscovered at runtime.
 
 4. **Should `RequestLoggingMiddleware` become pure ASGI?**
    - What we know: as a `BaseHTTPMiddleware` it cannot see the barrier's contextvars, and it disrupts propagation for anything pure-ASGI below it.
    - What's unclear: whether the request log line is required to carry identity fields.
    - Recommendation: do **not** convert it in this phase (D-03 pins the stack, and conversion is unscoped work). Have the barrier stash on `scope["state"]`; if the log line needs `user_id`, read `request.state` after `call_next`.
+   - **RESOLVED:** recommendation adopted — no conversion this phase. Plan 06 follows it: the barrier stashes on `scope["state"]` and `RequestLoggingMiddleware` stays a `BaseHTTPMiddleware`, per D-03.
 
 ## Environment Availability
 
