@@ -9,6 +9,8 @@ Anti-oracle: every acceptance-failure branch yields the identical `auth_required
 bounded reason lives only in the audit row's `details.failure` and in metric labels -- it is never
 client-visible, and it never names the issuer, the integration, or the failed check.
 """
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -20,10 +22,20 @@ from jwt.exceptions import (
     InvalidAudienceError,
     InvalidIssuerError,
     MissingRequiredClaimError,
+    PyJWKClientConnectionError,
+    PyJWKClientError,
     PyJWTError,
 )
 
 from nativespeaker.api.auth.wire import BoundedReason
+
+#: The negative-cache key an absent, empty, or non-string `kid` is recorded under.
+#:
+#: It cannot collide with a real key id by construction rather than by convention: the only other
+#: branch that writes a key requires a non-empty `str`, so the empty-string key is unreachable from
+#: it. PyJWT reads `kid` off the *unverified* header, so this key is attacker-influenced -- which is
+#: why nothing but a deadline is ever stored against it.
+_ABSENT_KID_SENTINEL = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +109,9 @@ class JWTVerifier:
                  issuer: str,
                  leeway: int = 30,
                  cache_ttl_seconds: float = 3600,
-                 fetch_timeout_seconds: float = 3.0):
+                 fetch_timeout_seconds: float = 3.0,
+                 unknown_kid_ttl_seconds: float = 60.0,
+                 unknown_kid_cache_size: int = 256):
         # `timeout=` is explicit because PyJWT 2.12.1 defaults it to 30 seconds. That default is the
         # operative bound on a blocking `urlopen`, so a hung endpoint would pin a worker for half a
         # minute per request; three seconds frees it while leaving ample room for a healthy fetch.
@@ -108,12 +122,71 @@ class JWTVerifier:
         self._audience = audience
         self._issuer = issuer
         self._leeway = leeway
+        self._unknown_kid_ttl = unknown_kid_ttl_seconds
+        self._unknown_kid_cache_size = unknown_kid_cache_size
+        # Key id -> monotonic deadline. Negative only: no signing key, no claim set, no admission
+        # decision. A positive cache here would keep a rotated or withdrawn key working past its own
+        # lifetime, so the value is a deadline and nothing else is ever stored.
+        self._unknown_kids: OrderedDict[str, float] = OrderedDict()
         # Warm up JWKS cache — crashes startup if endpoint unreachable (fail-fast). The set is
         # cached for `cache_ttl_seconds`, so a request costs one local RSA verification and no
         # per-request network call.
         self._jwks_client.get_signing_keys()
 
+    def _cache_key_for(self, token: str) -> str | None:
+        """The negative-cache key for this token's unverified `kid`, or `None` if unreadable.
+
+        A malformed compact form is left to the normal path: `verify` never raises, for the same
+        D-01 reason the barrier never raises, and a token whose header cannot be parsed has no key
+        id to remember.
+        """
+        try:
+            kid = jwt.get_unverified_header(token).get("kid")
+        except PyJWTError:
+            return None
+        return kid if isinstance(kid, str) and kid else _ABSENT_KID_SENTINEL
+
+    def _is_known_unknown(self, key: str) -> bool:
+        """Whether this key id is a live entry -- expiring it in passing if it is not."""
+        deadline = self._unknown_kids.get(key)
+        if deadline is None:
+            return False
+        if deadline <= time.monotonic():
+            del self._unknown_kids[key]
+            return False
+        return True
+
+    def _record_unknown(self, key: str) -> None:
+        """Remember this key id until its deadline, keeping the cache within its bound.
+
+        A TTL of 0 disables the cache outright, honestly rather than as a special case: nothing is
+        recorded, so every repeat takes the fetch path exactly as it did before this cache existed.
+        """
+        if self._unknown_kid_ttl <= 0:
+            return
+        now = time.monotonic()
+        for expired in [k for k, deadline in self._unknown_kids.items() if deadline <= now]:
+            del self._unknown_kids[expired]
+        self._unknown_kids[key] = now + self._unknown_kid_ttl
+        self._unknown_kids.move_to_end(key)
+        while len(self._unknown_kids) > self._unknown_kid_cache_size:
+            self._unknown_kids.popitem(last=False)
+
     def verify(self, token: str) -> VerificationResult:
+        # The unverified `kid` is attacker-chosen and reaches an outbound network decision before
+        # any identity work happens, so it is read here only to answer "have I already failed to
+        # match this one?". PyJWT keeps only candidates with a truthy `key_id`, so an absent or
+        # empty `kid` can never match and `get_signing_key` always falls through to
+        # `get_signing_keys(refresh=True)` -- which bypasses the JWK-set TTL cache and fetches for
+        # real, every time. Uncached, omitting one header field is an unbounded per-request fetch on
+        # the authentication hot path; hence the shared sentinel rather than skipping the cache.
+        # Caching that rejection is sound as well as necessary: a keyless token can never verify.
+        cache_key = self._cache_key_for(token)
+        if cache_key is not None and self._is_known_unknown(cache_key):
+            # Exactly what the fetched path yields for an unmatched key id, so the two are
+            # indistinguishable to the client, to telemetry, and to the audit `details.failure`.
+            return None, BoundedReason.bad_signature
+
         try:
             signing_key = self._jwks_client.get_signing_key_from_jwt(token)
             # `algorithms` is passed explicitly and lists RS256 alone, so an `alg: none` token and
@@ -125,6 +198,16 @@ class JWTVerifier:
                                  issuer=self._issuer,
                                  leeway=self._leeway,
                                  options={"require": ["exp", "iat", "aud", "iss", "sub"]})
+        except PyJWKClientError as exc:
+            # `PyJWKClientConnectionError` is a subclass, and it means the *endpoint* was
+            # unreachable -- not that the key id is bogus. Recording it would let a brief upstream
+            # outage reject legitimate tokens for the whole TTL after the endpoint recovered, which
+            # is the difference between a cache and an outage amplifier. The rule covers the
+            # sentinel path unchanged: when the endpoint is down, the very refresh an absent `kid`
+            # forces is what raises the connection variant.
+            if cache_key is not None and not isinstance(exc, PyJWKClientConnectionError):
+                self._record_unknown(cache_key)
+            return None, bounded_reason_for(exc)
         except PyJWTError as exc:
             return None, bounded_reason_for(exc)
 

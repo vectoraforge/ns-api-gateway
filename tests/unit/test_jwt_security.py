@@ -7,13 +7,14 @@ so an exception raised here would surface as a 500 instead of `auth_required` (D
 
 import time
 from unittest.mock import patch
+from urllib.error import URLError
 
 import jwt as pyjwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from nativespeaker.api.auth.verification import JWTVerifier, VerifiedClaims
+from nativespeaker.api.auth.verification import _ABSENT_KID_SENTINEL, JWTVerifier, VerifiedClaims
 from nativespeaker.api.auth.wire import BoundedReason
 from unit.conftest import (
     PRIVATE_KEY_PEM,
@@ -22,6 +23,12 @@ from unit.conftest import (
     TEST_PROJECT_ID,
     make_test_verifier,
     make_token,
+)
+from unit.test_barrier_jwks_offload import (
+    JWKS_URL,
+    KNOWN_KID,
+    install_counted_transport,
+    jwks_body,
 )
 
 
@@ -356,3 +363,179 @@ class TestProductionVerifier:
 
     def test_requires_a_non_empty_subject(self, real_verifier):
         assert rejected(real_verifier, make_token("")) is BoundedReason.empty_subject
+
+
+class TestTheJwksTransportIsNotHitPerRequest:
+    """Fetch counts, measured at the transport under a **real** `PyJWKClient`.
+
+    This class replaces `test_two_verifications_issue_no_additional_jwks_fetch`, which counted calls
+    to a method the code under test never invoked, on a client class that had been substituted
+    wholesale -- an assertion that held whatever the production code did (WR-05). The seam here is
+    `urllib.request.urlopen`, the one blocking call `PyJWKClient.fetch_data` makes, so every fetch
+    the real path performs is counted and none can hide.
+
+    Two cases exist to keep the rest honest.
+    `test_with_the_negative_cache_disabled_each_repeat_costs_a_fetch` shows the harness registering
+    real fetches, so a zero is evidence rather than an artefact; and
+    `test_distinct_unknown_kids_still_cost_one_fetch_each` states the residual this fix deliberately
+    accepts (T-35-12-03) somewhere a later phase will find it.
+    """
+
+    @pytest.fixture
+    def counted_transport(self, monkeypatch):
+        return install_counted_transport(monkeypatch)
+
+    def build(self, **kwargs) -> JWTVerifier:
+        return JWTVerifier(jwks_url=JWKS_URL, audience=TEST_PROJECT_ID, issuer=TEST_ISSUER,
+                           **kwargs)
+
+    def test_the_constructor_fetch_carries_a_bounded_timeout(self, counted_transport):
+        """T-35-12-02: the bound is observed on the wire, not read off the constructor."""
+        self.build()
+        assert len(counted_transport) == 1, "the warm-up is exactly one fetch"
+        assert all(t is not None and t <= 5 for t in counted_transport.timeouts), \
+            f"PyJWT's 30s default is the operative bound: {counted_transport.timeouts}"
+
+    def test_a_repeated_unknown_kid_costs_one_fetch_not_one_per_request(self, counted_transport):
+        """The gap statement's item (c): *repeated*, not distinct."""
+        verifier = self.build()
+        counted_transport.timeouts.clear()
+        for _ in range(5):
+            assert rejected(verifier, make_token("u", headers={"kid": "unknown-1"})) \
+                is BoundedReason.bad_signature
+        assert len(counted_transport) == 1
+
+    def test_with_the_negative_cache_disabled_each_repeat_costs_a_fetch(self, counted_transport):
+        """The control. Without it, the case above is a zero nobody has shown can be non-zero."""
+        verifier = self.build(unknown_kid_ttl_seconds=0)
+        counted_transport.timeouts.clear()
+        for _ in range(5):
+            rejected(verifier, make_token("u", headers={"kid": "unknown-1"}))
+        assert len(counted_transport) == 5
+
+    def test_distinct_unknown_kids_still_cost_one_fetch_each(self, counted_transport):
+        """T-35-12-03, pinned rather than assumed away: the per-`kid` cache caps repeats, not spread.
+
+        Accepted because Envoy rate-limits by IP, user and URL, and because T-35-12-01 removes the
+        reason rate limiting could not help -- the fetch no longer blocks the loop. A global refresh
+        cooldown would cap this too, at the price of delaying a legitimate key rotation.
+        """
+        verifier = self.build()
+        counted_transport.timeouts.clear()
+        for i in range(5):
+            rejected(verifier, make_token("u", headers={"kid": f"unknown-{i}"}))
+        assert len(counted_transport) == 5
+
+    def test_a_cached_rejection_is_indistinguishable_from_a_fetched_one(self, counted_transport):
+        """T-35-12-06: the cache-hit path yields the same bounded reason as the fetched path."""
+        verifier = self.build()
+        token = make_token("u", headers={"kid": "unknown-1"})
+        counted_transport.timeouts.clear()
+
+        fetched = verifier.verify(token)
+        assert len(counted_transport) == 1, "the first verification really did fetch"
+        cached = verifier.verify(token)
+        assert len(counted_transport) == 1, "the second really did not"
+
+        assert fetched == cached == (None, BoundedReason.bad_signature)
+
+    def test_a_jwks_connection_failure_does_not_mark_the_kid_unknown(self, counted_transport):
+        """T-35-12-04: an outage must not become a longer self-inflicted authentication outage.
+
+        `PyJWKClientConnectionError` says the *endpoint* was unreachable, not that the key id is
+        bogus. Recording it would reject legitimate tokens for the whole TTL after recovery -- the
+        difference between a cache and an outage amplifier.
+        """
+        verifier = self.build()
+        rotated_kid = "rotated-key-2"
+        token = make_token("u", headers={"kid": rotated_kid})
+
+        counted_transport.error = URLError("jwks endpoint unreachable")
+        assert rejected(verifier, token) is BoundedReason.bad_signature
+
+        # The endpoint recovers, now publishing the rotated key.
+        counted_transport.error = None
+        counted_transport.body = jwks_body(rotated_kid)
+        assert accepted(verifier, token).subject == "u", \
+            "the outage poisoned the negative cache: the recovered kid is still rejected"
+
+    def test_repeated_absent_kids_share_one_sentinel_entry_and_one_fetch(self, counted_transport):
+        """FOUND-02/empty: omitting one header field must not buy an unbounded per-request fetch.
+
+        `get_signing_keys` keeps only keys with a truthy `key_id`, so a `None` `kid` can never match
+        a candidate and `get_signing_key` always falls through to `get_signing_keys(refresh=True)`,
+        which bypasses the JWK-set TTL cache. Uncached, that is one real fetch per request forever,
+        reachable by leaving `kid` out.
+        """
+        verifier = self.build()
+        counted_transport.timeouts.clear()
+        for _ in range(5):
+            assert rejected(verifier, make_token("u")) is BoundedReason.bad_signature
+        assert len(counted_transport) == 1
+
+        cache = verifier._unknown_kids
+        assert len(cache) == 1
+        assert list(cache) == [_ABSENT_KID_SENTINEL]
+        assert None not in cache, "an absent kid keys on the sentinel, never on None"
+
+    def test_repeated_absent_kids_cost_a_fetch_each_with_the_cache_disabled(self, counted_transport):
+        """The sentinel's own control, at the same seam as the repeated-`kid` one."""
+        verifier = self.build(unknown_kid_ttl_seconds=0)
+        counted_transport.timeouts.clear()
+        for _ in range(5):
+            rejected(verifier, make_token("u"))
+        assert len(counted_transport) == 5
+
+    def test_an_empty_kid_keys_on_the_same_sentinel(self, counted_transport):
+        """An empty-string `kid` is the same condition as an absent one, and shares its entry."""
+        verifier = self.build()
+        counted_transport.timeouts.clear()
+        assert rejected(verifier, make_token("u")) is BoundedReason.bad_signature
+        assert len(counted_transport) == 1
+
+        assert rejected(verifier, make_token("u", headers={"kid": ""})) \
+            is BoundedReason.bad_signature
+        assert len(counted_transport) == 1, "the empty kid did not fall through to a second fetch"
+        assert list(verifier._unknown_kids) == [_ABSENT_KID_SENTINEL]
+
+    def test_two_equal_unknown_kids_merge_into_one_cache_entry(self, counted_transport):
+        """FOUND-02/adjacency: two equal keys neither collide onto a wrong answer nor accumulate."""
+        verifier = self.build()
+        token = make_token("u", headers={"kid": "unknown-1"})
+        rejected(verifier, token)
+        rejected(verifier, token)
+        assert list(verifier._unknown_kids) == ["unknown-1"]
+
+    def test_the_unknown_kid_cache_is_bounded(self, counted_transport):
+        """The cache is a bounded memory, not a growth surface an attacker chooses the size of."""
+        verifier = self.build(unknown_kid_cache_size=256)
+        for i in range(300):
+            rejected(verifier, make_token("u", headers={"kid": f"unknown-{i}"}))
+        assert len(verifier._unknown_kids) <= 256
+
+    def test_a_known_kid_still_verifies_and_costs_no_fetch(self, counted_transport):
+        """The cache changes nothing for a recognized key, which is still matched per request."""
+        verifier = self.build()
+        counted_transport.timeouts.clear()
+        token = make_token("user-a", headers={"kid": KNOWN_KID})
+        assert accepted(verifier, token).subject == "user-a"
+        assert accepted(verifier, token).subject == "user-a"
+        assert len(counted_transport) == 0
+
+    def test_no_signing_key_or_decision_is_memoized(self, counted_transport):
+        """T-35-12-05: the cache is negative only -- nothing an acceptance could be replayed from.
+
+        A positive cache here would keep a rotated or withdrawn key working past its own lifetime,
+        which is why the stored value is a deadline and the stored key is a key id.
+        """
+        verifier = self.build()
+        rejected(verifier, make_token("u", headers={"kid": "unknown-1"}))
+        assert all(isinstance(k, str) and isinstance(v, float)
+                   for k, v in verifier._unknown_kids.items())
+
+        # The endpoint withdraws the key it was serving; the next request stops being accepted, so
+        # no acceptance survived in memory.
+        counted_transport.body = jwks_body("some-other-key")
+        verifier._jwks_client.jwk_set_cache = None
+        assert rejected(verifier, make_token("u", headers={"kid": KNOWN_KID})) \
+            is BoundedReason.bad_signature

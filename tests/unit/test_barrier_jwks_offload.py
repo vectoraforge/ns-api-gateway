@@ -43,20 +43,21 @@ FETCH_DELAY = 0.4
 HEARTBEAT_INTERVAL = 0.01
 
 
-def _jwks_body() -> bytes:
-    """The one-key JWKS document the stubbed endpoint serves.
+def jwks_body(kid: str = KNOWN_KID) -> bytes:
+    """A one-key JWKS document the stubbed endpoint serves, under whatever `kid` is asked for.
 
     `PyJWKSet` rejects an empty `keys` list, so the document has to carry a real key even for cases
     that only ever ask for a `kid` it does not contain. It is the test keypair's public half, which
-    is what makes `KNOWN_KID` verify for real rather than through a stub.
+    is what makes the served `kid` verify for real rather than through a stub -- and what lets a case
+    re-serve the endpoint under a different `kid` to model a key rotation.
     """
     key = RSAAlgorithm(RSAAlgorithm.SHA256).prepare_key(PUBLIC_KEY_PEM)
     jwk = json.loads(RSAAlgorithm.to_jwk(key))
-    jwk.update(kid=KNOWN_KID, use="sig", alg="RS256")
+    jwk.update(kid=kid, use="sig", alg="RS256")
     return json.dumps({"keys": [jwk]}).encode()
 
 
-JWKS_BODY = _jwks_body()
+JWKS_BODY = jwks_body()
 
 
 class CountedJwksTransport:
@@ -72,6 +73,7 @@ class CountedJwksTransport:
         self.timeouts: list[float | None] = []
         self.fetch_delay: float = 0.0
         self.error: Exception | None = None
+        self.body: bytes = JWKS_BODY
 
     def __len__(self) -> int:
         return len(self.timeouts)
@@ -82,7 +84,7 @@ class CountedJwksTransport:
             time.sleep(self.fetch_delay)
         if self.error is not None:
             raise self.error
-        return io.BytesIO(JWKS_BODY)
+        return io.BytesIO(self.body)
 
 
 def install_counted_transport(monkeypatch) -> CountedJwksTransport:
