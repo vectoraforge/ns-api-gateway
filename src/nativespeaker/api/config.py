@@ -6,8 +6,6 @@ import yaml
 from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from nativespeaker.api.models import SubscriptionPlan
-
 LogLevel = StrEnum("LogLevel", {k: k for k in logging.getLevelNamesMapping()})
 
 
@@ -55,14 +53,10 @@ class JWTConfig(BaseModel):
         return  f"https://securetoken.google.com/{self.project_id}"
 
 
-class AppleConfig(BaseModel):
-    environment: str = Field(default="sandbox", description="Apple environment: sandbox or production")
-    bundle_id: str = Field(description="App bundle identifier")
-    app_apple_id: int | None = Field(default=None, description="Numeric Apple ID (required for production)")
-    enable_online_checks: bool = Field(default=True, description="Enable OCSP certificate checks")
-    certs_dir: str = Field(..., description="Directory containing Apple root CA certificates")
-    product_id_to_plan: dict[str, SubscriptionPlan] = Field(
-        description="Maps Apple product IDs to SubscriptionPlan values")
+# `AppleConfig` is deleted with the subscription model layer (D-16). It mapped Apple product ids
+# onto `core.subscription_plan`, an enum the v2.0 schema dropped, and pointed the receipt verifier
+# at its certificate directory -- and the lifespan no longer builds that verifier. Phase 43 writes
+# `/webhooks/app-store` and whatever configuration it needs from scratch.
 
 
 class ModelConfig(BaseModel):
@@ -79,8 +73,8 @@ class AppConfig(BaseConfig):
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
     jwt: JWTConfig = Field(default_factory=JWTConfig)
-    apple: AppleConfig = Field(default_factory=AppleConfig)
-    quotas: dict[SubscriptionPlan, int]
+    # No `quotas` mapping: v2.0 resolves a caller's allowance from `core.access_tiers.monthly_credits`
+    # through the grant Phase 36 wires, not from a per-plan table in this file.
 
     chats_limit: int = Field(default=50, ge=1)
     messages_limit: int = Field(default=50, ge=1)
