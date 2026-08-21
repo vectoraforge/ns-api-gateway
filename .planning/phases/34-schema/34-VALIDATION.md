@@ -51,14 +51,14 @@ updated accordingly.
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| TBD | TBD | 0 | SCHEMA-01 | — | N/A | integration | `pytest tests/schema/test_apply_rollback.py -m schema -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SCHEMA-02 | — | `(issuer,subject)` uniqueness prevents identity collision across providers | unit (DDL) | `pytest tests/schema/test_constraints.py -m schema -k identity -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SCHEMA-03 | — | At most one `status='active'` grant per user — blocks entitlement stacking | unit (DDL) | `pytest tests/schema/test_constraints.py -m schema -k grant -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SCHEMA-04 | — | Generated column rejects direct writes — entitlement cannot be forged | unit (DDL) | `pytest tests/schema/test_constraints.py -m schema -k subscription -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SCHEMA-05 | — | Challenge claim/consume CHECKs reject replay-shaped rows | unit (DDL) | `pytest tests/schema/test_constraints.py -m schema -k challenge -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SCHEMA-06 | — | Partial actor fields rejected — audit rows cannot be written unattributable | unit (DDL) | `pytest tests/schema/test_constraints.py -m schema -k audit -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SCHEMA-07 | — | Legacy `jwt_sub` / `subscription_plan` / `promo` paths are absent, not merely unused | unit (introspection) | `pytest tests/schema/test_inventory.py -m schema -k legacy -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SCHEMA-08 | — | N/A | unit (introspection) | `pytest tests/schema/test_inventory.py -m schema -x` | ❌ W0 | ⬜ pending |
+| 03 | 34-03 | 0 | SCHEMA-01 | — | N/A | integration | `pytest tests/schema/test_apply_rollback.py -m schema -x` | ✅ | ✅ green |
+| 04 | 34-04 | 4 | SCHEMA-02 | — | `(issuer,subject)` uniqueness prevents identity collision across providers | unit (DDL) | `pytest tests/schema/test_constraints.py -m schema -k identity -x` | ✅ | ✅ green |
+| 04 | 34-04 | 4 | SCHEMA-03 | — | At most one `status='active'` grant per user — blocks entitlement stacking | unit (DDL) | `pytest tests/schema/test_constraints.py -m schema -k grant -x` | ✅ | ✅ green |
+| 04 | 34-04 | 4 | SCHEMA-04 | — | Generated column rejects direct writes — entitlement cannot be forged | unit (DDL) | `pytest tests/schema/test_constraints.py -m schema -k subscription -x` | ✅ | ✅ green |
+| 04 | 34-04 | 4 | SCHEMA-05 | — | Challenge claim/consume CHECKs reject replay-shaped rows | unit (DDL) | `pytest tests/schema/test_constraints.py -m schema -k challenge -x` | ✅ | ✅ green |
+| 04 | 34-04 | 4 | SCHEMA-06 | — | Partial actor fields rejected — audit rows cannot be written unattributable | unit (DDL) | `pytest tests/schema/test_constraints.py -m schema -k audit -x` | ✅ | ✅ green |
+| 03 | 34-03 | 3 | SCHEMA-07 | — | Legacy `jwt_sub` / `subscription_plan` / `promo` paths are absent, not merely unused | unit (introspection) | `pytest tests/schema/test_inventory.py -m schema -k legacy -x` | ✅ | ✅ green |
+| 03 | 34-03 | 3 | SCHEMA-08 | — | N/A | unit (introspection) | `pytest tests/schema/test_inventory.py -m schema -x` | ✅ | ✅ green |
 
 *Task IDs are filled in by the planner; rows above are the requirement-level coverage contract.*
 
@@ -68,15 +68,15 @@ updated accordingly.
 
 ## Wave 0 Requirements
 
-- [ ] A reachable PostgreSQL 17 instance — **gates every other task in this phase**
-- [ ] `tests/schema/__init__.py`
-- [ ] `tests/schema/conftest.py` — scratch DB + `pogo_core.util.testing.apply` + per-test rollback
-- [ ] `tests/schema/helpers.py` — `insert_user()`, `insert_tier()`, `insert_grant()` per D-15
-- [ ] `tests/schema/test_inventory.py` — covers SCHEMA-07, SCHEMA-08
-- [ ] `tests/schema/test_constraints.py` — covers SCHEMA-02 … SCHEMA-06
-- [ ] `tests/schema/test_apply_rollback.py` — covers SCHEMA-01, D-20
-- [ ] `pyproject.toml` — add the `schema` marker to `[tool.pytest.ini_options] markers`
-- [ ] Framework install: none needed
+- [x] A reachable PostgreSQL 17 instance — **gates every other task in this phase**
+- [x] `tests/schema/__init__.py`
+- [x] `tests/schema/conftest.py` — scratch DB + `pogo_core.util.testing.apply` + per-test rollback
+- [x] `tests/schema/helpers.py` — `insert_user()`, `insert_tier()`, `insert_grant()` per D-15
+- [x] `tests/schema/test_inventory.py` — covers SCHEMA-07, SCHEMA-08
+- [x] `tests/schema/test_constraints.py` — covers SCHEMA-02 … SCHEMA-06
+- [x] `tests/schema/test_apply_rollback.py` — covers SCHEMA-01, D-20
+- [x] `pyproject.toml` — add the `schema` marker to `[tool.pytest.ini_options] markers`
+- [x] Framework install: none needed
 
 ---
 

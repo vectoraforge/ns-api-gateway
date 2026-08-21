@@ -1,21 +1,21 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Authentication & Entitlements
+milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 34
 current_phase_name: schema
-status: executing
-stopped_at: Completed 34-03-PLAN.md
-last_updated: "2026-08-21T00:58:48.020Z"
+status: verifying
+stopped_at: Completed 34-04-PLAN.md
+last_updated: "2026-08-21T01:15:16.270Z"
 last_activity: 2026-08-19
 last_activity_desc: Milestone v2.0 started
+state_head: 33147b4e489c12b6eb5b85d416fe2883d5718e72
 progress:
   total_phases: 13
   completed_phases: 0
   total_plans: 4
-  completed_plans: 3
+  completed_plans: 4
   percent: 0
-state_head: 6b1c5114a2244164bce88a13b108fb80acdd1fe0
 ---
 
 # Project State
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 Phase: 34 (schema) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-08-19 — Phase 34 execution started
 
 ## Accumulated Context
@@ -95,10 +95,10 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-21T00:58:26.768Z
+**Last session:** 2026-08-21T01:15:09.898Z
 
 Last activity: 2026-03-26
-Stopped at: Completed 34-03-PLAN.md
+Stopped at: Completed 34-04-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -109,6 +109,7 @@ Resume file: None
 | Phase 34 P01 | 10m | 2 tasks | 1 files |
 | Phase 34 P02 | ~25 min | 3 tasks | 6 files |
 | Phase 34 P03 | 42min | 3 tasks | 8 files |
+| Phase 34 P04 | 38min | 2 tasks | 3 files |
 
 ## Decisions
 
@@ -120,3 +121,6 @@ Resume file: None
 - [Phase ?]: 34-03: registered the `schema` pytest marker and extended addopts to -m 'not e2e and not schema' -- every schema command must now pass -m schema explicitly
 - [Phase ?]: 34-03: PostgreSQL 17.11 capture matched RESEARCH.md's PG 16.2 constants exactly across all six groups -- assumption A1 closed as confirmed, OQ-1 answered 'no divergence'
 - [Phase ?]: 34-03: index-predicate assertions pin search_path to the asyncpg default rather than normalizing pg_get_expr output, keeping expected strings literal (P-5)
+- [Phase ?]: Cases R5/R6 assert the exception class only: the named grant_source CHECK is subsumed by the four-arm CHECK and unreachable as a reported violation on PostgreSQL 17.11
+- [Phase ?]: Savepoint-scoped rejection helper, because a rejected statement aborts the whole transaction and blocks any post-rejection query
+- [Phase ?]: SET CONSTRAINTS ALL IMMEDIATE proves a deferred constraint accepts a valid row without committing it

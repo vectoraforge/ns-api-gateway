@@ -139,7 +139,7 @@ Explicitly excluded. `SHARED-INVARIANTS.md` "Global deletions" binds every phase
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SCHEMA-01 … SCHEMA-08 | Phase 34 | Pending |
+| SCHEMA-01 … SCHEMA-08 | Phase 34 | Complete |
 | FOUND-01 … FOUND-09 | Phase 35 | Pending |
 | REBIND-01 … REBIND-06 | Phase 36 | Pending |
 | CREATE-01 … CREATE-04 | Phase 37 | Pending |
