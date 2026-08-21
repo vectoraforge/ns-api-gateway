@@ -2,6 +2,47 @@
 
 Out-of-scope discoveries logged during execution. Not fixed by the plan that found them.
 
+## D-35-11-A: a grammatically **correct** phrase makes `POST /chats` return 500
+
+**Found during:** plan 35-11, task 2 — restoring `test_chats.py::TestCreateChat::
+test_create_chat_autodetect_lang`, whose original phrase (`"I am going home."`) is correct English.
+**Owner:** unowned. Phase 36 rewrites these routes (REBIND-04/05) and is the natural home, but this
+is a product/prompt decision rather than a rebinding one and needs an explicit call.
+
+`config/prompt.txt` asks the model for `issues` and `suggestions` **conditionally** — "if issues
+exist → provide 3 to 5 distinct suggestions", "if nearly perfect → provide 1 to 2 suggestions" —
+while `models/llm.py::AnalyzeResponse` declares both as **required** fields. For a phrase with
+nothing to correct the model returns `{resolved_mode, response}` and nothing else,
+`AnalyzeResponse.model_validate` raises `ValidationError`, and the request answers **500**.
+
+Reproduced four ways, so it is a defect and not LLM flake:
+
+| Request | Result |
+|---|---|
+| `{"phrase": "I am going home."}` (correct, no `lang`) | **500** |
+| `{"phrase": "I am going home.", "lang": "en"}` (correct) | **500** |
+| `{"phrase": "I am going to home."}` (incorrect, no `lang`) | 200 |
+| `{"phrase": "I am going to home.", "lang": "en"}` (incorrect) | 200 |
+
+Correctness of the phrase is the variable; `lang` is not.
+
+**Why plan 35-11 did not fix it.** `src/nativespeaker/api/models/llm.py` and `config/prompt.txt` are
+outside the plan's file list and outside Phase 35 altogether — this is the auth foundation, and
+`01-foundation.md §8.3` requires existing non-auth contracts to stay unchanged. The fix is also a
+real choice rather than a typo: either `AnalyzeResponse` defaults both fields to `[]` (a correct
+phrase then returns 200 with empty arrays, changing the client contract), or the prompt is changed
+to always emit them. That is a product decision.
+
+**Why it went unnoticed.** The only e2e case that sent a correct phrase was the autodetect case,
+which has been absent since plan 35-04's sweep and was failing on v2.0 schema drift before that.
+No unit test covers the served LLM path. Plan 35-11 restored the case against the incorrect phrase
+its four neighbours use, so autodetect is covered and the defect is recorded here rather than
+pinned as expected behaviour — a test asserting the 500 would make it look intended and would have
+to be deleted the moment it is fixed.
+
+**Severity note.** This is the primary route of a grammar-fixing product, and it fails for exactly
+the input a user gets when their sentence is already right.
+
 ## D-35-05-A: `uv.lock` is stale — pins `ns-api-gateway 1.5.0` against `pyproject.toml`'s 1.6.0
 
 **Found during:** plan 35-05, the editable-install refresh the plan's recorded assumptions call for.
