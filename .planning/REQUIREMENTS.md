@@ -22,28 +22,31 @@
 - [x] **SCHEMA-07**: Legacy structures are gone — `core.users.jwt_sub`, `core.users.subscription_plan`, `core.usage_monthly`, `core.subscription_events`, the `core.subscription_plan` enum, and the `promo` grant source
 - [x] **SCHEMA-08**: Every acceptance check in `00-schema.md §10` passes against a freshly migrated database
 
-### FOUND — Phase 35 (`01-foundation.md §1–§7, §9`)
+### FOUND — Phase 35 (`01-foundation.md §1–§4, §6, §7`)
 
 Shared machinery only. Rebinding the pre-existing routes is Phase 36.
+
+> Scope narrowed by the Phase 35 discussion (`35-CONTEXT.md`): `§5` (backend rate-limit engine) is **deleted from the product** — Envoy Gateway is the sole request-rate enforcement point (D-05), overriding `SHARED-INVARIANTS.md` § Rate limits and `01-foundation.md §5`. `§9` (the Envoy contract) is **deferred to v2.1** (D-08). The `§7.1` provider-call budget seam survives as FOUND-06 (D-06).
 
 - [ ] **FOUND-01**: A mandatory, default-on pre-handler barrier is the only place JWT acceptance and identity resolution happen; it admits only `identity_state='active'` AND `users.active` exactly TRUE
 - [ ] **FOUND-02**: The barrier enforces the exactly-one-Authorization wire contract — zero values, duplicate field instances, comma-joined values, multiple credentials, empty tokens, and trailing content all reject as `invalid_external_jwt`
 - [ ] **FOUND-03**: A route registry places every registered route in exactly one of three categories (public allowlist, provider-callback by exact path, authenticated), and a startup/CI enumeration assertion fails when a route is in zero or multiple categories
 - [ ] **FOUND-04**: One shared error-registry module owns the single client-visible response shape, statuses, copy, and exception handlers; within an error class the body, status, and copy are identical across every triggering branch
 - [ ] **FOUND-05**: An audit writer emits exactly one durable `audit.auth_events` row per on-path attempt before the response returns, with redacted `details` and an HMAC-SHA-256 `actor_subject_hash` carrying its key version
-- [ ] **FOUND-06**: A config-driven rate-limit engine using the `limits` library (`parse_many`, moving-window, Redis/Valkey) enforces limits with fail-closed defaults and canonical trusted-proxy-resolved client IPs
+- [ ] **FOUND-06**: A `§7.1` provider-call budget seam meters outbound provider calls per request with plain in-process counters — the 3-attempt Firebase `getUser` retry budget, plus a helper that checks every applicable budget non-destructively from broadest to narrowest and charges them together only on success; exhaustion maps to internal `firebase_lookup_unavailable` → client `verification_temporarily_unavailable`. No `limits` dependency, no Redis/Valkey, no traffic rate limiting
 - [ ] **FOUND-07**: A challenge store implements the claim/consume protocol that challenge-bearing operations depend on
 - [ ] **FOUND-08**: Adapter interfaces are defined as interfaces only — no store, device-check, or Firebase Admin implementations ship in this phase
-- [ ] **FOUND-09**: The Envoy Gateway config forwards `Authorization` unchanged, injects no identity headers, and the backend ignores every client- or proxy-supplied identity header
 
-> Phases 34 and 35 both end with a non-bootable application — existing code still reads dropped columns. Phase 36 is the first integration gate.
+> **FOUND-09 is deferred to v2.1** per D-08 — see Future Requirements below. Nothing in `k8s/` is touched by Phase 35.
+
+> Phase 35 ends with a **booting** application (D-14): the model layer is repaired against the v2.0 schema, so imports, lifespan, and the `§2.3` enumeration assertion all run at real startup against the real router. Chat and quota routes still fail at runtime until Phase 36 rewires them onto the grant model (D-15).
 
 ### REBIND — Phase 36 (`01-foundation.md §8`)
 
 - [ ] **REBIND-01**: Partition membership is declared for every pre-existing route — `GET /health/ready` public; `GET /`, `GET /examples`, and the `/chats` family authenticated — and the enumeration assertion passes in both directions
 - [ ] **REBIND-02**: These routes are off the audited attempt path and write no `audit.auth_events` row ever; rejections keep their internal result in the structured security log and increment the bounded-cardinality counter metric
 - [ ] **REBIND-03**: Auth rejections on these routes surface through the shared error taxonomy and response shape, while their existing non-auth business error contracts are unchanged
-- [ ] **REBIND-04**: Every quota-checked chat request passes the named `quota_checked_request` admission entry before any database quota mutation — before lazy rollover, usage-row creation, or increment
+- **REBIND-04** — **Void.** The named `quota_checked_request` admission entry it required no longer exists: Phase 35 D-05 deletes backend rate limiting from the product. REBIND-05's grant resolution, lock order, and lazy rollover are unaffected.
 - [ ] **REBIND-05**: The quota flow resolves one effective grant under the shared predicate, locks grant-then-usage in ascending grant id, fails closed on a missing usage row, performs lazy monthly rollover in the same locked transaction, and never lets `remaining` go negative
 - [ ] **REBIND-06**: The application starts and every pre-existing route behaves as it did in v1.6, apart from auth rejections now using the shared error classes
 
@@ -107,6 +110,10 @@ Shared machinery only. Rebinding the pre-existing routes is Phase 36.
 
 Tracked but deferred beyond v2.0.
 
+### Gateway contract — deferred from Phase 35
+
+- **FOUND-09**: The Envoy Gateway config forwards `Authorization` unchanged, injects no identity headers, pins `xff_num_trusted_hops`, overrides the shared 429 body, and the backend ignores every client- or proxy-supplied identity header (`01-foundation.md §9`). Deferred per Phase 35 D-08. Accepted consequences for v2.0: only the v1.6 chart's rate limiting ships, unverified against `§9`; Envoy's 429s keep their empty body, which does not satisfy the client error contract; and `xff_num_trusted_hops` stays unpinned, so the client address recorded in audit `details` is trusted rather than proven. No backend correctness depends on this — `§9` is explicit that the backend is the sole authoritative verifier.
+
 ### Observability
 
 - **OBS-01**: Proactive quota warnings via an `X-RateLimit-Remaining` response header
@@ -140,7 +147,8 @@ Explicitly excluded. `SHARED-INVARIANTS.md` "Global deletions" binds every phase
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | SCHEMA-01 … SCHEMA-08 | Phase 34 | Complete |
-| FOUND-01 … FOUND-09 | Phase 35 | Pending |
+| FOUND-01 … FOUND-08 | Phase 35 | Pending |
+| FOUND-09 | v2.1 backlog | Deferred (D-08) |
 | REBIND-01 … REBIND-06 | Phase 36 | Pending |
 | CREATE-01 … CREATE-04 | Phase 37 | Pending |
 | SYNC-01 … SYNC-03 | Phase 38 | Pending |

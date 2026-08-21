@@ -95,14 +95,14 @@ Archive: `.planning/milestones/v1.6-ROADMAP.md`
 
 ### ◆ v2.0 Authentication & Entitlements (Phases 34-46)
 
-Spec: `/home/init/native-speaker/specs/auth-refactor-phases/`. One phase per spec file, except `01-foundation.md`, which splits into Phase 35 (machinery, §1–§7 + §9) and Phase 36 (pre-existing route rebinding, §8). `SHARED-INVARIANTS.md` binds every phase and overrides any conflicting phase brief — flag conflicts, never resolve them silently.
+Spec: `/home/init/native-speaker/specs/auth-refactor-phases/`. One phase per spec file, except `01-foundation.md`, which splits into Phase 35 (machinery, §1–§4 + §6 + §7) and Phase 36 (pre-existing route rebinding, §8). `§5` is deleted from the product and `§9` is deferred to v2.1 — see Phase 35. `SHARED-INVARIANTS.md` binds every phase and overrides any conflicting phase brief — flag conflicts, never resolve them silently.
 
 Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time. The spec dir is ~90k tokens in total and is never loaded at once.
 
 **Dependency graph:**
 
 ```
-34 (schema) → 35 (foundation) → ┬─ 36 rebind pre-existing routes  ← first bootable app
+34 (schema) → 35 (foundation) → ┬─ 36 rebind pre-existing routes
                                 ├─ 37 create-user ─┬─ 40 upgrade-anon ──┐
                                 │                  ├─ 41 claim-anon ────┴─→ 42 claim-registered
                                 │                  ├─ 38 sync    (soft 37)
@@ -111,6 +111,8 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
                                 ├─ 45 restore-subscription (needs 37, 43, 44)
                                 └─ 46 sign-out-all
 ```
+
+Phase 35 is the first **booting** app (D-14) — imports, lifespan, and the startup enumeration assertion all run. Phase 36 is the first **fully working** one, once the chat quota path is rewired onto the grant model.
 
 #### Phase 34: Schema
 
@@ -148,8 +150,8 @@ Plans:
 
 #### Phase 35: Foundation
 
-**Goal:** Build the shared machinery every later phase calls and none rebuilds — barrier, route registry, error registry, audit writer, rate-limit engine, challenge store, adapter interfaces — plus the Envoy contract it depends on.
-**Requirements:** FOUND-01 … FOUND-09
+**Goal:** Build the shared machinery every later phase calls and none rebuilds — barrier, route registry, error registry, audit writer, provider-call budget seam, challenge store, adapter interfaces — and repair the model layer so the application boots and the enumeration assertion runs for real.
+**Requirements:** FOUND-01 … FOUND-08
 **Depends on:** 34
 **Success criteria:**
 
@@ -157,9 +159,9 @@ Plans:
 2. Zero, duplicate, comma-joined, empty, and trailing-content Authorization values each reject as `auth_required` with identical body, status, and copy
 3. The barrier admits only `identity_state='active'` AND `users.active` TRUE; every other combination rejects with nothing falling through to pre-auth
 4. A barrier rejection produces exactly one `audit.auth_events` row with all three actor fields NULL and a bounded reason
-5. Rate limits load entirely from config with no hard-coded values, and an unresolvable client address shares the single-address ceiling bucket
+5. The application boots clean — `nativespeaker.api` imports, the lifespan runs, and the `§2.3` enumeration assertion executes at real startup against the real router
 
-> Still not bootable — the pre-existing routes have not been rewired yet. Verification here is unit-level against the machinery in isolation.
+> Scope changed by the Phase 35 discussion (`35-CONTEXT.md`): `§5` backend rate limiting is deleted from the product (D-05, Envoy Gateway owns request-rate enforcement) and `§9` the Envoy contract is deferred to v2.1 (D-08). Per D-14/D-15 the phase now ends booting — chat and quota routes still fail at runtime until Phase 36 rewires them.
 
 #### Phase 36: Rebind Pre-existing Routes
 
@@ -171,7 +173,7 @@ Plans:
 1. The application starts and every pre-existing route serves as it did in v1.6, apart from auth rejections now using the shared error classes
 2. `GET /health/ready` is reachable unauthenticated; `GET /`, `GET /examples`, and all five `/chats` routes reject an unauthenticated caller
 3. No `audit.auth_events` row is written by any of these routes, including on barrier rejection — the bounded counter metric increments instead
-4. A quota-checked chat request passes `quota_checked_request` admission before any quota mutation, and a missing usage row fails the request closed rather than minting one
+4. A missing usage row fails a quota-checked chat request closed rather than minting one (the `quota_checked_request` admission entry is void — Phase 35 D-05)
 5. Lazy rollover resets `monthly_used` inside the same locked transaction when the stored period is stale, with grant-then-usage lock order and no network call under lock
 
 #### Phase 37: POST /auth/create-user
