@@ -22,6 +22,7 @@ import inspect
 from pathlib import Path
 
 import pytest
+
 from nativespeaker.api.auth.modesignal import ModeSignal, classify_mode_signal
 
 HANDLE = "AbCdEfGhIjKlMnOpQrStUv"
