@@ -153,12 +153,12 @@ Plans:
 **Goal:** Build the shared machinery every later phase calls and none rebuilds — barrier, route registry, error registry, audit writer, provider-call budget seam, challenge store, adapter interfaces — and repair the model layer so the application boots and the enumeration assertion runs for real.
 **Requirements:** FOUND-01 … FOUND-08
 **Depends on:** 34
-**Plans:** 11 plans across 10 waves
+**Plans:** 1/11 plans executed across 10 waves
 
 Plans:
 **Wave 1**
 
-- [ ] 35-01-PLAN.md — Tracer: unauthenticated request rejected end-to-end at real startup
+- [x] 35-01-PLAN.md — Tracer: unauthenticated request rejected end-to-end at real startup
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -378,7 +378,7 @@ Plans:
 | 32. Rewrite Models to Match Prompt Schema | v1.6 | 3/3 | Complete | 2026-03-26 |
 | 33. Propagate quota_exceeded Rename | v1.6 | 1/1 | Complete | 2026-03-26 |
 | 34. Schema | v2.0 | 4/4 | Complete    | 2026-08-20 |
-| 35. Foundation | v2.0 | 0/? | Pending | — |
+| 35. Foundation | v2.0 | 1/11 | In Progress|  |
 | 36. Rebind Pre-existing Routes | v2.0 | 0/? | Pending | — |
 | 37. POST /auth/create-user | v2.0 | 0/? | Pending | — |
 | 38. POST /auth/sync | v2.0 | 0/? | Pending | — |
