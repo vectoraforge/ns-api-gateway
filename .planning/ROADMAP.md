@@ -153,7 +153,7 @@ Plans:
 **Goal:** Build the shared machinery every later phase calls and none rebuilds — barrier, route registry, error registry, audit writer, provider-call budget seam, challenge store, adapter interfaces — and repair the model layer so the application boots and the enumeration assertion runs for real.
 **Requirements:** FOUND-01 … FOUND-08
 **Depends on:** 34
-**Plans:** 11/11 plans executed across 10 waves
+**Plans:** 12 plans across 11 waves — 11/11 executed; 35-12 is gap closure for the one failed must-have
 
 Plans:
 **Wave 1**
@@ -196,6 +196,10 @@ Plans:
 **Wave 10** *(blocked on Wave 9 completion)*
 
 - [x] 35-11-PLAN.md — Publish the `auth/` seam, restore e2e coverage, gate the suite green, COVERAGE.md
+
+**Wave 11** *(blocked on Wave 10 completion)*
+
+- [ ] 35-12-PLAN.md — Gap closure (CR-01): offload JWKS verification off the event loop, bound the fetch timeout, add the negative-`kid` cache, replace the vacuous test (wave 11)
 
 **Success criteria:**
 
