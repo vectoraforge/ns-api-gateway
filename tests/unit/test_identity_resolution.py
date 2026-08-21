@@ -39,14 +39,18 @@ class _StubResult:
 
 
 class _StubSession:
-    """Stands in for the one short session the barrier opens, and counts its own statements."""
+    """Stands in for the one short session the barrier opens, and keeps what it was asked to run."""
 
     def __init__(self, row=None):
         self._row = row
-        self.executed = 0
+        self.statements = []
 
-    async def exec(self, _statement):
-        self.executed += 1
+    @property
+    def executed(self) -> int:
+        return len(self.statements)
+
+    async def exec(self, statement):
+        self.statements.append(statement)
         return _StubResult(self._row)
 
 
@@ -206,6 +210,47 @@ class TestOneQueryOneCodePath:
         source = inspect.getsource(identity_module)
         assert "sleep" not in source
         assert "perf_counter" not in source
+
+
+class TestTheResolutionStatement:
+    """The shape of the one statement, asserted because one of its properties is unobservable.
+
+    The dangling-user branch above cannot be produced by the database -- `user_id` carries a
+    `NOT NULL REFERENCES core.users (id)` foreign key, so no such row can exist -- which means no
+    test at any level can reach that branch through real data. Only the join *kind* keeps the
+    branch alive at all: swap `isouter=True` for an inner join and the row simply disappears, the
+    dangling case silently becomes outcome 1, and every test above still passes. Asserting the
+    compiled statement is the one thing that catches that.
+    """
+
+    async def test_it_outer_joins_so_a_dangling_user_is_not_read_as_unlinked(self):
+        _decision, session = await _resolve(_row())
+        assert "LEFT OUTER JOIN" in str(session.statements[0])
+
+    async def test_it_joins_the_identity_table_to_the_user_table(self):
+        _decision, session = await _resolve(_row())
+        compiled = str(session.statements[0])
+        assert "core.external_identities" in compiled
+        assert "core.users" in compiled
+
+    async def test_it_filters_on_issuer_and_subject_and_nothing_else(self):
+        """§1.3 resolves the verified pair. `core.users.id` is never an authentication key."""
+        _decision, session = await _resolve(_row())
+        where = str(session.statements[0]).split("WHERE", 1)[1]
+        assert "external_identities.issuer" in where
+        assert "external_identities.subject" in where
+        assert "identity_state" not in where and "active" not in where
+
+    async def test_the_state_columns_are_read_in_python_not_filtered_in_sql(self):
+        """Both `account_unavailable` branches must leave the *same* statement (D-13).
+
+        A `WHERE identity_state = 'active'` would make outcome 2 return no row -- collapsing it
+        into outcome 1, which §1.3 forbids -- and would put the two rejections on different paths.
+        """
+        _decision, session = await _resolve(_row(identity_state=IdentityState.historical))
+        historical_sql = str(session.statements[0])
+        _decision, session = await _resolve(_row(user_active=False))
+        assert historical_sql == str(session.statements[0])
 
 
 class TestRejectionCounter:

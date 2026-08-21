@@ -17,9 +17,12 @@ structural identity -- the same single query reached through the same code path 
 rejects timing normalization for this product. A latency-parity assertion would be testing a
 property the service does not have and does not claim.
 """
+from contextlib import contextmanager
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 from unit.conftest import TEST_ISSUER, make_token
 
 from nativespeaker.api.models.identities import IdentityProvider, IdentityState
@@ -212,6 +215,57 @@ class TestVerificationPrecedesResolution:
 
         assert response.status_code == 401
         assert response.json() == {"code": "auth_required"}
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestOneQueryPerRequest:
+    """D-13's structural anti-oracle guarantee, observed at runtime rather than read off the source.
+
+    Every outcome leaves the barrier through the *same* single statement. That is what makes the two
+    `account_unavailable` branches indistinguishable in work done as well as in response: neither
+    issues a query, a lookup, or a network call the other skips. Counting real cursor executions is
+    the only form of this claim that a later refactor cannot quietly break.
+    """
+
+    @pytest.mark.parametrize("subject,seed", [
+        ("q-linked", {}),
+        ("q-historical", {"identity_state": IdentityState.historical}),
+        ("q-blocked", {"user_active": False}),
+        ("q-unlinked", None),
+    ])
+    async def test_every_outcome_issues_exactly_one_identity_statement(
+            self, barrier_client, _db_transaction, subject, seed):
+        if seed is not None:
+            await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject, **seed)
+
+        with _recording(_db_transaction) as statements:
+            await barrier_client.get("/chats", headers=_auth(subject))
+
+        assert len([s for s in statements if "external_identities" in s]) == 1
+
+    async def test_a_wire_contract_rejection_touches_the_database_not_at_all(
+            self, barrier_client, _db_transaction):
+        """§1.5 orders the wire contract ahead of resolution, so step 2 costs no query."""
+        with _recording(_db_transaction) as statements:
+            await barrier_client.get("/chats")
+
+        assert [s for s in statements if "external_identities" in s] == []
+
+
+@contextmanager
+def _recording(factory):
+    """Collect every statement the test connection executes for the duration of the block."""
+    engine = factory.kw["bind"].sync_engine
+    statements: list[str] = []
+
+    def _capture(_conn, _cursor, statement, *_args, **_kwargs):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        yield statements
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
 
 
 @pytest.mark.asyncio(loop_scope="module")
