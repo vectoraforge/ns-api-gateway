@@ -1,10 +1,11 @@
 """The three read/delete chat routes, over the real app with a real Firebase credential.
 
 The list/get/delete cases this module carried all seeded rows through `e2e.conftest.create_chat`
-and then asserted a served response. Both halves are unavailable in Phase 35: `create_chat` still
-inserts the v1.6 `User(jwt_sub=...)` shape that the v2.0 schema dropped (plan 05 repairs it), and
-the e2e Firebase subject has no `core.external_identities` row for the barrier to resolve (plan 06
-adds `seed_identity`). They are named in 35-04-SUMMARY.md for plan 11 to restore.
+and then asserted a served response. Plan 05 repaired the seeding half -- `create_chat` inserts
+against the v2.0 schema now, and `test_model_queries.py` proves it -- but the served half is still
+unavailable: the e2e Firebase subject has no `core.external_identities` row for the barrier to
+resolve, which is plan 06's `seed_identity`. They are named in 35-04-SUMMARY.md for plan 11 to
+restore.
 
 Together with `test_chats.py` this covers all five chat routes exactly once: no route is asserted
 twice, and none is left unasserted.

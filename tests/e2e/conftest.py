@@ -6,11 +6,19 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.app.main import app
 from nativespeaker.api.config import EnvironmentConfig
-from nativespeaker.api.models import Chat, ChatRole, Message, User
+from nativespeaker.api.models import (
+    Chat,
+    ChatRole,
+    ExternalIdentity,
+    IdentityProvider,
+    Message,
+    User,
+)
 
 
 @pytest.fixture(scope="session")
@@ -89,24 +97,41 @@ async def _db_transaction(_app_lifespan):
             await transaction.rollback()
 
 
-async def create_chat(factory, user_id: str):
-    """Insert a chat with human+AI message pair, return chat_id.
+async def create_chat(factory, issuer: str, subject: str):
+    """Insert a chat with a human+AI message pair for `(issuer, subject)`; return chat_id.
 
-    Creates a User record for the given Firebase UID if one doesn't exist,
-    then creates a Chat referencing the user's UUID primary key.
+    Seeds `core.users` and its matching `core.external_identities` row when the pair has none.
+    The v1.6 version looked a user up by `jwt_sub` and inserted `User(jwt_sub=...)`; v2.0 dropped
+    that column, and `(issuer, subject)` -- the table's auth-time lookup key -- is where an
+    external subject lives now, so the pair is what identifies a seeded caller here too.
+
+    This is **test seeding only**, and deliberately not a JIT-provisioning path: no route can
+    reach it, and `src/` has no code that writes either table. `core.users` rows originate from
+    `POST /auth/create-user` in Phase 37.
+
+    The identity is seeded `anonymous` with a NULL `provider_uid` -- the left arm of the table's
+    provider/provider_uid agreement CHECK, and the only shape available without inventing the
+    sentinel `provider_uid` ruling 9.2 forbids. Plan 06's `seed_identity` owns provider variation
+    and the barrier-resolvable case.
     """
     async with factory() as session:
-        # Ensure user exists (JIT-like provisioning for test data)
-        from sqlmodel import select
-        result = await session.exec(select(User).where(User.jwt_sub == user_id))
-        user = result.first()
-        if user is None:
-            user = User(jwt_sub=user_id, email=f"{user_id}@test.example.com")
+        result = await session.exec(select(ExternalIdentity)
+                                    .where(ExternalIdentity.issuer == issuer,
+                                           ExternalIdentity.subject == subject))
+        identity = result.first()
+        if identity is None:
+            user = User()
             session.add(user)
+            await session.flush()
+            identity = ExternalIdentity(user_id=user.id,
+                                        issuer=issuer,
+                                        subject=subject,
+                                        provider=IdentityProvider.anonymous)
+            session.add(identity)
             await session.flush()
 
         chat_id = uuid4()
-        chat = Chat(id=chat_id, user_id=user.id, title="test phrase")
+        chat = Chat(id=chat_id, user_id=identity.user_id, title="test phrase")
         human = Message(chat_id=chat_id, role=ChatRole.human,
                         content={"mode": "analyze", "phrase": "test phrase"})
         ai = Message(chat_id=chat_id, role=ChatRole.ai,

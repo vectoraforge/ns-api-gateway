@@ -98,11 +98,10 @@ def make_test_verifier() -> _FixedKeyVerifier:
     return _FixedKeyVerifier()
 
 
-# The v1.6 `TEST_USER` carried `jwt_sub`, `email`, `name`, and `subscription_plan`. Those are the
-# columns the v2.0 schema dropped and plan 05 removes from the model, so what stands in for an
-# authenticated caller now is the §1.4 identity context the barrier attaches -- built over the real
-# model classes with only the columns that survive. Handlers read `identity.user.id` and nothing
-# else, so the id is the whole contract.
+# The v1.6 `TEST_USER` was built from four columns the v2.0 schema dropped, so what stands in for
+# an authenticated caller now is the §1.4 identity context the barrier attaches -- built over the
+# real model classes, at their repaired shape. Handlers read `identity.user.id` and nothing else,
+# so the id is the whole contract.
 TEST_SUBJECT = "test-user"
 TEST_USER_ID = uuid7()
 TEST_IDENTITY = LinkedIdentity(
