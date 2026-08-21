@@ -28,14 +28,14 @@ Shared machinery only. Rebinding the pre-existing routes is Phase 36.
 
 > Scope narrowed by the Phase 35 discussion (`35-CONTEXT.md`): `§5` (backend rate-limit engine) is **deleted from the product** — Envoy Gateway is the sole request-rate enforcement point (D-05), overriding `SHARED-INVARIANTS.md` § Rate limits and `01-foundation.md §5`. `§9` (the Envoy contract) is **deferred to v2.1** (D-08). The `§7.1` provider-call budget seam survives as FOUND-06 (D-06).
 
-- [ ] **FOUND-01**: A mandatory, default-on pre-handler barrier is the only place JWT acceptance and identity resolution happen; it admits only `identity_state='active'` AND `users.active` exactly TRUE
+- [x] **FOUND-01**: A mandatory, default-on pre-handler barrier is the only place JWT acceptance and identity resolution happen; it admits only `identity_state='active'` AND `users.active` exactly TRUE
 - [ ] **FOUND-02**: The barrier enforces the exactly-one-Authorization wire contract — zero values, duplicate field instances, comma-joined values, multiple credentials, empty tokens, and trailing content all reject as `invalid_external_jwt`
 - [ ] **FOUND-03**: A route registry places every registered route in exactly one of three categories (public allowlist, provider-callback by exact path, authenticated), and a startup/CI enumeration assertion fails when a route is in zero or multiple categories
 - [ ] **FOUND-04**: One shared error-registry module owns the single client-visible response shape, statuses, copy, and exception handlers; within an error class the body, status, and copy are identical across every triggering branch
 - [ ] **FOUND-05**: An audit writer emits exactly one durable `audit.auth_events` row per on-path attempt before the response returns, with redacted `details` and an HMAC-SHA-256 `actor_subject_hash` carrying its key version
 - [ ] **FOUND-06**: A `§7.1` provider-call budget seam meters outbound provider calls per request with plain in-process counters — the 3-attempt Firebase `getUser` retry budget, plus a helper that checks every applicable budget non-destructively from broadest to narrowest and charges them together only on success; exhaustion maps to internal `firebase_lookup_unavailable` → client `verification_temporarily_unavailable`. No `limits` dependency, no Redis/Valkey, no traffic rate limiting
 - [ ] **FOUND-07**: A challenge store implements the claim/consume protocol that challenge-bearing operations depend on
-- [ ] **FOUND-08**: Adapter interfaces are defined as interfaces only — no store, device-check, or Firebase Admin implementations ship in this phase
+- [x] **FOUND-08**: Adapter interfaces are defined as interfaces only — no store, device-check, or Firebase Admin implementations ship in this phase
 
 > **FOUND-09 is deferred to v2.1** per D-08 — see Future Requirements below. Nothing in `k8s/` is touched by Phase 35.
 

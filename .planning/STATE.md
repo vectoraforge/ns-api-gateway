@@ -1,21 +1,21 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Authentication & Entitlements
-current_phase: 35
-current_phase_name: foundation
-status: executing
+milestone_name: Authentication & Entitlements (Phases 34-46)
+current_phase: 36
+current_phase_name: Rebind Pre-existing Routes
+status: planning
 stopped_at: Completed 35-12-PLAN.md
-last_updated: "2026-08-21T21:41:23.332Z"
+last_updated: "2026-08-21T22:43:53.244Z"
 last_activity: 2026-08-21
 last_activity_desc: Plan 35-12 complete — CR-01 gap closed
+state_head: f6e9968186a40f90d6135ac77f272bb5ce6cda61
 progress:
   total_phases: 13
   completed_phases: 2
   total_plans: 16
   completed_plans: 16
   percent: 15
-state_head: b5b67982c9a80a3eb3c98d161e12af21781c5f36
 ---
 
 # Project State
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 35 (foundation) — EXECUTING
-Plan: 12 of 12
-Status: All 12 plans executed; 35-12 closed the CR-01 gap — ready for re-verification
-Last activity: 2026-08-21 — Plan 35-12 complete (JWKS offload + negative-kid cache)
+Phase: 36 — Rebind Pre-existing Routes
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-08-21 — Phase 35 complete, transitioned to Phase 36
 
 ## Accumulated Context
 
