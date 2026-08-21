@@ -19,7 +19,32 @@ from fastapi.testclient import TestClient
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
 from nativespeaker.api.auth.registry import lookup
-from unit.conftest import make_token
+from nativespeaker.api.auth.telemetry import RejectionCounter
+from unit.conftest import make_test_verifier, make_token
+
+
+class _EmptyResult:
+    def first(self):
+        return None
+
+
+class _NoIdentitySession:
+    """A session whose single identity query matches no row -- /probe has no seeded pair.
+
+    The barrier resolves identity from plan 06 onward, so this fixture has to answer step 4. It is
+    a stand-in for the one short session the barrier opens, not for the database: what these cases
+    assert is which *step* refused the request, and every case below is refused at or before the
+    admission matrix.
+    """
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    async def exec(self, _statement):
+        return _EmptyResult()
 
 
 @pytest.fixture(scope="module")
@@ -33,6 +58,10 @@ def barrier_client():
         return {"reached": True}
 
     app.add_middleware(AuthBarrierMiddleware)  # ty: ignore[invalid-argument-type]
+    # Read per request by the barrier, exactly as the real lifespan supplies them.
+    app.state.jwt_verifier = make_test_verifier()
+    app.state.session_factory = _NoIdentitySession
+    app.state.rejection_counter = RejectionCounter()
 
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client
@@ -90,15 +119,23 @@ class TestBearerTokenEdgeCases:
         assert response.json()["code"] == "auth_required"
 
 
-class TestWellFormedCredentialPassesThrough:
-    """The positive control: the 401s above are the wire contract, not a blanket deny."""
+class TestWellFormedCredentialPassesTheWireContract:
+    """The positive control: the 401s above are the wire contract, not a blanket deny.
 
-    def test_one_well_formed_bearer_reaches_the_handler(self, barrier_client):
-        """The barrier does not verify the token here (plan 06 adds that) -- it checks the wire."""
+    Plan 06 moved verification and resolution onto this seam, so a well-formed credential no
+    longer reaches the handler -- `/probe` has no `core.external_identities` row and is not
+    pre-auth-callable, so §1.3 outcome 1' refuses it. The control still does its job, and does it
+    better: the answer *changes class* when the wire contract passes, which is the proof that the
+    401s above are §1.1 refusals rather than a deny-everything middleware. A 200 here would now
+    prove less, because it could equally come from a barrier that skipped steps 3 to 5.
+    """
+
+    def test_one_well_formed_bearer_advances_past_the_wire_contract(self, barrier_client):
+        """It clears §1.1 and §1.2 and is refused by the admission matrix, not by the wire."""
         response = barrier_client.get("/probe",
                                       headers={"Authorization": f"Bearer {make_token()}"})
-        assert response.status_code == 200
-        assert response.json() == {"reached": True}
+        assert response.status_code == 403
+        assert response.json() == {"code": "preauth_identity_not_allowed"}
 
     def test_the_scheme_is_matched_case_insensitively(self, barrier_client):
         """RFC 7235 makes the auth scheme case-insensitive, and §1.1 follows it.
@@ -109,4 +146,27 @@ class TestWellFormedCredentialPassesThrough:
         """
         response = barrier_client.get("/probe",
                                       headers={"Authorization": f"bearer {make_token()}"})
-        assert response.status_code == 200
+        assert response.status_code == 403
+
+    def test_an_unverifiable_token_is_refused_at_step_3(self, barrier_client):
+        """§1.2: a well-formed but unverifiable credential is the identical 401, never a 403."""
+        response = barrier_client.get("/probe",
+                                      headers={"Authorization": "Bearer not.a.jwt"})
+        assert response.status_code == 401
+        assert response.json() == {"code": "auth_required"}
+
+    def test_every_barrier_rejection_is_counted(self, barrier_client):
+        """§1.2's mandatory metric increments wherever the barrier rejects."""
+        counter = barrier_client.app.state.rejection_counter
+        before = sum(counter.snapshot().values())
+        barrier_client.get("/probe")
+        barrier_client.get("/probe", headers={"Authorization": f"Bearer {make_token()}"})
+        assert sum(counter.snapshot().values()) == before + 2
+
+    def test_the_counter_labels_the_route_template_and_never_the_token(self, barrier_client):
+        """T-35-06-05: every label comes from a closed set."""
+        counter = barrier_client.app.state.rejection_counter
+        barrier_client.get("/probe")
+        keys = counter.snapshot()
+        assert ("invalid_external_jwt", "missing_token", "/probe") in keys
+        assert all(len(key) == 3 and key[2] == "/probe" for key in keys)

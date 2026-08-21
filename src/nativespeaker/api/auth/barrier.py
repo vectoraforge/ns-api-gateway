@@ -4,29 +4,60 @@ Deliberately not a `BaseHTTPMiddleware` subclass: `add_middleware` places user m
 Starlette's `ExceptionMiddleware`, so `app.add_exception_handler` never sees what this class raises
 and a raised registry error would surface as a 500. The reject path therefore *returns* the shared
 error response -- it awaits the response object against `(scope, receive, send)` directly.
+
+The six §1.5 steps run in order, per request:
+
+1. read the route metadata -- available *before* dispatch, so a rejection can name the operation;
+2. apply the §1.1 wire contract;
+3. verify the token;
+4. resolve `(issuer, subject)` in one query from one short session;
+5. enforce the §1.3 admission matrix;
+6. attach the §1.4 typed context and dispatch.
+
+Every rejection at steps 2-5 returns the identical body its class declares and is recorded through
+`record_rejection`. The bounded reason lives only in telemetry and, for on-path routes, in the
+audit row's `details.failure`. The client response names no issuer, no integration, and no failed
+check -- and for §8.2 routes, which is every route this phase registers, no audit row is written.
+
+The typed context travels on `scope["state"]`, which stays visible to the handler through
+`request.state` and to the outer `RequestLoggingMiddleware` after `call_next`. Contextvars bound
+below a `BaseHTTPMiddleware` never propagate back up, so binding identity to `structlog.contextvars`
+and expecting the request log line to carry it would silently produce nothing (D-03 pins the stack).
 """
+from datetime import UTC, datetime
+from ipaddress import IPv6Address, ip_address
+from uuid import uuid7
+
 from starlette.routing import Match
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from nativespeaker.api.auth.registry import Category, lookup
-from nativespeaker.api.auth.wire import extract_bearer
-from nativespeaker.api.errors import AUTH_REQUIRED, error_response
+from nativespeaker.api.auth.context import (
+    REQUEST_CONTEXT_SCOPE_KEY,
+    ClientIpBucketKind,
+    RequestContext,
+)
+from nativespeaker.api.auth.identity import Reject, resolve_identity
+from nativespeaker.api.auth.registry import Category, RouteMetadata, lookup
+from nativespeaker.api.auth.telemetry import record_rejection
+from nativespeaker.api.auth.wire import BoundedReason, extract_bearer
+from nativespeaker.api.errors import AUTH_REQUIRED, ErrorClass, error_response
+from nativespeaker.api.models.auth import AuthEventResult
 
 
 class AuthBarrierMiddleware:
-    """Rejects an authenticated-category request that fails the §1.1 wire contract.
+    """The only place JWT acceptance and identity resolution happen.
 
-    This plan wires one path end to end: no identity resolution, no database read, no token
-    verification. Plan 06 adds verification, resolution, the admission matrix, and the typed
-    context on this same seam.
+    A handler consumes the context this attaches and nothing else. A route registered outside this
+    middleware has no context, and the §1.4 accessors answer `auth_required` rather than handing
+    back a `None` a handler could read as anonymous.
     """
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
-        # Capture NOTHING from app.state here. The middleware is constructed at add_middleware
-        # time, before the lifespan runs, and the e2e rollback fixture works by swapping
-        # app.state.session_factory afterwards -- anything cached here would write to the real
-        # database and never roll back.
+        # Capture nothing from the application here. This runs at `add_middleware` time, before
+        # the lifespan, and the e2e rollback fixture swaps the session factory afterwards --
+        # anything read now would write to the real database and never roll back. Everything the
+        # request path needs is read per request, inside `__call__`.
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":  # lifespan and websocket scopes pass straight through
@@ -41,23 +72,69 @@ class AuthBarrierMiddleware:
             await self.app(scope, receive, send)
             return
 
-        metadata = lookup(scope["method"], route.path)
-        # An undeclared route aborts boot via the §2.3 assertion, so `None` is unreachable in a
-        # started process. It is still treated as authenticated here: a route carrying no
-        # declaration gets the strictest treatment and must never silently become public.
-        if metadata is not None and metadata.category is not Category.authenticated:
+        # Step 1 -- route metadata, read before dispatch. An undeclared route aborts boot via the
+        # §2.3 assertion, so `None` is unreachable in a started process; it is answered with the
+        # strictest disposition anyway, because a route carrying no declaration must never
+        # silently become public.
+        meta = lookup(scope["method"], route.path) or _strictest(scope["method"], route.path)
+        if meta.category is not Category.authenticated:
             await self.app(scope, receive, send)
             return
 
-        _token, reason = extract_bearer(scope["headers"])  # plan 06 consumes the token
-        if reason is not None:
-            # Every bounded reason surfaces the identical status, body, and copy. The reason stays
-            # internal -- audit `details.failure` and metric labels only (plan 03).
-            response = error_response(AUTH_REQUIRED)
-            await response(scope, receive, send)
+        # One evaluation time and one attempt id per request. Every time-dependent value derives
+        # from this capture, so two reads within one request can never straddle a period boundary.
+        evaluated_at = datetime.now(UTC)
+        attempt_id = uuid7()
+
+        # Step 2 -- the wire contract.
+        token, reason = extract_bearer(scope["headers"])
+        if token is None:
+            await self._reject(scope, receive, send, error_class=AUTH_REQUIRED,
+                               result=AuthEventResult.invalid_external_jwt,
+                               bounded_reason=reason, route=meta.path)
             return
 
+        # Step 3 -- verification. `verify` returns rather than raises, for the same reason this
+        # middleware returns rather than raises.
+        claims, reason = scope["app"].state.jwt_verifier.verify(token)
+        if claims is None:
+            await self._reject(scope, receive, send, error_class=AUTH_REQUIRED,
+                               result=AuthEventResult.invalid_external_jwt,
+                               bounded_reason=reason, route=meta.path)
+            return
+
+        # Step 4 -- resolution. Exactly one short session, closed before dispatch: no lock is held
+        # and no network call is made while it is open.
+        async with scope["app"].state.session_factory() as session:
+            decision = await resolve_identity(session, issuer=claims.issuer,
+                                              subject=claims.subject, meta=meta)
+
+        # Step 5 -- the admission matrix.
+        if isinstance(decision, Reject):
+            await self._reject(scope, receive, send, error_class=decision.error_class,
+                               result=decision.result, bounded_reason=None, route=meta.path)
+            return
+
+        # Step 6 -- attach and dispatch.
+        scope.setdefault("state", {})[REQUEST_CONTEXT_SCOPE_KEY] = RequestContext(
+            identity=decision.identity,
+            route_metadata=meta,
+            client_ip_bucket_kind=_bucket_kind(scope.get("client")),
+            evaluated_at=evaluated_at,
+            attempt_id=attempt_id,
+        )
         await self.app(scope, receive, send)
+
+    async def _reject(self, scope: Scope, receive: Receive, send: Send, *,
+                      error_class: ErrorClass,
+                      result: AuthEventResult,
+                      bounded_reason: BoundedReason | None,
+                      route: str) -> None:
+        """Record the rejection, then *return* the shared response -- never raise it (D-01)."""
+        record_rejection(scope["app"].state, result=result,
+                         bounded_reason=bounded_reason, route=route)
+        response = error_response(error_class)
+        await response(scope, receive, send)
 
 
 def _match_full(scope: Scope):
@@ -73,3 +150,24 @@ def _match_full(scope: Scope):
         if match == Match.FULL:
             return route
     return None
+
+
+def _strictest(method: str, path: str) -> RouteMetadata:
+    """The disposition an undeclared route receives: authenticated, and nothing else granted."""
+    return RouteMetadata(method=method, path=path, category=Category.authenticated)
+
+
+def _bucket_kind(client) -> ClientIpBucketKind:
+    """§4.4's bucket kind, from the gateway-resolved `scope["client"]` alone.
+
+    Never recomputed from `X-Forwarded-For`, `Forwarded`, or any other client-supplied header, by
+    this function or any later one. The address itself is not carried anywhere: §9 is deferred, so
+    `xff_num_trusted_hops` is unpinned and an address would be trusted rather than proven (A3).
+    """
+    if not client:
+        return ClientIpBucketKind.unresolved
+    try:
+        address = ip_address(client[0])
+    except ValueError:
+        return ClientIpBucketKind.unresolved
+    return ClientIpBucketKind.ipv6 if isinstance(address, IPv6Address) else ClientIpBucketKind.ipv4

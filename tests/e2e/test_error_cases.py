@@ -2,11 +2,16 @@
 
 The six `TestErrorCases` cases asserted the handler-level statuses a *served* chat request
 produces -- 404 for a nonexistent chat, 400 for an unsupported language, 422 for a missing field.
-None of those branches is reachable in Phase 35: nothing attaches a §1.4 identity context yet, so
-every chat route answers `auth_required` before a handler runs. Rather than assert a status the
-code cannot produce, they are retargeted onto what that state actually guarantees, which is the
-stronger property anyway -- §3.1's anti-oracle rule. Their served-response forms are named in
-35-04-SUMMARY.md for plan 11 to restore.
+None of those branches is reachable in Phase 35: the e2e Firebase subject has no
+`core.external_identities` row, so the barrier refuses every chat request before a handler runs.
+Rather than assert a status the code cannot produce, they are retargeted onto what that state
+actually guarantees, which is the stronger property anyway -- §3.1's anti-oracle rule. Their
+served-response forms are named in 35-04-SUMMARY.md for plan 11 to restore.
+
+Plan 06 moved the refusal from `auth_required` (an absent identity context) to
+`preauth_identity_not_allowed` (§1.3 outcome 1', reached only after the token verified and the
+single identity query ran). The anti-oracle property these cases exist for is unchanged: all
+three branches still carry one indistinguishable answer.
 """
 from uuid import uuid4
 
@@ -22,21 +27,21 @@ class TestUnadmittedCallerLearnsNothing:
     async def test_nonexistent_chat_is_indistinguishable_from_an_existing_one(self, async_client):
         """A caller the barrier did not admit cannot probe which chat ids exist."""
         response = await async_client.get(f"/chats/{uuid4()}")
-        assert response.status_code == 401
-        assert response.json() == {"code": "auth_required"}
+        assert response.status_code == 403
+        assert response.json() == {"code": "preauth_identity_not_allowed"}
 
     async def test_unsupported_language_is_not_disclosed(self, async_client):
-        """`lang=xx` answers auth_required, not the handler's 400 -- no language enumeration."""
+        """`lang=xx` is refused by the barrier, not by the handler -- no language enumeration."""
         response = await async_client.post("/chats",
                                            json={"phrase": "test", "lang": "xx"})
-        assert response.status_code == 401
-        assert response.json() == {"code": "auth_required"}
+        assert response.status_code == 403
+        assert response.json() == {"code": "preauth_identity_not_allowed"}
 
     async def test_a_malformed_body_is_not_disclosed(self, async_client):
-        """A missing required field answers auth_required, not 422 -- no schema enumeration."""
+        """A missing required field is refused by the barrier, not 422 -- no schema enumeration."""
         response = await async_client.post("/chats", json={"lang": "en"})
-        assert response.status_code == 401
-        assert response.json() == {"code": "auth_required"}
+        assert response.status_code == 403
+        assert response.json() == {"code": "preauth_identity_not_allowed"}
 
     async def test_error_body_has_only_code_field(self, async_client):
         """Error responses contain exactly {code: ...} -- no extra fields."""

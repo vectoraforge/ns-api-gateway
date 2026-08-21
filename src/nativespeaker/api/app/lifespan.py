@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth.registry import assert_route_enumeration
+from nativespeaker.api.auth.telemetry import RejectionCounter
 from nativespeaker.api.auth.verification import JWTVerifier
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.errors import assert_registry_total
@@ -28,6 +29,13 @@ async def lifespan(app: FastAPI):
     # Validate the error registry and the route registry -- both fail closed before serving traffic
     assert_registry_total()
     assert_route_enumeration(app)
+
+    # The §1.2 / §8.2 bounded-cardinality rejection counter. Every route this phase registers is
+    # off the audited attempt path, so this counter plus the structured security log is the whole
+    # record of a barrier rejection there -- and §1.2 makes it the required alerting source for
+    # cross-route attack volume and for a systemic verification break. Nothing exports it yet;
+    # see 35-06-SUMMARY.md for the recorded gap.
+    app.state.rejection_counter = RejectionCounter()
 
     # Initialize database
     db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)
