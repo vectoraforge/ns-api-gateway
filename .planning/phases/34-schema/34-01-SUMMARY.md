@@ -3,165 +3,228 @@ phase: 34-schema
 plan: 01
 subsystem: environment
 tags: [postgresql, provisioning, env, blocking-gate]
-status: blocked
+status: complete
 requires: []
-provides: []
+provides:
+  - "A reachable, empty PostgreSQL 17.11 database named nativespeaker"
+  - ".env with the five DB_* keys both consumers interpolate"
 affects: [34-02, 34-03, 34-04]
 tech_stack:
   added: []
-  patterns: []
+  patterns:
+    - "Database credentials live only in gitignored .env; DB_* is the canonical prefix, POSTGRES_* is the container-image prefix"
 key_files:
-  created:
+  created: []
+  modified:
     - .env
-  modified: []
 decisions:
-  - "Rejected the only PostgreSQL on this machine (pgserver's bundled 16.2) on two independent grounds: it is a [SUS] package the plan forbids, and it is major version 16, so it cannot satisfy the 'exactly 17' criterion even if permitted"
-  - "Left docker-compose.yml placeholders unsubstituted — no container runtime exists to run it, so substituting would only put unverifiable values into a tracked file"
-  - "Wrote .env from .env.example defaults with an explicit UNVERIFIED header rather than inventing plausible-looking credentials"
+  - "Added the five DB_* keys rather than teaching the consumers to read POSTGRES_*: pyproject.toml [tool.pogo] database_config and AppConfig.db both resolve DB_*, and .env.example declares DB_*, so the file was wrong, not the consumers"
+  - "Renamed the dead key POSTGRES_NAME to POSTGRES_DB — the postgres:17 image reads POSTGRES_DB, which is the direct cause of the container provisioning only the default postgres database"
+  - "Mirrored DB_* values from the existing POSTGRES_* values instead of hardcoding, so the two prefixes cannot drift apart"
+  - "Did NOT mark SCHEMA-01 or SCHEMA-08 complete — this plan provisions environment state and produces no product artifact; both requirements belong to plans 34-02/03/04"
+  - "Left the developer's uncommitted docker-compose.yml edit untouched: it is their change, not this plan's, and this plan is forbidden from modifying that file"
 metrics:
-  duration: "~3 min"
+  duration: "~10 min"
   completed: 2026-08-20
 actuals:
-  tokens: 177
-  tasks: 1
-  commits: 0
+  tokens: 900
+  tasks: 2
+  commits: 1
 ---
 
 # Phase 34 Plan 01: Database Gate Summary
 
-**Provisioning failed honestly: no PostgreSQL 17 is reachable or obtainable in this
-environment, so the phase halts at task 2's blocking human gate with no schema work begun.**
+**The gate is green: PostgreSQL `17.11 (Debian 17.11-1.pgdg13+2)` is reachable on
+`localhost:5432`, the `nativespeaker` database exists and is genuinely empty, and `.env` now
+carries the five `DB_*` keys its two consumers actually read.**
 
 ## Outcome
 
-Task 1 did **not** achieve its `<done>` condition. No database was provisioned. The run stops
-at task 2 and hands control to the developer, which is exactly what that gate exists to do.
+Task 1's `<done>` condition holds. This is a continuation run: a previous executor found no
+PostgreSQL at all and halted at task 2's blocking gate. The developer has since started a
+PostgreSQL 17 container, and this run finished the substance of task 1 — which turned out to be
+two real defects in `.env`, not merely "type in the connection details".
 
-The one thing this plan owns — the database gate — is **red**. Plans 34-02, 34-03, and 34-04
-have not started and must not start until it is green.
+## The Observed `server_version`
 
-## What Was Tried
+```
+17.11 (Debian 17.11-1.pgdg13+2)
+```
 
-All three sanctioned provisioning paths from task 1's `<action>` were attempted in order.
+Recorded because plan 34-03 needs it, per this plan's `<output>` and task 1's `<manual>` step.
 
-| Path | Attempt | Result |
-|------|---------|--------|
-| (a) | Probe an already-running server | **Fail.** `ConnectionRefused` on `127.0.0.1`, `::1`, and `localhost` at both 5432 and 5433. `ss -ltnp` shows only ports 22 and 53 listening. No `/var/run/postgresql/` and no `/tmp/.s.PGSQL.*` unix socket. |
-| (b) | `docker compose up -d db` | **Fail.** No container runtime exists: `docker`, `podman`, `nerdctl`, `docker-compose`, `podman-compose` all absent from PATH and absent from `/usr/bin`, `/usr/local/bin`, `/snap/bin`, `/opt/homebrew/bin`. No `/var/run/docker.sock` and no rootless socket under `$XDG_RUNTIME_DIR`. |
-| (c) | Any other PostgreSQL the developer has | **Fail.** No `psql`, `pg_ctl`, `postgres`, `initdb`, `pg_isready`, `pg_config`, or `createdb` on PATH. No `/usr/lib/postgresql`, `/var/lib/postgresql`, or `/etc/postgresql`. No `DB_*`, `DATABASE_URL`, or `PG*` variables in the environment pointing at a remote host. |
+**RESEARCH.md assumption A1 remains open and is now actionable.** RESEARCH.md's introspection
+constants (Code Example 4) were captured on PostgreSQL **16.2**; the real target is **17.11**.
+Plan 34-03 task 1 must re-capture those constants against this server rather than copying them.
+A1 closes at that reconciliation, not here.
 
-A filesystem-wide search (`find / -xdev`) found PostgreSQL server binaries in exactly one place:
-`/home/init/.cache/uv/archive-v0/ccCQEcN3rAHfZ1Lt/pgserver/pginstall/bin/` — the residue of the
-research session's throwaway `/tmp` venv.
+## The Two Defects Fixed in `.env`
 
-**These were deliberately not used.** Two independent disqualifiers, either sufficient alone:
+The file existed but reached nothing useful. Both defects were silent — neither produces an error
+at write time, and both would have surfaced much later as confusing failures.
 
-1. **Forbidden.** `pgserver` is `[SUS]` in RESEARCH.md's Package Legitimacy Audit. Task 1's
-   action names it as a forbidden fallback and threat `T-34-01-02` / `T-34-01-SC` turn that into
-   a mitigation this plan must uphold. The binaries already sitting in a cache does not change
-   the trust posture — *executing* unvetted native code is the substance of the risk the audit
-   was written about, and is if anything a larger action than installing it.
-2. **Wrong version anyway.** Read out of the binary's metadata without executing it
-   (`strings`, and `#define PG_MAJORVERSION "16"` in its headers): **PostgreSQL 16.2**. Task 1's
-   verify block asserts `ver.split(".")[0] == "17"` and success criterion 1 requires major
-   version exactly 17. Using it could not have produced a legitimate pass — only a failing
-   assertion, or a fabricated green obtained by weakening the assertion.
+**1. The five `DB_*` keys were missing.** `.env` defined `POSTGRES_HOST/PORT/USER/PASSWORD/NAME`.
+Both consumers want `DB_*`:
 
-RESEARCH.md assumption **A4 is confirmed** by this reading: pgserver 0.1.4 bundles PG 16.2.
+| Consumer | What it reads | Evidence |
+|----------|---------------|----------|
+| `pyproject.toml` `[tool.pogo]` | `database_config = 'postgres://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}'` | verified in file, unmodified |
+| `src/nativespeaker/api/config.py` | `AppConfig.db: DatabaseConfig` under `env_nested_delimiter="_"`, `env_nested_max_split=1` → `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` | verified by instantiating the project's own `DatabaseConfig` against the live environment |
+| `.env.example` | declares `DB_*`, never `POSTGRES_*` | verified, unmodified |
 
-## What Was Produced
+Added all five, with values mirrored from the corresponding `POSTGRES_*` entries so the two
+prefixes cannot drift. Nested resolution was then confirmed live: `db.host=localhost`,
+`db.port=5432`, `db.user=postgres`, `db.name=nativespeaker`, and `db.password` loading as a
+non-empty `SecretStr` whose `repr` is `SecretStr('**********')`.
 
-`.env` (gitignored, untracked), copied from `.env.example` with its defaults intact and a header
-stating plainly that the values are unverified and reached nothing. No credential was invented;
-`OPENAI_API_KEY` and the three `FIREBASE_*` keys remain at their `.env.example` placeholders, per
-task 1's instruction that this phase must not materialize secrets it does not need.
+**2. `POSTGRES_NAME` was a dead key — renamed to `POSTGRES_DB`.** The `postgres:17` image reads
+`POSTGRES_DB`. `POSTGRES_NAME` means nothing to it, which is exactly why the container came up
+holding only the default `postgres` database instead of `nativespeaker`. `docker-compose.yml`'s
+`db` service uses `env_file: .env`, so the misnamed key was being handed to the image and ignored.
 
-The file exists so the developer has something concrete to correct at the gate. It is **not**
-evidence that must-have truth #1 holds — it does not.
+> **This rename only takes effect on a fresh volume.** The `postgres` image runs its
+> initialization — including `POSTGRES_DB` — only when the data directory is empty. The running
+> container will not gain a `nativespeaker` database from this rename; it already has one because
+> this plan created it explicitly (below). The rename's payoff is the *next*
+> `docker compose down -v && docker compose up -d db`, which will now provision the right database
+> instead of silently provisioning the wrong one again.
 
-## Acceptance Criteria
+Every pre-existing key was preserved: `CONFIG_DIR`, `APPLE_CERTS_DIR`, the four remaining
+`POSTGRES_*`, `OPENAI_API_KEY`, `JWT_PROJECT_ID`, `JWT_API_KEY`, `FIREBASE_TEST_EMAIL`,
+`FIREBASE_TEST_PASSWORD`. Key-name sets were diffed before and after to prove it: nothing removed
+except the intended rename, six keys added. **No value from this file was printed at any point** —
+it holds live third-party secrets, so all checks reported key names, booleans, and equality
+comparisons rather than contents.
 
-| # | Criterion | Result |
-|---|-----------|--------|
-| 1 | Verify block exits 0, prints `OK PostgreSQL 17` | **FAIL** — exit 1, `OSError: [Errno 111] Connect call failed ('::1', 5432), ('127.0.0.1', 5432)` |
-| 2 | `.env` defines all five `DB_*` | PASS |
-| 3 | `git status --porcelain .env` empty | PASS — ignored at `.gitignore:9`, not staged, not committed |
-| 4 | `.env.example` unmodified | PASS — hash `f14716aa` unchanged |
-| 5 | `count(*) FROM pg_namespace WHERE nspname IN ('core','audit')` = 0 | **UNVERIFIABLE** — no database to query |
-| 6 | `public._pogo_migration` absent or empty | **UNVERIFIABLE** — no database to query |
-| 7 | `rolcreatedb OR rolsuper` true | **UNVERIFIABLE** — no database to query |
-| 8 | `pyproject.toml` unmodified | PASS — hash `23008805` unchanged; no package installed |
+## The Drop-and-Recreate (`00-schema.md §9.13`)
 
-`docker-compose.yml` also verified unmodified (hash `0e81ae31`).
+Ran as mandated, connecting to the `postgres` maintenance database:
+`DROP DATABASE IF EXISTS "nativespeaker" WITH (FORCE)` then `CREATE DATABASE "nativespeaker"`.
+
+**The `DROP` had zero victims.** Measured immediately before executing it:
+`SELECT count(*) FROM pg_database WHERE datname='nativespeaker'` returned **0**. Before this run
+the server held exactly one non-template database, `postgres`. Nothing was destroyed — no
+developer data existed on this fresh container to destroy. Threat `T-34-01-03`'s destructive
+scenario did not materialize.
+
+## Task 2 — the Blocking Gate
+
+The gate is recorded as satisfied, not re-halted, on the developer's explicit instruction.
+
+**What the developer was shown before resuming**, and what this run independently re-verified
+rather than taking on trust:
+
+| Fact shown to the developer | Re-verified here |
+|---|---|
+| `localhost:5432` listening on IPv4 and IPv6 | yes — `ss -ltn` shows both |
+| `SHOW server_version` → `17.11 (Debian 17.11-1.pgdg13+2)`, major exactly 17 | yes |
+| Connecting role `postgres` has `rolcreatedb = true` | yes, and exercised for real (below) |
+| Only `['postgres']` existed; `nativespeaker` absent, so the §9.13 drop destroys nothing | yes — count was 0 immediately pre-drop |
+
+The developer's words on resuming: *"Now I fixed it for sure. Use localhost:5432."* They were told
+the drop-and-recreate would run and that it had no pre-existing database to destroy. Per the gate's
+`how-to-verify` step 3, the destructive action was disclosed before it ran, and it proved to be a
+no-op against an empty server.
+
+## Verification
+
+Task 1's `<automated>` block ran **verbatim from the plan**, unmodified, and exited 0:
+
+```
+OK PostgreSQL 17.11 (Debian 17.11-1.pgdg13+2) - empty, CREATEDB available
+VERIFY_EXIT=0
+```
+
+| # | Acceptance criterion | Result |
+|---|----------------------|--------|
+| 1 | Verify block exits 0, prints `OK PostgreSQL 17…` | **PASS** — output above |
+| 2 | `.env` defines all five `DB_*` | **PASS** |
+| 3 | `git status --porcelain .env` empty | **PASS** — empty; `git check-ignore` → `.gitignore:9`; `git ls-files --error-unmatch .env` → not in index |
+| 4 | `.env.example` unmodified | **PASS** — `git diff HEAD` empty; crc32 `0x71bef7f9` |
+| 5 | `core`/`audit` schema count = 0 | **PASS** |
+| 6 | `public._pogo_migration` absent or empty | **PASS** — table absent |
+| 7 | `rolcreatedb OR rolsuper` true | **PASS** |
+| 8 | `pyproject.toml` unmodified, no package installed | **PASS** — `git diff HEAD` empty; crc32 `0x1cd44c12` |
+
+Beyond the letter of the criteria, the `CREATEDB` capability was **exercised, not just read off a
+catalog flag**: `ns_schema_test` — the exact database name plan 34-03's session fixture uses — was
+created and dropped successfully. A `true` in `pg_roles` and a working `CREATE DATABASE` are not
+the same claim, and 34-03 depends on the latter.
 
 Plan `<verification>` regression check: `pytest tests/unit -q` → **163 passed**, matching
-RESEARCH.md A6's recorded baseline. Creating `.env` — which pytest-dotenv now loads where it
-previously loaded nothing — changed no unit-test behavior.
-
-## Critical Open Item for Plan 34-03
-
-**The `server_version` string was NOT observed.** Task 1's `<manual>` step and the plan's
-`<output>` both require recording it, and it could not be captured because no server was reached.
-
-RESEARCH.md **assumption A1 therefore stays open**, and OQ-1's resolution (plan 34-03 task 1
-re-capturing the introspection constants against real PG 17) is *unstarted*. Plan 34-03 must not
-copy RESEARCH.md's Code Example 4 constants, which were captured on PostgreSQL 16.2.
-
-## Actions NOT Taken
-
-Recorded so no downstream plan assumes otherwise:
-
-- No database was created, dropped, or recreated. The `DROP DATABASE ... WITH (FORCE)` /
-  `CREATE DATABASE` cycle mandated by `00-schema.md §9.13` **has not run**.
-- `CREATEDB` on the connecting role was never confirmed; no role was granted anything.
-- No package was installed. `pyproject.toml` is byte-identical to its pre-task state and
-  `import pgserver` fails in the project venv — none of the three `[SUS]` packages are present.
-- `docker-compose.yml` placeholders were left as shipped.
-- No commit was made. Task 1's only artifact is gitignored, so it produced zero tracked-file
-  changes; there was nothing to commit and no empty commit was manufactured.
+RESEARCH.md A6's baseline. Introducing `DB_*` into the environment that pytest-dotenv loads changed
+no unit-test behavior.
 
 ## Deviations from Plan
 
-**1. [Rule 3 - Blocking] Task 1 could not reach its `<done>` state — surfaced, not worked around**
+**1. [Rule 1 - Bug] `.env` was missing the `DB_*` keys and carried a dead `POSTGRES_NAME`**
 
-- **Found during:** Task 1, all three provisioning paths
-- **Issue:** No PostgreSQL 17 is reachable or obtainable without developer action.
-- **Handling:** Escalated to task 2's blocking gate rather than auto-fixed. The only available
-  workaround (pgserver 16.2) is forbidden by the plan and by threat `T-34-01-02`, and is the
-  wrong major version regardless. Rule 3 explicitly excludes package-manager installs.
+- **Found during:** Task 1
+- **Issue:** The file's keys did not match what either consumer reads, and `POSTGRES_NAME` is not
+  a key the `postgres:17` image recognizes. Left alone, `pogo apply` in plan 34-02 would fail on
+  an unresolvable `{DB_USER}` interpolation and every future fresh-volume `docker compose up`
+  would keep creating the wrong database.
+- **Fix:** Added the five `DB_*` keys mirrored from the `POSTGRES_*` values; renamed
+  `POSTGRES_NAME` → `POSTGRES_DB`.
+- **Files modified:** `.env` (gitignored)
+- **Commit:** none — `.env` is ignored at `.gitignore:9`, so this task produced zero tracked-file
+  changes. No empty commit was manufactured.
+
+**2. [Rule 4 - Scope] `SCHEMA-01` and `SCHEMA-08` deliberately NOT marked complete**
+
+- **Found during:** State update
+- **Issue:** This plan's frontmatter lists `requirements: [SCHEMA-01, SCHEMA-08]`, and the standard
+  flow marks a plan's requirements complete on finish. But SCHEMA-01 is the initial migration file
+  and SCHEMA-08 is "every acceptance check in `00-schema.md §10` passes" — neither exists yet.
+  This plan states outright that it "produces no product artifact."
+- **Handling:** Left both unchecked in REQUIREMENTS.md. They are earned by plans 34-02/03/04.
+  Marking them here would have made the requirements ledger claim a migration that no one has
+  written. Surfaced rather than silently applied.
+- **Commit:** this plan's docs commit
+
+**3. [Rule 3 - Blocking, informational] `docker-compose.yml` carries an uncommitted edit that is not this plan's**
+
+- **Found during:** Task 1 pre-flight
+- **Issue:** `git diff` shows `docker-compose.yml` modified — the explicit `POSTGRES_USER` /
+  `POSTGRES_PASSWORD` / `POSTGRES_DB` environment block replaced by `env_file: - .env`. The prior
+  summary recorded this file as unmodified, so the change is the developer's, made while starting
+  their container. It is also what makes the `POSTGRES_NAME` rename matter.
+- **Handling:** Left exactly as found — untouched and uncommitted. This plan is forbidden from
+  modifying that file, and reverting a developer's working change would be worse than leaving it.
+  Flagged here so it is not mistaken for drift later.
 - **Commit:** none
-
-**2. [Rule 2 - Correctness] `.env` written with an explicit unverified-values header**
-
-- **Found during:** Task 1, after all three paths failed
-- **Issue:** Task 1 says to fill `.env` with values "that actually reach the server found above."
-  No server was found, so no such values exist. Writing the example defaults silently would
-  present unverified values as working ones.
-- **Handling:** Wrote the `.env.example` defaults verbatim under a header stating they are
-  unverified and connect to nothing. The residual failure mode is loud, not silent — `pogo apply`
-  against `localhost:5432` fails with connection-refused rather than corrupting anything.
-- **Commit:** none (`.env` is gitignored)
 
 ## Threat Mitigations Upheld
 
-- **T-34-01-01** (credential disclosure): `.env` untracked and unstaged — `git ls-files
-  --error-unmatch .env` reports it is not in the index. No real secret was written into it.
-- **T-34-01-02 / T-34-01-SC** (supply chain): zero packages installed; `pyproject.toml` hash
-  unchanged; all three `[SUS]` packages absent from the project venv. The one cached `[SUS]`
-  binary set on the machine was found and deliberately not executed.
-- **T-34-01-03** (destructive drop): the drop did not occur, and per its mitigation it will not
-  occur until the developer confirms it at task 2's gate.
+- **T-34-01-01** (credential disclosure): `.env` remains untracked and unstaged — `git
+  status --porcelain .env` empty, not in the index. No secret was echoed, cat'd, or quoted at any
+  point in this run; all inspection was by key name and boolean. No new secret was invented.
+- **T-34-01-02 / T-34-01-SC** (supply chain): zero packages installed. `pyproject.toml` is
+  byte-identical to `HEAD`. `pgserver`, `pytest-postgresql`, and `testing.postgresql` remain absent
+  from the project. The server used is the developer's own container, not a package.
+- **T-34-01-03** (destructive drop): the drop ran with the developer's prior disclosure and
+  destroyed nothing — zero matching databases existed at the moment it executed.
+- **T-34-01-04** (`CREATEDB` on `DB_USER`): accepted as planned. The role is `postgres` on a local
+  development container; no role was created or granted anything.
 
-## Blocker
+## Known Stubs
 
-**A reachable PostgreSQL 17 is required and absent.** This gates every remaining task in phase 34.
-Resolution options, in the plan's own words: start one (`docker compose up -d db` after
-substituting the `{DB_USER}`/`{DB_PASSWORD}`/`{DB_NAME}` placeholders in `docker-compose.yml` —
-requires installing a container runtime first, which is a developer decision, not an executor
-one), point `.env` at an existing PostgreSQL 17, or stop the phase here.
+None. This plan produces environment state and one gitignored file; there is no product code to
+stub.
+
+## For Plan 34-02
+
+- Connect with the five `DB_*` values in `.env` — `pogo`'s `database_config` now interpolates.
+- The database is empty: no `core`, no `audit`, no `public._pogo_migration`. The
+  `type "chat_role" already exists` failure this plan exists to prevent cannot occur.
+- Do not re-run the drop; the database is already fresh.
 
 ## Self-Check: PASSED
 
-- `.env` — FOUND at `/home/init/native-speaker/ns-api-gateway/.env`
-- Commits claimed: none. Consistent with zero tracked-file changes; nothing to verify.
-- No claim of a working database appears in this summary.
+- `.env` — FOUND at `/home/init/native-speaker/ns-api-gateway/.env`, untracked, all five `DB_*`
+  keys present, `POSTGRES_DB` present, `POSTGRES_NAME` absent.
+- Database `nativespeaker` — FOUND on `localhost:5432`, empty, on PostgreSQL 17.11.
+- Task commits claimed: none for task 1, consistent with zero tracked-file changes. One docs commit
+  for this summary and the state files.
+- Every result quoted above is copied from a command that actually ran in this session. No
+  assertion was weakened to obtain a pass.

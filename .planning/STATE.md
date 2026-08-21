@@ -1,14 +1,15 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Authentication & Entitlements
+milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 34
 current_phase_name: schema
 status: executing
-stopped_at: Halted at 34-01 task 2 blocking gate (no PostgreSQL 17 reachable)
-last_updated: "2026-08-20T06:28:42.489Z"
+stopped_at: Completed 34-01-PLAN.md — database gate green (PostgreSQL 17.11)
+last_updated: "2026-08-21T00:31:04.112Z"
 last_activity: 2026-08-19
 last_activity_desc: Milestone v2.0 started
+state_head: 27f5d925641a407ecc81dede77d396ccdb65766b
 progress:
   total_phases: 13
   completed_phases: 0
@@ -29,8 +30,8 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 34 (schema) — EXECUTING
-Plan: 1 of 4
-Status: Executing Phase 34
+Plan: 2 of 4
+Status: Ready to execute
 Last activity: 2026-08-19 — Phase 34 execution started
 
 ## Accumulated Context
@@ -68,6 +69,8 @@ Last activity: 2026-08-19 — Phase 34 execution started
 - The pre-handler barrier is the only place identity resolution happens; handlers never re-verify
 - Fixed global lock order on every grant path: grant rows FOR UPDATE ascending by id, then their usage rows
 - No network call while any DB lock is held or a consuming transaction is open
+- Database credentials in .env use the DB_* prefix (read by pogo's database_config and AppConfig.db); POSTGRES_* exists only for the postgres:17 image, and the image's database key is POSTGRES_DB, never POSTGRES_NAME
+- Phase 34 dev database is the developer's local postgres:17 container on localhost:5432 — PostgreSQL 17.11; RESEARCH.md's introspection constants were captured on 16.2 and plan 34-03 must re-capture them (assumption A1 still open)
 
 ### Pending Todos
 
@@ -79,7 +82,8 @@ None.
 
 ### Blockers/Concerns
 
-- Phase 34 blocked: no reachable PostgreSQL 17. No server listening, no container runtime, no PG binaries except pgserver's [SUS]-forbidden PG 16.2. Halted at 34-01 task 2 blocking gate.
+- RESOLVED (34-01): the PostgreSQL 17 blocker is cleared — developer started a postgres:17 container; server_version 17.11 (Debian 17.11-1.pgdg13+2) reachable on localhost:5432, database `nativespeaker` created and empty.
+- OPEN: RESEARCH.md assumption A1 — introspection constants were captured on PostgreSQL 16.2 but the target is 17.11; plan 34-03 must re-capture them rather than copying RESEARCH.md Code Example 4.
 
 ### Quick Tasks Completed
 
@@ -91,14 +95,15 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-20T06:28:42.364Z
+**Last session:** 2026-08-21T00:30:54.711Z
 
 Last activity: 2026-03-26
-Stopped at: Halted at 34-01 task 2 blocking gate (no PostgreSQL 17 reachable)
-Resume file: .planning/phases/34-schema/34-01-SUMMARY.md
+Stopped at: Completed 34-01-PLAN.md — database gate green (PostgreSQL 17.11)
+Resume file: None
 
 ## Performance Metrics
 
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 34 P01 | 3m | 1 tasks | 1 files |
+| Phase 34 P01 | 10m | 2 tasks | 1 files |
