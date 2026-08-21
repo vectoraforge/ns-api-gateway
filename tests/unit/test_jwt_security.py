@@ -5,6 +5,7 @@ wrong at this seam: the barrier is a pure-ASGI middleware outside Starlette's Ex
 so an exception raised here would surface as a 500 instead of `auth_required` (D-01).
 """
 
+import threading
 import time
 from unittest.mock import patch
 from urllib.error import URLError
@@ -540,3 +541,136 @@ class TestTheJwksTransportIsNotHitPerRequest:
         verifier._jwks_client.jwk_set_cache = None
         assert rejected(verifier, make_token("u", headers={"kid": KNOWN_KID})) \
             is BoundedReason.bad_signature
+
+
+class TestVerifyIsTotalUnderConcurrency:
+    """`verify` never raises -- including out of its own cache, on the threadpool it runs on.
+
+    The offload that took the JWKS fetch off the event loop also made `_unknown_kids` shared
+    mutable state reachable from every anyio worker thread at once. Unsynchronized, the sweep in
+    `_record_unknown` raises `RuntimeError: OrderedDict mutated during iteration` and the expiring
+    `del` in `_is_known_unknown` races into a `KeyError`. Neither is a `PyJWTError`, so neither is
+    caught by `verify`'s clauses, by `run_in_threadpool`, or by the barrier -- an unauthenticated
+    caller would turn a 401 into a 500 (CR-01). These cases fail loudly if the lock is removed.
+    """
+
+    @pytest.fixture
+    def counted_transport(self, monkeypatch):
+        return install_counted_transport(monkeypatch)
+
+    def build(self, **kwargs) -> JWTVerifier:
+        return JWTVerifier(jwks_url=JWKS_URL, audience=TEST_PROJECT_ID, issuer=TEST_ISSUER,
+                           **kwargs)
+
+    @staticmethod
+    def _run_on_threads(work, *, threads: int = 24) -> list[BaseException]:
+        """Run `work` on `threads` OS threads at once, returning everything that escaped it."""
+        escaped: list[BaseException] = []
+        start = threading.Barrier(threads)
+
+        def run() -> None:
+            start.wait()
+            try:
+                work()
+            except BaseException as exc:  # noqa: BLE001 - recording precisely what escaped
+                escaped.append(exc)
+
+        workers = [threading.Thread(target=run) for _ in range(threads)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        return escaped
+
+    def test_the_cache_bookkeeping_survives_concurrent_readers_and_writers(self, counted_transport):
+        """The race at its own seam.
+
+        The parameters are load-bearing, not decorative. `_record_unknown`'s expiry sweep is what
+        races, so the cache has to be *full* for the iteration to span enough bytecodes to be
+        preempted: at 8 entries the sweep finishes inside a single scheduler slice and this case
+        passes with the lock removed -- vacuous, the exact failure WR-05 was raised for. At the
+        production 256 with a TTL short enough to keep entries turning over and a key space wider
+        than the cache, removing `_cache_lock` yields 23 `RuntimeError`s out of 24 threads, six runs
+        out of six.
+        """
+        verifier = self.build(unknown_kid_ttl_seconds=0.05, unknown_kid_cache_size=256)
+
+        def churn() -> None:
+            for i in range(3000):
+                key = f"unknown-{i % 512}"
+                verifier._is_known_unknown(key)
+                verifier._record_unknown(key)
+
+        escaped = self._run_on_threads(churn)
+        assert not escaped, f"cache bookkeeping is not thread-safe: {escaped[:3]}"
+
+    def test_concurrent_verification_of_unknown_kids_never_raises(self, counted_transport):
+        """The same race reached the way production reaches it -- through `verify` itself.
+
+        The `kid`s vary because that is what drives the sweep: a single repeated one short-circuits
+        on its cache hit and never reaches `_record_unknown`, which makes the case unable to fail.
+        Varying them is the reachable shape anyway -- the `kid` is attacker-chosen, and WR-03 records
+        that churning it is exactly what walks past the cache.
+        """
+        verifier = self.build(unknown_kid_ttl_seconds=0.05, unknown_kid_cache_size=128)
+        # 256 tokens, not more: each is a real RS256 signature, and the pool dominates this case's
+        # runtime. 128/256 still reproduces the race 8-11 times per run with the lock removed.
+        tokens = [make_token("u", headers={"kid": f"unknown-{i}"}) for i in range(256)]
+
+        def verify_repeatedly() -> None:
+            for i in range(400):
+                assert verifier.verify(tokens[i % len(tokens)]) \
+                    == (None, BoundedReason.bad_signature)
+
+        escaped = self._run_on_threads(verify_repeatedly, threads=12)
+        assert not escaped, f"verify raised instead of returning a bounded reason: {escaped[:3]}"
+
+    def test_a_non_json_jwks_body_rejects_rather_than_raising(self, counted_transport):
+        """WR-01: PyJWT wraps neither `json.JSONDecodeError` nor whatever a dependency invents next.
+
+        The last-resort clause makes "never raises" structural rather than a docstring promise, so
+        this returns the same bounded reason every other rejection does.
+        """
+        verifier = self.build()
+        counted_transport.body = b"<html>502 Bad Gateway</html>"
+        verifier._jwks_client.jwk_set_cache = None
+
+        assert verifier.verify(make_token("u", headers={"kid": KNOWN_KID})) \
+            == (None, BoundedReason.bad_signature)
+
+    def test_a_non_json_jwks_body_does_not_mark_the_kid_unknown(self, counted_transport):
+        """WR-02: a broken document is an *endpoint* condition, not a bogus key id."""
+        verifier = self.build()
+        counted_transport.body = b"<html>502 Bad Gateway</html>"
+        verifier._jwks_client.jwk_set_cache = None
+        rejected(verifier, make_token("u", headers={"kid": KNOWN_KID}))
+
+        counted_transport.body = jwks_body(KNOWN_KID)
+        verifier._jwks_client.jwk_set_cache = None
+        assert accepted(verifier, make_token("u", headers={"kid": KNOWN_KID})).subject == "u", \
+            "a broken JWKS document poisoned the cache for a kid the whole fleet shares"
+
+    def test_a_jwks_document_with_no_usable_keys_does_not_mark_the_kid_unknown(
+            self, counted_transport):
+        """WR-02, the other endpoint shape: `{"keys": []}` is a degraded endpoint, not a miss.
+
+        `PyJWKClient` raises a plain `PyJWKClientError` for it, which the previous carve-out --
+        excluding only `PyJWKClientConnectionError` -- recorded as if the key id were bogus.
+        """
+        verifier = self.build()
+        counted_transport.body = b'{"keys": []}'
+        verifier._jwks_client.jwk_set_cache = None
+        rejected(verifier, make_token("u", headers={"kid": KNOWN_KID}))
+
+        counted_transport.body = jwks_body(KNOWN_KID)
+        verifier._jwks_client.jwk_set_cache = None
+        assert accepted(verifier, make_token("u", headers={"kid": KNOWN_KID})).subject == "u", \
+            "an empty signing-key list poisoned the cache for the whole fleet's kid"
+
+    def test_a_definitive_miss_is_still_recorded(self, counted_transport):
+        """The narrowing must not disable the cache: a real refreshed-and-still-no-match still caches."""
+        verifier = self.build()
+        counted_transport.timeouts.clear()
+        for _ in range(5):
+            rejected(verifier, make_token("u", headers={"kid": "genuinely-unknown"}))
+        assert len(counted_transport) == 1, "the definitive miss stopped being cached"
