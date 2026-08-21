@@ -13,13 +13,13 @@
 
 ### SCHEMA — Phase 34 (`00-schema.md`)
 
-- [ ] **SCHEMA-01**: The single initial migration `migrations/20260818_01_initial-release.sql` replaces the deleted prior migration and creates the complete v2.0 schema in one apply against an empty database — no incremental migration files are added
-- [ ] **SCHEMA-02**: `core.users`, `core.external_identities`, and the `core.identity_provider` enum support `(issuer, subject)` → user resolution, with `identity_state` and permanently-retained tombstone rows
-- [ ] **SCHEMA-03**: `core.access_grants`, `core.access_tiers`, and `core.user_monthly_usage` enforce at most one active grant per user, with monthly usage keyed by grant id
-- [ ] **SCHEMA-04**: `core.subscriptions`, `core.store_purchases`, and `core.store_purchase_tokens` support both stores, with `product_entitled_subscription_id` as a STORED generated column over `('active','grace_period')`
-- [ ] **SCHEMA-05**: `core.auth_challenges` supports the claim/consume protocol for challenge-bearing operations
-- [ ] **SCHEMA-06**: `audit.auth_events` enforces the actor-field CHECK constraints and the `core.auth_operation` / `core.auth_event_result` enums in full
-- [ ] **SCHEMA-07**: Legacy structures are gone — `core.users.jwt_sub`, `core.users.subscription_plan`, `core.usage_monthly`, `core.subscription_events`, the `core.subscription_plan` enum, and the `promo` grant source
+- [x] **SCHEMA-01**: The single initial migration `migrations/20260818_01_initial-release.sql` replaces the deleted prior migration and creates the complete v2.0 schema in one apply against an empty database — no incremental migration files are added
+- [x] **SCHEMA-02**: `core.users`, `core.external_identities`, and the `core.identity_provider` enum support `(issuer, subject)` → user resolution, with `identity_state` and permanently-retained tombstone rows
+- [x] **SCHEMA-03**: `core.access_grants`, `core.access_tiers`, and `core.user_monthly_usage` enforce at most one active grant per user, with monthly usage keyed by grant id
+- [x] **SCHEMA-04**: `core.subscriptions`, `core.store_purchases`, and `core.store_purchase_tokens` support both stores, with `product_entitled_subscription_id` as a STORED generated column over `('active','grace_period')`
+- [x] **SCHEMA-05**: `core.auth_challenges` supports the claim/consume protocol for challenge-bearing operations
+- [x] **SCHEMA-06**: `audit.auth_events` enforces the actor-field CHECK constraints and the `core.auth_operation` / `core.auth_event_result` enums in full
+- [x] **SCHEMA-07**: Legacy structures are gone — `core.users.jwt_sub`, `core.users.subscription_plan`, `core.usage_monthly`, `core.subscription_events`, the `core.subscription_plan` enum, and the `promo` grant source
 - [ ] **SCHEMA-08**: Every acceptance check in `00-schema.md §10` passes against a freshly migrated database
 
 ### FOUND — Phase 35 (`01-foundation.md §1–§7, §9`)
@@ -154,6 +154,7 @@ Explicitly excluded. `SHARED-INVARIANTS.md` "Global deletions" binds every phase
 | SIGNOUT-01 … SIGNOUT-02 | Phase 46 | Pending |
 
 **Coverage:**
+
 - v2.0 requirements: 49 total
 - Mapped to phases: 49
 - Unmapped: 0 ✓

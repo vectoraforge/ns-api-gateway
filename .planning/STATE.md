@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 34
 current_phase_name: schema
 status: executing
-stopped_at: Completed 34-01-PLAN.md — database gate green (PostgreSQL 17.11)
-last_updated: "2026-08-21T00:31:04.112Z"
+stopped_at: Completed 34-02-PLAN.md
+last_updated: "2026-08-21T00:43:43.913Z"
 last_activity: 2026-08-19
 last_activity_desc: Milestone v2.0 started
-state_head: 27f5d925641a407ecc81dede77d396ccdb65766b
+state_head: 6b1c5114a2244164bce88a13b108fb80acdd1fe0
 progress:
   total_phases: 13
   completed_phases: 0
   total_plans: 4
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 34 (schema) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-08-19 — Phase 34 execution started
 
@@ -95,10 +95,10 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-21T00:30:54.711Z
+**Last session:** 2026-08-21T00:43:10.566Z
 
 Last activity: 2026-03-26
-Stopped at: Completed 34-01-PLAN.md — database gate green (PostgreSQL 17.11)
+Stopped at: Completed 34-02-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -107,3 +107,12 @@ Resume file: None
 |------|----------|-------|-------|
 | Phase 34 P01 | 3m | 1 tasks | 1 files |
 | Phase 34 P01 | 10m | 2 tasks | 1 files |
+| Phase 34 P02 | ~25 min | 3 tasks | 6 files |
+
+## Decisions
+
+- [Phase ?]: Phase 34 delivers the v2.0 schema as ONE migration file (34-02 task-1 one-way door resolved as one-file); the six-file sequence in 00-schema.md §1 is overridden and infeasible — no v1.6 baseline database exists to migrate from
+- [Phase ?]: 00-schema.md §3–§7 is a DELTA, not a complete file: seven objects its own §10 inventory requires are never created by it and must be hand-written (schemas core/audit, enums chat_role and subscription_status, tables users/chats/messages, index ix_chats_user_id)
+- [Phase ?]: core.users is taken from the §2 TARGET-shape table at 00-schema.md:84-94, never from the baseline CREATE TABLE — the baseline shape would reintroduce jwt_sub and violate SCHEMA-07 while the apply still succeeds
+- [Phase ?]: Migration rollback is two DROP SCHEMA … CASCADE statements rather than a reverse-order object list, because the list drifts out of sync with the apply body and the two-statement form cannot
+- [Phase ?]: PostgreSQL 17.11 reproduced every 16.2-derived constant this plan could check (54 indexes, 104 internal triggers, 0 user triggers/views/matviews) — corroborating evidence for RESEARCH.md A1, not its closure; 34-03 still re-captures
