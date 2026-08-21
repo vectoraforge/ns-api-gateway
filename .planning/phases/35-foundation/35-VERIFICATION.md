@@ -1,49 +1,97 @@
 ---
 phase: 35-foundation
-verified: 2026-08-21T13:00:00Z
+verified: 2026-08-21T22:20:17Z
 status: gaps_found
-score: 101/102 must-haves verified
+score: 111/114 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
+re_verification:
+  previous_status: gaps_found
+  previous_score: 101/102
+  gaps_closed:
+    - "D10 fifth conjunct's ORIGINAL reported symptom -- the blocking, on-event-loop, unbounded (30s default) urlopen call triggered by any unrecognized `kid` -- is genuinely fixed. `barrier.py:123` now awaits `verify()` through `starlette.concurrency.run_in_threadpool`, `JWTVerifier.__init__` passes an explicit `fetch_timeout_seconds=3.0` to `PyJWKClient`, and a bounded/TTL'd negative-kid cache eliminates the repeat-fetch cost. Measured directly by me: the heartbeat test (`test_an_unknown_kid_request_does_not_starve_the_event_loop`) passes, and the six-step wire-contract-before-verification ordering survives (`test_a_duplicate_authorization_never_reaches_the_jwks_transport` passes)."
+    - "The vacuous test (`test_two_verifications_issue_no_additional_jwks_fetch`, which mocked the whole `PyJWKClient` class) is confirmed deleted (`grep -c` -> 0) and replaced with transport-level fetch counting under a real client."
+  gaps_remaining:
+    - "The barrier's foundational 'returns rather than raises' invariant (D-01), specifically for JWT verification failures, is NOT closed -- it is newly broken by the very fix that closed the item above. 35-12 gave `JWTVerifier` new mutable instance state (an unsynchronized `OrderedDict` negative-kid cache) in the same change that moved `verify()` onto a real multi-threaded threadpool, so concurrent requests now race on that dict with no lock. This was not possible before 35-12 (verify() ran single-threaded on the event loop). I independently reproduced both the raw race and its end-to-end HTTP impact (500 `internal_error` where 401 `auth_required` is owed) -- see the gap below."
+  regressions: []
 gaps:
-  - truth: "Token verification pins iss to exactly https://securetoken.google.com/<configured project id> and aud to exactly the configured project id, verifies RS256 only, requires a non-empty sub, and performs no per-request network call (35-02-PLAN.md must-have D10; roadmap goal text 'shared machinery every later phase calls')"
+  - truth: "verify() never raises under any condition, including concurrent access to its own internal state -- the `TokenVerifier` Protocol's 'Never raises' contract and D-01's 'the barrier returns rather than raises' invariant, restated as 35-12-PLAN.md must-have truths #6, #8, and #9 (every verification failure, cached or fetched, returns the identical `auth_required` status/body/copy; two requests carrying the same unrecognized `kid` merge into one cache entry without colliding; an absent/empty-`kid` token 'rejects as bad_signature without raising')"
     status: failed
     reason: >
-      Four of five conjuncts hold (iss pin, aud pin, RS256-only, non-empty sub — all confirmed
-      directly in auth/verification.py and by tests/unit/test_jwt_security.py::TestClaimValidation /
-      TestAlgorithmSecurity / TestSignatureVerification). The fifth — "performs no per-request
-      network call" — is false whenever a request carries an unrecognized `kid`. `JWTVerifier.verify()`
-      (auth/verification.py:111-126) calls the synchronous, blocking `PyJWKClient.get_signing_key_from_jwt`,
-      invoked directly from `async def AuthBarrierMiddleware.__call__` (auth/barrier.py:113) with no
-      `run_in_threadpool` offload and no configured fetch timeout (PyJWT's 30s default applies, since
-      `JWTVerifier.__init__` never passes `timeout=`). This is documented in 35-REVIEW.md as CR-01
-      (critical), independently reproduced there: 3 unauthenticated requests carrying unrecognized
-      `kid`s triggered 3 live JWKS fetches and a measured 1.206s contiguous event-loop stall at a 0.4s
-      simulated round trip — during which the entire process, including `/health/ready`, is blocked.
-      I independently confirmed the code shape by direct read (barrier.py:113, verification.py:94-126)
-      and by `grep -rn "run_in_threadpool|to_thread|ThreadPoolExecutor" src/` returning nothing, and
-      by grepping verification.py for `timeout` (nothing). The one test that names this exact
-      property, tests/unit/test_jwt_security.py::TestProductionVerifier::test_two_verifications_issue_no_additional_jwks_fetch,
-      is vacuous: its fixture replaces the whole `PyJWKClient` class with a `MagicMock` and stubs
-      `get_signing_key_from_jwt` (the method `verify()` actually calls) to return a static key
-      directly, then asserts `get_signing_keys.call_count == 0` — a method `verify()` never calls in
-      the first place. The assertion holds regardless of caching behaviour and cannot fail. I ran it
-      to confirm it currently passes, then read its body to confirm why that pass is not evidence.
-      35-02-SUMMARY.md's own D10 entry cites this test as "6 tests over the real JWTVerifier with only
-      the JWKS transport stubbed" — the class is replaced wholesale, not its transport, so the SUMMARY
-      overstates what was proven.
+      35-12 closed the ORIGINAL gap (event-loop-blocking JWKS fetch) correctly -- see gaps_closed
+      above, independently re-confirmed by me. But the same change gave `JWTVerifier` a new piece
+      of mutable instance state (`self._unknown_kids`, an `OrderedDict`) with no lock, and in the
+      same breath moved `verify()` onto anyio's worker threadpool via `run_in_threadpool` --  so
+      concurrent requests now execute `verify()` on distinct OS threads simultaneously against that
+      one shared dict, held on `scope["app"].state.jwt_verifier` (one instance for the life of the
+      process, confirmed at `app/lifespan.py:78`). Before 35-12 this race could not exist: `verify()`
+      ran single-threaded on the event loop. This is a new defect the fix itself introduced, not a
+      regression of prior behaviour -- and it is more severe in kind than the gap it replaced (a
+      crash/wrong-response-code, not merely an availability/latency cost).
+
+      This is not inherited uncritically from 35-REVIEW.md's CR-01 -- I reproduced it twice myself,
+      independently, in this session: (1) hammering the real `_is_known_unknown`/`_record_unknown`
+      methods directly (bypassing the network layer via `object.__new__`) from 24 concurrent OS
+      threads x 3000 iterations, with `sys.setswitchinterval(0.00001)` to widen the race window,
+      produced 23 `RuntimeError('OrderedDict mutated during iteration')` exceptions; a first,
+      untightened run (16 threads x 500 iterations, default switch interval) produced zero, which is
+      itself a useful data point -- this is a genuine race, not deterministic, so an ordinary CI run
+      would not reliably catch it either. (2) Driving the real barrier + a real `JWTVerifier`
+      (real `PyJWKClient`, stubbed transport, exactly the fixture pattern
+      `tests/unit/test_barrier_jwks_offload.py` already uses) end-to-end through httpx's
+      `ASGITransport(raise_app_exceptions=False)`, with `_is_known_unknown` monkeypatched to raise
+      `KeyError` -- the exact exception shape and exact call site
+      (`auth/verification.py:193`, inside `verify()`) the real race produces -- the client received:
+
+          HTTP status: 500
+          HTTP body:   {"code":"internal_error"}
+
+      not the `401 {"code":"auth_required"}` every stated must-have promises. Neither `RuntimeError`
+      nor `KeyError` is a `PyJWTError`, so `verify()`'s two `except` clauses (`PyJWKClientError`,
+      `PyJWTError`, lines 209/219) do not catch them; they escape `verify()`, escape
+      `run_in_threadpool`, and reach `AuthBarrierMiddleware.__call__` (`barrier.py:123`), which has
+      no guard at that line. Because `AuthBarrierMiddleware` is added via `add_middleware` --
+      deliberately outside Starlette's `ExceptionMiddleware`, per D-01 -- the escaped exception
+      bypasses every registered `ServiceError`/`HTTPException` handler and is caught only by
+      `app.add_exception_handler(Exception, generic_error_handler)`, which Starlette wires through as
+      `ServerErrorMiddleware`'s outermost handler (confirmed via full traceback: the raise surfaces at
+      `starlette/middleware/errors.py`, the true outermost layer, above every user middleware). That
+      is where the 500 `internal_error` body actually originates. A second consequence, not itself a
+      stated must-have but worth recording: a CR-01-triggering request skips `_reject`/`_audit`/
+      `record_rejection` entirely (they sit after the `run_in_threadpool` line, never reached), so
+      there is no audit row and no rejection-counter increment for this exact failure mode -- the
+      phase's own telemetry has a blind spot for it.
+
+      A second, independent way `verify()` can raise (confirmed by reading the installed PyJWT 2.12.1
+      source directly at `.venv/lib/python3.14/site-packages/jwt/jwks_client.py`): `fetch_data`'s
+      `except (URLError, TimeoutError)` does not wrap the `json.load(response)` call inside the same
+      `try`, so a non-JSON JWKS response raises `json.JSONDecodeError`, which is also not a
+      `PyJWTError` and also escapes `verify()` the same way (35-REVIEW.md WR-01). Lower likelihood --
+      it needs a malformed JWKS endpoint response rather than merely concurrent ordinary traffic --
+      but the same class of defect against the same must-have, via a second, unrelated mechanism.
+
+      No test in the current suite (906 passed with default markers, including all of
+      `tests/unit/test_jwt_security.py` and `tests/unit/test_barrier_jwks_offload.py`) exercises
+      genuine multi-threaded concurrent access to the cache. Every existing "concurrency" test proves
+      the asyncio event loop keeps ticking while one fetch is outstanding -- a real and correctly
+      fixed property -- but that is a different property from OS-thread safety of shared mutable
+      state across simultaneous `verify()` calls, which is the property `run_in_threadpool` newly
+      requires and nothing currently provides. That is precisely why the full suite is green while
+      this defect is real and independently reproducible on demand.
     artifacts:
       - path: "src/nativespeaker/api/auth/verification.py"
-        issue: "JWTVerifier.__init__ (lines 94-109) passes no timeout= to PyJWKClient, and verify() (111-126) has no bounded negative-kid cache, so a cache-miss kid always re-fetches synchronously"
+        issue: "self._unknown_kids (an OrderedDict, line 136) is read and written by _is_known_unknown (lines 157-165) and _record_unknown (lines 167-181) with no lock, while verify() now runs on anyio's worker threadpool (up to 40 concurrent OS threads by default) via barrier.py's run_in_threadpool call -- a change 35-12 made in the same commit sequence that introduced this shared state. Additionally, verify()'s except clauses (PyJWKClientError, PyJWTError at lines 209/219) do not cover RuntimeError/KeyError from the racy dict access, nor json.JSONDecodeError from a non-JSON JWKS response (WR-01)."
       - path: "src/nativespeaker/api/auth/barrier.py"
-        issue: "Line 113 calls the synchronous verify() directly from async def __call__ with no run_in_threadpool / to_thread offload"
+        issue: "Line 123's `await run_in_threadpool(...verify, token)` call has no try/except. Any exception escaping verify() propagates straight out of AuthBarrierMiddleware.__call__, skipping _reject/_audit/record_rejection entirely, and reaches Starlette's ServerErrorMiddleware as an unhandled 500 -- independently confirmed end-to-end in this session."
+      - path: "tests/unit/test_barrier_jwks_offload.py"
+        issue: "Contains no test that drives verify() (or the two cache helper methods) from more than one real OS thread concurrently -- the exact access pattern run_in_threadpool now permits in production. Its 'concurrency' coverage is single-request asyncio-event-loop-heartbeat coverage, a different property from thread-safety of shared mutable state."
       - path: "tests/unit/test_jwt_security.py"
-        issue: "TestProductionVerifier::test_two_verifications_issue_no_additional_jwks_fetch mocks PyJWKClient wholesale (jwks_client fixture, lines 291-297) and cannot exercise the fetch path it claims to prove absent"
+        issue: "Same gap as above: TestTheJwksTransportIsNotHitPerRequest's cases call verify() sequentially, in one thread, never concurrently -- so none of them can observe the race."
     missing:
-      - "Offload verify() to a threadpool at the barrier call site (starlette.concurrency.run_in_threadpool), or make verification async, per the fix 35-REVIEW.md CR-01 already spells out"
-      - "Pass an explicit bounded fetch_timeout_seconds to PyJWKClient instead of PyJWT's 30s default"
-      - "Add a bounded negative-kid cache so a repeated unrecognized kid does not refetch on every request"
-      - "Replace the vacuous test with one that stubs the transport (urllib.request.urlopen) under a real PyJWKClient and asserts a bounded fetch count across repeated unknown kids (35-REVIEW.md WR-05 already drafts this test)"
+      - "Add a threading.Lock guarding every read and write of self._unknown_kids (35-REVIEW.md CR-01 drafts the exact patch: wrap _is_known_unknown and _record_unknown's bodies in `with self._unknown_kids_lock:`)"
+      - "Add a last-resort `except Exception:` inside verify() (or an equivalent guard at the barrier's step-3 call site) that logs and returns (None, BoundedReason.bad_signature) rather than letting anything escape -- makes the Protocol's 'Never raises' promise structurally true rather than dependent on PyJWT's exact exception taxonomy (35-REVIEW.md WR-01 drafts this fix)"
+      - "Add a test that hammers verify() (or the two cache helpers) from a real concurrent.futures.ThreadPoolExecutor with a mix of the shared sentinel key and distinct keys under a short unknown_kid_ttl_seconds, asserting no exception escapes and every result is (None, BoundedReason.bad_signature) -- 35-REVIEW.md CR-01 drafts this case"
+      - "Narrow the PyJWKClientError exclusion (verification.py:216) to the definitive 'no matching key after a refresh' case only, so an empty signing-key list or a non-JSON endpoint response (both endpoint conditions, not kid conditions) cannot poison the cache against every legitimate kid for the TTL (35-REVIEW.md WR-02) -- not independently scored as a failed truth here, but the same fix pass should address it since it sits in the same 20 lines"
 ---
 
 # Phase 35: Foundation Verification Report
@@ -53,254 +101,335 @@ route registry, error registry, audit writer, provider-call budget seam, challen
 interfaces — and repair the model layer so the application boots and the enumeration assertion runs
 for real.
 
-**Verified:** 2026-08-21T13:00:00Z
+**Verified:** 2026-08-21T22:20:17Z
 **Status:** gaps_found
-**Re-verification:** No — initial verification
+**Re-verification:** Yes — after gap-closure plan 35-12 (commits `c8a6fbe`, `e26d6e1`, `0365ce7`,
+`ca9ad9b`, all confirmed present in git history)
 
-**Scope note (from the dispatching orchestrator, honored here):** Phase 35 is explicitly the first
-**booting** app (D-14), not the first fully-working one — chat/quota routes still fail at runtime
-until Phase 36 rewires them onto the grant model (D-15). This report holds the phase to that bar:
-"boots and the enumeration assertion runs for real," not "every product flow works end to end." The
-one gap below is evaluated against that bar explicitly, not against a broader standard the phase
-never claimed.
+## Re-verification Summary
+
+The previous `35-VERIFICATION.md` (2026-08-21T13:00:00Z) scored 101/102 must-haves and found exactly
+one gap: 35-02-PLAN.md's D10 must-have, whose fifth conjunct — "performs no per-request network
+call" — was false because `JWTVerifier.verify()` was called synchronously, directly from `async def
+__call__`, with no thread offload and no configured fetch timeout. Plan 35-12 was executed as gap
+closure. Independently of the SUMMARY's own claims, I re-read every touched file, re-ran the relevant
+tests myself, and additionally read `35-REVIEW.md` — a code review completed after 35-12 and *not*
+available to the prior verification — which found a new critical defect (CR-01) inside 35-12's own
+fix. **I did not take 35-REVIEW.md's word for it either**: both of its central claims (the race
+fires; the race's output reaches the client as 500) are independently reproduced below with my own
+scripts, run in this session, not merely cited from the review.
+
+**Bottom line:** 35-12 genuinely fixed the reported symptom (the event-loop stall) but introduced a
+new, more severe defect in the same change — an unsynchronized negative-`kid` cache that a
+concurrent, unauthenticated caller can use to turn a `401 auth_required` into a `500
+internal_error`. The phase is **still gaps_found**, for a different and more serious reason than
+before.
 
 ## Goal Achievement
 
 ### Observable Truths — Roadmap Success Criteria (the authoritative contract)
 
-All five were exercised directly (not inferred from presence) by running the named tests myself in
-this session, against the live app and a live PostgreSQL database, in addition to the orchestrator's
-already-measured full-suite pass (1137 passed, 0 failed).
+None of these five files are in 35-12's `files_modified` list except `barrier.py`/`verification.py`
+(truth 2 and 5's territory), so 1/3/4 are scored by quick regression (existence + the orchestrator's
+906-passed run); 2 and 5 I re-ran myself directly given their proximity to the change.
 
 | # | Truth (ROADMAP.md wording) | Status | Evidence |
 |---|---|---|---|
-| 1 | The route-enumeration assertion passes, and a route declared in zero or in two categories fails it | ✓ VERIFIED | `auth/registry.py::assert_route_enumeration` checks set equality both directions (conditions 1-2) plus 7 more conditions. Ran `tests/unit/test_route_registry.py` names directly: `test_zero_routes_and_zero_entries_pass`, `test_registered_route_absent_from_the_registry_raises`, `test_declared_entry_with_no_registered_route_raises`, `test_same_method_and_path_declared_twice_raises` all exist and (per orchestrator's full run) pass. Ran `tests/e2e/test_startup_assertion.py::TestStartupAssertion` (9 cases) myself — PASSED, including `test_assertion_passes_against_the_live_app` calling the assertion against the real started app. |
-| 2 | Zero, duplicate, comma-joined, empty, and trailing-content Authorization values each reject as `auth_required` with identical body, status, and copy | ✓ VERIFIED | `auth/wire.py::extract_bearer` counts field instances before inspecting values (no first/last-value path). Ran `tests/e2e/test_barrier_wire_contract.py` myself (14 cases) — PASSED, including `test_all_six_bodies_are_byte_identical` and `test_all_six_statuses_are_identical` over a real ASGI transport, and `test_a_duplicate_is_refused_identically_on_every_authenticated_route` parametrized across `/`, `/examples`, `/chats`. |
-| 3 | The barrier admits only `identity_state='active'` AND `users.active` TRUE; every other combination rejects with nothing falling through to pre-auth | ✓ VERIFIED | `auth/identity.py::resolve_identity` — single outer-joined query, strict `!= active` / `is not True` comparisons (fails closed on NULL/unknown values by construction, not by enumeration). Ran `tests/e2e/test_barrier_admission.py::TestOutcomesTwoAndThreeAreIndistinguishable`, `::TestOutcomeFourLinkedAndActive`, `::TestOneQueryPerRequest` myself (13 cases against seeded live-DB rows) — PASSED. |
-| 4 | A barrier rejection produces exactly one `audit.auth_events` row with all three actor fields NULL and a bounded reason | ✓ VERIFIED | `auth/barrier.py::_reject`/`_audit` writes standalone-durable only when `meta.operation is not None`; `auth/audit.py::_assert_actor_consistency` enforces the all-NULL rule for `invalid_external_jwt` structurally (raises before any DB write otherwise). Ran `tests/e2e/test_audit_writer.py::TestAnOnPathRejectionWritesExactlyOneRow::test_a_missing_token_writes_one_row_and_returns_the_shared_401` and `::TestAVerifiedActorIsRecordedAsAKeyedHash::test_an_unlinked_subject_writes_all_three_actor_fields` myself against the live DB — PASSED. |
-| 5 | The application boots clean — `nativespeaker.api` imports, the lifespan runs, and the `§2.3` enumeration assertion executes at real startup against the real router | ✓ VERIFIED | `app/lifespan.py` calls `assert_registry_total()` then `assert_route_enumeration(app, app.state.route_registry)` before yielding, ahead of DB/JWT/LLM init. Directly executed `python -c "import nativespeaker.api.app.main as m; ..."` myself — app object constructs, exactly 8 routes registered. `tests/e2e/test_startup_assertion.py::TestStartupAssertion::test_lifespan_completed` runs the real lifespan over ASGI and PASSED (run myself). |
+| 1 | The route-enumeration assertion passes, and a route declared in zero or in two categories fails it | ✓ VERIFIED (regression) | `registry.py` untouched by 35-12. Re-ran `tests/e2e/test_startup_assertion.py` myself this session — 9/9 passed. |
+| 2 | Zero, duplicate, comma-joined, empty, and trailing-content Authorization values each reject as `auth_required` with identical body, status, and copy | ✓ VERIFIED | `wire.py` untouched by 35-12; step 2 (wire contract) still runs before step 3 (verification unaffected by CR-01, since malformed-header requests never reach `verify()`). Re-ran `tests/e2e/test_barrier_wire_contract.py` myself this session — 15/15 passed. **Caveat, not a literal-text violation:** the *anti-oracle principle* this truth embodies (identical response regardless of which check failed) is violated for a *different* class of rejection — JWT-verification-stage, not wire-contract-stage — by the gap below. This truth's own enumerated Authorization-value variations are unaffected. |
+| 3 | The barrier admits only `identity_state='active'` AND `users.active` TRUE; every other combination rejects with nothing falling through to pre-auth | ✓ VERIFIED (regression) | `identity.py` untouched by 35-12. Re-ran `tests/e2e/test_barrier_admission.py` myself this session — 26/26 passed. |
+| 4 | A barrier rejection produces exactly one `audit.auth_events` row with all three actor fields NULL and a bounded reason | ✓ VERIFIED (regression, with a noted blind spot) | `audit.py` untouched by 35-12; the audit-writer contract for a *normal* rejection is unaffected. Confirmed as part of the same passing suite the prior verification ran live against Postgres. **Not itself falsified, but note:** a CR-01-triggering request never reaches `_audit` at all (it crashes before that line), so this truth's guarantee — "a rejection produces one row" — simply doesn't apply to a request that never became a recorded rejection in the first place; this is a related consequence of the gap below, not a separate failure of this truth's literal text. |
+| 5 | The application boots clean — `nativespeaker.api` imports, the lifespan runs, and the `§2.3` enumeration assertion executes at real startup against the real router | ✓ VERIFIED | `lifespan.py` untouched by 35-12. Re-ran `tests/e2e/test_startup_assertion.py::TestStartupAssertion` myself this session (same 9-case run as truth 1) — passed, confirming the app still constructs and boots after 35-12's changes. |
 
-**Score on the roadmap contract: 5/5 verified.**
+**Score on the roadmap contract: 5/5 verified**, unchanged from the prior verification. None of the
+five roadmap success criteria's literal text is broken by the new finding — but truths 2 and 4 above
+carry an explicit caveat connecting them to the gap, because the same architectural principle
+(anti-oracle response identity; one audit row per rejection) is what the gap actually breaks, just
+via a different component (JWT verification, not wire-contract parsing).
 
-### Observable Truths — Plan-Level Must-Haves (all 11 plans, FOUND-01…08)
+### Gap Closure Re-Verification — Plan 35-12 (FOUND-01, FOUND-02)
 
-The 11 plans declare 102 individual must-have truths in total (12+11+4+6+7+9+12+9+11+15+6 across
-plans 01-11). I read every core artifact directly (`errors.py`, `wire.py`, `registry.py`,
-`barrier.py`, `verification.py`, `context.py`, `identity.py`, `telemetry.py`, `budgets.py`,
-`adapters.py`, `keys.py`, `audit.py`, `challenges.py`, `modesignal.py`, `auth/__init__.py`,
-`app/lifespan.py`, `app/main.py`, `app/dependencies.py`, `app/errors.py`, `models/users.py`,
-`models/identities.py`, `models/auth.py`, `config.py`, `config/config.yaml`, `routers/chats.py`,
-`models/__init__.py`) rather than trusting SUMMARY.md, cross-referenced each against its plan's
-must-have text, and spot-ran the tests that exercise the state-transition / concurrency-sensitive
-ones myself (see Behavioral Spot-Checks). One truth fails; the other 101 are verified.
+35-12 declares its own 10 truths and 3 prohibitions, restating 35-02-PLAN.md's D10 fifth conjunct as
+its own truth #1. I scored each individually rather than pass/failing the whole set, since they assert
+independently-checkable properties.
 
-| Plan | Requirement(s) | Truths | Verified | Failed | Key artifact(s) | Notes |
-|---|---|---|---|---|---|---|
-| 35-01 | FOUND-01..04 | 12 | 12 | 0 | `barrier.py`, `registry.py`, `wire.py`, `errors.py` | Includes 1 backstop truth (zero-routes/zero-entries), confirmed by `test_zero_routes_and_zero_entries_pass` |
-| 35-02 | FOUND-01, FOUND-04 | 11 | **10** | **1** | `errors.py`, `verification.py` | The one failure: "performs no per-request network call" — see gap above (CR-01) |
-| 35-03 | FOUND-01 | 4 | 4 | 0 | `context.py`, `dependencies.py`, `models/identities.py` | Fail-loudly accessors confirmed by direct read + `test_identity_accessors.py` |
-| 35-04 | FOUND-01, FOUND-03 | 6 | 6 | 0 | `registry.py`, `routers/chats.py`, `app/lifespan.py` | Exactly 8 routes confirmed by direct `python -c` execution against the live module |
-| 35-05 | FOUND-01 | 7 | 7 | 0 | `models/users.py`, `config.py` | 7-column `User` model confirmed; `config/config.yaml` has no `apple`/`quotas` block |
-| 35-06 | FOUND-01, FOUND-02 | 9 | 9 | 0 | `identity.py`, `telemetry.py`, `barrier.py` | Admission matrix + wire contract confirmed live against seeded Postgres rows (see spot-checks) |
-| 35-07 | FOUND-06, FOUND-08 | 12 | 12 | 0 | `budgets.py`, `adapters.py` | Includes 3 backstop truths (int-only counters, per-request isolation, no import side effects) — all confirmed by named tests (`test_counters_are_plain_ints`, `test_two_gates_share_no_state`, `test_no_module_level_mutable_state`) |
-| 35-08 | FOUND-05 | 9 | 9 | 0 | `keys.py`, `config.py` | Fail-closed active-key policy (D-22) confirmed by direct read of `HmacConfig._validate_key_material` |
-| 35-09 | FOUND-05 | 11 | 11 | 0 | `audit.py`, `models/auth.py` | Redaction, details shape, all-or-nothing actor CHECK all confirmed live (see spot-checks) |
-| 35-10 | FOUND-07 | 15 | 15 | 0 | `challenges.py`, `modesignal.py` | Claim/consume atomicity confirmed by running the concurrency test myself against live Postgres |
-| 35-11 | FOUND-01..08 | 6 | 6 | 0 | `auth/__init__.py`, `COVERAGE.md` | 58-symbol public seam confirmed by direct import; `COVERAGE.md` confirmed to declare "No external API integration" |
-| **Total** | | **102** | **101** | **1** | | |
+| # | 35-12 Truth | Status | Evidence |
+|---|---|---|---|
+| 1 | D10 restated: iss/aud/alg/sub pins hold, and verification "performs no per-request network call **on the event loop**" (not the original absolute claim) | ✓ VERIFIED (restated framing — see note) | Direct read: `run_in_threadpool` wraps the call (`barrier.py:123`); `fetch_timeout_seconds=3.0` explicit (`verification.py:118,127`, replacing PyJWT's 30s default — confirmed by reading installed PyJWT 2.12.1 source, `PyJWKClient.__init__`'s `self.timeout`). iss/aud/alg/sub conjuncts unchanged from the prior verification's confirmation. **Framing used:** the restated text, because that is what 35-12-PLAN.md's own frontmatter now states and no other artifact restates it differently; under the *original, absolute* wording ("no per-request network call", full stop) this conjunct would still fail, since a first-seen or distinct unrecognized `kid` still costs one real fetch (accepted explicitly as T-35-12-03). Both framings are stated here so the reader can judge either way. |
+| 2 | Event loop keeps ticking (>=10 heartbeats) during an outstanding fetch | ✓ VERIFIED | Ran `tests/unit/test_barrier_jwks_offload.py::test_an_unknown_kid_request_does_not_starve_the_event_loop` myself — passed. |
+| 3 | JWKS fetch carries an explicit timeout <=5s | ✓ VERIFIED | Code: `fetch_timeout_seconds: float = 3.0` constructor default (`verification.py:118`), passed straight to `PyJWKClient(..., timeout=fetch_timeout_seconds)` (`:127`). |
+| 4 | Five verifications of one repeated unrecognized `kid` cost exactly one fetch; cache bounded | ✓ VERIFIED (regression) | Part of the orchestrator's 906-passed run (`tests/unit/test_jwt_security.py::TestTheJwksTransportIsNotHitPerRequest`); code read confirms `unknown_kid_cache_size` eviction (`verification.py:180-181`). |
+| 5 | A `PyJWKClientConnectionError` never poisons the cache | ✓ VERIFIED | Code: `if cache_key is not None and not isinstance(exc, PyJWKClientConnectionError): self._record_unknown(cache_key)` (`verification.py:216-217`) — the exact exclusion the truth claims, confirmed by direct read. |
+| 6 | The four already-confirmed conjuncts hold, **and every verification failure — cached or fetched — still returns `BoundedReason.bad_signature` and the identical `auth_required` status, body, and copy** | ✗ **FAILED** | Under concurrent access, a verification "failure" can instead be an *unhandled exception* that never reaches the `return None, BoundedReason.bad_signature` line at all — surfacing as `500 {"code":"internal_error"}`, not the identical `401 {"code":"auth_required"}`. See the gap below; independently reproduced twice in this session. |
+| 7 | No surviving test asserts a JWKS-fetch count against a substituted `PyJWKClient` class | ✓ VERIFIED | `grep -c 'test_two_verifications_issue_no_additional_jwks_fetch' tests/unit/test_jwt_security.py` → `0`, confirmed directly by me. |
+| 8 | Two requests carrying exactly the same unrecognized `kid` merge into exactly one negative-cache entry — neither collide onto a wrong answer nor accumulate a second entry | ✗ **FAILED** (under concurrency; the sequential case the existing test covers does hold) | This is exactly the access pattern my race reproduction exercised (multiple threads writing/reading the *same* dict keys, sentinel included). Two concurrent requests for the same `kid` do not reliably "merge" — they can instead raise `RuntimeError`/`KeyError` out of the shared dict, independently reproduced below. The existing named test for this truth calls `verify()` sequentially in one thread and therefore cannot see the failure mode; it is not wrong, it just doesn't cover the concurrent case the truth's own text implies ("two requests" carries no explicit ordering guarantee, and production never guarantees sequential delivery). |
+| 9 | An absent/empty-`kid` token "rejects as `bad_signature` **without raising**", and repeats collapse onto one shared sentinel entry | ✗ **FAILED** | This is the headline CR-01 scenario: every absent/empty/non-string `kid` collapses onto the *same* sentinel dict key (`_ABSENT_KID_SENTINEL = ""`), so concurrent kid-less requests contend for the identical entry — the highest-probability trigger for the race. Independently reproduced end-to-end: a `KeyError` at the exact call site this truth's code path uses surfaces to the client as `500 internal_error`, not the "rejects... without raising" the truth promises. |
+| 10 | The six-step barrier ordering survives the offload (wire contract before verification) | ✓ VERIFIED | Ran `tests/unit/test_barrier_jwks_offload.py::test_a_duplicate_authorization_never_reaches_the_jwks_transport` myself — passed. |
+
+**35-12 truths: 7/10 verified, 3 failed** (all three failures trace to the same root cause: CR-01,
+the unsynchronized negative-`kid` cache).
+
+| # | 35-12 Prohibition | Verification tier | Status | Evidence |
+|---|---|---|---|---|
+| 1 | MUST NOT let the negative-kid cache turn a transient upstream problem into a longer self-inflicted outage | test | ✓ PASSED | `test_a_jwks_connection_failure_does_not_mark_the_kid_unknown` exists and passes (confirmed by name); code read confirms the `PyJWKClientConnectionError` exclusion (`verification.py:216`). Unaffected by CR-01 — different code path. |
+| 2 | MUST NOT extend the negative cache into a positive/decision cache | test | ✓ PASSED | `test_no_signing_key_or_decision_is_memoized` exists and passes; `self._unknown_kids: OrderedDict[str, float]` stores only a deadline, confirmed by direct read. Unaffected by CR-01. |
+| 3 | MUST NOT assert the absence of a JWKS fetch against a substituted `PyJWKClient` | test | ✓ PASSED | The offending test is confirmed deleted (`grep -c` → 0); replacement counts fetches at `urllib.request.urlopen` under a real client. |
+
+**35-12 prohibitions: 3/3 passed**, all independent of CR-01.
+
+**Plan 35-12 combined: 10/13 verified** (7 truths + 3 prohibitions), **3 failed** (truths #6, #8, #9
+— one root cause).
+
+### Independent Reproduction of CR-01 (not inherited from 35-REVIEW.md)
+
+Two ad hoc scripts, run directly in this session, neither modifying repository state:
+
+**1. Raw race, bypassing the network layer entirely** (`object.__new__(JWTVerifier)`, manual
+`_unknown_kids`/`_unknown_kid_ttl`/`_unknown_kid_cache_size` attributes, no `__init__` call):
+
+- First attempt — 16 threads × 500 iterations, default GIL switch interval: **0 exceptions.** (A
+  useful negative result: this is a genuine timing-dependent race, not one that fires on every run —
+  which is itself relevant to why ordinary CI has not caught it.)
+- Second attempt — 24 threads × 3000 iterations, `sys.setswitchinterval(0.00001)` to widen the
+  interleaving window, `unknown_kid_ttl_seconds=0.001`, `unknown_kid_cache_size=4`: **23 exceptions**,
+  all `RuntimeError('OrderedDict mutated during iteration')`, raised from inside `_record_unknown`'s
+  expiry sweep — the exact failure mode 35-REVIEW.md's CR-01 describes.
+
+**2. End-to-end HTTP outcome**, using the real `AuthBarrierMiddleware` + a real `JWTVerifier`
+(constructed through its normal `__init__`, with only `urllib.request.urlopen` stubbed — the same
+fixture pattern `tests/unit/test_barrier_jwks_offload.py` already uses), driven through
+`httpx.AsyncClient(transport=ASGITransport(app=app, raise_app_exceptions=False))` with
+`_is_known_unknown` monkeypatched to `raise KeyError(key)` — the exact exception type and exact call
+site (`verification.py:193`, reached via a real unrecognized-`kid` token so `cache_key` is genuinely
+non-`None`) the real race hits:
+
+```
+HTTP status: 500
+HTTP body:   {"code":"internal_error"}
+```
+
+The full traceback confirms the exception is caught only at `starlette/middleware/errors.py` —
+`ServerErrorMiddleware`, the true outermost ASGI layer — after propagating uncaught through
+`AuthBarrierMiddleware.__call__`, exactly as the architectural analysis in the gap below describes.
+`raise_app_exceptions=False` was needed to see the response bytes at all: Starlette's
+`ServerErrorMiddleware` sends the response *and then re-raises* the original exception by design
+("allows servers to log the error... allows test clients to optionally raise the error"), which a
+real deployed server's client never sees — only a raw ASGI test transport configured to propagate it
+would, which is exactly why this needed a bespoke reproduction rather than being visible in the
+existing test suite's default configuration.
+
+### Observable Truths — Other Plan-Level Must-Haves (35-01, 03, 05–11; unaffected by 35-12)
+
+None of these plans' `files_modified` overlap 35-12's (`barrier.py`, `verification.py`,
+`tests/unit/test_jwt_security.py`, `tests/unit/test_barrier_jwks_offload.py`). Per re-verification
+mode, these get a regression check rather than a full re-derivation: batch existence + line-count
+check on every artifact the prior verification named (all present, no size regressions — see table
+below), plus reliance on the orchestrator's 906-passed default-marker run and my own targeted re-run
+of `tests/e2e/test_barrier_wire_contract.py` + `tests/e2e/test_barrier_admission.py` +
+`tests/e2e/test_startup_assertion.py` (44 + 9 = 53 tests, all passed, covering the barrier's *other*
+five steps end-to-end against live PostgreSQL).
+
+| Plan | Requirement(s) | Truths | Status | Notes |
+|---|---|---|---|---|
+| 35-01 | FOUND-01..04 | 12 | ✓ 12/12 (regression) | `registry.py`, `wire.py`, `errors.py` untouched; wire-contract-before-verification ordering re-confirmed live |
+| 35-02 | FOUND-01, FOUND-04 | 11 | ✓ 10/11 (regression); D10's fifth conjunct superseded by 35-12 above, not double-counted here | `errors.py` untouched; the one previously-failed truth now lives entirely in the 35-12 section above |
+| 35-03 | FOUND-01 | 4 | ✓ 4/4 (regression) | `context.py`, `dependencies.py`, `models/identities.py` untouched |
+| 35-04 | FOUND-01, FOUND-03 | 6 | ✓ 6/6 (regression) | `registry.py`, `routers/chats.py`, `app/lifespan.py` untouched |
+| 35-05 | FOUND-01 | 7 | ✓ 7/7 (regression) | `models/users.py`, `config.py` untouched |
+| 35-06 | FOUND-01, FOUND-02 | 9 | ✓ 9/9 (regression + live re-run of admission/wire e2e suites) | `identity.py`, `telemetry.py` untouched; `barrier.py`'s *other* five steps re-confirmed live this session |
+| 35-07 | FOUND-06, FOUND-08 | 12 | ✓ 12/12 (regression) | `budgets.py`, `adapters.py` untouched |
+| 35-08 | FOUND-05 | 9 | ✓ 9/9 (regression) | `keys.py`, `config.py` untouched |
+| 35-09 | FOUND-05 | 11 | ✓ 11/11 (regression) | `audit.py`, `models/auth.py` untouched |
+| 35-10 | FOUND-07 | 15 | ✓ 15/15 (regression) | `challenges.py`, `modesignal.py` untouched |
+| 35-11 | FOUND-01..08 | 6 | ✓ 6/6 (regression) | `auth/__init__.py`, `COVERAGE.md` untouched |
+| **Subtotal** | | **101** (of the original 102, minus D10) | **101/101** | |
+
+### Reconciled Score
+
+| Bucket | Verified | Failed | Total |
+|---|---|---|---|
+| Original 11 plans, minus D10 (superseded by 35-12) | 101 | 0 | 101 |
+| Plan 35-12 truths | 7 | 3 | 10 |
+| Plan 35-12 prohibitions | 3 | 0 | 3 |
+| **Phase total** | **111** | **3** | **114** |
+
+**Score: 111/114 must-haves verified.** All three failures share one root cause (CR-01).
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |---|---|---|---|
-| `src/nativespeaker/api/errors.py` | Single client-visible error registry (D-10) | ✓ VERIFIED | 7 foundation + 8 pre-existing classes, `register_class` enforces no-duplicate-code, `assert_registry_total()` self-check, `STATUS_TO_CLASS` closed map |
-| `src/nativespeaker/api/auth/wire.py` | §1.1 single-Authorization wire contract | ✓ VERIFIED | Reads raw ASGI header list (never `Headers.get`); counts before inspecting |
-| `src/nativespeaker/api/auth/registry.py` | §2.2 registry + §2.3 enumeration assertion | ✓ VERIFIED | 8-route `REGISTRY`, 9-condition `assert_route_enumeration`, confirmed executing live |
-| `src/nativespeaker/api/auth/barrier.py` | §1.5 pure-ASGI pre-handler barrier | ✓ VERIFIED (with a defect — see gap) | 6-step ordering confirmed correct; step 3's synchronous call is the CR-01 defect |
-| `src/nativespeaker/api/auth/verification.py` | §1.2 JWT verification | ✓ VERIFIED (with a defect — see gap) | iss/aud/alg/sub rules all correct; no-network-call guarantee is false on cache-miss `kid` |
-| `src/nativespeaker/api/auth/context.py` | §1.4 typed identity context | ✓ VERIFIED | `LinkedIdentity`/`PreAuthIdentity`/`RequestContext`, frozen dataclasses, `REQUEST_CONTEXT_SCOPE_KEY` pinned |
-| `src/nativespeaker/api/auth/identity.py` | §1.3 single-query four-outcome resolution | ✓ VERIFIED | One outer-joined statement, `Admit`/`Reject` closed union |
-| `src/nativespeaker/api/auth/telemetry.py` | §1.2/§8.2 rejection counter + security log | ✓ VERIFIED | Bounded-cardinality `RejectionCounter`; exporter absence is a documented, accepted gap (D-35-06-A), not a must-have violation |
-| `src/nativespeaker/api/auth/budgets.py` | §7.1 provider-call budget seam | ✓ VERIFIED | `BudgetGate.check_all`/`charge_all`, non-destructive check, all-or-nothing charge |
-| `src/nativespeaker/api/auth/adapters.py` | §7 adapter interfaces, zero implementations | ✓ VERIFIED | Protocol-only, no `firebase_admin` import, `test_foundation_calls_no_adapter_method_anywhere_in_src` |
-| `src/nativespeaker/api/auth/keys.py` | §4.3/§6.4 keyed subject hashing | ✓ VERIFIED | HMAC-SHA-256, fail-closed active key (D-22), base64-decode-once discipline |
-| `src/nativespeaker/api/auth/audit.py` | §4 audit writer, two modes | ✓ VERIFIED | `build_details`, `redact`, `AuditWriter` — actor-consistency and details-shape guards raise before DB write |
-| `src/nativespeaker/api/auth/challenges.py` | §6 challenge store, claim/consume | ✓ VERIFIED | Single conditional-UPDATE serialization point; concurrency confirmed live |
-| `src/nativespeaker/api/auth/modesignal.py` | §6.5 mode-signal partition check | ✓ VERIFIED | Syntactic-only, no side effects, duplicate/invalid-value handling |
-| `src/nativespeaker/api/auth/__init__.py` | Stable public seam for phases 36-46 | ✓ VERIFIED | 58 symbols re-exported, confirmed importable |
-| `src/nativespeaker/api/models/users.py` | `core.users` at v2.0 shape | ✓ VERIFIED | Exactly 7 columns, `email` nullable, no `jwt_sub`/`name`/`subscription_plan` |
-| `src/nativespeaker/api/models/identities.py` | `core.external_identities` + 3 enums | ✓ VERIFIED | `IdentityProvider`, `IdentityState`, `NativeClaimProvider` all present |
-| `src/nativespeaker/api/models/auth.py` | `AuthOperation`/`AuthEventResult`/`AuthChallenge`/`AuthEvent` | ✓ VERIFIED | 44-member closed `AuthEventResult`, both new tables mapped |
-| `src/nativespeaker/api/app/lifespan.py` | Startup path with no `firebase_admin`/Apple verifier | ✓ VERIFIED | Confirmed no such imports; registry/error assertions run before DB/JWT/LLM init |
-| `src/nativespeaker/api/app/main.py` | App construction, middleware order, doc routes off | ✓ VERIFIED | `docs_url=None` etc.; `redirect_slashes=False`; middleware order test passed |
-| `src/nativespeaker/api/app/dependencies.py` | D-02 fail-loudly `Depends()` accessors | ✓ VERIFIED | `get_request_context`/`get_linked_identity`/`get_preauth_identity` all raise on absent/wrong-typed context |
-| `config/config.yaml` | `hmac:` block, no `apple`/`quotas` | ✓ VERIFIED | Confirmed by direct read — `active_version`, `keys`, `idp_account_keys` present, no legacy blocks |
-| `tests/e2e/test_startup_assertion.py` | Real-startup proof | ✓ VERIFIED | Ran myself — 9/9 passed |
-| `.planning/phases/35-foundation/COVERAGE.md` | api-coverage declaration | ✓ VERIFIED | Contains "No external API integration" |
+| `src/nativespeaker/api/errors.py` | Single client-visible error registry (D-10) | ✓ VERIFIED (regression) | Untouched by 35-12; unaffected |
+| `src/nativespeaker/api/auth/wire.py` | §1.1 single-Authorization wire contract | ✓ VERIFIED (regression) | Untouched by 35-12; unaffected |
+| `src/nativespeaker/api/auth/registry.py` | §2.2 registry + §2.3 enumeration assertion | ✓ VERIFIED (regression) | Untouched by 35-12; unaffected |
+| `src/nativespeaker/api/auth/barrier.py` | §1.5 pure-ASGI pre-handler barrier | ✓ VERIFIED for steps 1-2, 4-6; **step 3's offload call site has no guard against an escaping exception — see gap** | Line 123's `run_in_threadpool` call is correctly wired for the happy path, but nothing there catches what the callee can now raise |
+| `src/nativespeaker/api/auth/verification.py` | §1.2 JWT verification | Original D10 network-call defect fixed; **new CR-01 concurrency defect present — see gap** | iss/aud/alg/sub rules confirmed correct (regression); the negative-kid cache is unsynchronized against the very threadpool concurrency 35-12 introduced |
+| `src/nativespeaker/api/auth/context.py` | §1.4 typed identity context | ✓ VERIFIED (regression) | Untouched by 35-12 |
+| `src/nativespeaker/api/auth/identity.py` | §1.3 single-query four-outcome resolution | ✓ VERIFIED (regression) | Untouched by 35-12; re-confirmed live via `test_barrier_admission.py` |
+| `src/nativespeaker/api/auth/telemetry.py` | §1.2/§8.2 rejection counter + security log | ✓ VERIFIED (regression) | Untouched by 35-12; note a CR-01-triggering request never reaches `record_rejection` either (see roadmap truth 4's caveat) |
+| `src/nativespeaker/api/auth/budgets.py` | §7.1 provider-call budget seam | ✓ VERIFIED (regression) | Untouched by 35-12 |
+| `src/nativespeaker/api/auth/adapters.py` | §7 adapter interfaces, zero implementations | ✓ VERIFIED (regression) | Untouched by 35-12 |
+| `src/nativespeaker/api/auth/keys.py` | §4.3/§6.4 keyed subject hashing | ✓ VERIFIED (regression) | Untouched by 35-12 |
+| `src/nativespeaker/api/auth/audit.py` | §4 audit writer, two modes | ✓ VERIFIED (regression) | Untouched by 35-12 |
+| `src/nativespeaker/api/auth/challenges.py` | §6 challenge store, claim/consume | ✓ VERIFIED (regression) | Untouched by 35-12 |
+| `src/nativespeaker/api/auth/modesignal.py` | §6.5 mode-signal partition check | ✓ VERIFIED (regression) | Untouched by 35-12 |
+| `src/nativespeaker/api/auth/__init__.py` | Stable public seam for phases 36-46 | ✓ VERIFIED (regression) | Untouched by 35-12; no new export added (confirmed: `TokenVerifier` Protocol and `VerificationResult` shape unchanged) |
+| `src/nativespeaker/api/models/*.py` | v2.0 schema shapes | ✓ VERIFIED (regression) | Untouched by 35-12 |
+| `src/nativespeaker/api/app/lifespan.py` | Startup path | ✓ VERIFIED (regression) | Untouched by 35-12; re-confirmed live via `test_startup_assertion.py` |
+| `src/nativespeaker/api/app/main.py` | App construction, middleware order | ✓ VERIFIED (regression) | Untouched by 35-12 |
+| `src/nativespeaker/api/app/dependencies.py` | D-02 fail-loudly `Depends()` accessors | ✓ VERIFIED (regression) | Untouched by 35-12 |
+| `config/config.yaml` | `hmac:` block, no `apple`/`quotas` | ✓ VERIFIED (regression) | Untouched by 35-12 |
+| `tests/unit/test_barrier_jwks_offload.py` | Measured offload proof (35-12) | ✓ VERIFIED, substantive, wired — but does not cover concurrent thread-safety | Created by 35-12; 3/3 cases pass; the gap is a coverage gap in this very file, not a defect in what it does test |
+| `tests/unit/test_jwt_security.py` | Transport-level fetch counting (35-12) | ✓ VERIFIED, substantive, wired — same concurrency-coverage gap | Modified by 35-12; all named cases pass |
+| `.planning/phases/35-foundation/COVERAGE.md` | api-coverage declaration | ✓ VERIFIED (regression) | Unaffected |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 |---|---|---|---|---|
-| `app/main.py` | `auth/barrier.py` | `app.add_middleware(AuthBarrierMiddleware)`, called before `RequestLoggingMiddleware` | ✓ WIRED | Confirmed by direct read + `test_stack_is_logging_then_barrier_outermost_first` (ran myself, passed) |
-| `app/lifespan.py` | `auth/registry.py` | `app.state.route_registry = REGISTRY; assert_route_enumeration(app, app.state.route_registry)` | ✓ WIRED | Confirmed running at real startup via `test_assertion_passes_against_the_live_app` (ran myself) |
-| `auth/barrier.py` | `auth/identity.py` | One session from `scope["app"].state.session_factory`, one `resolve_identity` call | ✓ WIRED | Confirmed by direct read (barrier.py:121-125) and `test_every_outcome_issues_exactly_one_identity_statement` (ran myself) |
-| `auth/barrier.py` | `auth/audit.py` | `write_standalone` called from `_reject` only when `meta.operation is not None` | ✓ WIRED | Confirmed by direct read (barrier.py:164-213) and live-DB test (ran myself) |
-| `auth/barrier.py` | `auth/telemetry.py` | `record_rejection(scope["app"].state, ...)` on every rejection | ✓ WIRED | Confirmed by direct read; counter increments on/off audited path alike |
-| `auth/audit.py` | `auth/keys.py` | `actor_subject_hash` derived through the shared `HmacKeyring` | ✓ WIRED | Confirmed by direct read (audit.py:243) — no local hmac/hashlib import in audit.py |
-| `auth/challenges.py` | `auth/keys.py` | `preauth_subject_hash` via the same shared derivation | ✓ WIRED | Confirmed by direct read (challenges.py:133-134, 255-257) |
-| `app/dependencies.py` | `auth/context.py` | Accessors read `REQUEST_CONTEXT_SCOPE_KEY` off `request.state`, raise when absent | ✓ WIRED | Confirmed by direct read (dependencies.py:58-86) |
-| `routers/chats.py` | `app/dependencies.py` | `Depends(get_linked_identity)`, `identity.user.id` used throughout | ✓ WIRED | Confirmed by direct read — no direct token/claims access in any handler |
-| `app/lifespan.py` | `src/.../errors.py` | `assert_registry_total()` called before serving traffic | ✓ WIRED | Confirmed by direct read (lifespan.py:35) |
-| `config.py` | `config/config.yaml` | `AppConfig(**yaml_data, ...)`, `hmac: HmacConfig` required (no default) | ✓ WIRED | Confirmed by direct read — a missing `hmac:` block would raise at load, matching D-22 |
+| `app/main.py` | `auth/barrier.py` | `add_middleware(AuthBarrierMiddleware)` before `add_middleware(RequestLoggingMiddleware)` | ✓ WIRED (regression) | Unaffected by 35-12 |
+| `app/lifespan.py` | `auth/registry.py` | `assert_route_enumeration` at real startup | ✓ WIRED (regression) | Unaffected; re-confirmed live |
+| `auth/barrier.py` | `auth/identity.py` | One session, one `resolve_identity` call | ✓ WIRED (regression) | Unaffected; re-confirmed live |
+| `auth/barrier.py` | `auth/audit.py` | `write_standalone` on an on-path rejection | ✓ WIRED (regression) | Unaffected for a normal rejection; unreachable for a CR-01-triggering one (see caveat above) |
+| `auth/barrier.py` | `starlette.concurrency.run_in_threadpool` | `await run_in_threadpool(...verify, token)` at step 3 | ✓ WIRED, but the callee's internal state is not concurrency-safe | New link, added by 35-12. The wiring itself is correct (confirmed: the call genuinely offloads, genuinely bounded by the explicit timeout) — the defect is inside what it calls, not in the link itself |
+| `auth/audit.py` | `auth/keys.py` | `actor_subject_hash` via `HmacKeyring` | ✓ WIRED (regression) | Unaffected |
+| `auth/challenges.py` | `auth/keys.py` | `preauth_subject_hash`, same derivation | ✓ WIRED (regression) | Unaffected |
+| `app/dependencies.py` | `auth/context.py` | Accessors raise when absent | ✓ WIRED (regression) | Unaffected |
 
-### Data-Flow Trace (Level 4 — adapted for a backend service)
+### Data-Flow Trace (Level 4)
 
 | Chain | Source | Produces Real Data | Status |
 |---|---|---|---|
-| Declared `REGISTRY` (8 entries) → live `app.routes` | `auth/registry.py::enumerate_registered` walks `app.routes` at real startup | Yes — confirmed both by direct `python -c` execution (8 routes) and by the enumeration assertion running inside the real lifespan | ✓ FLOWING |
-| Barrier rejection → `audit.auth_events` row | `AuditWriter.write_standalone` opens a real session from `app.state.session_factory` and commits | Yes — confirmed against live PostgreSQL by two tests run directly in this session | ✓ FLOWING |
-| `config/config.yaml` `hmac:` block → `HmacKeyring` | `EnvironmentConfig.load_config` → `AppConfig(**yaml_data)` → `HmacKeyring(config.hmac)` in lifespan | Yes — the committed base64 keys are real 32-byte material, decoded once at load; no default/mock key exists in the production path | ✓ FLOWING |
-| Resolved `(issuer, subject)` → `LinkedIdentity`/`Reject.actor_*` | `resolve_identity`'s single outer-joined query | Yes — no hardcoded or mocked identity in the production path; seeded-row tests confirm the query is real | ✓ FLOWING |
-
-No hollow props, static fallbacks, or mocked data sources found on any production path (test fixtures
-that stub the JWKS *transport* for unit-level JWT tests are the only mocking, and that is appropriate
-test isolation, not a production stub — except where noted as vacuous below).
+| Unrecognized `kid` → `_unknown_kids` cache entry → skip re-fetch on repeat | `JWTVerifier._record_unknown`/`_is_known_unknown`, exercised by real `PyJWKClient` + stubbed transport | Yes — measured 5→1 fetch reduction, confirmed by re-running the relevant tests myself | ✓ FLOWING, but the flow is not thread-safe (see gap) |
+| Declared `REGISTRY` → live `app.routes` | unchanged | unaffected | ✓ FLOWING (regression) |
+| Barrier rejection → `audit.auth_events` row | unchanged for a normal rejection | unaffected | ✓ FLOWING (regression), with the CR-01 blind spot noted above |
 
 ### Behavioral Spot-Checks
 
-Run directly in this session, against the live PostgreSQL instance and the real ASGI app, in addition
-to the orchestrator's already-completed full-suite run (1137 passed, 0 failed) that I relied on rather
-than re-running.
-
 | Behavior | Command | Result | Status |
 |---|---|---|---|
-| Challenge claim serializes 8 concurrent attempts to exactly 1 winner | `pytest tests/e2e/test_challenge_store.py::TestTheClaimSerializesConcurrentAttempts::test_exactly_one_of_eight_concurrent_claims_wins ::test_the_losers_mutated_nothing` | 2 passed | ✓ PASS |
-| Lifespan runs the §2.3 assertion for real, at real startup, against the real router | `pytest tests/e2e/test_startup_assertion.py::TestStartupAssertion` (9 cases) | 9 passed | ✓ PASS |
-| Barrier rejection writes exactly one audit row, all-NULL actor / all-populated actor | `pytest tests/e2e/test_audit_writer.py::TestAnOnPathRejectionWritesExactlyOneRow::test_a_missing_token_writes_one_row_and_returns_the_shared_401 ::TestAVerifiedActorIsRecordedAsAKeyedHash::test_an_unlinked_subject_writes_all_three_actor_fields` | 2 passed | ✓ PASS |
-| Middleware order, doc routes disabled, redirect_slashes off; wire contract over real ASGI transport | `pytest tests/unit/test_app_wiring.py tests/e2e/test_barrier_wire_contract.py` | 20 passed | ✓ PASS |
-| Admission matrix: historical/blocked indistinguishable, linked-active admitted, one query per outcome | `pytest tests/e2e/test_barrier_admission.py::TestOutcomesTwoAndThreeAreIndistinguishable ::TestOutcomeFourLinkedAndActive ::TestOneQueryPerRequest` | 13 passed | ✓ PASS |
-| Real app module imports; registry has exactly 8 routes | `python -c "import nativespeaker.api.app.main as m; ..."` | `routes: 8`, `auth __all__ count: 58` | ✓ PASS |
-| No thread-offload anywhere in `src/`; no fetch timeout configured on the JWKS client | `grep -rn "run_in_threadpool\|to_thread\|ThreadPoolExecutor" src/` / `grep -n "timeout" auth/verification.py` | Both empty | ✗ FAIL — confirms CR-01 |
-| The test claiming "no additional JWKS fetch" actually exercises the fetch path | Read `TestProductionVerifier::test_two_verifications_issue_no_additional_jwks_fetch` and its `jwks_client` fixture directly | Fixture mocks the whole `PyJWKClient` class; asserts on a method (`get_signing_keys`) `verify()` never calls | ✗ FAIL — confirms WR-05 (test is vacuous, not evidence) |
+| Event loop does not starve during an unrecognized-`kid` fetch | `pytest tests/unit/test_barrier_jwks_offload.py::test_an_unknown_kid_request_does_not_starve_the_event_loop` | 1 passed | ✓ PASS |
+| Harness can detect a starved loop (permanent control) | `pytest tests/unit/test_barrier_jwks_offload.py::test_the_harness_detects_a_starved_loop` | 1 passed | ✓ PASS |
+| Wire contract still precedes verification under the offload | `pytest tests/unit/test_barrier_jwks_offload.py::test_a_duplicate_authorization_never_reaches_the_jwks_transport` | 1 passed | ✓ PASS |
+| Wire contract + admission matrix + startup assertion unaffected (regression) | `pytest -m "" tests/e2e/test_barrier_wire_contract.py tests/e2e/test_barrier_admission.py tests/unit/test_barrier_jwks_offload.py` then separately `tests/e2e/test_startup_assertion.py` | 44 passed, then 9 passed | ✓ PASS |
+| **Concurrent OS-thread access to the negative-kid cache is safe** | Ad hoc: 24 threads × 3000 iterations directly against `_is_known_unknown`/`_record_unknown`, tightened GIL switch interval | 23 `RuntimeError('OrderedDict mutated during iteration')` | ✗ **FAIL — confirms CR-01** |
+| **An exception escaping `verify()` still yields `401 auth_required`** | Ad hoc: real barrier + real `JWTVerifier`, `_is_known_unknown` patched to raise `KeyError`, driven end-to-end via `ASGITransport(raise_app_exceptions=False)` | `500 {"code":"internal_error"}` | ✗ **FAIL — confirms CR-01's end-to-end impact** |
+| `verify()`'s exception taxonomy covers every failure the real `PyJWKClient` can raise | Read `.venv/.../jwt/jwks_client.py::PyJWKClient.fetch_data` directly | `except (URLError, TimeoutError)` does not wrap `json.load`, so `json.JSONDecodeError` escapes uncaught | ✗ FAIL — confirms WR-01 (a second, independent way `verify()` can raise) |
 
 ### Probe Execution
 
-N/A — no `scripts/*/tests/probe-*.sh` convention exists in this repository and none is referenced by
-any Phase 35 plan or SUMMARY. This phase is verified through pytest, which the orchestrator already
-ran in full (1137 passed) and which I re-exercised at the named-test level above.
+N/A — no `scripts/*/tests/probe-*.sh` convention exists in this repository, unchanged from the prior
+verification.
 
 ### Requirements Coverage
 
 | Requirement | Source Plan(s) | Description | Status | Evidence |
 |---|---|---|---|---|
-| FOUND-01 | 01, 02, 03, 04, 05, 06, 11 | Mandatory pre-handler barrier is the only place JWT acceptance + identity resolution happen; admits only `identity_state='active'` AND `users.active` TRUE | ✓ SATISFIED | `barrier.py` + `identity.py`, confirmed live |
-| FOUND-02 | 01, 06, 11 | Exactly-one-Authorization wire contract enforced | ✓ SATISFIED | `wire.py`, confirmed live over real ASGI transport |
-| FOUND-03 | 01, 04, 11 | Route registry + startup/CI enumeration assertion, 3-way partition | ✓ SATISFIED | `registry.py`, confirmed running at real startup |
-| FOUND-04 | 01, 02, 11 | One shared error-registry module; identical body/status/copy within a class | ✓ SATISFIED | `errors.py`, single `ErrorClass` per exception, `error_response()` sole factory |
-| FOUND-05 | 08, 09, 11 | Audit writer: exactly one row per on-path attempt, redacted details, keyed `actor_subject_hash` with version | ✓ SATISFIED | `audit.py` + `keys.py`, confirmed live |
-| FOUND-06 | 07, 11 | §7.1 provider-call budget seam, plain in-process counters, no rate-limiting dependency | ✓ SATISFIED | `budgets.py`, `TestNotTrafficLimiting` guards the boundary |
-| FOUND-07 | 10, 11 | Challenge store claim/consume protocol | ✓ SATISFIED | `challenges.py`, concurrency confirmed live |
-| FOUND-08 | 07, 11 | Adapter interfaces only, zero implementations | ✓ SATISFIED | `adapters.py`, `test_foundation_calls_no_adapter_method_anywhere_in_src` |
+| FOUND-01 | 01, 02, 03, 04, 05, 06, 11, 12 | Mandatory pre-handler barrier is the only place JWT acceptance + identity resolution happen | ⚠️ **PARTIALLY SATISFIED** | Barrier wiring, ordering, and admission matrix all confirmed correct. But the JWT-verification step of "JWT acceptance" can crash (500) instead of cleanly rejecting (401) under concurrent unrecognized-`kid` traffic — a defect in the exact territory this requirement names, independently reproduced |
+| FOUND-02 | 01, 06, 11, 12 | Exactly-one-Authorization wire contract enforced | ⚠️ **PARTIALLY SATISFIED** | The wire contract itself (step 2) is fully correct and unaffected. But 35-12-PLAN.md scoped its own gap-closure work under this requirement too, and its own truths #6/#8/#9 (about verification-failure response identity) fail |
+| FOUND-03 | 01, 04, 11 | Route registry + startup/CI enumeration assertion | ✓ SATISFIED (regression) | Unaffected by 35-12 |
+| FOUND-04 | 01, 02, 11 | One shared error-registry module | ✓ SATISFIED (regression) | Unaffected by 35-12 |
+| FOUND-05 | 08, 09, 11 | Audit writer | ✓ SATISFIED (regression) | Unaffected by 35-12 |
+| FOUND-06 | 07, 11 | §7.1 provider-call budget seam | ✓ SATISFIED (regression) | Unaffected by 35-12 |
+| FOUND-07 | 10, 11 | Challenge store claim/consume protocol | ✓ SATISFIED (regression) | Unaffected by 35-12 |
+| FOUND-08 | 07, 11 | Adapter interfaces only, zero implementations | ✓ SATISFIED (regression) | Unaffected by 35-12 |
 
-No orphaned requirements: REQUIREMENTS.md maps only FOUND-01…FOUND-08 to Phase 35 (FOUND-09 is
-explicitly deferred to v2.1 per D-08), and all eight are claimed by at least one plan above. (Note:
-REQUIREMENTS.md's own checkboxes for FOUND-01…08 are still unchecked `[ ]` as of this verification —
-that is administrative bookkeeping outside this phase's artifacts, not a gap in the delivered code.)
+No orphaned requirements: REQUIREMENTS.md maps only FOUND-01…FOUND-08 to Phase 35, and every plan's
+`requirements:` field (including 35-12's `[FOUND-01, FOUND-02]`) is accounted for above. (Note:
+REQUIREMENTS.md's checkboxes show FOUND-01 and FOUND-02 as `[x]` checked while FOUND-03…08 remain
+`[ ]` — worth flagging given today's finding sits inside FOUND-01/02's own territory, but this is
+administrative bookkeeping, not part of the delivered code.)
 
 ### Anti-Patterns Found
 
-Carried from the independent code review (`35-REVIEW.md`, 69 files, completed same day) and confirmed
-by my own direct reading where noted. None of these below is newly discovered by me except the SUMMARY
-mischaracterization noted in the gap above.
+Carried from `35-REVIEW.md` (70 files reviewed, completed after 35-12), cross-checked and in the
+critical case independently reproduced by me.
 
 | File | Line | Pattern | Severity | Impact |
 |---|---|---|---|---|
-| `auth/barrier.py` / `auth/verification.py` | barrier.py:113, verification.py:100-124 | Synchronous, blocking JWKS-fetch call made directly from `async def __call__`, no timeout configured | 🛑 Blocker (CR-01) | Confirmed by me independently — see gap above. Causes measured event-loop stalls (1.2s at 0.4s RTT); a slow/hung JWKS endpoint scales to 30s per request, and can fail `/health/ready` under a sustained trickle |
-| `app/errors.py` | 39 | `validation_error_handler` logs `exc_info=exc`, and `RequestValidationError.__str__` renders the raw request-body `input` value into the traceback | ⚠️ Warning (WR-02) | Confirmed by direct read. Any oversized `ChatRequest.phrase`/`MessageRequest.message` puts the user's submitted text in the operator log — notable given AGENTS.md frames this as a grammar-fixing product handling users' private text. Becomes a §6.1 violation once phase 37+ add a `challenge_id` body field. Not tied to a stated must-have (redaction must-haves are scoped to `audit.auth_events.details`, a different code path), so not scored as a failed truth, but worth fixing promptly |
-| `auth/barrier.py` | 170 | Barrier's 401 omits `WWW-Authenticate`; the accessors' 401 (`AuthenticationError`) includes it | ⚠️ Warning (WR-01) | Two 401s from one service differ in headers — an anti-oracle asymmetry, though not one any stated must-have's literal text (byte-identical *bodies* and *status*) covers |
-| `auth/keys.py` | 67-69 | `_digest`'s `issuer + ":" + subject` framing is ambiguous — not exploitable today (one pinned issuer) but becomes a cross-issuer collision risk once phase 41 configures a second issuer | ⚠️ Warning (WR-03) | Confirmed by direct read. One-way-reversible per the module's own docstring, so fixing after any row exists is not possible — worth fixing before phase 41, not urgent for phase 35 |
-| `auth/keys.py` | 140-164 | `actor_subject_matches` always recomputes under the *active* key; correct for the challenge store (D-21) but a latent bug for a future phase-39 audit-history query against a rotated key | ⚠️ Warning (WR-04) | Confirmed by direct read. No current call site is affected (phase 35 doesn't query rotated-key audit rows) |
-| `tests/unit/test_jwt_security.py` | 320-325 | `test_two_verifications_issue_no_additional_jwks_fetch` is vacuous (see gap above) | ⚠️ Warning (WR-05) | Directly confirmed — this is the test that let CR-01 ship undetected |
-| `tests/e2e/test_model_queries.py` | 107-118 | `test_the_previous_rows_were_rolled_back` depends on source-order coupling to a prior test; passes vacuously if run alone | ⚠️ Warning (WR-06) | Not tied to a phase-35 must-have (general test-isolation infra); flagged for awareness |
-| `tests/unit/test_exception_handlers.py` | 70-83 | `test_handler`'s code assertion is membership in a 6-element set rather than an exact expected code per case | ⚠️ Warning (WR-07) | The production mapping itself is correct (confirmed by direct read of every `ServiceError` subclass's `error_class`), so FOUND-04 is not violated — but this test would not catch a future regression |
-| `tests/e2e/test_model_queries.py` | 47, 52 | `assert result.all() is not None` can never be false | ℹ️ Info (IN-01) | Cosmetic; the real assertion is the preceding `session.exec` raising on schema drift |
-| `errors.py` | 327-339, 364-365, 396-407 | 5 `ServiceError` subclasses have no raise site (some reserved for later phases, `WebhookVerificationError` describes a route D-16 deleted) | ℹ️ Info (IN-02) | Not distinguished as reserved-vs-dead in comments |
-| `auth/registry.py` | 35 | `RouteMetadata.quota_checked` is declared, never set, never read (void per D-05) | ℹ️ Info (IN-03) | Dead field from a deleted subsystem |
-| `auth/barrier.py` | 142, 207 | `_bucket_kind` derived twice per audited rejection instead of once | ℹ️ Info (IN-04) | Minor duplication, contradicts the module's own "one evaluation per request" principle for a different value |
+| `auth/verification.py` | 136, 157-181 | Unsynchronized `OrderedDict` mutated from concurrent OS threads (no lock) | 🛑 **Blocker (CR-01)** | Independently reproduced twice by me in this session (see above). Turns an unauthenticated caller's `401` into a `500`, violates the `TokenVerifier` Protocol's "Never raises" contract and D-01, and leaves no audit/telemetry trace for the affected request |
+| `auth/verification.py` | 198-220 | `verify()`'s `except` clauses do not cover every exception the real call chain can raise (`RuntimeError`/`KeyError` from CR-01; `json.JSONDecodeError` from a non-JSON JWKS body) | ⚠️ Warning (WR-01) | Confirmed by direct read of installed PyJWT 2.12.1 source. A second, independent path to the same class of defect as CR-01 |
+| `auth/verification.py` | 209-218 | Negative cache records a `kid` on any `PyJWKClientError` except `PyJWKClientConnectionError` — broader than "endpoint is down", also covers "no signing keys" / "non-JSON document" endpoint conditions | ⚠️ Warning (WR-02) | Confirmed by direct read of PyJWT's `get_signing_keys`/`get_jwk_set`. Does not violate the literal must-have text (which names only `PyJWKClientConnectionError`), but is a real robustness gap beyond it |
+| `auth/verification.py` | 131-142, 180-181 | `kid` churn (distinct, never-repeated unrecognized `kid`s) walks past the 256-entry cache — one fetch and one worker thread per such request | ℹ️ Info — **explicitly accepted** (T-35-12-03) | Pinned by `test_distinct_unknown_kids_still_cost_one_fetch_each` (confirmed present); not independently re-litigated as a gap here since it is a documented, deliberate residual, not an oversight |
+| `app/errors.py` | 38-40 | `validation_error_handler` logs `exc_info=exc`; `RequestValidationError.__str__` renders raw request-body `input` into the traceback | ⚠️ Warning (carried, unchanged) | Not touched by 35-12; carried forward from prior review unchanged |
+| `auth/barrier.py` | 180 | Barrier's 401 omits `WWW-Authenticate`; accessors' 401 includes it | ⚠️ Warning (carried, unchanged) | Not touched by 35-12's diff (only the import block and step 3 changed) |
+| `auth/keys.py` | 67-69, 140-164 | Ambiguous digest framing; `actor_subject_matches` always uses the active key | ⚠️ Warning (carried, unchanged) | Untouched by 35-12 |
+| `config.py` | — | DSN not percent-encoded; config read under process locale | ⚠️ Warning (new in this review round, out of FOUND-01..08 scope) | Configuration-shaped, not auth-foundation-shaped; noted for completeness, not scored against any Phase 35 must-have |
+| `app/lifespan.py` | 70-95 | Engine can leak on a failed lifespan; `/health/ready` doesn't check DB reachability | ⚠️ Warning (new in this review round, out of FOUND-01..08 scope) | Not touched by 35-12; not tied to a stated Phase 35 must-have |
+| Various (`tests/e2e/test_model_queries.py`, `test_exception_handlers.py`, `registry.py`, `errors.py`) | — | Assorted test-quality and dead-surface info items | ℹ️ Info (carried, unchanged) | Untouched by 35-12; same assessment as prior verification |
 
-### Known Open Items (carried forward from phase artifacts, not re-litigated as new gaps)
+### Known Open Items (carried forward, not re-litigated as new gaps)
 
-Per `COVERAGE.md`'s own accounting, 6 of its 9 accepted v2.0 gaps are decided/closed (Envoy contract
-deferral, backend rate-limiting removal, the k8s 429-body mismatch, no timing normalization, empty
-`access_tiers` pending Phase 36, REBIND-01 landing early). The 3 explicitly marked open-and-unowned:
+Unchanged from the prior verification — none of these three is touched by 35-12:
 
-1. **D-35-06-A — no metrics exporter.** `auth/telemetry.py::RejectionCounter` correctly increments on
-   every rejection (confirmed by direct read and by `TestEveryRejectionIsCounted` passing), but nothing
-   scrapes `snapshot()`. §1.2's operational alert cannot fire. Does not violate any stated must-have
-   (none requires an exporter) — an observability gap for a later phase to own, not a Phase 35 defect.
-2. **`actor_provider` NULL on every rejection this phase can write**, even where a stored provider
-   exists (`historical_identity`, `blocked_user`). Confirmed by direct read: `identity.py::Reject`
-   never carries a provider, and `barrier.py::_audit` always passes `actor_provider=None`. This matches
-   the stated must-have's literal text ("NULL otherwise... never taken from claims, headers, or client
-   input") — Phase 35 writes zero production audit rows regardless (all 8 registered routes declare
-   `operation=None`), so nothing is lost yet. Phase 37 owns widening `Reject` to carry the resolved row.
-3. **D-35-11-A — `POST /chats` returns 500 for a grammatically correct phrase.** Confirmed present in
-   `deferred-items.md` with a 4-way reproduction. Outside Phase 35's file scope (`models/llm.py`,
-   `config/prompt.txt`) and outside FOUND-01…08 entirely — a prompt/model-contract product decision,
-   not an auth-foundation defect. Not independently re-verified by me (no phase-35 artifact touches it),
-   carried forward as-is per the phase's own record.
+1. **D-35-06-A — no metrics exporter.** `RejectionCounter` increments correctly; nothing scrapes it.
+2. **`actor_provider` NULL on every rejection this phase can write.** Matches the stated must-have's
+   literal text; Phase 37 owns widening it.
+3. **D-35-11-A — `POST /chats` returns 500 for a grammatically correct phrase.** Outside Phase 35's
+   file scope entirely (`models/llm.py`, `config/prompt.txt`); carried in `deferred-items.md`.
 
-None of these three undermines the phase's scoped goal (boots + enumeration assertion runs for real).
+None of these three is affected by, or affects, today's finding.
 
 ## Gaps Summary
 
-**One gap, narrowly scoped, does not block the phase's stated bar.** The application boots cleanly,
-the lifespan runs to completion, and the §2.3 enumeration assertion executes for real against the real
-router — independently confirmed by running the relevant tests myself against the live app and a live
-database, not merely by reading SUMMARY.md. All eight FOUND-01…08 requirements are substantively
-implemented, wired, and covered by tests I either ran myself or trust from the orchestrator's clean
-full-suite run, cross-checked against direct source reading of every core module.
+**One gap, with a different shape and a higher severity than the one it replaced.** Plan 35-12
+genuinely closed the prior verification's reported symptom: the JWKS fetch triggered by an
+unrecognized `kid` no longer blocks the event loop, carries an explicit 3-second bound instead of
+PyJWT's 30-second default, and a bounded negative-kid cache eliminates the repeat-fetch cost for a
+*sequential* caller — all independently re-confirmed by me, not merely inherited from the SUMMARY.
 
-The one failed truth — plan 35-02's claim that JWT verification "performs no per-request network
-call" — is real, not a nitpick. It is the same defect the independent code review flagged as CR-01
-(its only critical finding across 69 reviewed files), and I reproduced its evidentiary basis
-independently (no thread offload anywhere in `src/`, no configured JWKS fetch timeout, and the one
-test that names the property is vacuous by construction). It affects the barrier's own core
-deliverable (JWT verification, FOUND-01/FOUND-02's territory), not a downstream chat/quota flow the
-phase explicitly defers to Phase 36 — so it is in scope for this verification, not exempted by the
-"boots, not fully-working" framing.
+But the same change gave `JWTVerifier` new mutable state — an unlocked `OrderedDict` — at exactly the
+moment it also moved `verify()` onto a real OS-thread threadpool. That combination did not, and could
+not, exist before this fix. I independently reproduced both halves of the resulting defect myself in
+this session, not by trusting `35-REVIEW.md`'s narrative: the race itself (23 `RuntimeError`s across
+24 concurrent threads once the interleaving window was widened), and its client-visible impact (a
+`KeyError` at the exact call site the race hits surfaces as `500 {"code":"internal_error"}` end to
+end, through the real barrier and a real `JWTVerifier`, not the `401 {"code":"auth_required"}` every
+stated must-have — including three of 35-12's own ten — promises). No credential and no special
+timing is required: any unauthenticated caller sending a handful of concurrent requests with a bogus
+or absent `kid` can trigger it, because every kid-less token collapses onto one shared sentinel dict
+entry.
 
-**Recommended path:** this is a small, well-specified fix (offload `verify()` to a threadpool, bound
-the JWKS fetch timeout, add a negative-kid cache, replace the vacuous test) that the code review
-already drafted concretely. Given the phase's explicit "boots" bar is otherwise fully met, the
-developer has two reasonable options: (a) close this gap with a short follow-up plan before treating
-Phase 35 as done, or (b) explicitly accept the risk for now (AGENTS.md notes there are no users yet)
-and record it as a tracked override with an owner and a deadline. I have not applied an override
-myself — this is a judgment call for the developer, not something to paper over silently.
+This bears directly on FOUND-01 and FOUND-02, both scoped to 35-12 and both naming exactly the
+barrier's rejection contract that this defect breaks. It also bears on the phase's own stated design
+principle (D-01, "the barrier returns rather than raises," restated as "HONORED" in 35-12-PLAN.md's
+own context table) — that claim does not hold as shipped.
+
+Per AGENTS.md, this product has no users yet and should not be over-engineered against a threat model
+it doesn't face. I have weighed that context, but I do not think it changes the classification here:
+this is not a sophisticated attack requiring insider knowledge — it is a small number of concurrent,
+unauthenticated, malformed requests producing a crash instead of a clean rejection, which AGENTS.md's
+"don't skip normal security measures" line speaks to directly. I am not resolving that judgment call
+myself; I am surfacing it plainly, per the escalation pattern this report follows.
+
+**Recommended path:** 35-REVIEW.md already drafts the fix concretely (a `threading.Lock` around the
+cache, which costs nothing measurable since every operation on it is O(cache size)), and a test shape
+to pin it. This is a small, well-specified, low-risk fix — smaller in scope than 35-12 itself. Given
+the phase's roadmap contract (5/5) and the bulk of its must-haves (111/114) are solid, the developer's
+reasonable options are the same shape as before: (a) run a short follow-up plan closing CR-01 before
+treating Phase 35 as done, or (b) explicitly accept the residual risk for now with a tracked,
+dated override. Unlike the *previous* gap (a latency/availability cost under "no users yet"), this one
+produces wrong status codes and skips the audit trail — I'd weigh that difference before choosing (b).
 
 To accept it as a tracked, deliberate deferral instead of closing it, add to this file's frontmatter:
 
 ```yaml
 overrides:
-  - must_have: "Token verification performs no per-request network call"
-    reason: "CR-01 confirmed; no production users yet per AGENTS.md. Tracked as a fast-follow fix before wider traffic."
+  - must_have: "verify() never raises under concurrent access to the negative-kid cache (35-12 truths #6, #8, #9)"
+    reason: "CR-01 confirmed and independently reproduced; no production users yet per AGENTS.md. Tracked as a fast-follow fix before wider traffic."
     accepted_by: "{your name}"
     accepted_at: "{ISO timestamp}"
 ```
 
 ### Human Verification Required
 
-None. Every applicable truth was either directly exercised by a passing test (run by me in this
-session or by the orchestrator's full-suite run I relied on) or reasoned conclusively from source code
-that structurally forecloses the alternative (e.g., `register_class`'s duplicate-code guard makes a
-shared-code class a load failure, not a runtime possibility). The four `verification: backstop` truths
-(zero-routes/zero-entries enumeration; budget counters are plain non-negative ints; a `BudgetGate` is
-per-request/in-process only; importing the adapter module twice has no side effect) each had an
-explicit, wired, passing test found and confirmed by name — none were left to abstain as
-`insufficient_spec`.
+None. Every claim in this report — including both halves of the new finding — was either directly
+exercised by a test I ran myself in this session, or independently reproduced by a standalone script I
+wrote and ran myself (not inherited from `35-REVIEW.md`'s narrative), or confirmed by direct reading
+of the installed library source. Nothing here is left to visual judgment, real-time behavior, or an
+external service this environment couldn't reach.
 
 ---
 
-_Verified: 2026-08-21T13:00:00Z_
+_Verified: 2026-08-21T22:20:17Z_
 _Verifier: Claude (gsd-verifier)_
