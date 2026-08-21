@@ -153,6 +153,20 @@ Plans:
 **Goal:** Build the shared machinery every later phase calls and none rebuilds — barrier, route registry, error registry, audit writer, provider-call budget seam, challenge store, adapter interfaces — and repair the model layer so the application boots and the enumeration assertion runs for real.
 **Requirements:** FOUND-01 … FOUND-08
 **Depends on:** 34
+**Plans:** 10 plans across 9 waves
+
+Plans:
+- [ ] 35-01-PLAN.md — Tracer: unauthenticated request rejected end-to-end at real startup
+- [ ] 35-02-PLAN.md — Error registry completion (D-09/D-11/D-12) and the §1.2 verification module
+- [ ] 35-03-PLAN.md — Dead-surface deletion (D-16), typed identity context, and the fail-loudly accessors
+- [ ] 35-04-PLAN.md — v2.0 model layer repair and removal of the Apple/quota config surface
+- [ ] 35-05-PLAN.md — Barrier identity resolution, admission matrix, telemetry, and the e2e harness
+- [ ] 35-06-PLAN.md — Provider-call budget seam and adapter interfaces (zero implementations)
+- [ ] 35-07-PLAN.md — Shared HMAC keyring and its fail-closed startup policy
+- [ ] 35-08-PLAN.md — `audit.auth_events` writer: two modes, details shape, redaction, barrier hook
+- [ ] 35-09-PLAN.md — Challenge store, claim/consume atomicity, and the §6.5 mode-signal check
+- [ ] 35-10-PLAN.md — Publish the `auth/` seam, restore e2e coverage, gate the suite green, COVERAGE.md
+
 **Success criteria:**
 
 1. The route-enumeration assertion passes, and a route declared in zero or in two categories fails it
