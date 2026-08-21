@@ -293,7 +293,15 @@ class TestAntiOracle:
 
 
 class TestProductionVerifier:
-    """The same rules against the real `JWTVerifier`, with only the JWKS transport stubbed."""
+    """The §1.2 claim rules against the real `JWTVerifier`, with the JWKS client substituted.
+
+    Substituting the client is legitimate isolation *here*: every case below is about issuer,
+    audience, algorithm or subject, and where the key came from is irrelevant to all four. It is
+    illegitimate for a case about fetch counts, which is why the one that used to live here was
+    deleted rather than repaired -- `get_signing_keys.call_count == 0` held whatever the production
+    code did, because `verify()` calls `get_signing_key_from_jwt` instead (WR-05). Fetch counts now
+    live in `TestTheJwksTransportIsNotHitPerRequest`, measured at the transport under a real client.
+    """
 
     @pytest.fixture
     def jwks_client(self):
@@ -339,13 +347,6 @@ class TestProductionVerifier:
         timeout = mock_cls.call_args.kwargs["timeout"]
         assert timeout is not None and timeout <= 5
 
-    def test_two_verifications_issue_no_additional_jwks_fetch(self, real_verifier, jwks_client):
-        """§1.2: a request costs one local RSA verification and no per-request network call."""
-        _, instance = jwks_client
-        assert accepted(real_verifier, make_token("user-a")).subject == "user-a"
-        assert accepted(real_verifier, make_token("user-b")).subject == "user-b"
-        assert instance.get_signing_keys.call_count == 0
-
     def test_rejects_hs256_over_the_public_key(self, real_verifier):
         """`algorithms=["RS256"]` is passed explicitly, so confusion lands on bad_signature."""
         payload = {"sub": "u", "aud": TEST_PROJECT_ID, "iss": TEST_ISSUER,
@@ -368,7 +369,7 @@ class TestProductionVerifier:
 class TestTheJwksTransportIsNotHitPerRequest:
     """Fetch counts, measured at the transport under a **real** `PyJWKClient`.
 
-    This class replaces `test_two_verifications_issue_no_additional_jwks_fetch`, which counted calls
+    This class replaces the deleted `TestProductionVerifier` fetch-count case, which counted calls
     to a method the code under test never invoked, on a client class that had been substituted
     wholesale -- an assertion that held whatever the production code did (WR-05). The seam here is
     `urllib.request.urlopen`, the one blocking call `PyJWKClient.fetch_data` makes, so every fetch

@@ -101,6 +101,12 @@ class JWTVerifier:
 
     `checkRevoked` is deliberately absent: SHARED-INVARIANTS forbids a per-request revocation check
     in every phase, so an already-minted ID token stays valid until its own `exp`.
+
+    Synchronous by design, and called through a threadpool at the barrier. `verify` must *return*
+    rather than raise (D-01), which an `async def` would not change -- but it can block on a JWKS
+    fetch, so `AuthBarrierMiddleware` awaits it through `starlette.concurrency.run_in_threadpool`
+    rather than calling it inline. Do not re-introduce the direct call: it puts a blocking outbound
+    round trip, chosen by an unauthenticated caller, on the loop that also serves `/health/ready`.
     """
 
     def __init__(self, *,
@@ -128,9 +134,11 @@ class JWTVerifier:
         # decision. A positive cache here would keep a rotated or withdrawn key working past its own
         # lifetime, so the value is a deadline and nothing else is ever stored.
         self._unknown_kids: OrderedDict[str, float] = OrderedDict()
-        # Warm up JWKS cache — crashes startup if endpoint unreachable (fail-fast). The set is
-        # cached for `cache_ttl_seconds`, so a request costs one local RSA verification and no
-        # per-request network call.
+        # Warm up JWKS cache — crashes startup if endpoint unreachable (fail-fast), and under the
+        # same bound, which is the intent. The set is cached for `cache_ttl_seconds`, so a
+        # *recognized* key id costs one local RSA verification and no outbound request. An
+        # unrecognized one costs at most one bounded, off-loop fetch for the life of its
+        # negative-cache entry, and none at all while that entry is live.
         self._jwks_client.get_signing_keys()
 
     def _cache_key_for(self, token: str) -> str | None:
