@@ -20,6 +20,7 @@ import ast
 import base64
 import inspect
 import re
+import string
 import textwrap
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -185,6 +186,19 @@ class TestTheOpaqueHandle:
         """URL-safe matters even though the handle never reaches a URL: `+` and `/` are what a
         careless caller would percent-encode, and a re-encoded handle no longer locates its row."""
         assert re.fullmatch(r"[A-Za-z0-9_-]{22}", new_challenge_id())
+
+    def test_the_alphabet_across_a_thousand_handles_is_exactly_base64url(self):
+        """Set equality over ~22,000 characters, because the containment form above is one sample
+        and two substitutions slip past it.
+
+        Standard `b64encode` produces `+` and `/` in only about half of any single 22-character
+        handle, so the case above passes it roughly one run in two -- flaky rather than wrong.
+        And `uuid4().hex[:22]` satisfies *every* other assertion in this class: 22 characters, no
+        padding, URL-safe by accident, all distinct, and it even decodes back to 16 bytes. Only the
+        alphabet tells them apart -- hex is 16 characters and base64url is 64.
+        """
+        observed = set("".join(new_challenge_id() for _ in range(1000)))
+        assert observed == set(string.ascii_letters + string.digits + "-_")
 
     def test_a_thousand_handles_are_all_distinct(self):
         assert len({new_challenge_id() for _ in range(1000)}) == 1000
