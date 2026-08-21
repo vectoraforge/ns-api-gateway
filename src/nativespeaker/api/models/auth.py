@@ -1,7 +1,7 @@
-"""The auth-domain PostgreSQL enums and the `audit.auth_events` table.
+"""The auth-domain PostgreSQL enums, the `core.auth_challenges` table, and `audit.auth_events`.
 
-`core.auth_challenges` is still absent -- plan 10 adds it. The two enums came first because route
-metadata (auth/registry.py) and the audit writer both key off them.
+The two enums came first because route metadata (auth/registry.py) and the audit writer both key
+off them.
 
 `AuthEvent` is the first model in this codebase mapped outside the `core` schema. Every constraint
 the table carries stays in `migrations/20260818_01_initial-release.sql` and is deliberately not
@@ -95,6 +95,53 @@ DateTimeType = cast(Any, DateTime(timezone=True))
 ByteaType = cast(Any, LargeBinary)
 SmallIntType = cast(Any, SmallInteger)
 JSONBType = cast(Any, JSONB)
+
+
+class AuthChallenge(SQLModel, table=True):
+    """One challenge row (§6). Lifecycle is discriminated by column nullability, not by a state
+    column: `issued` while `claimed_at IS NULL`, `claimed` once `claimed_at` and the attempt's
+    server-generated `claim_attempt_id` are set, `consumed` once `consumed_at` is set.
+
+    Do not add a state column, and do **not** add an HMAC key-version column. The migration comment
+    forbids the second explicitly: verification uses the current active key alone, so a challenge
+    outstanding across a key rotation simply fails (D-21's accepted consequence). `audit.auth_events`
+    is the table that has one.
+
+    The three CHECKs -- the lifecycle nullability rule, the four-arm operation/variant rule, and the
+    binding rule that admits a cleared `preauth_subject_hash` only once `consumed_at` is set -- live
+    in the migration and are deliberately not re-encoded here.
+    """
+
+    __tablename__ = "auth_challenges"
+    __table_args__ = {"schema": "core"}
+
+    # The internal correlation identifier, never returned to a client. This is the id that goes in
+    # `audit.auth_events.challenge_row_id`; the public `challenge_id` below never does.
+    id: UUID = Field(default_factory=uuid7, primary_key=True)
+    # The single opaque random value that both locates the row and serves as the nonce (§6.5). A
+    # **secret capability handle**: body-only transport, and never in a URL, an audit row, a log, a
+    # trace, analytics, or error text.
+    challenge_id: str = Field(unique=True)
+    operation: AuthOperation = Field(sa_type=AuthOperationType)
+    # NULL exactly for the two grant-claim operations; non-NULL for the two create/upgrade ones.
+    operation_variant: IdentityProvider | None = Field(sa_type=IdentityProviderType, default=None)
+    # §6.4's linked arm. Exactly one of this and the pre-auth pair below is populated.
+    bound_external_identity_id: UUID | None = Field(default=None,
+                                                    foreign_key="core.external_identities.id")
+    # Ruling 9.3: PLAINTEXT on purpose. A deployment-known provider string shared by every user of
+    # that provider -- do not hash it, encrypt it, or drop it.
+    preauth_issuer: str | None = Field(default=None)
+    # Ruling 9.4: the keyed hash of the backend-verified subject, never the raw subject and never a
+    # signed token the client carries. Cleared by consumption, in the same statement that sets
+    # `consumed_at` -- the binding CHECK admits a cleared hash only then.
+    preauth_subject_hash: bytes | None = Field(sa_type=ByteaType, default=None)
+    # Written by the application as `now + 300s` (§6.3). No database default, no per-operation
+    # override, and evaluated in exactly one place: the claim's WHERE.
+    expires_at: datetime = Field(sa_type=DateTimeType)
+    claimed_at: datetime | None = Field(sa_type=DateTimeType, default=None)
+    claim_attempt_id: UUID | None = Field(default=None)
+    consumed_at: datetime | None = Field(sa_type=DateTimeType, default=None)
+    created_at: datetime = Field(sa_type=DateTimeType)
 
 
 class AuthEvent(SQLModel, table=True):

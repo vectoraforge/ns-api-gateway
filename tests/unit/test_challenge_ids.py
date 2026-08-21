@@ -26,6 +26,7 @@ from pathlib import Path
 from uuid import UUID, uuid7
 
 import pytest
+
 from nativespeaker.api.auth.challenges import (
     CHALLENGE_ID_BYTES,
     CHALLENGE_TTL_SECONDS,
@@ -33,7 +34,6 @@ from nativespeaker.api.auth.challenges import (
     ChallengeStore,
     new_challenge_id,
 )
-
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
 from nativespeaker.api.auth.keys import HmacConfig, HmacKeyring
 from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult, AuthOperation
