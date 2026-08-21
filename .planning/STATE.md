@@ -5,17 +5,17 @@ milestone_name: Authentication & Entitlements
 current_phase: 35
 current_phase_name: foundation
 status: executing
-stopped_at: Phase 35 context gathered
-last_updated: "2026-08-21T21:17:35.532Z"
-last_activity: 2026-08-20
-last_activity_desc: Phase 34 complete, transitioned to Phase 35
+stopped_at: Completed 35-12-PLAN.md
+last_updated: "2026-08-21T21:41:23.332Z"
+last_activity: 2026-08-21
+last_activity_desc: Plan 35-12 complete — CR-01 gap closed
 progress:
   total_phases: 13
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 16
-  completed_plans: 4
-  percent: 8
-state_head: 08c16c14206afbc9669122abe33fa76ab19d7e5c
+  completed_plans: 16
+  percent: 15
+state_head: b5b67982c9a80a3eb3c98d161e12af21781c5f36
 ---
 
 # Project State
@@ -30,9 +30,9 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 35 (foundation) — EXECUTING
-Plan: 1 of 11
-Status: Ready to execute
-Last activity: 2026-08-20 — Phase 35 execution resumed (wave continue)
+Plan: 12 of 12
+Status: All 12 plans executed; 35-12 closed the CR-01 gap — ready for re-verification
+Last activity: 2026-08-21 — Plan 35-12 complete (JWKS offload + negative-kid cache)
 
 ## Accumulated Context
 
@@ -95,11 +95,11 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-21T02:25:36.309Z
+**Last session:** 2026-08-21T21:40:55.705Z
 
 Last activity: 2026-03-26
-Stopped at: Phase 35 context gathered
-Resume file: .planning/phases/35-foundation/35-CONTEXT.md
+Stopped at: Completed 35-12-PLAN.md
+Resume file: None
 
 ## Performance Metrics
 
@@ -110,6 +110,7 @@ Resume file: .planning/phases/35-foundation/35-CONTEXT.md
 | Phase 34 P02 | ~25 min | 3 tasks | 6 files |
 | Phase 34 P03 | 42min | 3 tasks | 8 files |
 | Phase 34 P04 | 38min | 2 tasks | 3 files |
+| Phase 35 P12 | 22min | 3 tasks | 4 files |
 
 ## Decisions
 
@@ -124,3 +125,8 @@ Resume file: .planning/phases/35-foundation/35-CONTEXT.md
 - [Phase ?]: Cases R5/R6 assert the exception class only: the named grant_source CHECK is subsumed by the four-arm CHECK and unreachable as a reported violation on PostgreSQL 17.11
 - [Phase ?]: Savepoint-scoped rejection helper, because a rejected statement aborts the whole transaction and blocks any post-rejection query
 - [Phase ?]: SET CONSTRAINTS ALL IMMEDIATE proves a deferred constraint accepts a valid row without committing it
+- [Phase ?]: 35-12: D10's fifth conjunct restated as 'no per-request network call ON THE EVENT LOOP' — a first unrecognized kid still costs one bounded (3s), off-loop fetch; repeats cost none for the life of a 60s negative-cache entry
+- [Phase ?]: 35-12: any synchronous call on the barrier's request path that can perform I/O is awaited through starlette.concurrency.run_in_threadpool — never called inline (verify() stays sync per D-01)
+- [Phase ?]: 35-12: an absent, empty, or non-string kid keys on a shared empty-string sentinel in the negative cache — PyJWT forces a real refresh on every unmatched kid, so omitting one header field was otherwise an unbounded per-request fetch
+- [Phase ?]: 35-12: PyJWKClientConnectionError never records a kid — an endpoint outage must not become a longer self-inflicted auth outage; distinct unknown kids still cost one bounded off-loop fetch each (accepted as T-35-12-03)
+- [Phase ?]: 35-12: fetch/IO counts are asserted at the transport seam under a real client, never against a substituted client class, and every bounded-count assertion ships with a control that makes the count non-zero

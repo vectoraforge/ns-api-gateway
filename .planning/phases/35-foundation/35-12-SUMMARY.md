@@ -289,6 +289,13 @@ None — no external service configuration required. `fetch_timeout_seconds`, `u
 - **One pattern later phases inherit:** any synchronous call on the barrier's request path that can perform I/O must be awaited through `run_in_threadpool`. The `JWTVerifier` class docstring records this so the direct call is not re-introduced.
 - **Concern, low:** the offload moves the blocking fetch onto Starlette's threadpool (40 workers by default). A sustained flood of distinct unknown `kid`s could saturate it — bounded now by the 3s timeout where it previously was not bounded at all, and by Envoy's rate limiting by IP/user/URL. The plan dropped *threadpool exhaustion* as a prohibition with the breadcrumb "canon availability, referred to OWASP rather than minted"; it is repeated here so a later phase adding a second blocking offload knows the budget is shared.
 
+## Self-Check: PASSED
+
+- All 5 claimed files exist on disk (1 created, 3 modified, 1 SUMMARY).
+- All 5 claimed commits exist in git: `c8a6fbe`, `e26d6e1`, `0365ce7`, `ca9ad9b`, `18265ed`.
+- All named test cases resolve to real `def test_*` definitions in `tests/`.
+- All measured counts in the Measured Evidence table were observed in this session, not estimated.
+
 ---
 *Phase: 35-foundation*
 *Completed: 2026-08-21*

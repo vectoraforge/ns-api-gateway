@@ -153,7 +153,7 @@ Plans:
 **Goal:** Build the shared machinery every later phase calls and none rebuilds — barrier, route registry, error registry, audit writer, provider-call budget seam, challenge store, adapter interfaces — and repair the model layer so the application boots and the enumeration assertion runs for real.
 **Requirements:** FOUND-01 … FOUND-08
 **Depends on:** 34
-**Plans:** 12 plans across 11 waves — 11/11 executed; 35-12 is gap closure for the one failed must-have
+**Plans:** 12/12 plans executed across 11 waves — 35-12 is gap closure for the one must-have `35-VERIFICATION.md` scored failed (CR-01); awaiting re-verification
 
 Plans:
 **Wave 1**
@@ -199,7 +199,7 @@ Plans:
 
 **Wave 11** *(blocked on Wave 10 completion)*
 
-- [ ] 35-12-PLAN.md — Gap closure (CR-01): offload JWKS verification off the event loop, bound the fetch timeout, add the negative-`kid` cache, replace the vacuous test (wave 11)
+- [x] 35-12-PLAN.md — Gap closure (CR-01): offload JWKS verification off the event loop, bound the fetch timeout, add the negative-`kid` cache, replace the vacuous test (wave 11)
 
 **Success criteria:**
 
@@ -382,7 +382,7 @@ Plans:
 | 32. Rewrite Models to Match Prompt Schema | v1.6 | 3/3 | Complete | 2026-03-26 |
 | 33. Propagate quota_exceeded Rename | v1.6 | 1/1 | Complete | 2026-03-26 |
 | 34. Schema | v2.0 | 4/4 | Complete    | 2026-08-20 |
-| 35. Foundation | v2.0 | 11/11 | In Progress|  |
+| 35. Foundation | v2.0 | 12/12 | In Progress|  |
 | 36. Rebind Pre-existing Routes | v2.0 | 0/? | Pending | — |
 | 37. POST /auth/create-user | v2.0 | 0/? | Pending | — |
 | 38. POST /auth/sync | v2.0 | 0/? | Pending | — |
