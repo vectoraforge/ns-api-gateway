@@ -50,24 +50,27 @@ class TestErrorCases:
 @pytest.mark.asyncio(loop_scope="module")
 class TestUnauthenticatedAccess:
     async def test_no_auth_header_returns_401(self, _app_lifespan):
-        """Request without Authorization header returns 401 unauthorized."""
+        """Request without Authorization header returns 401 auth_required.
+
+        The barrier now owns this rejection, and D-11 retires the old `unauthorized` code.
+        """
         from httpx import ASGITransport, AsyncClient
         transport = ASGITransport(app=_app_lifespan)
         async with AsyncClient(transport=transport,
                                base_url="http://test") as client:
             response = await client.get("/chats")
             assert response.status_code == 401
-            assert response.json()["code"] == "unauthorized"
+            assert response.json()["code"] == "auth_required"
 
     async def test_no_auth_on_users_me_returns_401(self, _app_lifespan):
-        """GET /users/me without auth returns 401."""
+        """GET /users/me without auth returns 401 auth_required."""
         from httpx import ASGITransport, AsyncClient
         transport = ASGITransport(app=_app_lifespan)
         async with AsyncClient(transport=transport,
                                base_url="http://test") as client:
             response = await client.get("/users/me")
             assert response.status_code == 401
-            assert response.json()["code"] == "unauthorized"
+            assert response.json()["code"] == "auth_required"
 
     async def test_invalid_bearer_token_returns_401(self, _app_lifespan):
         """Request with invalid Bearer token returns 401."""

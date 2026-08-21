@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth import JWTVerifier
+from nativespeaker.api.auth.registry import assert_route_enumeration
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.logs import setup_logging
 from nativespeaker.api.services import FirebaseService, LLMService, create_apple_verifier
@@ -24,6 +25,9 @@ async def lifespan(app: FastAPI):
 
     # Setup logging
     setup_logging(log_level=config.log_level)
+
+    # Validate the route registry against the live router -- fails closed before serving traffic
+    assert_route_enumeration(app)
 
     # Initialize database
     db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)
