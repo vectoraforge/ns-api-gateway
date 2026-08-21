@@ -54,9 +54,10 @@ pythonpath = ["."]
 env_files = [".env"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "-v --tb=short -m 'not e2e'"
+addopts = "-v --tb=short -m 'not e2e and not schema'"
 markers = [
     "e2e: marks end-to-end tests requiring real infrastructure (deselect with -m 'not e2e')",
+    "schema: marks schema-conformance tests requiring a real PostgreSQL (deselect with -m 'not schema')",
 ]
 
 [tool.ruff]

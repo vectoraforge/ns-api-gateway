@@ -21,20 +21,26 @@ created: 2026-08-19
 |----------|-------|
 | **Framework** | pytest 9.0.2 + pytest-asyncio 1.3.0 (`asyncio_mode = "auto"`) |
 | **Config file** | `pyproject.toml` `[tool.pytest.ini_options]` (lines 51-60) |
-| **Quick run command** | `pytest tests/schema -x -q` |
-| **Full suite command** | `pytest tests/schema tests/unit` |
+| **Quick run command** | `pytest tests/schema -m schema -x -q` |
+| **Full suite command** | `pytest tests/schema -m schema && pytest tests/unit` |
 | **Estimated runtime** | ~5 seconds (one-time scratch-DB apply, then sub-second per test) |
 
 **New marker required:** `schema: schema-conformance tests requiring a real PostgreSQL` must be added to
 `[tool.pytest.ini_options] markers`. **Do not** reuse `e2e` — the default
 `addopts = "-v --tb=short -m 'not e2e'"` would deselect this phase's only proof.
 
+**Resolved by plan 34-03 task 2 (orchestrator DIRECTIVE-2):** the marker is registered and `addopts`
+is now `-v --tb=short -m 'not e2e and not schema'`, so a bare `pytest` stays green on a machine with
+no PostgreSQL. The consequence is that **every command below must select the marker explicitly with
+`-m schema`** — a bare `pytest tests/schema` now collects nothing. All commands in this file were
+updated accordingly.
+
 ---
 
 ## Sampling Rate
 
-- **After every task commit:** Run `pytest tests/schema -x -q`
-- **After every plan wave:** Run `pytest tests/schema tests/unit`
+- **After every task commit:** Run `pytest tests/schema -m schema -x -q`
+- **After every plan wave:** Run `pytest tests/schema -m schema && pytest tests/unit`
 - **Before `/gsd:verify-work`:** Full suite must be green, plus a manual `pogo apply` against a genuinely
   empty PostgreSQL 17 (satisfies success criterion 1 outside the fixture)
 - **Max feedback latency:** 15 seconds
@@ -45,14 +51,14 @@ created: 2026-08-19
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| TBD | TBD | 0 | SCHEMA-01 | — | N/A | integration | `pytest tests/schema/test_apply_rollback.py -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SCHEMA-02 | — | `(issuer,subject)` uniqueness prevents identity collision across providers | unit (DDL) | `pytest tests/schema/test_constraints.py -k identity -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SCHEMA-03 | — | At most one `status='active'` grant per user — blocks entitlement stacking | unit (DDL) | `pytest tests/schema/test_constraints.py -k grant -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SCHEMA-04 | — | Generated column rejects direct writes — entitlement cannot be forged | unit (DDL) | `pytest tests/schema/test_constraints.py -k subscription -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SCHEMA-05 | — | Challenge claim/consume CHECKs reject replay-shaped rows | unit (DDL) | `pytest tests/schema/test_constraints.py -k challenge -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SCHEMA-06 | — | Partial actor fields rejected — audit rows cannot be written unattributable | unit (DDL) | `pytest tests/schema/test_constraints.py -k audit -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SCHEMA-07 | — | Legacy `jwt_sub` / `subscription_plan` / `promo` paths are absent, not merely unused | unit (introspection) | `pytest tests/schema/test_inventory.py -k legacy -x` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SCHEMA-08 | — | N/A | unit (introspection) | `pytest tests/schema/test_inventory.py -x` | ❌ W0 | ⬜ pending |
+| TBD | TBD | 0 | SCHEMA-01 | — | N/A | integration | `pytest tests/schema/test_apply_rollback.py -m schema -x` | ❌ W0 | ⬜ pending |
+| TBD | TBD | TBD | SCHEMA-02 | — | `(issuer,subject)` uniqueness prevents identity collision across providers | unit (DDL) | `pytest tests/schema/test_constraints.py -m schema -k identity -x` | ❌ W0 | ⬜ pending |
+| TBD | TBD | TBD | SCHEMA-03 | — | At most one `status='active'` grant per user — blocks entitlement stacking | unit (DDL) | `pytest tests/schema/test_constraints.py -m schema -k grant -x` | ❌ W0 | ⬜ pending |
+| TBD | TBD | TBD | SCHEMA-04 | — | Generated column rejects direct writes — entitlement cannot be forged | unit (DDL) | `pytest tests/schema/test_constraints.py -m schema -k subscription -x` | ❌ W0 | ⬜ pending |
+| TBD | TBD | TBD | SCHEMA-05 | — | Challenge claim/consume CHECKs reject replay-shaped rows | unit (DDL) | `pytest tests/schema/test_constraints.py -m schema -k challenge -x` | ❌ W0 | ⬜ pending |
+| TBD | TBD | TBD | SCHEMA-06 | — | Partial actor fields rejected — audit rows cannot be written unattributable | unit (DDL) | `pytest tests/schema/test_constraints.py -m schema -k audit -x` | ❌ W0 | ⬜ pending |
+| TBD | TBD | TBD | SCHEMA-07 | — | Legacy `jwt_sub` / `subscription_plan` / `promo` paths are absent, not merely unused | unit (introspection) | `pytest tests/schema/test_inventory.py -m schema -k legacy -x` | ❌ W0 | ⬜ pending |
+| TBD | TBD | TBD | SCHEMA-08 | — | N/A | unit (introspection) | `pytest tests/schema/test_inventory.py -m schema -x` | ❌ W0 | ⬜ pending |
 
 *Task IDs are filled in by the planner; rows above are the requirement-level coverage contract.*
 
