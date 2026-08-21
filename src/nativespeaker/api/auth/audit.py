@@ -78,7 +78,16 @@ FORBIDDEN_KEY_NAMES = frozenset({
 
 # Case-insensitive fragments: a key *containing* one of these is dropped wherever it appears.
 # Substring matching is what makes the redactor total over field names later phases have not
-# invented yet, which an exact list can never be. Over-redaction is the safe direction here.
+# invented yet, which an exact list can never be.
+#
+# **Naming convention this imposes, and it is load-bearing.** The match is on the artifact's *name*,
+# so it cannot tell `restore_proof` (the artifact) from `proof_families_checked` (the metadata §4.4
+# asks `verification` to carry). It drops both, because over-redaction is the safe direction and
+# under-redaction is a durable leak. A later phase recording metadata *about* a secret must
+# therefore not name the field after the secret: write `families_checked`, not
+# `proof_families_checked`; `signature_algorithm` and `payload_bytes` are dropped for the same
+# reason. `test_audit_details.py` pins this so the rule is discoverable from a failing test rather
+# than from a field that silently vanished.
 FORBIDDEN_KEY_FRAGMENTS = (
     "addr",                 # client_address, remote_addr, peer_address -- the bucket kind survives
     "attestation",          # attestation blobs and attestation private keys
@@ -86,12 +95,14 @@ FORBIDDEN_KEY_FRAGMENTS = (
     "device_fingerprint",
     "device_id",
     "email",                # email addresses
+    "forwarded",            # x_forwarded_for and every other forwarded-address header field
     "password",
     "payload",              # signed transaction payloads
     "private_key",
     "proof",                # raw restore_proof
     "provider_response",    # raw provider responses
     "raw_",                 # raw anything: raw_token, raw_response, raw_subject, raw_device_id
+    "real_ip",              # x_real_ip -- the same address under the other common header name
     "secret",
     "signature",
     "signed_",              # signed transaction payloads
