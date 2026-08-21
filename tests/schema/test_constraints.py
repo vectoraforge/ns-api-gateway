@@ -1,7 +1,8 @@
 """SCHEMA-02 .. SCHEMA-06 -- the 00-schema.md section 10 rejection cases, exercised with real rows."""
 import contextlib
+import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -23,8 +24,26 @@ UQ_IDENTITY_ISSUER_SUBJECT = "external_identities_issuer_subject_key"
 FK_IDENTITY_USER = "external_identities_user_id_fkey"
 FK_ANTI_ABUSE_REQUIRED = "access_grants_anti_abuse_required_grant_id_fkey"
 PK_USER_MONTHLY_USAGE = "user_monthly_usage_pkey"
+CK_ANTI_ABUSE_GRANT_SOURCE = "access_grants_anti_abuse_grant_source_check"
+FK_GRANT_SUBSCRIPTION_ENTITLED = "access_grants_active_subscription_grant_subscription_id_fkey"
+# PostgreSQL truncates a generated identifier at 63 characters. This composite FK's full
+# column-derived name does not fit, and "_ac" is all that survives of its second column. The name
+# is still derived from explicit column names rather than from declaration order, so it is stable
+# in the way P-8 cares about -- and asserting it is the only way to show that case OWN rejects on
+# the ownership FK rather than on the entitlement FK above.
+FK_GRANT_SUBSCRIPTION_OWNER = "access_grants_active_subscription_grant_subscription_id_ac_fkey"
 
 ISSUER = "https://securetoken.google.com/native-speaker-test"
+_ACTOR_SUBJECT_HASH = bytes(range(32))
+_IDP_ACCOUNT_HASH = bytes(range(32, 64))
+_DETAILS_KEYS = ("schema_version", "context", "verification", "resolved", "mutation", "failure")
+
+# The COMMIT-time cases (LB, E1, E2, OWN) below drive the boundary with explicit SQL. The conn
+# fixture has already opened a transaction, so the "BEGIN" is a documented no-op the server warns
+# about; what matters is the explicit "COMMIT", because a DEFERRABLE INITIALLY DEFERRED constraint
+# is only checked there. The failure aborts the transaction server-side while asyncpg still
+# believes it is open, so none of those tests issues a ROLLBACK afterwards and none of them queries
+# the connection again (RESEARCH P-6).
 
 # Two literal statements rather than one assembled string: the identity_state default has to be
 # proven by omitting the column, and no f-string is allowed to build SQL text in this module.
@@ -54,6 +73,37 @@ _INSERT_USAGE = (
     "INSERT INTO core.user_monthly_usage "
     "(grant_id, monthly_period, monthly_used, created_at, updated_at) "
     "VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+)
+_INSERT_SUBSCRIPTION_WITH_GENERATED_COLUMN = (
+    "INSERT INTO core.subscriptions "
+    "(id, user_id, provider, external_id, tier_id, status, product_entitled_subscription_id, "
+    "created_at, updated_at) "
+    "VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+)
+_INSERT_STORE_PURCHASE = (
+    "INSERT INTO core.store_purchases "
+    "(id, provider, identity_value, external_id, resolved_token_value, created_at) "
+    "VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)"
+)
+_INSERT_CHALLENGE = (
+    "INSERT INTO core.auth_challenges "
+    "(id, challenge_id, operation, operation_variant, bound_external_identity_id, preauth_issuer, "
+    "preauth_subject_hash, expires_at, claimed_at, claim_attempt_id, consumed_at, created_at) "
+    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)"
+)
+# Two literal statements again: case A6 has to prove the DDL's details DEFAULT is what a minimal
+# valid row gets, which means omitting the column rather than passing the skeleton by hand.
+_INSERT_AUTH_EVENT = (
+    "INSERT INTO audit.auth_events "
+    "(id, challenge_row_id, operation, result, actor_issuer, actor_subject_hash, "
+    "actor_subject_hash_key_version, actor_provider, details, created_at) "
+    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, CURRENT_TIMESTAMP)"
+)
+_INSERT_AUTH_EVENT_DETAILS_OMITTED = (
+    "INSERT INTO audit.auth_events "
+    "(id, challenge_row_id, operation, result, actor_issuer, actor_subject_hash, "
+    "actor_subject_hash_key_version, actor_provider, created_at) "
+    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)"
 )
 
 
@@ -152,6 +202,71 @@ async def _insert_anti_abuse(
         idp_account_hash,
         idp_account_hash_key_version,
     )
+
+
+async def _insert_challenge(
+    conn: asyncpg.Connection,
+    *,
+    operation: str = "create_user",
+    operation_variant: str | None = "anonymous",
+    bound_external_identity_id: uuid.UUID | None = None,
+    preauth_issuer: str | None = ISSUER,
+    preauth_subject_hash: bytes | None = _ACTOR_SUBJECT_HASH,
+    claimed_at: datetime | None = None,
+    claim_attempt_id: uuid.UUID | None = None,
+    consumed_at: datetime | None = None,
+) -> uuid.UUID:
+    """Insert one core.auth_challenges row and return its id."""
+    challenge_row_id = uuid.uuid4()
+    await conn.execute(
+        _INSERT_CHALLENGE,
+        challenge_row_id,
+        f"chal_{uuid.uuid4().hex}",
+        operation,
+        operation_variant,
+        bound_external_identity_id,
+        preauth_issuer,
+        preauth_subject_hash,
+        datetime.now(UTC) + timedelta(seconds=300),
+        claimed_at,
+        claim_attempt_id,
+        consumed_at,
+    )
+    return challenge_row_id
+
+
+async def _insert_auth_event(
+    conn: asyncpg.Connection,
+    *,
+    result: str,
+    operation: str | None = None,
+    actor_issuer: str | None = ISSUER,
+    actor_subject_hash: bytes | None = _ACTOR_SUBJECT_HASH,
+    actor_subject_hash_key_version: int | None = 1,
+    actor_provider: str | None = None,
+    details: dict | None = None,
+) -> uuid.UUID:
+    """Insert one audit.auth_events row and return its id.
+
+    details=None omits the column entirely so the DDL's six-key DEFAULT applies; pass a dict to
+    write an explicit one.
+    """
+    event_id = uuid.uuid4()
+    common = (
+        event_id,
+        None,  # challenge_row_id -- deliberately bare, the schema has no FK to core.auth_challenges
+        operation,
+        result,
+        actor_issuer,
+        actor_subject_hash,
+        actor_subject_hash_key_version,
+        actor_provider,
+    )
+    if details is None:
+        await conn.execute(_INSERT_AUTH_EVENT_DETAILS_OMITTED, *common)
+    else:
+        await conn.execute(_INSERT_AUTH_EVENT, *common, json.dumps(details))
+    return event_id
 
 
 class TestExternalIdentityConstraints:
@@ -306,3 +421,373 @@ class TestAccessGrantConstraints:
         # Forces every deferred constraint to be checked now, inside the per-test transaction, so the
         # valid pair is proven without committing it and without breaking per-test rollback.
         await conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
+
+
+class TestAntiAbuseEvidenceConstraints:
+    """SCHEMA-03 -- the four-arm anti-abuse CHECK and the "free sources only" partition."""
+
+    async def _free_grant(self, conn, tier, source="anonymous_device_grant") -> uuid.UUID:
+        user_id = await insert_user(conn)
+        return await insert_grant(conn, user_id=user_id, tier_id=tier, source=source)
+
+    async def test_grant_anti_abuse_native_ios_tuple_accepted(self, conn, tier):
+        """Case V1 -- native iOS: a native_claim_provider and no hash fields at all."""
+        grant_id = await self._free_grant(conn, tier)
+        await _insert_anti_abuse(
+            conn, grant_id=grant_id, grant_source="anonymous_device_grant", native_claim_provider="ios_devicecheck"
+        )
+        assert await conn.fetchval(
+            "SELECT native_claim_provider::text FROM core.access_grants_anti_abuse WHERE grant_id = $1", grant_id
+        ) == "ios_devicecheck"
+
+    async def test_grant_anti_abuse_native_android_tuple_accepted(self, conn, tier):
+        """Case V2 -- native Android. Ruling 9.6 keeps that arm shape-only, so no value list is asserted."""
+        grant_id = await self._free_grant(conn, tier)
+        await _insert_anti_abuse(
+            conn,
+            grant_id=grant_id,
+            grant_source="anonymous_device_grant",
+            native_claim_provider="android_play_integrity",
+        )
+        assert await conn.fetchval(
+            "SELECT count(*) FROM core.access_grants_anti_abuse WHERE grant_id = $1", grant_id
+        ) == 1
+
+    async def test_grant_anti_abuse_web_anonymous_tuple_accepted(self, conn, tier):
+        """Case V3 -- web anonymous: no native_claim_provider, both hash fields populated."""
+        grant_id = await self._free_grant(conn, tier)
+        await _insert_anti_abuse(
+            conn,
+            grant_id=grant_id,
+            grant_source="anonymous_device_grant",
+            idp_account_hash=_IDP_ACCOUNT_HASH,
+            idp_account_hash_key_version=1,
+        )
+        assert await conn.fetchval(
+            "SELECT idp_account_hash FROM core.access_grants_anti_abuse WHERE grant_id = $1", grant_id
+        ) == _IDP_ACCOUNT_HASH
+
+    async def test_grant_anti_abuse_registered_tuple_accepted(self, conn, tier):
+        """Case V4 -- registered: same shape as web anonymous, on a registered_account_grant."""
+        grant_id = await self._free_grant(conn, tier, source="registered_account_grant")
+        await _insert_anti_abuse(
+            conn,
+            grant_id=grant_id,
+            grant_source="registered_account_grant",
+            idp_account_hash=_IDP_ACCOUNT_HASH,
+            idp_account_hash_key_version=1,
+        )
+        assert await conn.fetchval(
+            "SELECT count(*) FROM core.access_grants_anti_abuse WHERE grant_id = $1", grant_id
+        ) == 1
+
+    async def test_grant_anti_abuse_anonymous_row_without_any_evidence_rejected(self, conn, tier):
+        """Case R1 -- an anonymous row with neither a native claim nor an account hash carries no evidence."""
+        grant_id = await self._free_grant(conn, tier)
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            # Leaving every evidence column NULL is the point of this test.
+            await _insert_anti_abuse(conn, grant_id=grant_id, grant_source="anonymous_device_grant")
+        assert await conn.fetchval("SELECT count(*) FROM core.access_grants_anti_abuse") == 0
+
+    async def test_grant_anti_abuse_native_row_carrying_idp_hash_rejected(self, conn, tier):
+        """Case R2 -- the native arm requires both hash fields NULL; a native row may not also carry one."""
+        grant_id = await self._free_grant(conn, tier)
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            # Mixing the native and web arms is the point of this test.
+            await _insert_anti_abuse(
+                conn,
+                grant_id=grant_id,
+                grant_source="anonymous_device_grant",
+                native_claim_provider="ios_devicecheck",
+                idp_account_hash=_IDP_ACCOUNT_HASH,
+                idp_account_hash_key_version=1,
+            )
+
+    async def test_grant_anti_abuse_web_anonymous_row_carrying_native_provider_rejected(self, conn, tier):
+        """Case R3 -- a web-anonymous row may not also claim a native provider."""
+        grant_id = await self._free_grant(conn, tier)
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            # Same mix as R2 read from the other side; the CHECK admits neither.
+            await _insert_anti_abuse(
+                conn,
+                grant_id=grant_id,
+                grant_source="anonymous_device_grant",
+                native_claim_provider="android_play_integrity",
+                idp_account_hash=_IDP_ACCOUNT_HASH,
+                idp_account_hash_key_version=1,
+            )
+
+    async def test_grant_anti_abuse_registered_row_carrying_native_provider_rejected(self, conn, tier):
+        """Case R4 -- the registered arm forbids a native_claim_provider outright."""
+        grant_id = await self._free_grant(conn, tier, source="registered_account_grant")
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            # A registered account never carries a native device claim; asserting one is the point.
+            await _insert_anti_abuse(
+                conn,
+                grant_id=grant_id,
+                grant_source="registered_account_grant",
+                native_claim_provider="ios_devicecheck",
+                idp_account_hash=_IDP_ACCOUNT_HASH,
+                idp_account_hash_key_version=1,
+            )
+
+    async def test_grant_anti_abuse_row_for_subscription_backed_grant_rejected(self, conn, tier):
+        """Case R5 -- a real subscription-backed grant cannot get an anti-abuse row at all."""
+        user_id = await insert_user(conn)
+        subscription_id = await _insert_subscription(conn, user_id=user_id, tier_id=tier, status="active")
+        grant_id = await insert_grant(
+            conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
+        )
+        # The real subscription and the real subscription-backed grant above are what make this test
+        # mean anything: source='subscription' with a NULL subscription_id is rejected by the grant's
+        # own subscription_id CHECK and would never reach the anti-abuse table at all (RESEARCH P-11).
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            await _insert_anti_abuse(
+                conn,
+                grant_id=grant_id,
+                grant_source="subscription",
+                idp_account_hash=_IDP_ACCOUNT_HASH,
+                idp_account_hash_key_version=1,
+            )
+        # The class only, not the name. RESEARCH Code Example 5 recorded this case as reporting
+        # access_grants_anti_abuse_grant_source_check on PostgreSQL 16.2; on the PostgreSQL 17.11
+        # target it reports access_grants_anti_abuse_check instead. That is not a schema defect and
+        # not a weaker test -- the row is still rejected, by a constraint that subsumes the named
+        # one. test_grant_anti_abuse_grant_source_check_is_subsumed below pins the reason.
+        assert await conn.fetchval("SELECT count(*) FROM core.access_grants_anti_abuse") == 0
+
+    async def test_grant_anti_abuse_row_for_manual_grant_rejected(self, conn, tier):
+        """Case R6 -- a manual grant cannot get an anti-abuse row either."""
+        user_id = await insert_user(conn)
+        grant_id = await insert_grant(conn, user_id=user_id, tier_id=tier, source="manual")
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            # A manual grant is a real grant with no anti-abuse evidence; attaching one is the point.
+            await _insert_anti_abuse(
+                conn,
+                grant_id=grant_id,
+                grant_source="manual",
+                idp_account_hash=_IDP_ACCOUNT_HASH,
+                idp_account_hash_key_version=1,
+            )
+        assert await conn.fetchval("SELECT count(*) FROM core.access_grants_anti_abuse") == 0
+
+    async def test_grant_anti_abuse_grant_source_check_is_subsumed(self, conn):
+        """Why cases R5 and R6 assert no constraint name: the named CHECK cannot be the reported one.
+
+        Both arms of the four-arm shape CHECK already pin grant_source to the two free sources, so
+        no row can satisfy that CHECK and still violate the grant_source CHECK. PostgreSQL evaluates
+        a table's CHECKs in constraint-name order, and access_grants_anti_abuse_check sorts before
+        access_grants_anti_abuse_grant_source_check, so the subsuming one always reports first. The
+        named CHECK is redundant belt-and-braces, exactly as the migration comment says. This test
+        asserts it is present and says what it says, which is what R5 and R6 can no longer assert.
+        """
+        definition = await conn.fetchval(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'core.access_grants_anti_abuse'::regclass AND conname = $1",
+            CK_ANTI_ABUSE_GRANT_SOURCE,
+        )
+        assert definition is not None
+        assert "anonymous_device_grant" in definition
+        assert "registered_account_grant" in definition
+        assert "subscription" not in definition
+        assert "manual" not in definition
+
+
+class TestSubscriptionConstraints:
+    """SCHEMA-04 -- the STORED generated column and the two deferred entitlement foreign keys."""
+
+    async def test_subscription_explicit_write_to_generated_column_rejected(self, conn, tier):
+        """Case GEN -- product_entitled_subscription_id is GENERATED ALWAYS and refuses a direct write."""
+        user_id = await insert_user(conn)
+        subscription_id = uuid.uuid4()
+        async with _rejects(conn, asyncpg.exceptions.GeneratedAlwaysError):
+            # Naming the generated column in the INSERT is the point of this test: forging
+            # entitlement would mean writing this column directly.
+            await conn.execute(
+                _INSERT_SUBSCRIPTION_WITH_GENERATED_COLUMN,
+                subscription_id,
+                user_id,
+                "apple",
+                f"ext_{uuid.uuid4().hex[:16]}",
+                tier,
+                "expired",
+                subscription_id,
+            )
+        assert await conn.fetchval("SELECT count(*) FROM core.subscriptions") == 0
+
+    async def test_subscription_expired_rejects_active_grant_at_commit(self, conn, tier):
+        """Case E1 -- an active subscription grant on an expired subscription fails the deferred FK."""
+        user_id = await insert_user(conn)
+        subscription_id = await _insert_subscription(conn, user_id=user_id, tier_id=tier, status="expired")
+        assert await conn.fetchval(
+            "SELECT product_entitled_subscription_id FROM core.subscriptions WHERE id = $1", subscription_id
+        ) is None
+        await conn.execute("BEGIN")
+        # An entitlement-bearing grant on a subscription nobody is paying for is the point of this test.
+        await insert_grant(
+            conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
+        )
+        with pytest.raises(asyncpg.ForeignKeyViolationError) as exc_info:
+            await conn.execute("COMMIT")  # the deferred FK fires HERE, not on the INSERT above
+        assert FK_GRANT_SUBSCRIPTION_ENTITLED in str(exc_info.value)
+
+    async def test_subscription_billing_retry_rejects_active_grant_at_commit(self, conn, tier):
+        """Case E2 -- ruling 9.14 fixes the entitled set at ('active','grace_period'); billing_retry is out."""
+        user_id = await insert_user(conn)
+        subscription_id = await _insert_subscription(conn, user_id=user_id, tier_id=tier, status="billing_retry")
+        assert await conn.fetchval(
+            "SELECT product_entitled_subscription_id FROM core.subscriptions WHERE id = $1", subscription_id
+        ) is None
+        await conn.execute("BEGIN")
+        # Not a duplicate of E1: this is the ruling most likely to be widened by a later reader who
+        # reasons that a card retry should keep the subscriber served.
+        await insert_grant(
+            conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
+        )
+        with pytest.raises(asyncpg.ForeignKeyViolationError) as exc_info:
+            await conn.execute("COMMIT")
+        assert FK_GRANT_SUBSCRIPTION_ENTITLED in str(exc_info.value)
+
+    async def test_subscription_grant_owner_mismatch_rejected_at_commit(self, conn, tier):
+        """Case OWN -- a grant may not point at another user's subscription."""
+        owner = await insert_user(conn)
+        thief = await insert_user(conn)
+        # The subscription stays entitled on purpose, so the entitlement FK is satisfied and the only
+        # constraint left to reject this grant is the composite ownership FK.
+        subscription_id = await _insert_subscription(conn, user_id=owner, tier_id=tier, status="active")
+        await conn.execute("BEGIN")
+        await insert_grant(
+            conn, user_id=thief, tier_id=tier, source="subscription", subscription_id=subscription_id
+        )
+        with pytest.raises(asyncpg.ForeignKeyViolationError) as exc_info:
+            await conn.execute("COMMIT")
+        assert FK_GRANT_SUBSCRIPTION_OWNER in str(exc_info.value)
+
+    async def test_subscription_with_null_user_id_accepted(self, conn, tier):
+        """Case UNO -- an unclaimed store subscription is ingested unowned and adopted later."""
+        subscription_id = await _insert_subscription(conn, user_id=None, tier_id=tier, status="active")
+        assert await conn.fetchval(
+            "SELECT user_id FROM core.subscriptions WHERE id = $1", subscription_id
+        ) is None
+
+    async def test_subscription_store_purchase_with_null_resolved_token_accepted(self, conn, tier):
+        """Case MS -- MATCH SIMPLE lets an unattributed purchase record without a resolved token."""
+        external_id = f"ext_{uuid.uuid4().hex[:16]}"
+        await _insert_subscription(conn, tier_id=tier, status="active", external_id=external_id)
+        purchase_id = uuid.uuid4()
+        await conn.execute(
+            _INSERT_STORE_PURCHASE, purchase_id, "apple", f"tok_{uuid.uuid4().hex[:16]}", external_id, None
+        )
+        assert await conn.fetchval(
+            "SELECT resolved_token_value FROM core.store_purchases WHERE id = $1", purchase_id
+        ) is None
+
+
+class TestAuthChallengeConstraints:
+    """SCHEMA-05 -- ruling 9.8's operation partition and the lifecycle and binding CHECKs."""
+
+    async def test_challenge_restore_subscription_operation_rejected(self, conn):
+        """Case R9 -- restore_subscription is challenge-free, and the database refuses such a row."""
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            # restore_subscription has no challenge row, no claim step and no consumption step;
+            # writing one is the point of this test.
+            await _insert_challenge(conn, operation="restore_subscription", operation_variant=None)
+        assert await conn.fetchval("SELECT count(*) FROM core.auth_challenges") == 0
+
+    async def test_challenge_create_user_without_operation_variant_rejected(self, conn):
+        """The other half of the 9.8 partition -- create_user must name a legal variant."""
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            # Omitting the required operation_variant is the point of this test.
+            await _insert_challenge(conn, operation="create_user", operation_variant=None)
+
+    async def test_challenge_claimed_without_attempt_id_rejected(self, conn):
+        """The lifecycle CHECK -- a claimed row must carry its server-generated claim_attempt_id."""
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            # Setting claimed_at while leaving claim_attempt_id NULL is the point of this test.
+            await _insert_challenge(conn, claimed_at=datetime.now(UTC), claim_attempt_id=None)
+
+    async def test_challenge_with_both_binding_forms_rejected(self, conn):
+        """The binding CHECK -- exactly one of the identity binding or the preauth pair, never both."""
+        user_id = await insert_user(conn)
+        identity_id = await _insert_identity(conn, user_id=user_id)
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            # Carrying both binding forms at once is the point of this test.
+            await _insert_challenge(
+                conn,
+                operation="claim_anonymous_grant",
+                operation_variant=None,
+                bound_external_identity_id=identity_id,
+                preauth_issuer=ISSUER,
+            )
+
+    async def test_challenge_wellformed_claimed_and_consumed_row_accepted(self, conn):
+        """All three CHECKs accept a well-formed claimed-and-consumed preauth row."""
+        now = datetime.now(UTC)
+        challenge_row_id = await _insert_challenge(
+            conn,
+            operation="upgrade_anonymous_to_registered",
+            operation_variant="google",
+            claimed_at=now,
+            claim_attempt_id=uuid.uuid4(),
+            consumed_at=now,
+        )
+        assert await conn.fetchval(
+            "SELECT count(*) FROM core.auth_challenges WHERE id = $1", challenge_row_id
+        ) == 1
+
+
+class TestAuthEventAuditConstraints:
+    """SCHEMA-06 -- the all-or-nothing actor CHECK, the succeeded/operation CHECK, and the details shape."""
+
+    async def test_audit_row_without_any_actor_fields_rejected(self, conn):
+        """Case A1 -- every result other than invalid_external_jwt must be attributable."""
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            # Dropping the whole actor triple on an attributable result is the point of this test.
+            await _insert_auth_event(
+                conn,
+                result="challenge_expired",
+                actor_issuer=None,
+                actor_subject_hash=None,
+                actor_subject_hash_key_version=None,
+            )
+        assert await conn.fetchval("SELECT count(*) FROM audit.auth_events") == 0
+
+    async def test_audit_invalid_external_jwt_row_carrying_actor_fields_rejected(self, conn):
+        """Case A2 -- an unverifiable token yields no actor, so the row may not claim one."""
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            # An invalid_external_jwt row was never able to identify an actor; asserting one is the point.
+            await _insert_auth_event(conn, result="invalid_external_jwt")
+
+    async def test_audit_row_with_partial_actor_triple_rejected(self, conn):
+        """Case A3 -- issuer and subject hash without the key version is an unverifiable actor."""
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            # Omitting only the key version is the point of this test: the hash cannot be
+            # re-derived later without knowing which key produced it.
+            await _insert_auth_event(
+                conn, result="challenge_expired", actor_subject_hash_key_version=None
+            )
+
+    async def test_audit_succeeded_row_without_operation_rejected(self, conn):
+        """Case A4 -- operation is nullable for rejections, but a succeeded row must name one."""
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            # Leaving operation NULL on a success is the point of this test.
+            await _insert_auth_event(conn, result="succeeded", operation=None)
+
+    async def test_audit_row_with_details_missing_failure_key_rejected(self, conn):
+        """Case A5 -- the details skeleton is enforced key by key."""
+        partial = {key: {} for key in _DETAILS_KEYS if key != "failure"}
+        partial["schema_version"] = 1
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            # Only the failure key is dropped, so this isolates one shape CHECK instead of
+            # tripping several at once.
+            await _insert_auth_event(conn, result="challenge_expired", details=partial)
+
+    async def test_audit_row_with_minimal_actor_triple_accepted(self, conn):
+        """Case A6 -- the CHECKs are not simply rejecting everything: a valid minimal row is accepted."""
+        event_id = await _insert_auth_event(conn, result="challenge_expired")
+        row = await conn.fetchrow(
+            "SELECT operation, actor_provider, details FROM audit.auth_events WHERE id = $1", event_id
+        )
+        assert row["operation"] is None  # nullable for a rejection result
+        assert row["actor_provider"] is None  # not part of the required triple
+        assert set(json.loads(row["details"])) == set(_DETAILS_KEYS)
