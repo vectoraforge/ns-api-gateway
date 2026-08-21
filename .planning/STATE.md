@@ -60,7 +60,7 @@ Last activity: 2026-08-19 — Phase 34 execution started
 **v2.0 (Authentication & Entitlements):**
 
 - Spec authority: /home/init/native-speaker/specs/auth-refactor-phases/ — SHARED-INVARIANTS.md binds every phase and overrides any conflicting phase brief; flag conflicts, never resolve silently
-- One initial migration rewritten in place; never add incremental migrations during v2.0 (overrides 00-schema.md §1/§2)
+- One initial migration, renamed and replaced rather than rewritten under its old id; never add incremental migrations during v2.0 (overrides 00-schema.md §1/§2)
 - Schema (34) and foundation (35) stay separate phases — different acceptance gates; Phase 34 knowingly leaves the app non-starting
 - Phase numbering continues at 34–45; spec file number + 34 = phase number
 - Roadmap built from spec metadata; each phase reads only its own spec file + SHARED-INVARIANTS.md at plan time (~90k tokens total, never loaded at once)

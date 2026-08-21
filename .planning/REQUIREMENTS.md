@@ -13,7 +13,7 @@
 
 ### SCHEMA — Phase 34 (`00-schema.md`)
 
-- [ ] **SCHEMA-01**: The single initial migration `migrations/20260322_01_initial-release.sql` creates the complete v2.0 schema in one apply against an empty database — no incremental migration files are added
+- [ ] **SCHEMA-01**: The single initial migration `migrations/20260818_01_initial-release.sql` replaces the deleted prior migration and creates the complete v2.0 schema in one apply against an empty database — no incremental migration files are added
 - [ ] **SCHEMA-02**: `core.users`, `core.external_identities`, and the `core.identity_provider` enum support `(issuer, subject)` → user resolution, with `identity_state` and permanently-retained tombstone rows
 - [ ] **SCHEMA-03**: `core.access_grants`, `core.access_tiers`, and `core.user_monthly_usage` enforce at most one active grant per user, with monthly usage keyed by grant id
 - [ ] **SCHEMA-04**: `core.subscriptions`, `core.store_purchases`, and `core.store_purchase_tokens` support both stores, with `product_entitled_subscription_id` as a STORED generated column over `('active','grace_period')`
@@ -131,7 +131,7 @@ Explicitly excluded. `SHARED-INVARIANTS.md` "Global deletions" binds every phase
 | Identity row deletion | Rows are tombstones; retirement is permanent and no path reverses it |
 | Data migration, backfill, compatibility shims, dual-write windows, deprecated aliases | Pre-launch database with disposable data |
 | `display_name` population from auth context | Never sourced from the Admin record or token claims |
-| Incremental migration files during v2.0 | One initial migration, rewritten in place |
+| Incremental migration files during v2.0 | One initial migration, renamed and replaced |
 | Multi-IdP support | Exactly one configured Firebase integration; store providers are not IdPs |
 | Admin user management | Own profile only (`GET /users/me`) |
 

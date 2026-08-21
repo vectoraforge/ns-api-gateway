@@ -114,7 +114,7 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 
 #### Phase 34: Schema
 
-**Goal:** Rewrite `migrations/20260322_01_initial-release.sql` in place so it delivers the complete v2.0 auth schema in one apply against an empty database.
+**Goal:** Deliver the complete v2.0 auth schema in one apply against an empty database as `migrations/20260818_01_initial-release.sql`, which replaces the deleted `20260322_01_initial-release.sql`.
 **Requirements:** SCHEMA-01 … SCHEMA-08
 **Depends on:** nothing — root of the graph
 **Plans:** 1/4 plans executed

@@ -163,6 +163,7 @@ Known areas for future work:
 - Grace period transparency in `GET /users/me` — `core.subscriptions.status` models `grace_period`, but `04-users-me.md` does not surface it in the response
 - Webhook retry reconciliation via App Store Server API polling
 - Startup exhaustiveness check for quota config (QUOTA-06)
+- `REVOKE DELETE ON core.external_identities` for the application and cleanup roles — the migration only records the requirement in a comment because this repo defines no database role, so it becomes actionable when role provisioning lands in the Kubernetes deployment
 
 ## Constraints
 
@@ -171,7 +172,7 @@ Known areas for future work:
 - **Error contract**: Exactly 5 status codes (400/401/404/429/500), 5 opaque error codes — no new codes without contract review
 - **Rate limiting**: backend `limits` engine owns identity/user-keyed limits (v2.0); Envoy Gateway limiting is defense-in-depth. Every limit value lives in config; security-sensitive entries default fail-closed
 - **Spec authority**: `/home/init/native-speaker/specs/auth-refactor-phases/` is the binding specification for v2.0. `SHARED-INVARIANTS.md` overrides any conflicting phase brief — flag conflicts, never resolve them silently
-- **Migrations**: pre-launch DB with no data. One initial migration file, rewritten in place — never add incremental migrations during v2.0
+- **Migrations**: pre-launch DB with no data. One initial migration file, replaced by a renamed file with the superseded one deleted — never add incremental migrations during v2.0
 
 ## Key Decisions
 
@@ -209,7 +210,7 @@ Known areas for future work:
 | LLM validation models in `models/llm.py`, API schemas in `models/api.py` | Separate concerns; LLM contract vs API contract | ✓ Good — v1.6 |
 | `require_quota` FastAPI dependency for quota enforcement | ChatService single-responsibility; quota is cross-cutting concern | ✓ Good — v1.6 |
 | `OutOfScopeError` for LLM reject responses | Clean error contract for out-of-scope input; dispatches on `resolved_mode` | ✓ Good — v1.6 |
-| Rewrite `20260322_01_initial-release.sql` in place instead of the six-migration sequence in `00-schema.md §1`/`§2` | Pre-launch DB with no data; teardown-then-rebuild SQL is pure waste. Overrides the phase brief — recorded per SHARED-INVARIANTS conflict rule | — Pending — v2.0 |
+| Deliver the v2.0 schema as `20260818_01_initial-release.sql`, deleting the superseded `20260322` file, instead of the six-migration sequence in `00-schema.md §1`/`§2` | Pre-launch DB with no data; teardown-then-rebuild SQL is pure waste. Overrides the phase brief — recorded per SHARED-INVARIANTS conflict rule. The rename also matters for correctness: the filename stem is pogo's tracked migration id, so rewriting the old file under its own id is silently skipped on any database that already applied it, whereas a new id fails loudly | — Pending — v2.0 |
 | Schema (34) and foundation (35) stay separate phases | Foundation is already the heaviest phase (8 subsystems); the two have genuinely different acceptance gates — "migration applies, constraints exist" vs "app starts, route assertion passes". Accepts one knowingly-broken intermediate commit | — Pending — v2.0 |
 | Phase numbering continues at 34–45 rather than resetting to 1 | Avoids colliding with the 33 phases already in MILESTONES.md; spec-file number maps to GSD phase by a fixed +34 offset | — Pending — v2.0 |
 | Roadmap built from spec metadata; each phase reads its own spec file at plan time | The spec dir is ~90k tokens — too large for one context, and unnecessary: the roadmapper needs dependency edges, not SQL DDL | — Pending — v2.0 |
