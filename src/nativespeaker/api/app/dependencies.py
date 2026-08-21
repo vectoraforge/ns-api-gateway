@@ -1,8 +1,6 @@
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
 
-import structlog
-from fastapi import Depends, Header, Request
+from fastapi import Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.context import (
@@ -11,12 +9,9 @@ from nativespeaker.api.auth.context import (
     PreAuthIdentity,
     RequestContext,
 )
-from nativespeaker.api.auth.verification import TokenVerifier
 from nativespeaker.api.config import AppConfig
-from nativespeaker.api.database import UsageDB
-from nativespeaker.api.errors import AuthenticationError, QuotaExceededError
-from nativespeaker.api.models import User
-from nativespeaker.api.services import ChatService, SubscriptionService, UserService
+from nativespeaker.api.errors import AuthenticationError
+from nativespeaker.api.services import ChatService
 
 
 def get_config(request: Request) -> AppConfig:
@@ -92,51 +87,16 @@ def get_preauth_identity(request: Request) -> PreAuthIdentity:
 
 
 # ---------------------------------------------------------------------------
-# Superseded by the barrier and the accessors above. Plan 04 deletes both, together with the
-# chat-route rewiring that is their last caller; they survive this plan only because deleting
-# them before `routers/chats.py` moves would leave the package un-importable.
+# Deleted here (D-16), together with the chat-route rewiring that was their last caller:
+#
+#   get_current_user       -- read the credential through FastAPI's `Header(None)` alias, which
+#                             returns a single folded value and cannot see a duplicate
+#                             `Authorization` field. That is the exact desync §1.1 exists to
+#                             reject, so this was a second acceptance path beside the barrier's.
+#                             It also provisioned `core.users` rows just in time; in v2.0 only
+#                             `POST /auth/create-user` (Phase 37) creates an account.
+#   require_quota          -- backend quota enforcement is Phase 36 REBIND-05, and the named
+#                             `quota_checked_request` admission entry §8.4 described is void
+#                             because D-05 deleted backend rate limiting from the product.
+#   get_subscription_service -- read `app.state.apple_verifier`, which the lifespan no longer sets.
 # ---------------------------------------------------------------------------
-
-
-def get_subscription_service(request: Request,
-                             db: AsyncSession = Depends(get_db),
-                             config: AppConfig = Depends(get_config)) -> SubscriptionService:
-    return SubscriptionService(
-        db=db,
-        verifier=request.app.state.apple_verifier,
-        firebase_service=request.app.state.firebase_service,
-        product_id_to_plan=config.apple.product_id_to_plan,
-    )
-
-
-async def get_current_user(request: Request,
-                           authorization: str | None = Header(None),
-                           db: AsyncSession = Depends(get_db)) -> User:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise AuthenticationError("Missing Bearer token")
-    token = authorization.split(" ", 1)[1].strip()
-    if not token:
-        raise AuthenticationError("Missing Bearer token")
-    verifier: TokenVerifier = request.app.state.jwt_verifier
-    # §1.2: the verifier returns a bounded reason rather than raising. The reason is never
-    # client-visible -- every failure branch surfaces the identical auth_required response.
-    claims, _reason = verifier.verify(token)
-    if claims is None:
-        raise AuthenticationError("Authentication failed")
-    user_service = UserService(db)
-    user = await user_service.get_or_create(claims.subject)
-    if not user.active:
-        raise AuthenticationError("Authentication failed")
-    structlog.contextvars.bind_contextvars(user_id=str(user.id))
-    return user
-
-
-async def require_quota(user: User = Depends(get_current_user),
-                        db: AsyncSession = Depends(get_db),
-                        config: AppConfig = Depends(get_config)) -> None:
-    """Atomically increment usage counter; raise 429 if monthly quota exhausted."""
-    month = datetime.now(UTC).strftime("%Y-%m")
-    monthly_quota = config.quotas[user.subscription_plan]
-    usage_db = UsageDB(db)
-    if not await usage_db.try_increment(user.id, month, monthly_quota):
-        raise QuotaExceededError("Monthly quota exceeded")

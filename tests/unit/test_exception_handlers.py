@@ -1,13 +1,9 @@
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-import nativespeaker.api.app.dependencies as deps_module
-from nativespeaker.api.app.dependencies import get_current_user, get_db
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.errors import (
     AuthenticationError,
@@ -23,8 +19,6 @@ from nativespeaker.api.errors import (
     TransientLLMError,
     UnsupportedLanguageError,
 )
-from nativespeaker.api.models import User
-from unit.conftest import make_test_verifier, make_token
 
 CASES = [
     ("missing_token", AuthenticationError("Missing Bearer token"), 401),
@@ -96,87 +90,14 @@ def test_validation_error_handler(handler_client):
     assert body["code"] == "validation_error"
 
 
-@pytest.fixture(scope="module")
-def dep_client():
-    mock_user = User(jwt_sub="u1", email="u1@example.com", name="User 1")
-    mock_db = MagicMock()
-
-    app = FastAPI()
-    register_exception_handlers(app)
-    app.state.jwt_verifier = make_test_verifier()
-    app.dependency_overrides[get_db] = lambda: mock_db
-
-    @app.get("/protected")
-    async def _protected(user: User = Depends(get_current_user)):
-        return {"user_id": str(user.id)}
-
-    with patch.object(deps_module, "UserService") as mock_user_svc_cls:
-        mock_user_svc_cls.return_value.get_or_create = AsyncMock(return_value=mock_user)
-        with TestClient(app, raise_server_exceptions=False) as client:
-            yield client
-
-
-def test_missing_auth_header_returns_401(dep_client):
-    response = dep_client.get("/protected")
-    assert response.status_code == 401
-    body = response.json()
-    assert body["code"] == "auth_required"
-
-
-def test_invalid_bearer_token_returns_401(dep_client):
-    response = dep_client.get("/protected", headers={"Authorization": "Bearer notajwt"})
-    assert response.status_code == 401
-
-
-def test_valid_bearer_token_resolves_user(dep_client):
-    token = make_token("u1")
-    response = dep_client.get("/protected", headers={"Authorization": f"Bearer {token}"})
-    assert response.status_code == 200
-    body = response.json()
-    assert "user_id" in body
-
-
-def test_expired_token_returns_401(dep_client):
-    token = make_token("u1", exp=1)
-    response = dep_client.get("/protected", headers={"Authorization": f"Bearer {token}"})
-    assert response.status_code == 401
-    body = response.json()
-    assert body["code"] == "auth_required"
-
-
-@pytest.fixture(scope="module")
-def state_client():
-    """Confirms verifier is resolved from app.state -- swapping it changes behavior."""
-    from nativespeaker.api.auth.verification import VerificationResult, VerifiedClaims
-
-    mock_user = User(jwt_sub="hardcoded-user", email="hw@example.com", name="Hardcoded")
-    mock_db = MagicMock()
-
-    class _AlwaysUser:
-        def verify(self, token: str) -> VerificationResult:
-            return VerifiedClaims(issuer="https://securetoken.google.com/test-project",
-                                  subject="hardcoded-user"), None
-
-    app = FastAPI()
-    register_exception_handlers(app)
-    app.state.jwt_verifier = _AlwaysUser()
-    app.dependency_overrides[get_db] = lambda: mock_db
-
-    @app.get("/whoami")
-    async def _whoami(user: User = Depends(get_current_user)):
-        return {"user_id": user.jwt_sub}
-
-    with patch.object(deps_module, "UserService") as mock_user_svc_cls:
-        mock_user_svc_cls.return_value.get_or_create = AsyncMock(return_value=mock_user)
-        with TestClient(app, raise_server_exceptions=False) as client:
-            yield client
-
-
-def test_verifier_swappable_via_state(state_client):
-    """Any token resolves to hardcoded-user -- proves verifier comes from app.state."""
-    response = state_client.get("/whoami", headers={"Authorization": "Bearer any.token.here"})
-    assert response.status_code == 200
-    assert response.json()["user_id"] == "hardcoded-user"
+# Five cases exercised the deleted `get_current_user` dependency end to end and went with it
+# (D-16). Their subjects did not disappear -- they moved to where the live code is:
+#   * token verification rules (invalid, expired, valid) -> test_jwt_security.py::TestProductionVerifier
+#   * a missing Authorization header on an authenticated route -> test_auth_security.py, over the
+#     real barrier, and tests/e2e/test_startup_assertion.py over the real started app
+#   * "the verifier is resolved from app.state, not captured" -> nothing in src/ reads
+#     `app.state.jwt_verifier` until plan 06 gives the barrier the verification step; that plan
+#     re-asserts it against the code that actually does the read.
 
 
 class TestRetryAfterHeaders:

@@ -3,10 +3,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from nativespeaker.api.models.subscriptions import SubscriptionPlan
-
 # `ErrorResponse` moved to `nativespeaker.api.errors` (D-10): the error body belongs to the
 # registry that owns the statuses and the copy, not to the request/response schema module.
+#
+# `UserProfileResponse` is deleted with `GET /users/me` (D-16): it exposed `name`,
+# `subscription_plan`, and a monthly usage count, none of which survives in the v2.0 schema.
+# Phase 39 writes the replacement profile route and its response model from scratch.
 
 
 class ChatRequest(BaseModel):
@@ -40,13 +42,3 @@ class MessageResponse(BaseModel):
 class ExamplesResponse(BaseModel):
     lang: str = Field(..., description="Language code")
     examples: list[str] = Field(..., description="List of example phrases")
-
-
-class UserProfileResponse(BaseModel):
-    email: str
-    name: str | None = None
-    subscription_plan: SubscriptionPlan
-    created_at: datetime
-    requests_used: int
-    monthly_limit: int
-    resets_at: datetime

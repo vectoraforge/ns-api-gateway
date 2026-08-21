@@ -12,7 +12,7 @@ from nativespeaker.api.errors import (
     OutOfScopeError,
     UnsupportedLanguageError,
 )
-from nativespeaker.api.models import Chat, ChatRole, Message, User
+from nativespeaker.api.models import Chat, ChatRole, Message
 from nativespeaker.api.models.api import ExamplesResponse
 from nativespeaker.api.models.llm import AnalyzeInput, AnalyzeResponse, FollowUpInput, FollowUpResponse
 from nativespeaker.api.services.llm import LLMService
@@ -63,18 +63,18 @@ class ChatService:
         return Message(chat_id=chat.id, role=ChatRole.ai, content=llm_response)
 
     async def create_chat(self,
-                          user: User,
+                          user_id: UUID,
                           phrase: str,
                           context: str | None = None,
                           lang: str | None = None) -> Message:
         if lang and lang not in self.supported_languages:
             raise UnsupportedLanguageError(lang, self.supported_languages)
 
-        chats_count = await self.chats_db.count_chats(user.id)
+        chats_count = await self.chats_db.count_chats(user_id)
         if chats_count >= self.chats_limit:
             raise ChatHistoryLimitError(self.chats_limit)
 
-        chat = Chat(id=uuid4(), user_id=user.id, title=phrase, lang=lang)
+        chat = Chat(id=uuid4(), user_id=user_id, title=phrase, lang=lang)
         input_model = AnalyzeInput(phrase=phrase, context=context)
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
                                 content=input_model.model_dump(exclude_none=True))
@@ -88,9 +88,9 @@ class ChatService:
 
     async def send_message(self,
                            chat_id: UUID,
-                           user: User,
+                           user_id: UUID,
                            message: str) -> Message:
-        chat = await self.chats_db.get_chat(chat_id, user.id)
+        chat = await self.chats_db.get_chat(chat_id, user_id)
         if chat is None:
             raise InvalidChatError(chat_id)
 

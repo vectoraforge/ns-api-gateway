@@ -3,7 +3,7 @@ __all__ = [
     "ExamplesResponse", "FollowUpInput", "FollowUpResponse", "Issue",
     "Message", "MessageRequest", "MessageResponse", "RejectResponse", "Subscription",
     "SubscriptionEvent", "SubscriptionPlan", "SubscriptionProvider", "SubscriptionStatus",
-    "UsageMonthly", "User", "UserProfileResponse",
+    "UsageMonthly", "User",
 ]
 
 from nativespeaker.api.models.api import (
@@ -12,7 +12,6 @@ from nativespeaker.api.models.api import (
     ExamplesResponse,
     MessageRequest,
     MessageResponse,
-    UserProfileResponse,
 )
 from nativespeaker.api.models.chats import Chat, ChatRole, Message
 from nativespeaker.api.models.llm import (

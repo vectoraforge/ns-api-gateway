@@ -63,18 +63,17 @@ _PREAUTH_CALLABLE_ROUTE = ("POST", "/auth/create-user")
 # Every route the router registers today, with the §8.1 metadata. Declaring the pre-existing routes
 # here is REBIND-01 landing in Phase 35: §2.3 is set equality against the live router and D-14 makes
 # it run at real startup, so whoever changes the router must change this table in the same commit.
-# Plan 04 deletes `GET /users/me` and `POST /webhooks/apple` from both the router and this table.
+# `GET /users/me` and `POST /webhooks/apple` were deleted here in the same commit as their routers
+# (D-16); Phase 39 and Phase 43 write the replacements and re-declare them alongside.
 REGISTRY: tuple[RouteMetadata, ...] = (
     RouteMetadata(method="GET", path="/health/ready", category=Category.public),
     RouteMetadata(method="GET", path="/", category=Category.authenticated),
     RouteMetadata(method="GET", path="/examples", category=Category.authenticated),
-    RouteMetadata(method="GET", path="/users/me", category=Category.authenticated),
     RouteMetadata(method="GET", path="/chats", category=Category.authenticated),
     RouteMetadata(method="POST", path="/chats", category=Category.authenticated),
     RouteMetadata(method="GET", path="/chats/{chat_id}", category=Category.authenticated),
     RouteMetadata(method="POST", path="/chats/{chat_id}", category=Category.authenticated),
     RouteMetadata(method="DELETE", path="/chats/{chat_id}", category=Category.authenticated),
-    RouteMetadata(method="POST", path="/webhooks/apple", category=Category.authenticated),
 )
 
 _INDEX: dict[tuple[str, str], RouteMetadata] = {(e.method, e.path): e for e in REGISTRY}

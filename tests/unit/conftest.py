@@ -1,5 +1,6 @@
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid7
 
 import jwt as pyjwt
 import pytest
@@ -8,28 +9,15 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import nativespeaker.api.routers.users as users_module
-from nativespeaker.api.app.dependencies import (
-    get_chat_service,
-    get_config,
-    get_current_user,
-    get_db,
-    get_subscription_service,
-    require_quota,
-)
+from nativespeaker.api.app.dependencies import get_chat_service, get_db, get_linked_identity
 from nativespeaker.api.app.errors import register_exception_handlers
+from nativespeaker.api.auth.context import LinkedIdentity
 from nativespeaker.api.auth.verification import VerificationResult, bounded_reason_for, claims_from_payload
 from nativespeaker.api.database import ChatsDB
-from nativespeaker.api.models import SubscriptionPlan, User
-from nativespeaker.api.routers import (
-    chats_router,
-    examples_router,
-    health_router,
-    root_router,
-    users_router,
-    webhooks_router,
-)
-from nativespeaker.api.services import ChatService, SubscriptionService
+from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
+from nativespeaker.api.models.users import User
+from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router
+from nativespeaker.api.services import ChatService
 
 # ---------------------------------------------------------------------------
 # JWT test infrastructure -- ephemeral RSA keypair and token factory
@@ -110,12 +98,24 @@ def make_test_verifier() -> _FixedKeyVerifier:
     return _FixedKeyVerifier()
 
 
-TEST_USER = User(
-    jwt_sub="test-user",
-    email="test@example.com",
-    name="Test User",
-    subscription_plan=SubscriptionPlan.free,
-    active=True,
+# The v1.6 `TEST_USER` carried `jwt_sub`, `email`, `name`, and `subscription_plan`. Those are the
+# columns the v2.0 schema dropped and plan 05 removes from the model, so what stands in for an
+# authenticated caller now is the §1.4 identity context the barrier attaches -- built over the real
+# model classes with only the columns that survive. Handlers read `identity.user.id` and nothing
+# else, so the id is the whole contract.
+TEST_SUBJECT = "test-user"
+TEST_USER_ID = uuid7()
+TEST_IDENTITY = LinkedIdentity(
+    user=User(id=TEST_USER_ID, active=True),
+    identity=ExternalIdentity(id=uuid7(),
+                              user_id=TEST_USER_ID,
+                              issuer=TEST_ISSUER,
+                              subject=TEST_SUBJECT,
+                              provider=IdentityProvider.google,
+                              provider_uid="google-account-test",
+                              identity_state=IdentityState.active),
+    issuer=TEST_ISSUER,
+    subject=TEST_SUBJECT,
 )
 
 
@@ -128,15 +128,6 @@ def mock_chats_db():
     db.delete = AsyncMock(return_value=1)
     db.list_chats = AsyncMock(return_value=[])
     db.count_chats = AsyncMock(return_value=0)
-    return db
-
-
-@pytest.fixture
-def mock_usage_db():
-    db = AsyncMock()
-    db.try_increment = AsyncMock(return_value=True)
-    db.get_usage = AsyncMock(return_value=0)
-    db.reset_usage = AsyncMock(return_value=None)
     return db
 
 
@@ -154,63 +145,24 @@ def service(mock_chats_db):
 
 
 @pytest.fixture
-def client(mock_chats_db, mock_usage_db):
-    mock_config = MagicMock()
-    mock_config.quotas = {SubscriptionPlan.free: 10,
-                          SubscriptionPlan.silver: 50,
-                          SubscriptionPlan.gold: 200,
-                          SubscriptionPlan.platinum: 1000}
+def client(mock_chats_db, service):
+    """The four surviving routers with the identity context supplied instead of the barrier.
 
-    # Patch UsageDB in users router (GET /users/me creates UsageDB directly)
-    with patch.object(users_module, "UsageDB", return_value=mock_usage_db):
-        app = FastAPI()
-        app.include_router(root_router)
-        app.include_router(chats_router)
-        app.include_router(examples_router)
-        app.include_router(health_router)
-        app.include_router(users_router)
-        register_exception_handlers(app)
-
-        llm_service = AsyncMock()
-        svc = ChatService(db=MagicMock(),
-                          llm_service=llm_service,
-                          examples={"en": ["Example 1", "Example 2"],
-                                    "es": ["Ejemplo 1"]},
-                          messages_limit=50,
-                          chats_limit=50)
-        svc.chats_db = mock_chats_db
-
-        app.dependency_overrides[get_db] = lambda: MagicMock()
-        app.dependency_overrides[get_current_user] = lambda: TEST_USER
-        app.dependency_overrides[get_chat_service] = lambda: svc
-        app.dependency_overrides[get_config] = lambda: mock_config
-        app.dependency_overrides[require_quota] = lambda: None
-
-        with TestClient(app, raise_server_exceptions=False) as test_client:
-            yield test_client
-
-
-@pytest.fixture
-def service_instance(client):
-    """The ChatService instance injected via DI overrides."""
-    return client.app.dependency_overrides[get_chat_service]()
-
-
-@pytest.fixture
-def mock_subscription_service():
-    service = AsyncMock(spec=SubscriptionService)
-    service.process_apple_notification = AsyncMock(return_value=None)
-    return service
-
-
-@pytest.fixture
-def webhook_client(mock_subscription_service):
+    `get_linked_identity` is overridden rather than the barrier being installed: this fixture's
+    subject is what a handler does *once admitted*. What happens when the barrier did **not** admit
+    is `test_identity_accessors.py`'s and `test_auth_security.py`'s subject, and neither overrides
+    the accessor.
+    """
     app = FastAPI()
-    app.include_router(webhooks_router)
+    app.include_router(root_router)
+    app.include_router(chats_router)
+    app.include_router(examples_router)
+    app.include_router(health_router)
     register_exception_handlers(app)
 
     app.dependency_overrides[get_db] = lambda: MagicMock()
-    app.dependency_overrides[get_subscription_service] = lambda: mock_subscription_service
+    app.dependency_overrides[get_chat_service] = lambda: service
+    app.dependency_overrides[get_linked_identity] = lambda: TEST_IDENTITY
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client

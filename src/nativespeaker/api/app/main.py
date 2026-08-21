@@ -13,8 +13,6 @@ from nativespeaker.api.routers import (
               examples_router,
               health_router,
               root_router,
-              users_router,
-              webhooks_router,
 )
 
 logger = structlog.get_logger()
@@ -50,8 +48,6 @@ app.include_router(root_router)
 app.include_router(chats_router)
 app.include_router(examples_router)
 app.include_router(health_router)
-app.include_router(users_router)
-app.include_router(webhooks_router)
 register_exception_handlers(app)
 # D-03 wants RequestLoggingMiddleware outermost and the barrier beneath it. add_middleware inserts
 # at index 0, so the call order here is the inverse of the reading order: the LAST call is outermost.

@@ -1,9 +1,7 @@
 from contextlib import asynccontextmanager
 
-import firebase_admin
 import structlog
 from fastapi import FastAPI
-from firebase_admin import credentials
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
@@ -12,7 +10,7 @@ from nativespeaker.api.auth.verification import JWTVerifier
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.errors import assert_registry_total
 from nativespeaker.api.logs import setup_logging
-from nativespeaker.api.services import FirebaseService, LLMService, create_apple_verifier
+from nativespeaker.api.services import LLMService
 
 logger = structlog.get_logger()
 
@@ -36,8 +34,10 @@ async def lifespan(app: FastAPI):
     app.state.session_factory = async_sessionmaker(db_engine, class_=SQLModelAsyncSession,
                                                        expire_on_commit=False)
 
-    # Initialize token verifiers
-    app.state.apple_verifier = create_apple_verifier(config.apple)
+    # Initialize token verifiers. D-16 removed the Apple receipt verifier with the subscription
+    # layer, and the Firebase Admin app with the plan-claim sync: neither Google Application
+    # Default Credentials nor the Apple signing certificates are read at boot any more. Phases 37+
+    # reintroduce Firebase behind the §7.1 adapter seam, never as an ambient startup client.
     app.state.jwt_verifier = JWTVerifier(jwks_url=config.jwt.jwks_url,
                                          audience=config.jwt.project_id,
                                          issuer=config.jwt.issuer,
@@ -49,17 +49,12 @@ async def lifespan(app: FastAPI):
                                        resilence_config=config.resilience,
                                        system_prompt=config.prompt)
 
-    # Initialize Firebase service
-    firebase_admin.initialize_app(credentials.ApplicationDefault())
-    app.state.firebase_service = FirebaseService()
-
     # Start the app
     logger.info("started", model=config.model.name, concurrency=config.resilience.pool_size,
                 languages=list(config.examples.keys()))
     yield
 
     # Shutdown
-    firebase_admin.delete_app(firebase_admin.get_app())
     await db_engine.dispose()
 
     logger.info("shutdown")
