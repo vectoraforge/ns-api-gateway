@@ -6,12 +6,21 @@ import yaml
 from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from nativespeaker.api.auth.keys import HmacConfig
+
 LogLevel = StrEnum("LogLevel", {k: k for k in logging.getLevelNamesMapping()})
 
 
 class BaseConfig(BaseSettings):
+    # `hide_input_in_errors` is T-35-08-02: pydantic renders the pre-coercion input in
+    # `input_value=...`, and a nested model's error is rendered under the *outer* model's config,
+    # so `HmacConfig` setting the flag on itself is not enough -- an invalid `hmac:` block reaching
+    # validation through `AppConfig` would print the raw base64 key. The field path and the message
+    # still identify what was wrong; only the offending value is withheld. Every secret this
+    # project loads (`db.password`, the HMAC keys) travels through this tree.
     model_config = SettingsConfigDict(env_nested_delimiter="_",
-                                      env_nested_max_split=1)
+                                      env_nested_max_split=1,
+                                      hide_input_in_errors=True)
 
 
 class DatabaseConfig(BaseModel):
@@ -73,6 +82,10 @@ class AppConfig(BaseConfig):
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
     jwt: JWTConfig = Field(default_factory=JWTConfig)
+    # Required, with no default: D-22 fails closed on the active key, so a deployment with no
+    # `hmac:` block never starts rather than starting and failing every audit insert. Unlike the
+    # blocks above it takes no `default_factory` -- there is no safe key to default to.
+    hmac: HmacConfig
     # No `quotas` mapping: v2.0 resolves a caller's allowance from `core.access_tiers.monthly_credits`
     # through the grant Phase 36 wires, not from a per-plan table in this file.
 

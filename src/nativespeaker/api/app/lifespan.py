@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
+from nativespeaker.api.auth.keys import HmacKeyring
 from nativespeaker.api.auth.registry import assert_route_enumeration
 from nativespeaker.api.auth.telemetry import RejectionCounter
 from nativespeaker.api.auth.verification import JWTVerifier
@@ -36,6 +37,14 @@ async def lifespan(app: FastAPI):
     # cross-route attack volume and for a systemic verification break. Nothing exports it yet;
     # see 35-06-SUMMARY.md for the recorded gap.
     app.state.rejection_counter = RejectionCounter()
+
+    # The §4.3 / §6.4 keyed-hashing seam: one keyring, read per request, never cached by a caller.
+    # D-22's fail-closed half already happened -- a missing, empty, or unusable active key raises
+    # out of EnvironmentConfig() above, before this line and long before the app serves. All that
+    # is left here is the tolerated half: a gap below the active version is named in the log and
+    # the process keeps going, because no request path recomputes a historical hash.
+    app.state.hmac_keyring = HmacKeyring(config.hmac)
+    app.state.hmac_keyring.warn_missing_older(logger)
 
     # Initialize database
     db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)
