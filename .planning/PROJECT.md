@@ -39,6 +39,8 @@ The analysis pipeline must work reliably — correct LLM invocation, proper resi
 - ✓ Language-specific examples via `GET /examples` — existing (moved in v1.3)
 - ✓ Health readiness probe — existing
 - ✓ YAML-based configuration with Pydantic validation — existing
+- ✓ Mandatory pre-handler auth barrier: single point of JWT acceptance and identity resolution, admitting only active identities — Validated in Phase 35: Foundation
+- ✓ Shared machinery every later phase calls: route registry with startup enumeration assertion, error registry, audit writer, provider-call budget seam, challenge store, adapter interfaces — Validated in Phase 35: Foundation
 - ✓ Typed exception hierarchy replacing bare `Exception` in database and service layers — v1.1
 - ✓ JWT auth structured for real signature verification (TokenVerifier protocol, pluggable via app.state) — v1.1
 - ✓ Retry logic preserves original exception chain with granular error types (TransientLLMError/PermanentLLMError) — v1.1
@@ -136,7 +138,7 @@ Added in v2.0 (from `SHARED-INVARIANTS.md` "Global deletions" — build none of 
 
 ## Current State
 
-Shipped v1.6. All milestones through v1.6 complete. 46,702 LOC Python across 33 phases. v2.0 (Authentication & Entitlements) planning started — 12 phases, 34–45.
+Shipped v1.6. All milestones through v1.6 complete. v2.0 (Authentication & Entitlements) in progress — Phase 34 (schema) and Phase 35 (foundation) complete. Phase 35 delivered the shared auth machinery and the app now boots with the route enumeration assertion running for real; chat and quota routes still fail at runtime until Phase 36 rewires them (D-14/D-15).
 
 ## Context
 
@@ -233,4 +235,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-08-19 after starting v2.0 milestone*
+*Last updated: 2026-08-21 after completing Phase 35*
