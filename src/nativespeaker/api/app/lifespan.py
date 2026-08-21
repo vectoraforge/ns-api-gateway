@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
+from nativespeaker.api.auth.audit import AuditWriter
 from nativespeaker.api.auth.keys import HmacKeyring
 from nativespeaker.api.auth.registry import assert_route_enumeration
 from nativespeaker.api.auth.telemetry import RejectionCounter
@@ -45,6 +46,13 @@ async def lifespan(app: FastAPI):
     # the process keeps going, because no request path recomputes a historical hash.
     app.state.hmac_keyring = HmacKeyring(config.hmac)
     app.state.hmac_keyring.warn_missing_older(logger)
+
+    # The §4 audit writer. One instance, read per request, never cached by a caller -- it takes the
+    # session factory as a parameter rather than reading app state itself, so the e2e rollback
+    # fixture's per-test factory swap still governs every row it writes. Nothing calls it in
+    # production this phase: all eight registered routes declare `operation = None`, and §8.2 puts
+    # them off the audited attempt path permanently. Phases 37-45 supply the real call sites.
+    app.state.audit_writer = AuditWriter(app.state.hmac_keyring)
 
     # Initialize database
     db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)

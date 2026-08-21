@@ -23,10 +23,10 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid7
 
 import pytest
-from nativespeaker.api.auth.audit import AuditWriter, build_details
 from sqlalchemy import CheckConstraint
 
 from nativespeaker.api.auth import audit
+from nativespeaker.api.auth.audit import AuditWriter, build_details
 from nativespeaker.api.auth.keys import HmacConfig, HmacKeyring
 from nativespeaker.api.models.auth import AuthEvent, AuthEventResult, AuthOperation
 from nativespeaker.api.models.identities import IdentityProvider

@@ -1,10 +1,26 @@
-"""Python mirrors of the auth-domain PostgreSQL enums (`migrations/20260818_01_initial-release.sql`).
+"""The auth-domain PostgreSQL enums and the `audit.auth_events` table.
 
-No SQLModel table lives here yet -- `core.auth_challenges` and `audit.auth_events` are added by
-later Phase 35 plans. These two enums are needed now because route metadata (auth/registry.py)
-and the audit writer both key off them.
+`core.auth_challenges` is still absent -- plan 10 adds it. The two enums came first because route
+metadata (auth/registry.py) and the audit writer both key off them.
+
+`AuthEvent` is the first model in this codebase mapped outside the `core` schema. Every constraint
+the table carries stays in `migrations/20260818_01_initial-release.sql` and is deliberately not
+re-encoded here -- the all-or-nothing actor CHECK, the six-key `details` shape, and the
+`succeeded`-needs-an-operation rule included. A Python copy of a CHECK is a second source of truth
+that can drift from the one that actually enforces. What the writer *does* do is refuse to build a
+row those CHECKs would reject, so the failure reads as a message rather than as a constraint
+violation; that guard lives in `auth/audit.py`, next to the caller it protects.
 """
+from datetime import datetime
 from enum import StrEnum
+from typing import Any, cast
+from uuid import UUID, uuid7
+
+from sqlalchemy import DateTime, Enum, LargeBinary, SmallInteger
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlmodel import Field, SQLModel
+
+from nativespeaker.api.models.identities import IdentityProvider, IdentityProviderType
 
 
 class AuthOperation(StrEnum):
@@ -69,3 +85,47 @@ class AuthEventResult(StrEnum):
     policy_rejected = "policy_rejected"
     revocation_unconfirmed = "revocation_unconfirmed"
     internal_error = "internal_error"
+
+
+AuthOperationType = cast(Any, Enum(AuthOperation, name='auth_operation', schema='core'))
+AuthEventResultType = cast(Any, Enum(AuthEventResult, name='auth_event_result', schema='core'))
+DateTimeType = cast(Any, DateTime(timezone=True))
+# BYTEA and SMALLINT. The key version is a SMALLINT, which is why `HmacConfig.active_version` is
+# bounded to 1..32767 at configuration load rather than discovered at the first insert.
+ByteaType = cast(Any, LargeBinary)
+SmallIntType = cast(Any, SmallInteger)
+JSONBType = cast(Any, JSONB)
+
+
+class AuthEvent(SQLModel, table=True):
+    """One append-only row per on-path attempt, for its terminal outcome (§4.1).
+
+    No raw subject, no raw token, and no other plaintext credential material lands here: the actor
+    subject is a keyed BYTEA hash with the version of the key that produced it, and `details` is
+    redacted before write.
+    """
+
+    __tablename__ = "auth_events"
+    __table_args__ = {"schema": "audit"}
+
+    id: UUID = Field(default_factory=uuid7, primary_key=True)
+    # A bare UUID with NO foreign key to core.auth_challenges, deliberately, so audit rows survive
+    # independently of the challenge they describe. This is the **non-secret** row id; the public
+    # `challenge_id` capability handle is never written to a row, to `details`, to a log, or to
+    # error text.
+    challenge_row_id: UUID | None = Field(default=None)
+    # Nullable: a rejection can precede operation determination. The table requires it non-NULL
+    # when `result = 'succeeded'`.
+    operation: AuthOperation | None = Field(sa_type=AuthOperationType, default=None)
+    # The single machine-readable outcome. There is no failure_reason column and no free-text
+    # fallback -- the bounded reason lives in `details.failure`.
+    result: AuthEventResult = Field(sa_type=AuthEventResultType)
+    actor_issuer: str | None = Field(default=None)
+    actor_subject_hash: bytes | None = Field(sa_type=ByteaType, default=None)
+    actor_subject_hash_key_version: int | None = Field(sa_type=SmallIntType, default=None)
+    # Populated only from the **stored** core.external_identities.provider column of a resolved
+    # linked identity. Never fabricated, and never taken from token claims, headers, or client
+    # input.
+    actor_provider: IdentityProvider | None = Field(sa_type=IdentityProviderType, default=None)
+    details: dict = Field(sa_type=JSONBType)
+    created_at: datetime = Field(sa_type=DateTimeType)
