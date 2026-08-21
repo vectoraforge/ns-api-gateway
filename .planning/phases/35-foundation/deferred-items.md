@@ -49,3 +49,24 @@ logging behaviour plan 35-01 did not touch.
 
 **Suggested fix:** have `test_logging.py`'s `_reset_logging` fixture call `structlog.reset_defaults()`
 *before* yielding as well as after, or set `cache_logger_on_first_use=False` under test.
+
+## D-35-06-A: the §1.2 bounded-cardinality counter has no exporter — the required alert cannot fire
+
+**Found during:** plan 35-06, task 1 (flagged in the plan's own recorded assumptions).
+**Owner:** unowned. Needs a phase or an explicit entry on the v2.0 accepted-consequences list.
+
+`auth/telemetry.py::RejectionCounter` implements exactly what §1.2 and §8.2 require — a counter
+labeled by result × bounded reason × route, incremented wherever the barrier rejects — and
+`snapshot()` makes it readable. **Nothing reads it.** This deployment ships no Prometheus client,
+no scrape endpoint and no exporter, and adding one is outside FOUND-01…FOUND-08.
+
+Consequences, to be accepted rather than rediscovered:
+
+- the operational alert §1.2 calls for cannot fire, because nothing exports the counter;
+- a systemic verification break is, by §1.2's own design, client-indistinguishable from ordinary
+  session expiry, so this alert is the **only** detection path — and it is currently dark;
+- the counter is per-process and in-memory: each replica holds its own view, and a restart discards
+  it.
+
+Sits alongside D-08's deferred gateway contract as a known v2.0 gap. Either schedule an exporter or
+record the acceptance explicitly.
