@@ -2,6 +2,22 @@
 
 Out-of-scope discoveries logged during execution. Not fixed by the plan that found them.
 
+## D-35-05-A: `uv.lock` is stale — pins `ns-api-gateway 1.5.0` against `pyproject.toml`'s 1.6.0
+
+**Found during:** plan 35-05, the editable-install refresh the plan's recorded assumptions call for.
+**Owner:** not plan 35-05 — `uv.lock` is outside its file list and nothing in this phase depends on
+the pin.
+
+Running `uv sync` (which does refresh the editable install correctly — the `auth/` subpackage is
+discovered and no stale `exceptions.py` or `subscriptions.py` entry survives in
+`src/ns_api_gateway.egg-info/SOURCES.txt`) rewrites two lines of `uv.lock`: the project version
+`1.5.0` → `1.6.0`, and the lock-format field `revision = 2` → `3`.
+
+The version bump is a genuine correction; the `revision` bump is a function of the locally
+installed uv and could differ from the team's. Both were reverted rather than committed, since a
+lockfile-format change is not something a model-repair plan should decide. Whoever next touches
+dependencies should run `uv lock` deliberately and commit the result on its own.
+
 ## D-35-01-A: `tests/unit/test_logging.py` fails when the e2e suite runs in the same process
 
 **Status: RESOLVED in plan 35-04** (commit for task 2). Fixed where it was diagnosed, in
