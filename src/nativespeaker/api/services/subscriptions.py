@@ -12,7 +12,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.config import AppleConfig
 from nativespeaker.api.database import SubscriptionDB, UsageDB
-from nativespeaker.api.exceptions import WebhookVerificationError
+from nativespeaker.api.errors import WebhookVerificationError
 from nativespeaker.api.models import SubscriptionPlan, SubscriptionProvider, SubscriptionStatus, User
 from nativespeaker.api.services.firebase import FirebaseService
 

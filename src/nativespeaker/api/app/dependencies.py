@@ -8,7 +8,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from nativespeaker.api.auth import TokenVerifier
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.database import UsageDB
-from nativespeaker.api.exceptions import AuthenticationError, QuotaExceededError
+from nativespeaker.api.errors import AuthenticationError, QuotaExceededError
 from nativespeaker.api.models import User
 from nativespeaker.api.services import ChatService, SubscriptionService, UserService
 

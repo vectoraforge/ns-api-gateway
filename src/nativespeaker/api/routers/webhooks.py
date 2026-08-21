@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Request, Response
 
 from nativespeaker.api.app.dependencies import get_subscription_service
-from nativespeaker.api.exceptions import WebhookVerificationError
+from nativespeaker.api.errors import WebhookVerificationError
 from nativespeaker.api.services import SubscriptionService
 
 router = APIRouter(tags=["webhooks"])

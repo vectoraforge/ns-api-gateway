@@ -2,7 +2,7 @@ from uuid import uuid4
 
 import pytest
 
-from nativespeaker.api.exceptions import (
+from nativespeaker.api.errors import (
     ChatHistoryLimitError,
     InvalidChatError,
     OutOfScopeError,

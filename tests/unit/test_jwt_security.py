@@ -7,7 +7,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from nativespeaker.api.exceptions import AuthenticationError
+from nativespeaker.api.errors import AuthenticationError
 from unit.conftest import PRIVATE_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_test_verifier, make_token
 
 

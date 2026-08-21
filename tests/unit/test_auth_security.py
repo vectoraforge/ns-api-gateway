@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 import nativespeaker.api.app.dependencies as deps_module
 from nativespeaker.api.app.dependencies import get_current_user, get_db
 from nativespeaker.api.app.errors import register_exception_handlers
-from nativespeaker.api.exceptions import AuthenticationError
+from nativespeaker.api.errors import AuthenticationError
 from nativespeaker.api.models import User
 from nativespeaker.api.routers import chats_router, users_router
 from unit.conftest import make_test_verifier, make_token
@@ -42,35 +42,35 @@ class TestBearerTokenEdgeCases:
         response = dep_client.get("/protected",
                                   headers={"Authorization": "Bearer    "})
         assert response.status_code == 401
-        assert response.json()["code"] == "unauthorized"
+        assert response.json()["code"] == "auth_required"
 
     def test_non_bearer_auth_scheme(self, dep_client):
         """Basic auth scheme is rejected -- only Bearer accepted."""
         response = dep_client.get("/protected",
                                   headers={"Authorization": "Basic dXNlcjpwYXNz"})
         assert response.status_code == 401
-        assert response.json()["code"] == "unauthorized"
+        assert response.json()["code"] == "auth_required"
 
     def test_bearer_prefix_no_space(self, dep_client):
         """'Bearertoken123' without space after Bearer is rejected."""
         response = dep_client.get("/protected",
                                   headers={"Authorization": "Bearertoken123"})
         assert response.status_code == 401
-        assert response.json()["code"] == "unauthorized"
+        assert response.json()["code"] == "auth_required"
 
     def test_empty_authorization_header(self, dep_client):
         """Empty Authorization header returns 401."""
         response = dep_client.get("/protected",
                                   headers={"Authorization": ""})
         assert response.status_code == 401
-        assert response.json()["code"] == "unauthorized"
+        assert response.json()["code"] == "auth_required"
 
     def test_bearer_lowercase_rejected(self, dep_client):
         """Lowercase 'bearer' is rejected -- case-sensitive check."""
         response = dep_client.get("/protected",
                                   headers={"Authorization": "bearer " + make_token()})
         assert response.status_code == 401
-        assert response.json()["code"] == "unauthorized"
+        assert response.json()["code"] == "auth_required"
 
 
 class TestInactiveUserBlocking:
@@ -100,10 +100,10 @@ class TestInactiveUserBlocking:
         """Inactive user gets 401 on POST /chats."""
         response = inactive_client.post("/chats", json={"phrase": "hello", "lang": "en"})
         assert response.status_code == 401
-        assert response.json()["code"] == "unauthorized"
+        assert response.json()["code"] == "auth_required"
 
     def test_inactive_user_blocked_on_users_me(self, inactive_client):
         """Inactive user gets 401 on GET /users/me."""
         response = inactive_client.get("/users/me")
         assert response.status_code == 401
-        assert response.json()["code"] == "unauthorized"
+        assert response.json()["code"] == "auth_required"

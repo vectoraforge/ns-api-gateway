@@ -20,7 +20,7 @@ from nativespeaker.api.app.dependencies import (
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth import UserIdentity
 from nativespeaker.api.database import ChatsDB
-from nativespeaker.api.exceptions import AuthenticationError
+from nativespeaker.api.errors import AuthenticationError
 from nativespeaker.api.models import SubscriptionPlan, User
 from nativespeaker.api.routers import (
     chats_router,

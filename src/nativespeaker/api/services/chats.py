@@ -5,7 +5,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.database import ChatsDB
-from nativespeaker.api.exceptions import (
+from nativespeaker.api.errors import (
     AnalysisError,
     ChatHistoryLimitError,
     InvalidChatError,

@@ -1,4 +1,4 @@
-from nativespeaker.api.exceptions import WebhookVerificationError
+from nativespeaker.api.errors import WebhookVerificationError
 
 
 class TestAppleWebhook:
@@ -20,7 +20,7 @@ class TestAppleWebhook:
         """SUBS-01: Missing signedPayload returns 400."""
         response = webhook_client.post("/webhooks/apple", json={})
         assert response.status_code == 400
-        assert response.json()["code"] == "validation_error"
+        assert response.json()["code"] == "invalid_request"
 
     def test_empty_signed_payload(self, webhook_client):
         """SUBS-01: Empty signedPayload returns 400."""
@@ -40,7 +40,7 @@ class TestAppleWebhook:
             json={"signedPayload": "invalid.jws.token"},
         )
         assert response.status_code == 400
-        assert response.json()["code"] == "validation_error"
+        assert response.json()["code"] == "invalid_request"
 
     def test_no_jwt_auth_required(self, webhook_client, mock_subscription_service):
         """SUBS-01: Webhook does not require JWT Bearer token."""

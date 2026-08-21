@@ -6,9 +6,12 @@ from fastapi.testclient import TestClient
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.app.main import app as real_app
 
-CONTRACT_CODES = {"invalid_request", "validation_error", "unauthorized", "not_found",
-                  "service_unavailable", "internal_error", "quota_exceeded", "out_of_scope"}
-CONTRACT_STATUSES = {400, 401, 404, 422, 429, 500, 503}
+# The closed code set after D-09 absorbed the business classes and D-11 retired `unauthorized`.
+CONTRACT_CODES = {"auth_required", "preauth_identity_not_allowed", "account_unavailable",
+                  "challenge_required", "invalid_request", "verification_temporarily_unavailable",
+                  "rate_limited", "validation_error", "not_found", "method_not_allowed",
+                  "internal_error", "service_unavailable", "quota_exceeded", "out_of_scope"}
+CONTRACT_STATUSES = {400, 401, 403, 404, 405, 409, 422, 429, 500, 503}
 
 
 @pytest.fixture(scope="module")
@@ -26,13 +29,13 @@ def contract_client():
 
 
 class TestStatusCodeRemapping:
-    """ERR-05, ERR-06: Non-contract codes are remapped."""
+    """ERR-05, ERR-06: every framework status carries its own honest class (D-12)."""
 
-    def test_wrong_method_returns_400(self, contract_client):
-        """POST to a GET-only route must return 400, not 405."""
+    def test_wrong_method_returns_405(self, contract_client):
+        """POST to a GET-only route returns 405 -- the deleted remap table folded it to 400."""
         response = contract_client.post("/only-get")
-        assert response.status_code == 400
-        assert response.json()["code"] == "invalid_request"
+        assert response.status_code == 405
+        assert response.json()["code"] == "method_not_allowed"
 
     def test_undefined_route_returns_404(self, contract_client):
         """Request to nonexistent path returns 404 with code not_found."""
@@ -47,7 +50,7 @@ class TestStatusCodeRemapping:
         assert list(body.keys()) == ["code"]
 
     def test_error_code_is_from_contract_set(self, contract_client):
-        """Error code value is one of the 5 allowed strings."""
+        """Error code value is one the registry declares."""
         response = contract_client.post("/only-get")
         assert response.json()["code"] in CONTRACT_CODES
 
@@ -77,7 +80,7 @@ class TestOpenAPISchema:
         assert "code" in error_schema.get("properties", {})
 
     def test_openapi_error_response_code_is_enum(self):
-        """ErrorResponse.code must enumerate exactly the 5 allowed values."""
+        """ErrorResponse.code must enumerate exactly the registered codes."""
         schema = real_app.openapi()
         error_schema = schema["components"]["schemas"]["ErrorResponse"]
         code_prop = error_schema["properties"]["code"]

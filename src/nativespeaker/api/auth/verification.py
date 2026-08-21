@@ -4,7 +4,7 @@ from typing import Protocol
 import jwt
 from jwt import PyJWKClient
 
-from nativespeaker.api.exceptions import AuthenticationError
+from nativespeaker.api.errors import AuthenticationError
 
 
 @dataclass(frozen=True, slots=True)

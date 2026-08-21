@@ -73,7 +73,12 @@ class TestUnauthenticatedAccess:
             assert response.json()["code"] == "auth_required"
 
     async def test_invalid_bearer_token_returns_401(self, _app_lifespan):
-        """Request with invalid Bearer token returns 401."""
+        """Request with invalid Bearer token returns 401 auth_required.
+
+        Verification still runs in `get_current_user` until plan 06 moves it onto the barrier, but
+        D-11 retires the `unauthorized` code that path used to emit: `AuthenticationError` now
+        points at the one registered 401 class.
+        """
         from httpx import ASGITransport, AsyncClient
         transport = ASGITransport(app=_app_lifespan)
         async with AsyncClient(transport=transport,
@@ -81,4 +86,4 @@ class TestUnauthenticatedAccess:
             client.headers["Authorization"] = "Bearer invalid.token.here"
             response = await client.get("/chats")
             assert response.status_code == 401
-            assert response.json()["code"] == "unauthorized"
+            assert response.json()["code"] == "auth_required"

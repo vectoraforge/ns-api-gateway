@@ -3,12 +3,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from nativespeaker.api.exceptions import ErrorCode
 from nativespeaker.api.models.subscriptions import SubscriptionPlan
 
-
-class ErrorResponse(BaseModel):
-    code: ErrorCode
+# `ErrorResponse` moved to `nativespeaker.api.errors` (D-10): the error body belongs to the
+# registry that owns the statuses and the copy, not to the request/response schema module.
 
 
 class ChatRequest(BaseModel):

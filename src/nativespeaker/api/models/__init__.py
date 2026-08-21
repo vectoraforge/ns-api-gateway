@@ -1,6 +1,6 @@
 __all__ = [
     "AnalyzeInput", "AnalyzeResponse", "Chat", "ChatRequest", "ChatResponse", "ChatRole",
-    "ErrorResponse", "ExamplesResponse", "FollowUpInput", "FollowUpResponse", "Issue",
+    "ExamplesResponse", "FollowUpInput", "FollowUpResponse", "Issue",
     "Message", "MessageRequest", "MessageResponse", "RejectResponse", "Subscription",
     "SubscriptionEvent", "SubscriptionPlan", "SubscriptionProvider", "SubscriptionStatus",
     "UsageMonthly", "User", "UserProfileResponse",
@@ -9,7 +9,6 @@ __all__ = [
 from nativespeaker.api.models.api import (
     ChatRequest,
     ChatResponse,
-    ErrorResponse,
     ExamplesResponse,
     MessageRequest,
     MessageResponse,

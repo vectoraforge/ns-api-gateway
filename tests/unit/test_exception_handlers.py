@@ -9,7 +9,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import nativespeaker.api.app.dependencies as deps_module
 from nativespeaker.api.app.dependencies import get_current_user, get_db
 from nativespeaker.api.app.errors import register_exception_handlers
-from nativespeaker.api.exceptions import (
+from nativespeaker.api.errors import (
     AuthenticationError,
     ChatHistoryLimitError,
     CircuitOpenError,
@@ -81,7 +81,7 @@ def test_handler(handler_client, name, exc, expected_status):
     assert list(body.keys()) == ["code"], f"Expected only 'code' key, got {list(body.keys())}"
     assert body["code"] in {
         "invalid_request",
-        "unauthorized",
+        "auth_required",
         "not_found",
         "service_unavailable",
         "internal_error",
@@ -120,7 +120,7 @@ def test_missing_auth_header_returns_401(dep_client):
     response = dep_client.get("/protected")
     assert response.status_code == 401
     body = response.json()
-    assert body["code"] == "unauthorized"
+    assert body["code"] == "auth_required"
 
 
 def test_invalid_bearer_token_returns_401(dep_client):
@@ -141,7 +141,7 @@ def test_expired_token_returns_401(dep_client):
     response = dep_client.get("/protected", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 401
     body = response.json()
-    assert body["code"] == "unauthorized"
+    assert body["code"] == "auth_required"
 
 
 @pytest.fixture(scope="module")

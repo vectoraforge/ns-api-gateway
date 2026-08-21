@@ -6,8 +6,13 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
-from nativespeaker.api.exceptions import ServiceError
-from nativespeaker.api.models.api import ErrorResponse
+from nativespeaker.api.errors import (
+    INTERNAL_ERROR,
+    STATUS_TO_CLASS,
+    VALIDATION_ERROR,
+    ServiceError,
+    error_response,
+)
 
 logger = structlog.get_logger()
 
@@ -19,28 +24,6 @@ _LEVEL_TO_METHOD = {
     logging.CRITICAL: "critical",
 }
 
-_STATUS_REMAP: dict[int, int] = {
-    405: 400,
-    406: 400,
-    409: 400,
-    410: 404,
-    413: 400,
-    415: 400,
-
-    502: 503,
-    504: 503,
-}
-
-_CODE_MAP: dict[int, str] = {
-    400: "invalid_request",
-    401: "unauthorized",
-    404: "not_found",
-    422: "validation_error",
-    429: "quota_exceeded",
-    503: "service_unavailable",
-    500: "internal_error",
-}
-
 
 async def service_error_handler(_: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, ServiceError)
@@ -49,29 +32,34 @@ async def service_error_handler(_: Request, exc: Exception) -> JSONResponse:
         log_method = getattr(logger, method_name)
         log_method(str(exc), error_type=type(exc).__name__,
                    exc_info=(exc.log_level >= logging.ERROR))
-    return JSONResponse(status_code=exc.status_code,
-                        content=ErrorResponse(code=exc.error_code).model_dump(),
-                        headers=exc.extra_headers())
+    return error_response(exc.error_class, headers=exc.extra_headers())
 
 
 async def validation_error_handler(_: Request, exc: Exception) -> JSONResponse:
     logger.error("Validation error", exc_info=exc)
-    return JSONResponse(status_code=422, content=ErrorResponse(code="validation_error").model_dump())
+    return error_response(VALIDATION_ERROR)
 
 
 async def http_exception_handler(_: Request, exc: Exception) -> JSONResponse:
+    """Answer a framework-raised HTTPException with the one class that status declares.
+
+    There is no status folding and no code fallback: `STATUS_TO_CLASS` is closed and every entry
+    carries its own key as its status. A miss is a registry hole, so it is logged loudly at ERROR
+    rather than defaulting silently -- the failure mode the deleted `_CODE_MAP.get(status, 500)`
+    made invisible.
+    """
     assert isinstance(exc, StarletteHTTPException)
-    status = _STATUS_REMAP.get(exc.status_code, exc.status_code)
-    if status not in _CODE_MAP:
-        status = 500
-    return JSONResponse(status_code=status,
-                        content=ErrorResponse(code=_CODE_MAP[status]).model_dump(),  # type: ignore[invalid-argument-type]
-                        headers=getattr(exc, "headers", None))
+    error_class = STATUS_TO_CLASS.get(exc.status_code)
+    if error_class is None:
+        logger.error("error_registry_unmapped_status", unmapped_status=exc.status_code)
+        return error_response(INTERNAL_ERROR)
+    # Forwarding `headers` is how the router's `Allow` header survives a 405.
+    return error_response(error_class, headers=getattr(exc, "headers", None))
 
 
 async def generic_error_handler(_: Request, exc: Exception) -> JSONResponse:
     logger.error("Unhandled exception", exc_info=exc)
-    return JSONResponse(status_code=500, content=ErrorResponse(code="internal_error").model_dump())
+    return error_response(INTERNAL_ERROR)
 
 
 def register_exception_handlers(app: FastAPI) -> None:

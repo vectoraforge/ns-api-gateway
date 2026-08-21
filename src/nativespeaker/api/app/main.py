@@ -6,8 +6,8 @@ from fastapi import FastAPI
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.app.lifespan import lifespan
 from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
+from nativespeaker.api.errors import ErrorResponse
 from nativespeaker.api.logs import RequestLoggingMiddleware
-from nativespeaker.api.models.api import ErrorResponse
 from nativespeaker.api.routers import (
               chats_router,
               examples_router,
@@ -32,8 +32,10 @@ app = FastAPI(title="NativeSpeaker API Gateway",
               openapi_url=None,
               responses={
                   400: {"model": ErrorResponse, "description": "Invalid request"},
-                  401: {"model": ErrorResponse, "description": "Unauthorized"},
+                  # D-11 retired the v1.3 `unauthorized` code; `auth_required` is the only 401.
+                  401: {"model": ErrorResponse, "description": "Authentication required"},
                   404: {"model": ErrorResponse, "description": "Not found"},
+                  405: {"model": ErrorResponse, "description": "Method not allowed"},
                   422: {"model": ErrorResponse, "description": "Validation error"},
                   429: {"model": ErrorResponse, "description": "Rate limited"},
                   500: {"model": ErrorResponse, "description": "Internal error"},

@@ -76,7 +76,7 @@ class TestInactiveUser:
 
     def test_inactive_user_rejected(self):
         """Inactive user receives the same 401 as invalid token -- no 'inactive' message."""
-        from nativespeaker.api.exceptions import AuthenticationError
+        from nativespeaker.api.errors import AuthenticationError
 
         async def mock_get_current_user():
             raise AuthenticationError("Authentication failed")
@@ -90,7 +90,7 @@ class TestInactiveUser:
             response = test_client.get("/users/me")
             assert response.status_code == 401
             data = response.json()
-            assert data["code"] == "unauthorized"
+            assert data["code"] == "auth_required"
             # Must NOT reveal "inactive" or "deactivated" in any response field
             assert "inactive" not in str(data).lower()
             assert "deactivated" not in str(data).lower()

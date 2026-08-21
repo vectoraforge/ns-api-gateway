@@ -7,7 +7,7 @@ from typing import Any
 from openai import APIConnectionError, APIStatusError, APITimeoutError, InternalServerError, RateLimitError
 
 from nativespeaker.api.config import ResilienceConfig
-from nativespeaker.api.exceptions import CircuitOpenError, PermanentLLMError, QueueFullError, TransientLLMError
+from nativespeaker.api.errors import CircuitOpenError, PermanentLLMError, QueueFullError, TransientLLMError
 
 
 def _extract_status_code(exc: Exception) -> int | None:

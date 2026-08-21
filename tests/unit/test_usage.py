@@ -5,7 +5,7 @@ import pytest
 
 import nativespeaker.api.app.dependencies as dep_module
 from nativespeaker.api.app.dependencies import require_quota
-from nativespeaker.api.exceptions import QuotaExceededError
+from nativespeaker.api.errors import QuotaExceededError
 from nativespeaker.api.models import SubscriptionPlan
 from unit.conftest import TEST_USER
 
@@ -14,10 +14,10 @@ class TestQuotaExceededError:
     """Error contract: QuotaExceededError returns 429 with quota_exceeded code."""
 
     def test_status_code(self):
-        assert QuotaExceededError.status_code == 429
+        assert QuotaExceededError.error_class.status == 429
 
     def test_error_code(self):
-        assert QuotaExceededError.error_code == "quota_exceeded"
+        assert QuotaExceededError.error_class.code == "quota_exceeded"
 
     def test_message(self):
         err = QuotaExceededError("Monthly quota exceeded")
