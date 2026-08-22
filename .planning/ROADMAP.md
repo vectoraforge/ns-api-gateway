@@ -249,7 +249,7 @@ Plans:
 **Goal:** Ship the only pre-auth-callable route — first-time account creation linking a verified Firebase `(issuer, subject)` to one new user plus exactly one active identity row.
 **Requirements:** CREATE-01 … CREATE-04
 **Depends on:** 34, 35
-**Plans:** 3/10 plans executed
+**Plans:** 6/10 plans executed
 **Success criteria:**
 
 1. An unlinked caller succeeds here and is rejected with `preauth_identity_not_allowed` on every other route
@@ -266,9 +266,9 @@ Plans:
 
 **Wave 2**
 
-- [ ] 37-04-PLAN.md — `SubscriptionProvider` + `StorePurchaseToken` over the PK-less table; prove RESEARCH assumption A2 against PostgreSQL
-- [ ] 37-05-PLAN.md — The concrete issuer-selected Firebase Admin adapter and §02 step 9's closed providerData classifier
-- [ ] 37-06-PLAN.md — Convert `resilience.py`'s hand-rolled retry loop to the same tenacity policy (D-05), own commit
+- [x] 37-04-PLAN.md — `SubscriptionProvider` + `StorePurchaseToken` over the PK-less table; prove RESEARCH assumption A2 against PostgreSQL
+- [x] 37-05-PLAN.md — The concrete issuer-selected Firebase Admin adapter and §02 step 9's closed providerData classifier
+- [x] 37-06-PLAN.md — Convert `resilience.py`'s hand-rolled retry loop to the same tenacity policy (D-05), own commit
 
 **Wave 3**
 
@@ -431,7 +431,7 @@ Plans:
 | 34. Schema | v2.0 | 4/4 | Complete    | 2026-08-20 |
 | 35. Foundation | v2.0 | 12/12 | Complete    | 2026-08-21 |
 | 36. Rebind Pre-existing Routes | v2.0 | 5/5 | Complete    | 2026-08-21 |
-| 37. POST /auth/create-user | v2.0 | 3/10 | In Progress|  |
+| 37. POST /auth/create-user | v2.0 | 6/10 | In Progress|  |
 | 38. POST /auth/sync | v2.0 | 0/? | Pending | — |
 | 39. GET /users/me | v2.0 | 0/? | Pending | — |
 | 40. POST /auth/upgrade-anonymous | v2.0 | 0/? | Pending | — |
