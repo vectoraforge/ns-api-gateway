@@ -38,6 +38,12 @@ REMOVED_SYMBOLS = frozenset({
     "SubscriptionStatusType", "UsageMonthly",
 })
 
+# Phase 36 introduces `core.user_monthly_usage`, keyed on grant_id -- a different table from the
+# dropped `core.usage_monthly`, as models/users.py's docstring records. It is exempted by name
+# rather than by weakening the substring backstop below, so every *other* Subscription/Usage
+# symbol still trips it.
+ALLOWED_USAGE_SYMBOLS = frozenset({"UserMonthlyUsage"})
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -109,7 +115,11 @@ class TestSubscriptionModelLayerIsGone:
 
     def test_barrel_exports_no_removed_symbol(self):
         assert REMOVED_SYMBOLS.isdisjoint(models.__all__)
-        assert not any("Subscription" in name or "Usage" in name for name in models.__all__)
+        suspect = [
+            name for name in models.__all__
+            if ("Subscription" in name or "Usage" in name) and name not in ALLOWED_USAGE_SYMBOLS
+        ]
+        assert not suspect, f"barrel exports a removed-layer symbol: {suspect}"
 
     def test_barrel_all_matches_its_namespace(self):
         """`__all__` is written by hand and listed first, so it can drift from what is imported."""
