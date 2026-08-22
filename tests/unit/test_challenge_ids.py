@@ -51,14 +51,14 @@ FIXED_NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 # §6.1's four challenge-bearing operations with the variants the table's CHECK admits. Used to
 # assert the TTL is universal: §6.3 forbids a per-operation override in either direction.
+# The four challenge-bearing operations. This enumerated (operation, variant) pairs until
+# D-12/D-13 removed the variant; the cases that remain are the ones that were always the point --
+# one per operation, because §6.3 forbids a per-operation TTL override in either direction.
 CHALLENGE_BEARING = (
-    (AuthOperation.create_user, IdentityProvider.anonymous),
-    (AuthOperation.create_user, IdentityProvider.google),
-    (AuthOperation.create_user, IdentityProvider.apple),
-    (AuthOperation.upgrade_anonymous_to_registered, IdentityProvider.google),
-    (AuthOperation.upgrade_anonymous_to_registered, IdentityProvider.apple),
-    (AuthOperation.claim_anonymous_grant, None),
-    (AuthOperation.claim_registered_grant, None),
+    AuthOperation.create_user,
+    AuthOperation.upgrade_anonymous_to_registered,
+    AuthOperation.claim_anonymous_grant,
+    AuthOperation.claim_registered_grant,
 )
 
 
@@ -146,14 +146,12 @@ def preauth_identity(subject: str = SUBJECT, *, issuer: str = ISSUER) -> PreAuth
 
 async def issue_row(identity, *, ring: HmacKeyring | None = None,
                     operation: AuthOperation = AuthOperation.create_user,
-                    variant: IdentityProvider | None = IdentityProvider.google,
                     now: datetime = FIXED_NOW):
     """Run `issue` against a stub session and return `(handle, expires_at, row, session)`."""
     session = _RecordingSession()
     subject_store = store(ring)
     handle, expires_at = await subject_store.issue(session,
                                                    operation=operation,
-                                                   operation_variant=variant,
                                                    identity=identity,
                                                    now=now)
     assert len(session.added) == 1, "issue writes exactly one row"
@@ -251,26 +249,22 @@ class TestTheUniversalTTL:
         _, _, row, _ = await issue_row(preauth_identity())
         assert row.created_at == FIXED_NOW
 
-    @pytest.mark.parametrize(("operation", "variant"), CHALLENGE_BEARING)
-    async def test_every_operation_gets_the_identical_ttl(self, operation, variant):
+    @pytest.mark.parametrize("operation", CHALLENGE_BEARING)
+    async def test_every_operation_gets_the_identical_ttl(self, operation):
         """§6.3 forbids a per-operation override *in either direction*."""
-        _, expires_at, _, _ = await issue_row(preauth_identity(), operation=operation,
-                                              variant=variant)
+        _, expires_at, _, _ = await issue_row(preauth_identity(), operation=operation)
         assert expires_at - FIXED_NOW == timedelta(seconds=CHALLENGE_TTL_SECONDS)
 
-    async def test_the_row_records_the_operation_and_variant_it_was_issued_for(self):
+    async def test_the_row_records_the_operation_it_was_issued_for(self):
         _, _, row, _ = await issue_row(preauth_identity(),
-                                       operation=AuthOperation.claim_anonymous_grant,
-                                       variant=None)
+                                       operation=AuthOperation.claim_anonymous_grant)
         assert row.operation is AuthOperation.claim_anonymous_grant
-        assert row.operation_variant is None
 
     async def test_issue_discloses_exactly_the_handle_and_expires_at(self):
         """§6.1: "Returns exactly `challenge_id` and `expires_at`; nothing else about the challenge
         is ever disclosed." A three-element return would hand a caller the row id to leak."""
         session = _RecordingSession()
         returned = await store().issue(session, operation=AuthOperation.create_user,
-                                       operation_variant=IdentityProvider.google,
                                        identity=preauth_identity(), now=FIXED_NOW)
         assert isinstance(returned, tuple)
         assert len(returned) == 2
@@ -378,7 +372,6 @@ class TestTheCompletionComparison:
         ring = keyring()
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.create_user,
-                            operation_variant=IdentityProvider.google,
                             preauth_issuer=ISSUER,
                             preauth_subject_hash=ring.actor_subject_hash(ISSUER, SUBJECT),
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
@@ -388,7 +381,6 @@ class TestTheCompletionComparison:
         ring = keyring()
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.create_user,
-                            operation_variant=IdentityProvider.google,
                             preauth_issuer=ISSUER,
                             preauth_subject_hash=ring.actor_subject_hash(ISSUER, SUBJECT),
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
@@ -401,7 +393,6 @@ class TestTheCompletionComparison:
         ring = keyring()
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.create_user,
-                            operation_variant=IdentityProvider.google,
                             preauth_issuer="https://securetoken.google.com/other-project",
                             preauth_subject_hash=ring.actor_subject_hash(ISSUER, SUBJECT),
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
@@ -410,12 +401,11 @@ class TestTheCompletionComparison:
 
     def test_a_preauth_row_still_matches_a_subject_that_has_since_become_linked(self):
         """§6.4: the pre-auth comparison is over the verified `(issuer, subject)` and stays that
-        way "even if that subject has since become linked". The request's current variant is not
-        part of the test -- what fails a pre-auth binding is a differing hash, not linkage."""
+        way "even if that subject has since become linked" -- what fails a pre-auth binding is a
+        differing hash, not linkage."""
         ring = keyring()
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.create_user,
-                            operation_variant=IdentityProvider.google,
                             preauth_issuer=ISSUER,
                             preauth_subject_hash=ring.actor_subject_hash(ISSUER, SUBJECT),
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
@@ -426,7 +416,6 @@ class TestTheCompletionComparison:
         rotation invalidates every outstanding pre-auth-bound challenge."""
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.create_user,
-                            operation_variant=IdentityProvider.google,
                             preauth_issuer=ISSUER,
                             preauth_subject_hash=keyring(1).actor_subject_hash(ISSUER, SUBJECT),
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
@@ -436,7 +425,6 @@ class TestTheCompletionComparison:
     def test_a_cleared_preauth_hash_takes_the_already_used_rejection(self):
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.create_user,
-                            operation_variant=IdentityProvider.google,
                             preauth_issuer=ISSUER,
                             preauth_subject_hash=None,
                             consumed_at=FIXED_NOW,
@@ -449,7 +437,6 @@ class TestTheCompletionComparison:
         property of the code path, not of the answer, so the keyring is one that explodes."""
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.create_user,
-                            operation_variant=IdentityProvider.google,
                             preauth_issuer=ISSUER,
                             preauth_subject_hash=None,
                             consumed_at=FIXED_NOW,
@@ -485,7 +472,7 @@ class TestLocateIsByteForByte:
 
     async def test_locate_returns_the_row_for_an_exact_handle(self):
         row = AuthChallenge(challenge_id="a" * 22, operation=AuthOperation.create_user,
-                            operation_variant=IdentityProvider.google, preauth_issuer=ISSUER,
+                            preauth_issuer=ISSUER,
                             preauth_subject_hash=b"x" * 32,
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
         assert await store().locate(_RecordingSession([row]), "a" * 22) is row

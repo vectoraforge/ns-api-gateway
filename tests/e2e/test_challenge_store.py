@@ -74,14 +74,13 @@ def preauth(subject: str = SUBJECT, *, issuer: str = ISSUER) -> PreAuthIdentity:
 
 
 async def issue(factory, store, identity=None, *, now=None,
-                operation: AuthOperation = AuthOperation.claim_anonymous_grant,
-                variant: IdentityProvider | None = None) -> tuple[str, datetime]:
+                operation: AuthOperation = AuthOperation.claim_anonymous_grant
+                ) -> tuple[str, datetime]:
     """Issue one challenge and commit it, the way a real prepare handler would."""
     moment = now if now is not None else datetime.now(UTC)
     async with factory() as session:
         handle, expires_at = await store.issue(session,
                                                operation=operation,
-                                               operation_variant=variant,
                                                identity=identity if identity is not None
                                                else preauth(),
                                                now=moment)

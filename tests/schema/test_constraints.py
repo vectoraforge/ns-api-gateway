@@ -82,9 +82,9 @@ _INSERT_STORE_PURCHASE = (
 )
 _INSERT_CHALLENGE = (
     "INSERT INTO core.auth_challenges "
-    "(id, challenge_id, operation, operation_variant, bound_external_identity_id, preauth_issuer, "
+    "(id, challenge_id, operation, bound_external_identity_id, preauth_issuer, "
     "preauth_subject_hash, expires_at, claimed_at, claim_attempt_id, consumed_at, created_at) "
-    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)"
+    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)"
 )
 # Two literal statements again: case A6 has to prove the DDL's details DEFAULT is what a minimal
 # valid row gets, which means omitting the column rather than passing the skeleton by hand.
@@ -203,7 +203,6 @@ async def _insert_challenge(
     conn: asyncpg.Connection,
     *,
     operation: str = "create_user",
-    operation_variant: str | None = "anonymous",
     bound_external_identity_id: uuid.UUID | None = None,
     preauth_issuer: str | None = ISSUER,
     preauth_subject_hash: bytes | None = _ACTOR_SUBJECT_HASH,
@@ -218,7 +217,6 @@ async def _insert_challenge(
         challenge_row_id,
         f"chal_{uuid.uuid4().hex}",
         operation,
-        operation_variant,
         bound_external_identity_id,
         preauth_issuer,
         preauth_subject_hash,
@@ -681,19 +679,37 @@ class TestSubscriptionConstraints:
 class TestAuthChallengeConstraints:
     """SCHEMA-05 -- ruling 9.8's operation partition and the lifecycle and binding CHECKs."""
 
-    async def test_challenge_restore_subscription_operation_rejected(self, conn):
-        """Case R9 -- restore_subscription is challenge-free, and the database refuses such a row."""
+    @pytest.mark.parametrize("operation", ["restore_subscription", "sign_out_all", "sync"])
+    async def test_challenge_for_a_challenge_free_operation_rejected(self, conn, operation):
+        """Case R9 -- the three challenge-free operations, none of which may have a challenge row.
+
+        Widened from restore_subscription alone when D-12/D-13 collapsed the four-arm CHECK to a
+        membership test. The membership form is the one that could plausibly be written too
+        loosely -- an enum-wide CHECK, or none at all, would admit all three of these -- so all
+        three are asserted rather than the one the original ruling named.
+        """
         async with _rejects(conn, asyncpg.CheckViolationError):
-            # restore_subscription has no challenge row, no claim step and no consumption step;
+            # These operations have no challenge row, no claim step and no consumption step;
             # writing one is the point of this test.
-            await _insert_challenge(conn, operation="restore_subscription", operation_variant=None)
+            await _insert_challenge(conn, operation=operation)
         assert await conn.fetchval("SELECT count(*) FROM core.auth_challenges") == 0
 
-    async def test_challenge_create_user_without_operation_variant_rejected(self, conn):
-        """The other half of the 9.8 partition -- create_user must name a legal variant."""
-        async with _rejects(conn, asyncpg.CheckViolationError):
-            # Omitting the required operation_variant is the point of this test.
-            await _insert_challenge(conn, operation="create_user", operation_variant=None)
+    @pytest.mark.parametrize("operation", [
+        "create_user", "upgrade_anonymous_to_registered",
+        "claim_anonymous_grant", "claim_registered_grant",
+    ])
+    async def test_challenge_for_every_challenge_bearing_operation_accepted(self, conn, operation):
+        """The other half of the partition -- all four challenge-bearing operations insert.
+
+        `upgrade_anonymous_to_registered` is the load-bearing case: it was pinned to a
+        provider-variant arm (`IN ('google','apple')`) until D-13 removed that column, so this is
+        the assertion that Phase 40's rows survived the rewrite. Phase 40 must supply its own provider
+        binding; that it has none *here* is the recorded handoff, not a regression.
+        """
+        challenge_row_id = await _insert_challenge(conn, operation=operation)
+        assert await conn.fetchval(
+            "SELECT count(*) FROM core.auth_challenges WHERE id = $1", challenge_row_id
+        ) == 1
 
     async def test_challenge_claimed_without_attempt_id_rejected(self, conn):
         """The lifecycle CHECK -- a claimed row must carry its server-generated claim_attempt_id."""
@@ -710,7 +726,6 @@ class TestAuthChallengeConstraints:
             await _insert_challenge(
                 conn,
                 operation="claim_anonymous_grant",
-                operation_variant=None,
                 bound_external_identity_id=identity_id,
                 preauth_issuer=ISSUER,
             )
@@ -721,7 +736,6 @@ class TestAuthChallengeConstraints:
         challenge_row_id = await _insert_challenge(
             conn,
             operation="upgrade_anonymous_to_registered",
-            operation_variant="google",
             claimed_at=now,
             claim_attempt_id=uuid.uuid4(),
             consumed_at=now,
