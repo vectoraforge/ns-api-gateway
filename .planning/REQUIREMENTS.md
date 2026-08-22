@@ -14,6 +14,7 @@
 ### SCHEMA — Phase 34 (`00-schema.md`)
 
 - [x] **SCHEMA-01**: The single initial migration `migrations/20260818_01_initial-release.sql` replaces the deleted prior migration and creates the complete v2.0 schema in one apply against an empty database — no incremental migration files are added
+  > **Upheld against a later conflicting decision (Phase 37, plan 37-01 Task 1, 2026-08-22).** `37-CONTEXT.md` D-13 called for "a new migration" to drop `core.auth_challenges.operation_variant`. That mechanism was rejected in favor of this requirement: the initial migration is **edited in place** and the disposable dev/test database is dropped and re-applied. SCHEMA-01 is unamended and `tests/schema/test_apply_rollback.py::test_exactly_one_sql_file` stays green unmodified. The consequence for any future v2.0 schema change is the same: edit in place, re-apply, never add a file.
 - [x] **SCHEMA-02**: `core.users`, `core.external_identities`, and the `core.identity_provider` enum support `(issuer, subject)` → user resolution, with `identity_state` and permanently-retained tombstone rows
 - [x] **SCHEMA-03**: `core.access_grants`, `core.access_tiers`, and `core.user_monthly_usage` enforce at most one active grant per user, with monthly usage keyed by grant id
 - [x] **SCHEMA-04**: `core.subscriptions`, `core.store_purchases`, and `core.store_purchase_tokens` support both stores, with `product_entitled_subscription_id` as a STORED generated column over `('active','grace_period')`

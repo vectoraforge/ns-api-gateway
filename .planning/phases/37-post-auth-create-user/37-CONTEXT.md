@@ -217,6 +217,24 @@ transaction, on **every** completion — anonymous and registered alike, no bran
     binds the target provider. Phase 37 removes the column; it does not design Phase 40's
     replacement. The new CHECK must still be written so Phase 40's rows remain insertable.
   — **Reversibility:** one-way (destructive schema change), cheap pre-launch.
+  - **FLAGGED CONFLICT — D-13's mechanism vs. SCHEMA-01. Resolved 2026-08-22 at plan 37-01 Task 1
+    in favor of SCHEMA-01, recorded here rather than silently resolved.** D-13 above says the removal
+    "requires a **new** migration". Two facts not visible when D-13 was written contradict that
+    wording: (1) `REQUIREMENTS.md` SCHEMA-01 is shipped and checked, and reads "**no incremental
+    migration files are added**"; (2) `tests/schema/test_apply_rollback.py::TestMigrationDirectory::test_exactly_one_sql_file`
+    asserts `migrations/` holds exactly one `.sql` file and fails the moment a second appears — it
+    exists precisely to enforce SCHEMA-01. **Resolution (option-a): the single initial migration
+    `20260818_01_initial-release.sql` is edited in place and the dev/test database is dropped and
+    re-applied.** Rationale: SCHEMA-01 is a locked, shipped requirement with a live test enforcing
+    it, and the only thing a second migration file buys — an audit trail of a schema change — has no
+    audience in a pre-launch repo with no deployed database (`37-RESEARCH.md` § Runtime State
+    Inventory: zero `core.users` rows originate from `src/`; `tests/schema/` builds and drops a
+    scratch database per session). **Consequences:** SCHEMA-01 survives unamended;
+    `test_exactly_one_sql_file` stays green **unmodified** — if it ever fails, that is a real signal,
+    not fallout to repair; the migration keeps reading as one from-empty apply, which every harness
+    in the repo assumes. **Accepted cost:** the tracked migration is rewritten, so a reviewer diffing
+    it sees a schema shape that never existed on any machine. Pre-launch with a disposable database,
+    that cost is bounded to reviewer confusion, which this note discharges.
 
 ### Claude's Discretion
 
