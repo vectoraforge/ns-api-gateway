@@ -13,6 +13,11 @@ ROLLBACK_TEST_DB = "ns_schema_test_rollback"
 
 NAMESPACES = "SELECT count(*) FROM pg_namespace WHERE nspname IN ('core', 'audit')"
 
+# The reference rows the migration seeds. One per v2.0 grant source; 'manual' names a tier
+# rather than having its own. Kept in sync with the INSERT in the migration by
+# TestSeededTiers below, which is the only place the credit values are pinned.
+SEEDED_TIERS = {"anonymous", "registered", "paid"}
+
 
 class TestMigrationDirectory:
     """SCHEMA-01: migrations/ holds exactly one .sql file, so pogo applies exactly that one."""
@@ -63,6 +68,31 @@ class TestRollback:
             await drop_database(ROLLBACK_TEST_DB)
 
 
+class TestSeededTiers:
+    """The migration seeds core.access_tiers as reference data, overriding 00-schema.md:249."""
+
+    async def test_seeded_tiers_and_credits(self, conn):
+        rows = await conn.fetch("SELECT id, monthly_credits FROM core.access_tiers ORDER BY id")
+        assert {row["id"]: row["monthly_credits"] for row in rows} == {
+            "anonymous": 10,
+            "registered": 50,
+            "paid": 1000,
+        }
+
+    async def test_registered_is_not_smaller_than_anonymous(self, conn):
+        """07-claim-registered-grant.md:59's sizing invariant, which no CHECK can express.
+
+        A registered claim carries the superseded anonymous grant's `monthly_used` across with
+        no reset or clamp. If the registered tier were the smaller of the two, that carry-over
+        could land above the new allowance and `remaining` would clamp to 0 on a fresh grant.
+        """
+        anonymous, registered = await conn.fetchrow(
+            "SELECT (SELECT monthly_credits FROM core.access_tiers WHERE id = 'anonymous'),"
+            "       (SELECT monthly_credits FROM core.access_tiers WHERE id = 'registered')"
+        )
+        assert registered >= anonymous
+
+
 class TestHarnessIsolation:
     """The per-test transaction rolls back, so no test observes another test's seed rows."""
 
@@ -73,7 +103,17 @@ class TestHarnessIsolation:
         assert await conn.fetchval("SELECT count(*) FROM core.access_grants WHERE id = $1", grant_id) == 1
 
     async def test_previous_test_rows_were_rolled_back(self, conn):
-        for table in ("core.users", "core.access_grants", "core.access_tiers"):
+        for table in ("core.users", "core.access_grants"):
             # table comes from the fixed literal tuple above, never from test input.
             count = await conn.fetchval(f"SELECT count(*) FROM {table}")
             assert count == 0, f"{table} still holds {count} rows from a previous test"
+
+    async def test_only_the_seeded_tiers_survive(self, conn):
+        """core.access_tiers is the one table the migration seeds, so 'empty' is the wrong bar.
+
+        The `tier` fixture inserts randomised `tier_<hex>` ids, so a leaked row shows up as an
+        id outside the seeded set -- a stricter check than a count, which a leak plus a
+        missing seed row could cancel out.
+        """
+        ids = {row["id"] for row in await conn.fetch("SELECT id FROM core.access_tiers")}
+        assert ids == SEEDED_TIERS, f"core.access_tiers holds {ids}, expected {SEEDED_TIERS}"

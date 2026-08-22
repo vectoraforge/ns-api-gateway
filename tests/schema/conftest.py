@@ -140,5 +140,9 @@ async def conn(_schema_db_uri):
 
 @pytest_asyncio.fixture
 async def tier(conn):
-    """Seed one core.access_tiers row and return its id -- the migration seeds none."""
+    """Insert one throwaway core.access_tiers row and return its id.
+
+    Distinct from the three reference tiers the migration seeds: this one carries a randomised
+    id so a test can own a tier without depending on, or disturbing, the seeded set.
+    """
     return await insert_tier(conn)

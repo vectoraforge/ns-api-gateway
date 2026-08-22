@@ -254,17 +254,33 @@ CREATE INDEX ix_external_identities_user_id ON core.external_identities (user_id
 CREATE INDEX ix_external_identities_provider ON core.external_identities (provider);
 CREATE INDEX ix_external_identities_user_active ON core.external_identities (user_id, identity_state);
 
--- Product configuration. This migration seeds NO tier rows (00-schema.md:249) - tier ids
--- are configuration owned by later phases/deployment. The "no registered tier may grant
--- fewer monthly_credits than the anonymous tier" sizing invariant is enforced at
--- configuration load/startup, not by a database constraint. The only database-side rule
--- is monthly_credits >= 0.
+-- Product configuration. The only database-side rule is monthly_credits >= 0; the "no
+-- registered tier may grant fewer monthly_credits than the anonymous tier" sizing
+-- invariant (07-claim-registered-grant.md:59) is not expressible as a constraint here.
 CREATE TABLE core.access_tiers (
     id TEXT PRIMARY KEY,
     monthly_credits INTEGER NOT NULL CHECK (monthly_credits >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Seeded as reference data, overriding 00-schema.md:249 ("Phase 00 seeds NO tier rows -
+-- tier ids are configuration owned by later phases/deployment"). Recorded here as the
+-- required SHARED-INVARIANTS conflict flag rather than resolved silently. Rationale: no
+-- phase in the roadmap claimed tier seeding, so the table stayed empty and every grant
+-- path (36, 41, 42, 43) had nothing to FK against.
+--
+-- One row per v2.0 grant source: 'anonymous' backs anonymous_device_grant, 'registered'
+-- backs registered_account_grant, 'paid' backs subscription. 'manual' grants pick whichever
+-- tier the issuance names.
+--
+-- registered (50) >= anonymous (10) satisfies the sizing invariant, which is what makes
+-- 07-claim-registered-grant.md:59's carry-over of monthly_used across a claim safe: the
+-- superseded grant's consumption can never exceed the new grant's allowance.
+INSERT INTO core.access_tiers (id, monthly_credits) VALUES
+    ('anonymous', 10),
+    ('registered', 50),
+    ('paid', 1000);
 
 -- =====================================================================
 -- 3. SUBSCRIPTIONS AND STORE  (00-schema.md section 5)
