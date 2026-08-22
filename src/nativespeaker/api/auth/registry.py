@@ -71,12 +71,17 @@ REGISTRY: tuple[RouteMetadata, ...] = (
     RouteMetadata(method="GET", path="/examples", category=Category.authenticated),
     RouteMetadata(method="GET", path="/chats", category=Category.authenticated),
     # quota_checked is enforcement, not documentation: condition 10 requires the matching
-    # `require_quota_*` decorator dependency on this route. `POST /chats/{chat_id}` gets its flag
-    # in plan 36-05, together with its wrapper -- the two must always move in one commit.
+    # `require_quota_*` decorator dependency on this route, and a flag that moves without its
+    # wrapper -- in either direction -- fails boot rather than serving requests free.
+    #
+    # Exactly these two of the eight entries carry it (D-07). The four reads and the delete do not:
+    # charging a user for listing or deleting what they already paid for is not what the allowance
+    # counts.
     RouteMetadata(method="POST", path="/chats", category=Category.authenticated,
                   quota_checked=True),
     RouteMetadata(method="GET", path="/chats/{chat_id}", category=Category.authenticated),
-    RouteMetadata(method="POST", path="/chats/{chat_id}", category=Category.authenticated),
+    RouteMetadata(method="POST", path="/chats/{chat_id}", category=Category.authenticated,
+                  quota_checked=True),
     RouteMetadata(method="DELETE", path="/chats/{chat_id}", category=Category.authenticated),
 )
 
@@ -133,10 +138,13 @@ def assert_route_enumeration(app: Any,
     #     the quota wrappers by identity.
     # The wrapper tuple is therefore built here rather than at module scope: there is no
     # import-time moment at which those callables are available to this module.
-    from nativespeaker.api.app.dependencies import require_quota_create_chat
+    from nativespeaker.api.app.dependencies import require_quota_create_chat, require_quota_send_message
     from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
 
-    quota_wrappers = (require_quota_create_chat,)
+    # Every per-route D-14 wrapper, by identity. A wrapper missing from here reads as "no quota
+    # dependency attached" and fails boot on the route that declares the flag -- so adding a gated
+    # route means adding its wrapper here in the same commit as its decorator and its flag.
+    quota_wrappers = (require_quota_create_chat, require_quota_send_message)
 
     known_verifiers = VERIFIERS if verifiers is None else verifiers
 

@@ -44,8 +44,14 @@ class TestErrorCases:
         assert response.json()["code"] == "not_found"
 
     async def test_followup_nonexistent_chat_returns_404(self, async_client,
-                                                         linked_firebase_identity):
-        """POST /chats/{id} for nonexistent chat returns 404."""
+                                                         linked_firebase_identity, quota_grant):
+        """POST /chats/{id} for nonexistent chat returns 404.
+
+        `quota_grant` keeps this case about the missing chat. The route is quota-checked from plan
+        36-05 on and the gate runs before the handler, so an ungranted caller would be refused 429
+        and the 404 branch would never be reached -- the same reason
+        `test_unsupported_language_returns_400` below carries it.
+        """
         response = await async_client.post(f"/chats/{uuid4()}",
                                            json={"message": "hello"})
         assert response.status_code == 404

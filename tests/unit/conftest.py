@@ -14,6 +14,7 @@ from nativespeaker.api.app.dependencies import (
     get_db,
     get_linked_identity,
     require_quota_create_chat,
+    require_quota_send_message,
 )
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth.context import LinkedIdentity
@@ -172,6 +173,10 @@ def client(mock_chats_db, service):
     # `state.session_factory` either, so without this line every unit case through the fixture
     # would reach real quota code and fail on the missing factory rather than on its subject.
     app.dependency_overrides[require_quota_create_chat] = lambda: None
+    # One line per wrapper, because overrides key on the exact callable: overriding the other
+    # wrapper does not cover this one, and overriding the shared `require_quota` they both forward
+    # to would cover neither.
+    app.dependency_overrides[require_quota_send_message] = lambda: None
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client

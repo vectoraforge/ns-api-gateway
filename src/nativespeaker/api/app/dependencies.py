@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator
+from uuid import UUID
 
 from fastapi import Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -11,7 +12,7 @@ from nativespeaker.api.auth.context import (
 )
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.errors import AuthenticationError
-from nativespeaker.api.models.api import ChatRequest
+from nativespeaker.api.models.api import ChatRequest, MessageRequest
 from nativespeaker.api.quota import consume_quota
 from nativespeaker.api.services import ChatService
 
@@ -102,9 +103,14 @@ def get_preauth_identity(request: Request) -> PreAuthIdentity:
 # grant row locks would span the entire provider round trip. Decorator dependencies complete before
 # the handler body is entered, so the transaction here is opened, committed and closed first.
 #
-# Each route gets its own thin wrapper declaring that route's body model as a plain, non-Depends
-# parameter (D-14). FastAPI validates the body while solving the dependency, so a malformed body
-# 422s before any quota work runs and no credit is spent on a request that was never served.
+# Each route gets its own thin wrapper declaring that route's body model -- and every untrusted
+# path parameter it takes -- as plain, non-Depends parameters (D-14). FastAPI validates them while
+# solving the dependency, so a malformed request 422s before any quota work runs and no credit is
+# spent on a request that was never served.
+#
+# The wrappers do nothing but forward to `require_quota`. They exist per route only because
+# FastAPI's validation is driven by a dependency's own signature; the moment one of them grows
+# logic of its own, the two routes have stopped sharing a resolver.
 # ---------------------------------------------------------------------------
 
 
@@ -150,6 +156,31 @@ async def require_quota_create_chat(
     v1.6, whose yield-dependency rolled the increment back. The parameter name is load-bearing too:
     it must match the handler's body parameter name, or FastAPI switches to an embedded body and
     the wire contract changes.
+    """
+    await require_quota(request, context)
+
+
+async def require_quota_send_message(
+        request: Request,
+        chat_id: UUID,
+        body: MessageRequest,
+        context: RequestContext = Depends(get_request_context)) -> None:
+    """`POST /chats/{chat_id}`. `chat_id` and `body` are unused on purpose -- both are the D-14
+    mitigation, and this route needs both halves of it.
+
+    Same rule as the wrapper above, applied to a route whose untrusted input is not only a body: a
+    path segment that is not a valid UUID must 422 before the own-session commit too, or a client
+    typing a malformed chat id drains a paying user's allowance one 422 at a time. Declaring the
+    parameters here is what buys that -- FastAPI validates path *and* body while solving the
+    dependency, and neither validation failure reaches this function body.
+
+    Both names are load-bearing and must match the handler's: `chat_id` so it binds to the path
+    template's placeholder rather than becoming a query parameter, and `body` so FastAPI keeps the
+    top-level body shape instead of switching to an embedded one.
+
+    Neither is renamed to `_chat_id`/`_body` and neither carries a `# noqa`: this repo's ruff
+    `select` is `["E", "W", "F", "I", "UP"]`, which has no unused-argument rule to silence, and
+    renaming would break the binding the parameters exist for.
     """
     await require_quota(request, context)
 

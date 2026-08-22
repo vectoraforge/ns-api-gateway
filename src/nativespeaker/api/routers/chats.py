@@ -6,6 +6,7 @@ from nativespeaker.api.app.dependencies import (
     get_chat_service,
     get_linked_identity,
     require_quota_create_chat,
+    require_quota_send_message,
 )
 from nativespeaker.api.auth.context import LinkedIdentity
 from nativespeaker.api.models.api import ChatRequest, ChatResponse, MessageRequest, MessageResponse
@@ -71,6 +72,7 @@ async def create_chat(body: ChatRequest,
 
 
 @router.post("/chats/{chat_id}",
+             dependencies=[Depends(require_quota_send_message)],
              response_model=MessageResponse,
              summary="Send follow-up message",
              description="Sends a follow-up message in an existing chat session. "

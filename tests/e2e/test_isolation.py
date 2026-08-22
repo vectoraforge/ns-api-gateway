@@ -23,7 +23,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unit.conftest import TEST_ISSUER, make_token
 
-from .conftest import create_chat, seed_identity
+from .conftest import create_chat, seed_grant, seed_identity
 
 pytestmark = pytest.mark.e2e
 
@@ -45,14 +45,21 @@ async def isolation_client(_app_lifespan, stub_verifier):
 
 @pytest_asyncio.fixture(loop_scope="module")
 async def owned_chat(_db_transaction):
-    """Two linked, active identities and one chat owned by `OWNER`. Returns its chat id.
+    """Two linked, active identities, an effective grant for `STRANGER`, and one chat owned by
+    `OWNER`. Returns the chat id.
 
     `seed_identity` runs before `create_chat` for the owner's pair, so the chat attaches to the
     identity the barrier will resolve rather than to a second `anonymous` one `create_chat` would
     otherwise seed itself.
+
+    The stranger's grant is what keeps `test_cannot_post_to_other_user_chat` about ownership.
+    `POST /chats/{chat_id}` is quota-checked, and the gate runs before the handler, so an ungranted
+    stranger would be refused 429 and the ownership filter -- the property that case exists to
+    prove -- would never run. Only the stranger needs one: the owner never POSTs here.
     """
     await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=OWNER)
-    await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=STRANGER)
+    stranger, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=STRANGER)
+    await seed_grant(_db_transaction, user_id=stranger.id)
     return await create_chat(_db_transaction, TEST_ISSUER, OWNER)
 
 
