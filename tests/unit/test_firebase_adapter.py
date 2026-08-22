@@ -305,3 +305,37 @@ class TestTheDeliberateNonImplementations:
         """It does not satisfy `FirebaseAdminAdapter`, so it must not claim to."""
         from nativespeaker.api.auth.adapters import FirebaseAdminAdapter
         assert FirebaseAdminAdapter not in FirebaseAdminLookup.__mro__
+
+
+class TestTheLazyReExport:
+    """D-23's one import root still reaches this module -- just not eagerly.
+
+    `TestNoProviderDependency.test_importing_the_module_does_not_import_firebase_admin` pins the
+    other half in a subprocess: importing the adapters seam leaves `firebase_admin` out of
+    `sys.modules`. What is pinned here is that the lazy path is a genuine **re-export** and not a
+    copy, so a caller reaching a name through the root and a caller reaching it directly are
+    holding the same object.
+    """
+
+    @pytest.mark.parametrize("name", ["build_admin_apps", "FirebaseAdminLookup",
+                                      "FIREBASE_HTTP_TIMEOUT_SECONDS"])
+    def test_the_root_yields_the_same_object_as_the_direct_import(self, name):
+        import nativespeaker.api.auth as auth_root
+        from nativespeaker.api.auth import firebase as firebase_module
+        assert getattr(auth_root, name) is getattr(firebase_module, name)
+
+    @pytest.mark.parametrize("name", ["build_admin_apps", "FirebaseAdminLookup",
+                                      "FIREBASE_HTTP_TIMEOUT_SECONDS"])
+    def test_every_lazy_name_is_declared_in_all(self, name):
+        import nativespeaker.api.auth as auth_root
+        assert name in auth_root.__all__
+
+    def test_an_unknown_name_still_raises_attribute_error(self):
+        """`__getattr__` resolves the mapping and nothing else -- it is not a catch-all."""
+        import nativespeaker.api.auth as auth_root
+        with pytest.raises(AttributeError):
+            auth_root.no_such_name
+
+    def test_dir_still_shows_the_whole_root(self):
+        import nativespeaker.api.auth as auth_root
+        assert dir(auth_root) == sorted(auth_root.__all__)
