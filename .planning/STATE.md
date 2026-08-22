@@ -3,19 +3,19 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 36
-current_phase_name: Rebind Pre-existing Routes
+current_phase_name: rebind-pre-existing-routes
 status: executing
-stopped_at: Phase 36 context gathered
-last_updated: "2026-08-22T01:45:20.858Z"
+stopped_at: Completed 36-01-PLAN.md
+last_updated: "2026-08-22T02:01:02.443Z"
 last_activity: 2026-08-21
 last_activity_desc: Plan 35-12 complete — CR-01 gap closed
 progress:
   total_phases: 13
   completed_phases: 2
   total_plans: 21
-  completed_plans: 16
+  completed_plans: 17
   percent: 15
-state_head: f6e9968186a40f90d6135ac77f272bb5ce6cda61
+state_head: 9cec5d788c9558ff0d4704e352608aa3abbd692b
 ---
 
 # Project State
@@ -25,14 +25,14 @@ state_head: f6e9968186a40f90d6135ac77f272bb5ce6cda61
 See: .planning/PROJECT.md (updated 2026-08-19)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 35 — foundation
+**Current focus:** Phase 36 — rebind-pre-existing-routes
 
 ## Current Position
 
-Phase: 36 — Rebind Pre-existing Routes
-Plan: Not started
+Phase: 36 (rebind-pre-existing-routes) — EXECUTING
+Plan: 2 of 5
 Status: Ready to execute
-Last activity: 2026-08-21 — Phase 35 complete, transitioned to Phase 36
+Last activity: 2026-08-21 — Phase 36 execution started
 
 ## Accumulated Context
 
@@ -95,11 +95,11 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-21T23:34:18.274Z
+**Last session:** 2026-08-22T02:00:48.656Z
 
 Last activity: 2026-03-26
-Stopped at: Phase 36 context gathered
-Resume file: .planning/phases/36-rebind-pre-existing-routes/36-CONTEXT.md
+Stopped at: Completed 36-01-PLAN.md
+Resume file: None
 
 ## Performance Metrics
 
@@ -111,6 +111,7 @@ Resume file: .planning/phases/36-rebind-pre-existing-routes/36-CONTEXT.md
 | Phase 34 P03 | 42min | 3 tasks | 8 files |
 | Phase 34 P04 | 38min | 2 tasks | 3 files |
 | Phase 35 P12 | 22min | 3 tasks | 4 files |
+| Phase 36 P01 | 7min | 3 tasks | 7 files |
 
 ## Decisions
 
@@ -130,3 +131,6 @@ Resume file: .planning/phases/36-rebind-pre-existing-routes/36-CONTEXT.md
 - [Phase ?]: 35-12: an absent, empty, or non-string kid keys on a shared empty-string sentinel in the negative cache — PyJWT forces a real refresh on every unmatched kid, so omitting one header field was otherwise an unbounded per-request fetch
 - [Phase ?]: 35-12: PyJWKClientConnectionError never records a kid — an endpoint outage must not become a longer self-inflicted auth outage; distinct unknown kids still cost one bounded off-loop fetch each (accepted as T-35-12-03)
 - [Phase ?]: 35-12: fetch/IO counts are asserted at the transport seam under a real client, never against a substituted client class, and every bounded-count assertion ships with a control that makes the count non-zero
+- [Phase ?]: 36-01: all four GENERATED ALWAYS AS (...) STORED columns on core.access_grants are omitted from the AccessGrant model — PostgreSQL rejects an explicit value for them, so mapping one breaks every ORM insert
+- [Phase ?]: 36-01: D-01 tier seeding committed as migration reference data (anonymous=10, registered=50, paid=1000), overriding 00-schema.md:249 with the conflict recorded as a SHARED-INVARIANTS flag rather than resolved silently
+- [Phase ?]: 36-01: REBIND-05 left unchecked — this plan delivers only the model layer; the resolution, lock order, fail-closed and rollover behavior the requirement describes is owned by plans 36-03/36-04/36-05, which also claim it

@@ -216,12 +216,12 @@ Plans:
 **Goal:** Put the nine pre-existing routes behind the barrier and rewire the chat quota path onto the grant model, restoring a running application.
 **Requirements:** REBIND-01 … REBIND-06 (REBIND-04 is void — see `REQUIREMENTS.md:49`)
 **Depends on:** 34, 35
-**Plans:** 5 plans
+**Plans:** 1/5 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 36-01-PLAN.md — Carry the applied D-01 tier seeding into the phase's commits and land the SQLModel layer for the three grant tables (wave 1)
+- [x] 36-01-PLAN.md — Carry the applied D-01 tier seeding into the phase's commits and land the SQLModel layer for the three grant tables (wave 1)
 - [ ] 36-02-PLAN.md — D-12 empty-array defaults, the D-13 documentation corrections, and the nine-to-eight route-count fix (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
@@ -403,7 +403,7 @@ Plans:
 | 33. Propagate quota_exceeded Rename | v1.6 | 1/1 | Complete | 2026-03-26 |
 | 34. Schema | v2.0 | 4/4 | Complete    | 2026-08-20 |
 | 35. Foundation | v2.0 | 12/12 | Complete    | 2026-08-21 |
-| 36. Rebind Pre-existing Routes | v2.0 | 0/? | Pending | — |
+| 36. Rebind Pre-existing Routes | v2.0 | 1/5 | In Progress|  |
 | 37. POST /auth/create-user | v2.0 | 0/? | Pending | — |
 | 38. POST /auth/sync | v2.0 | 0/? | Pending | — |
 | 39. GET /users/me | v2.0 | 0/? | Pending | — |
