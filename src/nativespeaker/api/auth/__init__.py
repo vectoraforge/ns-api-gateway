@@ -5,8 +5,8 @@ visibly one thing and a later internal split inside `auth/` costs no edit outsid
 Everything a later phase is expected to name is re-exported here: the barrier and its §1.1 wire
 contract, the §2.2 route registry with its §2.3 startup assertion, the §1.4 typed context, §1.3
 identity resolution, §1.2 verification, §8.2 rejection logging, the §4.3/§6.4 shared keyed
-hashing, the §4 audit writer, the §6 challenge store and its §6.5 mode signal, the §7.1 provider
-call budget, and the §7 adapter interfaces.
+hashing, the §4 audit writer, the §6 challenge store and its §6.5 mode signal, the §7.1 Firebase
+lookup retry policy, and the §7 adapter interfaces.
 
 **The error registry is deliberately absent.** `nativespeaker.api.errors` owns every client-visible
 class in the service -- quota, LLM and framework classes as well as the seven foundation ones -- so
@@ -18,16 +18,15 @@ from an auth package would misdescribe where that class comes from.
 the import ordering below it.
 """
 __all__ = [
-    "ACTOR_SUBJECT_PREFIX", "ADAPTER_FIREBASE_LOOKUP", "AdmissionDecision", "Admit", "AuditWriter",
-    "AuthBarrierMiddleware", "BoundedReason", "BudgetExhausted", "BudgetGate",
-    "CHALLENGE_ID_BYTES", "CHALLENGE_TTL_SECONDS", "Category", "ChallengeRejection",
-    "ChallengeStore", "ClaimKind", "ClientIpBucketKind", "DETAILS_SCHEMA_VERSION",
-    "DeviceBitState", "FIREBASE_LOOKUP_ATTEMPTS", "FirebaseAdminAdapter", "HmacConfig",
-    "HmacKeyring", "IDP_ACCOUNT_PREFIX", "IdentityKind", "JWTVerifier", "LinkedIdentity",
-    "ModeSignal", "NamedVerifier", "PreAuthIdentity", "ProviderDataEntry", "ProviderDataOutcome",
-    "ProviderDataResult", "REGISTRY", "REQUEST_CONTEXT_SCOPE_KEY", "Reject",
-    "RequestContext", "RevocationOutcome", "RouteMetadata", "StoreAdapter", "StoreState",
-    "TokenVerifier", "VERIFIERS", "VendorProofAdapter", "VerificationResult", "VerifiedClaims",
+    "ACTOR_SUBJECT_PREFIX", "AdmissionDecision", "Admit", "AuditWriter", "AuthBarrierMiddleware",
+    "BoundedReason", "CHALLENGE_ID_BYTES", "CHALLENGE_TTL_SECONDS", "Category",
+    "ChallengeRejection", "ChallengeStore", "ClaimKind", "ClientIpBucketKind",
+    "DETAILS_SCHEMA_VERSION", "DeviceBitState", "FirebaseAdminAdapter", "HmacConfig", "HmacKeyring",
+    "IDP_ACCOUNT_PREFIX", "IdentityKind", "JWTVerifier", "LinkedIdentity", "ModeSignal",
+    "NamedVerifier", "PreAuthIdentity", "ProviderDataEntry", "ProviderDataOutcome",
+    "ProviderDataResult", "REGISTRY", "REQUEST_CONTEXT_SCOPE_KEY", "Reject", "RequestContext",
+    "RevocationOutcome", "RouteMetadata", "StoreAdapter", "StoreState", "TokenVerifier",
+    "VERIFIERS", "VendorProofAdapter", "VerificationResult", "VerifiedClaims",
     "VerifiedNotification", "VerifiedTransaction", "assert_route_enumeration", "build_details",
     "classify_mode_signal", "enumerate_registered", "extract_bearer", "lookup", "new_challenge_id",
     "record_rejection", "redact", "resolve_identity",
@@ -54,12 +53,6 @@ from nativespeaker.api.auth.audit import (
     redact,
 )
 from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
-from nativespeaker.api.auth.budgets import (
-    ADAPTER_FIREBASE_LOOKUP,
-    FIREBASE_LOOKUP_ATTEMPTS,
-    BudgetExhausted,
-    BudgetGate,
-)
 from nativespeaker.api.auth.challenges import (
     CHALLENGE_ID_BYTES,
     CHALLENGE_TTL_SECONDS,

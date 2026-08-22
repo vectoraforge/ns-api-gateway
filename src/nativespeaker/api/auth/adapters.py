@@ -19,11 +19,13 @@ that drifts three ways:
   **never leak provider text to clients**. A provider's message is diagnostic material for the
   audit row and the log, never for the response body.
 
-**Budget wiring.** Calls through these seams are metered by `auth.budgets` -- the global
-`ADAPTER_FIREBASE_LOOKUP` budget with its `FIREBASE_LOOKUP_ATTEMPTS` retry budget for §7.1, and
-the endpoint-layer names later phases add. Budgets are checked non-destructively together and
-charged together immediately before the outbound call. Exhaustion is not a rate-limit rejection:
-it maps to internal `firebase_lookup_unavailable` -> client `verification_temporarily_unavailable`.
+**Retry wiring.** §7.1's 3-attempt budget on the providerData read is expressed with `tenacity`
+in `auth/retry.py` (`FIREBASE_LOOKUP_ATTEMPTS`, `lookup_with_retry`), and only
+`ProviderDataOutcome.retryable_failure` is retried. `user_not_found` and `selection_failure` are
+definitive: they resolve on the first attempt and spend no further one. Exhausting the three
+attempts is not a rate-limit rejection -- it maps to internal `firebase_lookup_unavailable` ->
+client `verification_temporarily_unavailable`, and `auth/retry.py` carries that pair as named
+constants rather than as a literal repeated at each call site.
 
 **Why these are `Protocol`s and not ABCs.** Nothing here is inherited from. A concrete adapter in
 phase 08 satisfies `StoreAdapter` structurally, which keeps the dependency arrow pointing at
@@ -123,7 +125,7 @@ class FirebaseAdminAdapter(Protocol):
         ...
 
     def get_user_provider_data(self, issuer: str, subject: str) -> ProviderDataResult:
-        """The `getUser` providerData read. Budget-gated; never called on an ordinary request path.
+        """The `getUser` providerData read. Retry-gated; never called on an ordinary request path.
 
         There are exactly five enumerated read points in the whole system (phases 02, 05, 06, 07).
         Foundation calls this zero times, and no ordinary request path may call it at all.
@@ -134,8 +136,9 @@ class FirebaseAdminAdapter(Protocol):
         """The refresh-token revocation seam phase 11 (`sign-out-all`) calls.
 
         Same issuer-selected client rule: an issuer mismatch fails closed before any Admin call.
-        Foundation declares the signature, the two-valued result, and the budget wiring only --
-        phase 11 owns the call site, the retry-budget values, and any in-flight coalescing.
+        Foundation declares the signature and the two-valued result only -- phase 11 owns the call
+        site, its own attempt count, and any in-flight coalescing, and expresses the retry with the
+        `auth/retry.py` tenacity idiom rather than a second hand-rolled loop.
         """
         ...
 
