@@ -168,6 +168,27 @@ redo it. Verify, then carry it into the phase's commits.** What exists:
   provide 1 to 2 suggestions", and the model ignores it. Strengthening the prompt is not the fix;
   prompt instruction alone is demonstrably not holding.
 
+### Plan-phase addenda (2026-08-21)
+
+Two items `36-RESEARCH.md` surfaced that this CONTEXT.md did not cover. Both were put to the
+developer during `/gsd:plan-phase 36` and answered; they are recorded here as binding.
+
+- **D-14:** **Mitigate the D-04 422 credit burn.** The quota dependency must declare the route's
+  request body model so FastAPI validates the body *before* the dependency commits. As specified,
+  D-04's own-session commit runs ahead of body validation, so a malformed body burns a credit —
+  verified by execution on the pinned FastAPI 0.135.1 (D-04 shape → `422 | calls: ['QUOTA-RAN']`,
+  committed; the v1.6 `Depends(get_db)` shape → `['open','increment','ROLLBACK']`). That is a v1.6
+  regression and REBIND-06 asks for v1.6 parity, so the ~8-line mitigation plus its two thin
+  per-route wrappers is in scope. A Wave 0 e2e test (`test_quota.py -k malformed`) must prove a
+  malformed body leaves `monthly_used` unchanged. — **Reversibility:** reversible.
+
+- **D-15:** **`docker-compose.yml` and `uv.lock` are out of scope.** Both are modified in the
+  working tree and neither is named by D-01. Phase 36 plans must not stage, commit, or revert
+  either file; in particular the deferred D-35-05-A `uv.lock` change (including the local-uv
+  `revision 2 → 3` bump `deferred-items.md` warns against committing) stays unowned and
+  uncommitted. Every Phase 36 commit must scope its `git add` to named paths — no `git add -A`,
+  no `git commit -a`. — **Reversibility:** reversible.
+
 ### Claude's Discretion
 
 - Whether the `quota_exceeded` 429 carries `Retry-After`. §8.3 asks for it "where computable", and
