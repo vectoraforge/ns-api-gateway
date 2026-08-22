@@ -12,7 +12,7 @@
     "ui_phase": false,
     "ui_safety_gate": false,
     "_auto_chain_active": false,
-    "use_worktrees": false
+    "use_worktrees": true
   },
   "git": {
     "branching_strategy": "phase"
