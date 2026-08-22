@@ -69,8 +69,10 @@ fixture. Omitting `loop_scope="module"` binds the wrong event loop. Schema modul
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
-**REBIND-04 note:** no row above — the planner must map REBIND-04 to at least one automated
-verification or record it under Manual-Only Verifications.
+**REBIND-04 note:** no row above, and none is owed. `REQUIREMENTS.md:49` marks REBIND-04 **Void** —
+the `quota_checked_request` admission entry it required no longer exists (Phase 35 D-05 deleted
+backend rate limiting from the product). REBIND-05's grant resolution, lock order, and lazy
+rollover are unaffected.
 
 ---
 
@@ -101,7 +103,6 @@ verification or record it under Manual-Only Verifications.
 - [ ] Wave 0 covers all MISSING references
 - [ ] No watch-mode flags
 - [ ] Feedback latency < 30s
-- [ ] REBIND-04 has a verification row or a documented manual entry
 - [ ] `nyquist_compliant: true` set in frontmatter
 
 **Approval:** pending

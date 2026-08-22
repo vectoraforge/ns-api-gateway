@@ -214,8 +214,28 @@ Plans:
 #### Phase 36: Rebind Pre-existing Routes
 
 **Goal:** Put the nine pre-existing routes behind the barrier and rewire the chat quota path onto the grant model, restoring a running application.
-**Requirements:** REBIND-01 … REBIND-06
+**Requirements:** REBIND-01 … REBIND-06 (REBIND-04 is void — see `REQUIREMENTS.md:49`)
 **Depends on:** 34, 35
+**Plans:** 5 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 36-01-PLAN.md — Carry the applied D-01 tier seeding into the phase's commits and land the SQLModel layer for the three grant tables (wave 1)
+- [ ] 36-02-PLAN.md — D-12 empty-array defaults, the D-13 documentation corrections, and the nine-to-eight route-count fix (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 36-03-PLAN.md — Tracer: end-to-end quota gate on `POST /chats`, no effective grant returns 429, with the registry cross-check enforcing the flag (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 36-04-PLAN.md — Complete the quota flow: usage lock, the two fail-closed 500s, lazy rollover, and the increment (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 36-05-PLAN.md — Second quota route, the audit off-path proof for all eight routes, and the two-connection lock-order test (wave 4)
+
 **Success criteria:**
 
 1. The application starts and every pre-existing route serves as it did in v1.6, apart from auth rejections now using the shared error classes
