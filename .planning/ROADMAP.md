@@ -213,7 +213,7 @@ Plans:
 
 #### Phase 36: Rebind Pre-existing Routes
 
-**Goal:** Put the nine pre-existing routes behind the barrier and rewire the chat quota path onto the grant model, restoring a running application.
+**Goal:** Put the eight pre-existing routes behind the barrier and rewire the chat quota path onto the grant model, restoring a running application. (The ninth was `GET /users/me`, deleted by Phase 35 D-16 alongside its router and re-declared in Phase 39 — `auth/registry.py` and success criterion 2 below both total eight.)
 **Requirements:** REBIND-01 … REBIND-06 (REBIND-04 is void — see `REQUIREMENTS.md:49`)
 **Depends on:** 34, 35
 **Plans:** 1/5 plans executed
