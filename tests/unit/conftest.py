@@ -13,8 +13,6 @@ from nativespeaker.api.app.dependencies import (
     get_chat_service,
     get_db,
     get_linked_identity,
-    require_quota_create_chat,
-    require_quota_send_message,
 )
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth.context import LinkedIdentity
@@ -139,12 +137,19 @@ def mock_chats_db():
 @pytest.fixture
 def service(mock_chats_db):
     llm_service = AsyncMock()
+    # An explicit stub gate, not an omitted argument: `ChatService` requires one so that a wiring
+    # slip serves both quota-checked POSTs free instead of failing. These cases' subject is chat
+    # behaviour, not the charge, and `llm_service` is an `AsyncMock` here -- so the real
+    # `on_admitted` callback never fires and this gate is never called. `tests/e2e/test_quota.py`
+    # is where the charge itself is proven, against the real resilience layer.
+    quota_gate = AsyncMock()
     svc = ChatService(db=MagicMock(),
                       llm_service=llm_service,
                       examples={"en": ["Example 1", "Example 2"],
                                 "es": ["Ejemplo 1"]},
                       messages_limit=50,
-                      chats_limit=50)
+                      chats_limit=50,
+                      quota_gate=quota_gate)
     svc.chats_db = mock_chats_db
     return svc
 
@@ -168,15 +173,11 @@ def client(mock_chats_db, service):
     app.dependency_overrides[get_db] = lambda: MagicMock()
     app.dependency_overrides[get_chat_service] = lambda: service
     app.dependency_overrides[get_linked_identity] = lambda: TEST_IDENTITY
-    # Overrides key on the exact callable and do not cascade, so overriding the shared
-    # `require_quota` or `consume_quota` they forward to would do nothing. This app has no
-    # `state.session_factory` either, so without this line every unit case through the fixture
-    # would reach real quota code and fail on the missing factory rather than on its subject.
-    app.dependency_overrides[require_quota_create_chat] = lambda: None
-    # One line per wrapper, because overrides key on the exact callable: overriding the other
-    # wrapper does not cover this one, and overriding the shared `require_quota` they both forward
-    # to would cover neither.
-    app.dependency_overrides[require_quota_send_message] = lambda: None
+    # No quota override is needed, and there is nothing left to override (REBIND-06). The charge
+    # used to be two decorator dependencies, each needing its own line here because overrides key
+    # on the exact callable; it now travels inside the `ChatService` the line above already
+    # replaces, whose `quota_gate` is a stub. This app still has no `state.session_factory`, and
+    # no longer needs one: nothing on these paths reaches real quota code.
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client

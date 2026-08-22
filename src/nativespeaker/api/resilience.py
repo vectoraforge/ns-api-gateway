@@ -69,6 +69,24 @@ class CircuitBreaker:
                 self._opened_at = time.monotonic()
 
 
+class _AdmissionRejected(Exception):
+    """Carries whatever an `on_admitted` callback raised back out through the retry loop.
+
+    The callback runs where the provider call is about to be made, which is inside the block
+    `ResiliencePolicy.ainvoke` wraps in its retry/classify handler. Without this wrapper a quota
+    rejection raised by the callback would be read as a provider failure: recorded against the
+    circuit breaker, retried, and finally re-raised as a `PermanentLLMError` 503 -- turning a 429
+    into a 503 and tripping the breaker on a caller's exhausted allowance.
+
+    Existing only to be unwrapped keeps `resilience.py` free of any quota import: the layer does
+    not need to know what the callback does, only that its failures are not the provider's.
+    """
+
+    def __init__(self, cause: BaseException):
+        super().__init__(str(cause))
+        self.cause = cause
+
+
 class LLMExecutionGate:
     def __init__(self, max_concurrency: int, max_queue: int, retry_after_seconds: int):
         self._semaphore = asyncio.Semaphore(max_concurrency)
@@ -92,9 +110,23 @@ class LLMExecutionGate:
             except asyncio.QueueFull:
                 pass
 
-    async def run(self, operation: Callable[[], Awaitable]):
+    async def run(self, operation: Callable[[], Awaitable],
+                  on_admitted: Callable[[], Awaitable] | None = None):
+        """Run `operation` under the gate, calling `on_admitted` once admission is certain.
+
+        `on_admitted` fires after the in-flight slot AND the concurrency semaphore are held, so it
+        runs only for a call this service is actually about to make. That ordering is the whole
+        point: a caller refused by `_inflight_slot` (503 `QueueFullError`) or held out by the
+        circuit breaker upstream must not have had it run. It is awaited before `operation` rather
+        than concurrently with it, so a callback that raises stops the provider call.
+        """
         async with self._inflight_slot():
             async with self._semaphore:
+                if on_admitted is not None:
+                    try:
+                        await on_admitted()
+                    except Exception as exc:
+                        raise _AdmissionRejected(exc) from exc
                 return await operation()
 
 
@@ -110,7 +142,26 @@ class ResiliencePolicy:
         self._retry_backoff_base = config.retry_backoff_base_seconds
         self._retry_backoff_max = config.retry_backoff_max_seconds
 
-    async def ainvoke(self, operation: Callable[[], Awaitable]) -> Any:
+    async def ainvoke(self, operation: Callable[[], Awaitable],
+                      on_admitted: Callable[[], Awaitable] | None = None) -> Any:
+        """Run `operation` under the circuit breaker, the gate and the retry policy.
+
+        `on_admitted` is called at most ONCE across every attempt, on the first admission. A retry
+        is the same caller request making a second try at the same provider call, so firing the
+        callback again would charge a second credit for one request -- the exact double-spend the
+        `admitted` flag below exists to prevent.
+        """
+        admitted = False
+
+        async def admit_once() -> None:
+            nonlocal admitted
+            if admitted or on_admitted is None:
+                return
+            # Set BEFORE awaiting, not after: a callback that raises has still had its one
+            # chance, and a retry must not call it again to find out whether it raises twice.
+            admitted = True
+            await on_admitted()
+
         for attempt in range(1, self._retry_max_attempts + 1):
             await self._circuit_breaker.before_call()
             try:
@@ -118,9 +169,14 @@ class ResiliencePolicy:
                 async def timed_op():
                     return await asyncio.wait_for(operation(), timeout=self._timeout_seconds)
 
-                result = await self._gate.run(timed_op)
+                result = await self._gate.run(timed_op, on_admitted=admit_once)
                 await self._circuit_breaker.record_success()
                 return result
+            except _AdmissionRejected as rejected:
+                # Not a provider failure: no `record_failure`, no retry, no `TransientLLMError`
+                # wrapping. Re-raised exactly as the callback raised it so the caller sees its own
+                # error class and status.
+                raise rejected.cause from None
             except (QueueFullError, CircuitOpenError):
                 raise
             except Exception as e:

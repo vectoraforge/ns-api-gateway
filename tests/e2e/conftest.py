@@ -204,6 +204,34 @@ async def quota_grant(_db_transaction, linked_firebase_identity):
     return await seed_grant(_db_transaction, user_id=user.id)
 
 
+@pytest_asyncio.fixture(loop_scope="module")
+async def own_chat(_db_transaction, linked_firebase_identity) -> UUID:
+    """A chat owned by the seeded Firebase caller, written directly rather than through the API.
+
+    `POST /chats` is itself quota-checked, so a case whose subject is "a caller with NO grant is
+    refused" cannot create its chat through the API -- it would need the grant it is asserting the
+    absence of. Seeding the row is what breaks that circle.
+
+    It exists because the charge moved off the decorator (REBIND-06). While quota was a decorator
+    dependency, `POST /chats/{anything}` answered 429 before the handler looked the chat up, so the
+    refusal cases could name a chat id that had never existed. The handler now runs first, so a
+    made-up id answers 404 -- a true answer, but not the one those cases are about. Pointing them
+    at a real chat keeps their subject the gate rather than the ownership filter.
+    """
+    user, _ = linked_firebase_identity
+    chat_id = uuid4()
+    async with _db_transaction() as session:
+        chat = Chat(id=chat_id, user_id=user.id, title="seeded for a quota refusal case")
+        chat.messages.append(Message(chat_id=chat_id, role=ChatRole.human,
+                                     content={"mode": "analyze", "phrase": "seeded"}))
+        chat.messages.append(Message(chat_id=chat_id, role=ChatRole.ai,
+                                     content={"resolved_mode": "analyze", "response": "seeded",
+                                              "issues": [], "suggestions": []}))
+        session.add(chat)
+        await session.commit()
+    return chat_id
+
+
 async def seed_grant(factory, *,
                      user_id: UUID,
                      tier_id: str = REGISTERED_TIER_ID,

@@ -15,6 +15,7 @@ from nativespeaker.api.errors import (
 from nativespeaker.api.models import Chat, ChatRole, Message
 from nativespeaker.api.models.api import ExamplesResponse
 from nativespeaker.api.models.llm import AnalyzeInput, AnalyzeResponse, FollowUpInput, FollowUpResponse
+from nativespeaker.api.quota import QuotaGate
 from nativespeaker.api.services.llm import LLMService
 
 
@@ -25,12 +26,19 @@ class ChatService:
                  llm_service: LLMService,
                  examples: dict[str, list[str]],
                  messages_limit: int,
-                 chats_limit: int) -> None:
+                 chats_limit: int,
+                 quota_gate: QuotaGate) -> None:
         self.llm_service = llm_service
         self.chats_db = ChatsDB(db)
         self.examples = examples
         self.messages_limit = messages_limit
         self.chats_limit = chats_limit
+        # Required, with no default. A default of `None` would mean a wiring slip in
+        # `get_chat_service` serves both quota-checked POSTs for free and nothing fails -- the
+        # silent free-service failure mode §2.3 condition 10 exists to make impossible. Tests that
+        # do not care about the charge pass an explicit stub, which is a visible choice rather than
+        # an omission.
+        self.quota_gate = quota_gate
 
     @property
     def supported_languages(self) -> list[str]:
@@ -45,10 +53,24 @@ class ChatService:
             else:
                 history.append(AIMessage(content=orjson.dumps(history_msg.content).decode()))
 
+        # The charge, handed to the resilience layer rather than performed here (REBIND-06).
+        #
+        # This is the single call site for both quota-checked routes: `create_chat` and
+        # `send_message` each do all of their own validation -- language, history limits,
+        # chat ownership -- before reaching this method, so every rejection either of them can
+        # make is already upstream of the charge. The resilience layer then withholds the callback
+        # from a request the circuit breaker or the queue refuses, which covers the last two.
+        #
+        # `chat.user_id` rather than a parameter: the charge must land on the owner of the chat
+        # being served, and taking it separately would let a caller's id and the chat's diverge.
+        async def charge() -> None:
+            await self.quota_gate.charge(chat.user_id)
+
         llm_response = await self.llm_service.ainvoke(
             history=history,
             content=orjson.dumps(message.content).decode(),
-            lang=lang_directive)
+            lang=lang_directive,
+            on_admitted=charge)
 
         resolved_mode = llm_response.get("resolved_mode")
         if resolved_mode == "reject":

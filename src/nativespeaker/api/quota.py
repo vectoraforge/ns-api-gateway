@@ -7,10 +7,10 @@ selection itself lives in `GrantsDB.lock_effective_grants` rather than in this f
 sync reads the same rows without consuming anything.
 
 **The caller opens its own session and commits it (D-04).** `consume_quota` never opens or closes
-one; `require_quota` does, in `app/dependencies.py`, using a short transaction that is committed
-and closed *before* the handler body is entered. It deliberately does not take FastAPI's
-`get_db` yield-dependency: that commits after the handler returns, which would hold the grant row
-locks across the entire provider round trip -- exactly what §8.4 and SHARED-INVARIANTS forbid.
+one; `QuotaGate.charge` below does, using a short transaction that is committed and closed before
+the provider call is made. It deliberately does not take FastAPI's `get_db` yield-dependency: that
+commits after the handler returns, which would hold the grant row locks across the entire provider
+round trip -- exactly what §8.4 and SHARED-INVARIANTS forbid.
 
 **Nothing here mints entitlement.** No branch creates a `core.access_grants` row (grants originate
 from Phases 41, 42 and 45) and no branch lazily mints a `core.user_monthly_usage` row for an
@@ -19,25 +19,37 @@ internal error, never as a free allowance. More than one effective grant is like
 failure with no tie-break and no precedence ranking (D-10) -- there is no "pick the best grant"
 path here and none may be added.
 
-**A failed provider call is not refunded (D-11).** Consumption is committed before the handler
-runs, so a request whose LLM call then fails has still spent its credit. That is a decision, not
-an oversight: the alternative is holding the transaction open across the provider round trip, and
-this product would rather lose one credit on a rare provider failure than serialise every caller
-behind a network call.
+**A failed provider call is not refunded (D-11).** Consumption is committed immediately before the
+provider call, so a request whose LLM call then fails has still spent its credit. That is a
+decision, not an oversight: the alternative is holding the transaction open across the provider
+round trip, and this product would rather lose one credit on a rare provider failure than
+serialise every caller behind a network call.
+
+**But a request the service refused itself is not charged at all (REBIND-06).** D-11's accepted
+loss covers calls that reached the provider and failed there. It does not cover the service's own
+rejections -- an unsupported language, a history limit, an unknown chat id, an open circuit, a full
+queue -- every one of which is decided without a provider call. `QuotaGate.charge` runs as the
+resilience layer's admission callback for exactly this reason: it fires only once the call is
+certain, so no rejection upstream of it can cost a credit. Anything that can refuse a request must
+stay upstream of that callback; a new rejection added downstream of it would silently reintroduce
+the charge-for-nothing this exists to prevent.
 
 **Lock order.** `GrantsDB` takes the grant rows `FOR UPDATE` ascending by grant id before anything
 touches `core.user_monthly_usage` (SHARED-INVARIANTS:33). This module is the first implementation
 of that order; Phases 41, 42 and 45 copy it.
 
 **Difference from the `auth/identity.py` analog.** `resolve_identity` *returns* a rejection,
-because its caller is ASGI middleware that must not raise. `consume_quota` runs inside a FastAPI
-dependency, so it **raises** `ServiceError` subclasses and lets `service_error_handler` format
-them. There is no decision object to inspect and no handler change to make.
+because its caller is ASGI middleware that must not raise. `consume_quota` runs inside a request
+handler's own call stack, so it **raises** `ServiceError` subclasses and lets
+`service_error_handler` format them. There is no decision object to inspect and no handler change
+to make.
 """
+from collections.abc import Callable
 from datetime import datetime
 from uuid import UUID
 
 import structlog
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.database import GrantsDB
@@ -152,3 +164,59 @@ async def consume_quota(session: AsyncSession, *, user_id: UUID, evaluated_at: d
     # period is: this module reads no clock.
     usage.monthly_used += 1
     usage.updated_at = evaluated_at
+
+
+class QuotaGate:
+    """One caller's ability to spend, bound to one request. Any consumer of the allowance holds one.
+
+    **Why this is an object and not a FastAPI dependency.** Consumption used to run as a decorator
+    dependency (`require_quota_*`), which fixed *when* the charge happened: after admission, before
+    the handler body, and therefore before every rejection the handler itself performs. Five such
+    rejections existed across the two gated routes -- an unsupported language, both history limits,
+    an unknown chat id, and local backpressure -- and each one charged a caller for work the
+    service refused without ever calling the provider (REBIND-06). A dependency cannot see any of
+    them, because they have not happened yet when it runs.
+
+    Moving the charge to a call site does not make it the caller's business to remember: `charge`
+    is passed to the resilience layer as its admission callback, so it fires at the one instant the
+    provider call is certain, and nothing downstream of it can reject the request for free.
+
+    **It is not owned by any one service.** `ChatService` is merely the first consumer. A future
+    service that spends the same allowance takes a `QuotaGate` the same way rather than importing
+    `ChatService` or reimplementing the session handling; `consume_quota` below stays the single
+    function that decides what a spend means.
+
+    **The session is still its own (D-04).** `charge` opens, commits and closes a short session per
+    call, so no grant or usage row lock is held across the provider round trip. That constraint is
+    unchanged -- only the moment the transaction runs has moved later.
+    """
+
+    def __init__(self,
+                 session_factory: async_sessionmaker | Callable[[], AsyncSession],
+                 *,
+                 evaluated_at: datetime,
+                 route: str) -> None:
+        self._session_factory = session_factory
+        # Both come from the `RequestContext` the barrier captured (D-06), and are fixed for the
+        # life of this object. Binding them here rather than taking them per call is what lets a
+        # consumer pass `charge` itself as a zero-argument callback.
+        self._evaluated_at = evaluated_at
+        self._route = route
+
+    async def charge(self, user_id: UUID) -> None:
+        """Spend one unit of `user_id`'s allowance, or raise. Commits on success.
+
+        Raises exactly what `consume_quota` raises -- `QuotaExceededError` for the two business
+        refusals, the three `INTERNAL_ERROR` classes for divergent stored state -- so a caller
+        needs no error translation and `service_error_handler` formats them as it always has.
+        """
+        async with self._session_factory() as session:
+            try:
+                await consume_quota(session,
+                                    user_id=user_id,
+                                    evaluated_at=self._evaluated_at,
+                                    route=self._route)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise

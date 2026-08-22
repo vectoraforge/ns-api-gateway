@@ -5,10 +5,9 @@ throwaway FastAPI instances with routes added inline and hand-built RouteMetadat
 condition is exercised in isolation rather than by mutating the real REGISTRY.
 """
 import pytest
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 from starlette.applications import Starlette
 
-from nativespeaker.api.app.dependencies import require_quota_create_chat
 from nativespeaker.api.app.main import app as real_app
 from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
 from nativespeaker.api.auth.registry import (
@@ -21,6 +20,7 @@ from nativespeaker.api.auth.registry import (
     lookup,
 )
 from nativespeaker.api.models.auth import AuthOperation
+from nativespeaker.api.routers.chats import create_chat
 
 CONFIGURED = {"apple_jws": NamedVerifier(name="apple_jws", configured=True)}
 UNCONFIGURED = {"apple_jws": NamedVerifier(name="apple_jws", configured=False)}
@@ -30,7 +30,7 @@ async def _endpoint():
     return {"ok": True}
 
 
-def _app(*routes: tuple[str, str], barrier: bool = True,
+def _app(*routes: tuple[str, str], barrier: bool = True, endpoint=None,
          dependencies: list | None = None) -> FastAPI:
     """A throwaway app carrying exactly the given (method, path) routes.
 
@@ -42,7 +42,7 @@ def _app(*routes: tuple[str, str], barrier: bool = True,
     """
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     for method, path in routes:
-        app.add_api_route(path, _endpoint, methods=[method], dependencies=dependencies)
+        app.add_api_route(path, endpoint or _endpoint, methods=[method], dependencies=dependencies)
     if barrier:
         app.add_middleware(AuthBarrierMiddleware)
     return app
@@ -213,29 +213,31 @@ class TestCondition9AuthenticatedRouteOutsideTheBarrier:
                     _app(("GET", "/a"), barrier=False), registry)
 
 
-QUOTA_DEPENDENCY = [Depends(require_quota_create_chat)]
+# Condition 10 keys on the handler that consumes the allowance, so a route "carries quota" by
+# being served by `create_chat` -- not by carrying a decorator dependency (REBIND-06).
+QUOTA_ENDPOINT = {"endpoint": create_chat}
 
 
-class TestCondition10QuotaFlagAndDependencyDisagree:
+class TestCondition10QuotaFlagAndConsumingHandlerDisagree:
     """D-05: `quota_checked` is enforcement, not documentation.
 
-    A route that declares the flag and forgets the dependency serves every request free, and
-    nothing about the served response says so. The cross-check is what turns that from an
-    invisible defect into a boot failure, so it is checked in both directions.
+    A route that declares the flag but is served by a handler that charges nothing serves every
+    request free, and nothing about the served response says so. The cross-check is what turns
+    that from an invisible defect into a boot failure, so it is checked in both directions.
     """
 
-    def test_the_wrapper_and_quota_checked_together_pass(self):
+    def test_the_consuming_handler_and_quota_checked_together_pass(self):
         registry = (RouteMetadata(method="POST", path="/chats", category=Category.authenticated,
                                   quota_checked=True),)
-        assert_route_enumeration(_app(("POST", "/chats"), dependencies=QUOTA_DEPENDENCY), registry)
+        assert_route_enumeration(_app(("POST", "/chats"), **QUOTA_ENDPOINT), registry)
 
-    def test_quota_checked_declared_with_no_dependency_attached_raises(self):
+    def test_quota_checked_declared_with_no_consuming_handler_raises(self):
         registry = (RouteMetadata(method="POST", path="/chats", category=Category.authenticated,
                                   quota_checked=True),)
-        _fails_with("quota_checked declared but no quota dependency is attached",
+        _fails_with("quota_checked declared but no quota-consuming handler serves it",
                     _app(("POST", "/chats")), registry)
 
-    def test_the_undeclared_dependency_message_names_the_route(self):
+    def test_the_undeclared_handler_message_names_the_route(self):
         registry = (RouteMetadata(method="POST", path="/chats", category=Category.authenticated,
                                   quota_checked=True),)
         with pytest.raises(RuntimeError) as excinfo:
@@ -243,23 +245,23 @@ class TestCondition10QuotaFlagAndDependencyDisagree:
         assert "'POST'" in str(excinfo.value)
         assert "'/chats'" in str(excinfo.value)
 
-    def test_a_dependency_attached_without_quota_checked_raises(self):
-        """The other direction: the route is gated, the registry does not say so."""
+    def test_a_consuming_handler_without_quota_checked_raises(self):
+        """The other direction: the route charges, the registry does not say so."""
         registry = (RouteMetadata(method="POST", path="/chats", category=Category.authenticated),)
-        _fails_with("quota dependency attached but quota_checked is not declared",
-                    _app(("POST", "/chats"), dependencies=QUOTA_DEPENDENCY), registry)
+        _fails_with("quota-consuming handler serves a route where quota_checked is not declared",
+                    _app(("POST", "/chats"), **QUOTA_ENDPOINT), registry)
 
     def test_the_unattached_quota_checked_message_names_the_route(self):
         registry = (RouteMetadata(method="POST", path="/chats", category=Category.authenticated),)
         with pytest.raises(RuntimeError) as excinfo:
-            assert_route_enumeration(_app(("POST", "/chats"), dependencies=QUOTA_DEPENDENCY),
+            assert_route_enumeration(_app(("POST", "/chats"), **QUOTA_ENDPOINT),
                                      registry)
         assert "'POST'" in str(excinfo.value)
         assert "'/chats'" in str(excinfo.value)
 
     def test_both_quota_checked_disagreements_are_reported_in_one_error(self):
         """One raise lists everything, the way conditions 1 and 2 do -- never only the first."""
-        app = _app(("POST", "/attached"), dependencies=QUOTA_DEPENDENCY)
+        app = _app(("POST", "/attached"), **QUOTA_ENDPOINT)
         app.add_api_route("/declared", _endpoint, methods=["POST"])
         registry = (
             RouteMetadata(method="POST", path="/attached", category=Category.authenticated),
@@ -270,9 +272,9 @@ class TestCondition10QuotaFlagAndDependencyDisagree:
             assert_route_enumeration(app, registry)
         message = str(excinfo.value)
         undeclared = [line for line in message.splitlines()
-                      if "quota dependency attached but quota_checked is not declared" in line]
+                      if "quota-consuming handler serves a route where quota_checked is not declared" in line]
         unattached = [line for line in message.splitlines()
-                      if "quota_checked declared but no quota dependency is attached" in line]
+                      if "quota_checked declared but no quota-consuming handler serves it" in line]
         assert len(undeclared) == 1
         assert len(unattached) == 1
         assert undeclared[0] is not unattached[0]

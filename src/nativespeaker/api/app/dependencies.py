@@ -1,5 +1,4 @@
 from collections.abc import AsyncGenerator
-from uuid import UUID
 
 from fastapi import Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -12,8 +11,7 @@ from nativespeaker.api.auth.context import (
 )
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.errors import AuthenticationError
-from nativespeaker.api.models.api import ChatRequest, MessageRequest
-from nativespeaker.api.quota import consume_quota
+from nativespeaker.api.quota import QuotaGate
 from nativespeaker.api.services import ChatService
 
 
@@ -38,7 +36,8 @@ def get_chat_service(request: Request,
                        llm_service=request.app.state.llm_service,
                        examples=config.examples,
                        chats_limit=config.chats_limit,
-                       messages_limit=config.messages_limit)
+                       messages_limit=config.messages_limit,
+                       quota_gate=get_quota_gate(request))
 
 
 # ---------------------------------------------------------------------------
@@ -90,99 +89,56 @@ def get_preauth_identity(request: Request) -> PreAuthIdentity:
 
 
 # ---------------------------------------------------------------------------
-# The §8.4 quota seam (D-04, D-05, D-14)
+# The §8.4 quota seam (D-04, D-05, REBIND-06)
 #
-# A quota-checked route carries `Depends(require_quota_*)` in its decorator's `dependencies=[...]`
-# list and declares `quota_checked=True` on its registry entry. Neither alone is enforcement: the
-# §2.3 condition-10 cross-check in `auth/registry.py` fails boot when the two disagree in either
-# direction, which is what stops a route from declaring the flag while serving requests free
-# (D-05).
+# A quota-checked route declares `quota_checked=True` on its registry entry, and its handler is
+# named in `auth/registry.py`'s quota-consuming handler set. Neither alone is enforcement: the
+# §2.3 condition-10 cross-check fails boot when the two disagree in either direction, which is what
+# stops a route from declaring the flag while serving requests free (D-05).
 #
-# `require_quota` opens its OWN session and commits inside its own body (D-04). It must never take
-# `Depends(get_db)`: that is a yield-dependency whose commit runs after the handler returns, so the
-# grant row locks would span the entire provider round trip. Decorator dependencies complete before
-# the handler body is entered, so the transaction here is opened, committed and closed first.
+# **The charge is no longer a decorator dependency, and that is REBIND-06's fix.** It used to be:
+# `require_quota_*` wrappers in `dependencies=[...]`, committing in their own session before the
+# handler body was entered. That ordering is what made five distinct rejections -- an unsupported
+# language, either history limit, an unknown chat id, and the resilience layer's local backpressure
+# -- each charge a caller for a request the service refused without ever calling the provider. A
+# decorator dependency cannot see any of them, because none of them has happened when it runs.
 #
-# Each route gets its own thin wrapper declaring that route's body model -- and every untrusted
-# path parameter it takes -- as plain, non-Depends parameters (D-14). FastAPI validates them while
-# solving the dependency, so a malformed request 422s before any quota work runs and no credit is
-# spent on a request that was never served.
+# Consumption now travels as `QuotaGate`, which `ChatService` calls at the resilience layer's
+# admission callback -- after every one of its own rejections, and after the circuit breaker and
+# execution gate have admitted the call. D-04 is untouched: `QuotaGate.charge` still opens, commits
+# and closes a session of its own, so no lock spans the provider round trip. Only the moment moved.
 #
-# The wrappers do nothing but forward to `require_quota`. They exist per route only because
-# FastAPI's validation is driven by a dependency's own signature; the moment one of them grows
-# logic of its own, the two routes have stopped sharing a resolver.
+# **What the D-14 wrappers bought is now structural.** They existed so FastAPI would validate a
+# route's body and path parameters before the own-session commit ran. With the commit moved inside
+# the handler's call stack, request validation necessarily precedes it -- a 422 means the handler
+# was never entered. The wrappers are deleted rather than kept as no-ops; `tests/e2e/test_quota.py`
+# keeps their cases, which now pass for a structural reason instead of a declared one.
 # ---------------------------------------------------------------------------
 
 
-async def require_quota(request: Request, context: RequestContext) -> None:
-    """Consume one unit of the caller's allowance, in a transaction of its own. Raises or returns.
+def get_quota_gate(request: Request) -> QuotaGate:
+    """Build this request's charge seam from the context the barrier captured.
 
-    Not a FastAPI dependency itself -- the per-route wrappers below are. This is the shared core
-    they all forward to, so the session lifetime and the lock window are written once.
+    Takes the app's real `session_factory` rather than `Depends(get_db)`: that is a
+    yield-dependency committing after the handler returns, which is precisely the lock-across-the-
+    provider-call shape D-04 forbids. `QuotaGate` opens its own short session instead.
+
+    Not itself declared in any route's `dependencies=[...]`. It is resolved by `get_chat_service`,
+    so a service that consumes the allowance cannot be constructed without one.
     """
+    context = get_request_context(request)
     identity = context.identity
     if not isinstance(identity, LinkedIdentity):
-        # These routes are Category.authenticated, so the barrier admits no pre-auth principal
-        # here and this branch is unreachable through the registry. Narrowed explicitly anyway,
-        # and failing closed rather than reaching for `.user` on a union: same isinstance-not-
-        # `is None` convention as the accessors above.
+        # The quota-checked routes are `Category.authenticated`, so the barrier admits no pre-auth
+        # principal to them and this is unreachable through the registry. Asserted anyway, and
+        # failing closed: a pre-auth caller reaching a charging service is a wiring bug, and the
+        # alternative to raising is billing a principal with no user row.
         raise AuthenticationError("Identity context is pre-auth on a quota-checked route")
-
-    # Exactly one short session, committed and closed before dispatch: no lock is held and no
-    # network call is made while it is open.
-    async with request.app.state.session_factory() as session:
-        try:
-            # `evaluated_at` comes from the context the barrier captured once for this request
-            # (D-06). Nothing on this path reads the system clock.
-            await consume_quota(session,
-                                user_id=identity.user.id,
-                                evaluated_at=context.evaluated_at,
-                                route=context.route_metadata.path)
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-
-
-async def require_quota_create_chat(
-        request: Request,
-        body: ChatRequest,
-        context: RequestContext = Depends(get_request_context)) -> None:
-    """`POST /chats`. `body` is unused on purpose -- declaring it IS the D-14 mitigation.
-
-    It is a plain parameter, not a `Depends`, so FastAPI validates the request body while solving
-    this dependency. Without it, D-04's own-session commit would run ahead of body validation and a
-    client posting `{"lang": "en"}` would get a 422 *and* lose a credit -- a regression against
-    v1.6, whose yield-dependency rolled the increment back. The parameter name is load-bearing too:
-    it must match the handler's body parameter name, or FastAPI switches to an embedded body and
-    the wire contract changes.
-    """
-    await require_quota(request, context)
-
-
-async def require_quota_send_message(
-        request: Request,
-        chat_id: UUID,
-        body: MessageRequest,
-        context: RequestContext = Depends(get_request_context)) -> None:
-    """`POST /chats/{chat_id}`. `chat_id` and `body` are unused on purpose -- both are the D-14
-    mitigation, and this route needs both halves of it.
-
-    Same rule as the wrapper above, applied to a route whose untrusted input is not only a body: a
-    path segment that is not a valid UUID must 422 before the own-session commit too, or a client
-    typing a malformed chat id drains a paying user's allowance one 422 at a time. Declaring the
-    parameters here is what buys that -- FastAPI validates path *and* body while solving the
-    dependency, and neither validation failure reaches this function body.
-
-    Both names are load-bearing and must match the handler's: `chat_id` so it binds to the path
-    template's placeholder rather than becoming a query parameter, and `body` so FastAPI keeps the
-    top-level body shape instead of switching to an embedded one.
-
-    Neither is renamed to `_chat_id`/`_body` and neither carries a `# noqa`: this repo's ruff
-    `select` is `["E", "W", "F", "I", "UP"]`, which has no unused-argument rule to silence, and
-    renaming would break the binding the parameters exist for.
-    """
-    await require_quota(request, context)
+    return QuotaGate(request.app.state.session_factory,
+                     # Both from the instant the barrier captured for this request (D-06). Nothing
+                     # on this path reads the system clock.
+                     evaluated_at=context.evaluated_at,
+                     route=context.route_metadata.path)
 
 
 # ---------------------------------------------------------------------------

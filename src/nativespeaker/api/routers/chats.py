@@ -5,8 +5,6 @@ from fastapi import APIRouter, Depends, Response
 from nativespeaker.api.app.dependencies import (
     get_chat_service,
     get_linked_identity,
-    require_quota_create_chat,
-    require_quota_send_message,
 )
 from nativespeaker.api.auth.context import LinkedIdentity
 from nativespeaker.api.models.api import ChatRequest, ChatResponse, MessageRequest, MessageResponse
@@ -19,11 +17,13 @@ router = APIRouter(tags=["chats"])
 # handler cannot serve a request the barrier did not admit. Handlers take `identity.user.id` -- the
 # resolved primary key -- and never a `User` row they could read a second classifier off.
 #
-# The quota-consuming POSTs additionally carry a `require_quota_*` decorator dependency, evaluated
-# after barrier admission and before the handler body, and declare `quota_checked=True` on their
-# registry entry; §2.3 condition 10 fails boot if the two ever disagree (D-05). The dependency is
-# per-route and never router-level: the barrier already exempts `/health/ready` by category, and a
-# router-level dependency would recreate the second acceptance path §1.1 exists to forbid.
+# The quota-consuming POSTs declare `quota_checked=True` on their registry entry, and §2.3
+# condition 10 fails boot unless the handler serving each of them is one that actually consumes the
+# allowance (D-05). They carry no decorator dependency: the charge used to be one, and running
+# before the handler body is exactly what made five of this router's own rejections -- an
+# unsupported language, either history limit, an unknown chat id, and the resilience layer's
+# backpressure -- charge a caller for a request that never reached the provider (REBIND-06). It now
+# travels inside `ChatService`, which spends at the provider-admission seam and nowhere else.
 
 
 @router.get("/chats",
@@ -55,7 +55,6 @@ async def get_chat_messages(chat_id: UUID,
 
 
 @router.post("/chats",
-             dependencies=[Depends(require_quota_create_chat)],
              response_model=MessageResponse,
              summary="Start new analysis",
              description="Analyzes a phrase and creates a new chat session with the AI response. "
@@ -72,7 +71,6 @@ async def create_chat(body: ChatRequest,
 
 
 @router.post("/chats/{chat_id}",
-             dependencies=[Depends(require_quota_send_message)],
              response_model=MessageResponse,
              summary="Send follow-up message",
              description="Sends a follow-up message in an existing chat session. "

@@ -53,11 +53,18 @@ ALLOWANCE = 50
 
 FOLLOWUP = {"message": "Can you explain more?"}
 
-# The two quota-checked routes as `(path, body)`, fixed at collection time. The follow-up entry
-# deliberately names a chat that does not exist: the quota dependency is a DECORATOR dependency and
-# completes before the handler body, so a caller with no effective grant is refused 429 and the chat
-# is never looked up. A 404 from any case below would mean the gate ran late, or not at all.
-QUOTA_ROUTES = [("/chats", PHRASE), (f"/chats/{uuid7()}", FOLLOWUP)]
+# The two quota-checked routes as `(path template, body)`, fixed at collection time. The follow-up
+# entry carries a `{chat_id}` placeholder that each case fills from the `own_chat` fixture -- a
+# chat the caller really owns.
+#
+# It used to name a chat id that had never existed, because the charge was a DECORATOR dependency
+# that completed before the handler body: a caller with no effective grant was refused 429 and the
+# chat was never looked up, so a 404 meant the gate had run late. REBIND-06 moved the charge to the
+# provider-admission seam precisely so the handler's own rejections come first, which makes a
+# made-up id answer 404 by design. Naming a real chat keeps these cases pointed at the gate; the
+# claim they defend -- that a caller with no grant is refused before any work is done -- is
+# unchanged, and a 404 here would still mean the gate never ran.
+QUOTA_ROUTES = [("/chats", PHRASE), ("/chats/{chat_id}", FOLLOWUP)]
 QUOTA_ROUTE_IDS = ["create_chat", "send_message"]
 
 # The other six of the eight pre-existing routes (D-07). `GET`/`DELETE` on a chat id that does not
@@ -109,52 +116,52 @@ class TestNoEffectiveGrant:
     """
 
     async def test_a_caller_with_no_grant_is_refused(self, async_client,
-                                                     linked_firebase_identity, path, body):
-        response = await async_client.post(path, json=body)
+                                                     linked_firebase_identity, own_chat, path, body):
+        response = await async_client.post(path.format(chat_id=own_chat), json=body)
         assert response.status_code == 429
         assert response.json()["code"] == "quota_exceeded"
 
     async def test_the_no_grant_refusal_carries_the_shared_error_body(
-            self, async_client, linked_firebase_identity, path, body):
+            self, async_client, linked_firebase_identity, own_chat, path, body):
         """The 429 is the shared `{code: ...}` shape -- not a 500, and not a bespoke payload."""
-        response = await async_client.post(path, json=body)
+        response = await async_client.post(path.format(chat_id=own_chat), json=body)
         assert list(response.json().keys()) == ["code"]
 
     async def test_a_not_yet_started_grant_is_no_grant(self, async_client,
                                                        linked_firebase_identity,
-                                                       _db_transaction, path, body):
+                                                       _db_transaction, own_chat, path, body):
         """`starts_at > evaluated_at`: the row exists, the entitlement has not begun."""
         user, _ = linked_firebase_identity
         now = datetime.now(UTC)
         await seed_grant(_db_transaction, user_id=user.id, starts_at=now + timedelta(days=1))
 
-        response = await async_client.post(path, json=body)
+        response = await async_client.post(path.format(chat_id=own_chat), json=body)
         assert response.status_code == 429
         assert response.json()["code"] == "quota_exceeded"
 
     async def test_an_already_ended_grant_is_no_grant(self, async_client,
                                                       linked_firebase_identity,
-                                                      _db_transaction, path, body):
+                                                      _db_transaction, own_chat, path, body):
         """`ends_at <= evaluated_at`: the row exists, the entitlement is over."""
         user, _ = linked_firebase_identity
         now = datetime.now(UTC)
         await seed_grant(_db_transaction, user_id=user.id,
                          starts_at=now - timedelta(days=2), ends_at=now - timedelta(days=1))
 
-        response = await async_client.post(path, json=body)
+        response = await async_client.post(path.format(chat_id=own_chat), json=body)
         assert response.status_code == 429
         assert response.json()["code"] == "quota_exceeded"
 
     @pytest.mark.parametrize("status", [AccessGrantStatus.revoked, AccessGrantStatus.expired])
     async def test_a_grant_whose_status_is_not_active_is_no_grant(self, async_client,
                                                                   linked_firebase_identity,
-                                                                  _db_transaction, status,
-                                                                  path, body):
+                                                                  _db_transaction, own_chat,
+                                                                  status, path, body):
         """The predicate is `status == active`, never "not revoked" -- both terminal rows refuse."""
         user, _ = linked_firebase_identity
         await seed_grant(_db_transaction, user_id=user.id, status=status)
 
-        response = await async_client.post(path, json=body)
+        response = await async_client.post(path.format(chat_id=own_chat), json=body)
         assert response.status_code == 429
         assert response.json()["code"] == "quota_exceeded"
 
@@ -411,10 +418,10 @@ class TestAQuotaRejectionWritesNoAuditRow:
 
     @pytest.mark.parametrize("path, body", QUOTA_ROUTES, ids=QUOTA_ROUTE_IDS)
     async def test_a_quota_429_writes_no_audit_row(self, async_client, linked_firebase_identity,
-                                                   _db_transaction, path, body):
+                                                   _db_transaction, own_chat, path, body):
         before = await auth_event_count(_db_transaction)
 
-        response = await async_client.post(path, json=body)
+        response = await async_client.post(path.format(chat_id=own_chat), json=body)
 
         assert response.status_code == 429
         assert await auth_event_count(_db_transaction) == before

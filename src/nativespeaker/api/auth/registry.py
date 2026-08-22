@@ -70,9 +70,9 @@ REGISTRY: tuple[RouteMetadata, ...] = (
     RouteMetadata(method="GET", path="/", category=Category.authenticated),
     RouteMetadata(method="GET", path="/examples", category=Category.authenticated),
     RouteMetadata(method="GET", path="/chats", category=Category.authenticated),
-    # quota_checked is enforcement, not documentation: condition 10 requires the matching
-    # `require_quota_*` decorator dependency on this route, and a flag that moves without its
-    # wrapper -- in either direction -- fails boot rather than serving requests free.
+    # quota_checked is enforcement, not documentation: condition 10 requires this route to be
+    # served by a handler that consumes the allowance, and a flag that moves without its handler
+    # -- in either direction -- fails boot rather than serving requests free.
     #
     # Exactly these two of the eight entries carry it (D-07). The four reads and the delete do not:
     # charging a user for listing or deleting what they already paid for is not what the allowance
@@ -135,16 +135,22 @@ def assert_route_enumeration(app: Any,
     #   - barrier.py imports this module for its own route lookup, and condition 9 needs the
     #     barrier class by identity;
     #   - app.dependencies imports auth.context, which imports this module, and condition 10 needs
-    #     the quota wrappers by identity.
-    # The wrapper tuple is therefore built here rather than at module scope: there is no
+    #     the quota-consuming handlers by identity.
+    # The handler tuple is therefore built here rather than at module scope: there is no
     # import-time moment at which those callables are available to this module.
-    from nativespeaker.api.app.dependencies import require_quota_create_chat, require_quota_send_message
     from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
+    from nativespeaker.api.routers.chats import create_chat, send_message
 
-    # Every per-route D-14 wrapper, by identity. A wrapper missing from here reads as "no quota
-    # dependency attached" and fails boot on the route that declares the flag -- so adding a gated
-    # route means adding its wrapper here in the same commit as its decorator and its flag.
-    quota_wrappers = (require_quota_create_chat, require_quota_send_message)
+    # Every handler that consumes the allowance, by identity.
+    #
+    # This set used to be the `require_quota_*` decorator dependencies. It is the handlers now
+    # because REBIND-06 moved the charge off the decorator and into the handler's own call stack --
+    # a decorator dependency runs before the handler can reject anything, so five rejections
+    # charged a caller for work the service never did. What condition 10 asserts is unchanged in
+    # both strength and direction: it pairs the declared flag with the thing that does the
+    # charging, and a handler missing from here reads as "consumes nothing" and fails boot on the
+    # route that declares the flag.
+    quota_consuming_handlers = (create_chat, send_message)
 
     known_verifiers = VERIFIERS if verifiers is None else verifiers
 
@@ -202,21 +208,19 @@ def assert_route_enumeration(app: Any,
             problems.append(f"named_verifier {entry.named_verifier!r} declared on {key}, whose "
                             f"category is {entry.category}, not provider_callback")
 
-    # Condition 10 (D-05) -- the `quota_checked` flag and the attached dependency must agree, in
-    # both directions, or the flag is documentation rather than enforcement: a route declaring it
-    # while carrying no dependency serves every request free, invisibly.
+    # Condition 10 (D-05) -- the `quota_checked` flag and the charging handler must agree, in both
+    # directions, or the flag is documentation rather than enforcement: a route declaring it while
+    # served by a handler that charges nothing serves every request free, invisibly.
     #
-    # `route.dependencies` is the RAW decorator-level list, whose items expose the callable on
-    # `.dependency`. `route.dependant.dependencies` is deliberately not used: it is the solved list
-    # and also contains parameter-level dependencies, which would conflate a handler's own
-    # `Depends()` parameter with a decorator attachment. Matching is by callable IDENTITY -- a name
-    # string would silently pass a renamed function, which is the failure this condition exists to
-    # catch.
+    # `route.endpoint` is the handler the router will actually call. Matching is by callable
+    # IDENTITY -- a name string would silently pass a renamed function, which is the failure this
+    # condition exists to catch. `functools.wraps`-style decoration would defeat identity here; no
+    # handler carries any, and one added later must be registered by its wrapper rather than its
+    # wrapped function.
     attached: set[tuple[str, str]] = set()
     for route in app.routes:
-        if isinstance(route, APIRoute) and any(dependency.dependency is wrapper
-                                               for dependency in route.dependencies
-                                               for wrapper in quota_wrappers):
+        if isinstance(route, APIRoute) and any(route.endpoint is handler
+                                               for handler in quota_consuming_handlers):
             for method in route.methods:
                 attached.add((method, route.path))
 
@@ -224,10 +228,10 @@ def assert_route_enumeration(app: Any,
     # so the same disagreement produces byte-identical text on every run.
     declared_quota = {(e.method, e.path) for e in registry if e.quota_checked}
     if undeclared := attached - declared_quota:
-        problems.append(f"quota dependency attached but quota_checked is not declared: "
-                        f"{sorted(undeclared)}")
+        problems.append(f"quota-consuming handler serves a route where quota_checked is not "
+                        f"declared: {sorted(undeclared)}")
     if unattached := declared_quota - attached:
-        problems.append(f"quota_checked declared but no quota dependency is attached: "
+        problems.append(f"quota_checked declared but no quota-consuming handler serves it: "
                         f"{sorted(unattached)}")
 
     # Condition 9, asserted structurally: one middleware wraps the whole router (D-01), so no
