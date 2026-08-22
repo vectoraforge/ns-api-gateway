@@ -212,13 +212,20 @@ async def seed_grant(factory, *,
                      monthly_period: str | None = None,
                      monthly_used: int = 0,
                      starts_at: datetime | None = None,
-                     ends_at: datetime | None = None):
+                     ends_at: datetime | None = None,
+                     with_usage: bool = True):
     """Insert a `core.access_grants` row **and its `core.user_monthly_usage` row**; return both.
 
     The two rows are written in one call, and that is not a convenience. A grant with no usage row
     is the state D-09 turns into a 500 rather than a 429, so a helper that seeded only the grant
     would convert every admitted chat case from an honest business answer into an internal error --
     a worse failure than the one this helper exists to prevent.
+
+    `with_usage=False` writes the grant alone and returns `(grant, None)`. It exists for exactly one
+    case -- proving D-09's fail-closed branch over the real transport -- and is a keyword here
+    rather than a second seeder so there stays one definition of the grant insert: a parallel
+    "seed_grant_without_usage" would drift from this one the first time a grant column changed.
+    Nothing in `src/` can produce this state; only a failed write can.
 
     `source` defaults to `manual`, not to a free source. `anonymous_device_grant` and
     `registered_account_grant` both populate the `anti_abuse_required_grant_id` generated column,
@@ -244,10 +251,12 @@ async def seed_grant(factory, *,
                             ends_at=ends_at)
         session.add(grant)
         await session.flush()
-        usage = UserMonthlyUsage(grant_id=grant.id,
-                                 monthly_period=monthly_period or now.strftime("%Y-%m"),
-                                 monthly_used=monthly_used)
-        session.add(usage)
+        usage = None
+        if with_usage:
+            usage = UserMonthlyUsage(grant_id=grant.id,
+                                     monthly_period=monthly_period or now.strftime("%Y-%m"),
+                                     monthly_used=monthly_used)
+            session.add(usage)
         await session.commit()
     return grant, usage
 

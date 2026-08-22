@@ -166,7 +166,7 @@ class TestTheAllowanceIsSpent:
         rows = await usage_rows(_db_transaction, grant.id)
         assert [row.monthly_used for row in rows] == [ALLOWANCE]
 
-    async def test_a_stale_period_rolls_over_before_the_allowance_is_compared(
+    async def test_a_stale_period_rollover_resets_before_the_allowance_is_compared(
             self, async_client, linked_firebase_identity, _db_transaction):
         """An exhausted row from *last* month must not refuse *this* month's first request.
 
@@ -187,6 +187,124 @@ class TestTheAllowanceIsSpent:
         # 1, not `ALLOWANCE + 1`: the reset happens before the comparison and before the increment,
         # inside the same locked transaction, so the stale count is never carried forward.
         assert [(row.monthly_period, row.monthly_used) for row in rows] == [(now.strftime("%Y-%m"), 1)]
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestAGrantWithNoUsageRow:
+    """D-09 over the real transport: a broken invariant answers 500, and nothing is minted.
+
+    `src/` cannot reach this state -- no route writes either table -- so the only way to observe
+    the branch is to seed the half-written pair a failed Phase 41/42/45 transaction would leave.
+    """
+
+    async def test_a_missing_usage_row_is_an_internal_error_not_a_free_allowance(
+            self, async_client, linked_firebase_identity, _db_transaction):
+        """500, not 200 and not 429: exhaustion and divergent state stay distinguishable."""
+        user, _ = linked_firebase_identity
+        await seed_grant(_db_transaction, user_id=user.id, with_usage=False)
+
+        response = await async_client.post("/chats", json=PHRASE)
+        assert response.status_code == 500
+        assert response.json() == {"code": "internal_error"}
+
+    async def test_the_missing_usage_row_is_still_missing_afterwards(
+            self, async_client, linked_firebase_identity, _db_transaction):
+        """The never-lazily-mint rule, read back rather than argued.
+
+        A convenience insert on this path would hand out a fresh allowance every time the
+        invariant broke -- and would hide the break while doing it.
+        """
+        user, _ = linked_firebase_identity
+        grant, _ = await seed_grant(_db_transaction, user_id=user.id, with_usage=False)
+
+        await async_client.post("/chats", json=PHRASE)
+
+        assert await usage_rows(_db_transaction, grant.id) == []
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestThePredicateBoundaries:
+    """REBIND-05's `starts_at`/`ends_at` boundaries, bracketed from both sides.
+
+    The exactly-equal instants -- `starts_at == evaluated_at` and `ends_at == evaluated_at` -- are
+    not reachable from here: the client cannot name the instant the barrier captures. They are
+    asserted against the compiled predicate in
+    `tests/unit/test_quota_resolver.py::TestTheLockingStatements`. What these cases add is the
+    behavioural bracket either side of each boundary, which is what says the compiled predicate is
+    the one actually running.
+    """
+
+    async def test_boundary_a_grant_that_started_a_moment_ago_is_effective(
+            self, async_client, linked_firebase_identity, _db_transaction):
+        user, _ = linked_firebase_identity
+        await seed_grant(_db_transaction, user_id=user.id,
+                         starts_at=datetime.now(UTC) - timedelta(seconds=1))
+
+        response = await async_client.post("/chats", json=PHRASE)
+        assert response.status_code == 200
+
+    async def test_boundary_a_grant_that_starts_tomorrow_is_not_effective(
+            self, async_client, linked_firebase_identity, _db_transaction):
+        user, _ = linked_firebase_identity
+        await seed_grant(_db_transaction, user_id=user.id,
+                         starts_at=datetime.now(UTC) + timedelta(days=1))
+
+        response = await async_client.post("/chats", json=PHRASE)
+        assert response.status_code == 429
+        assert response.json()["code"] == "quota_exceeded"
+
+    async def test_boundary_a_grant_that_ended_a_moment_ago_is_not_effective(
+            self, async_client, linked_firebase_identity, _db_transaction):
+        """The upper bound is exclusive, so a grant is over the instant `ends_at` passes."""
+        user, _ = linked_firebase_identity
+        now = datetime.now(UTC)
+        await seed_grant(_db_transaction, user_id=user.id,
+                         starts_at=now - timedelta(days=1), ends_at=now - timedelta(seconds=1))
+
+        response = await async_client.post("/chats", json=PHRASE)
+        assert response.status_code == 429
+        assert response.json()["code"] == "quota_exceeded"
+
+    async def test_boundary_a_grant_that_ends_in_an_hour_is_still_effective(
+            self, async_client, linked_firebase_identity, _db_transaction):
+        user, _ = linked_firebase_identity
+        now = datetime.now(UTC)
+        await seed_grant(_db_transaction, user_id=user.id, ends_at=now + timedelta(hours=1))
+
+        response = await async_client.post("/chats", json=PHRASE)
+        assert response.status_code == 200
+
+    async def test_boundary_an_open_ended_grant_is_effective(
+            self, async_client, linked_firebase_identity, _db_transaction):
+        """Ruling 9.11: a NULL `ends_at` is legal, and effective for as long as the grant is."""
+        user, _ = linked_firebase_identity
+        grant, _ = await seed_grant(_db_transaction, user_id=user.id, ends_at=None)
+
+        response = await async_client.post("/chats", json=PHRASE)
+        assert response.status_code == 200
+        assert [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)] == [1]
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestACorrectPhraseIsServedAndCharged:
+    """The D-12 half of REBIND-06, over the real transport rather than at the model.
+
+    A grammatically correct phrase is exactly the input that made the product's primary route
+    answer 500 (D-35-11-A): the unconstrained chain returns only `resolved_mode` and `response`,
+    and `AnalyzeResponse` had no defaults for the two lists. It is also the input a user gets when
+    their sentence is already right -- so under D-11 the 500 burned a credit for a request that
+    was never served.
+    """
+
+    async def test_a_correct_phrase_returns_200_with_empty_issue_and_suggestion_lists(
+            self, async_client, quota_grant):
+        response = await async_client.post(
+            "/chats", json={"phrase": "I am going home.", "lang": "en"})
+
+        assert response.status_code == 200
+        content = response.json()["content"]
+        assert content["issues"] == []
+        assert content["suggestions"] == []
 
 
 @pytest.mark.asyncio(loop_scope="module")
