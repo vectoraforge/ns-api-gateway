@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.14"
 
 [[package]]
@@ -863,7 +863,7 @@ wheels = [
 
 [[package]]
 name = "ns-api-gateway"
-version = "1.5.0"
+version = "1.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "app-store-server-library" },
