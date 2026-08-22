@@ -4,12 +4,12 @@ milestone: v2.0
 milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 36
 current_phase_name: rebind-pre-existing-routes
-status: executing
-stopped_at: Completed 36-04-PLAN.md
-last_updated: "2026-08-22T02:56:25.945Z"
+status: verifying
+stopped_at: Completed 36-05-PLAN.md
+last_updated: "2026-08-22T03:15:43.574Z"
 last_activity: 2026-08-21
 last_activity_desc: Plan 35-12 complete — CR-01 gap closed
-state_head: e6abc71c48964e8c2365b727ecb21476acb5bec6
+state_head: f2d9d0ae5aebe12e62e3d870f1908b38a7f27602
 progress:
   total_phases: 13
   completed_phases: 2
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 Phase: 36 (rebind-pre-existing-routes) — EXECUTING
 Plan: 5 of 5
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-08-21 — Phase 36 execution started
 
 ## Accumulated Context
@@ -95,10 +95,10 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-22T02:56:25.888Z
+**Last session:** 2026-08-22T03:15:43.516Z
 
 Last activity: 2026-03-26
-Stopped at: Completed 36-04-PLAN.md
+Stopped at: Completed 36-05-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -115,6 +115,7 @@ Resume file: None
 | Phase 36 P02 | 6min | 3 tasks | 5 files |
 | Phase 36 P03 | 7min | 2 tasks | 13 files |
 | Phase 36 P04 | 17min | 3 tasks | 7 files |
+| Phase 36 P05 | 12min | 3 tasks | 9 files |
 
 ## Decisions
 
@@ -146,3 +147,4 @@ Resume file: None
 - [Phase ?]: 36-04: the resolver never mints a usage row — a missing one is a 500 tripwire, not a free allowance (D-09)
 - [Phase ?]: 36-04: UnknownTierError added as a third INTERNAL_ERROR class so a dangling tier fails closed rather than reading as allowance 0 or unbounded
 - [Phase ?]: 36-04: ask_llm persists the validated LLM model, not the raw provider dict — D-12's empty-list defaults never reached the client before this
+- [Phase ?]: REBIND-06 left unmarked at phase end: a post-gate 404 on POST /chats/{chat_id} burns a credit, which v1.6's yield-dependency rolled back. Verified by probe (0 -> 1). Resolution is a decision about D-11's scope, not a re-plan.
