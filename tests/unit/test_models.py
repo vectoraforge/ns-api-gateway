@@ -173,17 +173,40 @@ class TestAnalyzeResponse:
         assert ar.issues == []
         assert ar.suggestions == []
 
-    def test_issues_required(self):
-        with pytest.raises(ValidationError):
-            # Omitting the required field is the point of this test.
-            AnalyzeResponse(resolved_mode="analyze", response="ok",
-                            suggestions=[])  # ty: ignore[missing-argument]
+    # D-12: both list fields default to empty. The two cases that previously asserted
+    # ValidationError on omission pinned the behaviour D-35-11-A reports as the defect,
+    # so they are replaced rather than kept.
+    def test_both_lists_default_to_empty(self):
+        ar = AnalyzeResponse(resolved_mode="analyze", response="Looks good.")
+        assert ar.issues == []
+        assert ar.suggestions == []
 
-    def test_suggestions_required(self):
+    def test_validates_payload_omitting_both_lists(self):
+        ar = AnalyzeResponse.model_validate({"resolved_mode": "analyze", "response": "ok"})
+        assert ar.issues == []
+        assert ar.suggestions == []
+
+    def test_defaults_are_not_shared_between_instances(self):
+        first = AnalyzeResponse(resolved_mode="analyze", response="ok")
+        second = AnalyzeResponse(resolved_mode="analyze", response="ok")
+        first.issues.append(Issue(text_part="x", explanation="y"))
+        first.suggestions.append("fix")
+        assert second.issues == []
+        assert second.suggestions == []
+
+    def test_explicit_values_still_win_over_defaults(self):
+        issue = Issue(text_part="x", explanation="y")
+        ar = AnalyzeResponse(resolved_mode="analyze", response="ok",
+                             issues=[issue], suggestions=["fix"])
+        assert ar.issues == [issue]
+        assert ar.suggestions == ["fix"]
+
+    def test_resolved_mode_and_response_stay_required(self):
         with pytest.raises(ValidationError):
-            # Omitting the required field is the point of this test.
-            AnalyzeResponse(resolved_mode="analyze", response="ok",
-                            issues=[])  # ty: ignore[missing-argument]
+            # T-36-llmshape: a truncated provider payload must still fail validation.
+            AnalyzeResponse.model_validate({"response": "ok"})
+        with pytest.raises(ValidationError):
+            AnalyzeResponse.model_validate({"resolved_mode": "analyze"})
 
 
 class TestFollowUpResponse:
