@@ -25,17 +25,37 @@ selection statement takes row locks and orders ascending by grant id (SHARED-INV
 served 429 looks the same whether or not the rows were locked.
 """
 from datetime import UTC, datetime, timedelta
-from uuid import uuid7
+from uuid import UUID, uuid7
 
 import pytest
+from sqlmodel import col, select
 
-from nativespeaker.api.models import AccessGrantStatus
+from nativespeaker.api.models import AccessGrantStatus, UserMonthlyUsage
 
 from .conftest import seed_grant
 
 pytestmark = pytest.mark.e2e
 
 PHRASE = {"phrase": "I am going to home.", "lang": "en"}
+
+# The `registered` tier's seeded allowance (migrations/20260818_01_initial-release.sql:280-283).
+# Named rather than repeated as a literal, because every arithmetic case below is expressed
+# relative to it -- "at the allowance", "one below" -- and a bare 50 hides which of those a case
+# means.
+ALLOWANCE = 50
+
+
+async def usage_rows(factory, grant_id: UUID) -> list[UserMonthlyUsage]:
+    """Read `core.user_monthly_usage` back for one grant, through the test's own factory.
+
+    The factory argument is `_db_transaction`'s swapped `async_sessionmaker`, never a fresh engine:
+    every row this package writes lives inside one uncommitted transaction, so a second engine
+    would open a connection that cannot see any of it and every assertion here would read zero
+    rows. Same shape as `test_audit_writer.py::rows`.
+    """
+    async with factory() as session:
+        statement = select(UserMonthlyUsage).where(col(UserMonthlyUsage.grant_id) == grant_id)
+        return list((await session.exec(statement)).all())
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -102,6 +122,71 @@ class TestASeededGrantIsAdmitted:
         data = response.json()
         assert data["role"] == "ai"
         assert "response" in data["content"]
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheAllowanceIsSpent:
+    """§8.4 steps 2-5: the grant is not just *found*, it is charged -- and charged exactly once.
+
+    Every case here reads `core.user_monthly_usage` back after the response, because the response
+    alone cannot distinguish "admitted and charged" from "admitted for free", which is precisely
+    the state the tracer left behind.
+    """
+
+    async def test_a_grant_at_its_allowance_is_exhausted(self, async_client,
+                                                         linked_firebase_identity, _db_transaction):
+        """`monthly_used == allowance` -- the exactly-touching case, not one past it."""
+        user, _ = linked_firebase_identity
+        await seed_grant(_db_transaction, user_id=user.id, monthly_used=ALLOWANCE)
+
+        response = await async_client.post("/chats", json=PHRASE)
+        assert response.status_code == 429
+        assert response.json()["code"] == "quota_exceeded"
+
+    async def test_an_exhausted_grant_is_not_charged_for_the_request_it_refused(
+            self, async_client, linked_firebase_identity, _db_transaction):
+        """A rejection must not increment: a 429 that still spends is worse than no gate at all."""
+        user, _ = linked_firebase_identity
+        grant, _ = await seed_grant(_db_transaction, user_id=user.id, monthly_used=ALLOWANCE)
+
+        await async_client.post("/chats", json=PHRASE)
+
+        rows = await usage_rows(_db_transaction, grant.id)
+        assert [row.monthly_used for row in rows] == [ALLOWANCE]
+
+    async def test_one_below_the_allowance_is_admitted_and_commits_exactly_at_it(
+            self, async_client, linked_firebase_identity, _db_transaction):
+        """Adjacency, the other side: `allowance - 1` is admitted and lands on `allowance`."""
+        user, _ = linked_firebase_identity
+        grant, _ = await seed_grant(_db_transaction, user_id=user.id, monthly_used=ALLOWANCE - 1)
+
+        response = await async_client.post("/chats", json=PHRASE)
+        assert response.status_code == 200
+
+        rows = await usage_rows(_db_transaction, grant.id)
+        assert [row.monthly_used for row in rows] == [ALLOWANCE]
+
+    async def test_a_stale_period_rolls_over_before_the_allowance_is_compared(
+            self, async_client, linked_firebase_identity, _db_transaction):
+        """An exhausted row from *last* month must not refuse *this* month's first request.
+
+        The stale period is derived from the current UTC month rather than hard-coded. A literal
+        past month would read as stale forever, which is harmless, but the same habit applied to a
+        literal *current* month silently stops testing anything the moment that month passes.
+        """
+        user, _ = linked_firebase_identity
+        now = datetime.now(UTC)
+        stale_period = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+        grant, _ = await seed_grant(_db_transaction, user_id=user.id,
+                                    monthly_period=stale_period, monthly_used=ALLOWANCE)
+
+        response = await async_client.post("/chats", json=PHRASE)
+        assert response.status_code == 200
+
+        rows = await usage_rows(_db_transaction, grant.id)
+        # 1, not `ALLOWANCE + 1`: the reset happens before the comparison and before the increment,
+        # inside the same locked transaction, so the stale count is never carried forward.
+        assert [(row.monthly_period, row.monthly_used) for row in rows] == [(now.strftime("%Y-%m"), 1)]
 
 
 @pytest.mark.asyncio(loop_scope="module")
