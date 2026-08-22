@@ -28,6 +28,7 @@ Both chat POSTs are gated, and only those two of the eight pre-existing routes (
 refusal cases run against both, and `TestTheOtherSixRoutesConsumeNothing` is the other half of
 that claim -- without it, "these two are checked" is consistent with "all eight are".
 """
+import time
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid7
 
@@ -484,6 +485,139 @@ class TestAMalformedRequestIsNotCharged:
 
         assert response.status_code == 422
         assert [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)] == before
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestNoPreProviderRejectionIsCharged:
+    """REBIND-06 / ROADMAP SC1: a request the app refused before calling the provider costs nothing.
+
+    `TestAMalformedRequestIsNotCharged` above covers the rejections FastAPI performs *while solving
+    the dependency* -- a 422 from a bad body or path segment. This class covers the rest of the
+    class of failure, and it is a strictly larger set: every rejection the app reaches on its own,
+    after admission and before a single token is sent to the provider.
+
+    There are five, spread across both gated routes and three layers -- request validation
+    (`lang`), the service's own business rules (both history limits, chat ownership), and the
+    resilience layer's local backpressure (circuit open, queue full). What makes them one case
+    rather than five is that they share a cause: consumption committing in its own session before
+    the work is known to be reachable. Fixing them one at a time is how two of them stayed live
+    after the first three were found.
+
+    D-11's accepted loss is narrower than this and stays intact: a credit spent on a request that
+    *did* reach the provider and failed there is not refunded. Backpressure is not a provider
+    failure -- it is this service declining to make the call -- and a 503 carrying `Retry-After`
+    that also spends a credit invites the client to pay again for the same refusal.
+
+    Every case reads `monthly_used` before and after, for the reason the D-14 class gives.
+    """
+
+    async def test_an_unsupported_language_is_not_charged(
+            self, async_client, quota_grant, _db_transaction):
+        """`POST /chats` with a well-formed body naming a language the service does not support.
+
+        `ChatRequest.lang` is unconstrained `str | None`, so this passes request validation and is
+        refused by `ChatService.create_chat` instead -- after the commit, under the old wiring.
+        """
+        grant, _ = quota_grant
+        before = [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)]
+
+        response = await async_client.post("/chats", json={"phrase": "I am going to home.",
+                                                           "lang": "zz"})
+
+        assert response.status_code == 400
+        assert response.json()["code"] == "invalid_request"
+        assert [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)] == before
+
+    async def test_a_chat_that_does_not_exist_is_not_charged(
+            self, async_client, quota_grant, _db_transaction):
+        """`POST /chats/{unknown}` with a perfectly good body.
+
+        The ownership filter is `ChatsDB.get_chat(chat_id, user_id)`, so this is also the shape a
+        caller reaching for *another user's* chat takes: both answer 404 from the same branch.
+        """
+        grant, _ = quota_grant
+        before = [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)]
+
+        response = await async_client.post(f"/chats/{uuid7()}", json=FOLLOWUP)
+
+        assert response.status_code == 404
+        assert [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)] == before
+
+    async def test_the_chat_history_limit_is_not_charged(
+            self, async_client, quota_grant, _db_transaction, _app_lifespan):
+        """`POST /chats` when the caller is already at `chats_limit`.
+
+        The limit is driven to zero rather than seeded up to: the subject is the counter, not the
+        limit's arithmetic, and fifty seeded chats would make this the slowest case in the package
+        while proving exactly the same thing.
+        """
+        grant, _ = quota_grant
+        original = _app_lifespan.state.config.chats_limit
+        _app_lifespan.state.config.chats_limit = 0
+        try:
+            before = [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)]
+
+            response = await async_client.post("/chats", json=PHRASE)
+
+            assert response.status_code == 400
+            assert [row.monthly_used
+                    for row in await usage_rows(_db_transaction, grant.id)] == before
+        finally:
+            _app_lifespan.state.config.chats_limit = original
+
+    async def test_the_message_history_limit_is_not_charged(
+            self, async_client, quota_grant, _db_transaction, _app_lifespan):
+        """`POST /chats/{chat_id}` on a real chat that is already at `messages_limit`.
+
+        The chat is created first, which legitimately spends one credit -- so the assertion is that
+        the *refused follow-up* adds nothing to it, not that the counter is still zero.
+        """
+        grant, _ = quota_grant
+
+        create = await async_client.post("/chats", json=PHRASE)
+        assert create.status_code == 200
+        chat_id = create.json()["chat_id"]
+        before = [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)]
+        assert before == [1]
+
+        original = _app_lifespan.state.config.messages_limit
+        _app_lifespan.state.config.messages_limit = 0
+        try:
+            response = await async_client.post(f"/chats/{chat_id}", json=FOLLOWUP)
+
+            assert response.status_code == 400
+            assert [row.monthly_used
+                    for row in await usage_rows(_db_transaction, grant.id)] == before
+        finally:
+            _app_lifespan.state.config.messages_limit = original
+
+    async def test_an_open_circuit_is_not_charged(
+            self, async_client, quota_grant, _db_transaction, _app_lifespan):
+        """`POST /chats` while the breaker is open.
+
+        The breaker is opened directly rather than by driving real failures through the provider:
+        the subject is what an open circuit costs the caller, not the threshold that opens it, and
+        `CircuitBreaker` records the open instant on `_opened_at` with no other state involved.
+
+        This is the worst of the five. The breaker stays open for `circuit_breaker_reset_seconds`,
+        so under the old wiring every request in that window paid for its own refusal -- and the
+        503 carries `Retry-After`, telling the client to come back and do it again.
+        """
+        grant, _ = quota_grant
+        breaker = _app_lifespan.state.llm_service.policy._circuit_breaker
+        breaker._opened_at = time.monotonic()
+        try:
+            before = [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)]
+
+            response = await async_client.post("/chats", json=PHRASE)
+
+            assert response.status_code == 503
+            assert response.json()["code"] == "service_unavailable"
+            assert [row.monthly_used
+                    for row in await usage_rows(_db_transaction, grant.id)] == before
+        finally:
+            breaker._opened_at = None
+            breaker._failure_count = 0
 
 
 @pytest.mark.asyncio(loop_scope="module")
