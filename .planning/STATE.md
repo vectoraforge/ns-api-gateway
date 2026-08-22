@@ -1,21 +1,21 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Authentication & Entitlements
+milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 36
 current_phase_name: rebind-pre-existing-routes
 status: executing
-stopped_at: Completed 36-01-PLAN.md
-last_updated: "2026-08-22T02:01:02.443Z"
+stopped_at: Completed 36-02-PLAN.md
+last_updated: "2026-08-22T02:09:46.144Z"
 last_activity: 2026-08-21
 last_activity_desc: Plan 35-12 complete — CR-01 gap closed
+state_head: 0308533c8d7ad5e16c33322a462a93f3c3d025a6
 progress:
   total_phases: 13
   completed_phases: 2
   total_plans: 21
-  completed_plans: 17
+  completed_plans: 18
   percent: 15
-state_head: 9cec5d788c9558ff0d4704e352608aa3abbd692b
 ---
 
 # Project State
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 36 (rebind-pre-existing-routes) — EXECUTING
-Plan: 2 of 5
+Plan: 3 of 5
 Status: Ready to execute
 Last activity: 2026-08-21 — Phase 36 execution started
 
@@ -95,10 +95,10 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-22T02:00:48.656Z
+**Last session:** 2026-08-22T02:09:46.088Z
 
 Last activity: 2026-03-26
-Stopped at: Completed 36-01-PLAN.md
+Stopped at: Completed 36-02-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -112,6 +112,7 @@ Resume file: None
 | Phase 34 P04 | 38min | 2 tasks | 3 files |
 | Phase 35 P12 | 22min | 3 tasks | 4 files |
 | Phase 36 P01 | 7min | 3 tasks | 7 files |
+| Phase 36 P02 | 6min | 3 tasks | 5 files |
 
 ## Decisions
 
@@ -134,3 +135,6 @@ Resume file: None
 - [Phase ?]: 36-01: all four GENERATED ALWAYS AS (...) STORED columns on core.access_grants are omitted from the AccessGrant model — PostgreSQL rejects an explicit value for them, so mapping one breaks every ORM insert
 - [Phase ?]: 36-01: D-01 tier seeding committed as migration reference data (anonymous=10, registered=50, paid=1000), overriding 00-schema.md:249 with the conflict recorded as a SHARED-INVARIANTS flag rather than resolved silently
 - [Phase ?]: 36-01: REBIND-05 left unchecked — this plan delivers only the model layer; the resolution, lock order, fail-closed and rollover behavior the requirement describes is owned by plans 36-03/36-04/36-05, which also claim it
+- [Phase ?]: D-12 shipped as plain `= []` defaults on AnalyzeResponse; a test proves Pydantic v2's per-instance deep-copy rather than assuming it, so no default_factory was needed.
+- [Phase ?]: resolved_mode and response stay required on AnalyzeResponse, pinned by a new test — T-36-llmshape's 'exactly two field defaults' is now enforced, not just asserted in a comment.
+- [Phase ?]: The withdrawn PROJECT.md constrained-decoding claim stays in place marked '✗ Withdrawn — never shipped' rather than being deleted, so the over-claim that made D-35-11-A reachable leaves a trace.
