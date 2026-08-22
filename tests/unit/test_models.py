@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from nativespeaker.api.errors import AnalysisError, InvalidChatError, ServiceError, UnsupportedLanguageError
+from nativespeaker.api.models import PurchaseProvider, StorePurchaseToken
 from nativespeaker.api.models.api import (
     ChatRequest,
     ChatResponse,
@@ -244,3 +245,64 @@ class TestExceptions:
     def test_service_error_base(self):
         error = ServiceError("Base error")
         assert isinstance(error, Exception)
+
+
+class TestPurchaseProviderEnum:
+    """CREATE-03: the Python mirror of the pre-existing `core.subscription_provider` type.
+
+    The Python class and the PostgreSQL type deliberately carry different names -- see
+    `models/purchase_tokens.py` for why. These cases pin the two halves separately: the member
+    set here, the database binding in `TestStorePurchaseTokenMapping`.
+    """
+
+    def test_exactly_two_members_in_migration_order(self):
+        assert list(PurchaseProvider) == [PurchaseProvider.apple, PurchaseProvider.google_play]
+
+    def test_values_are_the_migration_labels(self):
+        assert [member.value for member in PurchaseProvider] == ["apple", "google_play"]
+
+
+class TestStorePurchaseTokenMapping:
+    """The mapped shape of `core.store_purchase_tokens`, read off the SQLAlchemy Table.
+
+    Every assertion here reads `StorePurchaseToken.__table__` rather than the Python annotations,
+    so it describes what SQLAlchemy actually built -- which is the thing the create transaction
+    will run against. That the mapper *configures at all* over a table with no database primary
+    key is RESEARCH assumption A2's import half; its INSERT half is proven against a real
+    PostgreSQL in tests/schema/test_store_purchase_tokens.py.
+    """
+
+    def test_the_models_package_imports(self):
+        """The mapper configures without raising 'could not assemble any primary key columns'."""
+        from nativespeaker.api import models as models_package
+
+        assert models_package.StorePurchaseToken is StorePurchaseToken
+
+    def test_maps_core_store_purchase_tokens(self):
+        assert StorePurchaseToken.__tablename__ == "store_purchase_tokens"
+        assert StorePurchaseToken.__table_args__ == {"schema": "core"}
+
+    def test_orm_primary_key_is_the_composite_user_id_provider(self):
+        """ORM-level only. The table has no database primary key by design (migration:327-338)."""
+        columns = StorePurchaseToken.__table__.primary_key.columns
+        assert {column.name for column in columns} == {"user_id", "provider"}
+
+    def test_column_set_is_exactly_the_four_table_columns(self):
+        """No `id`, no surrogate key -- the mapper adds nothing the migration did not declare."""
+        columns = StorePurchaseToken.__table__.columns
+        assert {column.name for column in columns} == {
+            "user_id", "provider", "identity_value", "created_at",
+        }
+
+    def test_provider_column_binds_the_pre_existing_database_enum_type(self):
+        """The binding names `core.subscription_provider`, not the Python class.
+
+        This phase renames only the Python side and migrates nothing, so the explicit
+        `name=`/`schema=` pair is the entire mechanism holding the two together. Drop it and
+        SQLAlchemy derives the type name from the class instead, emitting a *second* enum type at
+        DDL time -- which fails at the first INSERT, not at import.
+        """
+        provider_type = StorePurchaseToken.__table__.c.provider.type
+        assert provider_type.name == "subscription_provider"
+        assert provider_type.schema == "core"
+        assert sorted(provider_type.enums) == ["apple", "google_play"]
