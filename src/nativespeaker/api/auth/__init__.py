@@ -21,15 +21,15 @@ __all__ = [
     "ACTOR_SUBJECT_PREFIX", "AdmissionDecision", "Admit", "AuditWriter", "AuthBarrierMiddleware",
     "BoundedReason", "CHALLENGE_ID_BYTES", "CHALLENGE_TTL_SECONDS", "Category",
     "ChallengeRejection", "ChallengeStore", "ClaimKind", "ClientIpBucketKind",
-    "DETAILS_SCHEMA_VERSION", "DeviceBitState", "FirebaseAdminAdapter", "HmacConfig", "HmacKeyring",
-    "IDP_ACCOUNT_PREFIX", "IdentityKind", "JWTVerifier", "LinkedIdentity", "ModeSignal",
-    "NamedVerifier", "PreAuthIdentity", "ProviderDataEntry", "ProviderDataOutcome",
-    "ProviderDataResult", "REGISTRY", "REQUEST_CONTEXT_SCOPE_KEY", "Reject", "RequestContext",
-    "RevocationOutcome", "RouteMetadata", "StoreAdapter", "StoreState", "TokenVerifier",
-    "VERIFIERS", "VendorProofAdapter", "VerificationResult", "VerifiedClaims",
+    "DETAILS_SCHEMA_VERSION", "DeviceBitState", "FIREBASE_LOOKUP_ATTEMPTS", "FirebaseAdminAdapter",
+    "HmacConfig", "HmacKeyring", "IDP_ACCOUNT_PREFIX", "IdentityKind", "JWTVerifier",
+    "LinkedIdentity", "ModeSignal", "NamedVerifier", "PreAuthIdentity", "ProviderDataEntry",
+    "ProviderDataOutcome", "ProviderDataResult", "REGISTRY", "REQUEST_CONTEXT_SCOPE_KEY", "Reject",
+    "RequestContext", "RevocationOutcome", "RouteMetadata", "StoreAdapter", "StoreState",
+    "TokenVerifier", "VERIFIERS", "VendorProofAdapter", "VerificationResult", "VerifiedClaims",
     "VerifiedNotification", "VerifiedTransaction", "assert_route_enumeration", "build_details",
-    "classify_mode_signal", "enumerate_registered", "extract_bearer", "lookup", "new_challenge_id",
-    "record_rejection", "redact", "resolve_identity",
+    "classify_mode_signal", "enumerate_registered", "extract_bearer", "lookup", "lookup_with_retry",
+    "new_challenge_id", "record_rejection", "redact", "resolve_identity",
 ]
 
 from nativespeaker.api.auth.adapters import (
@@ -85,6 +85,10 @@ from nativespeaker.api.auth.registry import (
     assert_route_enumeration,
     enumerate_registered,
     lookup,
+)
+from nativespeaker.api.auth.retry import (
+    FIREBASE_LOOKUP_ATTEMPTS,
+    lookup_with_retry,
 )
 from nativespeaker.api.auth.telemetry import record_rejection
 from nativespeaker.api.auth.verification import (

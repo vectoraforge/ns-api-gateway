@@ -8,6 +8,16 @@ enumerated providerData read points in the whole system and that none of them is
 The `firebase_admin` absence check runs in a **subprocess** on purpose. `app/lifespan.py` still
 imports `firebase_admin` at module scope until plan 04 deletes it (D-16), so an in-process
 `sys.modules` assertion would pass or fail on test ordering rather than on this module's imports.
+
+**Amended by plan 37-02.** The src-wide scan now carries a named, method-scoped allow-list
+(`ADAPTER_IMPLEMENTORS`) because this phase builds the first module that legitimately names an
+adapter method -- `auth/retry.py`, whose `lookup_with_retry` calls `get_user_provider_data`. It is
+an allow-list, not a widened skip: an entry permits exactly the methods it names and no others, so
+a listed module that later grows a second adapter method is still reported; every key must resolve
+to a file that exists, so a stale entry cannot silently widen the scan; and a control case pins
+that a non-exempt file naming any of `ADAPTER_METHODS` is still reported. Nothing above changes --
+this file still fails the moment `auth/adapters.py` grows an implementation, and §7.1's five
+enumerated providerData read points are still none of them.
 """
 import ast
 import subprocess
@@ -57,6 +67,16 @@ ADAPTER_METHODS = ("verify_id_token", "get_user_provider_data", "revoke_refresh_
 # source appearing here is the drift §7 exists to prevent.
 ALLOWED_IMPORT_ROOTS = {"dataclasses", "datetime", "enum", "typing", "uuid", "nativespeaker"}
 
+# The modules under SRC_ROOT permitted to name an adapter method, each mapped to the exact methods
+# it may name. Stated in the positive: every other file under SRC_ROOT may name **none** of the ten
+# in `ADAPTER_METHODS`, and an entry here permits only the methods it lists -- a listed module that
+# later grows a second adapter method is reported anyway. Keys are `path.relative_to(SRC_ROOT)` in
+# posix form, the same shape the offender strings carry. Plan 37-05 adds the concrete adapter as
+# the second entry, in the commit that creates it.
+ADAPTER_IMPLEMENTORS: dict[str, frozenset[str]] = {
+    "api/auth/retry.py": frozenset({"get_user_provider_data"}),
+}
+
 
 def _classes() -> list[ast.ClassDef]:
     return [node for node in TREE.body if isinstance(node, ast.ClassDef)]
@@ -69,6 +89,20 @@ def _is_stub_statement(stmt: ast.stmt) -> bool:
 
 def _run(code: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+
+
+def _adapter_method_offenders(sources, implementors=None) -> list[str]:
+    """Sorted `"path: method"` strings for every adapter method named outside its permitted set.
+
+    Pure on purpose. `sources` is an iterable of `(relative_path, text)` pairs, so the real src-wide
+    walk and the control cases below run through the identical filter -- the controls prove the
+    scan still fires without writing a file into the tree to provoke it.
+    """
+    permitted = ADAPTER_IMPLEMENTORS if implementors is None else implementors
+    return sorted(f"{path}: {method}"
+                  for path, text in sources
+                  for method in ADAPTER_METHODS
+                  if method in text and method not in permitted.get(path, frozenset()))
 
 
 class TestClosedOutcomeSets:
@@ -128,15 +162,35 @@ class TestZeroImplementations:
         assert getattr(protocol, "_is_runtime_protocol", False) is False
 
     def test_foundation_calls_no_adapter_method_anywhere_in_src(self):
-        """§7.1: foundation calls `get_user_provider_data` zero times -- and the rest likewise."""
-        offenders = []
-        for path in sorted(SRC_ROOT.rglob("*.py")):
-            if path == SOURCE_PATH:
-                continue
-            text = path.read_text()
-            offenders += [f"{path.relative_to(SRC_ROOT)}: {method}"
-                          for method in ADAPTER_METHODS if method in text]
-        assert offenders == []
+        """§7.1: foundation calls `get_user_provider_data` zero times -- and the rest likewise.
+
+        `ADAPTER_IMPLEMENTORS` names the one module this phase gives a legitimate reason to call
+        one, and permits it that method alone.
+        """
+        sources = [(path.relative_to(SRC_ROOT).as_posix(), path.read_text())
+                   for path in sorted(SRC_ROOT.rglob("*.py")) if path != SOURCE_PATH]
+        assert _adapter_method_offenders(sources) == []
+
+    def test_every_allow_listed_path_resolves_to_a_file_that_exists(self):
+        """A stale entry cannot silently widen the scan after a module is renamed or deleted."""
+        assert ADAPTER_IMPLEMENTORS, "an empty allow-list would make the two controls vacuous"
+        for relative in ADAPTER_IMPLEMENTORS:
+            assert (SRC_ROOT / relative).is_file(), f"{relative} does not exist under {SRC_ROOT}"
+
+    def test_a_non_exempt_file_naming_an_adapter_method_is_still_reported_control(self):
+        """The positive control: the guarantee this file exists for still fires."""
+        sources = [("api/app/main.py", "result = adapter.get_user_provider_data(issuer, subject)")]
+        assert _adapter_method_offenders(sources) == ["api/app/main.py: get_user_provider_data"]
+
+    def test_an_entry_permits_the_methods_it_names_and_no_others_control(self):
+        """The entry-scope control: an exemption admits one method, not a module.
+
+        Takes the first key rather than hard-coding a path, so a later plan's added entry needs no
+        edit here.
+        """
+        listed = next(iter(ADAPTER_IMPLEMENTORS))
+        sources = [(listed, "outcome = adapter.revoke_refresh_tokens(issuer, subject)")]
+        assert _adapter_method_offenders(sources) == [f"{listed}: revoke_refresh_tokens"]
 
 
 class TestNoProviderDependency:

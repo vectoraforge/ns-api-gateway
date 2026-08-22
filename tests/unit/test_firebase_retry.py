@@ -15,18 +15,18 @@ on exhaustion even with `reraise=True` -- there is no original exception for `re
 """
 import pytest
 import tenacity
-from nativespeaker.api.auth.retry import (
-    FIREBASE_LOOKUP_ATTEMPTS,
-    LOOKUP_UNAVAILABLE_ERROR_CLASS,
-    LOOKUP_UNAVAILABLE_RESULT,
-    lookup_with_retry,
-)
 
 from nativespeaker.api import errors
 from nativespeaker.api.auth.adapters import (
     ProviderDataEntry,
     ProviderDataOutcome,
     ProviderDataResult,
+)
+from nativespeaker.api.auth.retry import (
+    FIREBASE_LOOKUP_ATTEMPTS,
+    LOOKUP_UNAVAILABLE_ERROR_CLASS,
+    LOOKUP_UNAVAILABLE_RESULT,
+    lookup_with_retry,
 )
 from nativespeaker.api.models.auth import AuthEventResult
 
