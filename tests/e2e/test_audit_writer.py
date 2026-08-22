@@ -26,7 +26,6 @@ from unit.conftest import TEST_ISSUER, make_token
 from e2e.conftest import seed_identity
 from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
 from nativespeaker.api.auth.registry import Category, RouteMetadata
-from nativespeaker.api.auth.telemetry import RejectionCounter
 from nativespeaker.api.models.auth import AuthEvent, AuthEventResult, AuthOperation
 from nativespeaker.api.models.identities import IdentityState
 
@@ -77,7 +76,6 @@ def audited_app(_app_lifespan, _db_transaction, stub_verifier):
     app.state.jwt_verifier = stub_verifier
     app.state.hmac_keyring = _app_lifespan.state.hmac_keyring
     app.state.audit_writer = _app_lifespan.state.audit_writer
-    app.state.rejection_counter = RejectionCounter()
     return app
 
 
@@ -381,40 +379,6 @@ class TestOffPathRequestsWriteNothing:
 
         assert response.status_code == 404
         assert await row_count(_db_transaction) == 0
-
-
-@pytest.mark.asyncio(loop_scope="module")
-class TestTelemetryFiresEitherWay:
-    """§1.2 / §8.2: the counter is the required alerting source for cross-route attack volume, so
-    it increments wherever the barrier rejects -- on the audited path and off it alike."""
-
-    async def test_an_on_path_rejection_increments_the_counter(self, audited_app, audited_client):
-        async with audited_client as client:
-            await client.post("/auth/sync")
-
-        assert audited_app.state.rejection_counter.snapshot() == \
-               {("invalid_external_jwt", "missing_token", "/auth/sync"): 1}
-
-    async def test_an_off_path_rejection_increments_the_counter_too(
-            self, unauthenticated_client, _app_lifespan):
-        counter = _app_lifespan.state.rejection_counter
-        before = counter.snapshot().get(("invalid_external_jwt", "missing_token", "/chats"), 0)
-        async with unauthenticated_client as client:
-            await client.get("/chats")
-
-        after = counter.snapshot()[("invalid_external_jwt", "missing_token", "/chats")]
-        assert after == before + 1
-
-    async def test_the_route_label_is_the_template_never_the_request_path(
-            self, unauthenticated_client, _app_lifespan):
-        """Bounded cardinality: a thousand chat ids collapse to one counter key."""
-        counter = _app_lifespan.state.rejection_counter
-        async with unauthenticated_client as client:
-            await client.get("/chats/0198f0d2-0000-7000-8000-00000000000b")
-
-        labels = {route for _result, _reason, route in counter.snapshot()}
-        assert "/chats/{chat_id}" in labels
-        assert not any(label.startswith("/chats/0198") for label in labels)
 
 
 @pytest.mark.asyncio(loop_scope="module")

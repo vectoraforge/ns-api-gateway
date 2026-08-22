@@ -30,7 +30,6 @@ from jwt.algorithms import RSAAlgorithm
 
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
-from nativespeaker.api.auth.telemetry import RejectionCounter
 from nativespeaker.api.auth.verification import JWTVerifier
 from unit.conftest import PUBLIC_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_token
 
@@ -145,7 +144,6 @@ def barrier_app(verifier) -> FastAPI:
     app.add_middleware(AuthBarrierMiddleware)  # ty: ignore[invalid-argument-type]
     app.state.jwt_verifier = verifier
     app.state.session_factory = _NoIdentitySession
-    app.state.rejection_counter = RejectionCounter()
     app.state.route_registry = ()
     return app
 

@@ -9,7 +9,6 @@ from nativespeaker.api.auth.audit import AuditWriter
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.keys import HmacKeyring
 from nativespeaker.api.auth.registry import REGISTRY, assert_route_enumeration
-from nativespeaker.api.auth.telemetry import RejectionCounter
 from nativespeaker.api.auth.verification import JWTVerifier
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.errors import assert_registry_total
@@ -35,13 +34,6 @@ async def lifespan(app: FastAPI):
     assert_registry_total()
     app.state.route_registry = REGISTRY
     assert_route_enumeration(app, app.state.route_registry)
-
-    # The §1.2 / §8.2 bounded-cardinality rejection counter. Every route this phase registers is
-    # off the audited attempt path, so this counter plus the structured security log is the whole
-    # record of a barrier rejection there -- and §1.2 makes it the required alerting source for
-    # cross-route attack volume and for a systemic verification break. Nothing exports it yet;
-    # see 35-06-SUMMARY.md for the recorded gap.
-    app.state.rejection_counter = RejectionCounter()
 
     # The §4.3 / §6.4 keyed-hashing seam: one keyring, read per request, never cached by a caller.
     # D-22's fail-closed half already happened -- a missing, empty, or unusable active key raises

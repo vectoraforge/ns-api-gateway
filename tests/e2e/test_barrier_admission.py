@@ -268,47 +268,6 @@ def _recording(factory):
         event.remove(engine, "before_cursor_execute", _capture)
 
 
-@pytest.mark.asyncio(loop_scope="module")
-class TestEveryRejectionIsCounted:
-    """§1.2 / §8.2: the counter increments wherever the barrier rejects, and stays bounded."""
-
-    async def test_the_counter_records_each_outcome_under_its_internal_result(
-            self, barrier_client, _app_lifespan, _db_transaction):
-        counter = _app_lifespan.state.rejection_counter
-        await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject="counted-historical",
-                            identity_state=IdentityState.historical)
-        await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject="counted-blocked",
-                            user_active=False)
-
-        await barrier_client.get("/chats", headers=_auth("counted-unlinked"))
-        await barrier_client.get("/chats", headers=_auth("counted-historical"))
-        await barrier_client.get("/chats", headers=_auth("counted-blocked"))
-        await barrier_client.get("/chats")
-
-        keys = counter.snapshot()
-        assert ("preauth_identity_not_allowed", None, "/chats") in keys
-        assert ("historical_identity", None, "/chats") in keys
-        assert ("blocked_user", None, "/chats") in keys
-        assert ("invalid_external_jwt", "missing_token", "/chats") in keys
-
-    async def test_the_route_label_is_the_template_not_the_request_path(
-            self, barrier_client, _app_lifespan):
-        """T-35-06-05: `/chats/{chat_id}`, so a thousand chat ids stay one key."""
-        counter = _app_lifespan.state.rejection_counter
-        for suffix in ("aaaaaaaa", "bbbbbbbb", "cccccccc"):
-            await barrier_client.get(f"/chats/0193b669-f534-4298-a9f4-11a31ab9{suffix}")
-
-        assert ("invalid_external_jwt", "missing_token", "/chats/{chat_id}") in counter.snapshot()
-        assert not any("0193b669" in key[2] for key in counter.snapshot())
-
-    async def test_no_label_carries_a_token_or_a_subject(self, barrier_client, _app_lifespan):
-        counter = _app_lifespan.state.rejection_counter
-        await barrier_client.get("/chats", headers=_auth("secret-subject-name"))
-
-        assert not any("secret-subject-name" in "".join(str(part) for part in key)
-                       for key in counter.snapshot())
-
-
 def _comparable(headers) -> dict[str, str]:
     """Response headers minus the clock."""
     return {key: value for key, value in headers.items() if key.lower() != "date"}

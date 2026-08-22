@@ -4,7 +4,7 @@ Phases 36-46 import these names from `nativespeaker.api.auth` and nothing deeper
 visibly one thing and a later internal split inside `auth/` costs no edit outside this file.
 Everything a later phase is expected to name is re-exported here: the barrier and its §1.1 wire
 contract, the §2.2 route registry with its §2.3 startup assertion, the §1.4 typed context, §1.3
-identity resolution, §1.2 verification, §8.2 rejection telemetry, the §4.3/§6.4 shared keyed
+identity resolution, §1.2 verification, §8.2 rejection logging, the §4.3/§6.4 shared keyed
 hashing, the §4 audit writer, the §6 challenge store and its §6.5 mode signal, the §7.1 provider
 call budget, and the §7 adapter interfaces.
 
@@ -25,7 +25,7 @@ __all__ = [
     "DeviceBitState", "FIREBASE_LOOKUP_ATTEMPTS", "FirebaseAdminAdapter", "HmacConfig",
     "HmacKeyring", "IDP_ACCOUNT_PREFIX", "IdentityKind", "JWTVerifier", "LinkedIdentity",
     "ModeSignal", "NamedVerifier", "PreAuthIdentity", "ProviderDataEntry", "ProviderDataOutcome",
-    "ProviderDataResult", "REGISTRY", "REQUEST_CONTEXT_SCOPE_KEY", "Reject", "RejectionCounter",
+    "ProviderDataResult", "REGISTRY", "REQUEST_CONTEXT_SCOPE_KEY", "Reject",
     "RequestContext", "RevocationOutcome", "RouteMetadata", "StoreAdapter", "StoreState",
     "TokenVerifier", "VERIFIERS", "VendorProofAdapter", "VerificationResult", "VerifiedClaims",
     "VerifiedNotification", "VerifiedTransaction", "assert_route_enumeration", "build_details",
@@ -93,7 +93,7 @@ from nativespeaker.api.auth.registry import (
     enumerate_registered,
     lookup,
 )
-from nativespeaker.api.auth.telemetry import RejectionCounter, record_rejection
+from nativespeaker.api.auth.telemetry import record_rejection
 from nativespeaker.api.auth.verification import (
     JWTVerifier,
     TokenVerifier,

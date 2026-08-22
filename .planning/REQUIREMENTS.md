@@ -44,7 +44,7 @@ Shared machinery only. Rebinding the pre-existing routes is Phase 36.
 ### REBIND — Phase 36 (`01-foundation.md §8`)
 
 - [x] **REBIND-01**: Partition membership is declared for every pre-existing route — `GET /health/ready` public; `GET /`, `GET /examples`, and the `/chats` family authenticated — and the enumeration assertion passes in both directions
-- [x] **REBIND-02**: These routes are off the audited attempt path and write no `audit.auth_events` row ever; rejections keep their internal result in the structured security log and increment the bounded-cardinality counter metric
+- [x] **REBIND-02**: These routes are off the audited attempt path and write no `audit.auth_events` row ever; rejections keep their internal result in the structured security log (the hand-rolled `RejectionCounter` metric was removed — see D-15 below; rejection rate is derived from the log by the deployment's log pipeline, not by a counter subsystem the service maintains itself)
 - [ ] **REBIND-03**: Auth rejections on these routes surface through the shared error taxonomy and response shape, while their existing non-auth business error contracts are unchanged
 - **REBIND-04** — **Void.** The named `quota_checked_request` admission entry it required no longer exists: Phase 35 D-05 deletes backend rate limiting from the product. REBIND-05's grant resolution, lock order, and lazy rollover are unaffected.
 - [x] **REBIND-05**: The quota flow resolves one effective grant under the shared predicate, locks grant-then-usage in ascending grant id, fails closed on a missing usage row, performs lazy monthly rollover in the same locked transaction, and never lets `remaining` go negative

@@ -171,8 +171,7 @@ class AuthBarrierMiddleware:
         response goes out -- `§4.1` is explicit that the row is not a side effect of the response
         having been sent.
         """
-        record_rejection(scope["app"].state, result=result,
-                         bounded_reason=bounded_reason, route=meta.path)
+        record_rejection(result=result, bounded_reason=bounded_reason, route=meta.path)
         if meta.operation is not None:
             await self._audit(scope, result=result, bounded_reason=bounded_reason, meta=meta,
                               evaluated_at=evaluated_at, attempt_id=attempt_id,

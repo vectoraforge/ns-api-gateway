@@ -16,7 +16,7 @@ import pytest
 
 from nativespeaker.api.auth.identity import Admit, Reject, resolve_identity
 from nativespeaker.api.auth.registry import Category, RouteMetadata
-from nativespeaker.api.auth.telemetry import RejectionCounter, record_rejection
+from nativespeaker.api.auth.telemetry import record_rejection
 from nativespeaker.api.errors import (
     ACCOUNT_UNAVAILABLE,
     INTERNAL_ERROR,
@@ -253,83 +253,42 @@ class TestTheResolutionStatement:
         assert historical_sql == str(session.statements[0])
 
 
-class TestRejectionCounter:
-    """§1.2 / §8.2 -- the required alerting source, with cardinality bounded by construction."""
-
-    def test_repeated_rejections_accumulate_under_one_key(self):
-        counter = RejectionCounter()
-        for _ in range(2):
-            counter.increment(result="invalid_external_jwt", bounded_reason="missing_token",
-                              route="/chats")
-        assert list(counter.snapshot().values()) == [2]
-
-    def test_the_key_is_result_by_reason_by_route(self):
-        counter = RejectionCounter()
-        counter.increment(result="invalid_external_jwt", bounded_reason="expired", route="/chats")
-        assert list(counter.snapshot()) == [("invalid_external_jwt", "expired", "/chats")]
-
-    def test_a_missing_bounded_reason_is_a_key_of_its_own(self):
-        """Admission-matrix rejections carry no bounded reason; §1.1 failures always do."""
-        counter = RejectionCounter()
-        counter.increment(result="blocked_user", bounded_reason=None, route="/chats")
-        counter.increment(result="invalid_external_jwt", bounded_reason="expired", route="/chats")
-        assert len(counter.snapshot()) == 2
-
-    def test_the_route_label_is_the_path_template_so_cardinality_stays_bounded(self):
-        """T-35-06-05: a raw request path would make one label unbounded on its own."""
-        counter = RejectionCounter()
-        for _ in range(100):
-            counter.increment(result="blocked_user", bounded_reason=None,
-                              route="/chats/{chat_id}")
-        assert len(counter.snapshot()) == 1
-
-    def test_the_snapshot_is_a_copy(self):
-        counter = RejectionCounter()
-        counter.increment(result="blocked_user", bounded_reason=None, route="/chats")
-        counter.snapshot().clear()
-        assert len(counter.snapshot()) == 1
-
-
-class _AppState:
-    def __init__(self, counter=None):
-        if counter is not None:
-            self.rejection_counter = counter
-
-
 class TestRecordRejection:
-    """The barrier's one telemetry entry point -- it counts, it logs, it never raises."""
+    """The barrier's one telemetry entry point -- it logs, and it never raises."""
 
-    def test_it_increments_the_counter_on_the_application(self):
-        counter = RejectionCounter()
-        record_rejection(_AppState(counter), result=AuthEventResult.blocked_user,
-                         bounded_reason=None, route="/chats")
-        assert counter.snapshot() == {("blocked_user", None, "/chats"): 1}
-
-    def test_enum_labels_are_recorded_as_their_string_values(self):
-        from nativespeaker.api.auth.wire import BoundedReason
-        counter = RejectionCounter()
-        record_rejection(_AppState(counter), result=AuthEventResult.invalid_external_jwt,
-                         bounded_reason=BoundedReason.duplicate_authorization, route="/")
-        assert counter.snapshot() == {("invalid_external_jwt", "duplicate_authorization", "/"): 1}
-
-    def test_an_absent_counter_does_not_turn_a_rejection_into_a_500(self):
-        """A telemetry gap must never change what the client is told."""
-        record_rejection(_AppState(), result=AuthEventResult.blocked_user,
-                         bounded_reason=None, route="/chats")
-
-    def test_it_logs_the_rejection(self, monkeypatch):
-        """A recording spy, not `structlog.testing.capture_logs` -- see 35-02's caching note."""
+    def _capture(self, monkeypatch):
         from nativespeaker.api.auth import telemetry as telemetry_module
         events: list[tuple[str, dict]] = []
         monkeypatch.setattr(telemetry_module.logger, "warning",
                             lambda event, **kw: events.append((event, kw)))
-        record_rejection(_AppState(RejectionCounter()), result=AuthEventResult.historical_identity,
+        return events
+
+    def test_it_logs_the_rejection(self, monkeypatch):
+        """A recording spy, not `structlog.testing.capture_logs` -- see 35-02's caching note."""
+        events = self._capture(monkeypatch)
+        record_rejection(result=AuthEventResult.historical_identity,
                          bounded_reason=None, route="/examples")
         assert events == [("auth_rejected", {"result": "historical_identity",
                                              "bounded_reason": None,
                                              "route": "/examples"})]
 
+    def test_enum_labels_are_logged_as_their_string_values(self, monkeypatch):
+        from nativespeaker.api.auth.wire import BoundedReason
+        events = self._capture(monkeypatch)
+        record_rejection(result=AuthEventResult.invalid_external_jwt,
+                         bounded_reason=BoundedReason.duplicate_authorization, route="/")
+        assert events[0][1] == {"result": "invalid_external_jwt",
+                                "bounded_reason": "duplicate_authorization",
+                                "route": "/"}
+
+    def test_the_route_field_is_the_path_template_not_the_raw_path(self, monkeypatch):
+        """T-35-06-05: a raw request path would put caller-controlled text in the log."""
+        events = self._capture(monkeypatch)
+        record_rejection(result=AuthEventResult.blocked_user, bounded_reason=None,
+                         route="/chats/{chat_id}")
+        assert events[0][1]["route"] == "/chats/{chat_id}"
+
     def test_the_bounded_reason_never_reaches_the_client(self):
-        """§1.2: the reason lives in telemetry and audit `details.failure` only."""
+        """§1.2: the reason lives in the security log and audit `details.failure` only."""
         from nativespeaker.api.errors import ErrorResponse
         assert list(ErrorResponse.model_fields) == ["code"]

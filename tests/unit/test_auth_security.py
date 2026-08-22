@@ -19,7 +19,6 @@ from fastapi.testclient import TestClient
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
 from nativespeaker.api.auth.registry import lookup
-from nativespeaker.api.auth.telemetry import RejectionCounter
 from unit.conftest import make_test_verifier, make_token
 
 
@@ -61,7 +60,6 @@ def barrier_client():
     # Read per request by the barrier, exactly as the real lifespan supplies them.
     app.state.jwt_verifier = make_test_verifier()
     app.state.session_factory = _NoIdentitySession
-    app.state.rejection_counter = RejectionCounter()
     # An empty registry, which is what makes /probe undeclared *to this app* rather than merely
     # absent from the production table. It also keeps every case here off the audited attempt path:
     # a route with no declaration has no operation, so no rejection below writes an audit row and
@@ -164,19 +162,3 @@ class TestWellFormedCredentialPassesTheWireContract:
                                       headers={"Authorization": "Bearer not.a.jwt"})
         assert response.status_code == 401
         assert response.json() == {"code": "auth_required"}
-
-    def test_every_barrier_rejection_is_counted(self, barrier_client):
-        """§1.2's mandatory metric increments wherever the barrier rejects."""
-        counter = barrier_client.app.state.rejection_counter
-        before = sum(counter.snapshot().values())
-        barrier_client.get("/probe")
-        barrier_client.get("/probe", headers={"Authorization": f"Bearer {make_token()}"})
-        assert sum(counter.snapshot().values()) == before + 2
-
-    def test_the_counter_labels_the_route_template_and_never_the_token(self, barrier_client):
-        """T-35-06-05: every label comes from a closed set."""
-        counter = barrier_client.app.state.rejection_counter
-        barrier_client.get("/probe")
-        keys = counter.snapshot()
-        assert ("invalid_external_jwt", "missing_token", "/probe") in keys
-        assert all(len(key) == 3 and key[2] == "/probe" for key in keys)
