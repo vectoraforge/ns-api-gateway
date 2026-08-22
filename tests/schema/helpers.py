@@ -68,3 +68,25 @@ async def insert_grant(
         subscription_id,
     )
     return grant_id
+
+
+async def insert_usage(
+    conn: asyncpg.Connection,
+    *,
+    grant_id: uuid.UUID,
+    monthly_period: str = "2026-08",
+    monthly_used: int = 0,
+) -> None:
+    """Insert one core.user_monthly_usage row. Returns nothing -- grant_id is already the key.
+
+    created_at and updated_at are named explicitly because this is the one table in the schema
+    whose timestamps are NOT NULL with no DB DEFAULT; omitting them is a NOT NULL violation.
+    """
+    await conn.execute(
+        "INSERT INTO core.user_monthly_usage "
+        "(grant_id, monthly_period, monthly_used, created_at, updated_at) "
+        "VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        grant_id,
+        monthly_period,
+        monthly_used,
+    )

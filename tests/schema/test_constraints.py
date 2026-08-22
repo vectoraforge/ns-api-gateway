@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from schema.helpers import insert_grant, insert_user
+from schema.helpers import insert_grant, insert_usage, insert_user
 
 pytestmark = pytest.mark.schema
 
@@ -68,11 +68,6 @@ _INSERT_ANTI_ABUSE = (
     "(grant_id, grant_source, native_claim_provider, idp_account_hash, "
     "idp_account_hash_key_version, created_at) "
     "VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)"
-)
-_INSERT_USAGE = (
-    "INSERT INTO core.user_monthly_usage "
-    "(grant_id, monthly_period, monthly_used, created_at, updated_at) "
-    "VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
 )
 _INSERT_SUBSCRIPTION_WITH_GENERATED_COLUMN = (
     "INSERT INTO core.subscriptions "
@@ -389,11 +384,11 @@ class TestAccessGrantConstraints:
         """core.user_monthly_usage's primary key is grant_id alone -- not (grant_id, monthly_period)."""
         user_id = await insert_user(conn)
         grant_id = await insert_grant(conn, user_id=user_id, tier_id=tier, source="manual")
-        await conn.execute(_INSERT_USAGE, grant_id, "2026-08", 0)
+        await insert_usage(conn, grant_id=grant_id, monthly_period="2026-08")
         async with _rejects(conn, asyncpg.UniqueViolationError) as exc_info:
             # A different monthly_period would be accepted under a composite key; it is rejected
             # here, which is what proves the key is grant_id alone.
-            await conn.execute(_INSERT_USAGE, grant_id, "2026-09", 0)
+            await insert_usage(conn, grant_id=grant_id, monthly_period="2026-09")
         assert PK_USER_MONTHLY_USAGE in str(exc_info.value)
         assert await conn.fetchval(
             "SELECT count(*) FROM core.user_monthly_usage WHERE grant_id = $1", grant_id
