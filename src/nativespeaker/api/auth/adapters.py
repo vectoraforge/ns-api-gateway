@@ -99,10 +99,27 @@ class ProviderDataResult:
     `entries` is populated only for `ok` and is empty otherwise, which is also the honest reading
     of an `ok` for an account with no linked provider -- an empty providerData is a fact, not a
     failure.
+
+    **`email` and `email_verified` are a Phase 37 amendment to this Phase 35 module** (plan 37-05),
+    and they are here rather than on a second result type because §02 step 10 pins the copy to
+    "the same successful `getUser` response" the entries came from. An address re-fetched later is
+    a *different* response, so the only shape that can satisfy that rule is one where the address
+    rides out of the adapter on the result object the one `getUser` call produced. Both are
+    defaulted, so the amendment is purely additive: every pre-existing construction site --
+    `ProviderDataResult(ProviderDataOutcome.selection_failure)` and friends -- is unchanged.
+
+    They follow `entries`' rule exactly: populated only on the `ok` arm, from the same `UserRecord`,
+    inside the same threadpool call; left at their defaults on every failure arm. They are what the
+    provider *said*, not a decision -- the two-condition copy rule that reads them (non-empty AND
+    verified) is §02 step 10's and lives in `auth/classifier.py` as `email_to_persist`, not here.
+    Foundation declares the shape and stops, exactly as it already does for the classification rule
+    on `ProviderDataEntry`.
     """
 
     outcome: ProviderDataOutcome
     entries: tuple[ProviderDataEntry, ...] = ()
+    email: str | None = None
+    email_verified: bool = False
 
 
 class FirebaseAdminAdapter(Protocol):
