@@ -4,15 +4,15 @@ milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 36
 current_phase_name: Rebind Pre-existing Routes
-status: planning
+status: executing
 stopped_at: Phase 36 context gathered
-last_updated: "2026-08-21T23:34:18.290Z"
+last_updated: "2026-08-22T01:45:20.858Z"
 last_activity: 2026-08-21
 last_activity_desc: Plan 35-12 complete — CR-01 gap closed
 progress:
   total_phases: 13
   completed_phases: 2
-  total_plans: 16
+  total_plans: 21
   completed_plans: 16
   percent: 15
 state_head: f6e9968186a40f90d6135ac77f272bb5ce6cda61
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 Phase: 36 — Rebind Pre-existing Routes
 Plan: Not started
-Status: Ready to plan
+Status: Ready to execute
 Last activity: 2026-08-21 — Phase 35 complete, transitioned to Phase 36
 
 ## Accumulated Context

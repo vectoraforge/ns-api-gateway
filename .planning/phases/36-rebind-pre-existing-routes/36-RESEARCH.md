@@ -845,9 +845,16 @@ green in this sandbox with no database, so the quick-feedback loop is unaffected
 | A4 | No environment other than the developer's has applied the pre-seed version of the migration | Runtime State Inventory | A CI or teammate database silently lacks the tier rows, and every grant FK fails there |
 | A5 | 50 credits (`registered`) is comfortably above any single e2e test's consumption | Pitfall 2 | A long test module could exhaust the seeded grant mid-run and produce confusing 429s |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+> All four were closed during `/gsd:plan-phase 36` on 2026-08-21. Each carries its resolution and
+> the deciding artifact inline below. Nothing here is still open.
 
 1. **Does the phase accept the 422 credit burn, or take the body-declaring mitigation?**
+   - **RESOLVED — take the mitigation.** Put to the developer during plan-phase and answered;
+     recorded as **D-14** in `36-CONTEXT.md` § Plan-phase addenda. Implemented by `36-03` Step 3
+     (`body: ChatRequest` on `require_quota_create_chat`) and `36-05` Task 1
+     (`require_quota_send_message`); proved by `36-05` Task 2 (`test_quota.py -k malformed`).
    - What we know: the burn is real and is a v1.6 regression (both verified); the mitigation is
      verified and costs ~8 lines plus two thin wrappers.
    - What's unclear: whether the user considers this worth the extra seam, given AGENTS.md's
@@ -857,22 +864,23 @@ green in this sandbox with no database, so the quick-feedback loop is unaffected
      rather not spend the decision, surface it to the user in one line — it is a product call.
 
 2. **Who owns the two extra uncommitted files (`docker-compose.yml`, `uv.lock`)?**
-   - What we know: both are real changes; neither is named by D-01; `uv.lock` is the explicitly
-     deferred, still-unowned D-35-05-A.
-   - Recommendation: commit `docker-compose.yml` with the D-01 carry-over commit (it is a
-     one-line correctness fix in the same area), and **revert `uv.lock`** to keep D-35-05-A deferred
-     as recorded — or adopt it deliberately as its own commit. Do not let it ride along unnoticed.
+   - **RESOLVED — neither; both are out of scope.** Put to the developer during plan-phase and
+     answered "leave both alone"; recorded as **D-15** in `36-CONTEXT.md` § Plan-phase addenda.
+     No plan stages, commits, or reverts either file, and every plan carries the scoped-`git add`
+     constraint (no `git add -A`, no `git commit -a`) with grep-level acceptance criteria. The
+     deferred D-35-05-A `uv.lock` change stays unowned and uncommitted.
 
 3. **Does the roadmap's "nine routes" get corrected?**
-   - What we know: the code and success criterion 2 both say eight; the goal line says nine.
-   - Recommendation: correct the ROADMAP wording in this phase's docs commit, the same way D-13
-     corrects PROJECT.md.
+   - **RESOLVED — yes, by a task rather than silently.** `36-02` Task 3 corrects the ROADMAP goal
+     line from nine to eight, the same way D-13 corrects PROJECT.md. The `REBIND-04` void marker
+     was added to the Requirements line during planning. Until `36-02` executes, the ROADMAP goal
+     line still reads "nine".
 
 4. **Should quota rejections increment a metric at all (discretion item)?**
-   - What we know: `RejectionCounter.increment` is reachable, but `record_rejection`'s `result` is
-     typed to the closed `AuthEventResult` enum with no quota member, and the enum is explicitly
-     closed at 44 values.
-   - Recommendation: a separate small counter, or nothing. Do **not** widen `AuthEventResult`.
+   - **RESOLVED — no counter; structured log only.** Recorded in `36-03`'s discretion table.
+     `record_rejection`'s `result` is typed to the closed 44-value `AuthEventResult` enum that the
+     migration forbids widening, and a parallel counter was judged not worth the telemetry surface
+     for a first-version app. `AuthEventResult` is **not** widened.
 
 ## Sources
 
