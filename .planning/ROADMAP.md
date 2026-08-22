@@ -216,7 +216,7 @@ Plans:
 **Goal:** Put the eight pre-existing routes behind the barrier and rewire the chat quota path onto the grant model, restoring a running application. (The ninth was `GET /users/me`, deleted by Phase 35 D-16 alongside its router and re-declared in Phase 39 — `auth/registry.py` and success criterion 2 below both total eight.)
 **Requirements:** REBIND-01 … REBIND-06 (REBIND-04 is void — see `REQUIREMENTS.md:49`)
 **Depends on:** 34, 35
-**Plans:** 3/5 plans executed
+**Plans:** 4/5 plans executed
 
 Plans:
 **Wave 1**
@@ -230,7 +230,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 36-04-PLAN.md — Complete the quota flow: usage lock, the two fail-closed 500s, lazy rollover, and the increment (wave 3)
+- [x] 36-04-PLAN.md — Complete the quota flow: usage lock, the two fail-closed 500s, lazy rollover, and the increment (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -403,7 +403,7 @@ Plans:
 | 33. Propagate quota_exceeded Rename | v1.6 | 1/1 | Complete | 2026-03-26 |
 | 34. Schema | v2.0 | 4/4 | Complete    | 2026-08-20 |
 | 35. Foundation | v2.0 | 12/12 | Complete    | 2026-08-21 |
-| 36. Rebind Pre-existing Routes | v2.0 | 3/5 | In Progress|  |
+| 36. Rebind Pre-existing Routes | v2.0 | 4/5 | In Progress|  |
 | 37. POST /auth/create-user | v2.0 | 0/? | Pending | — |
 | 38. POST /auth/sync | v2.0 | 0/? | Pending | — |
 | 39. GET /users/me | v2.0 | 0/? | Pending | — |

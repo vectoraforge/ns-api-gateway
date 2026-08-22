@@ -1,21 +1,21 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Authentication & Entitlements
+milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 36
 current_phase_name: rebind-pre-existing-routes
 status: executing
-stopped_at: Completed 36-03-PLAN.md
-last_updated: "2026-08-22T02:32:08.029Z"
+stopped_at: Completed 36-04-PLAN.md
+last_updated: "2026-08-22T02:56:25.945Z"
 last_activity: 2026-08-21
 last_activity_desc: Plan 35-12 complete — CR-01 gap closed
+state_head: e6abc71c48964e8c2365b727ecb21476acb5bec6
 progress:
   total_phases: 13
   completed_phases: 2
   total_plans: 21
-  completed_plans: 19
+  completed_plans: 20
   percent: 15
-state_head: 0308533c8d7ad5e16c33322a462a93f3c3d025a6
 ---
 
 # Project State
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 36 (rebind-pre-existing-routes) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
 Last activity: 2026-08-21 — Phase 36 execution started
 
@@ -95,10 +95,10 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-22T02:31:57.424Z
+**Last session:** 2026-08-22T02:56:25.888Z
 
 Last activity: 2026-03-26
-Stopped at: Completed 36-03-PLAN.md
+Stopped at: Completed 36-04-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -114,6 +114,7 @@ Resume file: None
 | Phase 36 P01 | 7min | 3 tasks | 7 files |
 | Phase 36 P02 | 6min | 3 tasks | 5 files |
 | Phase 36 P03 | 7min | 2 tasks | 13 files |
+| Phase 36 P04 | 17min | 3 tasks | 7 files |
 
 ## Decisions
 
@@ -142,3 +143,6 @@ Resume file: None
 - [Phase ?]: 36-03: seed_grant defaults to source=manual — the two free grant sources require a core.access_grants_anti_abuse row via a deferrable FK, and that table has no model in this phase
 - [Phase ?]: 36-03: consume_quota takes a required keyword-only route parameter, so the fail-closed branch can log the route path template as a closed-set telemetry label
 - [Phase ?]: 36-03: registry condition 10 matches route.dependencies by callable identity, never route.dependant.dependencies (which conflates parameter-level dependencies)
+- [Phase ?]: 36-04: the resolver never mints a usage row — a missing one is a 500 tripwire, not a free allowance (D-09)
+- [Phase ?]: 36-04: UnknownTierError added as a third INTERNAL_ERROR class so a dangling tier fails closed rather than reading as allowance 0 or unbounded
+- [Phase ?]: 36-04: ask_llm persists the validated LLM model, not the raw provider dict — D-12's empty-list defaults never reached the client before this
