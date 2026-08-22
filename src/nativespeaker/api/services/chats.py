@@ -54,13 +54,28 @@ class ChatService:
         if resolved_mode == "reject":
             raise OutOfScopeError()
         elif resolved_mode == "analyze":
-            AnalyzeResponse.model_validate(llm_response)
+            validated: AnalyzeResponse | FollowUpResponse = \
+                AnalyzeResponse.model_validate(llm_response)
         elif resolved_mode == "follow_up":
-            FollowUpResponse.model_validate(llm_response)
+            validated = FollowUpResponse.model_validate(llm_response)
         else:
             raise AnalysisError(f"Unexpected resolved_mode: {resolved_mode}")
 
-        return Message(chat_id=chat.id, role=ChatRole.ai, content=llm_response)
+        # The **validated** model is what is persisted and returned, not the raw provider dict.
+        # Two reasons, and the first is why D-12 was only half-delivered without this:
+        #
+        # 1. `AnalyzeResponse.issues` and `.suggestions` default to `[]` (D-12), but a default only
+        #    materialises on the model. Discarding the model and storing `llm_response` meant a
+        #    grammatically correct phrase -- for which the unconstrained chain legitimately returns
+        #    only `resolved_mode` and `response` -- came back to the client with those two keys
+        #    simply absent. The 500 was fixed; the promised empty arrays never arrived.
+        # 2. The chain pipes through a plain `JsonOutputParser()`, so whatever extra keys the model
+        #    emits were persisted verbatim and echoed to the client. Dumping the validated model
+        #    drops them at the boundary instead of storing unvalidated provider output.
+        #
+        # `services/llm.py` binding these models as a strict schema on the call is still the
+        # general fix -- .planning/todos/pending/restore-strict-structured-output.md.
+        return Message(chat_id=chat.id, role=ChatRole.ai, content=validated.model_dump())
 
     async def create_chat(self,
                           user_id: UUID,
