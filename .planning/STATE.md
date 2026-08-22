@@ -3,18 +3,18 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 37
-current_phase_name: POST /auth/create-user
+current_phase_name: post-auth-create-user
 status: executing
-stopped_at: Phase 37 context gathered
-last_updated: "2026-08-22T21:33:44.421Z"
-last_activity: 2026-08-21
-last_activity_desc: Plan 35-12 complete — CR-01 gap closed
-state_head: 144bd5470488b6da5c3f7f603ddc7c2c0e70131d
+stopped_at: Completed 37-01-PLAN.md
+last_updated: "2026-08-22T23:18:50.488Z"
+last_activity: 2026-08-22
+last_activity_desc: Phase 37 execution started
+state_head: 74f719641dcb5c703b9d1e3311ad264ffb3ce4bb
 progress:
   total_phases: 13
   completed_phases: 3
   total_plans: 31
-  completed_plans: 21
+  completed_plans: 22
   percent: 23
 ---
 
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-19)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 36 — rebind-pre-existing-routes
+**Current focus:** Phase 37 — post-auth-create-user
 
 ## Current Position
 
-Phase: 37 — POST /auth/create-user
-Plan: Not started
+Phase: 37 (post-auth-create-user) — EXECUTING
+Plan: 2 of 10
 Status: Ready to execute
-Last activity: 2026-08-21 — Phase 36 complete, transitioned to Phase 37
+Last activity: 2026-08-22 — Phase 37 execution started
 
 ## Accumulated Context
 
@@ -95,11 +95,11 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-22T06:59:15.751Z
+**Last session:** 2026-08-22T23:18:50.406Z
 
 Last activity: 2026-03-26
-Stopped at: Phase 37 context gathered
-Resume file: .planning/phases/37-post-auth-create-user/37-CONTEXT.md
+Stopped at: Completed 37-01-PLAN.md
+Resume file: None
 
 ## Performance Metrics
 
@@ -116,6 +116,7 @@ Resume file: .planning/phases/37-post-auth-create-user/37-CONTEXT.md
 | Phase 36 P03 | 7min | 2 tasks | 13 files |
 | Phase 36 P04 | 17min | 3 tasks | 7 files |
 | Phase 36 P05 | 12min | 3 tasks | 9 files |
+| Phase 37 P01 | ~20min | 3 tasks | 8 files |
 
 ## Decisions
 
@@ -148,3 +149,7 @@ Resume file: .planning/phases/37-post-auth-create-user/37-CONTEXT.md
 - [Phase ?]: 36-04: UnknownTierError added as a third INTERNAL_ERROR class so a dangling tier fails closed rather than reading as allowance 0 or unbounded
 - [Phase ?]: 36-04: ask_llm persists the validated LLM model, not the raw provider dict — D-12's empty-list defaults never reached the client before this
 - [Phase ?]: REBIND-06 left unmarked at phase end: a post-gate 404 on POST /chats/{chat_id} burns a credit, which v1.6's yield-dependency rolled back. Verified by probe (0 -> 1). Resolution is a decision about D-11's scope, not a re-plan.
+- [Phase ?]: 37-01: Task 1 one-way gate resolved as option-a — the single initial migration is edited in place and the disposable dev/test DB re-applied; D-13's 'new migration' wording loses to shipped SCHEMA-01, recorded as a flagged conflict in both 37-CONTEXT.md and REQUIREMENTS.md
+- [Phase ?]: 37-01: the four-arm Ruling-9.8 CHECK is now a bare operation-membership test over the four challenge-bearing operations; lifecycle and binding CHECKs left byte-identical
+- [Phase ?]: 37-01: Phase 40 (POST /auth/upgrade-anonymous) has LOST its database-level provider binding (was operation_variant IN ('google','apple')) and must supply its own at completion — flagged forward, explicitly not Phase 37's to solve
+- [Phase ?]: 37-01: CREATE-02 left unchecked — this plan only removes a column; plans 37-02/06/07/08 also claim it and are the ones that complete it (same treatment as 36-01/REBIND-05)

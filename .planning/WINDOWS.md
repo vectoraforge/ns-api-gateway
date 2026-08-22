@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 2
+open_count: 3
 waived_count: 0
 fixed_count: 0
-total_count: 2
-last_updated: 2026-08-22T02:31:48.290Z
+total_count: 3
+last_updated: 2026-08-22T23:18:56.103Z
 ---
 
 # Broken Windows Ledger
@@ -17,6 +17,7 @@ last_updated: 2026-08-22T02:31:48.290Z
 |----|-------|------|------|------|-------------|--------|--------|-------------|-------------|
 | 1 | 36 | unrun-verify | src/nativespeaker/api/models/grants.py |  | No committed test round-trips AccessGrant/AccessTier/UserMonthlyUsage against the live schema; verified once by an uncommitted ad-hoc script (36-01 D3) | open |  | 2026-08-22T02:01:11.364Z |  |
 | 2 | 36 | stub | src/nativespeaker/api/quota.py |  | consume_quota implements §8.4 step 1 only; a caller holding an effective grant passes the gate uncharged until plan 36-04 lands steps 2-4 | open |  | 2026-08-22T02:31:48.290Z |  |
+| 3 | 37 | deviation | .planning/phases/37-post-auth-create-user/37-01-SUMMARY.md |  | Phase 40 lost its database-level provider binding for upgrade_anonymous_to_registered; replacement binding is unowned until Phase 40 plans it | open |  | 2026-08-22T23:18:56.103Z |  |
 
 ````json
 [
@@ -42,6 +43,18 @@ last_updated: 2026-08-22T02:31:48.290Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-08-22T02:31:48.290Z",
+    "resolved_at": null
+  },
+  {
+    "id": 3,
+    "kind": "deviation",
+    "phase": "37",
+    "file": ".planning/phases/37-post-auth-create-user/37-01-SUMMARY.md",
+    "line": null,
+    "description": "Phase 40 lost its database-level provider binding for upgrade_anonymous_to_registered; replacement binding is unowned until Phase 40 plans it",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-08-22T23:18:56.103Z",
     "resolved_at": null
   }
 ]
