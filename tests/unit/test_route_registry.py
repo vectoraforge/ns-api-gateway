@@ -5,9 +5,10 @@ throwaway FastAPI instances with routes added inline and hand-built RouteMetadat
 condition is exercised in isolation rather than by mutating the real REGISTRY.
 """
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from starlette.applications import Starlette
 
+from nativespeaker.api.app.dependencies import require_quota_create_chat
 from nativespeaker.api.app.main import app as real_app
 from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
 from nativespeaker.api.auth.registry import (
@@ -29,11 +30,19 @@ async def _endpoint():
     return {"ok": True}
 
 
-def _app(*routes: tuple[str, str], barrier: bool = True) -> FastAPI:
-    """A throwaway app carrying exactly the given (method, path) routes."""
+def _app(*routes: tuple[str, str], barrier: bool = True,
+         dependencies: list | None = None) -> FastAPI:
+    """A throwaway app carrying exactly the given (method, path) routes.
+
+    `dependencies` is forwarded to every route this call adds, which is what lets condition 10's
+    cases build a route that carries a quota wrapper. It defaults to `None`, the same default
+    `add_api_route` already has, so every existing call site is unchanged. A case needing routes
+    that differ in their dependencies adds the second one with `app.add_api_route` directly, the
+    way `TestEnumerateRegistered` already does.
+    """
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     for method, path in routes:
-        app.add_api_route(path, _endpoint, methods=[method])
+        app.add_api_route(path, _endpoint, methods=[method], dependencies=dependencies)
     if barrier:
         app.add_middleware(AuthBarrierMiddleware)
     return app
@@ -202,6 +211,98 @@ class TestCondition9AuthenticatedRouteOutsideTheBarrier:
         registry = (RouteMetadata(method="GET", path="/a", category=Category.authenticated),)
         _fails_with("AuthBarrierMiddleware is absent",
                     _app(("GET", "/a"), barrier=False), registry)
+
+
+QUOTA_DEPENDENCY = [Depends(require_quota_create_chat)]
+
+
+class TestCondition10QuotaFlagAndDependencyDisagree:
+    """D-05: `quota_checked` is enforcement, not documentation.
+
+    A route that declares the flag and forgets the dependency serves every request free, and
+    nothing about the served response says so. The cross-check is what turns that from an
+    invisible defect into a boot failure, so it is checked in both directions.
+    """
+
+    def test_the_wrapper_and_quota_checked_together_pass(self):
+        registry = (RouteMetadata(method="POST", path="/chats", category=Category.authenticated,
+                                  quota_checked=True),)
+        assert_route_enumeration(_app(("POST", "/chats"), dependencies=QUOTA_DEPENDENCY), registry)
+
+    def test_quota_checked_declared_with_no_dependency_attached_raises(self):
+        registry = (RouteMetadata(method="POST", path="/chats", category=Category.authenticated,
+                                  quota_checked=True),)
+        _fails_with("quota_checked declared but no quota dependency is attached",
+                    _app(("POST", "/chats")), registry)
+
+    def test_the_undeclared_dependency_message_names_the_route(self):
+        registry = (RouteMetadata(method="POST", path="/chats", category=Category.authenticated,
+                                  quota_checked=True),)
+        with pytest.raises(RuntimeError) as excinfo:
+            assert_route_enumeration(_app(("POST", "/chats")), registry)
+        assert "'POST'" in str(excinfo.value)
+        assert "'/chats'" in str(excinfo.value)
+
+    def test_a_dependency_attached_without_quota_checked_raises(self):
+        """The other direction: the route is gated, the registry does not say so."""
+        registry = (RouteMetadata(method="POST", path="/chats", category=Category.authenticated),)
+        _fails_with("quota dependency attached but quota_checked is not declared",
+                    _app(("POST", "/chats"), dependencies=QUOTA_DEPENDENCY), registry)
+
+    def test_the_unattached_quota_checked_message_names_the_route(self):
+        registry = (RouteMetadata(method="POST", path="/chats", category=Category.authenticated),)
+        with pytest.raises(RuntimeError) as excinfo:
+            assert_route_enumeration(_app(("POST", "/chats"), dependencies=QUOTA_DEPENDENCY),
+                                     registry)
+        assert "'POST'" in str(excinfo.value)
+        assert "'/chats'" in str(excinfo.value)
+
+    def test_both_quota_checked_disagreements_are_reported_in_one_error(self):
+        """One raise lists everything, the way conditions 1 and 2 do -- never only the first."""
+        app = _app(("POST", "/attached"), dependencies=QUOTA_DEPENDENCY)
+        app.add_api_route("/declared", _endpoint, methods=["POST"])
+        registry = (
+            RouteMetadata(method="POST", path="/attached", category=Category.authenticated),
+            RouteMetadata(method="POST", path="/declared", category=Category.authenticated,
+                          quota_checked=True),
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            assert_route_enumeration(app, registry)
+        message = str(excinfo.value)
+        undeclared = [line for line in message.splitlines()
+                      if "quota dependency attached but quota_checked is not declared" in line]
+        unattached = [line for line in message.splitlines()
+                      if "quota_checked declared but no quota dependency is attached" in line]
+        assert len(undeclared) == 1
+        assert len(unattached) == 1
+        assert undeclared[0] is not unattached[0]
+
+    def test_empty_input_adds_no_quota_checked_problem(self):
+        """Backstop, not a derived requirement: REBIND-01 says nothing about empty input.
+
+        Both directions are set differences, so empty-versus-empty must be a no-op rather than an
+        error. Asserted here so a later rewrite that reaches for "at least one gated route" fails
+        loudly instead of turning a fresh app's boot into a false alarm.
+        """
+        assert_route_enumeration(_app(), ())
+        registry = (RouteMetadata(method="GET", path="/a", category=Category.authenticated),)
+        assert_route_enumeration(_app(("GET", "/a")), registry)
+
+    def test_the_quota_checked_message_is_byte_identical_across_runs(self):
+        """`sorted()` on both differences, so the same disagreement never reads differently.
+
+        Three routes rather than one: a single-element set cannot show the difference between an
+        ordered emission and an accidental set iteration.
+        """
+        app = _app(("POST", "/a"), ("POST", "/b"), ("POST", "/c"))
+        registry = tuple(RouteMetadata(method="POST", path=path,
+                                       category=Category.authenticated, quota_checked=True)
+                         for path in ("/a", "/b", "/c"))
+        with pytest.raises(RuntimeError) as first:
+            assert_route_enumeration(app, registry)
+        with pytest.raises(RuntimeError) as second:
+            assert_route_enumeration(app, registry)
+        assert str(first.value) == str(second.value)
 
 
 class TestEnumerateRegistered:
