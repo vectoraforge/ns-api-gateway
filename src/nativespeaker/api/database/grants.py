@@ -19,7 +19,7 @@ from uuid import UUID
 from sqlmodel import col, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.models import AccessGrant, AccessGrantStatus
+from nativespeaker.api.models import AccessGrant, AccessGrantStatus, AccessTier, UserMonthlyUsage
 
 
 class GrantsDB:
@@ -60,3 +60,43 @@ class GrantsDB:
         # partial unique index `ix_access_grants_one_active_per_user` is what makes that state
         # unreachable in practice; the missing cap is what makes it detectable if it ever is not.
         return list((await self.session.exec(statement)).all())
+
+    async def lock_usage(self, grant_id: UUID) -> UserMonthlyUsage | None:
+        """Lock and return `grant_id`'s usage row, or `None` when the grant has none.
+
+        Second in the lock order and never first: the caller already holds the grant rows
+        `FOR UPDATE` when this runs (SHARED-INVARIANTS:33). Reversing the two, or reaching the
+        usage row through a locking join on `lock_effective_grants`, breaks the fixed global order
+        every future grant path copies from here.
+
+        **This method never inserts.** `None` is the fail-closed signal the caller acts on, not a
+        cue to mint the row: `core.user_monthly_usage` is written together with its grant by the
+        phases that issue grants, so a grant without one means a write path failed. A convenience
+        insert here -- even on a path that already holds the grant lock -- would turn that
+        detectable broken invariant into a silent free allowance.
+
+        `grant_id` is the table's whole primary key, so at most one row can match.
+        """
+        statement = (
+            select(UserMonthlyUsage)
+            .where(col(UserMonthlyUsage.grant_id) == grant_id)
+            .with_for_update()
+        )
+        return (await self.session.exec(statement)).first()
+
+    async def monthly_credits(self, tier_id: str) -> int | None:
+        """The allowance `tier_id` carries, or `None` when no such tier row exists.
+
+        Deliberately **not** locked, and that is the one asymmetry in this module. `core.access_tiers`
+        is seeded reference data that no path in this phase writes, and it has three rows for the
+        whole service -- so taking `FOR UPDATE` on a tier row during every chat POST would serialise
+        every user on that tier against each other for the duration of each other's quota
+        transaction. The value read here is compared, never incremented, so a shared lock buys
+        nothing.
+
+        Equally deliberately a separate statement rather than an eager-loading option or an outer
+        join on `lock_effective_grants`: PostgreSQL rejects `FOR UPDATE` combined with the join
+        those emit, so folding the tier into the locking query would turn it into a runtime error.
+        """
+        statement = select(AccessTier.monthly_credits).where(col(AccessTier.id) == tier_id)
+        return (await self.session.exec(statement)).first()

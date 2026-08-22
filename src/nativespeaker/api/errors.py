@@ -10,6 +10,7 @@ D-09 is complete as of plan 02: every client-visible class in the service lives 
 import logging
 from dataclasses import dataclass
 from typing import Literal, get_args
+from uuid import UUID
 
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
@@ -405,3 +406,74 @@ class DatabaseNotInitializedError(ServiceError):
 
     def __init__(self):
         super().__init__("Database session factory is not initialized")
+
+
+# ---------------------------------------------------------------------------
+# The three §8.4 fail-closed classes (Phase 36, D-09 / D-10)
+#
+# All three reuse the already-registered INTERNAL_ERROR class -- `register_class` is deliberately
+# NOT called for any of them. `ErrorCode` is closed and `assert_registry_total()` fails boot on a
+# mismatch, so a new client-visible code here would be a boot failure, not a feature.
+#
+# `log_level = logging.ERROR` is load-bearing rather than decorative: `service_error_handler`
+# passes `exc_info=(log_level >= logging.ERROR)`, so ERROR is what puts a traceback in the log.
+# Each of these three means stored state diverged from an invariant the database is supposed to
+# make unreachable, and a traceback is the only thing that says which call site found it.
+#
+# Every identifier below lives in the exception *message*, which is server-side only. The client
+# receives `INTERNAL_ERROR.copy` and nothing else, so naming a grant, a user or a tier here leaks
+# nothing across the trust boundary.
+# ---------------------------------------------------------------------------
+
+
+class MissingUsageRowError(ServiceError):
+    """An effective grant with no `core.user_monthly_usage` row -- maps to 500 (D-09).
+
+    Never repaired inline and never lazily minted. Phases 41, 42 and 45 write the grant and its
+    usage row in one transaction, so a grant without one means a write path failed. Minting the
+    row here would convert a detectable broken invariant into a silent free allowance.
+
+    Not `service_unavailable`: nothing repairs this state -- SHARED-INVARIANTS deletes background
+    healers -- so a 503's "retry soon" advice would be a lie.
+    """
+    error_class = INTERNAL_ERROR
+    log_level = logging.ERROR
+
+    def __init__(self, grant_id: UUID):
+        self.grant_id = grant_id
+        super().__init__(f"Grant {grant_id} has no core.user_monthly_usage row")
+
+
+class MultipleEffectiveGrantsError(ServiceError):
+    """More than one effective grant for one user -- maps to 500 (D-10).
+
+    A tripwire, not a recovery branch. `ix_access_grants_one_active_per_user` is a non-deferrable
+    partial unique index permitting one `status='active'` row per user, and the effective-grant
+    predicate is a strict subset of that, so this is structurally unreachable. It is asserted
+    anyway so that dropping the index or widening the predicate fails loudly instead of silently
+    tie-breaking -- the exact tie-break §8.4 forbids. Do not turn it into a precedence ranking.
+    """
+    error_class = INTERNAL_ERROR
+    log_level = logging.ERROR
+
+    def __init__(self, count: int, user_id: UUID):
+        self.count = count
+        self.user_id = user_id
+        super().__init__(f"{count} effective grants for user {user_id}; refusing to tie-break")
+
+
+class UnknownTierError(ServiceError):
+    """A grant whose `tier_id` has no `core.access_tiers` row -- maps to 500.
+
+    The same class of tripwire as `MultipleEffectiveGrantsError`: a foreign key makes it
+    unreachable, and the branch exists so a future FK change is loud. Failing closed is the whole
+    point -- the two silent readings, "allowance 0" and "unbounded allowance", are respectively an
+    unexplained 429 for a paying customer and a free service.
+    """
+    error_class = INTERNAL_ERROR
+    log_level = logging.ERROR
+
+    def __init__(self, tier_id: str, grant_id: UUID):
+        self.tier_id = tier_id
+        self.grant_id = grant_id
+        super().__init__(f"Grant {grant_id} references tier {tier_id!r}, which has no row")
