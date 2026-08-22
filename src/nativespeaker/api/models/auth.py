@@ -107,9 +107,10 @@ class AuthChallenge(SQLModel, table=True):
     outstanding across a key rotation simply fails (D-21's accepted consequence). `audit.auth_events`
     is the table that has one.
 
-    The three CHECKs -- the lifecycle nullability rule, the four-arm operation/variant rule, and the
-    binding rule that admits a cleared `preauth_subject_hash` only once `consumed_at` is set -- live
-    in the migration and are deliberately not re-encoded here.
+    The three CHECKs -- the lifecycle nullability rule, the operation-membership rule that admits
+    exactly the four challenge-bearing operations, and the binding rule that admits a cleared
+    `preauth_subject_hash` only once `consumed_at` is set -- live in the migration and are
+    deliberately not re-encoded here.
     """
 
     __tablename__ = "auth_challenges"
@@ -123,8 +124,6 @@ class AuthChallenge(SQLModel, table=True):
     # trace, analytics, or error text.
     challenge_id: str = Field(unique=True)
     operation: AuthOperation = Field(sa_type=AuthOperationType)
-    # NULL exactly for the two grant-claim operations; non-NULL for the two create/upgrade ones.
-    operation_variant: IdentityProvider | None = Field(sa_type=IdentityProviderType, default=None)
     # §6.4's linked arm. Exactly one of this and the pre-auth pair below is populated.
     bound_external_identity_id: UUID | None = Field(default=None,
                                                     foreign_key="core.external_identities.id")

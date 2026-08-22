@@ -594,7 +594,6 @@ CREATE TABLE core.auth_challenges (
     -- The single opaque random value that both locates the row and serves as the nonce.
     challenge_id TEXT NOT NULL UNIQUE,
     operation core.auth_operation NOT NULL,
-    operation_variant core.identity_provider,
     bound_external_identity_id UUID REFERENCES core.external_identities (id),
     -- Ruling 9.3: preauth_issuer stays PLAINTEXT. It is a deployment-known provider string
     -- shared by every user of that provider; do not hash it, encrypt it, or drop it.
@@ -620,21 +619,28 @@ CREATE TABLE core.auth_challenges (
         OR
         (claimed_at IS NOT NULL AND claim_attempt_id IS NOT NULL)
     ),
-    -- Ruling 9.8: exactly the four challenge-bearing operations and their legal variants.
+    -- Ruling 9.8: exactly the four challenge-bearing operations, by membership alone.
     -- restore_subscription, sign_out_all and sync are challenge-free - restore has no
     -- challenge row, no claim step and no consumption step - and the database refuses
     -- such a row.
+    --
+    -- Phase 37 / D-12 + D-13: the per-operation variant arms are GONE with the
+    -- operation_variant column. D-12 deletes the client flow declaration, so the account
+    -- type is derived from Firebase Admin providerData at COMPLETION, not declared at
+    -- prepare; there is nothing left to freeze at insert time and a nullable column would
+    -- be a field nothing ever writes. What survives is the membership rule alone.
+    --
+    -- HANDOFF, NOT PHASE 37's TO SOLVE: upgrade_anonymous_to_registered was pinned here to
+    -- operation_variant IN ('google','apple'). Phase 40 (POST /auth/upgrade-anonymous) has
+    -- therefore lost its provider binding at the database and must supply its own; this
+    -- CHECK is deliberately written so Phase 40's rows still insert.
     CHECK (
-        (operation = 'create_user'
-            AND operation_variant IS NOT NULL
-            AND operation_variant IN ('anonymous', 'google', 'apple'))
-        OR
-        (operation = 'upgrade_anonymous_to_registered'
-            AND operation_variant IS NOT NULL
-            AND operation_variant IN ('google', 'apple'))
-        OR
-        (operation IN ('claim_anonymous_grant', 'claim_registered_grant')
-            AND operation_variant IS NULL)
+        operation IN (
+            'create_user',
+            'upgrade_anonymous_to_registered',
+            'claim_anonymous_grant',
+            'claim_registered_grant'
+        )
     ),
     -- Requires exactly one of bound_external_identity_id or
     -- (preauth_issuer, preauth_subject_hash), and admits a cleared preauth_subject_hash

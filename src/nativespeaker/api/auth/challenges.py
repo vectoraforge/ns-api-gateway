@@ -28,13 +28,15 @@ convention someone has to remember.
 
 **No proof material is bound here** -- no restore proof, no reassignment target, no source
 identity, no integrity or attestation material, no IP, no device, no TLS binding, no DPoP, no mTLS,
-no token hash. A challenge binds an operation, a variant, and exactly one identity.
+no token hash. A challenge binds an operation and exactly one identity.
 
 **Rejection ordering the store enforces for its callers** (§6.4). An unknown handle, a
 bound-context mismatch, and an operation mismatch are all rejected **before** the claim and leave
 any located challenge unconsumed, so a wrong-endpoint or wrong-identity presentation can never burn
-the rightful user's in-flight challenge. The operation-*variant* comparison is the exception: it
-runs on the already-claimed row and is a consuming rejection.
+the rightful user's in-flight challenge. **The store performs no variant comparison at all** --
+D-12/D-13 removed the operation variant from the row, so the consuming post-claim rejection that
+used to exist for it is gone with it. `challenge_operation_mismatch` remains live, for the
+*operation*, on the other challenge-bearing routes, and it stays a pre-claim rejection.
 
 Every method here is transaction-neutral: none of them commits. `issue` flushes into the caller's
 prepare transaction, and `consume` runs inside the caller's consuming transaction atomically with
@@ -53,7 +55,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
 from nativespeaker.api.auth.keys import HmacKeyring
 from nativespeaker.api.models.auth import AuthChallenge, AuthOperation
-from nativespeaker.api.models.identities import IdentityProvider
 
 # §6.3. The single universal TTL for every challenge-issuing operation. No per-operation override
 # in either direction, no grace period, and no sliding renewal on retry.
@@ -102,15 +103,14 @@ class ChallengeStore:
 
     async def issue(self, session: AsyncSession, *,
                     operation: AuthOperation,
-                    operation_variant: IdentityProvider | None,
                     identity: LinkedIdentity | PreAuthIdentity,
                     now: datetime) -> tuple[str, datetime]:
         """Insert one issued row and return exactly `(challenge_id, expires_at)`.
 
         Nothing else about the challenge is ever disclosed (§6.1) -- not the row id, not the
-        binding, not the operation. Operation, variant, identity binding and `expires_at` are
-        authoritative only in the server-side row, which is why no signing key and no
-        challenge-token format exists.
+        binding, not the operation. Operation, identity binding and `expires_at` are authoritative
+        only in the server-side row, which is why no signing key and no challenge-token format
+        exists.
 
         `expires_at` comes from the server's own clock via the request's single captured evaluation
         time. It is never client-supplied, never extended, and never renewed.
@@ -135,7 +135,6 @@ class ChallengeStore:
 
         session.add(AuthChallenge(challenge_id=challenge_id,
                                   operation=operation,
-                                  operation_variant=operation_variant,
                                   bound_external_identity_id=bound_identity_id,
                                   preauth_issuer=preauth_issuer,
                                   preauth_subject_hash=preauth_subject_hash,
