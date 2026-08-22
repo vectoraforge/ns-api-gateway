@@ -6,15 +6,21 @@ see -- the §3.1 invariants `assert_registry_total` enforces mechanically, the f
 mapping D-12 replaced `_STATUS_REMAP` with, and the loud unmapped-status path. Handler cases are
 driven by calling the handlers directly with constructed exceptions, so no app startup is needed.
 """
+import re
 from contextlib import contextmanager
+from pathlib import Path
 from typing import get_args
 
 import pytest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+import nativespeaker.api.errors
 from nativespeaker.api.app.errors import http_exception_handler, service_error_handler
 from nativespeaker.api.app.main import app as real_app
 from nativespeaker.api.errors import (
+    CHALLENGE_REQUIRED,
+    IDENTITY_ALREADY_LINKED,
+    OPERATION_NOT_ALLOWED,
     REGISTRY,
     STATUS_TO_CLASS,
     ErrorClass,
@@ -276,3 +282,117 @@ class TestServiceErrorHandler:
         response = await service_error_handler(None, QueueFullError(30))
         assert response.status_code == 503
         assert response.headers["retry-after"] == "30"
+
+
+class TestPhase37Classes:
+    """Plan 37-03: the two classes phase 37 appends, at the statuses it pins (A3).
+
+    Neither status is pinned by the specification. 01-foundation.md:196 pins only 400, 403
+    (`device_grant_exhausted`, phase 06), 409 (`create_flow_mismatch`, phase 02) and 429 -- and
+    `create_flow_mismatch` is unregistered, so both statuses below are the registry's own choice.
+    They are asserted here so the choice is a fact rather than an inference.
+    """
+
+    def test_identity_already_linked_is_registered_at_409(self):
+        assert IDENTITY_ALREADY_LINKED.status == 409
+        assert IDENTITY_ALREADY_LINKED.code == "identity_already_linked"
+        assert REGISTRY["identity_already_linked"] is IDENTITY_ALREADY_LINKED
+
+    def test_operation_not_allowed_is_registered_at_403(self):
+        assert OPERATION_NOT_ALLOWED.status == 403
+        assert OPERATION_NOT_ALLOWED.code == "operation_not_allowed"
+        assert REGISTRY["operation_not_allowed"] is OPERATION_NOT_ALLOWED
+
+    def test_both_codes_are_declared_in_the_error_code_literal(self):
+        """`assert_registry_total` fails boot when the Literal and the table diverge."""
+        declared = get_args(ErrorCode)
+        assert "identity_already_linked" in declared
+        assert "operation_not_allowed" in declared
+
+    def test_the_registry_is_still_total(self):
+        assert assert_registry_total() is None
+
+    def test_sharing_409_with_challenge_required_is_legal_and_intended(self):
+        """`register_class` forbids duplicate codes, not duplicate statuses."""
+        at_409 = sorted(cls.name for cls in REGISTRY.values() if cls.status == 409)
+        assert at_409 == ["challenge_required", "identity_already_linked"]
+
+    def test_the_new_409_does_not_claim_the_framework_exception_slot(self):
+        """`STATUS_TO_CLASS` maps *framework-raised* statuses; 409 stays `challenge_required`.
+
+        The new class is emitted through `error_response(...)` at its own raise sites, which needs
+        no status lookup. Rebinding this entry would turn every framework 409 into a conflict the
+        caller cannot act on.
+        """
+        assert STATUS_TO_CLASS[409] is CHALLENGE_REQUIRED
+
+    def test_403_remains_absent_from_the_status_mapping(self):
+        """Three classes now sit at 403 and none of them is the generic answer."""
+        assert 403 not in STATUS_TO_CLASS
+
+    def test_operation_not_allowed_joins_the_existing_403_classes(self):
+        at_403 = sorted(cls.name for cls in REGISTRY.values() if cls.status == 403)
+        assert at_403 == ["account_unavailable", "operation_not_allowed",
+                          "preauth_identity_not_allowed"]
+
+    @pytest.mark.parametrize("name", ["identity_already_linked", "operation_not_allowed"])
+    def test_copy_is_one_neutral_sentence(self, name):
+        """§3.1 anti-oracle: no issuer, no integration, no failed check, no accusation."""
+        copy = REGISTRY[name].copy
+        assert copy.strip()
+        assert copy.count(".") == 1 and copy.endswith(".")
+        lowered = copy.lower()
+        for word in ("firebase", "google", "apple", "provider", "token", "lookup",
+                     "you ", "your ", "invalid", "failed"):
+            assert word not in lowered, f"{name} copy names {word!r}"
+
+
+class TestDeliberatelyUnregisteredClasses:
+    """§3.3 lists four classes for phase 02; two of them are deliberately not here.
+
+    `create_flow_mismatch` is absent per 37 D-12, which deletes the client flow declaration the
+    class exists to reject. `registration_temporarily_unavailable` is absent per 37 D-03: it is
+    gateway-emitted and the Envoy contract is v2.1. These assertions exist so the absences read as
+    decisions rather than omissions a later phase should "fix".
+    """
+
+    ABSENT = ("create_flow_mismatch", "registration_temporarily_unavailable")
+
+    @pytest.mark.parametrize("code", ABSENT)
+    def test_absent_from_the_registry(self, code):
+        assert code not in {cls.code for cls in REGISTRY.values()}
+        assert code not in REGISTRY
+
+    @pytest.mark.parametrize("code", ABSENT)
+    def test_absent_from_the_error_code_literal(self, code):
+        assert code not in get_args(ErrorCode)
+
+    def test_no_registered_class_carries_a_gateway_specialisation_of_429(self):
+        """D-03 keeps `rate_limited` as the only registered 429 beside `quota_exceeded`."""
+        at_429 = sorted(cls.name for cls in REGISTRY.values() if cls.status == 429)
+        assert at_429 == ["quota_exceeded", "rate_limited"]
+
+
+class TestErrorResponseStaysOneField:
+    """D-12 dissolved the one place §02 demanded a wider body; the contract is not reopened."""
+
+    def test_exactly_one_model_field(self):
+        assert list(ErrorResponse.model_fields) == ["code"]
+
+    def test_no_subclass_is_defined_anywhere_under_src(self):
+        """Source-level, not runtime: a subclass in a module nothing imports still widens the
+        contract the moment a handler reaches for it."""
+        src = Path(__file__).resolve().parents[2] / "src"
+        offenders = [str(path) for path in src.rglob("*.py")
+                     if re.search(r"^class\s+\w+\(.*\bErrorResponse\b.*\):", path.read_text(),
+                                  re.MULTILINE)]
+        assert offenders == []
+
+    def test_no_subclass_exists_at_runtime(self):
+        """`test_error_registry` imports the real app, so every production module is loaded."""
+        assert ErrorResponse.__subclasses__() == []
+
+    def test_the_registry_module_declares_no_per_class_payload_slot(self):
+        """The field §02 wanted on the 409 body. D-12 removed its reason to exist."""
+        source = Path(nativespeaker.api.errors.__file__).read_text()
+        assert "required" + "_flow" not in source

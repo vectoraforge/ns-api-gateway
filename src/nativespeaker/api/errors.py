@@ -34,7 +34,9 @@ ErrorCode = Literal["auth_required",
                     "internal_error",
                     "service_unavailable",
                     "quota_exceeded",
-                    "out_of_scope"]
+                    "out_of_scope",
+                    "identity_already_linked",
+                    "operation_not_allowed"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +197,51 @@ OUT_OF_SCOPE = register_class(ErrorClass(
     status=400,
     code="out_of_scope",
     copy="This request is outside the scope of linguistic analysis. Send a phrase to analyse.",
+))
+
+# ---------------------------------------------------------------------------
+# Phase 37 / spec 02-create-user.md -- the create-user classes
+#
+# Two, not the four §3.3 lists against phase 02. The other two are absent by decision:
+#
+#   `create_flow_mismatch` -- 37 D-12 removes the client flow declaration the class exists to
+#   reject; the server derives the account type solely from the Admin providerData classification.
+#   With the declaration gone there is no determinate mismatch to report, and the mandatory
+#   per-class field §02 attached to its 409 body goes with it. That field was the single place §02
+#   asked for a body shape `ErrorResponse` forbids, so the one-field contract above is preserved
+#   intact rather than reopened. Do not add a subclass, a payload slot, or an extras dict for it.
+#
+#   `registration_temporarily_unavailable` -- 37 D-03. §02 defines it as Envoy-emitted via
+#   response-override; the backend never raises it, and the gateway contract is v2.1. Registering
+#   an unreachable class is the defect D-11 corrects for the retired 401 code. This deliberately
+#   diverges from the D-07 precedent two blocks above, which kept `rate_limited` registered for a
+#   gateway that does not yet emit it: `rate_limited` is also §3.2's generic 429 for every backend
+#   rejection, so it has reachable raise sites of its own; this one would have none.
+#
+# Statuses (A3). The specification pins neither by number -- 01-foundation.md:196 pins only 400,
+# 403 (`device_grant_exhausted`, phase 06), 409 (`create_flow_mismatch`, now unregistered) and 429
+# -- so both are the registry's own choice under §3.1, made here and never varied per branch.
+# ---------------------------------------------------------------------------
+
+# 409, sharing the status with `challenge_required`. Same shape of condition: a conflict with
+# existing server state whose remediation is a different call -- here `/auth/sync`. Sharing is
+# legal by construction; `assert_registry_total` requires unique codes, not unique statuses, and
+# 403 already carried two classes before this block.
+IDENTITY_ALREADY_LINKED = register_class(ErrorClass(
+    name="identity_already_linked",
+    status=409,
+    code="identity_already_linked",
+    copy="An account already exists for this identity -- synchronise it rather than creating one.",
+))
+
+# 403, joining `preauth_identity_not_allowed` and `account_unavailable`. §02 routes this one to
+# support with no flow named, which is the terminal-refusal shape phase 06 pins numerically at 403
+# for its sibling class `device_grant_exhausted`.
+OPERATION_NOT_ALLOWED = register_class(ErrorClass(
+    name="operation_not_allowed",
+    status=403,
+    code="operation_not_allowed",
+    copy="This operation cannot be completed for this account -- contact support.",
 ))
 
 # No class is declared for 415. `python-multipart` is not installed, so a `Form` or `File`

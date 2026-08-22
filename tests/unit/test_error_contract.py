@@ -7,10 +7,16 @@ from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.app.main import app as real_app
 
 # The closed code set after D-09 absorbed the business classes and D-11 retired `unauthorized`.
+#
+# Written out rather than derived from `REGISTRY` on purpose: this is the independent mirror that
+# catches a code reaching the published schema without anyone deciding it should. Extending the
+# registry therefore means extending this literal in the same commit -- as plan 37-03 does for the
+# last two entries below.
 CONTRACT_CODES = {"auth_required", "preauth_identity_not_allowed", "account_unavailable",
                   "challenge_required", "invalid_request", "verification_temporarily_unavailable",
                   "rate_limited", "validation_error", "not_found", "method_not_allowed",
-                  "internal_error", "service_unavailable", "quota_exceeded", "out_of_scope"}
+                  "internal_error", "service_unavailable", "quota_exceeded", "out_of_scope",
+                  "identity_already_linked", "operation_not_allowed"}
 CONTRACT_STATUSES = {400, 401, 403, 404, 405, 409, 422, 429, 500, 503}
 
 

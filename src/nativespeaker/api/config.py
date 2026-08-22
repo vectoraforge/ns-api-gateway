@@ -1,9 +1,10 @@
+import json
 import logging
 from enum import StrEnum
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from nativespeaker.api.auth.keys import HmacConfig
@@ -62,6 +63,68 @@ class JWTConfig(BaseModel):
         return  f"https://securetoken.google.com/{self.project_id}"
 
 
+class FirebaseConfig(BaseModel):
+    """The Firebase service-account credential, and nothing else (37 D-08).
+
+    Populated from the gitignored `.env` and nowhere else. `BaseConfig` sets
+    `env_nested_delimiter="_"` with `env_nested_max_split=1`, so
+    `FIREBASE_SERVICE_ACCOUNT_JSON` reaches `firebase.service_account_json` by the same rule that
+    carries `JWT_PROJECT_ID` to `jwt.project_id`.
+
+    **Never add a `firebase:` block to `config/config.yaml`.** That file is tracked in git, and it
+    is authoritative for anything it declares -- `AppConfig(**yaml_data, ...)` puts it in
+    `init_settings`, which pydantic-settings ranks above `env_settings`. A block added there to
+    document the shape would make the `.env` value permanently unreachable *and* commit real key
+    material. `.env.example` is where the shape is documented.
+
+    Two states, decided here rather than left to a raise site:
+
+    * **Absent** is supported. The service boots, `service_account_json` is `None`, and
+      `credential_dict()` returns `None`; prepare mode, the mode-signal partition, the classifier
+      and every substituted-adapter test run unaffected, while a real completion fails closed at
+      the adapter's selection arm as `verification_temporarily_unavailable` (503). Refusing to
+      boot without a credential would block all of that for a credential most paths never touch.
+    * **Present but unparseable** fails at configuration load, and the service does not start.
+      The parse happens once, here, so a malformed credential is a boot-time failure rather than a
+      surprise 503 on the first completion long after deploy.
+
+    Extra keys are ignored deliberately: `.env` already carries `FIREBASE_API_KEY` and
+    `FIREBASE_TEST_*` for the e2e sign-in fixture, and the nesting rule routes all of them here.
+    Rejecting them would take the e2e suite down.
+    """
+    service_account_json: SecretStr | None = Field(
+        default=None,
+        description="The whole service-account JSON on one line, from the gitignored .env")
+
+    _credential: dict | None = PrivateAttr(default=None)
+
+    @model_validator(mode="after")
+    def _parse_credential(self):
+        if self.service_account_json is None:
+            return self
+        try:
+            parsed = json.loads(self.service_account_json.get_secret_value())
+        except json.JSONDecodeError:
+            # `from None` drops the JSONDecodeError, whose `doc` attribute holds the credential
+            # verbatim. The message names the field and nothing else; `BaseConfig` sets
+            # `hide_input_in_errors=True` for pydantic's own rendering, and this hand-written path
+            # must not undo it (T-37-09).
+            raise ValueError("service_account_json is not valid JSON") from None
+        if not isinstance(parsed, dict):
+            raise ValueError("service_account_json is not a JSON object")
+        self._credential = parsed
+        return self
+
+    def credential_dict(self) -> dict | None:
+        """The parsed credential for `credentials.Certificate`, or `None` when unconfigured.
+
+        Total over both supported states on purpose: the adapter's selection arm branches on the
+        `None` rather than catching an exception. A fresh copy each call, so a caller editing the
+        result cannot rewrite the process-wide credential.
+        """
+        return None if self._credential is None else dict(self._credential)
+
+
 # `AppleConfig` is deleted with the subscription model layer (D-16). It mapped Apple product ids
 # onto `core.subscription_plan`, an enum the v2.0 schema dropped, and pointed the receipt verifier
 # at its certificate directory -- and the lifespan no longer builds that verifier. Phase 43 writes
@@ -82,6 +145,10 @@ class AppConfig(BaseConfig):
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
     jwt: JWTConfig = Field(default_factory=JWTConfig)
+    # Defaulted, not required: the credential is absent today and every non-completion path in
+    # phase 37 must stay runnable without it. See `FirebaseConfig` for the absent/malformed split
+    # and for why no `firebase:` block may ever appear in `config/config.yaml`.
+    firebase: FirebaseConfig = Field(default_factory=FirebaseConfig)
     # Required, with no default: D-22 fails closed on the active key, so a deployment with no
     # `hmac:` block never starts rather than starting and failing every audit insert. Unlike the
     # blocks above it takes no `default_factory` -- there is no safe key to default to.
