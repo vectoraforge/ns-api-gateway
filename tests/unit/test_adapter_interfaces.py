@@ -71,10 +71,16 @@ ALLOWED_IMPORT_ROOTS = {"dataclasses", "datetime", "enum", "typing", "uuid", "na
 # it may name. Stated in the positive: every other file under SRC_ROOT may name **none** of the ten
 # in `ADAPTER_METHODS`, and an entry here permits only the methods it lists -- a listed module that
 # later grows a second adapter method is reported anyway. Keys are `path.relative_to(SRC_ROOT)` in
-# posix form, the same shape the offender strings carry. Plan 37-05 adds the concrete adapter as
-# the second entry, in the commit that creates it.
+# posix form, the same shape the offender strings carry.
+#
+# Two entries, and both name exactly one method. `auth/firebase.py` is the concrete §7.1 adapter
+# (plan 37-05); it deliberately implements neither `verify_id_token` nor `revoke_refresh_tokens`,
+# and a one-method entry is what makes those omissions structural -- when Phase 46 adds
+# `revoke_refresh_tokens` to that module, the scan reports it and Phase 46 widens the entry
+# deliberately rather than inheriting a blanket exemption.
 ADAPTER_IMPLEMENTORS: dict[str, frozenset[str]] = {
     "api/auth/retry.py": frozenset({"get_user_provider_data"}),
+    "api/auth/firebase.py": frozenset({"get_user_provider_data"}),
 }
 
 
