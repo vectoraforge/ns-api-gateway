@@ -249,7 +249,7 @@ Plans:
 **Goal:** Ship the only pre-auth-callable route — first-time account creation linking a verified Firebase `(issuer, subject)` to one new user plus exactly one active identity row.
 **Requirements:** CREATE-01 … CREATE-04
 **Depends on:** 34, 35
-**Plans:** 1/10 plans executed
+**Plans:** 3/10 plans executed
 **Success criteria:**
 
 1. An unlinked caller succeeds here and is rejected with `preauth_identity_not_allowed` on every other route
@@ -261,8 +261,8 @@ Plans:
 **Wave 1**
 
 - [x] 37-01-PLAN.md — Remove `core.auth_challenges.operation_variant` outright (D-13); apply the migration and repair the fallout — blocking decision checkpoint on the SCHEMA-01 conflict
-- [ ] 37-02-PLAN.md — Promote `tenacity` to a direct dependency (D-06), retire `auth/budgets.py` (D-04), land the one Firebase retry policy
-- [ ] 37-03-PLAN.md — Register `identity_already_linked` (409) and `operation_not_allowed` (403); add `FirebaseConfig` from `.env` only
+- [x] 37-02-PLAN.md — Promote `tenacity` to a direct dependency (D-06), retire `auth/budgets.py` (D-04), land the one Firebase retry policy
+- [x] 37-03-PLAN.md — Register `identity_already_linked` (409) and `operation_not_allowed` (403); add `FirebaseConfig` from `.env` only
 
 **Wave 2**
 
@@ -431,7 +431,7 @@ Plans:
 | 34. Schema | v2.0 | 4/4 | Complete    | 2026-08-20 |
 | 35. Foundation | v2.0 | 12/12 | Complete    | 2026-08-21 |
 | 36. Rebind Pre-existing Routes | v2.0 | 5/5 | Complete    | 2026-08-21 |
-| 37. POST /auth/create-user | v2.0 | 1/10 | In Progress|  |
+| 37. POST /auth/create-user | v2.0 | 3/10 | In Progress|  |
 | 38. POST /auth/sync | v2.0 | 0/? | Pending | — |
 | 39. GET /users/me | v2.0 | 0/? | Pending | — |
 | 40. POST /auth/upgrade-anonymous | v2.0 | 0/? | Pending | — |
