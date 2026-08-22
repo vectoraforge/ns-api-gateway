@@ -2,7 +2,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Response
 
-from nativespeaker.api.app.dependencies import get_chat_service, get_linked_identity
+from nativespeaker.api.app.dependencies import (
+    get_chat_service,
+    get_linked_identity,
+    require_quota_create_chat,
+)
 from nativespeaker.api.auth.context import LinkedIdentity
 from nativespeaker.api.models.api import ChatRequest, ChatResponse, MessageRequest, MessageResponse
 from nativespeaker.api.services import ChatService
@@ -13,6 +17,12 @@ router = APIRouter(tags=["chats"])
 # accessor and nothing else (D-02). `get_linked_identity` raises rather than returning `None`, so a
 # handler cannot serve a request the barrier did not admit. Handlers take `identity.user.id` -- the
 # resolved primary key -- and never a `User` row they could read a second classifier off.
+#
+# The quota-consuming POSTs additionally carry a `require_quota_*` decorator dependency, evaluated
+# after barrier admission and before the handler body, and declare `quota_checked=True` on their
+# registry entry; §2.3 condition 10 fails boot if the two ever disagree (D-05). The dependency is
+# per-route and never router-level: the barrier already exempts `/health/ready` by category, and a
+# router-level dependency would recreate the second acceptance path §1.1 exists to forbid.
 
 
 @router.get("/chats",
@@ -44,6 +54,7 @@ async def get_chat_messages(chat_id: UUID,
 
 
 @router.post("/chats",
+             dependencies=[Depends(require_quota_create_chat)],
              response_model=MessageResponse,
              summary="Start new analysis",
              description="Analyzes a phrase and creates a new chat session with the AI response. "

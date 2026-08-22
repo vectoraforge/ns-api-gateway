@@ -11,6 +11,8 @@ from nativespeaker.api.auth.context import (
 )
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.errors import AuthenticationError
+from nativespeaker.api.models.api import ChatRequest
+from nativespeaker.api.quota import consume_quota
 from nativespeaker.api.services import ChatService
 
 
@@ -87,6 +89,72 @@ def get_preauth_identity(request: Request) -> PreAuthIdentity:
 
 
 # ---------------------------------------------------------------------------
+# The §8.4 quota seam (D-04, D-05, D-14)
+#
+# A quota-checked route carries `Depends(require_quota_*)` in its decorator's `dependencies=[...]`
+# list and declares `quota_checked=True` on its registry entry. Neither alone is enforcement: the
+# §2.3 condition-10 cross-check in `auth/registry.py` fails boot when the two disagree in either
+# direction, which is what stops a route from declaring the flag while serving requests free
+# (D-05).
+#
+# `require_quota` opens its OWN session and commits inside its own body (D-04). It must never take
+# `Depends(get_db)`: that is a yield-dependency whose commit runs after the handler returns, so the
+# grant row locks would span the entire provider round trip. Decorator dependencies complete before
+# the handler body is entered, so the transaction here is opened, committed and closed first.
+#
+# Each route gets its own thin wrapper declaring that route's body model as a plain, non-Depends
+# parameter (D-14). FastAPI validates the body while solving the dependency, so a malformed body
+# 422s before any quota work runs and no credit is spent on a request that was never served.
+# ---------------------------------------------------------------------------
+
+
+async def require_quota(request: Request, context: RequestContext) -> None:
+    """Consume one unit of the caller's allowance, in a transaction of its own. Raises or returns.
+
+    Not a FastAPI dependency itself -- the per-route wrappers below are. This is the shared core
+    they all forward to, so the session lifetime and the lock window are written once.
+    """
+    identity = context.identity
+    if not isinstance(identity, LinkedIdentity):
+        # These routes are Category.authenticated, so the barrier admits no pre-auth principal
+        # here and this branch is unreachable through the registry. Narrowed explicitly anyway,
+        # and failing closed rather than reaching for `.user` on a union: same isinstance-not-
+        # `is None` convention as the accessors above.
+        raise AuthenticationError("Identity context is pre-auth on a quota-checked route")
+
+    # Exactly one short session, committed and closed before dispatch: no lock is held and no
+    # network call is made while it is open.
+    async with request.app.state.session_factory() as session:
+        try:
+            # `evaluated_at` comes from the context the barrier captured once for this request
+            # (D-06). Nothing on this path reads the system clock.
+            await consume_quota(session,
+                                user_id=identity.user.id,
+                                evaluated_at=context.evaluated_at,
+                                route=context.route_metadata.path)
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
+async def require_quota_create_chat(
+        request: Request,
+        body: ChatRequest,
+        context: RequestContext = Depends(get_request_context)) -> None:
+    """`POST /chats`. `body` is unused on purpose -- declaring it IS the D-14 mitigation.
+
+    It is a plain parameter, not a `Depends`, so FastAPI validates the request body while solving
+    this dependency. Without it, D-04's own-session commit would run ahead of body validation and a
+    client posting `{"lang": "en"}` would get a 422 *and* lose a credit -- a regression against
+    v1.6, whose yield-dependency rolled the increment back. The parameter name is load-bearing too:
+    it must match the handler's body parameter name, or FastAPI switches to an embedded body and
+    the wire contract changes.
+    """
+    await require_quota(request, context)
+
+
+# ---------------------------------------------------------------------------
 # Deleted here (D-16), together with the chat-route rewiring that was their last caller:
 #
 #   get_current_user       -- read the credential through FastAPI's `Header(None)` alias, which
@@ -95,8 +163,5 @@ def get_preauth_identity(request: Request) -> PreAuthIdentity:
 #                             reject, so this was a second acceptance path beside the barrier's.
 #                             It also provisioned `core.users` rows just in time; in v2.0 only
 #                             `POST /auth/create-user` (Phase 37) creates an account.
-#   require_quota          -- backend quota enforcement is Phase 36 REBIND-05, and the named
-#                             `quota_checked_request` admission entry §8.4 described is void
-#                             because D-05 deleted backend rate limiting from the product.
 #   get_subscription_service -- read `app.state.apple_verifier`, which the lifespan no longer sets.
 # ---------------------------------------------------------------------------

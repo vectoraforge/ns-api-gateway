@@ -16,8 +16,11 @@ That difference is exactly one seeded row, which is what makes each class load-b
 cases cannot be passing because the barrier was skipped (the refusals prove it runs on this client),
 and the refusals cannot be a blanket deny (the served cases prove the routes serve).
 
-No case here asserts a quota outcome. The chat quota path reads a grant model Phase 36 wires
-(D-15), so there is no allowance to enforce and nothing honest to assert about one.
+Every served case here runs against a grant seeded by `quota_grant`, so its subject stays the
+chat behaviour rather than the allowance. `POST /chats` now carries `require_quota_create_chat`
+and answers 429 to a caller with no effective grant; what that gate does is
+`test_quota.py`'s subject, and pinning it here too would make these cases fail for the wrong
+reason the moment the allowance arithmetic lands.
 """
 from uuid import UUID, uuid4
 
@@ -32,7 +35,8 @@ pytestmark = pytest.mark.e2e
 class TestCreateChat:
     """`POST /chats` served end to end, LLM included."""
 
-    async def test_create_chat_english(self, async_client, linked_firebase_identity):
+    async def test_create_chat_english(self, async_client, linked_firebase_identity,
+                                       quota_grant):
         response = await async_client.post("/chats",
                                            json={"phrase": "I am going to home.", "lang": "en"})
         assert response.status_code == 200
@@ -44,7 +48,8 @@ class TestCreateChat:
         assert data["content"] != {}
         assert "created_at" in data
 
-    async def test_create_chat_spanish(self, async_client, linked_firebase_identity):
+    async def test_create_chat_spanish(self, async_client, linked_firebase_identity,
+                                       quota_grant):
         response = await async_client.post("/chats",
                                            json={"phrase": "Yo soy va a casa.", "lang": "es"})
         assert response.status_code == 200
@@ -55,7 +60,8 @@ class TestCreateChat:
         assert "response" in data["content"]
         assert data["content"] != {}
 
-    async def test_create_chat_autodetect_lang(self, async_client, linked_firebase_identity):
+    async def test_create_chat_autodetect_lang(self, async_client, linked_firebase_identity,
+                                               quota_grant):
         """A request omitting `lang` is served -- `ask_llm` sends the autodetect directive.
 
         **The phrase changed on restoration, and the reason is a live defect, recorded rather than
@@ -79,7 +85,8 @@ class TestCreateChat:
         assert "chat_id" in data
         assert data["role"] == "ai"
 
-    async def test_create_chat_with_context(self, async_client, linked_firebase_identity):
+    async def test_create_chat_with_context(self, async_client, linked_firebase_identity,
+                                            quota_grant):
         response = await async_client.post("/chats",
                                            json={"phrase": "I am going to home.",
                                                  "context": "Is this too informal?",
@@ -93,6 +100,7 @@ class TestCreateChat:
 
     async def test_the_created_chat_belongs_to_the_resolved_user(self, async_client,
                                                                  linked_firebase_identity,
+                                                                 quota_grant,
                                                                  _db_transaction):
         """The row lands under the id the barrier resolved, not under anything off the token.
 
@@ -115,7 +123,7 @@ class TestCreateChat:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestFollowup:
-    async def test_followup_message(self, async_client, linked_firebase_identity):
+    async def test_followup_message(self, async_client, linked_firebase_identity, quota_grant):
         # First create a chat to get chat_id
         create_resp = await async_client.post("/chats",
                                               json={"phrase": "I am going to home.", "lang": "en"})

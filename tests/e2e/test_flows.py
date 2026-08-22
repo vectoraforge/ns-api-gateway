@@ -8,7 +8,8 @@ under its own name rather than folded into another module.
 `linked_firebase_identity` seeds the pair inside the per-test transaction, which is the whole
 difference between this and the twelve refusal cases in `test_chats.py` and `test_chat_queries.py`.
 Nothing else about the request path changes: the same real token, the same production verifier, the
-same single identity query, the same handlers.
+same single identity query, the same handlers. `quota_grant` seeds the allowance step 1 now
+spends, so the lifecycle still starts from a served create rather than from a 429.
 
 This is the only case that drives all five chat routes in sequence against one chat, so it is the
 one that would notice a route serving correctly in isolation but leaving state a later route
@@ -22,7 +23,8 @@ pytestmark = pytest.mark.e2e
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestChatLifecycle:
-    async def test_full_chat_lifecycle(self, async_client, linked_firebase_identity):
+    async def test_full_chat_lifecycle(self, async_client, linked_firebase_identity,
+                                       quota_grant):
         """Full lifecycle: create -> followup -> read messages -> list chats -> delete."""
         # Step 1: Create a new chat via LLM
         create_resp = await async_client.post("/chats",

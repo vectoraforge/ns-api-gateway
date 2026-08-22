@@ -51,8 +51,14 @@ class TestErrorCases:
         assert response.status_code == 404
         assert response.json()["code"] == "not_found"
 
-    async def test_unsupported_language_returns_400(self, async_client, linked_firebase_identity):
-        """POST /chats with lang=xx returns 400 invalid_request."""
+    async def test_unsupported_language_returns_400(self, async_client, linked_firebase_identity,
+                                                    quota_grant):
+        """POST /chats with lang=xx returns 400 invalid_request.
+
+        `quota_grant` is what keeps this case about the language: the quota dependency runs before
+        the handler, so without a grant the caller would be refused 429 and the 400 branch would
+        never be reached.
+        """
         response = await async_client.post("/chats",
                                            json={"phrase": "test", "lang": "xx"})
         assert response.status_code == 400

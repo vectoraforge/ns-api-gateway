@@ -9,7 +9,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from nativespeaker.api.app.dependencies import get_chat_service, get_db, get_linked_identity
+from nativespeaker.api.app.dependencies import (
+    get_chat_service,
+    get_db,
+    get_linked_identity,
+    require_quota_create_chat,
+)
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth.context import LinkedIdentity
 from nativespeaker.api.auth.verification import VerificationResult, bounded_reason_for, claims_from_payload
@@ -162,6 +167,11 @@ def client(mock_chats_db, service):
     app.dependency_overrides[get_db] = lambda: MagicMock()
     app.dependency_overrides[get_chat_service] = lambda: service
     app.dependency_overrides[get_linked_identity] = lambda: TEST_IDENTITY
+    # Overrides key on the exact callable and do not cascade, so overriding the shared
+    # `require_quota` or `consume_quota` they forward to would do nothing. This app has no
+    # `state.session_factory` either, so without this line every unit case through the fixture
+    # would reach real quota code and fail on the missing factory rather than on its subject.
+    app.dependency_overrides[require_quota_create_chat] = lambda: None
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client

@@ -70,7 +70,11 @@ REGISTRY: tuple[RouteMetadata, ...] = (
     RouteMetadata(method="GET", path="/", category=Category.authenticated),
     RouteMetadata(method="GET", path="/examples", category=Category.authenticated),
     RouteMetadata(method="GET", path="/chats", category=Category.authenticated),
-    RouteMetadata(method="POST", path="/chats", category=Category.authenticated),
+    # quota_checked is enforcement, not documentation: condition 10 requires the matching
+    # `require_quota_*` decorator dependency on this route. `POST /chats/{chat_id}` gets its flag
+    # in plan 36-05, together with its wrapper -- the two must always move in one commit.
+    RouteMetadata(method="POST", path="/chats", category=Category.authenticated,
+                  quota_checked=True),
     RouteMetadata(method="GET", path="/chats/{chat_id}", category=Category.authenticated),
     RouteMetadata(method="POST", path="/chats/{chat_id}", category=Category.authenticated),
     RouteMetadata(method="DELETE", path="/chats/{chat_id}", category=Category.authenticated),
@@ -118,10 +122,21 @@ def assert_route_enumeration(app: Any,
                              registry: tuple[RouteMetadata, ...] = REGISTRY,
                              *,
                              verifiers: Mapping[str, NamedVerifier] | None = None) -> None:
-    """Fail closed on any of the nine §2.3 conditions. Raises `RuntimeError` listing every problem."""
-    # Local import: barrier.py imports this module for its own route lookup, and condition 9 needs
-    # the barrier class by identity. Importing at function scope keeps the cycle from forming.
+    """Fail closed on any of ten conditions -- the nine §2.3 ones plus D-05's quota cross-check.
+
+    Raises `RuntimeError` listing every problem found, never only the first.
+    """
+    # Local imports, both breaking an import cycle rather than deferring work:
+    #   - barrier.py imports this module for its own route lookup, and condition 9 needs the
+    #     barrier class by identity;
+    #   - app.dependencies imports auth.context, which imports this module, and condition 10 needs
+    #     the quota wrappers by identity.
+    # The wrapper tuple is therefore built here rather than at module scope: there is no
+    # import-time moment at which those callables are available to this module.
+    from nativespeaker.api.app.dependencies import require_quota_create_chat
     from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
+
+    quota_wrappers = (require_quota_create_chat,)
 
     known_verifiers = VERIFIERS if verifiers is None else verifiers
 
@@ -178,6 +193,34 @@ def assert_route_enumeration(app: Any,
         elif entry.named_verifier is not None:
             problems.append(f"named_verifier {entry.named_verifier!r} declared on {key}, whose "
                             f"category is {entry.category}, not provider_callback")
+
+    # Condition 10 (D-05) -- the `quota_checked` flag and the attached dependency must agree, in
+    # both directions, or the flag is documentation rather than enforcement: a route declaring it
+    # while carrying no dependency serves every request free, invisibly.
+    #
+    # `route.dependencies` is the RAW decorator-level list, whose items expose the callable on
+    # `.dependency`. `route.dependant.dependencies` is deliberately not used: it is the solved list
+    # and also contains parameter-level dependencies, which would conflate a handler's own
+    # `Depends()` parameter with a decorator attachment. Matching is by callable IDENTITY -- a name
+    # string would silently pass a renamed function, which is the failure this condition exists to
+    # catch.
+    attached: set[tuple[str, str]] = set()
+    for route in app.routes:
+        if isinstance(route, APIRoute) and any(dependency.dependency is wrapper
+                                               for dependency in route.dependencies
+                                               for wrapper in quota_wrappers):
+            for method in route.methods:
+                attached.add((method, route.path))
+
+    # Two set differences, so empty input is a no-op rather than an error, and `sorted()` on both
+    # so the same disagreement produces byte-identical text on every run.
+    declared_quota = {(e.method, e.path) for e in registry if e.quota_checked}
+    if undeclared := attached - declared_quota:
+        problems.append(f"quota dependency attached but quota_checked is not declared: "
+                        f"{sorted(undeclared)}")
+    if unattached := declared_quota - attached:
+        problems.append(f"quota_checked declared but no quota dependency is attached: "
+                        f"{sorted(unattached)}")
 
     # Condition 9, asserted structurally: one middleware wraps the whole router (D-01), so no
     # registered route can be outside it -- provided the barrier is actually installed.
