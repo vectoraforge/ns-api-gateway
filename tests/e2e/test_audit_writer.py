@@ -335,9 +335,16 @@ class TestOffPathRequestsWriteNothing:
     """§8.2: chat routes, `GET /`, and `GET /examples` are not in the state-changing operation
     inventory. A rejection there writes no row, ever -- only the log line and the counter."""
 
+    # All seven of the eight pre-existing routes that answer 401 unauthenticated. The eighth,
+    # `GET /health/ready`, is public and answers 200, so it has no rejection to write a row for --
+    # `test_an_admitted_off_path_request_writes_zero_rows` below is what covers a served outcome.
+    # `POST /chats/{chat_id}` joined the list with its quota gate in plan 36-05: it is one of the
+    # two quota-checked routes, and leaving it out left a quarter of the phase's claim unproven.
     @pytest.mark.parametrize("method,path", [("GET", "/"), ("GET", "/examples"),
                                              ("GET", "/chats"), ("POST", "/chats"),
                                              ("GET", "/chats/0198f0d2-0000-7000-8000-00000000000a"),
+                                             ("POST",
+                                              "/chats/0198f0d2-0000-7000-8000-00000000000a"),
                                              ("DELETE",
                                               "/chats/0198f0d2-0000-7000-8000-00000000000a")])
     async def test_an_unauthenticated_request_to_a_foundation_route_writes_zero_rows(

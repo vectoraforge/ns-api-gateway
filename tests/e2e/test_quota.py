@@ -32,9 +32,11 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid7
 
 import pytest
+from sqlalchemy import func
 from sqlmodel import col, select
 
 from nativespeaker.api.models import AccessGrantStatus, UserMonthlyUsage
+from nativespeaker.api.models.auth import AuthEvent
 
 from .conftest import seed_grant
 
@@ -81,6 +83,17 @@ async def usage_rows(factory, grant_id: UUID) -> list[UserMonthlyUsage]:
     async with factory() as session:
         statement = select(UserMonthlyUsage).where(col(UserMonthlyUsage.grant_id) == grant_id)
         return list((await session.exec(statement)).all())
+
+
+async def auth_event_count(factory) -> int:
+    """`audit.auth_events` row count, read through the same swapped factory as everything else.
+
+    Same form as `test_audit_writer.py::row_count`, and deliberately a copy rather than an import:
+    that module builds its own app with its own registry to reach the audited path at all, and
+    importing from it would drag that fixture graph into a module whose subject is the quota gate.
+    """
+    async with factory() as session:
+        return await session.scalar(select(func.count()).select_from(AuthEvent))
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -379,6 +392,98 @@ class TestACorrectPhraseIsServedAndCharged:
         content = response.json()["content"]
         assert content["issues"] == []
         assert content["suggestions"] == []
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestAQuotaRejectionWritesNoAuditRow:
+    """REBIND-02 on the phase's new code path: a quota 429 writes nothing to `audit.auth_events`.
+
+    True by construction -- audited-path entry is gated solely on `meta.operation is not None`
+    (`auth/barrier.py:170-180`), all eight registry entries leave `operation` at its `None` default,
+    and the quota path never touches `AuditWriter`. Asserted anyway, because ROADMAP criterion 3's
+    "including on barrier rejection" leaves the *quota* rejection -- which is not a barrier
+    rejection, and is the one rejection this phase invented -- otherwise unproven on these routes.
+
+    The counter is read before and after rather than asserted against zero, so the case keeps
+    working if a future fixture ever seeds an unrelated row.
+    """
+
+    @pytest.mark.parametrize("path, body", QUOTA_ROUTES, ids=QUOTA_ROUTE_IDS)
+    async def test_a_quota_429_writes_no_audit_row(self, async_client, linked_firebase_identity,
+                                                   _db_transaction, path, body):
+        before = await auth_event_count(_db_transaction)
+
+        response = await async_client.post(path, json=body)
+
+        assert response.status_code == 429
+        assert await auth_event_count(_db_transaction) == before
+
+    async def test_an_admitted_and_charged_request_writes_no_audit_row_either(
+            self, async_client, quota_grant, _db_transaction):
+        """The served outcome, not only the refused one -- REBIND-02 says "no row, ever"."""
+        before = await auth_event_count(_db_transaction)
+
+        response = await async_client.post("/chats", json=PHRASE)
+
+        assert response.status_code == 200
+        assert await auth_event_count(_db_transaction) == before
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestAMalformedRequestIsNotCharged:
+    """D-14 over the real transport: a request the app itself refused must not spend a credit.
+
+    All three shapes below are ones the suite already sends elsewhere -- `{"lang": "en"}` to
+    `POST /chats` in `test_error_cases.py::test_missing_phrase_returns_422` and
+    `test_chats.py::test_the_refusal_precedes_body_validation`, and a follow-up with the wrong body
+    on `POST /chats/{chat_id}`. Without D-14 every one of them would 422 **and** silently burn a
+    credit: D-04 has the quota dependency commit in a session of its own, so without the wrapper
+    declaring the route's path and body parameters that commit runs ahead of validation. That is a
+    regression against v1.6, whose yield-dependency rolled the increment back, and this class is the
+    thing that stops it coming back.
+
+    Each case reads `monthly_used` **before and after**. Reading only afterwards would assert that
+    the seed value is still whatever it was seeded to, which is not the same claim.
+    """
+
+    async def test_a_malformed_create_chat_body_is_not_charged(
+            self, async_client, quota_grant, _db_transaction):
+        """`POST /chats` with `phrase` omitted."""
+        grant, _ = quota_grant
+        before = [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)]
+
+        response = await async_client.post("/chats", json={"lang": "en"})
+
+        assert response.status_code == 422
+        assert [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)] == before
+
+    async def test_a_malformed_follow_up_body_is_not_charged(
+            self, async_client, quota_grant, _db_transaction):
+        """`POST /chats/{chat_id}` with `message` omitted, on a well-formed chat id."""
+        grant, _ = quota_grant
+        before = [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)]
+
+        response = await async_client.post(f"/chats/{uuid7()}", json={"note": "hello"})
+
+        assert response.status_code == 422
+        assert [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)] == before
+
+    async def test_a_malformed_chat_id_in_the_path_is_not_charged(
+            self, async_client, quota_grant, _db_transaction):
+        """`POST /chats/not-a-uuid` with a perfectly good body.
+
+        This is the case that makes `require_quota_send_message` declare `chat_id` as well as
+        `body`. A wrapper that declared only the body would validate the body, pass, commit its
+        increment, and only then have FastAPI reject the path segment -- so a client with a broken
+        chat id would drain a paying user's allowance one 422 at a time.
+        """
+        grant, _ = quota_grant
+        before = [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)]
+
+        response = await async_client.post("/chats/not-a-uuid", json=FOLLOWUP)
+
+        assert response.status_code == 422
+        assert [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)] == before
 
 
 @pytest.mark.asyncio(loop_scope="module")
