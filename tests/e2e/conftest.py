@@ -1,5 +1,6 @@
 import os
-from uuid import uuid4
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -13,6 +14,9 @@ from unit.conftest import make_test_verifier
 from nativespeaker.api.app.main import app
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.models import (
+    AccessGrant,
+    AccessGrantSource,
+    AccessGrantStatus,
     Chat,
     ChatRole,
     ExternalIdentity,
@@ -20,7 +24,14 @@ from nativespeaker.api.models import (
     IdentityState,
     Message,
     User,
+    UserMonthlyUsage,
 )
+
+# The `registered` tier, seeded as reference data by
+# `migrations/20260818_01_initial-release.sql:280-283` at 50 monthly credits. Not a randomised
+# `tests/schema/helpers.py::insert_tier` id: that helper lives in the asyncpg-based `tests/schema/`
+# package and is not importable here. 50 is comfortably above any single e2e module's consumption.
+REGISTERED_TIER_ID = "registered"
 
 
 @pytest.fixture(scope="session")
@@ -176,6 +187,69 @@ async def seed_identity(factory, *,
         session.add(identity)
         await session.commit()
     return user, identity
+
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def quota_grant(_db_transaction, linked_firebase_identity):
+    """One effective grant plus its usage row for the seeded Firebase caller. Returns both rows.
+
+    Every case that drives a quota-checked route as an *admitted* caller needs this: without a
+    grant, `require_quota` answers 429 before the handler is entered, and the case's real subject
+    -- the chat behaviour, the language check, the ownership filter -- is never reached.
+
+    Seeded through `_db_transaction`, inside the per-test transaction, so it rolls back like every
+    other row this package writes.
+    """
+    user, _ = linked_firebase_identity
+    return await seed_grant(_db_transaction, user_id=user.id)
+
+
+async def seed_grant(factory, *,
+                     user_id: UUID,
+                     tier_id: str = REGISTERED_TIER_ID,
+                     source: AccessGrantSource = AccessGrantSource.manual,
+                     status: AccessGrantStatus = AccessGrantStatus.active,
+                     monthly_period: str | None = None,
+                     monthly_used: int = 0,
+                     starts_at: datetime | None = None,
+                     ends_at: datetime | None = None):
+    """Insert a `core.access_grants` row **and its `core.user_monthly_usage` row**; return both.
+
+    The two rows are written in one call, and that is not a convenience. A grant with no usage row
+    is the state D-09 turns into a 500 rather than a 429, so a helper that seeded only the grant
+    would convert every admitted chat case from an honest business answer into an internal error --
+    a worse failure than the one this helper exists to prevent.
+
+    `source` defaults to `manual`, not to a free source. `anonymous_device_grant` and
+    `registered_account_grant` both populate the `anti_abuse_required_grant_id` generated column,
+    whose deferrable FK requires a matching `core.access_grants_anti_abuse` row at commit -- a table
+    with no SQLModel class and no seeding path in this phase. `manual` is the source the schema
+    reserves for a hand-issued grant, which is exactly what a fixture writes, and the effective-grant
+    predicate reads `status`/`starts_at`/`ends_at` only, never the source.
+
+    `monthly_period` defaults to the current UTC calendar month in `YYYY-MM` form -- the same string
+    the request path derives from `RequestContext.evaluated_at`.
+
+    Test seeding only, and deliberately not a provisioning path -- no route reaches it, and `src/`
+    still contains no code that writes either table. Real grants originate from Phases 41, 42 and
+    45; this helper must never be promoted into `src/`.
+    """
+    now = datetime.now(UTC)
+    async with factory() as session:
+        grant = AccessGrant(user_id=user_id,
+                            tier_id=tier_id,
+                            source=source,
+                            status=status,
+                            starts_at=now if starts_at is None else starts_at,
+                            ends_at=ends_at)
+        session.add(grant)
+        await session.flush()
+        usage = UserMonthlyUsage(grant_id=grant.id,
+                                 monthly_period=monthly_period or now.strftime("%Y-%m"),
+                                 monthly_used=monthly_used)
+        session.add(usage)
+        await session.commit()
+    return grant, usage
 
 
 async def create_chat(factory, issuer: str, subject: str):
