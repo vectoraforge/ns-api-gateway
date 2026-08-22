@@ -249,12 +249,39 @@ Plans:
 **Goal:** Ship the only pre-auth-callable route — first-time account creation linking a verified Firebase `(issuer, subject)` to one new user plus exactly one active identity row.
 **Requirements:** CREATE-01 … CREATE-04
 **Depends on:** 34, 35
+**Plans:** 10 plans
 **Success criteria:**
 
 1. An unlinked caller succeeds here and is rejected with `preauth_identity_not_allowed` on every other route
 2. Prepare mode and completion mode partition correctly on the mode signal
 3. One transaction produces the user row, exactly one ACTIVE identity row, and both store purchase-attribution tokens — a forced mid-transaction failure leaves no partial account
 4. Two concurrent creates for the same `(issuer, subject)` yield one account; the loser reconciles via `/auth/sync`
+
+Plans:
+**Wave 1**
+
+- [ ] 37-01-PLAN.md — Remove `core.auth_challenges.operation_variant` outright (D-13); apply the migration and repair the fallout — blocking decision checkpoint on the SCHEMA-01 conflict
+- [ ] 37-02-PLAN.md — Promote `tenacity` to a direct dependency (D-06), retire `auth/budgets.py` (D-04), land the one Firebase retry policy
+- [ ] 37-03-PLAN.md — Register `identity_already_linked` (409) and `operation_not_allowed` (403); add `FirebaseConfig` from `.env` only
+
+**Wave 2**
+
+- [ ] 37-04-PLAN.md — `SubscriptionProvider` + `StorePurchaseToken` over the PK-less table; prove RESEARCH assumption A2 against PostgreSQL
+- [ ] 37-05-PLAN.md — The concrete issuer-selected Firebase Admin adapter and §02 step 9's closed providerData classifier
+- [ ] 37-06-PLAN.md — Convert `resilience.py`'s hand-rolled retry loop to the same tenacity policy (D-05), own commit
+
+**Wave 3**
+
+- [ ] 37-07-PLAN.md — TRACER: end-to-end anonymous account creation, prepare + completion, registry entry and router in one commit
+
+**Wave 4**
+
+- [ ] 37-08-PLAN.md — Completion rejection precedence: the five challenge rejections, the Admin outcomes, the classifier rejection
+- [ ] 37-09-PLAN.md — Conflict discrimination by constraint name; criteria 3 and 4 proven in `tests/schema/` with real commits
+
+**Wave 5**
+
+- [ ] 37-10-PLAN.md — Registered flow and field rules via substituted adapter; Firebase credential checkpoint; the real-anonymous e2e (D-09)
 
 #### Phase 38: POST /auth/sync
 
