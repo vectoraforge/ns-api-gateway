@@ -35,11 +35,12 @@ from uuid import UUID, uuid7
 import pytest
 from sqlalchemy import func
 from sqlmodel import col, select
+from unit.conftest import TEST_ISSUER
 
 from nativespeaker.api.models import AccessGrantStatus, UserMonthlyUsage
 from nativespeaker.api.models.auth import AuthEvent
 
-from .conftest import seed_grant
+from .conftest import seed_grant, seed_identity
 
 pytestmark = pytest.mark.e2e
 
@@ -628,6 +629,40 @@ class TestNoPreProviderRejectionIsCharged:
 
 
 @pytest.mark.asyncio(loop_scope="module")
+class TestOneUsersGrantIsNotAnothers:
+    """The effective-grant predicate is scoped to the caller, proven with a second grant holder.
+
+    Every other case in this module has exactly one user holding a grant at a time, and under that
+    setup the `user_id` term in `GrantsDB.lock_effective_grants` is unobservable: deleting it leaves
+    the whole suite green while the query silently matches every active grant in the table.
+
+    With two holders the deletion is loud in both directions. The caller's own charge would land on
+    -- or alongside -- a stranger's grant, and `consume_quota`'s D-10 tripwire would see two
+    effective grants and fail closed with a 500 rather than serve. Either way this case fails, which
+    is the point: it is the only thing standing between a one-line predicate edit and a
+    cross-tenant billing leak.
+    """
+
+    async def test_a_second_users_active_grant_is_neither_read_nor_charged(
+            self, async_client, quota_grant, _db_transaction):
+        own_grant, _ = quota_grant
+        stranger, _ = await seed_identity(_db_transaction,
+                                          issuer=TEST_ISSUER,
+                                          subject="quota-scope-stranger")
+        stranger_grant, _ = await seed_grant(_db_transaction, user_id=stranger.id)
+
+        response = await async_client.post("/chats", json=PHRASE)
+
+        # A 500 here means the predicate stopped being scoped: two effective grants matched and
+        # `MultipleEffectiveGrantsError` fired. A 200 with the wrong counter means it matched the
+        # wrong one. Both are asserted rather than only the pair of counters.
+        assert response.status_code == 200
+        assert [row.monthly_used for row in await usage_rows(_db_transaction, own_grant.id)] == [1]
+        assert [row.monthly_used
+                for row in await usage_rows(_db_transaction, stranger_grant.id)] == [0]
+
+
+@pytest.mark.asyncio(loop_scope="module")
 class TestTheEffectiveGrantStatement:
     """The lock and the order, which a served response cannot show (SHARED-INVARIANTS:33)."""
 
@@ -644,6 +679,13 @@ class TestTheEffectiveGrantStatement:
         sql = str(session.statements[0])
         assert "FOR UPDATE" in sql
         assert "ORDER BY core.access_grants.id ASC" in sql
+        # The tenant scope, asserted alongside the lock and the order because it is the one term
+        # in this predicate whose loss is a cross-user entitlement leak rather than a slow query.
+        # `_StubSession` ignores WHERE entirely, so only the compiled text can show it is there --
+        # and until this line existed the whole suite stayed green with the term deleted.
+        # `TestOneUsersGrantIsNotAnothers` below is the behavioural half of the same claim.
+        assert "core.access_grants.user_id = " in sql
+        assert "core.access_grants.status = " in sql
         # D-10: no row-count cap. The caller must be able to see a second effective grant rather
         # than have the database silently pick one for it.
         assert "LIMIT" not in sql
