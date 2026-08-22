@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, InternalServerError, RateLimitError
+from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from nativespeaker.api.config import ResilienceConfig
 from nativespeaker.api.errors import CircuitOpenError, PermanentLLMError, QueueFullError, TransientLLMError
@@ -130,6 +131,39 @@ class LLMExecutionGate:
                 return await operation()
 
 
+def _should_retry(exc: BaseException) -> bool:
+    """`ResiliencePolicy.ainvoke`'s retry predicate: `TransientLLMError` and nothing else.
+
+    **This is `retry_if_exception`, whereas `auth/retry.py` uses `retry_if_result`, and neither is
+    a mistake.** They share one library and one idiom; the predicates differ because the two seams
+    differ. The Firebase providerData lookup that module wraps *returns* a closed outcome enum and
+    never raises, so only a result predicate can fire there. This seam signals by raising, so only
+    an exception predicate can fire here. A reader comparing the two files should not "fix" either.
+
+    (The adapter method's own name is deliberately not written out above: `test_adapter_interfaces`
+    scans every `src/` module for adapter method names, and only `auth/` modules are exempt.)
+
+    Reading the class rather than re-deriving the classification is deliberate: the attempt body
+    below has already triaged the failure -- `_AdmissionRejected`, `QueueFullError` and
+    `CircuitOpenError` leave it untouched, and everything else leaves it as exactly one of
+    `TransientLLMError` / `PermanentLLMError` per `_is_transient_error`. Re-running that judgement
+    here would be a second answer to one question, and the two could drift apart.
+    """
+    return isinstance(exc, TransientLLMError)
+
+
+async def _sleep_if_positive(seconds: float) -> None:
+    """The retry policy's sleep: a zero-length backoff issues no sleep call at all.
+
+    `retry_backoff_base_seconds` is `ge=0`, so a zero schedule is a legal configuration, and the
+    hand-rolled loop this replaced guarded its sleep with `if backoff > 0`. Passing `asyncio.sleep`
+    straight through would instead yield to the event loop once per attempt -- the same elapsed
+    time, but not the same behaviour, and `tests/unit/test_resilience_retry.py` pins the difference.
+    """
+    if seconds > 0:
+        await asyncio.sleep(seconds)
+
+
 class ResiliencePolicy:
     def __init__(self, config: ResilienceConfig):
         self._circuit_breaker = CircuitBreaker(failure_threshold=config.circuit_breaker_failure_threshold,
@@ -162,7 +196,14 @@ class ResiliencePolicy:
             admitted = True
             await on_admitted()
 
-        for attempt in range(1, self._retry_max_attempts + 1):
+        async def attempt() -> Any:
+            """One attempt, already triaged. Everything `_should_retry` reads is decided in here.
+
+            tenacity evaluates its predicate *after* this returns, so the `record_failure` call and
+            the transient/permanent translation have to live here rather than in a
+            `retry_error_callback` -- moving them out would record a failure per policy, not per
+            attempt, and would leave the predicate reading raw provider exceptions.
+            """
             await self._circuit_breaker.before_call()
             try:
 
@@ -170,23 +211,44 @@ class ResiliencePolicy:
                     return await asyncio.wait_for(operation(), timeout=self._timeout_seconds)
 
                 result = await self._gate.run(timed_op, on_admitted=admit_once)
-                await self._circuit_breaker.record_success()
-                return result
-            except _AdmissionRejected as rejected:
+            except _AdmissionRejected:
                 # Not a provider failure: no `record_failure`, no retry, no `TransientLLMError`
-                # wrapping. Re-raised exactly as the callback raised it so the caller sees its own
-                # error class and status.
-                raise rejected.cause from None
+                # wrapping. Deliberately still wrapped at this point and unwrapped below, outside
+                # the policy: if the callback's own exception were re-raised here, `_should_retry`
+                # would inspect the caller's error class, and a caller raising something that
+                # happens to be a `TransientLLMError` would get its rejection retried.
+                raise
             except (QueueFullError, CircuitOpenError):
                 raise
             except Exception as e:
                 await self._circuit_breaker.record_failure()
-                if attempt >= self._retry_max_attempts or not _is_transient_error(e):
-                    if _is_transient_error(e):
-                        raise TransientLLMError(str(e)) from e
-                    raise PermanentLLMError(str(e)) from e
-                backoff = min(self._retry_backoff_max,
-                              self._retry_backoff_base * (2 ** (attempt - 1)))
-                if backoff > 0:
-                    await asyncio.sleep(backoff)
-        raise TransientLLMError("LLM request failed after all retries")
+                if _is_transient_error(e):
+                    raise TransientLLMError(str(e)) from e
+                raise PermanentLLMError(str(e)) from e
+            await self._circuit_breaker.record_success()
+            return result
+
+        retrying = AsyncRetrying(
+            stop=stop_after_attempt(self._retry_max_attempts),
+            # `multiplier * exp_base ** (attempt_number - 1)`, clamped to `max` -- byte-for-byte the
+            # hand-rolled `min(backoff_max, backoff_base * 2 ** (attempt - 1))`, and
+            # `TestBackoffSchedule` asserts the resulting durations rather than trusting the
+            # restatement.
+            wait=wait_exponential(multiplier=self._retry_backoff_base,
+                                  exp_base=2,
+                                  max=self._retry_backoff_max),
+            retry=retry_if_exception(_should_retry),
+            sleep=_sleep_if_positive,
+            # Correct here precisely because there IS an original exception -- the opposite of
+            # `auth/retry.py`, where a result-based retry has none and `retry_error_callback` is
+            # therefore mandatory. Exhaustion re-raises the last attempt's `TransientLLMError`
+            # (`__cause__` intact), so no `tenacity.RetryError` can reach a caller and no
+            # fall-through guard is needed below.
+            reraise=True,
+        )
+        try:
+            return await retrying(attempt)
+        except _AdmissionRejected as rejected:
+            # Re-raised exactly as the callback raised it so the caller sees its own error class
+            # and status -- a quota 429 stays a 429 instead of becoming a 503.
+            raise rejected.cause from None
