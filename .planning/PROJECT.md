@@ -48,7 +48,7 @@ The analysis pipeline must work reliably — correct LLM invocation, proper resi
 - ✓ Cursor pagination validation before decode (InvalidCursorError at route entry) — v1.1
 - ✓ Circuit breaker designed for multi-instance awareness (in-memory limitation documented, Redis path noted) — v1.1
 - ✓ Dead code removed (unreachable `get_chat()`/`delete_chat()`) and config bugs fixed — v1.2
-- ✓ Schema-guaranteed LLM responses via `with_structured_output(strict=True)` — v1.2
+- ✗ **Withdrawn — never shipped (corrected in Phase 36, D-13):** LLM responses are parsed as unconstrained JSON by `JsonOutputParser` and validated after the fact by the `models/llm.py` response models. Schema-constrained decoding via `with_structured_output(strict=True)` is not in the source and never was; restoring it is filed as `.planning/todos/pending/restore-strict-structured-output.md` — claimed v1.2
 - ✓ PEP8 compliance enforced by ruff (E/W/F/I/UP, line-length=120) — v1.2
 - ✓ Resilience concerns extracted into `ResiliencePolicy` facade — v1.2
 - ✓ Health endpoint simplified to unconditional 200/up (ReadinessCache removed) — v1.2
@@ -186,7 +186,7 @@ Known areas for future work:
 | `app.state.verifier` resolved at request-time | Enables zero-code swapping of auth providers in tests and startup | ✓ Good |
 | Typed LLM errors with `__cause__` | Callers can distinguish transient vs permanent without inspecting internals | ✓ Good |
 | CORS, rate limiting, security headers → Envoy Gateway | Avoids redundant app-level middleware | ✓ Good |
-| `with_structured_output(strict=True, method='json_schema')` | Constrained decoding eliminates fragile parsing | ✓ Good |
+| `with_structured_output(strict=True, method='json_schema')` | Constrained decoding would eliminate fragile parsing — but the decision was never implemented. `services/llm.py` has always been `prompt_template \| self.llm \| JsonOutputParser()`, and `git log -S'with_structured_output' -- src/` returns nothing. That gap is what made D-35-11-A reachable: an already-correct phrase returned 500 because the model omitted two keys nothing forced it to emit. Corrected in Phase 36 per D-13 | ✗ Never implemented — filed as `todos/pending/restore-strict-structured-output.md` |
 | ResiliencePolicy composes existing CB/gate without modifying them | Facade pattern; composition over modification | ✓ Good |
 | Health endpoint unconditional 200/up | If lifespan fails, FastAPI never serves — probing backends is redundant | ✓ Good |
 | PyJWT 2.11.0 over python-jose | python-jose is abandoned; PyJWT is actively maintained | ✓ Good |
