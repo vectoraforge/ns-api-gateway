@@ -432,3 +432,9 @@ Ready. Wave 2's remaining plans can proceed:
 ---
 *Phase: 36-rebind-pre-existing-routes*
 *Completed: 2026-08-21*
+
+## Self-Check: PASSED
+
+All claimed artifacts exist on disk (`database/grants.py`, `quota.py`, `tests/e2e/test_quota.py`,
+this SUMMARY) and all four claimed commits (`67f0511`, `096ac3a`, `fe07be1`, `217c7a9`) resolve in
+`git log`.
