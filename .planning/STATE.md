@@ -5,8 +5,8 @@ milestone_name: Authentication & Entitlements
 current_phase: 37
 current_phase_name: POST /auth/create-user
 status: planning
-stopped_at: Completed 36-05-PLAN.md
-last_updated: "2026-08-22T06:13:28.407Z"
+stopped_at: Phase 37 context gathered
+last_updated: "2026-08-22T06:59:15.770Z"
 last_activity: 2026-08-21
 last_activity_desc: Plan 35-12 complete — CR-01 gap closed
 progress:
@@ -95,11 +95,11 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-22T03:15:43.516Z
+**Last session:** 2026-08-22T06:59:15.751Z
 
 Last activity: 2026-03-26
-Stopped at: Completed 36-05-PLAN.md
-Resume file: None
+Stopped at: Phase 37 context gathered
+Resume file: .planning/phases/37-post-auth-create-user/37-CONTEXT.md
 
 ## Performance Metrics
 
