@@ -23,6 +23,10 @@ code that writes a grant row.
 `TestTheEffectiveGrantStatement` covers the one property the transport cannot show: that the
 selection statement takes row locks and orders ascending by grant id (SHARED-INVARIANTS:33). A
 served 429 looks the same whether or not the rows were locked.
+
+Both chat POSTs are gated, and only those two of the eight pre-existing routes (D-07). The
+refusal cases run against both, and `TestTheOtherSixRoutesConsumeNothing` is the other half of
+that claim -- without it, "these two are checked" is consistent with "all eight are".
 """
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid7
@@ -44,6 +48,27 @@ PHRASE = {"phrase": "I am going to home.", "lang": "en"}
 # means.
 ALLOWANCE = 50
 
+FOLLOWUP = {"message": "Can you explain more?"}
+
+# The two quota-checked routes as `(path, body)`, fixed at collection time. The follow-up entry
+# deliberately names a chat that does not exist: the quota dependency is a DECORATOR dependency and
+# completes before the handler body, so a caller with no effective grant is refused 429 and the chat
+# is never looked up. A 404 from any case below would mean the gate ran late, or not at all.
+QUOTA_ROUTES = [("/chats", PHRASE), (f"/chats/{uuid7()}", FOLLOWUP)]
+QUOTA_ROUTE_IDS = ["create_chat", "send_message"]
+
+# The other six of the eight pre-existing routes (D-07). `GET`/`DELETE` on a chat id that does not
+# exist answer 404 -- irrelevant here, because the subject of those cases is the counter, not the
+# status.
+UNCHARGED_ROUTES = [("GET", "/"),
+                    ("GET", "/health/ready"),
+                    ("GET", "/examples"),
+                    ("GET", "/chats"),
+                    ("GET", f"/chats/{uuid7()}"),
+                    ("DELETE", f"/chats/{uuid7()}")]
+UNCHARGED_ROUTE_IDS = ["root", "health_ready", "examples", "list_chats", "get_messages",
+                       "delete_chat"]
+
 
 async def usage_rows(factory, grant_id: UUID) -> list[UserMonthlyUsage]:
     """Read `core.user_monthly_usage` back for one grant, through the test's own factory.
@@ -59,55 +84,63 @@ async def usage_rows(factory, grant_id: UUID) -> list[UserMonthlyUsage]:
 
 
 @pytest.mark.asyncio(loop_scope="module")
+@pytest.mark.parametrize("path, body", QUOTA_ROUTES, ids=QUOTA_ROUTE_IDS)
 class TestNoEffectiveGrant:
-    """An admitted caller with nothing to spend. §8.4 step 1 routes this to the 429 contract."""
+    """An admitted caller with nothing to spend. §8.4 step 1 routes this to the 429 contract.
+
+    Every case runs against **both** quota-checked POSTs. Parametrized rather than duplicated so a
+    third gated route is one list entry away from being covered by all of them -- and so a route
+    that carries the flag but lost its wrapper cannot pass here by being tested only on the other
+    one.
+    """
 
     async def test_a_caller_with_no_grant_is_refused(self, async_client,
-                                                     linked_firebase_identity):
-        response = await async_client.post("/chats", json=PHRASE)
+                                                     linked_firebase_identity, path, body):
+        response = await async_client.post(path, json=body)
         assert response.status_code == 429
         assert response.json()["code"] == "quota_exceeded"
 
     async def test_the_no_grant_refusal_carries_the_shared_error_body(
-            self, async_client, linked_firebase_identity):
+            self, async_client, linked_firebase_identity, path, body):
         """The 429 is the shared `{code: ...}` shape -- not a 500, and not a bespoke payload."""
-        response = await async_client.post("/chats", json=PHRASE)
+        response = await async_client.post(path, json=body)
         assert list(response.json().keys()) == ["code"]
 
     async def test_a_not_yet_started_grant_is_no_grant(self, async_client,
                                                        linked_firebase_identity,
-                                                       _db_transaction):
+                                                       _db_transaction, path, body):
         """`starts_at > evaluated_at`: the row exists, the entitlement has not begun."""
         user, _ = linked_firebase_identity
         now = datetime.now(UTC)
         await seed_grant(_db_transaction, user_id=user.id, starts_at=now + timedelta(days=1))
 
-        response = await async_client.post("/chats", json=PHRASE)
+        response = await async_client.post(path, json=body)
         assert response.status_code == 429
         assert response.json()["code"] == "quota_exceeded"
 
     async def test_an_already_ended_grant_is_no_grant(self, async_client,
                                                       linked_firebase_identity,
-                                                      _db_transaction):
+                                                      _db_transaction, path, body):
         """`ends_at <= evaluated_at`: the row exists, the entitlement is over."""
         user, _ = linked_firebase_identity
         now = datetime.now(UTC)
         await seed_grant(_db_transaction, user_id=user.id,
                          starts_at=now - timedelta(days=2), ends_at=now - timedelta(days=1))
 
-        response = await async_client.post("/chats", json=PHRASE)
+        response = await async_client.post(path, json=body)
         assert response.status_code == 429
         assert response.json()["code"] == "quota_exceeded"
 
     @pytest.mark.parametrize("status", [AccessGrantStatus.revoked, AccessGrantStatus.expired])
     async def test_a_grant_whose_status_is_not_active_is_no_grant(self, async_client,
                                                                   linked_firebase_identity,
-                                                                  _db_transaction, status):
+                                                                  _db_transaction, status,
+                                                                  path, body):
         """The predicate is `status == active`, never "not revoked" -- both terminal rows refuse."""
         user, _ = linked_firebase_identity
         await seed_grant(_db_transaction, user_id=user.id, status=status)
 
-        response = await async_client.post("/chats", json=PHRASE)
+        response = await async_client.post(path, json=body)
         assert response.status_code == 429
         assert response.json()["code"] == "quota_exceeded"
 
@@ -122,6 +155,47 @@ class TestASeededGrantIsAdmitted:
         data = response.json()
         assert data["role"] == "ai"
         assert "response" in data["content"]
+
+    async def test_the_follow_up_route_is_admitted_and_charged_exactly_once(
+            self, async_client, quota_grant, _db_transaction):
+        """The second gated route, driven against a chat that really exists.
+
+        The counter is read between the two POSTs, not only at the end. `[2]` alone is consistent
+        with a follow-up that charged twice and a create that charged nothing, which is precisely
+        the mix-up a single trailing read cannot tell apart.
+        """
+        grant, _ = quota_grant
+
+        create = await async_client.post("/chats", json=PHRASE)
+        assert create.status_code == 200
+        chat_id = create.json()["chat_id"]
+        assert [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)] == [1]
+
+        followup = await async_client.post(f"/chats/{chat_id}", json=FOLLOWUP)
+        assert followup.status_code == 200
+        assert followup.json()["chat_id"] == chat_id
+        assert followup.json()["role"] == "ai"
+        assert [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)] == [2]
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheOtherSixRoutesConsumeNothing:
+    """D-07: exactly two of the eight pre-existing routes are quota-checked, and these are not.
+
+    The backstop to every case above. "Both POSTs are gated" is equally true of an app that gates
+    all eight, and gating a read would charge a user for looking at what they already paid for.
+    The counter is read back with a grant seeded, so a charge would be visible rather than
+    swallowed by a 429 the case never asserted against.
+    """
+
+    @pytest.mark.parametrize("method, path", UNCHARGED_ROUTES, ids=UNCHARGED_ROUTE_IDS)
+    async def test_the_route_spends_no_credit(self, async_client, quota_grant, _db_transaction,
+                                              method, path):
+        grant, _ = quota_grant
+
+        await async_client.request(method, path)
+
+        assert [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)] == [0]
 
 
 @pytest.mark.asyncio(loop_scope="module")
