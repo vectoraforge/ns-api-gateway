@@ -1,21 +1,21 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Authentication & Entitlements (Phases 34-46)
-current_phase: 36
-current_phase_name: rebind-pre-existing-routes
-status: verifying
+milestone_name: Authentication & Entitlements
+current_phase: 37
+current_phase_name: POST /auth/create-user
+status: planning
 stopped_at: Completed 36-05-PLAN.md
-last_updated: "2026-08-22T03:15:43.574Z"
+last_updated: "2026-08-22T06:13:28.407Z"
 last_activity: 2026-08-21
 last_activity_desc: Plan 35-12 complete — CR-01 gap closed
-state_head: f2d9d0ae5aebe12e62e3d870f1908b38a7f27602
 progress:
   total_phases: 13
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 21
-  completed_plans: 20
-  percent: 15
+  completed_plans: 21
+  percent: 23
+state_head: f2d9d0ae5aebe12e62e3d870f1908b38a7f27602
 ---
 
 # Project State
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 36 (rebind-pre-existing-routes) — EXECUTING
-Plan: 5 of 5
-Status: Phase complete — ready for verification
-Last activity: 2026-08-21 — Phase 36 execution started
+Phase: 37 — POST /auth/create-user
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-08-21 — Phase 36 complete, transitioned to Phase 37
 
 ## Accumulated Context
 

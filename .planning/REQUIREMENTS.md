@@ -48,7 +48,7 @@ Shared machinery only. Rebinding the pre-existing routes is Phase 36.
 - [ ] **REBIND-03**: Auth rejections on these routes surface through the shared error taxonomy and response shape, while their existing non-auth business error contracts are unchanged
 - **REBIND-04** — **Void.** The named `quota_checked_request` admission entry it required no longer exists: Phase 35 D-05 deletes backend rate limiting from the product. REBIND-05's grant resolution, lock order, and lazy rollover are unaffected.
 - [x] **REBIND-05**: The quota flow resolves one effective grant under the shared predicate, locks grant-then-usage in ascending grant id, fails closed on a missing usage row, performs lazy monthly rollover in the same locked transaction, and never lets `remaining` go negative
-- [ ] **REBIND-06**: The application starts and every pre-existing route behaves as it did in v1.6, apart from auth rejections now using the shared error classes
+- [x] **REBIND-06**: The application starts and every pre-existing route behaves as it did in v1.6, apart from auth rejections now using the shared error classes
 
 ### CREATE — Phase 37 (`02-create-user.md`) — `POST /auth/create-user`
 
@@ -149,7 +149,7 @@ Explicitly excluded. `SHARED-INVARIANTS.md` "Global deletions" binds every phase
 | SCHEMA-01 … SCHEMA-08 | Phase 34 | Complete |
 | FOUND-01 … FOUND-08 | Phase 35 | Pending |
 | FOUND-09 | v2.1 backlog | Deferred (D-08) |
-| REBIND-01 … REBIND-06 | Phase 36 | Pending |
+| REBIND-01 … REBIND-06 | Phase 36 | Complete (REBIND-03 partial by design, REBIND-04 void) |
 | CREATE-01 … CREATE-04 | Phase 37 | Pending |
 | SYNC-01 … SYNC-03 | Phase 38 | Pending |
 | PROF-01 … PROF-02 | Phase 39 | Pending |

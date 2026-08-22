@@ -1,7 +1,7 @@
 ---
 phase: 36-rebind-pre-existing-routes
 verified: 2026-08-22T04:53:36Z
-status: human_needed
+status: passed
 score: 6/6 truths verified
 behavior_unverified: 0
 overrides_applied: 0
@@ -9,13 +9,17 @@ re_verification:
   previous_status: gaps_found
   previous_score: 4/6
   gaps_closed:
+
     - "Every pre-existing route serves as it did in v1.6, apart from auth rejections now using the shared error classes (ROADMAP SC1 / REBIND-06). All five confirmed pre-provider-rejection charge paths (unsupported language, chat-count limit, chat not found, message-count limit, circuit-open/queue-full backpressure) now cost nothing, independently re-confirmed by re-running the persisted suite plus two verifier-authored behavioral probes for the two sub-cases the persisted suite still does not cover."
   gaps_remaining: []
   regressions: []
 human_verification:
+
   - test: "Whether REBIND-02's 'increment the bounded-cardinality counter metric' on rejection covers quota rejections (429) in addition to barrier/auth rejections."
     expected: "A ruling on whether the phase's own flagged, deliberately-unresolved reading (structured log only, no counter increment, for quota 429s) satisfies REBIND-02 as marked complete in REQUIREMENTS.md, or whether a second counter is required."
     why_human: "Requirement-text interpretation the phase's own authors declined to resolve unilaterally (36-05-SUMMARY.md, 'Flagged assumption carried forward — REBIND-02'); unchanged by the three gap-closure commits (none touch audit/telemetry code). Not decidable from code or tests alone."
+    resolved: 2026-08-22
+    resolution: "Dissolved rather than ruled on. During UAT the project owner rejected maintaining a hand-rolled metric subsystem at all, and `RejectionCounter` was removed (`5f275c8`) — it had no exporter, so the §1.2 alert it existed to feed could never fire. Rejections keep their structured security-log event, which carries the same result/reason/route fields; rejection rate is derived from those events by the deployment's log pipeline. REQUIREMENTS.md REBIND-02 reworded to match. There is no counter left for the question to be about. Full suite after removal: 1250 passed."
 ---
 
 # Phase 36: Rebind Pre-existing Routes Verification Report
