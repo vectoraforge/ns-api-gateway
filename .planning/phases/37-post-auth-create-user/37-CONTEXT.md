@@ -179,13 +179,57 @@ transaction, on **every** completion — anonymous and registered alike, no bran
   the create transaction on every branch per §02 step 10, but `PROJECT.md:20` already assigns
   surfacing them to the rewritten `GET /users/me` in Phase 39. One place surfaces them.
 
+### The create-flow declaration — removed (spec amendment)
+
+- **D-12:** **There is no client flow declaration. The server derives the account type solely from
+  the Firebase Admin providerData classification.** A client asks to create a user; the account is
+  created as whatever type Firebase reports. This **amends `02-create-user.md`**, which currently
+  specifies an optional `provider` field at prepare (step 3, defaulting to `anonymous`, frozen as the
+  challenge's immutable `operation_variant`), a REQUIRED byte-for-byte `provider` match at completion
+  (step 6), and a declaration-match rejection at step 9. Consequences, all in scope for this phase:
+  - **`create_flow_mismatch` is not registered**, and its mandatory `required_flow` field does not
+    exist. This dissolves the one place §02 required a body shape the closed error registry forbids
+    (`errors.py:49-52`, "Exactly one field -- do not add more"). `ErrorResponse` stays one field;
+    Phase 35's registry contract is preserved intact, not reopened.
+  - **Step 6's provider-variant check is removed** for `create_user`. `challenge_operation_mismatch`
+    remains a live result for the other challenge-bearing operations.
+  - **The closed classifier is unchanged**: empty → anonymous, exactly one `google.com` → google,
+    exactly one `apple.com` → apple, every other shape (both providers, multiple entries,
+    unrecognized, missing/empty uid) → reject. That rejection is an unclassifiable *account*, not a
+    declaration mismatch, and still routes to `operation_not_allowed` via invalid-shape
+    `provider_not_linked`.
+  - **`provider_not_linked`'s bounded cause loses `supported-provider-mismatch`**; `empty` and
+    `invalid-shape` remain.
+  — **Reversibility:** one-way in principle (published request + response contract and a dropped
+  column), cheap in practice — pre-launch, no clients.
+
+- **D-13:** **The `core.auth_challenges.operation_variant` column is removed outright**, not made
+  nullable. It exists only to freeze the declaration D-12 deletes, and it cannot be derived at
+  prepare time — §02 step 8 pins exactly one Firebase Admin lookup, at completion, immediately before
+  the write transaction. Requires a new migration dropping the column and rewriting the Ruling-9.8
+  CHECK at `migrations/20260818_01_initial-release.sql:627-638`, plus `models/auth.py:127` and the
+  `ChallengeStore.issue()` signature at `challenges.py:105,138`. Test fallout:
+  `tests/unit/test_challenge_ids.py`, `tests/e2e/test_challenge_store.py`,
+  `tests/schema/test_constraints.py`.
+  - **Flagged forward, NOT this phase's to solve:** the same CHECK pins
+    `upgrade_anonymous_to_registered` to `operation_variant IN ('google','apple')`. **Phase 40
+    (`POST /auth/upgrade-anonymous`) loses its provider binding** and needs its own answer for how it
+    binds the target provider. Phase 37 removes the column; it does not design Phase 40's
+    replacement. The new CHECK must still be written so Phase 40's rows remain insertable.
+  — **Reversibility:** one-way (destructive schema change), cheap pre-launch.
+
 ### Claude's Discretion
 
-- **Race-loser durability mechanism.** §02 step 12 names three acceptable mechanisms (consume-first
-  atomic conditional update, savepoint around the business insert, deterministic re-run taking the
-  already-linked branch). Raised and passed over. Default: **consume-first conditional update** — it
-  avoids savepoint nesting under the e2e harness's `join_transaction_mode="create_savepoint"`, and
-  whatever ships here becomes the reference phases 40/41/42 copy. Planner may revisit with reasons.
+- **Race-loser durability mechanism — resolved by research, do not re-litigate.** §02 step 12 names
+  three acceptable mechanisms. This CONTEXT originally defaulted to **consume-first conditional
+  update**; `37-RESEARCH.md` **disproved it empirically**: an `IntegrityError` poisons the SQLAlchemy
+  session, so the post-conflict `consume` and audit write both raise `PendingRollbackError` —
+  violating step 12's "consumption + rejected audit row MUST survive the business rollback" and
+  producing exactly the generic 500 step 12 forbids. `session.begin_nested()` was executed against
+  live PostgreSQL 17.11 under the **exact** e2e harness config
+  (`join_transaction_mode="create_savepoint"`) and works. The stated rationale for avoiding savepoints
+  is therefore a non-issue. **Ship the savepoint around the business insert.** Whatever ships here
+  becomes the reference phases 40/41/42 copy.
 - **Testing success criteria 3 and 4.** Both need genuinely committed, concurrent transactions —
   a forced mid-transaction failure leaving no partial account, and two concurrent creates for the
   same `(issuer, subject)` yielding one account. The e2e harness wraps every test in one outer
