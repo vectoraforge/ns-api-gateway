@@ -1,0 +1,187 @@
+"""§02 step 9's closed providerData classifier and step 10's email-copy predicate.
+
+Both sets below are **closed**, and both are written table-driven so that closure is visible: the
+accept set is exactly three shapes -- empty, exactly one `google.com` entry, exactly one
+`apple.com` entry -- and everything else rejects. The reject set is not a list of shapes anyone
+expects to see; it is the list of shapes that must never be linked to a provider account the
+caller may not own (T-37-15). "Never take the first recognized entry" is the rule a best-effort
+reading breaks, so the two-entry cases appear in **both** orderings: a classifier that scans for
+the first entry it recognizes passes one ordering and fails the other.
+
+`email_to_persist` is the single evaluation site of §02 step 10's two-condition copy rule -- "copy
+`email` only when the same successful `getUser` response has a non-empty address AND
+`emailVerified = true`, else NULL". The cases pin both conditions independently, pin that a
+non-`ok` outcome can never yield an address, and pin that the predicate does **not** transform the
+address it returns: the `.strip()` inside it is a non-empty *test*, not a normalization step
+(T-37-34).
+"""
+import pytest
+
+from nativespeaker.api.auth.adapters import (
+    ProviderDataEntry,
+    ProviderDataOutcome,
+    ProviderDataResult,
+)
+from nativespeaker.api.auth.classifier import classify_provider_data, email_to_persist
+from nativespeaker.api.models.identities import IdentityProvider
+
+GOOGLE = ProviderDataEntry(provider_id="google.com", uid="google-uid-1")
+APPLE = ProviderDataEntry(provider_id="apple.com", uid="apple-uid-1")
+PASSWORD = ProviderDataEntry(provider_id="password", uid="user@example.test")
+FACEBOOK = ProviderDataEntry(provider_id="facebook.com", uid="facebook-uid-1")
+GOOGLE_NO_UID = ProviderDataEntry(provider_id="google.com", uid="")
+APPLE_NO_UID = ProviderDataEntry(provider_id="apple.com", uid="")
+GOOGLE_OTHER = ProviderDataEntry(provider_id="google.com", uid="google-uid-2")
+
+# The whole accept set. Three shapes, no fourth.
+ACCEPTED = [
+    ((), (IdentityProvider.anonymous, None), "empty providerData is anonymous"),
+    ((GOOGLE,), (IdentityProvider.google, "google-uid-1"), "exactly one google.com entry"),
+    ((APPLE,), (IdentityProvider.apple, "apple-uid-1"), "exactly one apple.com entry"),
+]
+
+# Everything else. Each case names the §02 prohibition it would violate if it were accepted.
+REJECTED = [
+    ((GOOGLE, APPLE), "both providers, google first -- never take the first recognized entry"),
+    ((APPLE, GOOGLE), "both providers, apple first -- rejection is order-independent"),
+    ((GOOGLE, GOOGLE_OTHER), "two google.com entries -- multiple entries never classify"),
+    ((PASSWORD,), "the e2e credential's shape -- `password` is not a recognized provider"),
+    ((FACEBOOK,), "an unrecognized provider id"),
+    ((GOOGLE_NO_UID,), "an empty uid is malformed/indeterminate, never persisted"),
+    ((APPLE_NO_UID,), "an empty uid is malformed/indeterminate, never persisted"),
+    ((GOOGLE, FACEBOOK), "recognized first, unrecognized second -- the recognized one is not taken"),
+    ((FACEBOOK, GOOGLE), "unrecognized first, recognized second -- same answer, either way"),
+]
+
+
+class TestTheAcceptSet:
+    """Exactly three shapes classify. `provider_uid` is NULL for anonymous and the uid otherwise."""
+
+    @pytest.mark.parametrize("entries,expected,why", ACCEPTED, ids=[case[2] for case in ACCEPTED])
+    def test_a_recognized_shape_classifies(self, entries, expected, why):
+        assert classify_provider_data(entries) == expected, why
+
+    def test_anonymous_carries_no_provider_uid(self):
+        """`core.external_identities`' CHECK requires NULL for anonymous and forbids a sentinel."""
+        provider, provider_uid = classify_provider_data(())
+        assert provider is IdentityProvider.anonymous
+        assert provider_uid is None
+
+    @pytest.mark.parametrize("entry,provider", [(GOOGLE, IdentityProvider.google),
+                                                (APPLE, IdentityProvider.apple)])
+    def test_the_matching_entrys_uid_is_the_sole_source_of_provider_uid(self, entry, provider):
+        """§02 step 9: the matching entry's non-empty uid is the SOLE source of `provider_uid`."""
+        assert classify_provider_data((entry,)) == (provider, entry.uid)
+
+    def test_the_recognized_provider_map_has_exactly_two_keys(self):
+        """A third recognized provider is a spec change, not a refactor."""
+        from nativespeaker.api.auth import classifier
+        assert set(classifier._RECOGNIZED) == {"google.com", "apple.com"}
+
+
+class TestTheRejectSet:
+    """Every other shape is an unclassifiable account: reject, no persistence."""
+
+    @pytest.mark.parametrize("entries,why", REJECTED, ids=[case[1] for case in REJECTED])
+    def test_an_unrecognized_shape_rejects(self, entries, why):
+        assert classify_provider_data(entries) is None, why
+
+    @pytest.mark.parametrize("pair", [(GOOGLE, APPLE), (GOOGLE, FACEBOOK), (GOOGLE, GOOGLE_OTHER)])
+    def test_rejection_is_order_independent(self, pair):
+        """A first-recognized-entry reading passes one ordering and fails the other."""
+        first, second = pair
+        assert classify_provider_data((first, second)) is None
+        assert classify_provider_data((second, first)) is None
+
+    def test_a_two_entry_shape_rejects_even_when_both_entries_are_the_same_provider(self):
+        assert classify_provider_data((GOOGLE, GOOGLE)) is None
+
+
+class TestTheClassifierRecordsItsProhibitions:
+    """The three §02 prohibitions and D-12's two deletions, recorded where the next reader is."""
+
+    @pytest.mark.parametrize("phrase", [
+        "never take the first recognized entry",
+        "never classify non-empty providerdata as anonymous",
+        "never read `firebase.sign_in_provider`",
+        "no declaration match",
+        "no `required_flow`",
+    ])
+    def test_the_module_docstring_records_the_prohibitions(self, phrase):
+        from nativespeaker.api.auth import classifier
+        assert phrase in classifier.__doc__.lower()
+
+    @pytest.mark.parametrize("name", ["sign_in_provider", "required_flow"])
+    def test_neither_deleted_concept_appears_outside_the_docstring(self, name):
+        """D-12: no declaration match, no `required_flow` -- and `sign_in_provider` is never read.
+
+        The module docstring names both, which is the point of it, so this checks the code rather
+        than the file: strip the docstring and neither identifier survives anywhere.
+        """
+        import ast
+        from pathlib import Path
+
+        from nativespeaker.api.auth import classifier
+        source = Path(classifier.__file__).read_text()
+        code = source.replace(ast.get_docstring(ast.parse(source), clean=False), "", 1)
+        assert name not in code
+
+
+class TestEmailToPersist:
+    """§02 step 10's two-condition copy rule, evaluated in exactly one place."""
+
+    @staticmethod
+    def _ok(email, email_verified):
+        return ProviderDataResult(outcome=ProviderDataOutcome.ok,
+                                  entries=(GOOGLE,),
+                                  email=email,
+                                  email_verified=email_verified)
+
+    def test_a_non_empty_verified_address_is_copied(self):
+        assert email_to_persist(self._ok("a@b.test", True)) == "a@b.test"
+
+    @pytest.mark.parametrize("email,email_verified,why", [
+        ("a@b.test", False, "unverified -- the second condition fails"),
+        (None, True, "absent -- the first condition fails"),
+        ("", True, "empty -- the first condition fails"),
+        ("   ", True, "whitespace only is not an address"),
+        (None, False, "neither condition holds"),
+    ], ids=["unverified", "absent", "empty", "whitespace-only", "neither"])
+    def test_every_other_combination_yields_none(self, email, email_verified, why):
+        assert email_to_persist(self._ok(email, email_verified)) is None, why
+
+    @pytest.mark.parametrize("outcome", [ProviderDataOutcome.user_not_found,
+                                         ProviderDataOutcome.retryable_failure,
+                                         ProviderDataOutcome.selection_failure])
+    def test_a_non_ok_outcome_never_yields_an_address(self, outcome):
+        """The defaults make `None` the only reachable answer on a failure arm."""
+        assert email_to_persist(ProviderDataResult(outcome)) is None
+
+    def test_a_non_ok_outcome_yields_none_even_if_the_fields_were_somehow_populated(self):
+        """The outcome gate is checked, not merely implied by the defaults."""
+        result = ProviderDataResult(outcome=ProviderDataOutcome.retryable_failure,
+                                    email="a@b.test",
+                                    email_verified=True)
+        assert email_to_persist(result) is None
+
+    def test_the_address_is_returned_verbatim_and_never_normalized(self):
+        """The `.strip()` inside the predicate is a non-empty test, not a transform."""
+        assert email_to_persist(self._ok("  Mixed.Case@B.TEST  ", True)) == "  Mixed.Case@B.TEST  "
+
+
+class TestTheProviderDataResultAmendment:
+    """The Phase 35 foundation amendment: two fields, both defaulted, no caller changed."""
+
+    def test_the_result_declares_exactly_four_fields(self):
+        from dataclasses import fields
+        assert [f.name for f in fields(ProviderDataResult)] == [
+            "outcome", "entries", "email", "email_verified",
+        ]
+
+    def test_a_pre_existing_construction_site_still_takes_one_positional_argument(self):
+        """`ProviderDataResult(ProviderDataOutcome.selection_failure)` -- unchanged by the amendment."""
+        result = ProviderDataResult(ProviderDataOutcome.selection_failure)
+        assert result.outcome is ProviderDataOutcome.selection_failure
+        assert result.entries == ()
+        assert result.email is None
+        assert result.email_verified is False
