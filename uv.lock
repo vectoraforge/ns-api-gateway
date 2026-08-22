@@ -883,6 +883,7 @@ dependencies = [
     { name = "ruff" },
     { name = "sqlmodel" },
     { name = "structlog" },
+    { name = "tenacity" },
     { name = "ty" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -919,6 +920,7 @@ requires-dist = [
     { name = "ruff", specifier = "==0.15.7" },
     { name = "sqlmodel", specifier = ">=0.0.22" },
     { name = "structlog", specifier = ">=25.5" },
+    { name = "tenacity", specifier = ">=9.1.4" },
     { name = "ty", specifier = "==0.0.24" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.42.0" },
 ]
