@@ -981,7 +981,10 @@ class StorePurchaseToken(SQLModel, table=True):
 | A5 | The `httpTimeout` app option applies to `auth.get_user` calls (it is documented as "a global timeout for all remote API calls"). Not separately measured. | Code Example 1 | Low. Worst case the per-attempt bound is the 120s default; detectable by a slow test. |
 | A6 | `firebase-admin 7.3.0` (installed) behaves as `7.5.0` (latest) for `get_user`/`provider_data`/`initialize_app`. All source quotes above are from the **installed 7.3.0**, so they are accurate for what will run. | Standard Stack | Low. Pin behavior to the installed version; do not upgrade in this phase. |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All four were closed during planning. Each carries its deciding plan and task below; the question text
+is left as written so the reasoning that led to the answer stays readable.
 
 1. **How does `create_flow_mismatch` carry `required_flow` through a one-field response model?**
    - What we know: §02 makes the field mandatory; `ErrorResponse` declares exactly one field and says
@@ -992,6 +995,13 @@ class StorePurchaseToken(SQLModel, table=True):
      narrower option (a `CreateFlowMismatchResponse(ErrorResponse)` subclass returned only by that
      class's raise site) touches less and does not weaken the anti-oracle guarantee, since
      `required_flow` is derived solely from the Admin classification and never from client input.
+   - **RESOLVED — mooted, not answered.** 37-CONTEXT.md **D-12** deletes the client flow declaration, so
+     `create_flow_mismatch` has no trigger and the field it needed to carry does not exist. `ErrorResponse`
+     stays one field and no subclass is added. Executed in **37-03 Task 1** (the error-registry edit, resolution
+     A3) and restated in **37-05**'s objective: the classifier performs no declaration match and derives
+     nothing of the kind; a rejecting providerData shape is an unclassifiable *account*, routed to
+     `operation_not_allowed` via `provider_not_linked`, whose bounded cause set loses
+     `supported-provider-mismatch` and keeps `empty` and `invalid-shape`.
 
 2. **Where do criteria 3 and 4 actually run?**
    - What we know: the e2e harness cannot express them (one outer transaction, savepoint-joined
@@ -1005,6 +1015,13 @@ class StorePurchaseToken(SQLModel, table=True):
      `tests/unit` with a substituted session that raises on the second `flush()`, plus a
      `tests/schema/` check that no orphan `core.users` row survives. Do **not** add a second
      commit-for-real fixture to `tests/e2e/` — it would defeat the isolation every other module relies on.
+   - **RESOLVED — adopted exactly as recommended.** **37-09** owns both: criterion 4 (concurrency) runs in
+     `tests/schema/test_create_race.py` driving `auth/creation.py`'s transaction function directly with two
+     real sessions on independent connections, which is why 37-07 put that function in its own module rather
+     than inline in the router; criterion 3 (forced mid-transaction failure) runs in
+     `tests/unit/test_create_user_rollback.py` with a substituted session, paired with
+     `tests/schema/test_create_atomicity.py` proving no orphan `core.users` row survives. No second
+     commit-for-real fixture is added to `tests/e2e/`.
 
 3. **Is `verify_id_token` on the adapter Protocol needed at all this phase?**
    - What we know: `adapters.py:114-123` declares it, and notes the barrier does not call it.
@@ -1012,6 +1029,14 @@ class StorePurchaseToken(SQLModel, table=True):
    - Recommendation: implement it as a genuine method (the Protocol is structural, so an incomplete
      class simply does not satisfy it), but do not call it. The barrier's `TokenVerifier` remains the
      only verification path.
+   - **RESOLVED — decided against the recommendation, deliberately.** **37-05 Task 2**: the concrete adapter
+     implements `get_user_provider_data` only. An uncalled `verify_id_token` would be unreachable structure of
+     exactly the kind **D-03** refuses, and §02's hardenings forbid a handler re-implementing verification —
+     the barrier's JWKS-backed `TokenVerifier` stays the single verification path. `revoke_refresh_tokens` is
+     likewise left to Phase 46 (§7.1 assigns it the sign-out-all phase along with its retry budget). The
+     Protocol is structural and not `@runtime_checkable`, so the partial class breaks nothing at runtime; the
+     class is not annotated as `FirebaseAdminAdapter`, and 37-05 carries the divergence into its SUMMARY as
+     flagged assumption A-37-05-1 with a Phase 46 handoff.
 
 4. **Does the challenge claim get its own committed transaction?**
    - What we know: the claim (step 5) and the consume (step 13) sit on either side of the provider
@@ -1019,6 +1044,11 @@ class StorePurchaseToken(SQLModel, table=True):
    - Recommendation: commit the claim in its own short transaction before the lookup. Record this
      explicitly — it is the reason a crashed attempt leaves a permanently-claimed dead row, which
      §6.2 says is the design.
+   - **RESOLVED — yes, as recommended.** **37-07 Task 1**: the claim gets its own transaction, committed before
+     the provider call, with no transaction open across `lookup_with_retry` (Pitfall 10, SHARED-INVARIANTS
+     § Locks). 37-07 requires a comment at that site stating the dead-row consequence outright, "because it
+     looks like an accident otherwise". The consume and the audit write happen later, in the separate consuming
+     transaction in `auth/creation.py`.
 
 ## Environment Availability
 
