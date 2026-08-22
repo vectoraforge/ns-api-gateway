@@ -149,7 +149,7 @@ is the wrong tenacity predicate — `retry_if_result` is the right one, and resu
 raises `RetryError` regardless of `reraise=True`, so a `retry_error_callback` is mandatory.
 
 **Primary recommendation:** Sequence the phase as (1) `uv lock` + `tenacity` dependency commit,
-(2) the `StorePurchaseToken` model + `SubscriptionProvider` enum, (3) the adapter + classifier +
+(2) the `StorePurchaseToken` model + `PurchaseProvider` enum, (3) the adapter + classifier +
 tenacity policy, (4) errors + registry + route + prepare handler, (5) the completion handler and its
 savepoint-wrapped consuming transaction, (6) the independent `resilience.py` conversion in its own
 revertible commit. Put criteria 3 and 4 in `tests/schema/`, which already owns a disposable scratch
@@ -312,7 +312,7 @@ uv sync
 | `auth/classifier.py` (name is discretion) | **new** | §02 step 9's closed providerData classifier + declaration match + `required_flow` derivation. |
 | `auth/retry.py` or inline | **new** | The one tenacity policy (`stop_after_attempt(3)`, `retry_if_result`, `retry_error_callback`). Shared idiom with `resilience.py` per D-05. |
 | `routers/auth.py` (name is discretion) | **new** | The route, the two mode handlers, the consuming transaction. |
-| `models/subscriptions.py` (name is discretion) | **new** | `SubscriptionProvider` enum + `StorePurchaseToken` model. |
+| `models/purchase_tokens.py` | **new** | `PurchaseProvider` enum + `StorePurchaseToken` model. **SUPERSEDED NAMES:** this row and Code Example 7 originally said `models/subscriptions.py` / `SubscriptionProvider`; 37-04-PLAN.md renamed them because `tests/unit/test_users.py`'s live D-16 guard forbids that file path and those symbols. The database type stays `core.subscription_provider`. Follow the plan's names, not this document's examples. |
 | `auth/registry.py` | edit | One `RouteMetadata` entry. Must land in the **same commit** as the router registration (`assert_route_enumeration` is set-equality at startup). |
 | `errors.py` | edit | Three appended classes + three `ErrorCode` Literal members. |
 | `app/dependencies.py` | edit | Expose adapter + challenge store to the handler. |
@@ -853,7 +853,7 @@ async def complete(session, ctx, identity, challenge_row, provider, provider_uid
                                          created_at=ctx.evaluated_at,
                                          updated_at=ctx.evaluated_at))
             # §02 step 10: minted EAGERLY on every branch, one row per store.
-            for store in (SubscriptionProvider.apple, SubscriptionProvider.google_play):
+            for store in (PurchaseProvider.apple, PurchaseProvider.google_play):
                 session.add(StorePurchaseToken(user_id=user.id, provider=store,
                                                identity_value=str(uuid4()),
                                                created_at=ctx.evaluated_at))
@@ -913,6 +913,12 @@ def anonymous_firebase_token(_app_config):
 
 ### Example 7: The `StorePurchaseToken` model over a PK-less table
 
+> **Names superseded by 37-04-PLAN.md.** The Python class is `PurchaseProvider` and the module
+> is `models/purchase_tokens.py`: `tests/unit/test_users.py`'s live D-16 guard forbids the old
+> `Subscription*` symbols and the `models/subscriptions.py` path. The PostgreSQL type keeps its
+> name, `core.subscription_provider`, which is why the explicit `name=`/`schema=` pair below is
+> mandatory rather than cosmetic. The plan is authoritative for identifiers and field options.
+
 ```python
 from enum import StrEnum
 from typing import Any, cast
@@ -922,13 +928,13 @@ from sqlalchemy import DateTime, Enum
 from sqlmodel import Field, SQLModel
 
 
-class SubscriptionProvider(StrEnum):
+class PurchaseProvider(StrEnum):
     """Mirrors `core.subscription_provider` -- exactly two values (migration:54)."""
     apple = "apple"
     google_play = "google_play"
 
 
-SubscriptionProviderType = cast(Any, Enum(SubscriptionProvider, name="subscription_provider",
+PurchaseProviderType = cast(Any, Enum(PurchaseProvider, name="subscription_provider",
                                           schema="core"))
 DateTimeType = cast(Any, DateTime(timezone=True))
 
@@ -944,7 +950,7 @@ class StorePurchaseToken(SQLModel, table=True):
     __table_args__ = {"schema": "core"}
 
     user_id: UUID = Field(foreign_key="core.users.id", primary_key=True)
-    provider: SubscriptionProvider = Field(sa_type=SubscriptionProviderType, primary_key=True)
+    provider: PurchaseProvider = Field(sa_type=PurchaseProviderType, primary_key=True)
     # A random opaque server-generated UUID: no PII, not derivable from identity, never rotated.
     identity_value: str = Field(unique=True)
     created_at: datetime = Field(sa_type=DateTimeType)
