@@ -3,8 +3,8 @@ __all__ = [
     "AnalyzeResponse", "AuthChallenge", "AuthEvent", "AuthEventResult", "AuthOperation", "Chat",
     "ChatRequest", "ChatResponse", "ChatRole", "ExamplesResponse", "ExternalIdentity",
     "FollowUpInput", "FollowUpResponse", "IdentityProvider", "IdentityState", "Issue", "Message",
-    "MessageRequest", "MessageResponse", "NativeClaimProvider", "RejectResponse", "User",
-    "UserMonthlyUsage",
+    "MessageRequest", "MessageResponse", "NativeClaimProvider", "PurchaseProvider",
+    "RejectResponse", "StorePurchaseToken", "User", "UserMonthlyUsage",
 ]
 
 from nativespeaker.api.models.api import (
@@ -41,5 +41,9 @@ from nativespeaker.api.models.llm import (
     FollowUpResponse,
     Issue,
     RejectResponse,
+)
+from nativespeaker.api.models.purchase_tokens import (
+    PurchaseProvider,
+    StorePurchaseToken,
 )
 from nativespeaker.api.models.users import User
