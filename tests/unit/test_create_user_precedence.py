@@ -39,12 +39,15 @@ from nativespeaker.api.app.dependencies import (
     get_session_factory,
 )
 from nativespeaker.api.app.errors import register_exception_handlers
+from nativespeaker.api.auth.adapters import ProviderDataEntry, ProviderDataOutcome
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import ClientIpBucketKind, PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.keys import HmacKeyring
 from nativespeaker.api.auth.registry import lookup
+from nativespeaker.api.auth.retry import FIREBASE_LOOKUP_ATTEMPTS
 from nativespeaker.api.config import HmacConfig
 from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult, AuthOperation
+from nativespeaker.api.models.identities import IdentityProvider
 from nativespeaker.api.routers import auth_router
 
 from .conftest import TEST_ISSUER
@@ -403,3 +406,152 @@ class TestTheFiveChallengeRejections:
         # column of a resolved linked identity.
         assert kwargs["actor_provider"] is None
         assert HANDLE not in repr(kwargs["details"])
+
+
+class TestTheProviderStageRejections:
+    """§02 completion steps 8 and 9 -- three outcomes, three client classes, all consuming.
+
+    **Collapsing any pair here is a client-contract bug the client cannot detect.**
+    `auth_required` (401) says the token no longer identifies a Firebase user;
+    `verification_temporarily_unavailable` (503) says the lookup itself failed and the whole
+    operation should be retried; `operation_not_allowed` (403) is a terminal statement about the
+    account. Telling a client with a deleted Firebase user to retry forever is exactly what
+    `user_not_found` mapping onto 503 would do, which is why those two are asserted at distinct
+    statuses with distinct internal results (T-37-38).
+    """
+
+    def test_user_not_found_is_auth_required_and_persists_nothing(
+            self, client, store, writer, context, keyring, creator, fake_firebase_adapter):
+        """A valid token for a deleted Firebase user must not create an account (T-37-37)."""
+        store.row = _issued_row(context, keyring)
+        fake_firebase_adapter.script(ProviderDataOutcome.user_not_found)
+
+        response = _complete(client)
+
+        assert response.status_code == 401
+        assert response.json() == {"code": "auth_required"}
+        assert writer.results == [AuthEventResult.firebase_user_unresolved]
+        # Definitive and non-retryable: it spends no further attempt.
+        assert len(fake_firebase_adapter.calls) == 1
+        assert creator.calls == []
+
+    def test_an_exhausted_retry_budget_is_verification_temporarily_unavailable(
+            self, client, store, writer, context, keyring, creator, fake_firebase_adapter):
+        """Three attempts, then the §7.1 exhaustion mapping -- and no `tenacity.RetryError`.
+
+        The call count is what proves the retry predicate is wired end to end rather than only in
+        37-02's isolated unit: a `retry_if_exception_type` predicate would match nothing here and
+        would silently turn the three-attempt budget into a one-attempt budget.
+        """
+        store.row = _issued_row(context, keyring)
+        fake_firebase_adapter.script(ProviderDataOutcome.retryable_failure)
+
+        response = _complete(client)
+
+        assert response.status_code == 503
+        assert response.json() == {"code": "verification_temporarily_unavailable"}
+        assert writer.results == [AuthEventResult.firebase_lookup_unavailable]
+        assert len(fake_firebase_adapter.calls) == FIREBASE_LOOKUP_ATTEMPTS == 3
+        assert creator.calls == []
+
+    def test_a_selection_failure_is_unavailable_on_its_first_attempt(
+            self, client, store, writer, context, keyring, creator, fake_firebase_adapter):
+        """An issuer mismatch fails closed and never falls back to another project -- so it is
+        definitive, spends one attempt, and lands on the same internal result as exhaustion."""
+        store.row = _issued_row(context, keyring)
+        fake_firebase_adapter.script(ProviderDataOutcome.selection_failure)
+
+        response = _complete(client)
+
+        assert response.status_code == 503
+        assert response.json() == {"code": "verification_temporarily_unavailable"}
+        assert writer.results == [AuthEventResult.firebase_lookup_unavailable]
+        assert len(fake_firebase_adapter.calls) == 1
+        assert creator.calls == []
+
+    @pytest.mark.parametrize("entries", [
+        # Both providers at once. There is no first recognized entry to take.
+        (ProviderDataEntry("google.com", "g-uid"), ProviderDataEntry("apple.com", "a-uid")),
+        # One unrecognized entry -- the exact shape the e2e email/password credential produces.
+        (ProviderDataEntry("password", "someone@example.test"),),
+        # Recognized, but with no uid: §02 makes the entry's non-empty uid the SOLE source of
+        # `provider_uid`, so a missing one is a malformed lookup, not an anonymous account.
+        (ProviderDataEntry("google.com", ""),),
+    ])
+    def test_a_rejecting_provider_data_shape_is_operation_not_allowed(
+            self, client, store, writer, context, keyring, creator, fake_firebase_adapter,
+            entries):
+        store.row = _issued_row(context, keyring)
+        fake_firebase_adapter.script(ProviderDataOutcome.ok, entries=entries)
+
+        response = _complete(client)
+
+        assert response.status_code == 403
+        assert response.json() == {"code": "operation_not_allowed"}
+        assert writer.results == [AuthEventResult.provider_not_linked]
+        # D-12 left the bounded cause with exactly two members; the third went with the declaration
+        # it described. No flow is named anywhere in the response.
+        assert writer.rows[0][1]["details"]["failure"]["cause"] == "invalid-shape"
+        assert len(fake_firebase_adapter.calls) == 1
+        assert creator.calls == []
+
+    def test_one_recognized_entry_with_a_uid_reaches_the_consuming_transaction(
+            self, client, store, context, keyring, creator, fake_firebase_adapter):
+        """The classifier's verdict is carried through unchanged; the router re-derives nothing."""
+        store.row = _issued_row(context, keyring)
+        fake_firebase_adapter.script(ProviderDataOutcome.ok,
+                                     entries=(ProviderDataEntry("google.com", "google-uid-1"),),
+                                     email="someone@example.test", email_verified=True)
+
+        response = _complete(client)
+
+        assert response.status_code == 200
+        assert response.json() == {"identity_provider": "google"}
+        assert len(creator.calls) == 1
+        assert creator.calls[0]["provider"] is IdentityProvider.google
+        assert creator.calls[0]["provider_uid"] == "google-uid-1"
+        assert creator.calls[0]["email"] == "someone@example.test"
+
+
+class TestEveryProviderStageRejectionConsumes:
+    """§02 step 13: every rejection at or after the Admin lookup consumes, so a retry needs a fresh
+    prepare (T-37-39). The audit row rides in the SAME transaction as the consumption, which is why
+    it is written in-transaction rather than standalone."""
+
+    @pytest.mark.parametrize("outcome,entries", [
+        (ProviderDataOutcome.user_not_found, ()),
+        (ProviderDataOutcome.retryable_failure, ()),
+        (ProviderDataOutcome.selection_failure, ()),
+        (ProviderDataOutcome.ok, (ProviderDataEntry("password", "someone@example.test"),)),
+    ])
+    def test_the_challenge_is_consumed_and_its_binding_cleared(
+            self, client, store, writer, context, keyring, fake_firebase_adapter,
+            outcome, entries):
+        store.row = _issued_row(context, keyring)
+        fake_firebase_adapter.script(outcome, entries=entries)
+
+        _complete(client)
+
+        assert store.row.consumed_at is not None
+        # Cleared in the same state transition -- which is why a later presentation of the same
+        # handle takes the already-used rejection rather than a mismatch.
+        assert store.row.preauth_subject_hash is None
+        assert writer.rows[0][0] == "in_transaction"
+        assert len(writer.rows) == 1
+
+    def test_a_replay_after_a_rejection_is_challenge_required_and_mints_nothing(
+            self, client, store, writer, context, keyring, creator, fake_firebase_adapter):
+        """There is no idempotent replay and no `challenge_replayed` result (§02 DELETIONS)."""
+        store.row = _issued_row(context, keyring)
+        fake_firebase_adapter.script(ProviderDataOutcome.user_not_found)
+
+        first = _complete(client)
+        second = _complete(client)
+
+        assert first.status_code == 401
+        _assert_challenge_required(second)
+        assert writer.results == [AuthEventResult.firebase_user_unresolved,
+                                  AuthEventResult.challenge_consumed]
+        assert creator.calls == []
+        # The second attempt performs no work at all: the provider was not read a second time.
+        assert len(fake_firebase_adapter.calls) == 1
