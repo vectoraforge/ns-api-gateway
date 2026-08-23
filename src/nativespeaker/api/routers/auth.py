@@ -65,7 +65,7 @@ from nativespeaker.api.errors import (
     VERIFICATION_TEMPORARILY_UNAVAILABLE,
     error_response,
 )
-from nativespeaker.api.models.auth import AuthEventResult, AuthOperation
+from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult, AuthOperation
 from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
 
 logger = structlog.get_logger()
@@ -160,7 +160,7 @@ async def create_user(body: CreateUserRequest | None = None,
     # `challenge_not_found`, not `invalid_request`: a deliberate asymmetry, not an oversight to
     # tidy up with a `.strip()` here.
     completion_handle: str = body_challenge_id  # ty: ignore[invalid-assignment]
-    return await _complete(session, context=context, identity=identity,
+    return await _complete(session, session_factory, context=context, identity=identity,
                            challenge_id=completion_handle,
                            challenge_store=challenge_store, audit_writer=audit_writer,
                            adapter=adapter)
@@ -272,7 +272,48 @@ def _prepare_details(context: RequestContext, *, linked: bool) -> dict:
         failure={"stage": "prepare_precheck"} if linked else {})
 
 
-async def _complete(session: AsyncSession, *,
+def _completion_details(context: RequestContext, *,
+                        result: AuthEventResult,
+                        stage: str,
+                        provider_data_read: bool,
+                        consumed: bool,
+                        cause: str | None = None) -> dict:
+    """§4.4's six-key object for a completion-mode **rejection**.
+
+    The successful completion's object is `auth/creation.py::_details`; this one describes the
+    attempts that never reached that transaction, so `mutation` reports only what actually changed
+    -- the challenge's lifecycle -- and reports it truthfully on both sides of the consumption
+    boundary rather than assuming it.
+
+    `cause` is the bounded `provider_not_linked` reason and is present for that result alone.
+    Absent everywhere else, rather than `None`-valued, so a reader cannot mistake "not applicable"
+    for "applicable and unknown".
+
+    The public challenge handle is not here, at any depth. The row is correlated on
+    `challenge_row_id`, and the redactor would drop the handle anyway.
+    """
+    failure: dict[str, object] = {"stage": stage}
+    if cause is not None:
+        failure["cause"] = cause
+    return build_details(
+        context={"route": context.route_metadata.path,
+                 "method": context.route_metadata.method,
+                 "operation": AuthOperation.create_user,
+                 "attempt_id": context.attempt_id,
+                 "prepare_mode": False,
+                 "completion_mode": True,
+                 "client_ip_bucket_kind": context.client_ip_bucket_kind},
+        verification={"provider_data_read": provider_data_read},
+        resolved={},
+        # Nothing business-side was written on any arm this builds for: §02 is explicit that a
+        # failed lookup and a rejected classification persist nothing at all.
+        mutation={"user_created": False,
+                  "identity_created": False,
+                  "challenge_consumed": consumed},
+        failure=failure)
+
+
+async def _complete(session: AsyncSession, session_factory, *,
                     context: RequestContext,
                     identity: LinkedIdentity | PreAuthIdentity,
                     challenge_id: str,
@@ -286,16 +327,44 @@ async def _complete(session: AsyncSession, *,
     check would be cheaper to run first.
     """
     # --- Steps 3-5, in one transaction that COMMITS before the provider call. ---
+    #
+    # **None of the five rejections below consumes anything**, and that is the part easiest to get
+    # backwards, so it is stated once here rather than repeated at each arm:
+    #
+    # * `challenge_not_found` has no row at all;
+    # * the identity and operation mismatches are rejected BEFORE the claim, on purpose, so a wrong
+    #   presenter can never burn the rightful user's in-flight challenge (§6.4, T-37-35);
+    # * the two claim losers never held a claim, so there is nothing for them to consume.
+    #
+    # Consumption begins at the Admin lookup and covers every rejection from there on.
     challenge = await challenge_store.locate(session, challenge_id)
     if challenge is None:
-        return _challenge_rejected("challenge_not_found")
+        # A definitive no-row. A database outage during the lookup is NOT this -- it raises out of
+        # `locate` and stays the ordinary infrastructure failure, because answering "no such
+        # challenge" to an unreachable database tells a legitimate client to throw away a challenge
+        # that exists. The raw malformed identifier is never logged.
+        return await _challenge_rejected(session, session_factory, context=context,
+                                         identity=identity, challenge=None,
+                                         result=AuthEventResult.challenge_not_found,
+                                         audit_writer=audit_writer)
 
-    if challenge_store.verify_binding(challenge, identity) is not None:
-        # Rejected BEFORE the claim, leaving the row unconsumed, so a wrong presenter can never
-        # burn the rightful user's in-flight challenge (§6.4, T-37-25).
-        return _challenge_rejected("challenge_binding_rejected")
+    # Every `ChallengeRejection` member's value is also an `AuthEventResult` member, precisely so a
+    # caller needs no private mapping table -- so this maps straight through by name. There is
+    # deliberately no `compare_digest` here either: `verify_binding` already routes the comparison
+    # through `HmacKeyring.actor_subject_matches`, and a second comparison is a second answer.
+    rejection = challenge_store.verify_binding(challenge, identity)
+    if rejection is not None:
+        return await _challenge_rejected(session, session_factory, context=context,
+                                         identity=identity, challenge=challenge,
+                                         result=AuthEventResult(rejection.value),
+                                         audit_writer=audit_writer)
     if challenge.operation is not AuthOperation.create_user:
-        return _challenge_rejected("challenge_operation_mismatch")
+        # D-12 removed step 6's provider-*variant* check, not this one. A challenge issued for a
+        # different operation and presented here is still step 4's rejection, and still pre-claim.
+        return await _challenge_rejected(session, session_factory, context=context,
+                                         identity=identity, challenge=challenge,
+                                         result=AuthEventResult.challenge_operation_mismatch,
+                                         audit_writer=audit_writer)
 
     if not await challenge_store.claim(session,
                                        challenge_id=challenge_id,
@@ -303,7 +372,21 @@ async def _complete(session: AsyncSession, *,
                                        now=context.evaluated_at):
         # The claim is the single serialization point and the only expiry evaluation anywhere. A
         # loser matched zero rows, mutated nothing, and performs no work at all from here.
-        return _challenge_rejected("challenge_claim_lost")
+        #
+        # The two reasons are distinguished by **re-reading the located row**, not by issuing a
+        # second conditional update -- `challenges.py:168-172` says so explicitly, and a second
+        # conditional update would be a second serialization point that can disagree with the
+        # first. `claimed_at` alone answers it: still NULL means the row is issued and the claim
+        # can only have failed its deadline; non-NULL means somebody else already holds it.
+        # Reading the row's expiry deadline here instead would be a second expiry evaluation,
+        # which is exactly what the store's WHERE exists to prevent -- and the deadline column is
+        # deliberately not named anywhere in this handler, so a grep for it stays a live detector.
+        await session.refresh(challenge)
+        lost = (AuthEventResult.challenge_expired if challenge.claimed_at is None
+                else AuthEventResult.challenge_consumed)
+        return await _challenge_rejected(session, session_factory, context=context,
+                                         identity=identity, challenge=challenge,
+                                         result=lost, audit_writer=audit_writer)
 
     # **This commit is load-bearing; see module docstring point 1.** The claim must be durable
     # before the provider call, or a crash during the lookup leaves the challenge unclaimed and a
@@ -338,20 +421,48 @@ async def _complete(session: AsyncSession, *,
     return _completion_response(result, provider)
 
 
-def _challenge_rejected(stage: str) -> Response:
+async def _challenge_rejected(session: AsyncSession, session_factory, *,
+                              context: RequestContext,
+                              identity: LinkedIdentity | PreAuthIdentity,
+                              challenge: AuthChallenge | None,
+                              result: AuthEventResult,
+                              audit_writer: AuditWriter) -> Response:
     """The five §6 challenge rejections collapse into one client class (§02's error table).
 
-    `challenge_required` for all of them, so completion is not a challenge-enumeration oracle: a
-    client cannot learn whether a handle was unknown, expired, already used, bound to somebody
-    else, or bound to another operation.
+    `challenge_required` for all of them -- byte-identical body and status -- so completion is not
+    a challenge-enumeration oracle: a client cannot learn whether a handle was unknown, expired,
+    already used, bound to somebody else, or bound to another operation. **Only the audit row
+    differs**, and it carries the specific internal result, which is never less specific than the
+    class returned (T-37-34).
 
-    **37-08 Task 1 owns the rest of this branch** -- the per-rejection internal
-    `core.auth_event_result`, its audit row, and its consumption disposition (an identity or
-    operation mismatch neither claims nor consumes; a claim loser has nothing to consume). What is
-    already correct here and must not regress: the class returned, and the fact that every check
-    above the claim runs before it.
+    None of the five consumes; see the disposition note at the call sites.
+
+    The row is written **standalone durable**, because no consuming transaction exists yet on any
+    of these arms -- the claim's transaction is rolled back first, so the writer's own session is
+    the only thing holding one. It has nothing to be atomic with, which is what "standalone" means.
     """
-    logger.warning("create_user_challenge_rejected", stage=stage)
+    # Read the correlation id BEFORE the rollback: SQLAlchemy expires every instance on rollback,
+    # and touching an expired attribute afterwards emits a lazy load off the event loop.
+    challenge_row_id = None if challenge is None else challenge.id
+    # The specific internal result, in the structured log only. The client sees one collapsed class
+    # and the public handle is never logged (§6.1).
+    logger.warning("create_user_challenge_rejected", stage=str(result))
+    await session.rollback()
+    await audit_writer.write_standalone(
+        session_factory,
+        operation=AuthOperation.create_user,
+        result=result,
+        actor_issuer=identity.issuer,
+        actor_subject=identity.subject,
+        # NULL for a pre-auth attempt: §4.2 admits `actor_provider` only from the stored provider
+        # column of a *resolved linked* identity, never from a classification this attempt made.
+        actor_provider=None,
+        # The NON-SECRET row id, where a row was located at all. The public capability handle never
+        # reaches an audit row, a log, or error text.
+        challenge_row_id=challenge_row_id,
+        details=_completion_details(context, result=result, stage="challenge_verification",
+                                    provider_data_read=False, consumed=False),
+        created_at=context.evaluated_at)
     return error_response(CHALLENGE_REQUIRED)
 
 

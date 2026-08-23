@@ -97,20 +97,26 @@ class _UnlinkedSession:
     direct read. `statements` is recorded so a case can assert *one* -- a second read appearing
     here would mean the handler had grown a second identity resolution, which §1.4 forbids.
 
-    `commit` and `rollback` raise, because no path this module drives may reach either: a
-    mode-signal rejection precedes everything, and prepare's own transaction is committed by
-    `get_db`'s teardown, which this app overrides away.
+    `commit` still raises, because no path this module drives may reach one: a mode-signal
+    rejection precedes everything, and prepare's own transaction is committed by `get_db`'s
+    teardown, which this app overrides away.
+
+    **`rollback` records rather than raising** (37-08). The two completion cases here reach
+    `challenge_not_found`, and that rejection now writes a standalone-durable audit row -- which
+    means releasing the read transaction `locate` opened first, exactly as prepare's already-linked
+    arm already did. The count is kept so the release stays observable rather than merely tolerated.
     """
 
     def __init__(self) -> None:
         self.statements: list[object] = []
+        self.rollbacks = 0
 
     async def exec(self, statement):
         self.statements.append(statement)
         return _EmptyResult()
 
     async def rollback(self):
-        raise AssertionError("no path in this module may roll back")
+        self.rollbacks += 1
 
     async def commit(self):
         raise AssertionError("no path in this module may commit")
