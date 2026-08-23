@@ -53,7 +53,11 @@ from nativespeaker.api.auth.audit import AuditWriter, build_details
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.classifier import classify_provider_data, email_to_persist
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.creation import create_account, resolve_existing_identity
+from nativespeaker.api.auth.creation import (
+    CLIENT_CLASS_FOR_RESULT,
+    create_account,
+    resolve_existing_identity,
+)
 from nativespeaker.api.auth.modesignal import ModeSignal, classify_mode_signal
 from nativespeaker.api.auth.retry import (
     LOOKUP_UNAVAILABLE_ERROR_CLASS,
@@ -61,7 +65,6 @@ from nativespeaker.api.auth.retry import (
     lookup_with_retry,
 )
 from nativespeaker.api.errors import (
-    ACCOUNT_UNAVAILABLE,
     AUTH_REQUIRED,
     CHALLENGE_REQUIRED,
     IDENTITY_ALREADY_LINKED,
@@ -599,13 +602,14 @@ def _completion_response(result: AuthEventResult, provider: IdentityProvider) ->
     The internal result is never client-visible and is never less specific than the class returned
     -- that asymmetry is the point of having both.
 
-    **37-09 owns the rejection arms** (the in-transaction re-resolution outcomes and the race
-    loser). The success arm is complete: one field, the classified provider, and nothing else.
+    The rejection arms key on `CLIENT_CLASS_FOR_RESULT`, exported by the transaction that produces
+    these results, so the mapping has exactly one definition. The local two-arm form this replaced
+    collapsed `provider_account_already_linked` onto `ACCOUNT_UNAVAILABLE`; §02 step 11 gives it
+    `operation_not_allowed` -- the same 403, but a different code and a different remediation.
+    The success arm is complete: one field, the classified provider, and nothing else.
     """
     if result is not AuthEventResult.succeeded:
         logger.warning("create_user_transaction_rejected", result=str(result))
-        return error_response(IDENTITY_ALREADY_LINKED
-                              if result is AuthEventResult.identity_already_linked
-                              else ACCOUNT_UNAVAILABLE)
+        return error_response(CLIENT_CLASS_FOR_RESULT[result])
     return JSONResponse(content=CompletionResponse(identity_provider=provider)
                         .model_dump(mode="json"))

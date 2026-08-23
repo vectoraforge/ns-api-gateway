@@ -180,7 +180,7 @@ class TestTheTwoModesDispatch:
         # mean the handler had grown an identity resolution of its own.
         assert len(session.statements) == 1
 
-    def test_a_body_handle_with_no_challenge_parameter_is_completion(self, client, store):
+    def test_a_body_handle_with_no_challenge_parameter_is_completion(self, client, store, session):
         response = client.post("/auth/create-user", json={"challenge_id": "a-handle"})
 
         # `challenge_required`, which only the completion branch can produce here.
@@ -188,6 +188,10 @@ class TestTheTwoModesDispatch:
         assert response.json() == {"code": "challenge_required"}
         assert store.located == ["a-handle"]
         assert store.issued == []
+        # The standalone-durable audit row requires releasing `locate`'s read transaction, so this
+        # arm rolls back exactly once. Asserted, not merely tolerated: the fake counts instead of
+        # raising, so without this a spurious rollback anywhere in the module would pass silently.
+        assert session.rollbacks == 1
 
 
 class TestTheInvalidRequestPartition:
@@ -238,7 +242,7 @@ class TestTheInvalidRequestPartition:
 
 
 class TestTheWhitespaceAsymmetry:
-    def test_a_padded_handle_reaches_completion_untouched(self, client, store):
+    def test_a_padded_handle_reaches_completion_untouched(self, client, store, session):
         """Deliberately **not** `invalid_request` -- and it must arrive byte-for-byte.
 
         `.strip()` in the classifier decides emptiness only; `locate` compares byte-for-byte, so a
@@ -251,6 +255,7 @@ class TestTheWhitespaceAsymmetry:
         assert response.status_code == 409
         assert response.json() == {"code": "challenge_required"}
         assert store.located == ["  a-handle  "]
+        assert session.rollbacks == 1
 
 
 class TestTheRejectionHasNoSideEffects:
