@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 3
+open_count: 7
 waived_count: 0
 fixed_count: 0
-total_count: 3
-last_updated: 2026-08-22T23:18:56.103Z
+total_count: 7
+last_updated: 2026-08-23T23:13:48.214Z
 ---
 
 # Broken Windows Ledger
@@ -18,6 +18,10 @@ last_updated: 2026-08-22T23:18:56.103Z
 | 1 | 36 | unrun-verify | src/nativespeaker/api/models/grants.py |  | No committed test round-trips AccessGrant/AccessTier/UserMonthlyUsage against the live schema; verified once by an uncommitted ad-hoc script (36-01 D3) | open |  | 2026-08-22T02:01:11.364Z |  |
 | 2 | 36 | stub | src/nativespeaker/api/quota.py |  | consume_quota implements §8.4 step 1 only; a caller holding an effective grant passes the gate uncharged until plan 36-04 lands steps 2-4 | open |  | 2026-08-22T02:31:48.290Z |  |
 | 3 | 37 | deviation | .planning/phases/37-post-auth-create-user/37-01-SUMMARY.md |  | Phase 40 lost its database-level provider binding for upgrade_anonymous_to_registered; replacement binding is unowned until Phase 40 plans it | open |  | 2026-08-22T23:18:56.103Z |  |
+| 4 | 37 | stub | src/nativespeaker/api/routers/auth.py |  | _lookup_rejected: user_not_found earns 503 where §02 earns 401 auth_required; no audit rows on the lookup/classifier rejections (owner: 37-08 Task 2) | open |  | 2026-08-23T23:13:47.905Z |  |
+| 5 | 37 | stub | src/nativespeaker/api/auth/creation.py |  | _insert_account: begin_nested savepoint has no except IntegrityError rollback arm, so a genuine UNIQUE (issuer, subject) race surfaces as a 500 (owner: 37-09 Task 1) | open |  | 2026-08-23T23:13:48.007Z |  |
+| 6 | 37 | stub | src/nativespeaker/api/routers/auth.py |  | _challenge_rejected: correct challenge_required class but no per-rejection internal result, audit row, or consumption disposition (owner: 37-08 Task 1) | open |  | 2026-08-23T23:13:48.109Z |  |
+| 7 | 37 | stub | src/nativespeaker/api/auth/creation.py |  | _result_for_existing: no blocked-user discrimination; a non-active row audits as historical_identity (owner: 37-09) | open |  | 2026-08-23T23:13:48.214Z |  |
 
 ````json
 [
@@ -55,6 +59,54 @@ last_updated: 2026-08-22T23:18:56.103Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-08-22T23:18:56.103Z",
+    "resolved_at": null
+  },
+  {
+    "id": 4,
+    "kind": "stub",
+    "phase": "37",
+    "file": "src/nativespeaker/api/routers/auth.py",
+    "line": null,
+    "description": "_lookup_rejected: user_not_found earns 503 where §02 earns 401 auth_required; no audit rows on the lookup/classifier rejections (owner: 37-08 Task 2)",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-08-23T23:13:47.905Z",
+    "resolved_at": null
+  },
+  {
+    "id": 5,
+    "kind": "stub",
+    "phase": "37",
+    "file": "src/nativespeaker/api/auth/creation.py",
+    "line": null,
+    "description": "_insert_account: begin_nested savepoint has no except IntegrityError rollback arm, so a genuine UNIQUE (issuer, subject) race surfaces as a 500 (owner: 37-09 Task 1)",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-08-23T23:13:48.007Z",
+    "resolved_at": null
+  },
+  {
+    "id": 6,
+    "kind": "stub",
+    "phase": "37",
+    "file": "src/nativespeaker/api/routers/auth.py",
+    "line": null,
+    "description": "_challenge_rejected: correct challenge_required class but no per-rejection internal result, audit row, or consumption disposition (owner: 37-08 Task 1)",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-08-23T23:13:48.109Z",
+    "resolved_at": null
+  },
+  {
+    "id": 7,
+    "kind": "stub",
+    "phase": "37",
+    "file": "src/nativespeaker/api/auth/creation.py",
+    "line": null,
+    "description": "_result_for_existing: no blocked-user discrimination; a non-active row audits as historical_identity (owner: 37-09)",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-08-23T23:13:48.214Z",
     "resolved_at": null
   }
 ]

@@ -249,7 +249,7 @@ Plans:
 **Goal:** Ship the only pre-auth-callable route — first-time account creation linking a verified Firebase `(issuer, subject)` to one new user plus exactly one active identity row.
 **Requirements:** CREATE-01 … CREATE-04
 **Depends on:** 34, 35
-**Plans:** 6/10 plans executed
+**Plans:** 7/10 plans executed
 **Success criteria:**
 
 1. An unlinked caller succeeds here and is rejected with `preauth_identity_not_allowed` on every other route
@@ -272,7 +272,7 @@ Plans:
 
 **Wave 3**
 
-- [ ] 37-07-PLAN.md — TRACER: end-to-end anonymous account creation, prepare + completion, registry entry and router in one commit
+- [x] 37-07-PLAN.md — TRACER: end-to-end anonymous account creation, prepare + completion, registry entry and router in one commit
 
 **Wave 4**
 
@@ -431,7 +431,7 @@ Plans:
 | 34. Schema | v2.0 | 4/4 | Complete    | 2026-08-20 |
 | 35. Foundation | v2.0 | 12/12 | Complete    | 2026-08-21 |
 | 36. Rebind Pre-existing Routes | v2.0 | 5/5 | Complete    | 2026-08-21 |
-| 37. POST /auth/create-user | v2.0 | 6/10 | In Progress|  |
+| 37. POST /auth/create-user | v2.0 | 7/10 | In Progress|  |
 | 38. POST /auth/sync | v2.0 | 0/? | Pending | — |
 | 39. GET /users/me | v2.0 | 0/? | Pending | — |
 | 40. POST /auth/upgrade-anonymous | v2.0 | 0/? | Pending | — |

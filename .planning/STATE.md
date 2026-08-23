@@ -1,21 +1,21 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Authentication & Entitlements (Phases 34-46)
+milestone_name: Authentication & Entitlements
 current_phase: 37
 current_phase_name: post-auth-create-user
 status: executing
-stopped_at: Completed 37-01-PLAN.md
-last_updated: "2026-08-22T23:18:50.488Z"
-last_activity: 2026-08-22
-last_activity_desc: Phase 37 execution started
-state_head: 74f719641dcb5c703b9d1e3311ad264ffb3ce4bb
+stopped_at: Completed 37-07-PLAN.md (the phase tracer)
+last_updated: "2026-08-23T23:13:31.750Z"
+last_activity: 2026-08-23
+last_activity_desc: 37-07 (the phase tracer) complete; waves 1-3 done, 37-08/09/10 remain
 progress:
   total_phases: 13
   completed_phases: 3
   total_plans: 31
-  completed_plans: 22
+  completed_plans: 28
   percent: 23
+state_head: 74f719641dcb5c703b9d1e3311ad264ffb3ce4bb
 ---
 
 # Project State
@@ -30,9 +30,28 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 37 (post-auth-create-user) — EXECUTING
-Plan: 2 of 10
+Plan: 8 of 10
 Status: Ready to execute
-Last activity: 2026-08-22 — Phase 37 execution started
+Last activity: 2026-08-23 — 37-07 (the phase tracer) complete; waves 1-3 done, 37-08/09/10 remain
+
+<!-- The plan counter was corrected from 3 to 8 on 2026-08-23. Waves 1 and 2 ran as parallel
+     worktree agents which deliberately do not write STATE.md (last-write-wins hazard), so the
+     counter never advanced with them and `state advance-plan` incremented a stale value. Eight is
+     disk truth: seven SUMMARY files exist (37-01..37-07), so 37-08 is next. -->
+
+## Wave 3 outcome (37-07, the tracer)
+
+`POST /auth/create-user` is registered, declared, and serving both modes end to end for the
+anonymous happy path. The architectural facts later plans build on, all proven against real
+PostgreSQL: the challenge claim commits in its own transaction **before** the provider read; no
+transaction is open across that read; the consuming transaction is a plain function
+(`auth/creation.py::create_account`) reachable without FastAPI; and `begin_nested()` wraps the
+business inserts so consumption and the audit row survive a rollback.
+
+Four rejection branches are deliberately unfinished and marked in code with their owning plan —
+see 37-07-SUMMARY.md § Known Stubs. Two have client-visible consequences and are 37-08/37-09's
+first work: `user_not_found` currently earns 503 where §02 earns 401, and a genuine
+`UNIQUE (issuer, subject)` race would surface as a 500 until the savepoint's rollback arm lands.
 
 ## Accumulated Context
 
@@ -95,10 +114,10 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-22T23:18:50.406Z
+**Last session:** 2026-08-23T23:13:31.731Z
 
 Last activity: 2026-03-26
-Stopped at: Completed 37-01-PLAN.md
+Stopped at: Completed 37-07-PLAN.md (the phase tracer)
 Resume file: None
 
 ## Performance Metrics
@@ -117,6 +136,7 @@ Resume file: None
 | Phase 36 P04 | 17min | 3 tasks | 7 files |
 | Phase 36 P05 | 12min | 3 tasks | 9 files |
 | Phase 37 P01 | ~20min | 3 tasks | 8 files |
+| Phase 37 P07 | 35min | 3 tasks | 12 files |
 
 ## Decisions
 
@@ -153,3 +173,6 @@ Resume file: None
 - [Phase ?]: 37-01: the four-arm Ruling-9.8 CHECK is now a bare operation-membership test over the four challenge-bearing operations; lifecycle and binding CHECKs left byte-identical
 - [Phase ?]: 37-01: Phase 40 (POST /auth/upgrade-anonymous) has LOST its database-level provider binding (was operation_variant IN ('google','apple')) and must supply its own at completion — flagged forward, explicitly not Phase 37's to solve
 - [Phase ?]: 37-01: CREATE-02 left unchecked — this plan only removes a column; plans 37-02/06/07/08 also claim it and are the ones that complete it (same treatment as 36-01/REBIND-05)
+- [Phase ?]: 37-07: POST /auth/create-user reads the identity variant off RequestContext rather than Depends(get_preauth_identity) — it is the only route admitting both variants, because §02 prepare step 1's already-linked rejection (409) is unreachable when the accessor raises 401 on a linked caller (A-37-07-1)
+- [Phase ?]: 37-07: the challenge claim commits in its own transaction before the Firebase read — a crash mid-lookup leaves a permanently-claimed dead row (§6.2's design), whereas holding the claim uncommitted would let a second attempt win it
+- [Phase ?]: 37-07: the consuming transaction is auth/creation.py::create_account, a plain function over (session + resolved facts), so 37-09 can drive it with two real sessions; begin_nested() wraps the business inserts
