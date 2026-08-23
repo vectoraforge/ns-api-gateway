@@ -56,6 +56,31 @@ _CHALLENGES = select(func.count()).select_from(AuthChallenge)
 _ALREADY_LINKED_EVENTS = (select(func.count()).select_from(AuthEvent)
                           .where(col(AuthEvent.result) == AuthEventResult.identity_already_linked))
 
+_GRANTS = select(func.count()).select_from(AccessGrant)
+_MONTHLY_USAGE = select(func.count()).select_from(UserMonthlyUsage)
+_USERS_CARRYING_A_NAME = (select(func.count()).select_from(User)
+                          .where(col(User.display_name).is_not(None)))
+
+
+async def _assert_step_10s_global_invariants(factory) -> None:
+    """The two §02 step 10 rules that hold after **every** completion in this file, on every branch.
+
+    They are asserted globally rather than per-user on purpose. A per-user check answers "this
+    account got no grant"; these answer "this *request* created no entitlement anywhere and named
+    nobody", which is the invariant §02 states -- and it is the form that would still catch a write
+    landing on the wrong row. The whole `core.*` set is visible here because each case runs inside
+    the per-test transaction with a clean database beneath it.
+
+    * **No entitlement whatsoever.** `POST /auth/create-user` mints no `core.access_grants` row and
+      no `core.user_monthly_usage` row -- not for anonymous, not for google, not for apple. A new
+      account correctly answers `quota_exceeded` on its first chat until Phase 41/42 ships.
+    * **`display_name` is never populated**, on any branch (§02 DELETIONS). Not defaulted, not
+      copied from the provider record, not derived from the address.
+    """
+    assert await _count(factory, _GRANTS) == 0
+    assert await _count(factory, _MONTHLY_USAGE) == 0
+    assert await _count(factory, _USERS_CARRYING_A_NAME) == 0
+
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheAnonymousHappyPath:
@@ -163,6 +188,8 @@ class TestTheAnonymousHappyPath:
         assert events[0].result is AuthEventResult.succeeded
         assert not _mentions(events[0].details, "challenge_id")
         assert handle not in repr(events[0].details)
+
+        await _assert_step_10s_global_invariants(_db_transaction)
 
 
 def _mentions(payload, needle: str) -> bool:
@@ -316,6 +343,7 @@ class TestCompletionRejectionsOnTheWire:
         assert await _count(_db_transaction,
                             _events_with(AuthEventResult.challenge_not_found)) == events_before + 1
         assert await _count(_db_transaction, _USERS) == users_before
+        await _assert_step_10s_global_invariants(_db_transaction)
 
     async def test_a_password_entry_is_operation_not_allowed_and_consumes_the_challenge(
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
@@ -364,6 +392,8 @@ class TestCompletionRejectionsOnTheWire:
         assert not _mentions(events[0].details, "challenge_id")
         assert handle not in repr(events[0].details)
 
+        await _assert_step_10s_global_invariants(_db_transaction)
+
     async def test_the_same_handle_replayed_after_a_rejection_mints_nothing(
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
         """No idempotent replay and no `challenge_replayed` result (§02 DELETIONS, T-37-36).
@@ -390,6 +420,7 @@ class TestCompletionRejectionsOnTheWire:
         assert second.status_code == 409
         assert second.json() == {"code": "challenge_required"}
         assert await _count(_db_transaction, _USERS) == users_before
+        await _assert_step_10s_global_invariants(_db_transaction)
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -415,3 +446,248 @@ class TestCreate01AdmittedHereAndRefusedEverywhereElse:
         # not admissible on an authenticated route.
         assert refused.status_code == 403
         assert refused.json() == {"code": "preauth_identity_not_allowed"}
+
+
+# ---------------------------------------------------------------------------
+# 37-10: the registered flow, §02 step 10's field rules, and the provider-account reservation.
+#
+# **D-09's substituted half, and why it is the right instrument for exactly these cases.** A real
+# google.com- or apple.com-linked Firebase account cannot be minted from a test: there is no REST
+# call that links a Google or Apple provider without a real consent screen, so a "real" registered
+# fixture would mean a hand-provisioned account living in shared CI state that nothing can
+# reproduce or reset. 37-CONTEXT.md § Deferred Ideas records that trade explicitly, and records the
+# one condition worth revisiting it under -- the fake drifting from the SDK's shape.
+#
+# What bounds that drift is the *other* half of the same decision: the genuinely anonymous fixture
+# below in `tests/e2e/conftest.py`, which mints a real Firebase user through
+# `accounts:signUp` and proves the real Admin SDK returns the empty providerData this file's
+# anonymous cases script. The one shape that CAN be minted reproducibly is minted for real; the
+# ones that cannot are scripted, and the scripting is confined to the provider seam.
+#
+# Nothing below required a source change. §02 step 10's email carrier -- `ProviderDataResult.email`
+# and `.email_verified` -- was built and recorded as a Phase 35 foundation amendment by 37-05, and
+# `auth/classifier.py::email_to_persist` is its single evaluation site. These cases script that
+# carrier; they do not extend it.
+# ---------------------------------------------------------------------------
+
+
+async def _prepare_and_complete(client, subject: str):
+    """One prepare then one completion for `subject`; return `(handle, completion_response)`.
+
+    The prepare is asserted here rather than in each caller: every case below is about what the
+    *completion* answers, and a case whose prepare had quietly failed would otherwise assert
+    against a completion for a handle that never existed.
+    """
+    prepare = await client.post("/auth/create-user?challenge=true", headers=_auth(subject))
+    assert prepare.status_code == 200, prepare.text
+    handle = prepare.json()["challenge_id"]
+    completion = await client.post("/auth/create-user",
+                                   json={"challenge_id": handle},
+                                   headers=_auth(subject))
+    return handle, completion
+
+
+async def _identity_and_user(factory, subject: str) -> tuple[ExternalIdentity, User]:
+    """The single identity row for `(TEST_ISSUER, subject)` and the `core.users` row it points at.
+
+    `.one()` on both, deliberately: "exactly one identity" is itself part of what step 10 promises,
+    so a second row must fail here rather than be silently narrowed away by a `.first()`.
+    """
+    async with factory() as session:
+        identity = (await session.exec(
+            select(ExternalIdentity).where(col(ExternalIdentity.issuer) == TEST_ISSUER,
+                                           col(ExternalIdentity.subject) == subject))).one()
+        user = (await session.exec(select(User).where(col(User.id) == identity.user_id))).one()
+    return identity, user
+
+
+async def _challenge_and_events(factory, handle: str):
+    """The challenge row for `handle` and every audit row correlated on its **row id**.
+
+    Correlating on `challenge_row_id` rather than on the handle is not a convenience: the public
+    handle is a secret capability and never reaches a row (§4.4), so the row id is the only
+    correlation key there is.
+    """
+    async with factory() as session:
+        challenge = (await session.exec(
+            select(AuthChallenge).where(col(AuthChallenge.challenge_id) == handle))).one()
+        events = (await session.exec(
+            select(AuthEvent).where(col(AuthEvent.challenge_row_id) == challenge.id))).all()
+    return challenge, events
+
+
+# The two recognized provider ids, verbatim from §02 step 9, each with the `uid` the classifier is
+# required to carry through to `provider_uid` unchanged.
+_REGISTERED_SHAPES = [
+    pytest.param("google.com", IdentityProvider.google, "g-123", id="google"),
+    pytest.param("apple.com", IdentityProvider.apple, "a-456", id="apple"),
+]
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheRegisteredFlow:
+    """§02 step 10 for a caller whose providerData carries exactly one recognized entry.
+
+    The anonymous branch is the tracer's; this is the other one, and the two differ in precisely
+    three columns -- `provider`, `provider_uid` and `registered_at`. Everything else, the
+    attribution tokens included, is common to both and is asserted here again rather than assumed
+    from the tracer: "both tokens are minted on the registered branch as well" is a claim about
+    *this* branch.
+    """
+
+    @pytest.mark.parametrize(("provider_id", "expected", "uid"), _REGISTERED_SHAPES)
+    async def test_one_recognized_entry_creates_a_registered_account(
+            self, create_user_client, _db_transaction, scripted_firebase_adapter,
+            provider_id, expected, uid):
+        subject = f"registered-{expected}-subject"
+        scripted_firebase_adapter.script(entries=(ProviderDataEntry(provider_id, uid),))
+        users_before = await _count(_db_transaction, _USERS)
+
+        handle, completion = await _prepare_and_complete(create_user_client, subject)
+
+        assert completion.status_code == 200, completion.text
+        # One field, the classified provider, and nothing else -- no backend token, no session, no
+        # generation counter, no attribution value (D-10 / D-11).
+        assert completion.json() == {"identity_provider": expected.value}
+        # §02 step 8: exactly one provider read per completion. A second would be invisible here
+        # without this assertion, because a repeat lookup returns the same scripted answer.
+        assert scripted_firebase_adapter.calls == [(TEST_ISSUER, subject)]
+        assert await _count(_db_transaction, _USERS) == users_before + 1
+
+        identity, user = await _identity_and_user(_db_transaction, subject)
+        assert identity.identity_state is IdentityState.active
+        assert identity.provider is expected
+        # §02 makes the matching entry's `uid` the SOLE source of `provider_uid` -- never a token
+        # claim, never client input, never an email or a display name. Asserting the exact value
+        # is what catches a derivation creeping in where a copy belongs.
+        assert identity.provider_uid == uid
+        # Non-NULL exactly for google and apple, NULL exactly for anonymous, with no third state.
+        assert user.registered_at is not None
+        assert user.display_name is None
+
+        async with _db_transaction() as session:
+            tokens = (await session.exec(
+                select(StorePurchaseToken)
+                .where(col(StorePurchaseToken.user_id) == user.id))).all()
+        assert len(tokens) == 2
+        assert {token.provider for token in tokens} == set(PurchaseProvider)
+        # Distinct, because each is a fresh `uuid4()` and nothing derived: two equal values would
+        # be a cross-store correlation key.
+        assert len({token.identity_value for token in tokens}) == 2
+
+        challenge, events = await _challenge_and_events(_db_transaction, handle)
+        assert challenge.consumed_at is not None
+        assert challenge.preauth_subject_hash is None
+        assert len(events) == 1
+        assert events[0].operation is AuthOperation.create_user
+        assert events[0].result is AuthEventResult.succeeded
+
+        await _assert_step_10s_global_invariants(_db_transaction)
+
+
+# §02 step 10's copy rule has two independent conditions and they are ANDed: a non-empty address
+# AND `emailVerified` true. Each row below fails at most one of them, so a case that started
+# passing because the rule had collapsed to a single condition would show up as exactly one
+# failure rather than as a suite that still agrees with itself.
+_EMAIL_CASES = [
+    pytest.param("verified@example.test", True, "verified@example.test", id="non-empty-and-verified"),
+    pytest.param("unverified@example.test", False, None, id="non-empty-but-unverified"),
+    pytest.param("", True, None, id="empty-though-verified"),
+    pytest.param("   ", True, None, id="whitespace-only-though-verified"),
+    pytest.param(None, True, None, id="absent-though-verified"),
+]
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestStep10sEmailCopyRule:
+    """The address that lands in `core.users.email`, over the wire and against a real column.
+
+    `tests/unit/` proves `email_to_persist` in isolation. What only this can prove is that the
+    resolved value actually travels -- adapter result -> classifier -> router -> `create_account`
+    -> the column -- without a second evaluation site quietly re-deciding it (T-37-34).
+
+    Both fields are driven through 37-05's already-committed `ProviderDataResult.email` /
+    `.email_verified`; nothing under `src/` changes for these cases.
+    """
+
+    @pytest.mark.parametrize(("email", "email_verified", "persisted"), _EMAIL_CASES)
+    async def test_the_address_is_copied_only_when_both_conditions_hold(
+            self, create_user_client, _db_transaction, scripted_firebase_adapter,
+            email, email_verified, persisted):
+        subject = f"email-rule-{email!r}-{email_verified}"
+        scripted_firebase_adapter.script(entries=(ProviderDataEntry("google.com", "g-email-case"),),
+                                         email=email,
+                                         email_verified=email_verified)
+
+        _, completion = await _prepare_and_complete(create_user_client, subject)
+
+        assert completion.status_code == 200, completion.text
+        assert completion.json() == {"identity_provider": "google"}
+
+        _, user = await _identity_and_user(_db_transaction, subject)
+        # Exactly as the provider gave it when it is copied at all -- not lowercased, not trimmed.
+        assert user.email == persisted
+        assert user.display_name is None
+        assert user.registered_at is not None
+
+        await _assert_step_10s_global_invariants(_db_transaction)
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheProviderAccountReservation:
+    """§02 step 11 on the wire: one provider account, one identity, forever.
+
+    `tests/unit/test_conflict_classification.py` proves that `ix_external_identities_provider_account`
+    maps to `provider_account_already_linked`. What is proved here is that the index really fires
+    for a second subject presenting the same `uid` -- against real PostgreSQL, through the real
+    savepoint arm, ending in the real 403.
+
+    **Retirement never frees a provider account**, which is why the historical variant exists. The
+    index is partial on `provider_uid IS NOT NULL` and says nothing about `identity_state`, so a
+    tombstoned row still holds its reservation. The alternative reading -- that a retired identity
+    releases its Google account for re-linking to a fresh `core.users` row -- is exactly the silent
+    account-takeover path the reservation exists to close.
+    """
+
+    @pytest.mark.parametrize("owner_state", [IdentityState.active, IdentityState.historical],
+                             ids=["owner-active", "owner-historical"])
+    async def test_a_reserved_provider_account_refuses_a_second_subject(
+            self, create_user_client, _db_transaction, scripted_firebase_adapter, owner_state):
+        _, owner = await seed_identity(_db_transaction,
+                                       issuer=TEST_ISSUER,
+                                       subject=f"provider-account-owner-{owner_state}",
+                                       identity_state=owner_state,
+                                       provider=IdentityProvider.google)
+        # Read back rather than reconstructed: `seed_identity` derives `provider_uid` itself, and a
+        # second derivation here would silently stop colliding the day the helper changes.
+        assert owner.provider_uid is not None
+        scripted_firebase_adapter.script(
+            entries=(ProviderDataEntry("google.com", owner.provider_uid),))
+        subject = f"provider-account-claimant-{owner_state}"
+        users_before = await _count(_db_transaction, _USERS)
+
+        handle, completion = await _prepare_and_complete(create_user_client, subject)
+
+        # 403, and this code rather than `account_unavailable`: the same status, a different
+        # remediation. The caller's Firebase account is already someone's; support, not retry.
+        assert completion.status_code == 403, completion.text
+        assert completion.json() == {"code": "operation_not_allowed"}
+
+        # Nothing partial survived the conflict: no user row, no identity row for the claimant.
+        assert await _count(_db_transaction, _USERS) == users_before
+        async with _db_transaction() as session:
+            claimant_rows = (await session.exec(
+                select(ExternalIdentity).where(col(ExternalIdentity.issuer) == TEST_ISSUER,
+                                               col(ExternalIdentity.subject) == subject))).all()
+        assert claimant_rows == []
+
+        challenge, events = await _challenge_and_events(_db_transaction, handle)
+        # §02 step 13: a rejection at or after the provider read consumes. A retry needs a fresh
+        # prepare -- and will earn the same answer.
+        assert challenge.consumed_at is not None
+        assert challenge.preauth_subject_hash is None
+        assert len(events) == 1
+        assert events[0].operation is AuthOperation.create_user
+        assert events[0].result is AuthEventResult.provider_account_already_linked
+
+        await _assert_step_10s_global_invariants(_db_transaction)
