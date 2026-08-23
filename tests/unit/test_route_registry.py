@@ -336,3 +336,45 @@ class TestEnumerateRegistered:
         registered, problems = enumerate_registered(app)
         assert registered == {("GET", "/m"), ("POST", "/m")}
         assert problems == []
+
+
+class TestCreate01TheProductionPreAuthDeclaration:
+    """CREATE-01's structural half, asserted against the **shipped** table.
+
+    `TestCondition6IllegalPreAuthDeclaration` above proves the assertion rejects a wrong
+    declaration, but it builds its own registry to do so -- so it would keep passing if the real
+    table declared the flag nowhere, or declared it on nothing at all. This class asserts the fact
+    itself: the production `REGISTRY` carries exactly one pre-auth-callable route, and it is the
+    one §02 names.
+
+    Why it matters more than it looks: `preauth_callable` is what admits a caller the barrier
+    resolved to **no identity row**. Every other authenticated route answers such a caller
+    `preauth_identity_not_allowed`. A second route acquiring the flag would silently open an
+    unlinked-caller path through a handler written on the assumption that a user row exists.
+    """
+
+    def test_exactly_one_production_route_is_preauth_callable(self):
+        declared = [(entry.method, entry.path) for entry in REGISTRY if entry.preauth_callable]
+
+        assert declared == [("POST", "/auth/create-user")]
+
+    def test_that_route_carries_the_create_user_operation_and_is_challenge_bearing(self):
+        entry = lookup("POST", "/auth/create-user")
+
+        assert entry is not None
+        assert entry.operation is AuthOperation.create_user
+        assert entry.challenge_bearing is True
+        # `authenticated`, not a category of its own: condition 8 rejects a non-None operation on
+        # any other category, and the FLAG -- not the category -- is what admits the unlinked
+        # caller. The barrier still verifies the token here like everywhere else.
+        assert entry.category is Category.authenticated
+
+    def test_the_operation_is_mapped_by_exactly_one_route(self):
+        """Condition 8's uniqueness, asserted as a fact rather than only as a rejection.
+
+        Phase 40 registers `upgrade_anonymous_to_registered` and must not reuse this operation.
+        """
+        mapped = [(entry.method, entry.path) for entry in REGISTRY
+                  if entry.operation is AuthOperation.create_user]
+
+        assert mapped == [("POST", "/auth/create-user")]

@@ -15,6 +15,11 @@ from nativespeaker.api.app.dependencies import (
     get_linked_identity,
 )
 from nativespeaker.api.app.errors import register_exception_handlers
+from nativespeaker.api.auth.adapters import (
+    ProviderDataEntry,
+    ProviderDataOutcome,
+    ProviderDataResult,
+)
 from nativespeaker.api.auth.context import LinkedIdentity
 from nativespeaker.api.auth.verification import VerificationResult, bounded_reason_for, claims_from_payload
 from nativespeaker.api.database import ChatsDB
@@ -181,3 +186,54 @@ def client(mock_chats_db, service):
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client
+
+
+# ---------------------------------------------------------------------------
+# The shared §7.1 provider-seam fake (37-07 Task 3)
+#
+# It lives here rather than in a per-test module because every substituted create-user test needs
+# it: this phase's mode-signal, precedence and transaction suites, 37-08's rejection matrix, and
+# 37-10's step-10 email cases. `tests/e2e/conftest.py` imports it too, for the same reason it
+# already imports `make_test_verifier` from this file -- `pythonpath = ["."]` makes both packages
+# importable, and two copies of a fake are two things that can drift apart.
+# ---------------------------------------------------------------------------
+
+
+class FakeFirebaseAdapter:
+    """A stand-in for the provider seam whose answer the caller writes.
+
+    Scriptable on **all four** of `ProviderDataResult`'s fields -- `outcome`, `entries`, `email`
+    and `email_verified`. The last two are not optional extras: §02 step 10's copy rule reads that
+    pair, and a fake that could not vary them would send 37-10 looking for a second fake.
+
+    `calls` records every `(issuer, subject)` pair, so a test can assert both *that* the provider
+    was read and *how often*. §02 step 8 pins exactly one read per completion, and only a
+    `retryable_failure` may ever spend more -- an assertion on `len(calls)` is what keeps a future
+    stray second read visible instead of merely slow.
+
+    `async def`, matching the concrete adapter rather than the Protocol: `FirebaseAdminLookup`
+    offloads its blocking SDK call to a threadpool and is therefore awaitable, and `auth/retry.py`
+    awaits whatever it is handed. A synchronous fake would pass against itself and fail against
+    production wiring.
+    """
+
+    def __init__(self) -> None:
+        self.result = ProviderDataResult(ProviderDataOutcome.ok)
+        self.calls: list[tuple[str, str]] = []
+
+    def script(self, outcome: ProviderDataOutcome = ProviderDataOutcome.ok, *,
+               entries: tuple[ProviderDataEntry, ...] = (),
+               email: str | None = None,
+               email_verified: bool = False) -> None:
+        self.result = ProviderDataResult(outcome, entries,
+                                         email=email, email_verified=email_verified)
+
+    async def get_user_provider_data(self, issuer: str, subject: str) -> ProviderDataResult:
+        self.calls.append((issuer, subject))
+        return self.result
+
+
+@pytest.fixture
+def fake_firebase_adapter() -> FakeFirebaseAdapter:
+    """A fresh fake per test, defaulting to `ok` with empty providerData -- the anonymous shape."""
+    return FakeFirebaseAdapter()
