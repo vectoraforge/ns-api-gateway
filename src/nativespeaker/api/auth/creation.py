@@ -29,28 +29,73 @@ inserts is what keeps the outer transaction live across a conflict. This was dis
 empirically against PostgreSQL 17.11 under that harness (37-RESEARCH Pitfall 1 / Pattern 3) -- it is
 settled, and not to be re-litigated into a consume-first conditional update.
 
-**What is not here yet.** The `except IntegrityError` arm that classifies a conflict by constraint
-name and rolls back *to* the savepoint belongs to 37-09, which owns conflict discrimination and both
-race proofs. The savepoint is built here regardless, because the transaction's shape is the
-architectural fact the tracer exists to prove and retrofitting it later would move every line in
-this function.
+**The database is the only race arbiter, and the constraint that fired is the only discriminator.**
+Two completions can both observe an unlinked subject; nothing in this module tries to stop that,
+and nothing may be added that does. The loser is whoever the `INSERT` rejects, and *which* rule
+rejected it decides what the caller is told -- so the arm below reads the constraint name off the
+driver exception rather than inspecting the message text, which is brittle and locale-fragile. See
+`RACE_CONSTRAINT_NAMES` for the mapping and for what happens to a name nobody mapped.
 """
 from datetime import datetime
 from uuid import UUID, uuid4
 
 import structlog
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.audit import AuditWriter, build_details
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
+from nativespeaker.api.errors import (
+    ACCOUNT_UNAVAILABLE,
+    IDENTITY_ALREADY_LINKED,
+    OPERATION_NOT_ALLOWED,
+    ErrorClass,
+)
 from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult, AuthOperation
 from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.models.purchase_tokens import PurchaseProvider, StorePurchaseToken
 from nativespeaker.api.models.users import User
 
 logger = structlog.get_logger()
+
+# §02 step 12's two arbiters over `core.external_identities`, by the names PostgreSQL reports for
+# them. The migration names neither rule explicitly, so both names below are *generated* -- which
+# means they are not a stable contract and must never be trusted on the strength of the pattern
+# alone. `tests/schema/test_create_atomicity.py` reads the live names out of `pg_constraint` and
+# `pg_class` and asserts they still equal these literals, so a migration that names a constraint
+# explicitly breaks a test rather than silently misclassifying a conflict as an unmapped one.
+#
+#   external_identities_issuer_subject_key -> UNIQUE (issuer, subject)
+#   external_identities_user_id_key        -> UNIQUE (user_id)
+#
+# Both mean the same thing to the caller: an account already exists for this identity, reconcile it
+# through `/auth/sync` rather than creating a second one.
+RACE_CONSTRAINT_NAMES = frozenset({
+    "external_identities_issuer_subject_key",
+    "external_identities_user_id_key",
+})
+
+# §02 step 11's conflict, and a standalone PARTIAL UNIQUE INDEX rather than a table constraint --
+# `UNIQUE (issuer, provider, provider_uid) WHERE provider_uid IS NOT NULL`. asyncpg reports an index
+# by name exactly as it reports a constraint, which is what makes one discriminator sufficient for
+# both. This one is terminal for the caller and routes to support; keeping it apart from the two
+# above is a client-contract requirement, not a nicety.
+PROVIDER_ACCOUNT_INDEX_NAME = "ix_external_identities_provider_account"
+
+# Every internal result this transaction can return that is not `succeeded`, and the client class it
+# earns. Declared here, beside the code that produces the results, so the two cannot drift: the
+# router maps the returned result onto a class and never re-derives it.
+#
+# `historical_identity` and `blocked_user` deliberately share one class -- §02 makes them mutually
+# indistinguishable to a client, and only the audited internal result tells them apart.
+CLIENT_CLASS_FOR_RESULT: dict[AuthEventResult, ErrorClass] = {
+    AuthEventResult.identity_already_linked: IDENTITY_ALREADY_LINKED,
+    AuthEventResult.provider_account_already_linked: OPERATION_NOT_ALLOWED,
+    AuthEventResult.historical_identity: ACCOUNT_UNAVAILABLE,
+    AuthEventResult.blocked_user: ACCOUNT_UNAVAILABLE,
+}
 
 
 async def create_account(session: AsyncSession, *,
@@ -82,7 +127,7 @@ async def create_account(session: AsyncSession, *,
         # §02 step 10's three no-mutation arms. The prepare-time pre-check is racy and never
         # authoritative, so this is the resolution that decides -- and it decides for a row that
         # may have appeared between prepare and now.
-        result = _result_for_existing(existing)
+        result = await _result_for_existing(session, existing)
 
     # Both of the following run on the outer transaction, on success and rejection alike (§02 step
     # 13: every rejection at or after the provider read consumes). Ordering matters only in that
@@ -134,20 +179,73 @@ async def resolve_existing_identity(session: AsyncSession, *,
     return (await session.exec(statement)).first()
 
 
-def _result_for_existing(existing: ExternalIdentity) -> AuthEventResult:
+def classify_insert_conflict(exc: IntegrityError) -> AuthEventResult:
+    """Which business outcome a rejected `INSERT` earned -- or nothing, loudly.
+
+    Exactly three constraint names are business outcomes here. Every other name, including the
+    provider/provider_uid agreement CHECK (`external_identities_check`, which §02 step 10 derives
+    `provider_uid` specifically so as not to reach), is a defect in this service rather than a
+    statement about the caller's account -- so it re-raises. Swallowing an unmapped conflict as a
+    business branch is the failure this function exists to prevent: it would convert a programming
+    error into a plausible, permanent-looking answer that tells the client to do the wrong thing.
+
+    Re-raising the original exception rather than a fresh one keeps the driver's own diagnostics --
+    the constraint, the detail line, the statement -- attached to the traceback that surfaces.
+    """
+    name = _conflicting_constraint_name(exc)
+    if name in RACE_CONSTRAINT_NAMES:
+        return AuthEventResult.identity_already_linked
+    if name == PROVIDER_ACCOUNT_INDEX_NAME:
+        return AuthEventResult.provider_account_already_linked
+    raise exc
+
+
+def _conflicting_constraint_name(exc: IntegrityError) -> str | None:
+    """The `constraint_name` the driver reported, walking down to the exception that carries it.
+
+    SQLAlchemy's `IntegrityError.orig` is the dialect's own wrapper and the asyncpg exception is
+    its `__cause__`, so the walk is normally one step; it is written as a loop rather than a fixed
+    `orig.__cause__` because a driver or dialect that nests one level deeper would otherwise turn
+    every conflict into an unmapped re-raise. `None` when nothing in the chain carries one, which
+    the caller treats as unmapped.
+
+    Reading a structured field off the driver exception is the whole point. The alternative --
+    matching against the rendered message -- depends on PostgreSQL's message wording and on the
+    server's `lc_messages`, and a substring match would silently accept the wrong one of two rules
+    that name the same table.
+    """
+    cause: BaseException | None = exc.orig
+    while cause is not None and not hasattr(cause, "constraint_name"):
+        cause = cause.__cause__
+    return getattr(cause, "constraint_name", None)
+
+
+async def _result_for_existing(session: AsyncSession,
+                               existing: ExternalIdentity) -> AuthEventResult:
     """Map an already-present identity row onto its internal result. No mutation on any arm.
 
     `!= active` rather than `== historical`, so a NULL or a future enum member fails closed on the
     same branch instead of falling through into a creation the row forbids -- the strict form
     `auth/identity.py` uses for the same comparison.
 
-    The blocked-user arm is 37-09's: distinguishing it needs the joined `core.users` row, and this
-    read deliberately fetches one table. Both arms surface identically to the client anyway
-    (`account_unavailable`, §02's mutually-indistinguishable pair), so the delta is which internal
-    result is audited, not what the caller is told.
+    An active row costs one further read, of its `core.users` row, because `blocked_user` and
+    `identity_already_linked` are different internal results and the identity row alone cannot tell
+    them apart. That read is issued only on this arm: a non-active row is already decisive, and a
+    second query to reach the same answer would be work spent to learn nothing. `is not True` is
+    the barrier's positive test, so an unexpected value rejects rather than being read as
+    permission -- and an absent user row, which the FK's `ON DELETE RESTRICT` makes unreachable,
+    fails closed on the same branch. §02's rule there is explicit: refuse, and never invent or
+    reassign an identity to repair it.
+
+    `blocked_user` and `historical_identity` surface identically to the client
+    (`account_unavailable`, §02's mutually-indistinguishable pair). The delta is what is audited.
     """
     if existing.identity_state != IdentityState.active:
         return AuthEventResult.historical_identity
+
+    user = (await session.exec(select(User).where(col(User.id) == existing.user_id))).first()
+    if user is None or user.active is not True:
+        return AuthEventResult.blocked_user
     return AuthEventResult.identity_already_linked
 
 
@@ -156,7 +254,7 @@ async def _insert_account(session: AsyncSession, *,
                           identity: LinkedIdentity | PreAuthIdentity,
                           provider: IdentityProvider,
                           provider_uid: str | None,
-                          email: str | None) -> tuple[UUID, AuthEventResult]:
+                          email: str | None) -> tuple[UUID | None, AuthEventResult]:
     """The three business inserts, inside one savepoint. Either all land or none does.
 
     `registered_at` is NULL for anonymous and the request's evaluation time otherwise -- §02 step
@@ -167,9 +265,42 @@ async def _insert_account(session: AsyncSession, *,
     `display_name` is never populated. Not defaulted, not copied from the provider record, not
     derived from the address: §02's DELETIONS list forbids it outright, and the column's absence
     from every construction below is the enforcement.
+
+    **Why the savepoint, and why it may not be simplified away.** §02 step 12 requires the challenge
+    consumption and the rejected audit row to *survive* a rolled-back business insert. PostgreSQL
+    aborts the entire transaction on a failed statement, and SQLAlchemy mirrors that by refusing
+    every further statement until an explicit rollback -- so without a savepoint the consume and the
+    audit write that follow a conflict both raise `PendingRollbackError`, the commit raises too, and
+    the attempt returns exactly the generic 500 step 12 forbids while losing the audit row that
+    records the rejection. Rolling back *to* the savepoint discards the three inserts and leaves the
+    **outer** transaction live, which is what lets the caller finish normally. Consuming earlier in
+    the same transaction does not help: the abort would roll the consume back too. This was settled
+    empirically against PostgreSQL 17.11 under this project's e2e harness configuration
+    (37-RESEARCH Pitfall 1 / Pattern 3) -- it is a correctness requirement, not a tradeoff.
+
+    All **three** inserts share the one savepoint, including the attribution tokens: a conflict on
+    the third must undo the first two, or the account is the partial one §02 forbids.
     """
     savepoint = await session.begin_nested()
+    try:
+        return await _flush_account(session, savepoint,
+                                    evaluated_at=evaluated_at, identity=identity,
+                                    provider=provider, provider_uid=provider_uid, email=email)
+    except IntegrityError as conflict:
+        # Rollback FIRST, classify second. Until the savepoint is released the session refuses
+        # every further statement, so a classifier that raised before this line would leave the
+        # outer transaction poisoned and take the consume and the audit row down with it.
+        await savepoint.rollback()
+        return None, classify_insert_conflict(conflict)
 
+
+async def _flush_account(session: AsyncSession, savepoint, *,
+                         evaluated_at: datetime,
+                         identity: LinkedIdentity | PreAuthIdentity,
+                         provider: IdentityProvider,
+                         provider_uid: str | None,
+                         email: str | None) -> tuple[UUID, AuthEventResult]:
+    """The inserts themselves, so the arm above reads as one rollback around one body."""
     user = User(email=email,
                 registered_at=None if provider is IdentityProvider.anonymous else evaluated_at,
                 created_at=evaluated_at,

@@ -21,12 +21,15 @@ The savepoint's *durability* half -- that the consumption and the rejected audit
 rolled-back business insert -- is not provable against a stub and is not attempted here. It is
 `tests/schema/test_create_atomicity.py`'s, against a real committing PostgreSQL.
 """
+import ast
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from nativespeaker.api.auth import creation
 from nativespeaker.api.auth.context import ClientIpBucketKind, PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.creation import (
     CLIENT_CLASS_FOR_RESULT,
@@ -330,3 +333,79 @@ class TestTheReResolutionsThreeNoMutationArms:
         _, session, _, _ = await _run([_identity_row(state=IdentityState.historical)])
 
         assert len(session.statements) == 1
+
+
+# --------------------------------------------------------------------------------------------
+# Structural guards over `auth/creation.py` itself.
+#
+# These read the module's **code** with the comments and docstrings removed, which is the only
+# form in which "the module does not use X" is a true statement about behaviour. A plain text
+# search cannot express it: this module's prose says, at length, that serializable isolation and
+# advisory locks are *not* used and may not be added -- the exact documentation §02 step 12 wants
+# preserved -- and a grep for those words would be satisfied only by deleting it. Stripping to
+# code first keeps both the prohibition and its explanation.
+# --------------------------------------------------------------------------------------------
+
+_CREATION_SOURCE = Path(creation.__file__).read_text()
+
+
+class _StripDocstrings(ast.NodeTransformer):
+    """Drop the leading string expression from every module, class and function body."""
+
+    def _strip(self, node):
+        self.generic_visit(node)
+        body = node.body
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
+                and isinstance(body[0].value.value, str):
+            node.body = body[1:] or [ast.Pass()]
+        return node
+
+    visit_Module = _strip
+    visit_ClassDef = _strip
+    visit_FunctionDef = _strip
+    visit_AsyncFunctionDef = _strip
+
+
+def _code_only(source: str) -> str:
+    """The module's executable text: comments dropped by the parse, docstrings dropped above."""
+    return ast.unparse(_StripDocstrings().visit(ast.parse(source)))
+
+
+class TestTheModuleUsesNoSecondRaceArbiter:
+    """§02 step 12: the UNIQUE constraints are the sole arbiters, and nothing else may be added."""
+
+    @pytest.mark.parametrize("forbidden", ["serializable", "advisory_lock", "pg_advisory",
+                                           "isolation_level", "for update", "select_for_update"])
+    def test_no_second_serialization_mechanism_appears_in_the_code(self, forbidden):
+        """A distributed lock, an advisory lock, a stricter isolation level or a row lock would
+        each be a second arbiter that can disagree with the first."""
+        assert forbidden not in _code_only(_CREATION_SOURCE).lower()
+
+    def test_conflicts_are_never_discriminated_by_message_text(self):
+        """The discriminator is the driver's structured `constraint_name` field. Rendering the
+        exception and matching on the result depends on the server's `lc_messages` and would
+        happily accept either of two rules that name the same table (T-37-44)."""
+        code = _code_only(_CREATION_SOURCE)
+        assert "str(exc" not in code
+        assert "str(e)" not in code
+
+
+class TestTheSavepointRollbackArmIsStructurallyPresent:
+    """T-37-42: without this arm a conflict poisons the session and the audit row is lost."""
+
+    def test_the_business_inserts_open_a_savepoint(self):
+        assert "begin_nested" in _code_only(_CREATION_SOURCE)
+
+    def test_an_integrity_error_handler_rolls_back_to_the_savepoint(self):
+        """Asserted on the handler rather than on the file, so a `savepoint.rollback()` sitting
+        somewhere the conflict never reaches would not satisfy it."""
+        tree = ast.parse(_CREATION_SOURCE)
+        handlers = [node for node in ast.walk(tree)
+                    if isinstance(node, ast.ExceptHandler)
+                    and isinstance(node.type, ast.Name) and node.type.id == "IntegrityError"]
+        assert handlers, "no `except IntegrityError` arm in auth/creation.py"
+
+        rollbacks = [node for handler in handlers for node in ast.walk(handler)
+                     if isinstance(node, ast.Attribute) and node.attr == "rollback"
+                     and isinstance(node.value, ast.Name) and node.value.id == "savepoint"]
+        assert rollbacks, "an `except IntegrityError` arm that does not roll back to the savepoint"
