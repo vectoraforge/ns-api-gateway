@@ -83,6 +83,18 @@ REGISTRY: tuple[RouteMetadata, ...] = (
     RouteMetadata(method="POST", path="/chats/{chat_id}", category=Category.authenticated,
                   quota_checked=True),
     RouteMetadata(method="DELETE", path="/chats/{chat_id}", category=Category.authenticated),
+    # Phase 37 / spec 02-create-user.md. The one route in the whole table that may carry
+    # `preauth_callable` -- condition 6 above fails boot on any other entry declaring it, and
+    # `_PREAUTH_CALLABLE_ROUTE` is the pin.
+    #
+    # `category` is `authenticated`, not a fourth category and not `public`: condition 8 rejects a
+    # non-`None` `operation` on any other category, and the flag -- not the category -- is what
+    # admits the unlinked caller (`auth/identity.py:87-88`). The barrier still verifies the token
+    # on this route like every other one; what `preauth_callable` changes is only what happens when
+    # that verified pair resolves to no identity row.
+    RouteMetadata(method="POST", path="/auth/create-user", category=Category.authenticated,
+                  operation=AuthOperation.create_user, preauth_callable=True,
+                  challenge_bearing=True),
 )
 
 _INDEX: dict[tuple[str, str], RouteMetadata] = {(e.method, e.path): e for e in REGISTRY}

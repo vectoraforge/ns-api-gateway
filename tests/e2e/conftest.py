@@ -12,6 +12,11 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from unit.conftest import make_test_verifier
 
 from nativespeaker.api.app.main import app
+from nativespeaker.api.auth.adapters import (
+    ProviderDataEntry,
+    ProviderDataOutcome,
+    ProviderDataResult,
+)
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.models import (
     AccessGrant,
@@ -138,6 +143,63 @@ def stub_verifier(_app_lifespan):
         yield _app_lifespan.state.jwt_verifier
     finally:
         _app_lifespan.state.jwt_verifier = original
+
+
+class ScriptedFirebaseAdapter:
+    """A stand-in for the §7.1 provider seam whose answer the test writes.
+
+    The one method the create-user path reaches, scripted on **all four** of
+    `ProviderDataResult`'s fields -- `outcome`, `entries`, `email` and `email_verified` -- because
+    37-10 drives §02 step 10's email-copy cases through this same object and a partially scriptable
+    fake would send it looking for a second one.
+
+    It is `async` to match the concrete adapter rather than the Protocol: `FirebaseAdminLookup`
+    offloads its blocking SDK call to a threadpool and is therefore awaitable, and `retry.py`'s
+    policy awaits whatever it is handed. A synchronous fake here would pass its own tests and fail
+    against production wiring.
+
+    `calls` records every `(issuer, subject)` pair, so a test can assert the number of provider
+    reads -- §02 step 8 pins exactly one per completion, and the retry budget only ever spends more
+    on a `retryable_failure`.
+    """
+
+    def __init__(self) -> None:
+        self.result = ProviderDataResult(ProviderDataOutcome.ok)
+        self.calls: list[tuple[str, str]] = []
+
+    def script(self, outcome: ProviderDataOutcome = ProviderDataOutcome.ok, *,
+               entries: tuple[ProviderDataEntry, ...] = (),
+               email: str | None = None,
+               email_verified: bool = False) -> None:
+        self.result = ProviderDataResult(outcome, entries,
+                                         email=email, email_verified=email_verified)
+
+    async def get_user_provider_data(self, issuer: str, subject: str) -> ProviderDataResult:
+        self.calls.append((issuer, subject))
+        return self.result
+
+
+@pytest.fixture
+def scripted_firebase_adapter(_app_lifespan):
+    """Swap `app.state.firebase_adapter` for a scripted one, and restore it afterwards.
+
+    The same shape as `stub_verifier` above, and it works for the same structural reason: the
+    handler reads the adapter off the application per request rather than holding one, so replacing
+    it here changes what the *real* route sees without touching the route at all.
+
+    Defaults to `ok` with empty providerData -- the anonymous account §02 step 9's classifier
+    answers `anonymous` for -- so a case that does not care about the provider shape need not say
+    so. `tests/e2e/test_create_user.py` documents why a substituted adapter is the right instrument
+    here: the package's real Firebase credential signs in with email/password, whose providerData
+    is `[{providerId: "password"}]` and which the closed classifier rejects by design.
+    """
+    original = _app_lifespan.state.firebase_adapter
+    adapter = ScriptedFirebaseAdapter()
+    _app_lifespan.state.firebase_adapter = adapter
+    try:
+        yield adapter
+    finally:
+        _app_lifespan.state.firebase_adapter = original
 
 
 @pytest_asyncio.fixture(loop_scope="module")

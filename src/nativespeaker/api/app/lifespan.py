@@ -7,6 +7,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth.audit import AuditWriter
 from nativespeaker.api.auth.challenges import ChallengeStore
+from nativespeaker.api.auth.firebase import FirebaseAdminLookup, build_admin_apps
 from nativespeaker.api.auth.keys import HmacKeyring
 from nativespeaker.api.auth.registry import REGISTRY, assert_route_enumeration
 from nativespeaker.api.auth.verification import JWTVerifier
@@ -58,15 +59,31 @@ async def lifespan(app: FastAPI):
     # this phase: the four challenge-bearing operations are phases 37, 40, 41 and 42.
     app.state.challenge_store = ChallengeStore(app.state.hmac_keyring)
 
+    # The §7.1 provider seam, built once at boot and read per request. `build_admin_apps` returns
+    # one named app per configured issuer; an absent credential returns `{}`, the adapter is still
+    # constructed, and boot proceeds -- 37-03 split absent from malformed deliberately, and a
+    # malformed credential already failed at configuration load above, so the only state reachable
+    # here is "no credential", under which a real completion fails closed at the adapter's own
+    # selection arm as `verification_temporarily_unavailable` rather than at startup.
+    #
+    # No `[DEFAULT]` app is created and none is expressible: selection is an exact dict lookup on
+    # the request-verified issuer, and every outbound call passes its app explicitly.
+    app.state.firebase_adapter = FirebaseAdminLookup(build_admin_apps(config))
+
     # Initialize database
     db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)
     app.state.session_factory = async_sessionmaker(db_engine, class_=SQLModelAsyncSession,
                                                        expire_on_commit=False)
 
     # Initialize token verifiers. D-16 removed the Apple receipt verifier with the subscription
-    # layer, and the Firebase Admin app with the plan-claim sync: neither Google Application
-    # Default Credentials nor the Apple signing certificates are read at boot any more. Phases 37+
-    # reintroduce Firebase behind the §7.1 adapter seam, never as an ambient startup client.
+    # layer, and the Firebase Admin app with the plan-claim sync.
+    #
+    # **Amended by Phase 37**, which reverses half of what this note used to say: a Firebase client
+    # *is* read at boot again, in the `app.state.firebase_adapter` block above. What has not
+    # changed is the part that mattered -- it is built behind the §7.1 adapter seam, from an
+    # explicit service-account credential, as a named per-issuer app, and never as an ambient
+    # startup client or from Application Default Credentials. The Apple signing certificates are
+    # still not read at boot.
     app.state.jwt_verifier = JWTVerifier(jwks_url=config.jwt.jwks_url,
                                          audience=config.jwt.project_id,
                                          issuer=config.jwt.issuer,

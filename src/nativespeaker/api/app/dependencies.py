@@ -3,6 +3,8 @@ from collections.abc import AsyncGenerator
 from fastapi import Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from nativespeaker.api.auth.audit import AuditWriter
+from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import (
     REQUEST_CONTEXT_SCOPE_KEY,
     LinkedIdentity,
@@ -86,6 +88,62 @@ def get_preauth_identity(request: Request) -> PreAuthIdentity:
     if not isinstance(identity, PreAuthIdentity):
         raise AuthenticationError("Identity context is linked on a route expecting a pre-auth identity")
     return identity
+
+
+# ---------------------------------------------------------------------------
+# The §6.5 / §7.1 challenge-bearing-endpoint accessors (Phase 37, reused by phases 40/41/42)
+#
+# Every one exists so a challenge-bearing route can stay Depends()-only. `POST /auth/create-user`
+# needs five things the §1.4 context deliberately does not carry, and the alternative to an
+# accessor apiece is a handler taking `Request` -- which is the v1.3 convention's one prohibition
+# and would hand that handler the raw headers the barrier exists to be the only reader of.
+# ---------------------------------------------------------------------------
+
+
+def get_raw_query_string(request: Request) -> bytes:
+    """The ASGI `scope["query_string"]` bytes, unparsed.
+
+    `auth/modesignal.py`'s `classify_mode_signal` parses these itself with `parse_qsl`, because a
+    duplicated `challenge` parameter is its own `invalid_request` case and **any** first-value-wins
+    accessor -- `request.query_params.get(...)` included -- folds duplicates and cannot see it.
+    Handing the raw bytes over is what keeps that decision in the one module that owns it.
+
+    `RequestContext` deliberately carries no query string, so this is a seam rather than a field:
+    the mode signal is a per-route syntactic concern, not part of the identity context.
+    """
+    return request.scope["query_string"]
+
+
+def get_challenge_store(request: Request) -> ChallengeStore:
+    """The one `ChallengeStore` the lifespan built. Read per request, never cached by a caller."""
+    return request.app.state.challenge_store
+
+
+def get_audit_writer(request: Request) -> AuditWriter:
+    """The one `AuditWriter` the lifespan built. Read per request, never cached by a caller."""
+    return request.app.state.audit_writer
+
+
+def get_session_factory(request: Request):
+    """The app's real session factory, for `AuditWriter.write_standalone` alone.
+
+    Not `Depends(get_db)`: a standalone-durable audit row exists precisely because there is no
+    consuming transaction to be atomic with, so it must open and commit a session of its own. The
+    factory is read off the app per request rather than captured, so the e2e rollback fixture's
+    per-test swap still governs every row written through it.
+    """
+    return request.app.state.session_factory
+
+
+def get_firebase_adapter(request: Request):
+    """The §7.1 provider seam the lifespan built.
+
+    Deliberately unannotated, following `auth/retry.py`'s precedent for the same object: the
+    concrete class satisfies the Protocol's one reachable method asynchronously while the Protocol
+    declares it synchronously, so an annotation here would be a claim the class does not make.
+    Nothing on this path may reach a provider client any other way.
+    """
+    return request.app.state.firebase_adapter
 
 
 # ---------------------------------------------------------------------------

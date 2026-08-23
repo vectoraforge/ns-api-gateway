@@ -9,6 +9,7 @@ from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
 from nativespeaker.api.errors import ErrorResponse
 from nativespeaker.api.logs import RequestLoggingMiddleware
 from nativespeaker.api.routers import (
+              auth_router,
               chats_router,
               examples_router,
               health_router,
@@ -45,6 +46,10 @@ app = FastAPI(title="NativeSpeaker API Gateway",
 app.router.redirect_slashes = False
 
 app.include_router(root_router)
+# Registered in the same commit as its `auth/registry.py` declaration, and it has to be: §2.3 is
+# set equality in both directions at real startup, so a route without a declaration -- or a
+# declaration without a route -- aborts boot rather than serving.
+app.include_router(auth_router)
 app.include_router(chats_router)
 app.include_router(examples_router)
 app.include_router(health_router)
