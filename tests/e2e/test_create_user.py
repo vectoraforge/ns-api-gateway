@@ -27,6 +27,8 @@ from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvid
 from nativespeaker.api.models.purchase_tokens import PurchaseProvider, StorePurchaseToken
 from nativespeaker.api.models.users import User
 
+from .conftest import seed_identity
+
 pytestmark = pytest.mark.e2e
 
 SUBJECT = "tracer-unlinked-subject"
@@ -47,6 +49,11 @@ def _auth(subject: str = SUBJECT) -> dict[str, str]:
 async def _count(factory, statement) -> int:
     async with factory() as session:
         return (await session.exec(statement)).one()
+
+
+_CHALLENGES = select(func.count()).select_from(AuthChallenge)
+_ALREADY_LINKED_EVENTS = (select(func.count()).select_from(AuthEvent)
+                          .where(col(AuthEvent.result) == AuthEventResult.identity_already_linked))
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -169,3 +176,99 @@ def _mentions(payload, needle: str) -> bool:
     if isinstance(payload, list | tuple):
         return any(_mentions(item, needle) for item in payload)
     return False
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestPrepareRejectsAnAlreadyLinkedCaller:
+    """§02 prepare step 1's fail-fast.
+
+    A caller who already has an account does not need one, and telling them so at prepare saves a
+    challenge, a provider read and a transaction. It is **best-effort only** -- the resolution that
+    decides is the one inside the consuming transaction -- but a cheap early no is still the right
+    answer to give.
+
+    Note what reaching this rejection requires: the barrier resolves an ACTIVE identity for such a
+    caller and hands the handler a *linked* context, so the route cannot demand a pre-auth one. It
+    is the only route in the system that admits both variants, and answering 409 rather than 401 to
+    the linked one is the whole point of §02 step 1.
+    """
+
+    async def test_an_active_linked_identity_is_rejected(self, create_user_client, _db_transaction):
+        subject = "already-linked-prepare"
+        await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject)
+
+        response = await create_user_client.post("/auth/create-user?challenge=true",
+                                                 headers=_auth(subject))
+
+        assert response.status_code == 409
+        # The shared one-field body, and the key set asserted exactly: `ErrorResponse` carries
+        # exactly one field and D-12 removed the one place §02 asked for a second.
+        assert response.json() == {"code": "identity_already_linked"}
+
+    async def test_the_rejection_issues_no_challenge(self, create_user_client, _db_transaction):
+        subject = "already-linked-issues-nothing"
+        await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject)
+        before = await _count(_db_transaction, _CHALLENGES)
+
+        await create_user_client.post("/auth/create-user?challenge=true", headers=_auth(subject))
+
+        assert await _count(_db_transaction, _CHALLENGES) == before
+
+    async def test_the_rejection_writes_exactly_one_audit_row(self, create_user_client,
+                                                              _db_transaction):
+        """Standalone-durable, because no consuming transaction exists at prepare time.
+
+        The route carries a non-`None` `operation`, which is what puts it on the audited path, so
+        this rejection owes exactly one row -- written before the response returns, not as a side
+        effect of having sent it.
+        """
+        subject = "already-linked-audited"
+        await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject)
+        before = await _count(_db_transaction, _ALREADY_LINKED_EVENTS)
+
+        await create_user_client.post("/auth/create-user?challenge=true", headers=_auth(subject))
+
+        assert await _count(_db_transaction, _ALREADY_LINKED_EVENTS) == before + 1
+        async with _db_transaction() as session:
+            event = (await session.exec(
+                select(AuthEvent)
+                .where(col(AuthEvent.result) == AuthEventResult.identity_already_linked)
+                .order_by(col(AuthEvent.created_at).desc()))).first()
+        assert event is not None
+        assert event.operation is AuthOperation.create_user
+        # The actor is known -- the token was verified -- so the all-or-nothing CHECK requires
+        # every actor field. The raw subject is never stored; only its keyed hash is.
+        assert event.actor_issuer == TEST_ISSUER
+        assert event.actor_subject_hash is not None
+        assert event.actor_subject_hash_key_version is not None
+        # No challenge existed to correlate on, and none was issued.
+        assert event.challenge_row_id is None
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestPrepareStillIssuesForAnUnlinkedCaller:
+    """The fail-fast must not have narrowed the path it guards."""
+
+    async def test_an_unlinked_caller_still_gets_the_two_field_body(self, create_user_client,
+                                                                    _db_transaction):
+        response = await create_user_client.post("/auth/create-user?challenge=true",
+                                                 headers=_auth("still-unlinked"))
+
+        assert response.status_code == 200
+        assert set(response.json()) == {"challenge_id", "expires_at"}
+
+    async def test_two_prepares_issue_two_distinct_challenges(self, create_user_client,
+                                                              _db_transaction):
+        """Prepare is not idempotent and never reuses a row.
+
+        Each call mints fresh CSPRNG bytes and inserts its own challenge. A "reuse the outstanding
+        one" optimisation would hand two concurrent client attempts the same single-use capability,
+        so exactly one of them could ever complete.
+        """
+        headers = _auth("prepares-twice")
+
+        first = await create_user_client.post("/auth/create-user?challenge=true", headers=headers)
+        second = await create_user_client.post("/auth/create-user?challenge=true", headers=headers)
+
+        assert first.status_code == second.status_code == 200
+        assert first.json()["challenge_id"] != second.json()["challenge_id"]
