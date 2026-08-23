@@ -555,3 +555,90 @@ class TestEveryProviderStageRejectionConsumes:
         assert creator.calls == []
         # The second attempt performs no work at all: the provider was not read a second time.
         assert len(fake_firebase_adapter.calls) == 1
+
+
+class TestThePrecedenceItself:
+    """§02 line 52: "numbered order is normative rejection precedence -- reject for the earliest
+    failed step".
+
+    **Precedence is a property of the ordering, not of any single branch**, so reading the handler
+    top to bottom proves nothing: every case below makes *two* things wrong at once and asserts
+    which one is reported. A reordering that a per-branch suite would wave through fails here.
+    """
+
+    def test_an_unknown_handle_beats_a_failing_provider(
+            self, client, store, writer, creator, fake_firebase_adapter):
+        """3 beats 8. The adapter is scripted to fail and is never asked."""
+        store.row = None
+        fake_firebase_adapter.script(ProviderDataOutcome.retryable_failure)
+
+        _assert_challenge_required(_complete(client))
+
+        assert writer.results == [AuthEventResult.challenge_not_found]
+        assert fake_firebase_adapter.calls == []
+        assert creator.calls == []
+
+    def test_an_identity_mismatch_beats_an_expired_row(
+            self, client, store, writer, context, keyring, fake_firebase_adapter):
+        """4 beats 5 -- and this ordering is load-bearing rather than cosmetic.
+
+        If the claim ran first, an expired row bound to somebody else would audit
+        `challenge_expired` and, worse, a *live* row bound to somebody else would be claimed by the
+        wrong presenter. The pre-claim placement is what makes T-37-35 structural.
+        """
+        store.row = _issued_row(context, keyring, subject=OTHER_SUBJECT, ttl_seconds=-1)
+
+        _assert_challenge_required(_complete(client))
+
+        assert writer.results == [AuthEventResult.challenge_identity_mismatch]
+        assert store.row.claimed_at is None
+        assert fake_firebase_adapter.calls == []
+
+    def test_the_identity_binding_is_checked_before_the_operation(
+            self, client, store, writer, context, keyring):
+        """§02 step 4 names both checks and orders neither, so this pins the choice.
+
+        The binding runs first, matching the order the sentence itself uses ("verify binding ...;
+        operation must be `create_user`") and matching `ChallengeStore.verify_binding` owning the
+        comparison the step is named for. Both are pre-claim rejections collapsing to the same
+        client class, so the choice is observable only in the audit row -- which is exactly why it
+        needs to be a decision on the record rather than an accident of line order.
+        """
+        store.row = _issued_row(context, keyring, subject=OTHER_SUBJECT,
+                                operation=AuthOperation.claim_anonymous_grant)
+
+        _assert_challenge_required(_complete(client))
+
+        assert writer.results == [AuthEventResult.challenge_identity_mismatch]
+
+    def test_an_expired_row_beats_a_failing_provider(
+            self, client, store, writer, context, keyring, creator, fake_firebase_adapter):
+        """5 beats 8. The claim loser performs no work at all."""
+        store.row = _issued_row(context, keyring, ttl_seconds=-1)
+        fake_firebase_adapter.script(ProviderDataOutcome.user_not_found)
+
+        _assert_challenge_required(_complete(client))
+
+        assert writer.results == [AuthEventResult.challenge_expired]
+        assert fake_firebase_adapter.calls == []
+        assert creator.calls == []
+
+    def test_a_failed_lookup_beats_a_rejecting_shape(
+            self, client, store, writer, context, keyring, creator, fake_firebase_adapter):
+        """8 beats 9: the classifier is never reached.
+
+        The scripted result carries entries the classifier would reject, so a handler that
+        classified before checking the outcome would answer 403 `operation_not_allowed` -- terminal,
+        routed to support -- to a caller whose token simply no longer identifies a Firebase user.
+        """
+        store.row = _issued_row(context, keyring)
+        fake_firebase_adapter.script(
+            ProviderDataOutcome.user_not_found,
+            entries=(ProviderDataEntry("password", "someone@example.test"),))
+
+        response = _complete(client)
+
+        assert response.status_code == 401
+        assert response.json() == {"code": "auth_required"}
+        assert writer.results == [AuthEventResult.firebase_user_unresolved]
+        assert creator.calls == []

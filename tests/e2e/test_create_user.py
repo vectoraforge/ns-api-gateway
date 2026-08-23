@@ -21,6 +21,7 @@ from sqlalchemy import func
 from sqlmodel import col, select
 from unit.conftest import TEST_ISSUER, make_token
 
+from nativespeaker.api.auth.adapters import ProviderDataEntry
 from nativespeaker.api.models.auth import AuthChallenge, AuthEvent, AuthEventResult, AuthOperation
 from nativespeaker.api.models.grants import AccessGrant, UserMonthlyUsage
 from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
@@ -272,3 +273,145 @@ class TestPrepareStillIssuesForAnUnlinkedCaller:
 
         assert first.status_code == second.status_code == 200
         assert first.json()["challenge_id"] != second.json()["challenge_id"]
+
+
+# ---------------------------------------------------------------------------
+# 37-08: the rejection arms, over real HTTP and a real database.
+#
+# `tests/unit/test_create_user_precedence.py` proves the full precedence against fakes, at unit
+# speed. What only a real database can prove is the part the fakes stand in for: that a rejection
+# really wrote its `audit.auth_events` row and really moved the challenge's lifecycle, rather than
+# calling a recorder that agreed with the test.
+# ---------------------------------------------------------------------------
+
+_USERS = select(func.count()).select_from(User)
+
+
+def _events_with(result: AuthEventResult):
+    return select(func.count()).select_from(AuthEvent).where(col(AuthEvent.result) == result)
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestCompletionRejectionsOnTheWire:
+    """Two rejections from opposite sides of the consumption boundary, and the replay behind them.
+
+    They are chosen deliberately: `challenge_not_found` is the earliest rejection there is and
+    consumes nothing, while the `password`-entry classification rejection is the latest one before
+    the consuming transaction and consumes everything. Proving both anchors the boundary from each
+    side against real rows.
+    """
+
+    async def test_an_unknown_handle_is_challenge_required_and_audited(
+            self, create_user_client, _db_transaction):
+        users_before = await _count(_db_transaction, _USERS)
+        events_before = await _count(_db_transaction,
+                                     _events_with(AuthEventResult.challenge_not_found))
+
+        response = await create_user_client.post("/auth/create-user",
+                                                 json={"challenge_id": "no-such-handle"},
+                                                 headers=_auth("e2e-unknown-handle"))
+
+        assert response.status_code == 409
+        assert response.json() == {"code": "challenge_required"}
+        assert await _count(_db_transaction,
+                            _events_with(AuthEventResult.challenge_not_found)) == events_before + 1
+        assert await _count(_db_transaction, _USERS) == users_before
+
+    async def test_a_password_entry_is_operation_not_allowed_and_consumes_the_challenge(
+            self, create_user_client, _db_transaction, scripted_firebase_adapter):
+        """The shape the package's own email/password credential really produces (Pitfall 8).
+
+        One *unrecognized* entry: the closed classifier rejects it, which is an unclassifiable
+        account rather than a declaration mismatch (D-12), so it is terminal `operation_not_allowed`
+        and it persists nothing.
+        """
+        subject = "e2e-password-shape"
+        scripted_firebase_adapter.script(
+            entries=(ProviderDataEntry("password", "someone@example.test"),))
+        users_before = await _count(_db_transaction, _USERS)
+
+        prepare = await create_user_client.post("/auth/create-user?challenge=true",
+                                                headers=_auth(subject))
+        handle = prepare.json()["challenge_id"]
+
+        completion = await create_user_client.post("/auth/create-user",
+                                                   json={"challenge_id": handle},
+                                                   headers=_auth(subject))
+
+        assert completion.status_code == 403
+        assert completion.json() == {"code": "operation_not_allowed"}
+        # No flow is named: D-12 removed `create_flow_mismatch` and its `required_flow` field, so
+        # the shared one-field body is the whole response.
+        assert set(completion.json()) == {"code"}
+        assert await _count(_db_transaction, _USERS) == users_before
+
+        async with _db_transaction() as session:
+            challenge = (await session.exec(
+                select(AuthChallenge)
+                .where(col(AuthChallenge.challenge_id) == handle))).one()
+        # §02 step 13: every rejection at or after the Admin lookup consumes.
+        assert challenge.consumed_at is not None
+        assert challenge.preauth_subject_hash is None
+
+        async with _db_transaction() as session:
+            events = (await session.exec(
+                select(AuthEvent)
+                .where(col(AuthEvent.challenge_row_id) == challenge.id))).all()
+        assert len(events) == 1
+        assert events[0].result is AuthEventResult.provider_not_linked
+        assert events[0].operation is AuthOperation.create_user
+        assert events[0].details["failure"]["cause"] == "invalid-shape"
+        assert not _mentions(events[0].details, "challenge_id")
+        assert handle not in repr(events[0].details)
+
+    async def test_the_same_handle_replayed_after_a_rejection_mints_nothing(
+            self, create_user_client, _db_transaction, scripted_firebase_adapter):
+        """No idempotent replay and no `challenge_replayed` result (§02 DELETIONS, T-37-36).
+
+        The second attempt is not told what the first one earned -- it is told to prepare again, and
+        the client reconciles through `/auth/sync`.
+        """
+        subject = "e2e-replayed-handle"
+        scripted_firebase_adapter.script(
+            entries=(ProviderDataEntry("password", "someone@example.test"),))
+        users_before = await _count(_db_transaction, _USERS)
+
+        prepare = await create_user_client.post("/auth/create-user?challenge=true",
+                                                headers=_auth(subject))
+        handle = prepare.json()["challenge_id"]
+        first = await create_user_client.post("/auth/create-user",
+                                              json={"challenge_id": handle},
+                                              headers=_auth(subject))
+        second = await create_user_client.post("/auth/create-user",
+                                               json={"challenge_id": handle},
+                                               headers=_auth(subject))
+
+        assert first.status_code == 403
+        assert second.status_code == 409
+        assert second.json() == {"code": "challenge_required"}
+        assert await _count(_db_transaction, _USERS) == users_before
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestCreate01AdmittedHereAndRefusedEverywhereElse:
+    """CREATE-01's observable half, on the wire rather than in a registry assertion.
+
+    `preauth_callable` is a property of exactly one route, and the way to see it is one token
+    getting two different answers. A registry test proves the declaration; only this proves the
+    barrier acts on it.
+    """
+
+    async def test_one_unlinked_token_is_admitted_at_create_user_and_refused_at_examples(
+            self, create_user_client, _db_transaction):
+        headers = _auth("e2e-create01-unlinked")
+
+        admitted = await create_user_client.post("/auth/create-user?challenge=true",
+                                                 headers=headers)
+        refused = await create_user_client.get("/examples?lang=en", headers=headers)
+
+        assert admitted.status_code == 200
+        assert set(admitted.json()) == {"challenge_id", "expires_at"}
+        # 403 and this specific class -- not `auth_required`. The token is fine; the *identity* is
+        # not admissible on an authenticated route.
+        assert refused.status_code == 403
+        assert refused.json() == {"code": "preauth_identity_not_allowed"}
