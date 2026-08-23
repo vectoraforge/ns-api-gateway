@@ -354,9 +354,11 @@ async def _complete(session: AsyncSession, session_factory, *,
                                          audit_writer=audit_writer)
 
     # Every `ChallengeRejection` member's value is also an `AuthEventResult` member, precisely so a
-    # caller needs no private mapping table -- so this maps straight through by name. There is
-    # deliberately no `compare_digest` here either: `verify_binding` already routes the comparison
-    # through `HmacKeyring.actor_subject_matches`, and a second comparison is a second answer.
+    # caller needs no private mapping table -- so this maps straight through by name. No keyed
+    # comparison is written here either: `verify_binding` already routes it through
+    # `HmacKeyring.actor_subject_matches`, and a second comparison is a second answer. The
+    # constant-time primitive's name stays absent from this module so a grep for it remains a live
+    # detector of exactly that mistake.
     rejection = challenge_store.verify_binding(challenge, identity)
     if rejection is not None:
         return await _challenge_rejected(session, session_factory, context=context,
