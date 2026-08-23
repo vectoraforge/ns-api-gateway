@@ -44,7 +44,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.audit import AuditWriter, build_details
 from nativespeaker.api.auth.challenges import ChallengeStore
-from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
+from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
 from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult, AuthOperation
 from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.models.purchase_tokens import PurchaseProvider, StorePurchaseToken
@@ -55,7 +55,7 @@ logger = structlog.get_logger()
 
 async def create_account(session: AsyncSession, *,
                          context: RequestContext,
-                         identity: PreAuthIdentity,
+                         identity: LinkedIdentity | PreAuthIdentity,
                          challenge: AuthChallenge,
                          provider: IdentityProvider,
                          provider_uid: str | None,
@@ -68,7 +68,7 @@ async def create_account(session: AsyncSession, *,
     challenge consumption, and the audit row -- committed together, exactly once. The caller maps
     the returned `AuthEventResult` onto a client-visible class and never re-derives it.
     """
-    existing = await _resolve_existing(session, issuer=identity.issuer, subject=identity.subject)
+    existing = await resolve_existing_identity(session, issuer=identity.issuer, subject=identity.subject)
 
     user_id: UUID | None = None
     if existing is None:
@@ -116,8 +116,8 @@ async def create_account(session: AsyncSession, *,
     return result
 
 
-async def _resolve_existing(session: AsyncSession, *,
-                            issuer: str, subject: str) -> ExternalIdentity | None:
+async def resolve_existing_identity(session: AsyncSession, *,
+                                    issuer: str, subject: str) -> ExternalIdentity | None:
     """§02 step 10's re-resolution, issued INSIDE the transaction.
 
     Prepare-time pre-auth status never suffices: the barrier resolved this pair minutes ago at
@@ -153,7 +153,7 @@ def _result_for_existing(existing: ExternalIdentity) -> AuthEventResult:
 
 async def _insert_account(session: AsyncSession, *,
                           evaluated_at: datetime,
-                          identity: PreAuthIdentity,
+                          identity: LinkedIdentity | PreAuthIdentity,
                           provider: IdentityProvider,
                           provider_uid: str | None,
                           email: str | None) -> tuple[UUID, AuthEventResult]:

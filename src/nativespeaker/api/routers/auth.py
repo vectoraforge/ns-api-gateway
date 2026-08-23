@@ -44,16 +44,16 @@ from nativespeaker.api.app.dependencies import (
     get_challenge_store,
     get_db,
     get_firebase_adapter,
-    get_preauth_identity,
     get_raw_query_string,
     get_request_context,
+    get_session_factory,
 )
 from nativespeaker.api.auth.adapters import ProviderDataOutcome
-from nativespeaker.api.auth.audit import AuditWriter
+from nativespeaker.api.auth.audit import AuditWriter, build_details
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.classifier import classify_provider_data, email_to_persist
-from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.creation import create_account
+from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
+from nativespeaker.api.auth.creation import create_account, resolve_existing_identity
 from nativespeaker.api.auth.modesignal import ModeSignal, classify_mode_signal
 from nativespeaker.api.auth.retry import lookup_with_retry
 from nativespeaker.api.errors import (
@@ -66,7 +66,7 @@ from nativespeaker.api.errors import (
     error_response,
 )
 from nativespeaker.api.models.auth import AuthEventResult, AuthOperation
-from nativespeaker.api.models.identities import IdentityProvider
+from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
 
 logger = structlog.get_logger()
 
@@ -117,8 +117,8 @@ class CompletionResponse(BaseModel):
 async def create_user(body: CreateUserRequest | None = None,
                       raw_query: bytes = Depends(get_raw_query_string),
                       context: RequestContext = Depends(get_request_context),
-                      identity: PreAuthIdentity = Depends(get_preauth_identity),
                       session: AsyncSession = Depends(get_db),
+                      session_factory=Depends(get_session_factory),
                       challenge_store: ChallengeStore = Depends(get_challenge_store),
                       audit_writer: AuditWriter = Depends(get_audit_writer),
                       adapter=Depends(get_firebase_adapter)) -> Response:
@@ -128,6 +128,15 @@ async def create_user(body: CreateUserRequest | None = None,
     retry may reuse the same unexpired challenge. A `None` classification is `invalid_request`
     (400): it belongs to the admission phase, has no internal `core.auth_event_result`, and writes
     **no** `audit.auth_events` row -- it is recorded in the structured security log alone.
+
+    **This route reads the identity variant off the context rather than demanding a pre-auth one,
+    and it is the only route in the system that does.** `Depends(get_preauth_identity)` raises on a
+    linked caller -- correctly, for every other handler, where a linked context arriving at a
+    pre-auth-only handler is a wiring bug. Here it is a *client condition* §02 prepare step 1 names
+    explicitly: a caller who already has an account gets `identity_already_linked` (409), not
+    `auth_required` (401), and the two say incompatible things to a client. So the accessor's
+    fail-loudly guarantee is preserved where it belongs -- `get_request_context` still raises when
+    the barrier did not run -- while the variant itself becomes something this one route decides on.
     """
     body_challenge_id = None if body is None else body.challenge_id
     mode = classify_mode_signal(raw_query, body_challenge_id)
@@ -140,9 +149,10 @@ async def create_user(body: CreateUserRequest | None = None,
                        body_present=body is not None)
         return error_response(INVALID_REQUEST)
 
+    identity = context.identity
     if mode is ModeSignal.prepare:
-        return await _prepare(session, context=context, identity=identity,
-                              challenge_store=challenge_store)
+        return await _prepare(session, session_factory, context=context, identity=identity,
+                              challenge_store=challenge_store, audit_writer=audit_writer)
 
     # `classify_mode_signal` returns `completion` only for a non-empty `str`, so the annotation
     # below is the partition's guarantee rather than this handler's assumption -- and the value is
@@ -156,11 +166,12 @@ async def create_user(body: CreateUserRequest | None = None,
                            adapter=adapter)
 
 
-async def _prepare(session: AsyncSession, *,
+async def _prepare(session: AsyncSession, session_factory, *,
                    context: RequestContext,
-                   identity: PreAuthIdentity,
-                   challenge_store: ChallengeStore) -> Response:
-    """§02 prepare steps 4-5: issue one challenge and disclose exactly two fields.
+                   identity: LinkedIdentity | PreAuthIdentity,
+                   challenge_store: ChallengeStore,
+                   audit_writer: AuditWriter) -> Response:
+    """§02 prepare steps 1, 4 and 5: fail fast, then issue one challenge and disclose two fields.
 
     Prepare mutates **no** business state -- no user, no identity, no grant, no attribution token.
     The only row it writes is the challenge itself, inside the request's one transaction, which
@@ -169,6 +180,27 @@ async def _prepare(session: AsyncSession, *,
     `expires_at` comes from the store, derived from the request's single captured evaluation time.
     Nothing here recomputes it, extends it, or renews it on retry.
     """
+    linked = await _already_linked(session, identity=identity)
+    if linked is not None:
+        # Release the read transaction the racy check may have opened, so the standalone write
+        # below is the only thing holding a session. It has nothing to be atomic with anyway --
+        # that is what "standalone" means -- and prepare has written nothing to preserve.
+        await session.rollback()
+        await audit_writer.write_standalone(
+            session_factory,
+            operation=AuthOperation.create_user,
+            result=AuthEventResult.identity_already_linked,
+            actor_issuer=identity.issuer,
+            actor_subject=identity.subject,
+            # Permitted here precisely because it is the STORED column of a resolved identity row
+            # (§4.2) -- never fabricated, never a token claim, never client input.
+            actor_provider=linked.provider,
+            # No challenge exists to correlate on: none was issued, and none was located.
+            challenge_row_id=None,
+            details=_prepare_details(context, linked=True),
+            created_at=context.evaluated_at)
+        return error_response(IDENTITY_ALREADY_LINKED)
+
     challenge_id, expires_at = await challenge_store.issue(session,
                                                            operation=AuthOperation.create_user,
                                                            identity=identity,
@@ -180,9 +212,69 @@ async def _prepare(session: AsyncSession, *,
                         headers={"Cache-Control": "no-store"})
 
 
+async def _already_linked(session: AsyncSession, *,
+                          identity: LinkedIdentity | PreAuthIdentity) -> ExternalIdentity | None:
+    """§02 prepare step 1's fail-fast. The row when this caller already has an account, else `None`.
+
+    **Best-effort, racy, and never authoritative -- do not "strengthen" it.** The authoritative
+    answer is the re-resolution inside the consuming transaction, and the arbiters between two
+    completions that both observed an unlinked subject are `UNIQUE (issuer, subject)` and
+    `UNIQUE (user_id)` alone (§02 step 12). Turning this into a lock, a `FOR UPDATE`, or a
+    pre-SELECT-then-INSERT would *add* a window the constraints do not have, while looking like it
+    closed one. It is here to save a challenge, a provider read and a transaction in the common
+    case, and for nothing else.
+
+    Two arms, because the question has already been answered once for most callers:
+
+    * **A linked context needs no query at all.** The barrier resolved this exact pair through
+      `auth/identity.py`'s single statement one layer ago and put the answer in the context. Asking
+      again would be a second identity resolution -- which §1.4 forbids a handler outright -- and
+      it would be *racier*, not less, because it would be strictly later.
+    * **A pre-auth context gets one direct read**, through the same query the consuming transaction
+      uses, to catch a row that appeared in the window between the barrier's resolution and now.
+
+    Historical and blocked callers are **not** re-checked here: the barrier already rejected both
+    with `account_unavailable`, so a context reaching this handler at all resolved to no active
+    identity row. The `is` test below is why a historical row that somehow arrived falls through to
+    issue a challenge rather than being reported as already-linked -- it is not linked, and the
+    consuming transaction is where that gets the answer it deserves.
+    """
+    if isinstance(identity, LinkedIdentity):
+        return identity.identity
+    existing = await resolve_existing_identity(session,
+                                               issuer=identity.issuer, subject=identity.subject)
+    if existing is not None and existing.identity_state is IdentityState.active:
+        return existing
+    return None
+
+
+def _prepare_details(context: RequestContext, *, linked: bool) -> dict:
+    """§4.4's six-key object for a prepare-mode outcome.
+
+    `context` carries the route, the method, the operation, this attempt's id, the mode signal as
+    booleans, and the client-IP **bucket kind**. Never the address -- §4.4 admits the kind alone,
+    so `audit.auth_events` cannot become a behavioural-tracking archive -- and never the public
+    challenge handle, which prepare mode does not even have at the point this is built.
+    """
+    return build_details(
+        context={"route": context.route_metadata.path,
+                 "method": context.route_metadata.method,
+                 "operation": AuthOperation.create_user,
+                 "attempt_id": context.attempt_id,
+                 "prepare_mode": True,
+                 "completion_mode": False,
+                 "client_ip_bucket_kind": context.client_ip_bucket_kind},
+        verification={},
+        resolved={"identity_already_linked": linked},
+        # Prepare mutates no business state on either arm, so there is nothing to report -- and
+        # `{}` is §4.4's own way of saying exactly that.
+        mutation={},
+        failure={"stage": "prepare_precheck"} if linked else {})
+
+
 async def _complete(session: AsyncSession, *,
                     context: RequestContext,
-                    identity: PreAuthIdentity,
+                    identity: LinkedIdentity | PreAuthIdentity,
                     challenge_id: str,
                     challenge_store: ChallengeStore,
                     audit_writer: AuditWriter,
