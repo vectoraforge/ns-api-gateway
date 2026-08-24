@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 
+import firebase_admin
 import structlog
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -68,7 +69,8 @@ async def lifespan(app: FastAPI):
     #
     # No `[DEFAULT]` app is created and none is expressible: selection is an exact dict lookup on
     # the request-verified issuer, and every outbound call passes its app explicitly.
-    app.state.firebase_adapter = FirebaseAdminLookup(build_admin_apps(config))
+    firebase_apps = build_admin_apps(config)
+    app.state.firebase_adapter = FirebaseAdminLookup(firebase_apps)
 
     # Initialize database
     db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)
@@ -80,10 +82,13 @@ async def lifespan(app: FastAPI):
     #
     # **Amended by Phase 37**, which reverses half of what this note used to say: a Firebase client
     # *is* read at boot again, in the `app.state.firebase_adapter` block above. What has not
-    # changed is the part that mattered -- it is built behind the §7.1 adapter seam, from an
-    # explicit service-account credential, as a named per-issuer app, and never as an ambient
-    # startup client or from Application Default Credentials. The Apple signing certificates are
-    # still not read at boot.
+    # changed is the part that mattered -- it is built behind the §7.1 adapter seam, as a named
+    # per-issuer app with an explicit `projectId`, and never as an ambient `[DEFAULT]` app that a
+    # call site could reach by forgetting `app=`. The credential itself may now come from
+    # Application Default Credentials as well as from an explicit key: this project's org policy
+    # sets `iam.disableServiceAccountKeyCreation`, so no key can be minted, and ADC is the only
+    # route to a real Admin call. That is a change of credential *source*, not of the wire
+    # contract D-08 is about. The Apple signing certificates are still not read at boot.
     app.state.jwt_verifier = JWTVerifier(jwks_url=config.jwt.jwks_url,
                                          audience=config.jwt.project_id,
                                          issuer=config.jwt.issuer,
@@ -102,5 +107,18 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     await db_engine.dispose()
+
+    # Give back every named Firebase app this lifespan created. `firebase_admin` keeps its apps in
+    # a **process-global** registry that no lifespan owns and nothing else clears, and
+    # `initialize_app` raises `ValueError: ... already exists` on a repeated name -- so a second
+    # boot in one process dies at startup unless the first one cleaned up. One process, several
+    # boots is not hypothetical: the e2e suite starts this lifespan once per test module.
+    #
+    # It stayed invisible while no credential was configured, because `build_admin_apps` then
+    # returned `{}` without registering anything. The moment a real credential existed -- ADC, in
+    # this project's case -- every e2e module after the first errored in fixture setup. Symmetry is
+    # the fix: whoever creates a globally-registered handle destroys it.
+    for firebase_app in firebase_apps.values():
+        firebase_admin.delete_app(firebase_app)
 
     logger.info("shutdown")
