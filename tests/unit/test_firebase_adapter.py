@@ -22,8 +22,10 @@ import dataclasses
 import json
 
 import firebase_admin
+import google.auth
+import google.auth.exceptions
 import pytest
-from firebase_admin import auth, exceptions
+from firebase_admin import auth, credentials, exceptions
 
 from nativespeaker.api.auth.adapters import ProviderDataOutcome
 from nativespeaker.api.auth.firebase import (
@@ -84,6 +86,21 @@ class RecordingApp:
 
 
 @pytest.fixture
+def no_adc(monkeypatch):
+    """Force the environment to offer no Application Default Credentials.
+
+    `build_admin_apps` falls back to ADC when no key is configured, so a developer machine with a
+    gcloud login -- or a `GOOGLE_APPLICATION_CREDENTIALS` in `.env` -- makes the genuinely-absent
+    state unreachable. Any case asserting the absent state must take this fixture, or it quietly
+    starts asserting something else.
+    """
+    def no_credentials(*args, **kwargs):
+        raise google.auth.exceptions.DefaultCredentialsError("no ADC in this test")
+
+    monkeypatch.setattr(google.auth, "default", no_credentials)
+
+
+@pytest.fixture
 def app() -> RecordingApp:
     return RecordingApp(f"issuer:{ISSUER}")
 
@@ -138,17 +155,60 @@ class TestBuildAdminApps:
         assert options == {"projectId": PROJECT_ID,
                            "httpTimeout": FIREBASE_HTTP_TIMEOUT_SECONDS}
 
-    def test_an_absent_credential_yields_an_empty_mapping_and_no_default_app(self):
-        """Absent is a supported state (37-03): the service boots and completion fails closed."""
+    def test_an_absent_credential_yields_an_empty_mapping_and_no_default_app(self, no_adc):
+        """Absent is a supported state (37-03): the service boots and completion fails closed.
+
+        `no_adc` is mandatory here. Since ADC became the second credential source, "absent" means
+        *both* sources absent -- and a developer machine with a gcloud login supplies the second
+        one, so without the fixture this case silently stops testing the state it names.
+        """
         assert build_admin_apps(StubConfig(None)) == {}
         assert firebase_admin._DEFAULT_APP_NAME not in firebase_admin._apps
 
-    def test_an_absent_credential_does_not_raise_and_does_not_initialize_anything(self, monkeypatch):
+    def test_an_absent_credential_does_not_raise_and_does_not_initialize_anything(self, monkeypatch,
+                                                                                 no_adc):
         def explode(*args, **kwargs):
             raise AssertionError("initialize_app must not be called with no credential")
 
         monkeypatch.setattr(firebase_admin, "initialize_app", explode)
         assert build_admin_apps(StubConfig(None)) == {}
+
+    def test_adc_supplies_the_credential_when_no_key_is_configured(self, monkeypatch):
+        """The second source: no key file, but the environment offers ADC.
+
+        This is the arm the organization policy forces -- `iam.disableServiceAccountKeyCreation`
+        means no key can be minted, so ADC is the only route to a real Admin call here.
+        """
+        monkeypatch.setattr(google.auth, "default", lambda *a, **k: (object(), PROJECT_ID))
+        passed = {}
+
+        def capture(credential, options, name):
+            passed.update(credential=credential, options=options, name=name)
+            return "app-sentinel"
+
+        monkeypatch.setattr(firebase_admin, "initialize_app", capture)
+        apps = build_admin_apps(StubConfig(None))
+
+        assert apps == {ISSUER: "app-sentinel"}
+        assert isinstance(passed["credential"], credentials.ApplicationDefault)
+        # Never inferred from the credential: user-scoped ADC carries no project, and an Admin
+        # client bound to the wrong one reads another project's users.
+        assert passed["options"]["projectId"] == PROJECT_ID
+
+    def test_an_explicit_key_wins_over_adc(self, monkeypatch):
+        """Source order: a configured key is used even where ADC is also available."""
+        monkeypatch.setattr(google.auth, "default", lambda *a, **k: (object(), PROJECT_ID))
+        passed = {}
+
+        def capture(credential, options, name):
+            passed.update(credential=credential)
+            return "app-sentinel"
+
+        monkeypatch.setattr(firebase_admin, "initialize_app", capture)
+        monkeypatch.setattr(credentials, "Certificate", lambda d: "certificate-sentinel")
+        build_admin_apps(StubConfig(json.dumps(CREDENTIAL)))
+
+        assert passed["credential"] == "certificate-sentinel"
 
     def test_the_per_attempt_timeout_sits_inside_the_mandated_band(self):
         """`adapters.py:16-17`: a fixed configured per-attempt timeout on the order of 5-10 s."""
