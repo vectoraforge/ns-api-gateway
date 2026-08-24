@@ -12,6 +12,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from unit.conftest import FakeFirebaseAdapter, make_test_verifier
 
 from nativespeaker.api.app.main import app
+from nativespeaker.api.auth.firebase import _application_default_credential
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.models import (
     AccessGrant,
@@ -60,6 +61,73 @@ def firebase_token(_app_config):
     # Store the test user's UID (from Firebase 'localId') for seeding assertions
     os.environ.setdefault("FIREBASE_TEST_USER_ID", data["localId"])
     return token
+
+
+def _admin_credential_configured(app_config) -> bool:
+    """Whether `build_admin_apps` would find a credential -- asked the way it asks.
+
+    Both source probes below are the **same two calls** `auth/firebase.py::build_admin_apps` makes,
+    in the same order, rather than a re-reading of the environment: a local
+    `os.environ["FIREBASE_SERVICE_ACCOUNT_JSON"]` test would have gone on reporting "absent" on a
+    machine whose credential arrives through ADC, and skipped the one case in this package that
+    can only run when a credential is present. A predicate that can disagree with the thing it
+    predicts is worse than no predicate.
+    """
+    if app_config.firebase.credential_dict() is not None:
+        return True
+    return _application_default_credential() is not None
+
+
+# Names both routes, because either one satisfies the requirement and a message naming only the
+# first sends a reader to provision a key that this project's org policy
+# (`iam.disableServiceAccountKeyCreation`) forbids minting at all.
+_NO_ADMIN_CREDENTIAL = (
+    "no Firebase Admin credential: set FIREBASE_SERVICE_ACCOUNT_JSON (a service-account key) or "
+    "GOOGLE_APPLICATION_CREDENTIALS (Application Default Credentials) in .env"
+)
+
+
+@pytest.fixture(scope="session")
+def anonymous_firebase_credential(_app_config):
+    """A **genuinely anonymous** Firebase user, minted for real. Returns `(id_token, local_id)`.
+
+    `accounts:signUp` with `returnSecureToken` and **no** `email` and **no** `password` is the one
+    credential shape that can be minted reproducibly from a test and still produce empty
+    providerData from the real Admin SDK. Google's Identity Platform reference says of the `email`
+    field: "An anonymous user will be created if not provided."
+
+    It mirrors the `firebase_token` fixture's REST idiom above deliberately -- same host, same v1
+    `identitytoolkit.googleapis.com` form (not the legacy v3 `relyingparty/signupNewUser`), same
+    key -- because the two fixtures are the same operation on the same project and a second idiom
+    would be a second thing to keep true.
+
+    **Why this exists at all.** `firebase_token` signs in with `accounts:signInWithPassword`, so
+    its providerData is `[{providerId: "password"}]` -- a single unrecognized entry that §02 step
+    9's closed classifier rejects. A completion test written against it "passes" while testing the
+    rejection arm (Pitfall 8). This fixture is D-09's answer for the one flow that can be minted
+    for real.
+
+    **Each call creates a permanent user in the shared project, and nothing deletes it** (T-37-50,
+    accepted). SHARED-INVARIANTS deletes purge jobs and an `auth.delete_user` teardown would itself
+    be an Admin call; a handful of empty anonymous users in a test project is the accepted cost.
+
+    Skips -- never fails -- when no Admin credential is configured, so a contributor without one
+    still gets a green `-m e2e` run and a skip reason that names what to set.
+    """
+    if not _admin_credential_configured(_app_config):
+        pytest.skip(_NO_ADMIN_CREDENTIAL)
+    resp = httpx.post(
+        f"https://identitytoolkit.googleapis.com/v1/accounts:signUp"
+        f"?key={_app_config.jwt.api_key}",
+        json={"returnSecureToken": True},
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    # RESEARCH A1: `returnSecureToken` is absent from the Identity Platform field list but present
+    # in the Firebase Auth REST reference. If it were ignored the response would simply lack
+    # `idToken`, and this subscript is what makes that fail loudly on the first run rather than
+    # degrade into a case that silently stopped proving anything.
+    return data["idToken"], data["localId"]
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")

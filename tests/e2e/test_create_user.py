@@ -21,7 +21,8 @@ from sqlalchemy import func
 from sqlmodel import col, select
 from unit.conftest import TEST_ISSUER, make_token
 
-from nativespeaker.api.auth.adapters import ProviderDataEntry
+from nativespeaker.api.auth.adapters import ProviderDataEntry, ProviderDataOutcome
+from nativespeaker.api.auth.firebase import FirebaseAdminLookup
 from nativespeaker.api.models.auth import AuthChallenge, AuthEvent, AuthEventResult, AuthOperation
 from nativespeaker.api.models.grants import AccessGrant, UserMonthlyUsage
 from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
@@ -471,31 +472,43 @@ class TestCreate01AdmittedHereAndRefusedEverywhereElse:
 # ---------------------------------------------------------------------------
 
 
-async def _prepare_and_complete(client, subject: str):
+async def _prepare_and_complete(client, subject: str | None = None):
     """One prepare then one completion for `subject`; return `(handle, completion_response)`.
 
     The prepare is asserted here rather than in each caller: every case below is about what the
     *completion* answers, and a case whose prepare had quietly failed would otherwise assert
     against a completion for a handle that never existed.
+
+    `subject=None` sends **no** `Authorization` header and lets the client's own stand -- which is
+    what the real-anonymous case needs, because its client already carries a genuine Firebase ID
+    token and a per-request `_auth(...)` header would replace it with a stub-verifier token the
+    real verifier rejects.
     """
-    prepare = await client.post("/auth/create-user?challenge=true", headers=_auth(subject))
+    headers = {} if subject is None else _auth(subject)
+    prepare = await client.post("/auth/create-user?challenge=true", headers=headers)
     assert prepare.status_code == 200, prepare.text
     handle = prepare.json()["challenge_id"]
     completion = await client.post("/auth/create-user",
                                    json={"challenge_id": handle},
-                                   headers=_auth(subject))
+                                   headers=headers)
     return handle, completion
 
 
-async def _identity_and_user(factory, subject: str) -> tuple[ExternalIdentity, User]:
-    """The single identity row for `(TEST_ISSUER, subject)` and the `core.users` row it points at.
+async def _identity_and_user(factory, subject: str,
+                             issuer: str = TEST_ISSUER) -> tuple[ExternalIdentity, User]:
+    """The single identity row for `(issuer, subject)` and the `core.users` row it points at.
 
     `.one()` on both, deliberately: "exactly one identity" is itself part of what step 10 promises,
     so a second row must fail here rather than be silently narrowed away by a `.first()`.
+
+    `issuer` is a parameter rather than the module constant because the real-anonymous case's rows
+    carry the **live project's** issuer, not the stub verifier's. Defaulting it to `TEST_ISSUER`
+    hid that from the first run of this helper: the query simply matched nothing and reported it as
+    "no account was created" for a completion that had in fact returned 200.
     """
     async with factory() as session:
         identity = (await session.exec(
-            select(ExternalIdentity).where(col(ExternalIdentity.issuer) == TEST_ISSUER,
+            select(ExternalIdentity).where(col(ExternalIdentity.issuer) == issuer,
                                            col(ExternalIdentity.subject) == subject))).one()
         user = (await session.exec(select(User).where(col(User.id) == identity.user_id))).one()
     return identity, user
@@ -691,3 +704,118 @@ class TestTheProviderAccountReservation:
         assert events[0].result is AuthEventResult.provider_account_already_linked
 
         await _assert_step_10s_global_invariants(_db_transaction)
+
+
+# ---------------------------------------------------------------------------
+# 37-10 Task 3: D-09's real half.
+#
+# Everything above substitutes the provider seam. This does not, and that is the entire point:
+# every scripted `entries=()` above encodes an *assumption* about what the real Firebase Admin SDK
+# returns for an anonymous user, and an assumption the whole classifier rests on is exactly the
+# kind that fails silently in production -- green tests, 503s for real callers, and nothing in the
+# suite that disagrees.
+#
+# So this case substitutes nothing. A real anonymous Firebase user, minted through
+# `accounts:signUp`; the real JWT verifier resolving a real Firebase ID token against real JWKS;
+# the real `FirebaseAdminLookup` making a real `getUser` against a real project; and then the same
+# row set §02 step 10 names, in the same real PostgreSQL.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def anonymous_client(_app_lifespan, anonymous_firebase_credential):
+    """A client carrying a REAL anonymous Firebase ID token, verified by the REAL verifier.
+
+    Note what it does **not** take: `stub_verifier`. Every other case in this file swaps the
+    verifier so an arbitrary subject is expressible without minting an account; this one has a
+    genuine account, so the ephemeral-RSA verifier would reject its genuine token. The real
+    verifier, the real JWKS fetch and the real issuer/audience checks are all part of what this
+    case is here to exercise.
+    """
+    id_token, _ = anonymous_firebase_credential
+    transport = ASGITransport(app=_app_lifespan)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        client.headers["Authorization"] = f"Bearer {id_token}"
+        yield client
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheRealAnonymousCompletion:
+    """D-09's real half: nothing substituted, end to end, against the live project.
+
+    Skips rather than fails without an Admin credential -- see `anonymous_firebase_credential`.
+    Running it creates a permanent anonymous user in the shared project with no cleanup path
+    (T-37-50, accepted).
+    """
+
+    async def test_a_genuinely_anonymous_user_completes_through_the_real_admin_sdk(
+            self, anonymous_client, _db_transaction, _app_lifespan, _app_config,
+            anonymous_firebase_credential):
+        _, local_id = anonymous_firebase_credential
+        adapter = _app_lifespan.state.firebase_adapter
+        # The guard that keeps this case honest. `scripted_firebase_adapter` is deliberately not
+        # requested, but "deliberately not requested" is invisible in a diff and one careless
+        # fixture argument would turn the phase's only unsubstituted proof into another scripted
+        # one that agrees with itself.
+        assert isinstance(adapter, FirebaseAdminLookup)
+        users_before = await _count(_db_transaction, _USERS)
+
+        handle, completion = await _prepare_and_complete(anonymous_client)
+
+        assert completion.status_code == 200, completion.text
+        assert completion.json() == {"identity_provider": "anonymous"}
+        assert await _count(_db_transaction, _USERS) == users_before + 1
+
+        identity, user = await _identity_and_user(_db_transaction, local_id,
+                                                  issuer=_app_config.jwt.issuer)
+        assert identity.issuer == _app_config.jwt.issuer
+        assert identity.identity_state is IdentityState.active
+        assert identity.provider is IdentityProvider.anonymous
+        # NULL, not a sentinel: the row stays outside the provider-account reservation.
+        assert identity.provider_uid is None
+        assert user.registered_at is None
+        assert user.display_name is None
+
+        async with _db_transaction() as session:
+            tokens = (await session.exec(
+                select(StorePurchaseToken)
+                .where(col(StorePurchaseToken.user_id) == user.id))).all()
+        assert len(tokens) == 2
+        assert {token.provider for token in tokens} == set(PurchaseProvider)
+        assert len({token.identity_value for token in tokens}) == 2
+
+        challenge, events = await _challenge_and_events(_db_transaction, handle)
+        assert challenge.consumed_at is not None
+        assert challenge.preauth_subject_hash is None
+        assert len(events) == 1
+        assert events[0].operation is AuthOperation.create_user
+        assert events[0].result is AuthEventResult.succeeded
+
+        await _assert_step_10s_global_invariants(_db_transaction)
+
+    async def test_the_real_sdk_returns_empty_provider_data_for_an_anonymous_user(
+            self, _app_lifespan, _app_config, anonymous_firebase_credential):
+        """**The assertion this whole plan exists to make.**
+
+        No substituted adapter can make it, because a substituted adapter is where the assumption
+        lives. §02 step 9's classifier answers `anonymous` to an EMPTY providerData and to nothing
+        else -- so if the real SDK returned, say, a single entry with `providerId: "anonymous"`, or
+        `None` instead of an empty sequence, every anonymous completion in production would take
+        the classifier's reject arm and return 403 while this suite stayed green.
+
+        It is a separate case from the completion above on purpose: the completion asserts the
+        *consequence*, and consequences can be right for the wrong reason. This asserts the shape.
+        """
+        adapter = _app_lifespan.state.firebase_adapter
+        assert isinstance(adapter, FirebaseAdminLookup)
+        _, local_id = anonymous_firebase_credential
+
+        result = await adapter.get_user_provider_data(_app_config.jwt.issuer, local_id)
+
+        assert result.outcome is ProviderDataOutcome.ok
+        assert result.entries == ()
+        # The same response's address fields, which §02 step 10's copy rule reads. An anonymous
+        # user has neither, so the rule yields NULL -- and it yields it from real values here
+        # rather than from scripted ones.
+        assert result.email is None
+        assert result.email_verified is False
