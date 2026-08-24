@@ -33,6 +33,7 @@ from nativespeaker.api.auth.firebase import (
     FirebaseAdminLookup,
     build_admin_apps,
 )
+from nativespeaker.api.auth.retry import FIREBASE_LOOKUP_ATTEMPTS, lookup_with_retry
 from nativespeaker.api.config import FirebaseConfig, JWTConfig
 
 PROJECT_ID = "ns-test-project"
@@ -318,6 +319,39 @@ class TestFailureMapping:
         get_user_calls(exceptions.FirebaseError("unavailable", PROVIDER_TEXT))
         result = await adapter.get_user_provider_data(ISSUER, SUBJECT)
         assert result.outcome is ProviderDataOutcome.retryable_failure
+
+    async def test_a_credential_refresh_failure_is_retryable_and_never_escapes(self, adapter,
+                                                                              get_user_calls):
+        """CR-01. Credential acquisition happens before the request is sent, outside every arm.
+
+        `AuthorizedSession.request` calls `credentials.before_request()` first, and firebase-admin
+        converts only `requests.exceptions.RequestException` into a `FirebaseError`. `RefreshError`
+        is none of the three types the other arms catch, so without its own arm it escapes the
+        adapter: `retry_if_result` never sees a result, no retry is spent, and the caller gets 500
+        with the claim left unconsumed instead of 503.
+
+        This is the steady state under ADC, not an edge case -- the org policy blocks key creation,
+        so every deployment renews a short-lived token and every renewal can fail.
+        """
+        assert not issubclass(google.auth.exceptions.RefreshError, exceptions.FirebaseError)
+        assert not issubclass(google.auth.exceptions.RefreshError, ValueError)
+        get_user_calls(google.auth.exceptions.RefreshError("token refresh failed"))
+        result = await adapter.get_user_provider_data(ISSUER, SUBJECT)
+        assert result.outcome is ProviderDataOutcome.retryable_failure
+
+    async def test_a_credential_failure_spends_the_full_retry_budget(self, adapter, monkeypatch):
+        """The point of returning a result rather than raising: the policy can actually retry it."""
+        calls = []
+
+        def failing_get_user(uid, app=None):
+            calls.append(uid)
+            raise google.auth.exceptions.RefreshError("token refresh failed")
+
+        monkeypatch.setattr(auth, "get_user", failing_get_user)
+        result = await lookup_with_retry(adapter, ISSUER, SUBJECT)
+
+        assert result.outcome is ProviderDataOutcome.retryable_failure
+        assert len(calls) == FIREBASE_LOOKUP_ATTEMPTS
 
     async def test_a_lazy_provider_data_value_error_is_retryable_and_never_escapes(self, adapter,
                                                                                   get_user_calls):

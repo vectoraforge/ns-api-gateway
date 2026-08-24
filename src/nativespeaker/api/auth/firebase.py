@@ -170,6 +170,18 @@ class FirebaseAdminLookup:
             # A malformed or indeterminate response -- §02 step 8 classifies that as retryable.
             logger.warning("firebase_provider_data_malformed", detail=str(error))
             return ProviderDataResult(ProviderDataOutcome.retryable_failure)
+        except google.auth.exceptions.GoogleAuthError as error:
+            # Credential acquisition, which happens BEFORE the request is sent -- inside
+            # `AuthorizedSession.request` -> `credentials.before_request()`. firebase-admin
+            # converts only `requests.exceptions.RequestException` into a `FirebaseError`, and
+            # `RefreshError` is neither that nor a `ValueError`, so without this arm it escapes
+            # the adapter entirely: `retry_if_result` never sees a result, no retry is spent,
+            # and the caller gets 500 instead of 503 with the claim left unconsumed.
+            #
+            # Retryable, not definitive: an expired access token that failed to renew is the
+            # ordinary steady state under ADC, and the next attempt commonly succeeds.
+            logger.warning("firebase_credential_unavailable", detail=str(error))
+            return ProviderDataResult(ProviderDataOutcome.retryable_failure)
         except exceptions.FirebaseError as error:
             # Outage or integration-auth failure. The provider's text is diagnostic material for
             # the log and never for the response body (`adapters.py:19-20`, T-37-16) -- which is
