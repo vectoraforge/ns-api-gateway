@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
-current_phase: 38
-current_phase_name: POST /auth/sync
+current_phase: 37.1
+current_phase_name: Refactor machine-generated code
 status: planning
-stopped_at: Completed 37-10-PLAN.md — phase 37 complete
-last_updated: "2026-08-24T01:43:06.037Z"
+stopped_at: Phase 37.1 context gathered
+last_updated: "2026-08-24T22:41:58.691Z"
 last_activity: 2026-08-23
 last_activity_desc: 37-10 complete — D-09's split fully realized; all 10 plans of phase 37 executed
 progress:
-  total_phases: 13
+  total_phases: 14
   completed_phases: 4
   total_plans: 31
   completed_plans: 31
-  percent: 31
+  percent: 29
 state_head: 74f719641dcb5c703b9d1e3311ad264ffb3ce4bb
 ---
 
@@ -25,11 +25,11 @@ state_head: 74f719641dcb5c703b9d1e3311ad264ffb3ce4bb
 See: .planning/PROJECT.md (updated 2026-08-19)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 37 — post-auth-create-user
+**Current focus:** Phase 37.1 — refactor-machine-generated-code
 
 ## Current Position
 
-Phase: 38 — POST /auth/sync
+Phase: 37.1 — Refactor machine-generated code
 Plan: Not started
 Status: Ready to plan
 Last activity: 2026-08-23 — Phase 37 complete, transitioned to Phase 38
@@ -98,7 +98,7 @@ None.
 
 ### Roadmap Evolution
 
-None.
+- Phase 37.1 inserted after Phase 37: Refactor machine-generated code (URGENT)
 
 ### Blockers/Concerns
 
@@ -116,11 +116,11 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-24T00:49:36.045Z
+**Last session:** 2026-08-24T22:41:58.671Z
 
 Last activity: 2026-03-26
-Stopped at: Completed 37-10-PLAN.md — phase 37 complete
-Resume file: None
+Stopped at: Phase 37.1 context gathered
+Resume file: .planning/phases/37.1-refactor-machine-generated-code/37.1-CONTEXT.md
 
 ## Performance Metrics
 
