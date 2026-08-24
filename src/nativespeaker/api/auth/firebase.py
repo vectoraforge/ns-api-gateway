@@ -37,6 +37,8 @@ is deliberately not annotated as `FirebaseAdminAdapter` anywhere, because it doe
 whole Protocol and must not claim to.
 """
 import firebase_admin
+import google.auth
+import google.auth.exceptions
 import structlog
 from firebase_admin import auth, credentials, exceptions
 from starlette.concurrency import run_in_threadpool
@@ -60,25 +62,58 @@ FIREBASE_HTTP_TIMEOUT_SECONDS = 8
 def build_admin_apps(config) -> dict[str, firebase_admin.App]:
     """One named Admin app per configured issuer, built once at boot. Never a `[DEFAULT]` one.
 
-    Returns `{}` when no service-account credential is configured. That is a **supported** state
-    (37-03's `FirebaseConfig`): the service boots, prepare mode and every substituted-adapter path
-    runs unaffected, and a real completion fails closed at the selection arm below --
-    `selection_failure`, which §7.1 maps to `verification_temporarily_unavailable`. The credential
-    was already parsed and validated once at configuration load, so this reads the parsed dict
-    rather than re-parsing a secret.
+    Three credential sources, tried in this order. All three end in the same named app, so every
+    caller below is indifferent to which one supplied it.
+
+    1. **An explicit service-account key** in `FIREBASE_SERVICE_ACCOUNT_JSON` (37-03's
+       `FirebaseConfig`). Already parsed and validated once at configuration load, so this reads
+       the parsed dict rather than re-parsing a secret.
+    2. **Application Default Credentials**, when no explicit key is set. This is Google's
+       documented preference over key files, and the only route available where an organization
+       policy blocks `iam.disableServiceAccountKeyCreation` -- as this project's does. ADC resolves
+       whatever the environment supplies: `GOOGLE_APPLICATION_CREDENTIALS`, a developer's
+       `gcloud` login, or an attached identity, with no code difference between them.
+    3. **Neither**, which returns `{}` and remains a **supported** state: the service boots,
+       prepare mode and every substituted-adapter path runs unaffected, and a real completion
+       fails closed at the selection arm below -- `selection_failure`, which §7.1 maps to
+       `verification_temporarily_unavailable`.
+
+    `projectId` is always passed explicitly, never inferred: user-scoped ADC carries no project,
+    and an Admin client bound to the wrong project answers `selection_failure` on every lookup
+    rather than reading across projects.
     """
     credential_dict = config.firebase.credential_dict()
-    if credential_dict is None:
-        logger.warning("firebase_admin_credential_absent",
-                       consequence="user creation fails closed as verification_temporarily_unavailable "
-                                   "until FIREBASE_SERVICE_ACCOUNT_JSON is set")
-        return {}
+    if credential_dict is not None:
+        credential = credentials.Certificate(credential_dict)
+    else:
+        credential = _application_default_credential()
+        if credential is None:
+            logger.warning("firebase_admin_credential_absent",
+                           consequence="user creation fails closed as verification_temporarily_unavailable "
+                                       "until FIREBASE_SERVICE_ACCOUNT_JSON is set or ADC is configured")
+            return {}
     app = firebase_admin.initialize_app(
-        credentials.Certificate(credential_dict),
+        credential,
         {"projectId": config.jwt.project_id, "httpTimeout": FIREBASE_HTTP_TIMEOUT_SECONDS},
         name=f"issuer:{config.jwt.issuer}",
     )
     return {config.jwt.issuer: app}
+
+
+def _application_default_credential() -> credentials.ApplicationDefault | None:
+    """ADC if the environment supplies it, `None` if it does not -- never a raise.
+
+    `google.auth.default()` raises `DefaultCredentialsError` when nothing is configured, which is
+    the ordinary no-credential case, not an error: it must stay indistinguishable from an absent
+    key so the supported absent state above survives. The probe is done here, at boot, so a
+    misconfigured environment surfaces in one startup log line rather than as a surprise 503.
+    """
+    try:
+        google.auth.default()
+    except google.auth.exceptions.DefaultCredentialsError:
+        return None
+    logger.info("firebase_admin_using_application_default_credentials")
+    return credentials.ApplicationDefault()
 
 
 class FirebaseAdminLookup:
