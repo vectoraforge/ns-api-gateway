@@ -57,7 +57,7 @@ Shared machinery only. Rebinding the pre-existing routes is Phase 36.
 - [x] **CREATE-01**: The endpoint is the only pre-auth-callable route; every other route rejects an unlinked caller with `preauth_identity_not_allowed`
 - [x] **CREATE-02**: The endpoint implements both prepare mode and completion mode, partitioned by the mode signal
 - [x] **CREATE-03**: The creation transaction atomically produces one `core.users` row, exactly one ACTIVE `core.external_identities` row, and the per-store purchase-attribution tokens — never a partial account
-- [ ] **CREATE-04**: Concurrent create-user attempts for the same `(issuer, subject)` never produce duplicate accounts; the losing caller reconciles through `POST /auth/sync`
+- [x] **CREATE-04**: Concurrent create-user attempts for the same `(issuer, subject)` never produce duplicate accounts; the losing caller reconciles through `POST /auth/sync`
 
 ### SYNC — Phase 38 (`03-sync.md`) — `POST /auth/sync`
 
@@ -152,7 +152,7 @@ Explicitly excluded. `SHARED-INVARIANTS.md` "Global deletions" binds every phase
 | FOUND-01 … FOUND-08 | Phase 35 | Pending |
 | FOUND-09 | v2.1 backlog | Deferred (D-08) |
 | REBIND-01 … REBIND-06 | Phase 36 | Complete (REBIND-03 partial by design, REBIND-04 void) |
-| CREATE-01 … CREATE-04 | Phase 37 | Pending |
+| CREATE-01 … CREATE-04 | Phase 37 | Complete |
 | SYNC-01 … SYNC-03 | Phase 38 | Pending |
 | PROF-01 … PROF-02 | Phase 39 | Pending |
 | UPGRADE-01 … UPGRADE-02 | Phase 40 | Pending |

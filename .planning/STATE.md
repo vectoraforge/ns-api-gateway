@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 37
 current_phase_name: post-auth-create-user
 status: executing
-stopped_at: Completed 37-07-PLAN.md (the phase tracer)
-last_updated: "2026-08-23T23:13:31.750Z"
+stopped_at: Completed 37-10-PLAN.md — phase 37 complete
+last_updated: "2026-08-24T00:50:03.103Z"
 last_activity: 2026-08-23
-last_activity_desc: 37-07 (the phase tracer) complete; waves 1-3 done, 37-08/09/10 remain
+last_activity_desc: 37-10 complete — D-09's split fully realized; all 10 plans of phase 37 executed
 progress:
   total_phases: 13
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 31
-  completed_plans: 28
-  percent: 23
+  completed_plans: 31
+  percent: 31
 state_head: 74f719641dcb5c703b9d1e3311ad264ffb3ce4bb
 ---
 
@@ -29,15 +29,16 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 37 (post-auth-create-user) — EXECUTING
-Plan: 8 of 10
-Status: Ready to execute
-Last activity: 2026-08-23 — 37-07 (the phase tracer) complete; waves 1-3 done, 37-08/09/10 remain
+Phase: 37 (post-auth-create-user) — COMPLETE
+Plan: 10 of 10
+Status: All plans executed — ready for /gsd:verify-work and /gsd:validate-phase
+Last activity: 2026-08-23 — 37-10 complete; D-09's split fully realized, phase 37 done
 
-<!-- The plan counter was corrected from 3 to 8 on 2026-08-23. Waves 1 and 2 ran as parallel
-     worktree agents which deliberately do not write STATE.md (last-write-wins hazard), so the
-     counter never advanced with them and `state advance-plan` incremented a stale value. Eight is
-     disk truth: seven SUMMARY files exist (37-01..37-07), so 37-08 is next. -->
+<!-- The plan counter was corrected from 3 to 8 on 2026-08-23, and from 9 to 10 on 2026-08-24, for
+     the same reason both times. Waves 1, 2 and 4 ran as parallel worktree agents which deliberately
+     do not write STATE.md (last-write-wins hazard), so the counter never advanced with them and
+     `state advance-plan` increments a stale value. Ten is disk truth: ten SUMMARY files exist
+     (37-01..37-10), which is every plan in the phase. -->
 
 ## Wave 3 outcome (37-07, the tracer)
 
@@ -103,6 +104,7 @@ None.
 
 - RESOLVED (34-01): the PostgreSQL 17 blocker is cleared — developer started a postgres:17 container; server_version 17.11 (Debian 17.11-1.pgdg13+2) reachable on localhost:5432, database `nativespeaker` created and empty.
 - OPEN: RESEARCH.md assumption A1 — introspection constants were captured on PostgreSQL 16.2 but the target is 17.11; plan 34-03 must re-capture them rather than copying RESEARCH.md Code Example 4.
+- Deferred (37-10): the ~48s worst-case provider latency on the completion path is a policy decision on a shared budget — resolve with phases 40/41/42, which share the adapter seam.
 
 ### Quick Tasks Completed
 
@@ -114,10 +116,10 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-23T23:13:31.731Z
+**Last session:** 2026-08-24T00:49:36.045Z
 
 Last activity: 2026-03-26
-Stopped at: Completed 37-07-PLAN.md (the phase tracer)
+Stopped at: Completed 37-10-PLAN.md — phase 37 complete
 Resume file: None
 
 ## Performance Metrics
@@ -137,6 +139,7 @@ Resume file: None
 | Phase 36 P05 | 12min | 3 tasks | 9 files |
 | Phase 37 P01 | ~20min | 3 tasks | 8 files |
 | Phase 37 P07 | 35min | 3 tasks | 12 files |
+| Phase 37 P10 | ~55 min | 3 tasks | 5 files |
 
 ## Decisions
 
@@ -176,3 +179,5 @@ Resume file: None
 - [Phase ?]: 37-07: POST /auth/create-user reads the identity variant off RequestContext rather than Depends(get_preauth_identity) — it is the only route admitting both variants, because §02 prepare step 1's already-linked rejection (409) is unreachable when the accessor raises 401 on a linked caller (A-37-07-1)
 - [Phase ?]: 37-07: the challenge claim commits in its own transaction before the Firebase read — a crash mid-lookup leaves a permanently-claimed dead row (§6.2's design), whereas holding the claim uncommitted would let a second attempt win it
 - [Phase ?]: 37-07: the consuming transaction is auth/creation.py::create_account, a plain function over (session + resolved facts), so 37-09 can drive it with two real sessions; begin_nested() wraps the business inserts
+- [Phase ?]: D-08 amended (37-10): the Firebase Admin credential arrives via Application Default Credentials, not a service-account key — org policy iam.disableServiceAccountKeyCreation forbids minting one. Named per-issuer app, explicit projectId and no [DEFAULT] app are unchanged; only the credential source moved.
+- [Phase ?]: RESEARCH A5 closed by measurement (37-10): httpTimeout bounds each get_user transport attempt exactly, but the SDK makes two per call — one get_user costs up to 2x httpTimeout (16s at 8s), and with auth/retry.py's 3 attempts a worst-case completion holds ~48s. Fails closed; latency exposure only.
