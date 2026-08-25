@@ -174,9 +174,7 @@ class TestAnalyzeResponse:
         assert ar.issues == []
         assert ar.suggestions == []
 
-    # D-12: both list fields default to empty. The two cases that previously asserted
-    # ValidationError on omission pinned the behaviour D-35-11-A reports as the defect,
-    # so they are replaced rather than kept.
+    # Both list fields default to empty rather than raising on omission.
     def test_both_lists_default_to_empty(self):
         ar = AnalyzeResponse(resolved_mode="analyze", response="Looks good.")
         assert ar.issues == []
@@ -204,7 +202,7 @@ class TestAnalyzeResponse:
 
     def test_resolved_mode_and_response_stay_required(self):
         with pytest.raises(ValidationError):
-            # T-36-llmshape: a truncated provider payload must still fail validation.
+            # A truncated provider payload must still fail validation.
             AnalyzeResponse.model_validate({"response": "ok"})
         with pytest.raises(ValidationError):
             AnalyzeResponse.model_validate({"resolved_mode": "analyze"})
@@ -248,12 +246,7 @@ class TestExceptions:
 
 
 class TestPurchaseProviderEnum:
-    """CREATE-03: the Python mirror of the pre-existing `core.subscription_provider` type.
-
-    The Python class and the PostgreSQL type deliberately carry different names -- see
-    `models/purchase_tokens.py` for why. These cases pin the two halves separately: the member
-    set here, the database binding in `TestStorePurchaseTokenMapping`.
-    """
+    """The Python mirror of the pre-existing database enum type, whose names deliberately differ."""
 
     def test_exactly_two_members_in_migration_order(self):
         assert list(PurchaseProvider) == [PurchaseProvider.apple, PurchaseProvider.google_play]
@@ -263,14 +256,7 @@ class TestPurchaseProviderEnum:
 
 
 class TestStorePurchaseTokenMapping:
-    """The mapped shape of `core.store_purchase_tokens`, read off the SQLAlchemy Table.
-
-    Every assertion here reads `StorePurchaseToken.__table__` rather than the Python annotations,
-    so it describes what SQLAlchemy actually built -- which is the thing the create transaction
-    will run against. That the mapper *configures at all* over a table with no database primary
-    key is RESEARCH assumption A2's import half; its INSERT half is proven against a real
-    PostgreSQL in tests/schema/test_store_purchase_tokens.py.
-    """
+    """Read off the SQLAlchemy Table rather than the annotations, so it describes what was actually built."""
 
     def test_the_models_package_imports(self):
         """The mapper configures without raising 'could not assemble any primary key columns'."""
@@ -295,13 +281,7 @@ class TestStorePurchaseTokenMapping:
         }
 
     def test_provider_column_binds_the_pre_existing_database_enum_type(self):
-        """The binding names `core.subscription_provider`, not the Python class.
-
-        This phase renames only the Python side and migrates nothing, so the explicit
-        `name=`/`schema=` pair is the entire mechanism holding the two together. Drop it and
-        SQLAlchemy derives the type name from the class instead, emitting a *second* enum type at
-        DDL time -- which fails at the first INSERT, not at import.
-        """
+        """The explicit name and schema hold the two together; without them SQLAlchemy emits a second enum type."""
         provider_type = StorePurchaseToken.__table__.c.provider.type
         assert provider_type.name == "subscription_provider"
         assert provider_type.schema == "core"

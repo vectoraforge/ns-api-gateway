@@ -1,4 +1,4 @@
-"""Tests that verify the error contract is enforced across the API surface."""
+"""The contract under test is that every branch within an error class returns identical copy."""
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -6,12 +6,7 @@ from fastapi.testclient import TestClient
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.app.main import app as real_app
 
-# The closed code set after D-09 absorbed the business classes and D-11 retired `unauthorized`.
-#
-# Written out rather than derived from `REGISTRY` on purpose: this is the independent mirror that
-# catches a code reaching the published schema without anyone deciding it should. Extending the
-# registry therefore means extending this literal in the same commit -- as plan 37-03 does for the
-# last two entries below.
+# Written out rather than derived from REGISTRY: the mirror that catches an undecided code shipping.
 CONTRACT_CODES = {"auth_required", "preauth_identity_not_allowed", "account_unavailable",
                   "challenge_required", "invalid_request", "verification_temporarily_unavailable",
                   "rate_limited", "validation_error", "not_found", "method_not_allowed",
@@ -35,7 +30,7 @@ def contract_client():
 
 
 class TestStatusCodeRemapping:
-    """ERR-05, ERR-06: every framework status carries its own honest class (D-12)."""
+    """Every framework status carries its own honest class rather than being folded onto one."""
 
     def test_wrong_method_returns_405(self, contract_client):
         """POST to a GET-only route returns 405 -- the deleted remap table folded it to 400."""

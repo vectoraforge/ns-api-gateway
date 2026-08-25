@@ -90,14 +90,7 @@ def test_validation_error_handler(handler_client):
     assert body["code"] == "validation_error"
 
 
-# Five cases exercised the deleted `get_current_user` dependency end to end and went with it
-# (D-16). Their subjects did not disappear -- they moved to where the live code is:
-#   * token verification rules (invalid, expired, valid) -> test_jwt_security.py::TestProductionVerifier
-#   * a missing Authorization header on an authenticated route -> test_auth_security.py, over the
-#     real barrier, and tests/e2e/test_startup_assertion.py over the real started app
-#   * "the verifier is resolved from app.state, not captured" -> nothing in src/ reads
-#     `app.state.jwt_verifier` until plan 06 gives the barrier the verification step; that plan
-#     re-asserts it against the code that actually does the read.
+# The token-verification and missing-header cases live in test_jwt_security.py and test_auth_security.py.
 
 
 class TestRetryAfterHeaders:
