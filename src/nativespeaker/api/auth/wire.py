@@ -1,9 +1,4 @@
-"""The single-Authorization wire contract (spec 01-foundation.md §1.1).
-
-Reads the raw ASGI header list directly. Never `Headers.get`, never `Headers[...]`, never
-FastAPI's `Header()` alias: `Headers.get` returns only the *first* matching value and discards the
-rest, which silently satisfies the duplicate-field attack this contract exists to reject.
-"""
+"""The wire contract: a request carries exactly one well-formed Authorization header, or it is rejected."""
 from enum import StrEnum
 
 _AUTHORIZATION = b"authorization"
@@ -11,11 +6,7 @@ _BEARER = b"bearer"
 
 
 class BoundedReason(StrEnum):
-    """§1.1 / §4.5 rejection reasons -- audit `details.failure` and metric labels only.
-
-    Never client-visible: every one of these surfaces the identical `auth_required` status, body,
-    and copy.
-    """
+    """Rejection reasons for logs and metric labels; all of them surface the same copy to the client."""
     missing_token = "missing_token"
     malformed = "malformed"
     duplicate_authorization = "duplicate_authorization"
@@ -27,17 +18,12 @@ class BoundedReason(StrEnum):
 
 
 def extract_bearer(raw_headers: list[tuple[bytes, bytes]]) -> tuple[str | None, BoundedReason | None]:
-    """Return `(token, None)` for exactly one well-formed Bearer credential, else `(None, reason)`.
-
-    Field instances are counted before any value is inspected, so a request carrying two
-    Authorization values is rejected without either being selected -- there is no first-value or
-    last-value path for an attacker to steer. HTTP field names are case-insensitive and ASGI
-    guarantees lowercase keys, so `Authorization`, `authorization`, and `AUTHORIZATION` all arrive
-    folded into the same key and differently-cased occurrences count as duplicates.
-    """
+    """Return `(token, None)` for exactly one well-formed Bearer credential, else `(None, reason)`."""
+    # ASGI lowercases header names, so differently-cased duplicates fold into this one key.
     values = [v for (k, v) in raw_headers if k == _AUTHORIZATION]
     if not values:
         return None, BoundedReason.missing_token
+    # Counted before any value is read: `Headers.get` returns the first and hides the rest.
     if len(values) > 1:
         return None, BoundedReason.duplicate_authorization
 
@@ -50,8 +36,7 @@ def extract_bearer(raw_headers: list[tuple[bytes, bytes]]) -> tuple[str | None, 
         return None, BoundedReason.malformed
 
     try:
-        # The scheme matched case-insensitively; the token bytes are case-sensitive and are never
-        # trimmed, case-folded, decoded and re-encoded, or otherwise normalized.
+        # The scheme matched case-insensitively; the token bytes are never trimmed or normalized.
         token = parts[1].decode("ascii", "strict")
     except UnicodeDecodeError:
         return None, BoundedReason.malformed

@@ -16,21 +16,15 @@ from nativespeaker.api.errors import (
 
 logger = structlog.get_logger()
 
-_LEVEL_TO_METHOD = {
-    logging.DEBUG: "debug",
-    logging.INFO: "info",
-    logging.WARNING: "warning",
-    logging.ERROR: "error",
-    logging.CRITICAL: "critical",
-}
+_LOGGABLE = frozenset({logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL})
 
 
 async def service_error_handler(_: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, ServiceError)
     if exc.log_level is not None:
-        method_name = _LEVEL_TO_METHOD.get(exc.log_level, "error")
-        log_method = getattr(logger, method_name)
-        log_method(str(exc), error_type=type(exc).__name__,
+        # structlog's filtering logger indexes the five standard levels and raises on any other.
+        level = exc.log_level if exc.log_level in _LOGGABLE else logging.ERROR
+        logger.log(level, str(exc), error_type=type(exc).__name__,
                    exc_info=(exc.log_level >= logging.ERROR))
     return error_response(exc.error_class, headers=exc.extra_headers())
 
@@ -41,13 +35,8 @@ async def validation_error_handler(_: Request, exc: Exception) -> JSONResponse:
 
 
 async def http_exception_handler(_: Request, exc: Exception) -> JSONResponse:
-    """Answer a framework-raised HTTPException with the one class that status declares.
-
-    There is no status folding and no code fallback: `STATUS_TO_CLASS` is closed and every entry
-    carries its own key as its status. A miss is a registry hole, so it is logged loudly at ERROR
-    rather than defaulting silently -- the failure mode the deleted `_CODE_MAP.get(status, 500)`
-    made invisible.
-    """
+    """Answer a framework-raised HTTPException with the one class that status declares."""
+    # STATUS_TO_CLASS is closed, so a miss is a registry hole and is logged rather than defaulted.
     assert isinstance(exc, StarletteHTTPException)
     error_class = STATUS_TO_CLASS.get(exc.status_code)
     if error_class is None:

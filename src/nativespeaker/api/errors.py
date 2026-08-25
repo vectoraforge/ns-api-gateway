@@ -1,12 +1,4 @@
-"""The one client-visible error registry (D-10, spec 01-foundation.md §3).
-
-One response model, one closed registry table, one response factory, one exception hierarchy.
-Later phases append classes here by calling `register_class`; no phase defines its own response
-shape or handler.
-
-D-09 is complete as of plan 02: every client-visible class in the service lives here.
-`exceptions.py` no longer exists and `models/api.py` no longer declares the error body.
-"""
+"""The one client-visible error registry: one response model, one table, one factory, one hierarchy."""
 import logging
 from dataclasses import dataclass
 from typing import Literal, get_args
@@ -15,12 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
-# The machine-readable class codes the body may carry. A typo is a ValidationError at construction
-# rather than a runtime 500. Later phases extend this Literal alongside their `register_class` call.
-#
-# D-11: the v1.3 401 code `"unauthorized"` is retired. `auth_required` is the only 401 the service
-# emits -- once the barrier owns acceptance nothing else can produce one, so keeping both would
-# leave a code no branch reaches, which §3.1 forbids.
+# The codes the body may carry. A typo is a ValidationError at construction, not a runtime 500.
 ErrorCode = Literal["auth_required",
                     "preauth_identity_not_allowed",
                     "account_unavailable",
@@ -41,7 +28,7 @@ ErrorCode = Literal["auth_required",
 
 @dataclass(frozen=True, slots=True)
 class ErrorClass:
-    """One client-visible error class: exactly one status, one code, one copy (§3.1 anti-oracle)."""
+    """One client-visible error class: exactly one status, one code, one copy."""
     name: str
     status: int
     code: ErrorCode
@@ -68,25 +55,13 @@ def register_class(cls: ErrorClass) -> ErrorClass:
 
 
 def error_response(cls: ErrorClass, *, headers: dict[str, str] | None = None) -> JSONResponse:
-    """Build the shared response for a registered class.
-
-    Every client-visible error body in the service is produced here, so a class's status, code and
-    copy cannot disagree between one call site and another. Handlers return it directly; raised
-    `ServiceError`s reach it through `app/errors.py::service_error_handler`.
-    """
+    """Build the shared response for a registered class -- every error body is produced here."""
     return JSONResponse(status_code=cls.status,
                         content=ErrorResponse(code=cls.code).model_dump(),
                         headers=headers)
 
 
-# ---------------------------------------------------------------------------
-# The seven §3.2 foundation classes
-#
-# Copy is neutral by construction: it names no issuer, no integration, and no failed check, so no
-# branch within a class is distinguishable from another. It also never tells the caller they did
-# something wrong or implies abuse -- it states the condition and the remediation.
-# ---------------------------------------------------------------------------
-
+# Copy is neutral by construction: no branch within a class is distinguishable from another.
 AUTH_REQUIRED = register_class(ErrorClass(
     name="auth_required",
     status=401,
@@ -129,23 +104,13 @@ VERIFICATION_TEMPORARILY_UNAVAILABLE = register_class(ErrorClass(
     copy="Temporarily unavailable. Retry the whole operation later with backoff.",
 ))
 
-# Registered even though D-05 removed backend traffic limiting: per D-07 this is the class Envoy's
-# 429 body must name once the gateway contract lands, and §3.2 pins it as the generic 429 every
-# unspecialized rate-limit rejection carries.
+# The generic 429 every unspecialized rate-limit rejection carries, including Envoy's.
 RATE_LIMITED = register_class(ErrorClass(
     name="rate_limited",
     status=429,
     code="rate_limited",
     copy="Too many requests. Wait for the indicated interval and retry.",
 ))
-
-# ---------------------------------------------------------------------------
-# The pre-existing business classes, absorbed from exceptions.py (D-09)
-#
-# Each keeps its v1.6 code and status verbatim so §8.3's "existing non-auth error contracts
-# unchanged" holds. `invalid_request` (400) is reused above rather than re-minted: §3.1 forbids
-# near-duplicates.
-# ---------------------------------------------------------------------------
 
 VALIDATION_ERROR = register_class(ErrorClass(
     name="validation_error",
@@ -161,9 +126,7 @@ NOT_FOUND = register_class(ErrorClass(
     copy="No such resource at this path.",
 ))
 
-# A1: 405 gets its own class at its own status rather than folding into invalid_request. Folding is
-# the same lie as the deleted `_STATUS_REMAP` 405 -> 400 entry, and there is no anti-oracle cost --
-# a 405 is only reachable by a caller the barrier already admitted.
+# 405 keeps its own status. An unauthenticated caller can reach it, and it discloses only that the path exists.
 METHOD_NOT_ALLOWED = register_class(ErrorClass(
     name="method_not_allowed",
     status=405,
@@ -199,34 +162,7 @@ OUT_OF_SCOPE = register_class(ErrorClass(
     copy="This request is outside the scope of linguistic analysis. Send a phrase to analyse.",
 ))
 
-# ---------------------------------------------------------------------------
-# Phase 37 / spec 02-create-user.md -- the create-user classes
-#
-# Two, not the four §3.3 lists against phase 02. The other two are absent by decision:
-#
-#   `create_flow_mismatch` -- 37 D-12 removes the client flow declaration the class exists to
-#   reject; the server derives the account type solely from the Admin providerData classification.
-#   With the declaration gone there is no determinate mismatch to report, and the mandatory
-#   per-class field §02 attached to its 409 body goes with it. That field was the single place §02
-#   asked for a body shape `ErrorResponse` forbids, so the one-field contract above is preserved
-#   intact rather than reopened. Do not add a subclass, a payload slot, or an extras dict for it.
-#
-#   `registration_temporarily_unavailable` -- 37 D-03. §02 defines it as Envoy-emitted via
-#   response-override; the backend never raises it, and the gateway contract is v2.1. Registering
-#   an unreachable class is the defect D-11 corrects for the retired 401 code. This deliberately
-#   diverges from the D-07 precedent two blocks above, which kept `rate_limited` registered for a
-#   gateway that does not yet emit it: `rate_limited` is also §3.2's generic 429 for every backend
-#   rejection, so it has reachable raise sites of its own; this one would have none.
-#
-# Statuses (A3). The specification pins neither by number -- 01-foundation.md:196 pins only 400,
-# 403 (`device_grant_exhausted`, phase 06), 409 (`create_flow_mismatch`, now unregistered) and 429
-# -- so both are the registry's own choice under §3.1, made here and never varied per branch.
-# ---------------------------------------------------------------------------
-
-# 409, sharing the status with `challenge_required`. Same shape of condition: a conflict with
-# existing server state whose remediation is a different call -- here `/auth/sync`. Sharing is
-# legal by construction; `assert_registry_total` requires unique codes, not unique statuses, and
-# 403 already carried two classes before this block.
+# Shares 409 with `challenge_required`: codes must be unique, statuses need not be.
 IDENTITY_ALREADY_LINKED = register_class(ErrorClass(
     name="identity_already_linked",
     status=409,
@@ -234,9 +170,6 @@ IDENTITY_ALREADY_LINKED = register_class(ErrorClass(
     copy="An account already exists for this identity -- synchronise it rather than creating one.",
 ))
 
-# 403, joining `preauth_identity_not_allowed` and `account_unavailable`. §02 routes this one to
-# support with no flow named, which is the terminal-refusal shape phase 06 pins numerically at 403
-# for its sibling class `device_grant_exhausted`.
 OPERATION_NOT_ALLOWED = register_class(ErrorClass(
     name="operation_not_allowed",
     status=403,
@@ -244,26 +177,9 @@ OPERATION_NOT_ALLOWED = register_class(ErrorClass(
     copy="This operation cannot be completed for this account -- contact support.",
 ))
 
-# No class is declared for 415. `python-multipart` is not installed, so a `Form` or `File`
-# parameter cannot even be declared and no branch can reach that status. Declaring an unreachable
-# class is exactly the defect D-11 corrects for the retired 401 code -- apply it consistently.
+# No 415: `python-multipart` is absent, so a Form or File parameter cannot be declared at all.
 
-# ---------------------------------------------------------------------------
-# Framework-exception mapping (D-12)
-#
-# This replaces `app.errors._STATUS_REMAP` + `_CODE_MAP`, which were deleted outright rather than
-# trimmed: one entry folded 409 -> 400, and the registry uses 409 for `challenge_required`, so a
-# framework 409 would have surfaced as `invalid_request`. Every key here maps to a class carrying
-# that same status -- no status is ever folded into a different one, and `assert_registry_total`
-# proves it.
-#
-# 403 is deliberately absent. Two classes sit at 403 -- `preauth_identity_not_allowed` and
-# `account_unavailable` -- and neither is the generic answer, so any entry would be an arbitrary
-# lie of exactly the kind D-12 deletes. Both are named explicitly by the auth dependency, which
-# carries the class on the `AuthRejectionError` it raises and needs no status lookup. A bare
-# framework 403 is therefore a programming error and takes the loud unmapped-status path.
-# ---------------------------------------------------------------------------
-
+# No status is ever folded into another; 403 is absent because neither class there is the generic one.
 STATUS_TO_CLASS: dict[int, ErrorClass] = {
     400: INVALID_REQUEST,
     401: AUTH_REQUIRED,
@@ -278,13 +194,7 @@ STATUS_TO_CLASS: dict[int, ErrorClass] = {
 
 
 def assert_registry_total() -> None:
-    """Fail closed on a registry defect. Called from the lifespan, before the app serves traffic.
-
-    Four invariants, each of which a later phase could break by appending a class carelessly:
-    every registered class carries exactly one status under its own name, no two classes share a
-    code, every status maps to a registered class carrying that same status, and the `ErrorCode`
-    Literal set equals the set of registered codes exactly.
-    """
+    """Fail closed on a registry defect, from the lifespan, before the app serves traffic."""
     problems: list[str] = []
 
     for name, cls in REGISTRY.items():
@@ -316,15 +226,7 @@ def assert_registry_total() -> None:
         raise RuntimeError("error registry is not total:\n  " + "\n  ".join(problems))
 
 
-# ---------------------------------------------------------------------------
-# The service exception hierarchy, absorbed from exceptions.py (D-09)
-#
-# The v1.6 `status_code: int` / `error_code: ErrorCode` class-attribute pair is replaced by a
-# single `error_class: ErrorClass`. A subclass can no longer name a status and a code that
-# disagree, which is how `WebhookVerificationError` came to carry the 422 code at status 400.
-# ---------------------------------------------------------------------------
-
-
+# One `error_class` per subclass, so a status and a code can never be named in disagreement.
 class ServiceError(Exception):
     """Base exception for service layer errors."""
     error_class: ErrorClass = INTERNAL_ERROR
@@ -351,15 +253,13 @@ class AnalysisError(ServiceError):
 
 
 class TransientLLMError(AnalysisError):
-    """Raised when all retry attempts failed due to a transient LLM error.
-    __cause__ holds the original exception from the last failed attempt."""
+    """All retries failed on a transient LLM error; `__cause__` holds the last one."""
     error_class = SERVICE_UNAVAILABLE
     log_level = None
 
 
 class PermanentLLMError(AnalysisError):
-    """Raised when the LLM call failed with a non-transient error (no retry possible).
-    __cause__ holds the original exception."""
+    """The LLM call failed with a non-transient error; `__cause__` holds it."""
     error_class = SERVICE_UNAVAILABLE
     log_level = None
 
@@ -429,11 +329,7 @@ class OutOfScopeError(ServiceError):
 
 
 class AuthenticationError(ServiceError):
-    """Base for authentication failures -- maps to the one 401 class (D-11).
-
-    Plan 04 deletes its v1.6 raise sites, after which plan 03's three identity accessors are its
-    only remaining ones.
-    """
+    """Base for authentication failures -- maps to the one 401 class."""
     error_class = AUTH_REQUIRED
     log_level = logging.WARNING
 
@@ -442,26 +338,8 @@ class AuthenticationError(ServiceError):
 
 
 class AuthRejectionError(ServiceError):
-    """A §1.5 admission rejection, raised by the auth dependency (37.1 D-06).
-
-    The barrier this replaced *returned* `error_response(...)` rather than raising, because
-    `add_middleware` places user middleware outside Starlette's `ExceptionMiddleware`. A dependency
-    runs inside it, so that constraint is gone and this raises like every other service error.
-
-    Two deliberate differences from `AuthenticationError`, both of which keep the wire response
-    byte-identical to what the middleware produced:
-
-    - **The error class is per-instance, not per-class.** Admission rejects with three different
-      classes -- `auth_required` (401), `preauth_identity_not_allowed` (403) and
-      `account_unavailable` (403) -- and `ServiceError.error_class` is a class attribute. Assigning
-      to `self.error_class` shadows it, so one subclass covers all three rather than three
-      subclasses covering one apiece.
-    - **`log_level` stays `None` and `extra_headers` is not overridden.** `record_rejection` has
-      already emitted the `auth_rejected` event by the time this is raised, so a second WARNING
-      here would double-log every rejection; and the barrier's 401 never carried a
-      `WWW-Authenticate: Bearer` header, so inheriting `AuthenticationError`'s would be a wire
-      change.
-    """
+    """An admission rejection raised by the auth dependency, carrying its error class per instance."""
+    # It logs nothing itself: the security log already recorded the rejection.
     log_level = None
 
     def __init__(self, error_class: ErrorClass, message: str):
@@ -475,7 +353,7 @@ class WebhookVerificationError(ServiceError):
 
 
 class DatabaseNotInitializedError(ServiceError):
-    """Raised when DB session factory is not initialized -- maps to 500."""
+    """The DB session factory is not initialized -- maps to 500."""
     error_class = INTERNAL_ERROR
     log_level = logging.ERROR
 
@@ -483,34 +361,10 @@ class DatabaseNotInitializedError(ServiceError):
         super().__init__("Database session factory is not initialized")
 
 
-# ---------------------------------------------------------------------------
-# The three §8.4 fail-closed classes (Phase 36, D-09 / D-10)
-#
-# All three reuse the already-registered INTERNAL_ERROR class -- `register_class` is deliberately
-# NOT called for any of them. `ErrorCode` is closed and `assert_registry_total()` fails boot on a
-# mismatch, so a new client-visible code here would be a boot failure, not a feature.
-#
-# `log_level = logging.ERROR` is load-bearing rather than decorative: `service_error_handler`
-# passes `exc_info=(log_level >= logging.ERROR)`, so ERROR is what puts a traceback in the log.
-# Each of these three means stored state diverged from an invariant the database is supposed to
-# make unreachable, and a traceback is the only thing that says which call site found it.
-#
-# Every identifier below lives in the exception *message*, which is server-side only. The client
-# receives `INTERNAL_ERROR.copy` and nothing else, so naming a grant, a user or a tier here leaks
-# nothing across the trust boundary.
-# ---------------------------------------------------------------------------
-
-
+# All three reuse INTERNAL_ERROR; ERROR level adds the traceback, and their messages stay server-side.
 class MissingUsageRowError(ServiceError):
-    """An effective grant with no `core.user_monthly_usage` row -- maps to 500 (D-09).
-
-    Never repaired inline and never lazily minted. Phases 41, 42 and 45 write the grant and its
-    usage row in one transaction, so a grant without one means a write path failed. Minting the
-    row here would convert a detectable broken invariant into a silent free allowance.
-
-    Not `service_unavailable`: nothing repairs this state -- SHARED-INVARIANTS deletes background
-    healers -- so a 503's "retry soon" advice would be a lie.
-    """
+    """An effective grant with no `core.user_monthly_usage` row -- maps to 500."""
+    # Never minted here: that would turn a detectable broken invariant into a silent free allowance.
     error_class = INTERNAL_ERROR
     log_level = logging.ERROR
 
@@ -520,14 +374,8 @@ class MissingUsageRowError(ServiceError):
 
 
 class MultipleEffectiveGrantsError(ServiceError):
-    """More than one effective grant for one user -- maps to 500 (D-10).
-
-    A tripwire, not a recovery branch. `ix_access_grants_one_active_per_user` is a non-deferrable
-    partial unique index permitting one `status='active'` row per user, and the effective-grant
-    predicate is a strict subset of that, so this is structurally unreachable. It is asserted
-    anyway so that dropping the index or widening the predicate fails loudly instead of silently
-    tie-breaking -- the exact tie-break §8.4 forbids. Do not turn it into a precedence ranking.
-    """
+    """More than one effective grant for one user -- maps to 500."""
+    # A unique index makes this unreachable; asserted so dropping it fails loudly, never tie-breaks.
     error_class = INTERNAL_ERROR
     log_level = logging.ERROR
 
@@ -538,13 +386,8 @@ class MultipleEffectiveGrantsError(ServiceError):
 
 
 class UnknownTierError(ServiceError):
-    """A grant whose `tier_id` has no `core.access_tiers` row -- maps to 500.
-
-    The same class of tripwire as `MultipleEffectiveGrantsError`: a foreign key makes it
-    unreachable, and the branch exists so a future FK change is loud. Failing closed is the whole
-    point -- the two silent readings, "allowance 0" and "unbounded allowance", are respectively an
-    unexplained 429 for a paying customer and a free service.
-    """
+    """A grant whose `tier_id` has no `core.access_tiers` row -- maps to 500."""
+    # A foreign key makes this unreachable; the silent readings are a wrong 429 or a free service.
     error_class = INTERNAL_ERROR
     log_level = logging.ERROR
 
