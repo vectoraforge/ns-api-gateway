@@ -21,7 +21,7 @@ retained indefinitely. That is the design, not an omission -- the client's only 
 prepare inside the 300-second TTL.
 
 **The handle is a secret capability.** Possession is the only thing that locates a row, so it is
-body-only transport and must never reach a URL, an audit row, a log, a trace, analytics, or error
+body-only transport and must never reach a URL, a log, a trace, analytics, or error
 text. Correlate with the non-secret `core.auth_challenges.id`. This module holds no logger at all,
 which is what makes "the raw malformed identifier is never logged" structural rather than a
 convention someone has to remember.
@@ -40,7 +40,7 @@ used to exist for it is gone with it. `challenge_operation_mismatch` remains liv
 
 Every method here is transaction-neutral: none of them commits. `issue` flushes into the caller's
 prepare transaction, and `consume` runs inside the caller's consuming transaction atomically with
-the audit row and any mutation.
+any mutation.
 """
 import base64
 import secrets
@@ -75,8 +75,9 @@ def new_challenge_id() -> str:
 
 
 class ChallengeRejection(StrEnum):
-    """The five §6 rejections. Every member's value is also a `core.auth_event_result` member, so a
-    caller writing the audit row can use it directly rather than keeping a private mapping table.
+    """The five §6 rejections. Every member's value is also an `AuthEventResult` member, so a caller
+    can map straight through with `AuthEventResult(rejection.value)` rather than keeping a private
+    mapping table that can drift. `routers/auth.py` does exactly that.
 
     None of these is client-visible: they all surface as `challenge_required` (409).
     """
@@ -90,9 +91,9 @@ class ChallengeRejection(StrEnum):
 class ChallengeStore:
     """The §6.1 four operations. One instance lives on `app.state.challenge_store`.
 
-    The session is a parameter on every method rather than held on the instance, for the same
-    reason the audit writer takes one: the e2e rollback fixture swaps `app.state.session_factory`
-    per test, and an instance that captured a session at construction would write outside it.
+    The session is a parameter on every method rather than held on the instance because the e2e
+    rollback fixture swaps `app.state.session_factory` per test, and an instance that captured a
+    session at construction would write outside it.
     """
 
     def __init__(self, keyring: HmacKeyring) -> None:
@@ -197,8 +198,8 @@ class ChallengeStore:
         a change of identity -- which is why a cleared row is later rejected as already-used rather
         than as a mismatch.
 
-        Runs inside the caller's consuming transaction, atomically with the audit row and any
-        mutation, and does not commit. `False` under any other `claim_attempt_id`, and `False` on a
+        Runs inside the caller's consuming transaction, atomically with any mutation, and does not
+        commit. `False` under any other `claim_attempt_id`, and `False` on a
         second call under the winning one: the lifecycle runs one direction only.
         """
         result = await session.exec(
@@ -229,8 +230,8 @@ class ChallengeStore:
 
         The hash comparison runs through `HmacKeyring.actor_subject_matches`, which wraps
         `hmac.compare_digest`. There is deliberately no `compare_digest` call written here: plan 08
-        shipped that comparison as part of the keyed-hashing seam precisely so the audit writer and
-        this store would not each grow their own `stored == recomputed`. `==` on keyed material
+        shipped that comparison as part of the keyed-hashing seam precisely so no caller would grow
+        its own `stored == recomputed`. `==` on keyed material
         returns the identical answer while leaking position information through timing, so nothing
         but the seam is acceptable.
 

@@ -31,7 +31,7 @@ def _headers(*values: bytes) -> list[tuple[bytes, bytes]]:
 
 
 class TestTheSixWireCases:
-    """Every one of these is `invalid_external_jwt` to the audit path and `auth_required` to a client."""
+    """Every one of these is `invalid_external_jwt` internally and `auth_required` to a client."""
 
     def test_zero_authorization_values_is_missing_token(self):
         assert extract_bearer(_headers()) == (None, BoundedReason.missing_token)

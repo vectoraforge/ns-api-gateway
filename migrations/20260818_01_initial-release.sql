@@ -81,58 +81,6 @@ CREATE TYPE core.access_grant_status AS ENUM (
     'expired'
 );
 
--- Exactly 44 values; closed and exact. Do not add a spare, a catch-all alias, or a
--- deprecated value. Ruling 9.7: 'invalid_attestation_or_integrity_proof' is DELETED
--- (malformed proof audits as 'proof_malformed'); there is no 'cloudflare_lookup_unavailable'
--- (an incomplete Cloudflare lookup audits as 'verification_temporarily_unavailable');
--- failed or ambiguous Firebase revocation audits as 'revocation_unconfirmed'.
-CREATE TYPE core.auth_event_result AS ENUM (
-    'succeeded',
-    'challenge_expired',
-    'challenge_consumed',
-    'challenge_identity_mismatch',
-    'challenge_operation_mismatch',
-    'challenge_not_found',
-    'invalid_external_jwt',
-    'preauth_identity_not_allowed',
-    'identity_already_linked',
-    'provider_not_linked',
-    'provider_transition_not_allowed',
-    'provider_account_already_linked',
-    'blocked_user',
-    'historical_identity',
-    'invalid_restore_proof',
-    'proof_malformed',
-    'store_transaction_already_linked',
-    'restore_subscription_unlinked',
-    'restore_subscription_not_entitled',
-    'restore_purchase_uuid_unknown',
-    'restore_purchase_uuid_mismatch',
-    'restore_subscription_grant_owner_mismatch',
-    'restore_branch_inconsistent',
-    'restore_store_state_unverified',
-    'restore_source_user_inactive',
-    'restore_destination_anonymous',
-    'restore_destination_already_entitled',
-    'anti_abuse_already_claimed',
-    'native_claim_already_claimed',
-    'native_claim_unavailable',
-    'native_claim_write_failed',
-    'devicecheck_read_budget_exhausted',
-    'devicecheck_write_budget_exhausted',
-    'device_recall_read_budget_exhausted',
-    'device_recall_write_budget_exhausted',
-    'firebase_user_unresolved',
-    'idp_account_not_eligible',
-    'firebase_lookup_unavailable',
-    'verification_temporarily_unavailable',
-    'idp_account_already_claimed',
-    'registered_grant_destination_incompatible',
-    'policy_rejected',
-    'revocation_unconfirmed',
-    'internal_error'
-);
-
 CREATE TYPE core.native_claim_provider AS ENUM ('ios_devicecheck', 'android_play_integrity');
 
 CREATE TYPE core.gate_consumption_kind AS ENUM ('web_anonymous_gate', 'registered_account_grant');
@@ -200,9 +148,9 @@ CREATE INDEX ix_messages_chat_id ON core.messages (chat_id);
 -- ---------------------------------------------------------------------
 --
 -- This is the ONLY table that stores a recoverable external subject. issuer/subject are
--- the verified Firebase ID token's iss/sub in plaintext; core.auth_challenges and
--- audit.auth_events store a keyed hash instead. That plaintext is the deliberate,
--- user-disclosed exception of section 8: it exists solely as a uniqueness reservation.
+-- the verified Firebase ID token's iss/sub in plaintext; core.auth_challenges stores a
+-- keyed hash instead. That plaintext is the deliberate, user-disclosed exception of
+-- section 8: it exists solely as a uniqueness reservation.
 CREATE TABLE core.external_identities (
     id UUID PRIMARY KEY,
     -- ON DELETE RESTRICT is intentional (section 8) - a guardrail against deleting a
@@ -602,8 +550,7 @@ CREATE TABLE core.auth_challenges (
     -- backend-verified subject), not a signed token carried by the client. There is no
     -- signed-token column and no JWT column. This row records NO HMAC key version -
     -- verification uses the current active key alone, so a challenge outstanding across a
-    -- key rotation simply fails. Do NOT add a key-version column here (unlike
-    -- audit.auth_events, which has one).
+    -- key rotation simply fails. Do NOT add a key-version column here.
     preauth_subject_hash BYTEA,
     -- The 300-second TTL is applied by the application when it writes this; there is no
     -- database default and no per-operation override.
@@ -657,63 +604,6 @@ CREATE TABLE core.auth_challenges (
 );
 
 CREATE INDEX ix_auth_challenges_expires_at ON core.auth_challenges (expires_at);
-
--- Append-only. No raw subject, no raw token, and no other plaintext credential material
--- lands here: the actor subject is a keyed BYTEA hash with its key version.
-CREATE TABLE audit.auth_events (
-    id UUID PRIMARY KEY,
-    -- A bare UUID with NO foreign key to core.auth_challenges (00-schema.md:608),
-    -- deliberately, so audit rows survive independently. Do not add an FK.
-    challenge_row_id UUID,
-    -- Nullable: rejection can precede operation determination. A 'succeeded' row must
-    -- name one - that is the last CHECK below.
-    operation core.auth_operation,
-    -- The single machine-readable outcome. There is no failure_reason column and no
-    -- free-text fallback.
-    result core.auth_event_result NOT NULL,
-    actor_issuer TEXT,
-    -- HMAC-SHA-256 of the verified subject. Raw subjects never land here.
-    actor_subject_hash BYTEA,
-    actor_subject_hash_key_version SMALLINT,
-    actor_provider core.identity_provider,
-    details JSONB NOT NULL DEFAULT '{"schema_version":1,"context":{},"verification":{},"resolved":{},"mutation":{},"failure":{}}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL,
-    -- The enforced top-level shape of details. Field contents inside each subobject are
-    -- later phases' choice; secrets, raw tokens, raw proofs and the public challenge_id
-    -- never go in.
-    CHECK (jsonb_typeof(details) = 'object'),
-    CHECK (details ? 'schema_version' AND jsonb_typeof(details -> 'schema_version') = 'number'),
-    CHECK (details ? 'context' AND jsonb_typeof(details -> 'context') = 'object'),
-    CHECK (details ? 'verification' AND jsonb_typeof(details -> 'verification') = 'object'),
-    CHECK (details ? 'resolved' AND jsonb_typeof(details -> 'resolved') = 'object'),
-    CHECK (details ? 'mutation' AND jsonb_typeof(details -> 'mutation') = 'object'),
-    CHECK (details ? 'failure' AND jsonb_typeof(details -> 'failure') = 'object'),
-    -- All-or-nothing actor CHECK: invalid_external_jwt rows carry no actor at all
-    -- (actor_provider included); every other result carries issuer, subject hash and
-    -- key version.
-    CHECK (
-        (result = 'invalid_external_jwt'
-            AND actor_issuer IS NULL
-            AND actor_subject_hash IS NULL
-            AND actor_subject_hash_key_version IS NULL
-            AND actor_provider IS NULL)
-        OR
-        (result <> 'invalid_external_jwt'
-            AND actor_issuer IS NOT NULL
-            AND actor_subject_hash IS NOT NULL
-            AND actor_subject_hash_key_version IS NOT NULL)
-    ),
-    CHECK (
-        (result = 'succeeded' AND operation IS NOT NULL)
-        OR
-        (result <> 'succeeded')
-    )
-);
-
-CREATE INDEX ix_auth_events_challenge_row_id ON audit.auth_events (challenge_row_id);
-CREATE INDEX ix_auth_events_result_created_at ON audit.auth_events (result, created_at);
-CREATE INDEX ix_auth_events_operation_created_at ON audit.auth_events (operation, created_at);
-CREATE INDEX ix_auth_events_actor_issuer_subject_hash ON audit.auth_events (actor_issuer, actor_subject_hash);
 
 -- migrate: rollback
 

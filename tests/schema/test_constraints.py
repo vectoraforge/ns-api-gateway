@@ -1,6 +1,5 @@
-"""SCHEMA-02 .. SCHEMA-06 -- the 00-schema.md section 10 rejection cases, exercised with real rows."""
+"""SCHEMA-02 .. SCHEMA-05 -- the 00-schema.md section 10 rejection cases, exercised with real rows."""
 import contextlib
-import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -36,7 +35,6 @@ FK_GRANT_SUBSCRIPTION_OWNER = "access_grants_active_subscription_grant_subscript
 ISSUER = "https://securetoken.google.com/native-speaker-test"
 _ACTOR_SUBJECT_HASH = bytes(range(32))
 _IDP_ACCOUNT_HASH = bytes(range(32, 64))
-_DETAILS_KEYS = ("schema_version", "context", "verification", "resolved", "mutation", "failure")
 
 # The COMMIT-time cases (LB, E1, E2, OWN) below drive the boundary with explicit SQL. The conn
 # fixture has already opened a transaction, so the "BEGIN" is a documented no-op the server warns
@@ -85,20 +83,6 @@ _INSERT_CHALLENGE = (
     "(id, challenge_id, operation, bound_external_identity_id, preauth_issuer, "
     "preauth_subject_hash, expires_at, claimed_at, claim_attempt_id, consumed_at, created_at) "
     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)"
-)
-# Two literal statements again: case A6 has to prove the DDL's details DEFAULT is what a minimal
-# valid row gets, which means omitting the column rather than passing the skeleton by hand.
-_INSERT_AUTH_EVENT = (
-    "INSERT INTO audit.auth_events "
-    "(id, challenge_row_id, operation, result, actor_issuer, actor_subject_hash, "
-    "actor_subject_hash_key_version, actor_provider, details, created_at) "
-    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, CURRENT_TIMESTAMP)"
-)
-_INSERT_AUTH_EVENT_DETAILS_OMITTED = (
-    "INSERT INTO audit.auth_events "
-    "(id, challenge_row_id, operation, result, actor_issuer, actor_subject_hash, "
-    "actor_subject_hash_key_version, actor_provider, created_at) "
-    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)"
 )
 
 
@@ -226,40 +210,6 @@ async def _insert_challenge(
         consumed_at,
     )
     return challenge_row_id
-
-
-async def _insert_auth_event(
-    conn: asyncpg.Connection,
-    *,
-    result: str,
-    operation: str | None = None,
-    actor_issuer: str | None = ISSUER,
-    actor_subject_hash: bytes | None = _ACTOR_SUBJECT_HASH,
-    actor_subject_hash_key_version: int | None = 1,
-    actor_provider: str | None = None,
-    details: dict | None = None,
-) -> uuid.UUID:
-    """Insert one audit.auth_events row and return its id.
-
-    details=None omits the column entirely so the DDL's six-key DEFAULT applies; pass a dict to
-    write an explicit one.
-    """
-    event_id = uuid.uuid4()
-    common = (
-        event_id,
-        None,  # challenge_row_id -- deliberately bare, the schema has no FK to core.auth_challenges
-        operation,
-        result,
-        actor_issuer,
-        actor_subject_hash,
-        actor_subject_hash_key_version,
-        actor_provider,
-    )
-    if details is None:
-        await conn.execute(_INSERT_AUTH_EVENT_DETAILS_OMITTED, *common)
-    else:
-        await conn.execute(_INSERT_AUTH_EVENT, *common, json.dumps(details))
-    return event_id
 
 
 class TestExternalIdentityConstraints:
@@ -743,60 +693,3 @@ class TestAuthChallengeConstraints:
         assert await conn.fetchval(
             "SELECT count(*) FROM core.auth_challenges WHERE id = $1", challenge_row_id
         ) == 1
-
-
-class TestAuthEventAuditConstraints:
-    """SCHEMA-06 -- the all-or-nothing actor CHECK, the succeeded/operation CHECK, and the details shape."""
-
-    async def test_audit_row_without_any_actor_fields_rejected(self, conn):
-        """Case A1 -- every result other than invalid_external_jwt must be attributable."""
-        async with _rejects(conn, asyncpg.CheckViolationError):
-            # Dropping the whole actor triple on an attributable result is the point of this test.
-            await _insert_auth_event(
-                conn,
-                result="challenge_expired",
-                actor_issuer=None,
-                actor_subject_hash=None,
-                actor_subject_hash_key_version=None,
-            )
-        assert await conn.fetchval("SELECT count(*) FROM audit.auth_events") == 0
-
-    async def test_audit_invalid_external_jwt_row_carrying_actor_fields_rejected(self, conn):
-        """Case A2 -- an unverifiable token yields no actor, so the row may not claim one."""
-        async with _rejects(conn, asyncpg.CheckViolationError):
-            # An invalid_external_jwt row was never able to identify an actor; asserting one is the point.
-            await _insert_auth_event(conn, result="invalid_external_jwt")
-
-    async def test_audit_row_with_partial_actor_triple_rejected(self, conn):
-        """Case A3 -- issuer and subject hash without the key version is an unverifiable actor."""
-        async with _rejects(conn, asyncpg.CheckViolationError):
-            # Omitting only the key version is the point of this test: the hash cannot be
-            # re-derived later without knowing which key produced it.
-            await _insert_auth_event(
-                conn, result="challenge_expired", actor_subject_hash_key_version=None
-            )
-
-    async def test_audit_succeeded_row_without_operation_rejected(self, conn):
-        """Case A4 -- operation is nullable for rejections, but a succeeded row must name one."""
-        async with _rejects(conn, asyncpg.CheckViolationError):
-            # Leaving operation NULL on a success is the point of this test.
-            await _insert_auth_event(conn, result="succeeded", operation=None)
-
-    async def test_audit_row_with_details_missing_failure_key_rejected(self, conn):
-        """Case A5 -- the details skeleton is enforced key by key."""
-        partial = {key: {} for key in _DETAILS_KEYS if key != "failure"}
-        partial["schema_version"] = 1
-        async with _rejects(conn, asyncpg.CheckViolationError):
-            # Only the failure key is dropped, so this isolates one shape CHECK instead of
-            # tripping several at once.
-            await _insert_auth_event(conn, result="challenge_expired", details=partial)
-
-    async def test_audit_row_with_minimal_actor_triple_accepted(self, conn):
-        """Case A6 -- the CHECKs are not simply rejecting everything: a valid minimal row is accepted."""
-        event_id = await _insert_auth_event(conn, result="challenge_expired")
-        row = await conn.fetchrow(
-            "SELECT operation, actor_provider, details FROM audit.auth_events WHERE id = $1", event_id
-        )
-        assert row["operation"] is None  # nullable for a rejection result
-        assert row["actor_provider"] is None  # not part of the required triple
-        assert set(json.loads(row["details"])) == set(_DETAILS_KEYS)

@@ -79,8 +79,8 @@ class TestTheDerivation:
 
     def test_two_keyrings_from_the_same_configuration_agree(self):
         """Stability across instances, not merely across calls. A row written by one process must
-        still match a hash recomputed by the next one, which is the property the audit table and
-        the challenge binding both rest on."""
+        still match a hash recomputed by the next one, which is the property the challenge binding
+        rests on."""
         cfg = config(1, keys={1: material(4)})
         assert (HmacKeyring(cfg).actor_subject_hash(ISSUER, SUBJECT)
                 == HmacKeyring(cfg).actor_subject_hash(ISSUER, SUBJECT))
@@ -148,8 +148,7 @@ class TestTheActiveKeyPolicy:
 
     @pytest.mark.parametrize("version", [0, -1, 32768])
     def test_an_out_of_range_active_version_is_rejected(self, version):
-        """`audit.auth_events.actor_subject_hash_key_version` is SMALLINT: fail at load, not at
-        the first audit insert."""
+        """The stored key version is a SMALLINT: fail at load, not at the first write."""
         with pytest.raises(ValidationError):
             HmacConfig(active_version=version, keys={version: material(1)})
 

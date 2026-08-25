@@ -61,9 +61,8 @@ def barrier_client():
     app.state.jwt_verifier = make_test_verifier()
     app.state.session_factory = _NoIdentitySession
     # An empty registry, which is what makes /probe undeclared *to this app* rather than merely
-    # absent from the production table. It also keeps every case here off the audited attempt path:
-    # a route with no declaration has no operation, so no rejection below writes an audit row and
-    # none of them needs a writer.
+    # absent from the production table. It also keeps every case here off the on-path attempt
+    # route: a route with no declaration has no operation.
     app.state.route_registry = ()
 
     with TestClient(app, raise_server_exceptions=False) as client:

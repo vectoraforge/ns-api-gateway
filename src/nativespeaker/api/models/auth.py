@@ -1,26 +1,21 @@
-"""The auth-domain PostgreSQL enums, the `core.auth_challenges` table, and `audit.auth_events`.
+"""The auth-domain enums and the `core.auth_challenges` table.
 
-The two enums came first because route metadata (auth/registry.py) and the audit writer both key
-off them.
+`AuthOperation` is backed by the `core.auth_operation` PostgreSQL type, because
+`core.auth_challenges.operation` stores it. `AuthEventResult` is **not** backed by a database type:
+it is the internal rejection vocabulary that identity resolution, account creation, the retry
+policy and the security log all classify against, and nothing persists it.
 
-`AuthEvent` is the first model in this codebase mapped outside the `core` schema. Every constraint
-the table carries stays in `migrations/20260818_01_initial-release.sql` and is deliberately not
-re-encoded here -- the all-or-nothing actor CHECK, the six-key `details` shape, and the
-`succeeded`-needs-an-operation rule included. A Python copy of a CHECK is a second source of truth
-that can drift from the one that actually enforces. What the writer *does* do is refuse to build a
-row those CHECKs would reject, so the failure reads as a message rather than as a constraint
-violation; that guard lives in `auth/audit.py`, next to the caller it protects.
+The CHECKs `core.auth_challenges` carries stay in `migrations/20260818_01_initial-release.sql` and
+are deliberately not re-encoded here. A Python copy of a CHECK is a second source of truth that can
+drift from the one that actually enforces.
 """
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, cast
 from uuid import UUID, uuid7
 
-from sqlalchemy import DateTime, Enum, LargeBinary, SmallInteger
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import DateTime, Enum, LargeBinary
 from sqlmodel import Field, SQLModel
-
-from nativespeaker.api.models.identities import IdentityProvider, IdentityProviderType
 
 
 class AuthOperation(StrEnum):
@@ -35,11 +30,11 @@ class AuthOperation(StrEnum):
 
 
 class AuthEventResult(StrEnum):
-    """Mirrors `core.auth_event_result` -- the internal audit outcome codes.
+    """The internal outcome vocabulary for an auth attempt.
 
     Closed and exact (44 values). Never client-visible: the shared error registry maps these onto
-    the client-visible classes, and the audited internal result is never less specific than the
-    class returned.
+    the client-visible classes, and the internal result recorded in the security log is never less
+    specific than the class returned.
     """
     succeeded = "succeeded"
     challenge_expired = "challenge_expired"
@@ -88,13 +83,8 @@ class AuthEventResult(StrEnum):
 
 
 AuthOperationType = cast(Any, Enum(AuthOperation, name='auth_operation', schema='core'))
-AuthEventResultType = cast(Any, Enum(AuthEventResult, name='auth_event_result', schema='core'))
 DateTimeType = cast(Any, DateTime(timezone=True))
-# BYTEA and SMALLINT. The key version is a SMALLINT, which is why `HmacConfig.active_version` is
-# bounded to 1..32767 at configuration load rather than discovered at the first insert.
 ByteaType = cast(Any, LargeBinary)
-SmallIntType = cast(Any, SmallInteger)
-JSONBType = cast(Any, JSONB)
 
 
 class AuthChallenge(SQLModel, table=True):
@@ -104,8 +94,7 @@ class AuthChallenge(SQLModel, table=True):
 
     Do not add a state column, and do **not** add an HMAC key-version column. The migration comment
     forbids the second explicitly: verification uses the current active key alone, so a challenge
-    outstanding across a key rotation simply fails (D-21's accepted consequence). `audit.auth_events`
-    is the table that has one.
+    outstanding across a key rotation simply fails (D-21's accepted consequence).
 
     The three CHECKs -- the lifecycle nullability rule, the operation-membership rule that admits
     exactly the four challenge-bearing operations, and the binding rule that admits a cleared
@@ -116,12 +105,12 @@ class AuthChallenge(SQLModel, table=True):
     __tablename__ = "auth_challenges"
     __table_args__ = {"schema": "core"}
 
-    # The internal correlation identifier, never returned to a client. This is the id that goes in
-    # `audit.auth_events.challenge_row_id`; the public `challenge_id` below never does.
+    # The internal correlation identifier, never returned to a client. This is the non-secret id
+    # that logs correlate on; the public `challenge_id` below never is.
     id: UUID = Field(default_factory=uuid7, primary_key=True)
     # The single opaque random value that both locates the row and serves as the nonce (§6.5). A
-    # **secret capability handle**: body-only transport, and never in a URL, an audit row, a log, a
-    # trace, analytics, or error text.
+    # **secret capability handle**: body-only transport, and never in a URL, a log, a trace,
+    # analytics, or error text.
     challenge_id: str = Field(unique=True)
     operation: AuthOperation = Field(sa_type=AuthOperationType)
     # §6.4's linked arm. Exactly one of this and the pre-auth pair below is populated.
@@ -140,38 +129,4 @@ class AuthChallenge(SQLModel, table=True):
     claimed_at: datetime | None = Field(sa_type=DateTimeType, default=None)
     claim_attempt_id: UUID | None = Field(default=None)
     consumed_at: datetime | None = Field(sa_type=DateTimeType, default=None)
-    created_at: datetime = Field(sa_type=DateTimeType)
-
-
-class AuthEvent(SQLModel, table=True):
-    """One append-only row per on-path attempt, for its terminal outcome (§4.1).
-
-    No raw subject, no raw token, and no other plaintext credential material lands here: the actor
-    subject is a keyed BYTEA hash with the version of the key that produced it, and `details` is
-    redacted before write.
-    """
-
-    __tablename__ = "auth_events"
-    __table_args__ = {"schema": "audit"}
-
-    id: UUID = Field(default_factory=uuid7, primary_key=True)
-    # A bare UUID with NO foreign key to core.auth_challenges, deliberately, so audit rows survive
-    # independently of the challenge they describe. This is the **non-secret** row id; the public
-    # `challenge_id` capability handle is never written to a row, to `details`, to a log, or to
-    # error text.
-    challenge_row_id: UUID | None = Field(default=None)
-    # Nullable: a rejection can precede operation determination. The table requires it non-NULL
-    # when `result = 'succeeded'`.
-    operation: AuthOperation | None = Field(sa_type=AuthOperationType, default=None)
-    # The single machine-readable outcome. There is no failure_reason column and no free-text
-    # fallback -- the bounded reason lives in `details.failure`.
-    result: AuthEventResult = Field(sa_type=AuthEventResultType)
-    actor_issuer: str | None = Field(default=None)
-    actor_subject_hash: bytes | None = Field(sa_type=ByteaType, default=None)
-    actor_subject_hash_key_version: int | None = Field(sa_type=SmallIntType, default=None)
-    # Populated only from the **stored** core.external_identities.provider column of a resolved
-    # linked identity. Never fabricated, and never taken from token claims, headers, or client
-    # input.
-    actor_provider: IdentityProvider | None = Field(sa_type=IdentityProviderType, default=None)
-    details: dict = Field(sa_type=JSONBType)
     created_at: datetime = Field(sa_type=DateTimeType)

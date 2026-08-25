@@ -161,7 +161,7 @@ class TestTheExhaustionMapping:
     that drifts four ways, and a test can pin a name but not a literal.
     """
 
-    def test_the_audit_result_is_firebase_lookup_unavailable(self):
+    def test_the_internal_result_is_firebase_lookup_unavailable(self):
         assert LOOKUP_UNAVAILABLE_RESULT is AuthEventResult.firebase_lookup_unavailable
 
     def test_the_error_class_is_verification_temporarily_unavailable(self):

@@ -21,7 +21,7 @@ only through FastAPI cannot be driven that way. Everything it needs is a paramet
   module reads no clock and generates no attempt id.
 
 **The savepoint is the shape, not an optimisation.** §02 step 12 requires the challenge consumption
-and the rejected audit row to *survive* a rolled-back business insert. Under this project's e2e
+to *survive* a rolled-back business insert. Under this project's e2e
 harness (`join_transaction_mode="create_savepoint"`) an `IntegrityError` marks the whole session
 transaction as rolled back, so a consume issued after a conflict raises `PendingRollbackError` and
 the attempt returns exactly the generic 500 step 12 forbids. `begin_nested()` around the business
@@ -44,7 +44,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.auth.audit import AuditWriter, build_details
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
 from nativespeaker.api.errors import (
@@ -53,7 +52,7 @@ from nativespeaker.api.errors import (
     OPERATION_NOT_ALLOWED,
     ErrorClass,
 )
-from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult, AuthOperation
+from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult
 from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.models.purchase_tokens import PurchaseProvider, StorePurchaseToken
 from nativespeaker.api.models.users import User
@@ -89,7 +88,7 @@ PROVIDER_ACCOUNT_INDEX_NAME = "ix_external_identities_provider_account"
 # router maps the returned result onto a class and never re-derives it.
 #
 # `historical_identity` and `blocked_user` deliberately share one class -- §02 makes them mutually
-# indistinguishable to a client, and only the audited internal result tells them apart.
+# indistinguishable to a client, and only the internal result tells them apart.
 CLIENT_CLASS_FOR_RESULT: dict[AuthEventResult, ErrorClass] = {
     AuthEventResult.identity_already_linked: IDENTITY_ALREADY_LINKED,
     AuthEventResult.provider_account_already_linked: OPERATION_NOT_ALLOWED,
@@ -105,33 +104,31 @@ async def create_account(session: AsyncSession, *,
                          provider: IdentityProvider,
                          provider_uid: str | None,
                          email: str | None,
-                         challenge_store: ChallengeStore,
-                         audit_writer: AuditWriter) -> AuthEventResult:
+                         challenge_store: ChallengeStore) -> AuthEventResult:
     """Run §02 step 10's transaction and return the internal result it earned.
 
-    One transaction: the in-transaction re-resolution, the savepoint-wrapped business inserts, the
-    challenge consumption, and the audit row -- committed together, exactly once. The caller maps
-    the returned `AuthEventResult` onto a client-visible class and never re-derives it.
+    One transaction: the in-transaction re-resolution, the savepoint-wrapped business inserts and
+    the challenge consumption -- committed together, exactly once. The caller maps the returned
+    `AuthEventResult` onto a client-visible class and never re-derives it.
     """
     existing = await resolve_existing_identity(session, issuer=identity.issuer, subject=identity.subject)
 
-    user_id: UUID | None = None
     if existing is None:
-        user_id, result = await _insert_account(session,
-                                                evaluated_at=context.evaluated_at,
-                                                identity=identity,
-                                                provider=provider,
-                                                provider_uid=provider_uid,
-                                                email=email)
+        _, result = await _insert_account(session,
+                                          evaluated_at=context.evaluated_at,
+                                          identity=identity,
+                                          provider=provider,
+                                          provider_uid=provider_uid,
+                                          email=email)
     else:
         # §02 step 10's three no-mutation arms. The prepare-time pre-check is racy and never
         # authoritative, so this is the resolution that decides -- and it decides for a row that
         # may have appeared between prepare and now.
         result = await _result_for_existing(session, existing)
 
-    # Both of the following run on the outer transaction, on success and rejection alike (§02 step
-    # 13: every rejection at or after the provider read consumes). Ordering matters only in that
-    # both must precede the commit; neither commits on its own.
+    # Runs on the outer transaction, on success and rejection alike (§02 step 13: every rejection
+    # at or after the provider read consumes). It must precede the commit and does not commit on
+    # its own.
     consumed = await challenge_store.consume(session,
                                              challenge_id=challenge.challenge_id,
                                              claim_attempt_id=context.attempt_id,
@@ -141,21 +138,6 @@ async def create_account(session: AsyncSession, *,
         # stored state diverged from the lifecycle. Correlate on the non-secret row id; the public
         # handle is never logged (§6.1).
         logger.error("challenge_consume_did_not_match", challenge_row_id=str(challenge.id))
-
-    await audit_writer.write_in_transaction(
-        session,
-        operation=AuthOperation.create_user,
-        result=result,
-        actor_issuer=identity.issuer,
-        actor_subject=identity.subject,
-        # NULL on purpose: §4.2 admits `actor_provider` only from the stored provider column of a
-        # *resolved linked* identity, and this request's identity context is pre-auth. The provider
-        # this attempt classified is recorded under `details.resolved` instead, where it reads as
-        # what it is -- an outcome of the attempt, not the actor's established classification.
-        actor_provider=None,
-        challenge_row_id=challenge.id,
-        details=_details(context, result=result, provider=provider, user_id=user_id),
-        created_at=context.evaluated_at)
 
     await session.commit()
     return result
@@ -238,7 +220,8 @@ async def _result_for_existing(session: AsyncSession,
     reassign an identity to repair it.
 
     `blocked_user` and `historical_identity` surface identically to the client
-    (`account_unavailable`, §02's mutually-indistinguishable pair). The delta is what is audited.
+    (`account_unavailable`, §02's mutually-indistinguishable pair). The delta is the internal
+    result this function returns.
     """
     if existing.identity_state != IdentityState.active:
         return AuthEventResult.historical_identity
@@ -267,16 +250,16 @@ async def _insert_account(session: AsyncSession, *,
     from every construction below is the enforcement.
 
     **Why the savepoint, and why it may not be simplified away.** §02 step 12 requires the challenge
-    consumption and the rejected audit row to *survive* a rolled-back business insert. PostgreSQL
-    aborts the entire transaction on a failed statement, and SQLAlchemy mirrors that by refusing
-    every further statement until an explicit rollback -- so without a savepoint the consume and the
-    audit write that follow a conflict both raise `PendingRollbackError`, the commit raises too, and
-    the attempt returns exactly the generic 500 step 12 forbids while losing the audit row that
-    records the rejection. Rolling back *to* the savepoint discards the three inserts and leaves the
-    **outer** transaction live, which is what lets the caller finish normally. Consuming earlier in
-    the same transaction does not help: the abort would roll the consume back too. This was settled
-    empirically against PostgreSQL 17.11 under this project's e2e harness configuration
-    (37-RESEARCH Pitfall 1 / Pattern 3) -- it is a correctness requirement, not a tradeoff.
+    consumption to *survive* a rolled-back business insert. PostgreSQL aborts the entire transaction
+    on a failed statement, and SQLAlchemy mirrors that by refusing every further statement until an
+    explicit rollback -- so without a savepoint the consume that follows a conflict raises
+    `PendingRollbackError`, the commit raises too, and the attempt returns exactly the generic 500
+    step 12 forbids while leaving the challenge replayable. Rolling back *to* the savepoint discards
+    the three inserts and leaves the **outer** transaction live, which is what lets the caller
+    finish normally. Consuming earlier in the same transaction does not help: the abort would roll
+    the consume back too. This was settled empirically against PostgreSQL 17.11 under this project's
+    e2e harness configuration (37-RESEARCH Pitfall 1 / Pattern 3) -- it is a correctness
+    requirement, not a tradeoff.
 
     All **three** inserts share the one savepoint, including the attribution tokens: a conflict on
     the third must undo the first two, or the account is the partial one §02 forbids.
@@ -289,7 +272,7 @@ async def _insert_account(session: AsyncSession, *,
     except IntegrityError as conflict:
         # Rollback FIRST, classify second. Until the savepoint is released the session refuses
         # every further statement, so a classifier that raised before this line would leave the
-        # outer transaction poisoned and take the consume and the audit row down with it.
+        # outer transaction poisoned and take the consume down with it.
         await savepoint.rollback()
         return None, classify_insert_conflict(conflict)
 
@@ -334,38 +317,3 @@ async def _flush_account(session: AsyncSession, savepoint, *,
     await session.flush()
     await savepoint.commit()
     return user.id, AuthEventResult.succeeded
-
-
-def _details(context: RequestContext, *,
-             result: AuthEventResult,
-             provider: IdentityProvider,
-             user_id: UUID | None) -> dict:
-    """§4.4's six-key object for this attempt.
-
-    Built through `build_details` rather than as a literal: the builder is keyword-only, so a
-    seventh top-level key is a `TypeError` at this call site instead of a CHECK violation at insert.
-
-    Two things are absent by rule rather than by oversight -- the public challenge handle (§4.4; the
-    row is correlated on `challenge_row_id`, and the redactor would drop it anyway) and the client
-    address (only the bucket kind the barrier derived). The minted attribution values are absent for
-    the same reason a token never appears in an audit row: they are the account's durable store
-    identifiers, and this table is not where a second copy of them belongs.
-    """
-    succeeded = result is AuthEventResult.succeeded
-    return build_details(
-        context={"route": context.route_metadata.path,
-                 "method": context.route_metadata.method,
-                 "operation": AuthOperation.create_user,
-                 "attempt_id": context.attempt_id,
-                 "prepare_mode": False,
-                 "completion_mode": True,
-                 "client_ip_bucket_kind": context.client_ip_bucket_kind},
-        verification={"provider_data_read": True},
-        resolved={"identity_provider": provider,
-                  "user_id": user_id},
-        mutation={"user_created": succeeded,
-                  "identity_created": succeeded,
-                  "store_attribution_rows_minted": len(PurchaseProvider) if succeeded else 0,
-                  "access_grant_created": False,
-                  "monthly_usage_row_created": False},
-        failure={} if succeeded else {"stage": "consuming_transaction"})

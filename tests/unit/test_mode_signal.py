@@ -8,9 +8,8 @@ challenge.
 The check is syntactic and has no side effects, which is why every case here is a pure call. It
 issues nothing, looks nothing up, consumes nothing, and changes no state -- a corrected retry may
 reuse the same unexpired challenge, and it can only do so because this check never touched the row.
-It belongs to the admission phase, has no internal `core.auth_event_result`, and writes no audit
-row (§4.1): a rejection here is recorded in the structured security log and the counter metric
-alone.
+It belongs to the admission phase and has no internal `AuthEventResult`: a rejection here is
+recorded in the structured security log and the counter metric alone.
 
 The query string arrives as the raw ASGI `scope["query_string"]` bytes, the same way `auth/wire.py`
 takes the raw header list, and for the same reason: a first-value-wins accessor silently folds the

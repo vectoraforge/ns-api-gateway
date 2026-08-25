@@ -1,10 +1,10 @@
 """ROADMAP criterion 3, against a real committing PostgreSQL: no partial account, ever.
 
 §02 step 12 asks for two things at once, and they pull in opposite directions: a failed business
-insert must leave **nothing** behind, while the challenge consumption and the rejected audit row
-that describe the failure must **survive** it and commit. A savepoint is the mechanism, and neither
-half of the requirement is expressible against a mock -- "rolled back" and "committed" are claims
-about what the database did, so this module makes the database do it.
+insert must leave **nothing** behind, while the challenge consumption that records the attempt was
+spent must **survive** it and commit. A savepoint is the mechanism, and neither half of the
+requirement is expressible against a mock -- "rolled back" and "committed" are claims about what
+the database did, so this module makes the database do it.
 
 **Where this lives, and why not `tests/e2e/`.** That package wraps every test in one outer
 transaction with savepoint-joined sessions, so nothing it writes is ever committed and two
@@ -38,7 +38,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth import creation
-from nativespeaker.api.auth.audit import AuditWriter
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import ClientIpBucketKind, PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.creation import (
@@ -48,7 +47,7 @@ from nativespeaker.api.auth.creation import (
 )
 from nativespeaker.api.auth.keys import HmacConfig, HmacKeyring
 from nativespeaker.api.auth.registry import lookup
-from nativespeaker.api.models.auth import AuthEventResult, AuthOperation
+from nativespeaker.api.models.auth import AuthEventResult
 from nativespeaker.api.models.identities import IdentityProvider
 
 pytestmark = pytest.mark.schema
@@ -118,8 +117,7 @@ async def harness(_schema_db_uri):
                     {"issuer": subject.issuer})).all()
                 for statement in (
                         "DELETE FROM core.external_identities WHERE issuer = :issuer",
-                        "DELETE FROM core.auth_challenges WHERE preauth_issuer = :issuer",
-                        "DELETE FROM audit.auth_events WHERE actor_issuer = :issuer"):
+                        "DELETE FROM core.auth_challenges WHERE preauth_issuer = :issuer"):
                     await conn.execute(text(statement), {"issuer": subject.issuer})
                 # Users last: the identity FK is ON DELETE RESTRICT, so the identity rows above
                 # have to go first. `core.store_purchase_tokens` cascades from the user.
@@ -132,6 +130,7 @@ async def harness(_schema_db_uri):
 
 def keyring() -> HmacKeyring:
     return HmacKeyring(HmacConfig(active_version=1, keys={1: KEY_MATERIAL}))
+
 
 
 def context(harness: _Harness, subject: str) -> RequestContext:
@@ -174,8 +173,8 @@ async def commit_claimed_challenge(harness: _Harness, *, subject: str,
     """Commit one challenge row already claimed under `attempt_id`, as step 5 would have left it.
 
     The consuming transaction is step 10 onward; it never claims and never re-checks expiry, so the
-    row it is handed is a claimed one. `preauth_subject_hash` is the real derivation under the same
-    keyring the audit writer uses -- the table's binding CHECK requires a non-NULL value here until
+    row it is handed is a claimed one. `preauth_subject_hash` is the real derivation under the
+    production keyring -- the table's binding CHECK requires a non-NULL value here until
     consumption clears it, and consumption clearing it is one of the things asserted below.
     """
     row_id = uuid.uuid4()
@@ -242,7 +241,7 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
     class _Challenge:
         """The two fields the transaction reads, both taken from the row committed above.
 
-        The non-secret `id` is what the audit row correlates on; the handle is what `consume`
+        The non-secret `id` is what the tests below correlate on; the handle is what `consume`
         matches. Building this rather than re-reading the row keeps the transaction under test the
         only thing issuing statements on its session, so the read counter above stays meaningful.
         """
@@ -259,8 +258,7 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
                                       provider=provider,
                                       provider_uid=provider_uid,
                                       email=None,
-                                      challenge_store=ChallengeStore(keyring()),
-                                      audit_writer=AuditWriter(keyring()))
+                                      challenge_store=ChallengeStore(keyring()))
     return result, row_id, challenge_id_value
 
 
@@ -383,26 +381,6 @@ class TestAConflictOnTheIdentityInsertLeavesNoPartialAccount:
         assert found[0] is not None
         assert found[1] is None, "consumption clears the verifier in the same state transition"
 
-    async def test_exactly_one_rejected_audit_row_committed(self, harness, collided):
-        """One row per on-path attempt, for its terminal outcome, and it is the *specific* internal
-        result -- never `invalid_external_jwt`, which §02 step 12 names as the wrong answer here."""
-        found = await row(
-            harness,
-            "SELECT count(*), min(result::text) FROM audit.auth_events WHERE challenge_row_id = :id",
-            {"id": collided["challenge_row_id"]})
-        assert found[0] == 1
-        assert found[1] == AuthEventResult.identity_already_linked.value
-
-    async def test_the_audit_row_records_that_nothing_was_mutated(self, harness, collided):
-        """A rejection whose `details` claimed a mutation would misdescribe the state it left."""
-        mutation = await scalar(
-            harness,
-            "SELECT details -> 'mutation' FROM audit.auth_events WHERE challenge_row_id = :id",
-            {"id": collided["challenge_row_id"]})
-        assert mutation["user_created"] is False
-        assert mutation["identity_created"] is False
-        assert mutation["store_attribution_rows_minted"] == 0
-
 
 class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
     """The case that exposes a savepoint scoped around only the user and the identity row.
@@ -436,7 +414,7 @@ class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
 
     async def test_an_unmapped_conflict_is_not_dressed_up_as_a_business_outcome(self,
                                                                                token_collision):
-        """No `core.auth_event_result` describes an attribution collision, so inventing one would
+        """No `AuthEventResult` member describes an attribution collision, so inventing one would
         tell a client something false about their account."""
         assert isinstance(token_collision["error"], IntegrityError)
 
@@ -480,10 +458,6 @@ class TestTheHappyPathStillCommitsEverything:
         assert await scalar(harness,
                             "SELECT count(*) FROM core.store_purchase_tokens WHERE user_id = :id",
                             {"id": user_id}) == 2
-        assert await scalar(harness,
-                            "SELECT count(*) FROM audit.auth_events WHERE challenge_row_id = :id "
-                            "AND result = 'succeeded' AND operation = :op",
-                            {"id": row_id, "op": AuthOperation.create_user.value}) == 1
         assert await scalar(harness,
                             "SELECT consumed_at FROM core.auth_challenges WHERE id = :id",
                             {"id": row_id}) is not None

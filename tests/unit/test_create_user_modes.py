@@ -23,12 +23,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
-    get_audit_writer,
     get_challenge_store,
     get_db,
     get_firebase_adapter,
     get_request_context,
-    get_session_factory,
 )
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth.context import ClientIpBucketKind, PreAuthIdentity, RequestContext
@@ -65,25 +63,6 @@ class _RecordingChallengeStore:
         return None
 
 
-class _RecordingAuditWriter:
-    """Fails the assertion by *recording*, not by raising -- the count is the subject.
-
-    A mode-signal rejection must write zero `audit.auth_events` rows: it belongs to the admission
-    phase, has no internal `core.auth_event_result`, and is recorded in the structured security log
-    alone (§4.1, §02). Asserting on a recorder rather than on database rows is what keeps this a
-    unit test; the row-count version over a real database is 37-08's.
-    """
-
-    def __init__(self) -> None:
-        self.writes: list[str] = []
-
-    async def write_standalone(self, session_factory, **kwargs):
-        self.writes.append(str(kwargs.get("result")))
-
-    async def write_in_transaction(self, session, **kwargs):
-        self.writes.append(str(kwargs.get("result")))
-
-
 class _EmptyResult:
     def first(self):
         return None
@@ -102,9 +81,8 @@ class _UnlinkedSession:
     teardown, which this app overrides away.
 
     **`rollback` records rather than raising** (37-08). The two completion cases here reach
-    `challenge_not_found`, and that rejection now writes a standalone-durable audit row -- which
-    means releasing the read transaction `locate` opened first, exactly as prepare's already-linked
-    arm already did. The count is kept so the release stays observable rather than merely tolerated.
+    `challenge_not_found`, which releases the read transaction `locate` opened. The count is kept
+    so the release stays observable rather than merely tolerated.
     """
 
     def __init__(self) -> None:
@@ -128,17 +106,12 @@ def store() -> _RecordingChallengeStore:
 
 
 @pytest.fixture
-def writer() -> _RecordingAuditWriter:
-    return _RecordingAuditWriter()
-
-
-@pytest.fixture
 def session() -> _UnlinkedSession:
     return _UnlinkedSession()
 
 
 @pytest.fixture
-def client(store, writer, session, fake_firebase_adapter):
+def client(store, session, fake_firebase_adapter):
     """The real auth router, with the barrier's context supplied and app state substituted."""
     app = FastAPI()
     app.include_router(auth_router)
@@ -153,9 +126,7 @@ def client(store, writer, session, fake_firebase_adapter):
     )
     app.dependency_overrides[get_request_context] = lambda: context
     app.dependency_overrides[get_db] = lambda: session
-    app.dependency_overrides[get_session_factory] = lambda: None
     app.dependency_overrides[get_challenge_store] = lambda: store
-    app.dependency_overrides[get_audit_writer] = lambda: writer
     app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
@@ -188,9 +159,9 @@ class TestTheTwoModesDispatch:
         assert response.json() == {"code": "challenge_required"}
         assert store.located == ["a-handle"]
         assert store.issued == []
-        # The standalone-durable audit row requires releasing `locate`'s read transaction, so this
-        # arm rolls back exactly once. Asserted, not merely tolerated: the fake counts instead of
-        # raising, so without this a spurious rollback anywhere in the module would pass silently.
+        # This arm releases `locate`'s read transaction, so it rolls back exactly once. Asserted,
+        # not merely tolerated: the fake counts instead of raising, so without this a spurious
+        # rollback anywhere in the module would pass silently.
         assert session.rollbacks == 1
 
 
@@ -259,7 +230,7 @@ class TestTheWhitespaceAsymmetry:
 
 
 class TestTheRejectionHasNoSideEffects:
-    """§02: the rejection issues nothing, consumes nothing, and writes no audit row."""
+    """§02: the rejection issues nothing, consumes nothing, and reads nothing."""
 
     @pytest.mark.parametrize("kwargs", [
         {"params": {"challenge": "true"}, "json": {"challenge_id": "a-handle"}},
@@ -268,12 +239,11 @@ class TestTheRejectionHasNoSideEffects:
         {"params": {"challenge": "1"}},
         {"json": {"challenge_id": 123}},
     ])
-    def test_no_audit_row_is_written(self, client, store, writer, session,
-                                     fake_firebase_adapter, kwargs):
+    def test_nothing_is_issued_read_or_resolved(self, client, store, session,
+                                                fake_firebase_adapter, kwargs):
         response = client.post("/auth/create-user", **kwargs)
 
         _assert_invalid_request(response)
-        assert writer.writes == []
         assert store.issued == []
         assert store.located == []
         # The rejection is syntactic and precedes the pre-check too: it reads nothing at all.

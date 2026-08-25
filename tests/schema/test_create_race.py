@@ -37,7 +37,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth.audit import AuditWriter
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import ClientIpBucketKind, PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.creation import create_account
@@ -85,8 +84,7 @@ async def harness(_schema_db_uri):
                     {"issuer": subject.issuer})).all()
                 for statement in (
                         "DELETE FROM core.external_identities WHERE issuer = :issuer",
-                        "DELETE FROM core.auth_challenges WHERE preauth_issuer = :issuer",
-                        "DELETE FROM audit.auth_events WHERE actor_issuer = :issuer"):
+                        "DELETE FROM core.auth_challenges WHERE preauth_issuer = :issuer"):
                     await conn.execute(text(statement), {"issuer": subject.issuer})
                 for user_id in {*subject.owned_user_ids, *(row[0] for row in rows)}:
                     await conn.execute(text("DELETE FROM core.users WHERE id = :id"),
@@ -97,6 +95,7 @@ async def harness(_schema_db_uri):
 
 def keyring() -> HmacKeyring:
     return HmacKeyring(HmacConfig(active_version=1, keys={1: KEY_MATERIAL}))
+
 
 
 async def read(harness: _Harness, sql: str, params: dict | None = None):
@@ -195,8 +194,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=Non
                                               provider=attempt.provider,
                                               provider_uid=attempt.provider_uid,
                                               email=None,
-                                              challenge_store=ChallengeStore(keyring()),
-                                              audit_writer=AuditWriter(keyring()))
+                                              challenge_store=ChallengeStore(keyring()))
     return attempt
 
 
@@ -325,29 +323,6 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
             assert rows[0][0] is not None, f"{attempt.result} left its challenge unconsumed"
             assert rows[0][1] is None
 
-    async def test_the_losers_rejection_audit_row_committed(self, harness, raced):
-        """The point of the savepoint, under genuine concurrency rather than a synthetic collision
-        -- and read from a connection neither attempt used, so "committed" means committed.
-
-        `identity_already_linked` specifically: §02 step 12 names `invalid_external_jwt` as the
-        wrong answer here, and a generic 500 as the other wrong answer.
-        """
-        loser = raced["by_result"][AuthEventResult.identity_already_linked]
-        rows = await read(
-            harness,
-            "SELECT result::text FROM audit.auth_events WHERE challenge_row_id = :id",
-            {"id": loser.challenge_row_id})
-        assert rows == [(AuthEventResult.identity_already_linked.value,)]
-
-    async def test_the_winners_audit_row_committed_too(self, harness, raced):
-        """One row per on-path attempt -- the pair of them, not one shared row."""
-        winner = raced["by_result"][AuthEventResult.succeeded]
-        rows = await read(
-            harness,
-            "SELECT result::text FROM audit.auth_events WHERE challenge_row_id = :id",
-            {"id": winner.challenge_row_id})
-        assert rows == [(AuthEventResult.succeeded.value,)]
-
 
 class TestRunningTheSameCreationTwiceSequentially:
     """The "runs twice on the same input" question, answered beside the concurrent one.
@@ -421,16 +396,9 @@ class TestRunningTheSameCreationTwiceSequentially:
         assert after_second == twice["row_after_first"]
         assert after_second[0][0] == IdentityProvider.google.value
 
-    async def test_the_second_run_consumed_its_own_challenge_and_audited_its_own_result(
-            self, harness, twice):
+    async def test_the_second_run_consumed_its_own_challenge(self, harness, twice):
         rows = await read(
             harness,
             "SELECT consumed_at IS NOT NULL FROM core.auth_challenges WHERE id = :id",
             {"id": twice["second"].challenge_row_id})
         assert rows == [(True,)]
-
-        audited = await read(
-            harness,
-            "SELECT result::text FROM audit.auth_events WHERE challenge_row_id = :id",
-            {"id": twice["second"].challenge_row_id})
-        assert audited == [(AuthEventResult.identity_already_linked.value,)]

@@ -2,7 +2,7 @@
 
 This is the only table in the schema that stores a recoverable external subject: `issuer` and
 `subject` are the verified Firebase ID token's `iss`/`sub` in plaintext, held as a uniqueness
-reservation. `core.auth_challenges` and `audit.auth_events` store a keyed hash instead.
+reservation. `core.auth_challenges` stores a keyed hash instead.
 
 The stored `provider` column is the **sole** per-request classifier for every identity,
 authorization, entitlement, grant-class, and audit decision. It is never rederived from token
