@@ -1,13 +1,15 @@
 """JWT verification against the one configured Firebase integration (spec 01-foundation.md §1.2).
 
-`verify` **returns** `(claims, reason)` instead of raising. The barrier is a pure-ASGI middleware
-installed with `add_middleware`, which places it outside Starlette's `ExceptionMiddleware`: an
-exception raised at this seam would bypass every registered handler and surface as a 500 rather
-than as `auth_required` (D-01).
+`verify` **returns** `(claims, reason)` instead of raising, and the `reason` half is why. Every
+acceptance failure answers the client with the identical `auth_required` response, so the only
+thing distinguishing them is the bounded reason -- which has to reach `record_rejection` as a
+value. Returning it is how; an exception type per reason would be a second, parallel vocabulary
+for the same closed set. (The original argument was narrower: the caller was a middleware sitting
+outside Starlette's `ExceptionMiddleware`, where a raise surfaced as a 500. 37.1 D-06 moved the
+caller inside it, and the returning contract outlived the reason it was introduced for.)
 
-Anti-oracle: every acceptance-failure branch yields the identical `auth_required` response. The
-bounded reason lives only in the audit row's `details.failure` and in metric labels -- it is never
-client-visible, and it never names the issuer, the integration, or the failed check.
+Anti-oracle: the bounded reason is never client-visible, and it never names the issuer, the
+integration, or the failed check. It travels to the structured security log and nowhere else.
 """
 import threading
 import time
@@ -110,11 +112,12 @@ class JWTVerifier:
     `checkRevoked` is deliberately absent: SHARED-INVARIANTS forbids a per-request revocation check
     in every phase, so an already-minted ID token stays valid until its own `exp`.
 
-    Synchronous by design, and called through a threadpool at the barrier. `verify` must *return*
-    rather than raise (D-01), which an `async def` would not change -- but it can block on a JWKS
-    fetch, so `AuthBarrierMiddleware` awaits it through `starlette.concurrency.run_in_threadpool`
-    rather than calling it inline. Do not re-introduce the direct call: it puts a blocking outbound
-    round trip, chosen by an unauthenticated caller, on the loop that also serves `/health/ready`.
+    Synchronous by design, and called through a threadpool. `verify` must *return* rather than
+    raise, which an `async def` would not change -- but it can block on a JWKS fetch, so
+    `app/dependencies.py::get_request_context` awaits it through
+    `starlette.concurrency.run_in_threadpool` rather than calling it inline. Do not re-introduce
+    the direct call: it puts a blocking outbound round trip, chosen by an unauthenticated caller,
+    on the loop that also serves `/health/ready`.
     """
 
     def __init__(self, *,
@@ -146,8 +149,9 @@ class JWTVerifier:
         # `_unknown_kids` is a different OS thread. An unsynchronized `OrderedDict` raises
         # `RuntimeError: OrderedDict mutated during iteration` under that concurrency, and neither
         # that nor the check-then-`del` `KeyError` is a `PyJWTError` -- so both would escape
-        # `verify`, escape `run_in_threadpool`, and reach a barrier that catches nothing, turning an
-        # unauthenticated caller's 401 into a 500. The lock is held only for dict bookkeeping;
+        # `verify`, escape `run_in_threadpool`, and escape the auth dependency to the generic
+        # handler, turning an unauthenticated caller's 401 into a 500. The lock is held only for
+        # dict bookkeeping;
         # nothing under it blocks, so no fetch ever serializes behind it.
         self._cache_lock = threading.Lock()
         # Warm up JWKS cache — crashes startup if endpoint unreachable (fail-fast), and under the
@@ -160,9 +164,8 @@ class JWTVerifier:
     def _cache_key_for(self, token: str) -> str | None:
         """The negative-cache key for this token's unverified `kid`, or `None` if unreadable.
 
-        A malformed compact form is left to the normal path: `verify` never raises, for the same
-        D-01 reason the barrier never raises, and a token whose header cannot be parsed has no key
-        id to remember.
+        A malformed compact form is left to the normal path: `verify` never raises, whatever it is
+        handed, and a token whose header cannot be parsed has no key id to remember.
         """
         try:
             kid = jwt.get_unverified_header(token).get("kid")

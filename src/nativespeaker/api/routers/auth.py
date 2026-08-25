@@ -74,7 +74,14 @@ from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvid
 
 logger = structlog.get_logger()
 
-router = APIRouter(tags=["auth"])
+# Authentication is default-on for this router (D-07), but the declaration is
+# `get_request_context` rather than one of the two narrowing accessors -- the one departure from
+# D-08's table, and the same reason `create_user` reads the variant off the context instead of
+# demanding a pre-auth one: `get_preauth_identity` raises on a *linked* caller, and here that
+# caller is a client condition §02 prepare step 1 answers with `identity_already_linked` (409), not
+# a wiring bug to answer with a 401. The property D-07 is buying is unaffected -- the token is
+# still verified and the identity still resolved before any handler in this router runs.
+router = APIRouter(tags=["auth"], dependencies=[Depends(get_request_context)])
 
 
 class CreateUserRequest(BaseModel):
@@ -136,9 +143,10 @@ async def create_user(body: CreateUserRequest | None = None,
     linked caller -- correctly, for every other handler, where a linked context arriving at a
     pre-auth-only handler is a wiring bug. Here it is a *client condition* §02 prepare step 1 names
     explicitly: a caller who already has an account gets `identity_already_linked` (409), not
-    `auth_required` (401), and the two say incompatible things to a client. So the accessor's
-    fail-loudly guarantee is preserved where it belongs -- `get_request_context` still raises when
-    the barrier did not run -- while the variant itself becomes something this one route decides on.
+    `auth_required` (401), and the two say incompatible things to a client. Nothing is given up by
+    reading the variant here: `get_request_context` is declared on this router as well as in the
+    signature below, so the token is verified and the identity resolved before this body runs --
+    the only thing this route decides for itself is what to do with the variant that came back.
     """
     body_challenge_id = None if body is None else body.challenge_id
     mode = classify_mode_signal(raw_query, body_challenge_id)

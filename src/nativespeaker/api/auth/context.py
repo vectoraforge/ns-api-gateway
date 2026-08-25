@@ -1,4 +1,4 @@
-"""The §1.4 typed identity context -- the one object the barrier attaches on admission.
+"""The §1.4 typed identity context -- the one object admission produces.
 
 Handlers consume this and nothing else. A handler must not perform or re-implement JWT acceptance
 or identity resolution, and must not reconstruct identity context from claims. Phases 36-46 import
@@ -28,11 +28,6 @@ from uuid import UUID
 
 from nativespeaker.api.models.identities import ExternalIdentity
 from nativespeaker.api.models.users import User
-
-# The key the barrier stashes the context under, on `scope["state"]` / `request.state`. Pinned as a
-# module constant so the writer (the barrier) and the readers (the `Depends()` accessors) cannot
-# drift to two different strings, which would fail open as a missing context rather than loudly.
-REQUEST_CONTEXT_SCOPE_KEY = "ns_request_context"
 
 
 class IdentityKind(StrEnum):

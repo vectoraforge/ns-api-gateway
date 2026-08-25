@@ -2,14 +2,18 @@
 
 Phases 36-46 import these names from `nativespeaker.api.auth` and nothing deeper, so the seam is
 visibly one thing and a later internal split inside `auth/` costs no edit outside this file.
-Everything a later phase is expected to name is re-exported here: the barrier and its §1.1 wire
-contract, the §2.2 route registry with its §2.3 startup assertion, the §1.4 typed context, §1.3
-identity resolution, §1.2 verification, §8.2 rejection logging, the §4.3/§6.4 shared keyed
-hashing, the §6 challenge store and its §6.5 mode signal, the §7.1 Firebase
+Everything a later phase is expected to name is re-exported here: the §1.1 wire contract, the §1.4
+typed context, §1.3 identity resolution, §1.2 verification, §8.2 rejection logging, the §4.3/§6.4
+shared keyed hashing, the §6 challenge store and its §6.5 mode signal, the §7.1 Firebase
 lookup retry policy, the §7 adapter interfaces, the concrete issuer-selected Firebase Admin
 integration, §02's closed providerData classifier, and §02 step 10's email-copy predicate. Phases
 40/41/42 reach all three of those last ones through this one root per D-23, rather than importing
 `auth.firebase` or `auth.classifier` directly.
+
+**Admission itself is not re-exported, because it is no longer in this package.** 37.1 D-06
+replaced the barrier middleware and the route registry with `app/dependencies.py`'s
+`get_request_context`, which composes the pieces above; a later phase declares that dependency
+rather than importing an enforcement object from here.
 
 **The three `auth/firebase.py` names arrive lazily, and that is what makes D-23 affordable.** This
 file imports every sibling eagerly, and Python imports a parent package before its submodule, so
@@ -33,18 +37,18 @@ from an auth package would misdescribe where that class comes from.
 the import ordering below it.
 """
 __all__ = [
-    "ACTOR_SUBJECT_PREFIX", "AdmissionDecision", "Admit", "AuthBarrierMiddleware",
-    "BoundedReason", "CHALLENGE_ID_BYTES", "CHALLENGE_TTL_SECONDS", "Category", "ChallengeRejection",
+    "ACTOR_SUBJECT_PREFIX", "AdmissionDecision", "Admit",
+    "BoundedReason", "CHALLENGE_ID_BYTES", "CHALLENGE_TTL_SECONDS", "ChallengeRejection",
     "ChallengeStore", "ClaimKind", "DeviceBitState",
     "FIREBASE_HTTP_TIMEOUT_SECONDS", "FIREBASE_LOOKUP_ATTEMPTS", "FirebaseAdminAdapter",
     "FirebaseAdminLookup", "HmacConfig", "HmacKeyring", "IDP_ACCOUNT_PREFIX", "IdentityKind",
-    "JWTVerifier", "LinkedIdentity", "ModeSignal", "NamedVerifier", "PreAuthIdentity",
-    "ProviderDataEntry", "ProviderDataOutcome", "ProviderDataResult", "REGISTRY",
-    "REQUEST_CONTEXT_SCOPE_KEY", "Reject", "RequestContext", "RevocationOutcome", "RouteMetadata",
-    "StoreAdapter", "StoreState", "TokenVerifier", "VERIFIERS", "VendorProofAdapter",
+    "JWTVerifier", "LinkedIdentity", "ModeSignal", "PreAuthIdentity",
+    "ProviderDataEntry", "ProviderDataOutcome", "ProviderDataResult",
+    "Reject", "RequestContext", "RevocationOutcome",
+    "StoreAdapter", "StoreState", "TokenVerifier", "VendorProofAdapter",
     "VerificationResult", "VerifiedClaims", "VerifiedNotification", "VerifiedTransaction",
-    "assert_route_enumeration", "build_admin_apps", "classify_mode_signal",
-    "classify_provider_data", "email_to_persist", "enumerate_registered", "extract_bearer", "lookup",
+    "build_admin_apps", "classify_mode_signal",
+    "classify_provider_data", "email_to_persist", "extract_bearer",
     "lookup_with_retry", "new_challenge_id", "record_rejection", "resolve_identity",
 ]
 
@@ -65,7 +69,6 @@ from nativespeaker.api.auth.adapters import (
     VerifiedNotification,
     VerifiedTransaction,
 )
-from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
 from nativespeaker.api.auth.challenges import (
     CHALLENGE_ID_BYTES,
     CHALLENGE_TTL_SECONDS,
@@ -78,7 +81,6 @@ from nativespeaker.api.auth.challenges import (
 # `models/identities.py` and drags in nothing new.
 from nativespeaker.api.auth.classifier import classify_provider_data, email_to_persist
 from nativespeaker.api.auth.context import (
-    REQUEST_CONTEXT_SCOPE_KEY,
     IdentityKind,
     LinkedIdentity,
     PreAuthIdentity,
@@ -92,16 +94,6 @@ from nativespeaker.api.auth.keys import (
     HmacKeyring,
 )
 from nativespeaker.api.auth.modesignal import ModeSignal, classify_mode_signal
-from nativespeaker.api.auth.registry import (
-    REGISTRY,
-    VERIFIERS,
-    Category,
-    NamedVerifier,
-    RouteMetadata,
-    assert_route_enumeration,
-    enumerate_registered,
-    lookup,
-)
 from nativespeaker.api.auth.retry import (
     FIREBASE_LOOKUP_ATTEMPTS,
     lookup_with_retry,

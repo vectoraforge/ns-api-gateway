@@ -9,7 +9,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.firebase import FirebaseAdminLookup, build_admin_apps
 from nativespeaker.api.auth.keys import HmacKeyring
-from nativespeaker.api.auth.registry import REGISTRY, assert_route_enumeration
 from nativespeaker.api.auth.verification import JWTVerifier
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.errors import assert_registry_total
@@ -29,12 +28,14 @@ async def lifespan(app: FastAPI):
     # Setup logging
     setup_logging(log_level=config.log_level)
 
-    # Validate the error registry and the route registry -- both fail closed before serving traffic.
-    # The route registry goes onto app.state first and the assertion runs against *that* object, so
-    # the table the barrier reads per request is provably the table boot checked.
+    # Validate the error registry -- it fails closed before serving traffic.
+    #
+    # The route-enumeration assertion that used to stand beside this is gone with the route
+    # registry it checked (37.1 D-06). It existed to catch a route drifting from a parallel table
+    # of auth declarations; there is no parallel table now, because each router declares its own
+    # auth dependency and that declaration IS what serves traffic. `tests/unit/test_app_wiring.py`
+    # asserts the resulting property over the live router directly.
     assert_registry_total()
-    app.state.route_registry = REGISTRY
-    assert_route_enumeration(app, app.state.route_registry)
 
     # The §4.3 / §6.4 keyed-hashing seam: one keyring, read per request, never cached by a caller.
     # D-22's fail-closed half already happened -- a missing, empty, or unusable active key raises
