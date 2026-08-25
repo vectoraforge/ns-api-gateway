@@ -128,17 +128,6 @@ class _ConsumingStore:
         return True
 
 
-class _InertWriter:
-    """Inert stand-in for the writer parameter `create_account` still declares.
-
-    Records nothing and asserts nothing; it exists only so the call type-checks until the parameter
-    itself is deleted from `auth/creation.py` later in this plan.
-    """
-
-    async def write_in_transaction(self, session, **kwargs) -> None:
-        pass
-
-
 def _context() -> RequestContext:
     identity = PreAuthIdentity(issuer=ISSUER, subject=SUBJECT)
     return RequestContext(identity=identity,
@@ -178,8 +167,7 @@ async def _run(rows: list[object | None]) -> tuple[AuthEventResult, _NoMutationS
                                   provider=IdentityProvider.anonymous,
                                   provider_uid=None,
                                   email=None,
-                                  challenge_store=store,
-                                  audit_writer=_InertWriter())
+                                  challenge_store=store)
     return result, session, store
 
 

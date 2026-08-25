@@ -1,18 +1,16 @@
-"""§4.3 / §6.4 keyed subject hashing -- the one derivation two subsystems share.
+"""§4.3 / §6.4 keyed subject hashing -- the one derivation its callers share.
 
-The audit writer's `actor_subject_hash` and the challenge store's `preauth_subject_hash` are the
-**same family under the same key** (D-21), separated only by a pinned domain-separation prefix.
-There is one helper here rather than one per caller because two helpers would drift, and a drift
-here is silent: both would produce a plausible 32-byte digest and only one would match the rows
-already written.
+`actor_subject_hash` and the challenge store's `preauth_subject_hash` are the **same family under
+the same key** (D-21), separated only by a pinned domain-separation prefix. There is one helper
+here rather than one per caller because two helpers would drift, and a drift here is silent: both
+would produce a plausible 32-byte digest and only one would match the rows already written.
 
 **On-disk encoding, pinned by this phase's checkpoint (assumption A5, reversibility one-way).**
 Key material is base64 text in `config/config.yaml`, decoded to `bytes` exactly once at
 configuration load and stored thereafter only as `bytes`. `hmac.new` is never called on a `str`:
 it raises `TypeError`, and the obvious "fix" of calling `.encode()` silently derives the HMAC over
-the base64 *text* instead of the 32 key bytes. Once one `audit.auth_events` or
-`core.auth_challenges` row exists there is no migration back, because the raw subject was never
-stored.
+the base64 *text* instead of the 32 key bytes. Once one `core.auth_challenges` row exists there is
+no migration back, because the raw subject was never stored.
 
 **D-20's accepted consequence.** `config/config.yaml` is tracked in git, so the key material below
 is committed and rotating a key leaves its predecessor readable in history for good. That was
@@ -24,7 +22,7 @@ entries rather than override them.
 
 **D-22, the fail-closed policy.** A missing, empty, or short *active* key aborts configuration
 load: nothing can be written without it, so the process must not start. A missing *older* version
-only warns -- it means historical audit hashes cannot be recomputed, which no request path needs.
+only warns -- it means historical hashes cannot be recomputed, which no request path needs.
 Requiring every version 1..active would mean keys could never be retired and losing one would
 brick the app.
 """
@@ -82,10 +80,9 @@ class HmacConfig(BaseModel):
 
     active_version: int = Field(ge=1, le=32767,
                                 description="Key version used for new writes. Bounded to the "
-                                            "SMALLINT range of "
-                                            "audit.auth_events.actor_subject_hash_key_version, so "
-                                            "a bad value fails at load rather than at the first "
-                                            "audit insert.")
+                                            "SMALLINT range a stored key version occupies, so a "
+                                            "bad value fails at load rather than at the first "
+                                            "write.")
     keys: dict[int, SecretStr] = Field(description="Base64 actor-subject key material by version. "
                                                    "Shared by §4.3 and §6.4 per D-21.")
     idp_account_keys: dict[int, SecretStr] = Field(

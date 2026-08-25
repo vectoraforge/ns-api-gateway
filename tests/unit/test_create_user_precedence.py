@@ -31,12 +31,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
-    get_audit_writer,
     get_challenge_store,
     get_db,
     get_firebase_adapter,
     get_request_context,
-    get_session_factory,
 )
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth.adapters import ProviderDataEntry, ProviderDataOutcome
@@ -131,22 +129,6 @@ class _FakeChallengeStore:
         return True
 
 
-class _InertWriter:
-    """Inert stand-in for the writer dependency the route still declares.
-
-    Records nothing: the internal result is read out of the structured log by `_RejectionLog`
-    below. It exists only because FastAPI resolves every declared dependency before the handler
-    runs, so the override has to answer with something until the dependency itself is deleted from
-    `routers/auth.py` later in this plan.
-    """
-
-    async def write_standalone(self, session_factory, **kwargs) -> None:
-        pass
-
-    async def write_in_transaction(self, session, **kwargs) -> None:
-        pass
-
-
 class _RejectionLog:
     """The rejection results the router logged, in order.
 
@@ -223,11 +205,6 @@ def store(keyring) -> _FakeChallengeStore:
 
 
 @pytest.fixture
-def writer() -> _InertWriter:
-    return _InertWriter()
-
-
-@pytest.fixture
 def rejections(monkeypatch) -> _RejectionLog:
     """Spy on the router's logger, so "which internal result" stays observable."""
     log = _RejectionLog()
@@ -259,16 +236,14 @@ def context() -> RequestContext:
 
 
 @pytest.fixture
-def client(store, writer, session, context, creator, fake_firebase_adapter):
+def client(store, session, context, creator, fake_firebase_adapter):
     app = FastAPI()
     app.include_router(auth_router)
     register_exception_handlers(app)
 
     app.dependency_overrides[get_request_context] = lambda: context
     app.dependency_overrides[get_db] = lambda: session
-    app.dependency_overrides[get_session_factory] = lambda: None
     app.dependency_overrides[get_challenge_store] = lambda: store
-    app.dependency_overrides[get_audit_writer] = lambda: writer
     app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
@@ -511,7 +486,9 @@ class TestTheProviderStageRejections:
         assert response.status_code == 403
         assert response.json() == {"code": "operation_not_allowed"}
         assert rejections.results == [AuthEventResult.provider_not_linked]
-        # No flow is named anywhere in the response.
+        # D-12 left the bounded cause with exactly two members; the third went with the declaration
+        # it described. It reaches the security log and never the response, where no flow is named.
+        assert rejections.entries[0][1]["cause"] == "invalid-shape"
         assert len(fake_firebase_adapter.calls) == 1
         assert creator.calls == []
 

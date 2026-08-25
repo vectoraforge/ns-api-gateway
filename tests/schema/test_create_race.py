@@ -97,17 +97,6 @@ def keyring() -> HmacKeyring:
     return HmacKeyring(HmacConfig(active_version=1, keys={1: KEY_MATERIAL}))
 
 
-class _InertWriter:
-    """Inert stand-in for the writer parameter `create_account` still declares.
-
-    Persists nothing, so the row counts below are the business rows and nothing else. It exists
-    only so the call type-checks until the parameter itself is deleted from `auth/creation.py`
-    later in this plan.
-    """
-
-    async def write_in_transaction(self, session, **kwargs) -> None:
-        pass
-
 
 async def read(harness: _Harness, sql: str, params: dict | None = None):
     """One read on a connection of its own -- never the one an attempt under test used."""
@@ -205,8 +194,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=Non
                                               provider=attempt.provider,
                                               provider_uid=attempt.provider_uid,
                                               email=None,
-                                              challenge_store=ChallengeStore(keyring()),
-                                              audit_writer=_InertWriter())
+                                              challenge_store=ChallengeStore(keyring()))
     return attempt
 
 

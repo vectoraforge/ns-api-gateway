@@ -23,12 +23,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
-    get_audit_writer,
     get_challenge_store,
     get_db,
     get_firebase_adapter,
     get_request_context,
-    get_session_factory,
 )
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth.context import ClientIpBucketKind, PreAuthIdentity, RequestContext
@@ -63,21 +61,6 @@ class _RecordingChallengeStore:
     async def locate(self, session, challenge_id):
         self.located.append(challenge_id)
         return None
-
-
-class _InertWriter:
-    """Inert stand-in for the writer dependency the route still declares.
-
-    It records nothing and asserts nothing. It exists only because FastAPI resolves every declared
-    dependency before the handler runs, so the override has to answer with *something* until the
-    dependency itself is deleted from `routers/auth.py` later in this plan.
-    """
-
-    async def write_standalone(self, session_factory, **kwargs):
-        pass
-
-    async def write_in_transaction(self, session, **kwargs):
-        pass
 
 
 class _EmptyResult:
@@ -123,17 +106,12 @@ def store() -> _RecordingChallengeStore:
 
 
 @pytest.fixture
-def writer() -> _InertWriter:
-    return _InertWriter()
-
-
-@pytest.fixture
 def session() -> _UnlinkedSession:
     return _UnlinkedSession()
 
 
 @pytest.fixture
-def client(store, writer, session, fake_firebase_adapter):
+def client(store, session, fake_firebase_adapter):
     """The real auth router, with the barrier's context supplied and app state substituted."""
     app = FastAPI()
     app.include_router(auth_router)
@@ -148,9 +126,7 @@ def client(store, writer, session, fake_firebase_adapter):
     )
     app.dependency_overrides[get_request_context] = lambda: context
     app.dependency_overrides[get_db] = lambda: session
-    app.dependency_overrides[get_session_factory] = lambda: None
     app.dependency_overrides[get_challenge_store] = lambda: store
-    app.dependency_overrides[get_audit_writer] = lambda: writer
     app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
 
     with TestClient(app, raise_server_exceptions=False) as test_client:

@@ -27,8 +27,7 @@ evaluation (only `ChallengeStore.claim`'s WHERE), no affected-row count read off
 `RequestContext`, 35 D-02).
 
 **The public `challenge_id` never leaves the body.** It is a secret capability handle: not in a URL,
-not in a log line, not in an audit row, not in error text. Correlation is on the non-secret
-`core.auth_challenges.id`, carried as the audit row's `challenge_row_id`.
+not in a log line, not in error text. Correlation is on the non-secret `core.auth_challenges.id`.
 """
 from datetime import datetime
 from typing import Any
@@ -40,16 +39,13 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.responses import JSONResponse, Response
 
 from nativespeaker.api.app.dependencies import (
-    get_audit_writer,
     get_challenge_store,
     get_db,
     get_firebase_adapter,
     get_raw_query_string,
     get_request_context,
-    get_session_factory,
 )
 from nativespeaker.api.auth.adapters import ProviderDataEntry, ProviderDataOutcome
-from nativespeaker.api.auth.audit import AuditWriter, build_details
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.classifier import classify_provider_data, email_to_persist
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
@@ -126,16 +122,14 @@ async def create_user(body: CreateUserRequest | None = None,
                       raw_query: bytes = Depends(get_raw_query_string),
                       context: RequestContext = Depends(get_request_context),
                       session: AsyncSession = Depends(get_db),
-                      session_factory=Depends(get_session_factory),
                       challenge_store: ChallengeStore = Depends(get_challenge_store),
-                      audit_writer: AuditWriter = Depends(get_audit_writer),
                       adapter=Depends(get_firebase_adapter)) -> Response:
     """Classify the mode signal, then dispatch. The classification itself has no side effects.
 
     §6.5's partition is evaluated before anything is issued, looked up or consumed, so a corrected
     retry may reuse the same unexpired challenge. A `None` classification is `invalid_request`
-    (400): it belongs to the admission phase, has no internal `core.auth_event_result`, and writes
-    **no** `audit.auth_events` row -- it is recorded in the structured security log alone.
+    (400): it belongs to the admission phase and has no internal `AuthEventResult` -- it is
+    recorded in the structured security log alone.
 
     **This route reads the identity variant off the context rather than demanding a pre-auth one,
     and it is the only route in the system that does.** `Depends(get_preauth_identity)` raises on a
@@ -159,8 +153,8 @@ async def create_user(body: CreateUserRequest | None = None,
 
     identity = context.identity
     if mode is ModeSignal.prepare:
-        return await _prepare(session, session_factory, context=context, identity=identity,
-                              challenge_store=challenge_store, audit_writer=audit_writer)
+        return await _prepare(session, context=context, identity=identity,
+                              challenge_store=challenge_store)
 
     # `classify_mode_signal` returns `completion` only for a non-empty `str`, so the annotation
     # below is the partition's guarantee rather than this handler's assumption -- and the value is
@@ -168,17 +162,16 @@ async def create_user(body: CreateUserRequest | None = None,
     # `challenge_not_found`, not `invalid_request`: a deliberate asymmetry, not an oversight to
     # tidy up with a `.strip()` here.
     completion_handle: str = body_challenge_id  # ty: ignore[invalid-assignment]
-    return await _complete(session, session_factory, context=context, identity=identity,
+    return await _complete(session, context=context, identity=identity,
                            challenge_id=completion_handle,
-                           challenge_store=challenge_store, audit_writer=audit_writer,
+                           challenge_store=challenge_store,
                            adapter=adapter)
 
 
-async def _prepare(session: AsyncSession, session_factory, *,
+async def _prepare(session: AsyncSession, *,
                    context: RequestContext,
                    identity: LinkedIdentity | PreAuthIdentity,
-                   challenge_store: ChallengeStore,
-                   audit_writer: AuditWriter) -> Response:
+                   challenge_store: ChallengeStore) -> Response:
     """§02 prepare steps 1, 4 and 5: fail fast, then issue one challenge and disclose two fields.
 
     Prepare mutates **no** business state -- no user, no identity, no grant, no attribution token.
@@ -190,23 +183,10 @@ async def _prepare(session: AsyncSession, session_factory, *,
     """
     linked = await _already_linked(session, identity=identity)
     if linked is not None:
-        # Release the read transaction the racy check may have opened, so the standalone write
-        # below is the only thing holding a session. It has nothing to be atomic with anyway --
-        # that is what "standalone" means -- and prepare has written nothing to preserve.
-        await session.rollback()
-        await audit_writer.write_standalone(
-            session_factory,
-            operation=AuthOperation.create_user,
-            result=AuthEventResult.identity_already_linked,
-            actor_issuer=identity.issuer,
-            actor_subject=identity.subject,
-            # Permitted here precisely because it is the STORED column of a resolved identity row
-            # (§4.2) -- never fabricated, never a token claim, never client input.
-            actor_provider=linked.provider,
-            # No challenge exists to correlate on: none was issued, and none was located.
-            challenge_row_id=None,
-            details=_prepare_details(context, linked=True),
-            created_at=context.evaluated_at)
+        # Nothing is read off the row, and the read transaction is left alone: the rollback that
+        # used to stand here existed solely to free the session for a standalone write, and reading
+        # `linked.provider` after it was 37-REVIEW CR-02 -- an attribute expired by that very
+        # rollback, whose lazy load off the event loop turned this 409 into a 500.
         return error_response(IDENTITY_ALREADY_LINKED)
 
     challenge_id, expires_at = await challenge_store.issue(session,
@@ -256,77 +236,11 @@ async def _already_linked(session: AsyncSession, *,
     return None
 
 
-def _prepare_details(context: RequestContext, *, linked: bool) -> dict:
-    """§4.4's six-key object for a prepare-mode outcome.
-
-    `context` carries the route, the method, the operation, this attempt's id, the mode signal as
-    booleans, and the client-IP **bucket kind**. Never the address -- §4.4 admits the kind alone,
-    so `audit.auth_events` cannot become a behavioural-tracking archive -- and never the public
-    challenge handle, which prepare mode does not even have at the point this is built.
-    """
-    return build_details(
-        context={"route": context.route_metadata.path,
-                 "method": context.route_metadata.method,
-                 "operation": AuthOperation.create_user,
-                 "attempt_id": context.attempt_id,
-                 "prepare_mode": True,
-                 "completion_mode": False,
-                 "client_ip_bucket_kind": context.client_ip_bucket_kind},
-        verification={},
-        resolved={"identity_already_linked": linked},
-        # Prepare mutates no business state on either arm, so there is nothing to report -- and
-        # `{}` is §4.4's own way of saying exactly that.
-        mutation={},
-        failure={"stage": "prepare_precheck"} if linked else {})
-
-
-def _completion_details(context: RequestContext, *,
-                        result: AuthEventResult,
-                        stage: str,
-                        provider_data_read: bool,
-                        consumed: bool,
-                        cause: str | None = None) -> dict:
-    """§4.4's six-key object for a completion-mode **rejection**.
-
-    The successful completion's object is `auth/creation.py::_details`; this one describes the
-    attempts that never reached that transaction, so `mutation` reports only what actually changed
-    -- the challenge's lifecycle -- and reports it truthfully on both sides of the consumption
-    boundary rather than assuming it.
-
-    `cause` is the bounded `provider_not_linked` reason and is present for that result alone.
-    Absent everywhere else, rather than `None`-valued, so a reader cannot mistake "not applicable"
-    for "applicable and unknown".
-
-    The public challenge handle is not here, at any depth. The row is correlated on
-    `challenge_row_id`, and the redactor would drop the handle anyway.
-    """
-    failure: dict[str, object] = {"stage": stage}
-    if cause is not None:
-        failure["cause"] = cause
-    return build_details(
-        context={"route": context.route_metadata.path,
-                 "method": context.route_metadata.method,
-                 "operation": AuthOperation.create_user,
-                 "attempt_id": context.attempt_id,
-                 "prepare_mode": False,
-                 "completion_mode": True,
-                 "client_ip_bucket_kind": context.client_ip_bucket_kind},
-        verification={"provider_data_read": provider_data_read},
-        resolved={},
-        # Nothing business-side was written on any arm this builds for: §02 is explicit that a
-        # failed lookup and a rejected classification persist nothing at all.
-        mutation={"user_created": False,
-                  "identity_created": False,
-                  "challenge_consumed": consumed},
-        failure=failure)
-
-
-async def _complete(session: AsyncSession, session_factory, *,
+async def _complete(session: AsyncSession, *,
                     context: RequestContext,
                     identity: LinkedIdentity | PreAuthIdentity,
                     challenge_id: str,
                     challenge_store: ChallengeStore,
-                    audit_writer: AuditWriter,
                     adapter) -> Response:
     """§02 completion steps 3-14, in the specification's own order.
 
@@ -351,10 +265,7 @@ async def _complete(session: AsyncSession, session_factory, *,
         # `locate` and stays the ordinary infrastructure failure, because answering "no such
         # challenge" to an unreachable database tells a legitimate client to throw away a challenge
         # that exists. The raw malformed identifier is never logged.
-        return await _challenge_rejected(session, session_factory, context=context,
-                                         identity=identity, challenge=None,
-                                         result=AuthEventResult.challenge_not_found,
-                                         audit_writer=audit_writer)
+        return await _challenge_rejected(session, result=AuthEventResult.challenge_not_found)
 
     # Every `ChallengeRejection` member's value is also an `AuthEventResult` member, precisely so a
     # caller needs no private mapping table -- so this maps straight through by name. No keyed
@@ -364,17 +275,12 @@ async def _complete(session: AsyncSession, session_factory, *,
     # detector of exactly that mistake.
     rejection = challenge_store.verify_binding(challenge, identity)
     if rejection is not None:
-        return await _challenge_rejected(session, session_factory, context=context,
-                                         identity=identity, challenge=challenge,
-                                         result=AuthEventResult(rejection.value),
-                                         audit_writer=audit_writer)
+        return await _challenge_rejected(session, result=AuthEventResult(rejection.value))
     if challenge.operation is not AuthOperation.create_user:
         # D-12 removed step 6's provider-*variant* check, not this one. A challenge issued for a
         # different operation and presented here is still step 4's rejection, and still pre-claim.
-        return await _challenge_rejected(session, session_factory, context=context,
-                                         identity=identity, challenge=challenge,
-                                         result=AuthEventResult.challenge_operation_mismatch,
-                                         audit_writer=audit_writer)
+        return await _challenge_rejected(
+            session, result=AuthEventResult.challenge_operation_mismatch)
 
     if not await challenge_store.claim(session,
                                        challenge_id=challenge_id,
@@ -394,9 +300,7 @@ async def _complete(session: AsyncSession, session_factory, *,
         await session.refresh(challenge)
         lost = (AuthEventResult.challenge_expired if challenge.claimed_at is None
                 else AuthEventResult.challenge_consumed)
-        return await _challenge_rejected(session, session_factory, context=context,
-                                         identity=identity, challenge=challenge,
-                                         result=lost, audit_writer=audit_writer)
+        return await _challenge_rejected(session, result=lost)
 
     # **This commit is load-bearing; see module docstring point 1.** The claim must be durable
     # before the provider call, or a crash during the lookup leaves the challenge unclaimed and a
@@ -423,24 +327,22 @@ async def _complete(session: AsyncSession, session_factory, *,
     provider_data = await lookup_with_retry(adapter, identity.issuer, identity.subject)
 
     if provider_data.outcome is not ProviderDataOutcome.ok:
-        return await _consuming_rejection(session, context=context, identity=identity,
+        return await _consuming_rejection(session, context=context,
                                           challenge=challenge,
                                           stage="provider_lookup",
                                           challenge_store=challenge_store,
-                                          audit_writer=audit_writer,
                                           **_LOOKUP_REJECTIONS[provider_data.outcome])
 
     # --- Steps 9-10: classify the account and resolve the address, both from THIS one response. ---
     classified = classify_provider_data(provider_data.entries)
     if classified is None:
-        return await _consuming_rejection(session, context=context, identity=identity,
+        return await _consuming_rejection(session, context=context,
                                           challenge=challenge,
                                           result=AuthEventResult.provider_not_linked,
                                           error_class=OPERATION_NOT_ALLOWED,
                                           stage="provider_classification",
                                           cause=_classification_cause(provider_data.entries),
-                                          challenge_store=challenge_store,
-                                          audit_writer=audit_writer)
+                                          challenge_store=challenge_store)
     provider, provider_uid = classified
     # The single evaluation site for §02 step 10's copy rule. `auth/creation.py` receives the
     # result as a plain `email` argument and re-derives nothing, so the rule cannot be answered
@@ -455,55 +357,29 @@ async def _complete(session: AsyncSession, session_factory, *,
                                   provider=provider,
                                   provider_uid=provider_uid,
                                   email=email,
-                                  challenge_store=challenge_store,
-                                  audit_writer=audit_writer)
+                                  challenge_store=challenge_store)
 
     # --- Step 14: return the resulting backend state, and nothing more. ---
     return _completion_response(result, provider)
 
 
-async def _challenge_rejected(session: AsyncSession, session_factory, *,
-                              context: RequestContext,
-                              identity: LinkedIdentity | PreAuthIdentity,
-                              challenge: AuthChallenge | None,
-                              result: AuthEventResult,
-                              audit_writer: AuditWriter) -> Response:
+async def _challenge_rejected(session: AsyncSession, *, result: AuthEventResult) -> Response:
     """The five §6 challenge rejections collapse into one client class (§02's error table).
 
     `challenge_required` for all of them -- byte-identical body and status -- so completion is not
     a challenge-enumeration oracle: a client cannot learn whether a handle was unknown, expired,
-    already used, bound to somebody else, or bound to another operation. **Only the audit row
+    already used, bound to somebody else, or bound to another operation. **Only the structured log
     differs**, and it carries the specific internal result, which is never less specific than the
     class returned (T-37-34).
 
-    None of the five consumes; see the disposition note at the call sites.
-
-    The row is written **standalone durable**, because no consuming transaction exists yet on any
-    of these arms -- the claim's transaction is rolled back first, so the writer's own session is
-    the only thing holding one. It has nothing to be atomic with, which is what "standalone" means.
+    None of the five consumes; see the disposition note at the call sites. None of them has written
+    anything either -- the pre-claim arms mutate nothing and a claim loser matched zero rows -- so
+    the rollback releases the read transaction `locate` opened rather than undoing work.
     """
-    # Read the correlation id BEFORE the rollback: SQLAlchemy expires every instance on rollback,
-    # and touching an expired attribute afterwards emits a lazy load off the event loop.
-    challenge_row_id = None if challenge is None else challenge.id
     # The specific internal result, in the structured log only. The client sees one collapsed class
     # and the public handle is never logged (§6.1).
     logger.warning("create_user_challenge_rejected", stage=str(result))
     await session.rollback()
-    await audit_writer.write_standalone(
-        session_factory,
-        operation=AuthOperation.create_user,
-        result=result,
-        actor_issuer=identity.issuer,
-        actor_subject=identity.subject,
-        # NULL for a pre-auth attempt: §4.2 admits `actor_provider` only from the stored provider
-        # column of a *resolved linked* identity, never from a classification this attempt made.
-        actor_provider=None,
-        # The NON-SECRET row id, where a row was located at all. The public capability handle never
-        # reaches an audit row, a log, or error text.
-        challenge_row_id=challenge_row_id,
-        details=_completion_details(context, result=result, stage="challenge_verification",
-                                    provider_data_read=False, consumed=False),
-        created_at=context.evaluated_at)
     return error_response(CHALLENGE_REQUIRED)
 
 
@@ -548,27 +424,28 @@ def _classification_cause(entries: tuple[ProviderDataEntry, ...]) -> str:
 
 async def _consuming_rejection(session: AsyncSession, *,
                                context: RequestContext,
-                               identity: LinkedIdentity | PreAuthIdentity,
                                challenge: AuthChallenge,
                                result: AuthEventResult,
                                error_class: ErrorClass,
                                stage: str,
                                challenge_store: ChallengeStore,
-                               audit_writer: AuditWriter,
                                cause: str | None = None) -> Response:
     """A rejection at or after the Admin lookup: it **consumes**, and it persists nothing else.
 
     §02 step 13 makes consumption unconditional from the provider read onwards -- a retry requires a
     fresh prepare, and a handle that survived a rejection would be a handle an attacker could
     re-present (T-37-39). There is no business mutation on any arm this serves, so the transaction
-    it opens holds exactly two things: the conditional consume and the audit row describing it,
-    committed together. A row written outside that transaction could describe a consumption that
-    did not happen.
+    it opens holds exactly one thing: the conditional consume, committed on its own.
 
     Consumption clears `preauth_subject_hash` in the same statement, which is why a later
     presentation of the same handle takes the already-used rejection rather than a mismatch.
+
+    `cause` is the bounded `provider_not_linked` reason and is present for that result alone. It is
+    omitted rather than `None`-valued everywhere else, so a reader of the log cannot mistake "not
+    applicable" for "applicable and unknown". Like every bounded reason it is never client-visible.
     """
-    logger.warning("create_user_lookup_rejected", stage=stage, result=str(result))
+    bounded = {} if cause is None else {"cause": cause}
+    logger.warning("create_user_lookup_rejected", stage=stage, result=str(result), **bounded)
     consumed = await challenge_store.consume(session,
                                              challenge_id=challenge.challenge_id,
                                              claim_attempt_id=context.attempt_id,
@@ -579,19 +456,6 @@ async def _consuming_rejection(session: AsyncSession, *,
         # handle is never logged (§6.1).
         logger.error("challenge_consume_did_not_match", challenge_row_id=str(challenge.id))
 
-    await audit_writer.write_in_transaction(
-        session,
-        operation=AuthOperation.create_user,
-        result=result,
-        actor_issuer=identity.issuer,
-        actor_subject=identity.subject,
-        # NULL: §4.2 admits `actor_provider` only from the stored provider column of a resolved
-        # linked identity, and this attempt resolved none -- it rejected before creating one.
-        actor_provider=None,
-        challenge_row_id=challenge.id,
-        details=_completion_details(context, result=result, stage=stage,
-                                    provider_data_read=True, consumed=consumed, cause=cause),
-        created_at=context.evaluated_at)
     await session.commit()
     return error_response(error_class)
 

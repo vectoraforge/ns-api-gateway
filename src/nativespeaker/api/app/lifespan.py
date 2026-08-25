@@ -6,7 +6,6 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth.audit import AuditWriter
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.firebase import FirebaseAdminLookup, build_admin_apps
 from nativespeaker.api.auth.keys import HmacKeyring
@@ -45,19 +44,12 @@ async def lifespan(app: FastAPI):
     app.state.hmac_keyring = HmacKeyring(config.hmac)
     app.state.hmac_keyring.warn_missing_older(logger)
 
-    # The §4 audit writer. One instance, read per request, never cached by a caller -- it takes the
-    # session factory as a parameter rather than reading app state itself, so the e2e rollback
-    # fixture's per-test factory swap still governs every row it writes. Nothing calls it in
-    # production this phase: all eight registered routes declare `operation = None`, and §8.2 puts
-    # them off the audited attempt path permanently. Phases 37-45 supply the real call sites.
-    app.state.audit_writer = AuditWriter(app.state.hmac_keyring)
-
     # The §6 challenge store. It shares the keyring above rather than deriving anything of its own:
-    # `preauth_subject_hash` and the audit writer's `actor_subject_hash` are one family under one
-    # key (D-21), and the store calls it with no version because `core.auth_challenges` records
-    # none. Like the writer, it takes its session as a method parameter, so the e2e rollback
-    # fixture's per-test factory swap governs everything it writes. Nothing calls it in production
-    # this phase: the four challenge-bearing operations are phases 37, 40, 41 and 42.
+    # `preauth_subject_hash` is derived through that one keyed family under one key (D-21), and the
+    # store calls it with no version because `core.auth_challenges` records none. It takes its
+    # session as a method parameter, so the e2e rollback fixture's per-test factory swap governs
+    # everything it writes. Nothing calls it in production this phase: the four challenge-bearing
+    # operations are phases 37, 40, 41 and 42.
     app.state.challenge_store = ChallengeStore(app.state.hmac_keyring)
 
     # The §7.1 provider seam, built once at boot and read per request. `build_admin_apps` returns

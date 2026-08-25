@@ -5,7 +5,7 @@ visibly one thing and a later internal split inside `auth/` costs no edit outsid
 Everything a later phase is expected to name is re-exported here: the barrier and its §1.1 wire
 contract, the §2.2 route registry with its §2.3 startup assertion, the §1.4 typed context, §1.3
 identity resolution, §1.2 verification, §8.2 rejection logging, the §4.3/§6.4 shared keyed
-hashing, the §4 audit writer, the §6 challenge store and its §6.5 mode signal, the §7.1 Firebase
+hashing, the §6 challenge store and its §6.5 mode signal, the §7.1 Firebase
 lookup retry policy, the §7 adapter interfaces, the concrete issuer-selected Firebase Admin
 integration, §02's closed providerData classifier, and §02 step 10's email-copy predicate. Phases
 40/41/42 reach all three of those last ones through this one root per D-23, rather than importing
@@ -33,9 +33,9 @@ from an auth package would misdescribe where that class comes from.
 the import ordering below it.
 """
 __all__ = [
-    "ACTOR_SUBJECT_PREFIX", "AdmissionDecision", "Admit", "AuditWriter", "AuthBarrierMiddleware",
+    "ACTOR_SUBJECT_PREFIX", "AdmissionDecision", "Admit", "AuthBarrierMiddleware",
     "BoundedReason", "CHALLENGE_ID_BYTES", "CHALLENGE_TTL_SECONDS", "Category", "ChallengeRejection",
-    "ChallengeStore", "ClaimKind", "ClientIpBucketKind", "DETAILS_SCHEMA_VERSION", "DeviceBitState",
+    "ChallengeStore", "ClaimKind", "ClientIpBucketKind", "DeviceBitState",
     "FIREBASE_HTTP_TIMEOUT_SECONDS", "FIREBASE_LOOKUP_ATTEMPTS", "FirebaseAdminAdapter",
     "FirebaseAdminLookup", "HmacConfig", "HmacKeyring", "IDP_ACCOUNT_PREFIX", "IdentityKind",
     "JWTVerifier", "LinkedIdentity", "ModeSignal", "NamedVerifier", "PreAuthIdentity",
@@ -43,9 +43,9 @@ __all__ = [
     "REQUEST_CONTEXT_SCOPE_KEY", "Reject", "RequestContext", "RevocationOutcome", "RouteMetadata",
     "StoreAdapter", "StoreState", "TokenVerifier", "VERIFIERS", "VendorProofAdapter",
     "VerificationResult", "VerifiedClaims", "VerifiedNotification", "VerifiedTransaction",
-    "assert_route_enumeration", "build_admin_apps", "build_details", "classify_mode_signal",
+    "assert_route_enumeration", "build_admin_apps", "classify_mode_signal",
     "classify_provider_data", "email_to_persist", "enumerate_registered", "extract_bearer", "lookup",
-    "lookup_with_retry", "new_challenge_id", "record_rejection", "redact", "resolve_identity",
+    "lookup_with_retry", "new_challenge_id", "record_rejection", "resolve_identity",
 ]
 
 from importlib import import_module
@@ -64,12 +64,6 @@ from nativespeaker.api.auth.adapters import (
     VendorProofAdapter,
     VerifiedNotification,
     VerifiedTransaction,
-)
-from nativespeaker.api.auth.audit import (
-    DETAILS_SCHEMA_VERSION,
-    AuditWriter,
-    build_details,
-    redact,
 )
 from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
 from nativespeaker.api.auth.challenges import (

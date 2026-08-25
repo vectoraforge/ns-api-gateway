@@ -132,17 +132,6 @@ def keyring() -> HmacKeyring:
     return HmacKeyring(HmacConfig(active_version=1, keys={1: KEY_MATERIAL}))
 
 
-class _InertWriter:
-    """Inert stand-in for the writer parameter `create_account` still declares.
-
-    Persists nothing, so the row counts below are the business rows and nothing else. It exists
-    only so the call type-checks until the parameter itself is deleted from `auth/creation.py`
-    later in this plan.
-    """
-
-    async def write_in_transaction(self, session, **kwargs) -> None:
-        pass
-
 
 def context(harness: _Harness, subject: str) -> RequestContext:
     """The production route metadata, looked up rather than hand-built."""
@@ -269,8 +258,7 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
                                       provider=provider,
                                       provider_uid=provider_uid,
                                       email=None,
-                                      challenge_store=ChallengeStore(keyring()),
-                                      audit_writer=_InertWriter())
+                                      challenge_store=ChallengeStore(keyring()))
     return result, row_id, challenge_id_value
 
 

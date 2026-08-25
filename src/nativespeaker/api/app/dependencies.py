@@ -3,7 +3,6 @@ from collections.abc import AsyncGenerator
 from fastapi import Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.auth.audit import AuditWriter
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import (
     REQUEST_CONTEXT_SCOPE_KEY,
@@ -117,22 +116,6 @@ def get_raw_query_string(request: Request) -> bytes:
 def get_challenge_store(request: Request) -> ChallengeStore:
     """The one `ChallengeStore` the lifespan built. Read per request, never cached by a caller."""
     return request.app.state.challenge_store
-
-
-def get_audit_writer(request: Request) -> AuditWriter:
-    """The one `AuditWriter` the lifespan built. Read per request, never cached by a caller."""
-    return request.app.state.audit_writer
-
-
-def get_session_factory(request: Request):
-    """The app's real session factory, for `AuditWriter.write_standalone` alone.
-
-    Not `Depends(get_db)`: a standalone-durable audit row exists precisely because there is no
-    consuming transaction to be atomic with, so it must open and commit a session of its own. The
-    factory is read off the app per request rather than captured, so the e2e rollback fixture's
-    per-test swap still governs every row written through it.
-    """
-    return request.app.state.session_factory
 
 
 def get_firebase_adapter(request: Request):
