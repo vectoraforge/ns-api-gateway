@@ -296,7 +296,7 @@ Plans:
 **Goal:** Strip the machine-generated excess out of phases 34-37: delete the auth-event audit subsystem, replace the auth barrier middleware and route registry with FastAPI dependencies, and rewrite the prose across `src/`, `tests/` and the migration in plain English. Behavior-reducing only — no endpoint changes shape and no route changes its authentication status.
 **Requirements**: none mapped — this phase is tracked against the CONTEXT.md decisions D-01 … D-17
 **Depends on:** Phase 37
-**Plans:** 7/8 plans executed
+**Plans:** 8/8 plans executed
 
 Plans:
 **Wave 1**
@@ -314,7 +314,7 @@ Plans:
 - [x] 37.1-05-PLAN.md — Prose: routers, the `models/` package, and the top-level service modules (D-13…D-16) [wave 3]
 - [x] 37.1-06-PLAN.md — Prose: `tests/e2e/`, `tests/schema/`, and the migration (D-13…D-16) [wave 3]
 - [x] 37.1-07-PLAN.md — Prose: `tests/unit/` (D-13…D-16) [wave 3]
-- [ ] 37.1-08-PLAN.md — Amend REQUIREMENTS.md and ROADMAP.md for both deletions; flag the SHARED-INVARIANTS conflicts (D-12) [wave 3]
+- [x] 37.1-08-PLAN.md — Amend REQUIREMENTS.md and ROADMAP.md for both deletions; flag the SHARED-INVARIANTS conflicts (D-12) [wave 3]
 
 **Cross-cutting constraints:**
 
