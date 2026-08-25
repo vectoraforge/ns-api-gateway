@@ -1,10 +1,10 @@
 """FOUND-02 / §1.1: the same six wire cases, over a real ASGI transport.
 
-`tests/unit/test_barrier_wire_contract.py` drives `extract_bearer` with hand-built header lists.
+`tests/unit/test_wire_contract.py` drives `extract_bearer` with hand-built header lists.
 This module is worth having beside it for one reason: it proves the awkward shapes **survive the
 transport**. A duplicate `Authorization` field, a differently-cased pair of them, and a
 comma-joined value all reach `scope["headers"]` byte-for-byte instead of being folded, deduplicated,
-or first-value-selected somewhere between the client and the barrier. If they were folded, the unit
+or first-value-selected between the client and `extract_bearer`. If they were folded, the unit
 module would still pass while the deployed service quietly authenticated one of two credentials --
 which is the desync §1.1 exists to make impossible.
 
@@ -85,10 +85,10 @@ async def _delivered(headers: list[tuple[str, str]]) -> list[tuple[bytes, bytes]
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheTransportPreservesTheAwkwardShapes:
-    """This module's whole reason for existing: the shapes are not folded before the barrier.
+    """This module's whole reason for existing: the shapes are not folded before the server reads them.
 
     Asserted against a bare recording app rather than the real one, because what is under test
-    here is the transport, not the barrier. If httpx folded a duplicate into one comma-joined
+    here is the transport, not admission. If httpx folded a duplicate into one comma-joined
     value the cases above would still return 401 -- but for the wrong reason, and the deployed
     service's behaviour would no longer be what they claim to prove.
     """
@@ -111,7 +111,7 @@ class TestTheTransportPreservesTheAwkwardShapes:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheContractRunsOnEveryAuthenticatedRoute:
-    """§1.1 is the barrier's, so it does not vary by route -- and does not apply to the allowlist."""
+    """§1.1 belongs to admission, so it does not vary by route -- and does not apply to the allowlist."""
 
     @pytest.mark.parametrize("path", ["/", "/examples", "/chats"])
     async def test_a_duplicate_is_refused_identically_on_every_authenticated_route(
@@ -122,7 +122,7 @@ class TestTheContractRunsOnEveryAuthenticatedRoute:
         assert response.json() == {"code": "auth_required"}
 
     async def test_the_public_readiness_probe_is_not_subject_to_it(self, wire_client):
-        """§2.1's allowlist sits outside the barrier: zero authentication, wire contract included."""
+        """§2.1's allowlist declares no auth dependency at all: wire contract included."""
         response = await wire_client.get("/health/ready",
                                          headers=[("authorization", "Bearer a"),
                                                   ("authorization", "Bearer b")])

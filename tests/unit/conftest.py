@@ -161,12 +161,16 @@ def service(mock_chats_db):
 
 @pytest.fixture
 def client(mock_chats_db, service):
-    """The four surviving routers with the identity context supplied instead of the barrier.
+    """The four surviving routers with the identity supplied instead of being resolved.
 
-    `get_linked_identity` is overridden rather than the barrier being installed: this fixture's
-    subject is what a handler does *once admitted*. What happens when the barrier did **not** admit
-    is `test_identity_accessors.py`'s and `test_auth_security.py`'s subject, and neither overrides
-    the accessor.
+    Overriding `get_linked_identity` is all it takes under D-07, and that is the simplification the
+    dependency swap bought: the accessor these routers declare at the router level is the same
+    object their endpoints declare, so one `dependency_overrides` entry covers both and no
+    middleware has to be installed or suppressed.
+
+    This fixture's subject is what a handler does *once admitted*. What happens when admission
+    refuses is `test_identity_accessors.py`'s and `test_auth_security.py`'s subject, and neither
+    overrides the accessor.
     """
     app = FastAPI()
     app.include_router(root_router)

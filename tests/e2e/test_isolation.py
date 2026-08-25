@@ -35,7 +35,7 @@ STRANGER = "isolation-stranger"
 async def isolation_client(_app_lifespan, stub_verifier):
     """A client over the real started app whose tokens the stub verifier accepts.
 
-    Mirrors `test_barrier_admission.py::barrier_client`. The credential is per-request here rather
+    Mirrors `test_admission.py::admission_client`. The credential is per-request here rather
     than set on the client, because both subjects drive the same client.
     """
     transport = ASGITransport(app=_app_lifespan)

@@ -1,6 +1,6 @@
 """FOUND-01 / §1.3: the four-outcome admission matrix as logic, plus the §1.2 counter.
 
-`tests/e2e/test_barrier_admission.py` proves the matrix against real rows over the real transport.
+`tests/e2e/test_admission.py` proves the matrix against real rows over the real transport.
 This module proves the branches the *database* cannot produce. `core.identity_state` is a
 two-value `NOT NULL` enum and `core.external_identities.user_id` carries a `RESTRICT` foreign key,
 so a NULL state, an unrecognized state, and a dangling user reference are all unreachable through

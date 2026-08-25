@@ -1,19 +1,24 @@
 """The measured proof that an unrecognized `kid` never stalls the event loop (CR-01).
 
 `35-VERIFICATION.md` scored the fifth conjunct of 35-02's D10 -- "performs no per-request network
-call" -- as failed: step 3 of the barrier called the synchronous `JWTVerifier.verify` directly from
-`async def __call__`, and that call reaches `PyJWKClient.get_signing_key_from_jwt`, which on an
-unmatched `kid` performs a blocking `urlopen` with PyJWT's 30-second default bound. One
-unauthenticated request was enough to stop every other coroutine in the process, `/health/ready`
-included.
+call" -- as failed: the acceptance step called the synchronous `JWTVerifier.verify` directly from
+an `async def`, and that call reaches `PyJWKClient.get_signing_key_from_jwt`, which on an unmatched
+`kid` performs a blocking `urlopen` with PyJWT's 30-second default bound. One unauthenticated
+request was enough to stop every other coroutine in the process, `/health/ready` included.
 
 What that gap needs is a *measurement*, not a structural assertion. So the request here travels the
-whole stack -- ASGI, barrier, verifier, real `PyJWKClient`, stubbed transport -- while a heartbeat
-coroutine counts its own ticks, and the case fails if the loop stops serving. The transport is
-stubbed at `urllib.request.urlopen`, the one blocking call PyJWT makes; the client itself is real,
-because the vacuous test this replaces (WR-05) substituted the client class and could therefore not
-fail (see `test_jwt_security.py::TestTheJwksTransportIsNotHitPerRequest` for the same seam applied to
-fetch counts).
+whole stack -- ASGI, the auth dependency, the verifier, a real `PyJWKClient`, a stubbed transport
+-- while a heartbeat coroutine counts its own ticks, and the case fails if the loop stops serving.
+The transport is stubbed at `urllib.request.urlopen`, the one blocking call PyJWT makes; the client
+itself is real, because the vacuous test this replaces (WR-05) substituted the client class and
+could therefore not fail (see `test_jwt_security.py::TestTheJwksTransportIsNotHitPerRequest` for
+the same seam applied to fetch counts).
+
+**37.1 D-06 moved the seam under test and changed nothing here that matters.** The offload is now
+`run_in_threadpool` inside `app/dependencies.py::get_request_context` rather than inside a
+middleware's `__call__`; the fetch it offloads, the bound it carries and the loop it must not stall
+are the same. What this module measures survives a mechanism change precisely because it measures
+behaviour rather than structure -- so the harness moved and every count assertion stayed.
 
 `test_the_harness_detects_a_starved_loop` is permanent, not scaffolding: without it, the case above
 is a green assertion nobody has shown can go red.
@@ -24,12 +29,13 @@ import json
 import time
 
 import pytest
-from fastapi import FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
 from jwt.algorithms import RSAAlgorithm
 
+from nativespeaker.api.app.dependencies import get_linked_identity
 from nativespeaker.api.app.errors import register_exception_handlers
-from nativespeaker.api.auth.barrier import AuthBarrierMiddleware
+from nativespeaker.api.auth.context import LinkedIdentity
 from nativespeaker.api.auth.verification import JWTVerifier
 from unit.conftest import PUBLIC_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_token
 
@@ -101,9 +107,10 @@ class _EmptyResult:
 class _NoIdentitySession:
     """Step 4's session. Every case here is refused at step 2 or step 3, so it is never consulted.
 
-    It exists because the barrier reads `session_factory` off application state per request; leaving
-    it out would make a wrongly-*accepted* token fail with an attribute error instead of the 403 the
-    admission matrix owes it, and that failure would be about the fixture rather than the code.
+    It exists because the dependency reads `session_factory` off application state per request;
+    leaving it out would make a wrongly-*accepted* token fail with an attribute error instead of
+    the 403 the admission matrix owes it, and that failure would be about the fixture rather than
+    the code.
     """
 
     async def __aenter__(self):
@@ -128,23 +135,24 @@ def verifier(transport) -> JWTVerifier:
 
 
 @pytest.fixture
-def barrier_app(verifier) -> FastAPI:
-    """The real barrier in front of one undeclared route, wired the way the lifespan wires it.
+def probe_app(verifier) -> FastAPI:
+    """The real auth dependency in front of one route, wired the way the lifespan wires it.
 
-    `/probe` carries no registry declaration, so the barrier applies its strictest disposition and
-    treats it as authenticated -- the same premise `test_auth_security.py::barrier_client` rests on.
+    `/probe` gets the dependency the way every non-public route does under D-07 -- declared on the
+    router and again in the endpoint signature -- so what these cases measure is the production
+    shape rather than a single hand-placed `Depends`.
     """
     app = FastAPI()
     register_exception_handlers(app)
+    router = APIRouter(dependencies=[Depends(get_linked_identity)])
 
-    @app.get("/probe")
-    async def _probe():
+    @router.get("/probe")
+    async def _probe(identity: LinkedIdentity = Depends(get_linked_identity)):
         return {"reached": True}
 
-    app.add_middleware(AuthBarrierMiddleware)  # ty: ignore[invalid-argument-type]
+    app.include_router(router)
     app.state.jwt_verifier = verifier
     app.state.session_factory = _NoIdentitySession
-    app.state.route_registry = ()
     return app
 
 
@@ -191,7 +199,7 @@ async def _get_probe(app: FastAPI, headers) -> tuple[int, dict, float, float]:
     return response.status_code, response.json(), started, finished
 
 
-async def test_an_unknown_kid_request_does_not_starve_the_event_loop(barrier_app, transport):
+async def test_an_unknown_kid_request_does_not_starve_the_event_loop(probe_app, transport):
     """CR-01, measured: the loop keeps serving while an unrecognized `kid` is being fetched.
 
     Ten ticks is a deliberate four-fold margin against scheduler noise -- an offloaded fetch of this
@@ -203,7 +211,7 @@ async def test_an_unknown_kid_request_does_not_starve_the_event_loop(barrier_app
 
     async with Heartbeat() as heartbeat:
         status, body, started, finished = await _get_probe(
-            barrier_app, {"Authorization": f"Bearer {token}"})
+            probe_app, {"Authorization": f"Bearer {token}"})
 
     assert status == 401
     assert body == {"code": "auth_required"}, "the client-visible response is unchanged by the fix"
@@ -232,13 +240,13 @@ async def test_the_harness_detects_a_starved_loop(verifier, transport):
     assert ticks <= 2, f"the harness cannot register a starved loop: it counted {ticks} ticks"
 
 
-async def test_a_duplicate_authorization_never_reaches_the_jwks_transport(barrier_app, transport):
+async def test_a_duplicate_authorization_never_reaches_the_jwks_transport(probe_app, transport):
     """FOUND-02 ordering: the §1.1 wire contract still precedes verification under the offload."""
     token = make_token("u", headers={"kid": "unrecognised-2"})
     before = len(transport)
 
     status, body, _started, _finished = await _get_probe(
-        barrier_app,
+        probe_app,
         [("Authorization", f"Bearer {token}"), ("Authorization", f"Bearer {token}")])
 
     assert status == 401
