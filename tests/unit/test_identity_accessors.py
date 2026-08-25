@@ -1,15 +1,4 @@
-"""FOUND-01: the §1.4 typed identity context and the fail-loudly `Depends()` accessors (D-02).
-
-Pure unit tests -- no database, no network. The three accessors *are* admission now (37.1 D-06):
-`get_request_context` applies the wire contract, verifies the token and resolves the identity, and
-the other two narrow the variant it produced. So these cases drive real requests through real
-routers with a real verifier over an ephemeral keypair, and stub only the two things the lifespan
-would otherwise supply -- `app.state.jwt_verifier` and `app.state.session_factory`.
-
-Every case here is still the inverse of the usual one: what the seam **refuses**, and that it never
-hands a handler something it could read as anonymous. `test_auth_security.py` asserts the same seam
-from the wire side.
-"""
+"""The typed identity context and the accessors that are admission: what the seam refuses, over real routers."""
 import inspect
 from datetime import UTC, datetime
 from typing import get_type_hints
@@ -44,8 +33,7 @@ ACCESSORS = (get_request_context, get_linked_identity, get_preauth_identity)
 ISSUER = TEST_ISSUER
 SUBJECT = "firebase-uid-1"
 
-# The context carries no client address in any form (A3). Any field name matching one of these
-# would be an address sneaking back in.
+# A field name matching any of these would be a client address sneaking back into the context.
 _ADDRESS_MARKERS = ("addr", "remote", "host", "forwarded", "xff", "peer")
 
 
@@ -88,13 +76,7 @@ class _Result:
 
 
 class _ProbeSession:
-    """The one short session the auth dependency opens: exactly one read, and never a write.
-
-    Every write verb raises rather than recording. §1.4's no-provisioning prohibition used to be
-    structural -- the accessors were synchronous and could not reach a session at all -- and
-    `get_request_context` now opens one, so the prohibition needs asserting instead of assuming.
-    A `create`, `link`, `repair` or `merge` on this path would have to come through one of these.
-    """
+    """The one short session the dependency opens: exactly one read, and every write verb raises."""
 
     instances: list[_ProbeSession] = []
 
@@ -129,12 +111,7 @@ class _ProbeSession:
 
 
 def _client(row=None) -> TestClient:
-    """Three accessor-declaring routes over stubbed app state.
-
-    `row` is what the identity query finds: `None` resolves as a pre-auth caller, an
-    `(identity, user)` pair as a linked one. Each router declares its accessor **and** each
-    endpoint declares the identical callable again, which is the D-07 shape the real routers use.
-    """
+    """Three accessor-declaring routes over stubbed app state, each declaring its accessor at both levels."""
     _ProbeSession.instances.clear()
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     register_exception_handlers(app)
@@ -170,7 +147,7 @@ def _bearer(subject: str = SUBJECT) -> dict[str, str]:
 
 
 class TestNoCredentialIsRefused:
-    """§1.4: a route declaring any of the three refuses a caller who presented nothing."""
+    """A route declaring any of the three refuses a caller who presented nothing."""
 
     @pytest.mark.parametrize("path", ["/ctx", "/linked", "/preauth"])
     def test_no_authorization_header_answers_auth_required(self, path):
@@ -193,17 +170,10 @@ class TestNoCredentialIsRefused:
 
 
 class TestVariantConfusionIsRefused:
-    """T-35-03-02: an accessor refuses the wrong variant rather than handing it over."""
+    """An accessor refuses the wrong variant rather than handing it over."""
 
     def test_a_preauth_caller_on_a_linked_route_answers_403(self):
-        """`preauth_identity_not_allowed`, not `auth_required` -- CREATE-01's client contract.
-
-        This is the same answer, with the same status and the same body, that the deleted barrier
-        produced for the same caller through `resolve_identity`'s non-pre-auth-callable arm. What
-        moved is *where* the narrowing happens: resolution now admits a pre-auth principal on every
-        route and this accessor rejects it, which is what lets `POST /auth/create-user` read the
-        variant off the context.
-        """
+        """Resolution admits a pre-auth principal everywhere and this accessor rejects it, so create-user reads it."""
         response = _client(row=None).get("/linked", headers=_bearer())
         assert response.status_code == 403
         assert response.json() == {"code": "preauth_identity_not_allowed"}
@@ -238,7 +208,7 @@ class TestVariantConfusionIsRefused:
 
 
 class TestNeverReturnsNone:
-    """No accessor has a path that yields None -- the failure mode §1.4 names explicitly."""
+    """No accessor has a path that yields None, which is the failure mode worth naming."""
 
     @pytest.mark.parametrize("accessor", ACCESSORS, ids=lambda f: f.__name__)
     def test_no_accessor_declares_an_optional_return(self, accessor):
@@ -257,20 +227,10 @@ class TestNeverReturnsNone:
 
 
 class TestAccessorsCannotProvision:
-    """The no-provisioning prohibition: exactly one read, and no write verb is reachable.
-
-    It used to be structural -- the accessors were synchronous and could not await a session at
-    all. `get_request_context` opens one now, for §1.3's single statement, so the prohibition is
-    asserted directly instead: `_ProbeSession` raises on `commit`, `flush`, `add` and `delete`, so
-    a create, link, repair, reassign or merge appearing on this path fails these cases loudly.
-    """
+    """Exactly one read and no reachable write verb, asserted now that the accessors do open a session."""
 
     def test_only_the_resolving_accessor_takes_the_request(self):
-        """`get_request_context` needs app state; the two narrowing accessors must not have it.
-
-        They take the resolved context instead, which is also what puts them on FastAPI's
-        per-request cache -- see `test_the_declaration_resolves_once` below.
-        """
+        """The narrowing accessors take the resolved context, which is also what puts them on the cache."""
         assert list(inspect.signature(get_request_context).parameters) == ["request"]
         for accessor in (get_linked_identity, get_preauth_identity):
             params = list(inspect.signature(accessor).parameters)
@@ -283,15 +243,7 @@ class TestAccessorsCannotProvision:
 
     @pytest.mark.parametrize("path", ["/ctx", "/linked", "/preauth"])
     def test_the_declaration_resolves_once(self, path):
-        """One session, one statement, closed before the handler -- across BOTH declarations.
-
-        Each route here declares its accessor at the router level and again in the endpoint
-        signature, and `/linked` and `/preauth` add a third resolution of `get_request_context`
-        beneath them. A second `_ProbeSession` would mean the JWT verify and the identity query
-        had run twice, which is what T-37.1-11 is about: an accessor that *called*
-        `get_request_context(request)` instead of declaring it did exactly that, because the
-        per-request cache lives in FastAPI's solver and cannot see a direct call.
-        """
+        """One session across both declarations; an accessor calling rather than declaring ran everything twice."""
         user, identity = _rows()
         _client(row=(identity, user)).get(path, headers=_bearer())
         assert len(_ProbeSession.instances) == 1, "resolution ran more than once"
@@ -301,7 +253,7 @@ class TestAccessorsCannotProvision:
 
 
 class TestContextShape:
-    """The §1.4 field sets. Phases 36-46 import these verbatim, so they are the contract."""
+    """The field sets later phases import verbatim, so they are the contract."""
 
     def test_request_context_carries_exactly_the_four_request_scoped_values(self):
         assert sorted(RequestContext.__dataclass_fields__) == [
@@ -343,7 +295,7 @@ class TestContextShape:
 
 
 class TestNoClientAddressIsCarried:
-    """A3 / T-35-03-04: no address at all. §9 is deferred, so one would be trusted, not proven."""
+    """No client address in any form, since deriving trust from one would assume rather than prove it."""
 
     @pytest.mark.parametrize("cls", [LinkedIdentity, PreAuthIdentity, RequestContext],
                              ids=lambda c: c.__name__)
@@ -355,12 +307,7 @@ class TestNoClientAddressIsCarried:
     @pytest.mark.parametrize("cls", [LinkedIdentity, PreAuthIdentity, RequestContext],
                              ids=lambda c: c.__name__)
     def test_the_only_string_fields_are_the_verified_pair_and_the_route_template(self, cls):
-        """An address would have to arrive as a str, so the str fields are an enumerated set.
-
-        `route` is the third and last one. It is a **path template** the router declared, drawn
-        from a closed set fixed at import time -- not a client-supplied value, and nothing a caller
-        can steer. The verified pair is the other two.
-        """
+        """An address would arrive as a str, and the route is a declared template no caller can steer."""
         strings = {name for name, hint in get_type_hints(cls).items() if hint is str}
         assert strings <= {"issuer", "subject", "route"}, \
             f"unexpected str field(s) on {cls.__name__}: {strings}"

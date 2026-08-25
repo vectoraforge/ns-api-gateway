@@ -1,11 +1,4 @@
-"""FOUND-04: the error registry is total, and the handlers read it rather than a remap table.
-
-Scope note: `test_error_contract.py` owns the client-visible contract over a live app, and
-`test_exception_handlers.py` owns the exception -> status matrix. This module owns what neither can
-see -- the §3.1 invariants `assert_registry_total` enforces mechanically, the framework-exception
-mapping D-12 replaced `_STATUS_REMAP` with, and the loud unmapped-status path. Handler cases are
-driven by calling the handlers directly with constructed exceptions, so no app startup is needed.
-"""
+"""The error registry is total, and the handlers read it rather than a remap table."""
 import re
 from contextlib import contextmanager
 from pathlib import Path
@@ -33,17 +26,13 @@ from nativespeaker.api.errors import (
     register_class,
 )
 
-# The 401 code the v1.3 contract used alongside auth_required, retired by D-11.
+# The 401 code an earlier contract used alongside auth_required, since retired.
 RETIRED_401_CODE = "unauthorized"
 
 
 @contextmanager
 def registry_mutation():
-    """Restore both tables afterwards, so a mutation test cannot leak into another module.
-
-    Both are module-level dicts shared process-wide; `REGISTRY = {...}` would rebind only the local
-    name, so the restore mutates the same objects the production code holds.
-    """
+    """Restore both tables afterwards, since they are module-level dicts shared process-wide."""
     saved_registry = dict(REGISTRY)
     saved_status = dict(STATUS_TO_CLASS)
     try:
@@ -56,14 +45,7 @@ def registry_mutation():
 
 
 class _RecordingLogger:
-    """Records calls per level.
-
-    Deliberately not `structlog.testing.capture_logs`: an e2e module's lifespan calls
-    `setup_logging()`, which reconfigures structlog with `cache_logger_on_first_use=True`, after
-    which `capture_logs` can no longer intercept a module-level cached logger. That interaction
-    already makes two tests in `test_logging.py` fail in a combined run (see
-    `deferred-items.md`); this spy has no dependency on structlog's configuration state.
-    """
+    """Records calls per level, with no dependency on structlog's configuration state."""
 
     def __init__(self):
         self.calls: list[tuple[str, str, dict]] = []
@@ -78,7 +60,7 @@ class _RecordingLogger:
 
 
 class TestRegistryTotality:
-    """§3.1: one class per condition, and the declared code set is exactly the registered one."""
+    """One class per condition, and the declared code set is exactly the registered one."""
 
     def test_no_two_classes_share_a_code(self):
         codes = [cls.code for cls in REGISTRY.values()]
@@ -99,7 +81,7 @@ class TestRegistryTotality:
         assert set(get_args(ErrorCode)) == {cls.code for cls in REGISTRY.values()}
 
     def test_every_class_carries_copy(self):
-        """§3.2 pins a remediation contract per class; an empty one would leave a client stuck."""
+        """Every class pins a remediation; an empty one would leave a client stuck."""
         for cls in REGISTRY.values():
             assert cls.copy.strip(), f"{cls.name} declares no copy"
 
@@ -111,7 +93,7 @@ class TestRegistryTotalityCatchesDefects:
     """Each of the four invariants fails loudly when a later phase appends a class carelessly."""
 
     def test_duplicate_code_is_rejected_at_registration(self):
-        """`register_class` refuses the near-duplicate §3.1 forbids, before boot even starts."""
+        """`register_class` refuses a near-duplicate before boot even starts."""
         with registry_mutation():
             with pytest.raises(ValueError, match="already registered"):
                 register_class(ErrorClass(name="second_not_found", status=404,
@@ -148,7 +130,7 @@ class TestRegistryTotalityCatchesDefects:
 
 
 class TestRetired401Code:
-    """D-11: `auth_required` is the only 401 the service emits."""
+    """`auth_required` is the only 401 the service emits."""
 
     def test_absent_from_the_registry(self):
         assert RETIRED_401_CODE not in {cls.code for cls in REGISTRY.values()}
@@ -175,7 +157,7 @@ class TestRetired401Code:
 
 
 class TestStatusToClass:
-    """D-12: the closed framework-exception mapping that replaced the folding table."""
+    """The closed framework-exception mapping that replaced the folding table."""
 
     @pytest.mark.parametrize("status,expected_code", [
         (404, "not_found"),
@@ -264,7 +246,7 @@ class TestHttpExceptionHandler:
 
 
 class TestServiceErrorHandler:
-    """§3.1 anti-oracle: within a class, status and body are identical across every branch."""
+    """Within a class, status and body are identical across every branch."""
 
     async def test_two_subclasses_sharing_a_class_produce_byte_identical_bodies(self):
         first = await service_error_handler(None, InvalidCursorError())
@@ -285,13 +267,7 @@ class TestServiceErrorHandler:
 
 
 class TestPhase37Classes:
-    """Plan 37-03: the two classes phase 37 appends, at the statuses it pins (A3).
-
-    Neither status is pinned by the specification. 01-foundation.md:196 pins only 400, 403
-    (`device_grant_exhausted`, phase 06), 409 (`create_flow_mismatch`, phase 02) and 429 -- and
-    `create_flow_mismatch` is unregistered, so both statuses below are the registry's own choice.
-    They are asserted here so the choice is a fact rather than an inference.
-    """
+    """The two appended classes, at statuses the registry chooses rather than inherits from the spec."""
 
     def test_identity_already_linked_is_registered_at_409(self):
         assert IDENTITY_ALREADY_LINKED.status == 409
@@ -318,12 +294,7 @@ class TestPhase37Classes:
         assert at_409 == ["challenge_required", "identity_already_linked"]
 
     def test_the_new_409_does_not_claim_the_framework_exception_slot(self):
-        """`STATUS_TO_CLASS` maps *framework-raised* statuses; 409 stays `challenge_required`.
-
-        The new class is emitted through `error_response(...)` at its own raise sites, which needs
-        no status lookup. Rebinding this entry would turn every framework 409 into a conflict the
-        caller cannot act on.
-        """
+        """The mapping is for framework-raised statuses, and rebinding it would recast every framework 409."""
         assert STATUS_TO_CLASS[409] is CHALLENGE_REQUIRED
 
     def test_403_remains_absent_from_the_status_mapping(self):
@@ -337,7 +308,7 @@ class TestPhase37Classes:
 
     @pytest.mark.parametrize("name", ["identity_already_linked", "operation_not_allowed"])
     def test_copy_is_one_neutral_sentence(self, name):
-        """§3.1 anti-oracle: no issuer, no integration, no failed check, no accusation."""
+        """No issuer, no integration, no failed check, no accusation."""
         copy = REGISTRY[name].copy
         assert copy.strip()
         assert copy.count(".") == 1 and copy.endswith(".")
@@ -348,13 +319,7 @@ class TestPhase37Classes:
 
 
 class TestDeliberatelyUnregisteredClasses:
-    """§3.3 lists four classes for phase 02; two of them are deliberately not here.
-
-    `create_flow_mismatch` is absent per 37 D-12, which deletes the client flow declaration the
-    class exists to reject. `registration_temporarily_unavailable` is absent per 37 D-03: it is
-    gateway-emitted and the Envoy contract is v2.1. These assertions exist so the absences read as
-    decisions rather than omissions a later phase should "fix".
-    """
+    """Two classes are absent by decision, asserted so the absences do not read as omissions to fix."""
 
     ABSENT = ("create_flow_mismatch", "registration_temporarily_unavailable")
 
@@ -368,20 +333,19 @@ class TestDeliberatelyUnregisteredClasses:
         assert code not in get_args(ErrorCode)
 
     def test_no_registered_class_carries_a_gateway_specialisation_of_429(self):
-        """D-03 keeps `rate_limited` as the only registered 429 beside `quota_exceeded`."""
+        """`rate_limited` stays the only registered 429 beside `quota_exceeded`."""
         at_429 = sorted(cls.name for cls in REGISTRY.values() if cls.status == 429)
         assert at_429 == ["quota_exceeded", "rate_limited"]
 
 
 class TestErrorResponseStaysOneField:
-    """D-12 dissolved the one place §02 demanded a wider body; the contract is not reopened."""
+    """The one place a wider body was once demanded is gone, and the contract is not reopened."""
 
     def test_exactly_one_model_field(self):
         assert list(ErrorResponse.model_fields) == ["code"]
 
     def test_no_subclass_is_defined_anywhere_under_src(self):
-        """Source-level, not runtime: a subclass in a module nothing imports still widens the
-        contract the moment a handler reaches for it."""
+        """Source-level, not runtime: a subclass nothing imports still widens the contract once a handler reaches it."""
         src = Path(__file__).resolve().parents[2] / "src"
         offenders = [str(path) for path in src.rglob("*.py")
                      if re.search(r"^class\s+\w+\(.*\bErrorResponse\b.*\):", path.read_text(),
@@ -393,6 +357,6 @@ class TestErrorResponseStaysOneField:
         assert ErrorResponse.__subclasses__() == []
 
     def test_the_registry_module_declares_no_per_class_payload_slot(self):
-        """The field §02 wanted on the 409 body. D-12 removed its reason to exist."""
+        """The field the 409 body once wanted no longer has a reason to exist."""
         source = Path(nativespeaker.api.errors.__file__).read_text()
         assert "required" + "_flow" not in source

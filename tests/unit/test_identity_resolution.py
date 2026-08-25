@@ -1,15 +1,4 @@
-"""FOUND-01 / §1.3: the four-outcome admission matrix as logic, plus the §1.2 counter.
-
-`tests/e2e/test_admission.py` proves the matrix against real rows over the real transport.
-This module proves the branches the *database* cannot produce. `core.identity_state` is a
-two-value `NOT NULL` enum and `core.external_identities.user_id` carries a `RESTRICT` foreign key,
-so a NULL state, an unrecognized state, and a dangling user reference are all unreachable through
-PostgreSQL -- and §1.3 requires each of them to fail closed rather than fall through to pre-auth.
-A stub session is the only way to put such a row in front of `resolve_identity`.
-
-The stub also makes the query-count claim checkable directly: it counts its own `exec` calls, so
-"exactly one SELECT per resolution" is asserted rather than read off the source.
-"""
+"""The four-outcome admission matrix as logic: the branches a real database cannot produce."""
 from uuid import uuid7
 
 import pytest
@@ -72,7 +61,7 @@ async def _resolve(row, *, preauth_callable: bool = False):
 
 
 class TestOutcomeOneNoMatchingRow:
-    """§1.3 outcomes 1 and 1' -- the only two readings of "this pair was never linked"."""
+    """The only two readings of a pair that was never linked."""
 
     async def test_a_preauth_callable_route_admits_the_verified_pair(self):
         decision, _ = await _resolve(None, preauth_callable=True)
@@ -92,13 +81,13 @@ class TestOutcomeOneNoMatchingRow:
         assert decision.result is AuthEventResult.preauth_identity_not_allowed
 
     async def test_the_rejection_carries_the_verified_actor(self):
-        """Pitfall 10: only `invalid_external_jwt` may reach a rejection with no actor at all."""
+        """Only an unverifiable token may reach a rejection with no actor at all."""
         decision, _ = await _resolve(None)
         assert (decision.actor_issuer, decision.actor_subject) == (ISSUER, SUBJECT)
 
 
 class TestOutcomeTwoIdentityStateIsNotExactlyActive:
-    """§1.3 outcome 2 -- `historical`, NULL, and any future member land on one branch."""
+    """`historical`, NULL and any future member all land on one branch."""
 
     @pytest.mark.parametrize("state", [IdentityState.historical, None, "retired", ""])
     async def test_a_state_other_than_active_rejects_account_unavailable(self, state):
@@ -109,19 +98,19 @@ class TestOutcomeTwoIdentityStateIsNotExactlyActive:
 
     @pytest.mark.parametrize("state", [IdentityState.historical, None, "retired", ""])
     async def test_it_never_falls_through_to_pre_auth(self, state):
-        """Even on the one route that may admit a pre-auth principal (§1.3 outcome 2, "any route")."""
+        """Even on the one route that may admit a pre-auth principal."""
         decision, _ = await _resolve(_row(identity_state=state), preauth_callable=True)
         assert isinstance(decision, Reject)
         assert decision.result is AuthEventResult.historical_identity
 
     async def test_a_retired_identity_never_surfaces_preauth_identity_not_allowed(self):
-        """T-35-06-02: identity rows are never deleted, so a retired pair still has a row."""
+        """Identity rows are never deleted, so a retired pair still has a row."""
         decision, _ = await _resolve(_row(identity_state=IdentityState.historical))
         assert decision.error_class is not PREAUTH_IDENTITY_NOT_ALLOWED
 
 
 class TestOutcomeThreeUserIsNotExactlyTrue:
-    """§1.3 outcome 3 -- a positive test on the user column, not a truthiness test."""
+    """A positive test on the user column, not a truthiness test."""
 
     async def test_an_inactive_user_rejects_account_unavailable(self):
         decision, _ = await _resolve(_row(user_active=False))
@@ -138,7 +127,7 @@ class TestOutcomeThreeUserIsNotExactlyTrue:
 
 
 class TestOutcomeFourLinkedAndActive:
-    """§1.3 outcome 4 -- the only admission that carries a user row."""
+    """The only admission that carries a user row."""
 
     async def test_it_admits_with_the_resolved_rows(self):
         row = _row()
@@ -157,7 +146,7 @@ class TestOutcomeFourLinkedAndActive:
 
 
 class TestUnresolvableUser:
-    """T-35-06-07 -- an identity row whose user row is missing fails closed, never inline repair."""
+    """An identity row whose user row is missing fails closed, never inline repair."""
 
     async def test_it_rejects_as_an_internal_error(self):
         decision, _ = await _resolve(_row(user=None))
@@ -176,7 +165,7 @@ class TestUnresolvableUser:
 
 
 class TestOneQueryOneCodePath:
-    """D-13's whole anti-oracle guarantee, asserted structurally rather than by timing."""
+    """The anti-oracle guarantee asserted structurally rather than by timing."""
 
     @pytest.mark.parametrize("row", [
         None,
@@ -197,7 +186,7 @@ class TestOneQueryOneCodePath:
         assert historical.result is not blocked.result
 
     async def test_no_timing_normalisation_is_present(self):
-        """D-13 rejects padding and constant-time delays for this product -- deliberately absent."""
+        """Padding and constant-time delays are deliberately absent for this product."""
         import inspect
 
         from nativespeaker.api.auth import identity as identity_module
@@ -207,15 +196,7 @@ class TestOneQueryOneCodePath:
 
 
 class TestTheResolutionStatement:
-    """The shape of the one statement, asserted because one of its properties is unobservable.
-
-    The dangling-user branch above cannot be produced by the database -- `user_id` carries a
-    `NOT NULL REFERENCES core.users (id)` foreign key, so no such row can exist -- which means no
-    test at any level can reach that branch through real data. Only the join *kind* keeps the
-    branch alive at all: swap `isouter=True` for an inner join and the row simply disappears, the
-    dangling case silently becomes outcome 1, and every test above still passes. Asserting the
-    compiled statement is the one thing that catches that.
-    """
+    """The join kind keeps the dangling-user branch alive: an inner join would make it silently vanish."""
 
     async def test_it_outer_joins_so_a_dangling_user_is_not_read_as_unlinked(self):
         _decision, session = await _resolve(_row())
@@ -228,7 +209,7 @@ class TestTheResolutionStatement:
         assert "core.users" in compiled
 
     async def test_it_filters_on_issuer_and_subject_and_nothing_else(self):
-        """§1.3 resolves the verified pair. `core.users.id` is never an authentication key."""
+        """Resolution is on the verified pair; `core.users.id` is never an authentication key."""
         _decision, session = await _resolve(_row())
         where = str(session.statements[0]).split("WHERE", 1)[1]
         assert "external_identities.issuer" in where
@@ -236,11 +217,7 @@ class TestTheResolutionStatement:
         assert "identity_state" not in where and "active" not in where
 
     async def test_the_state_columns_are_read_in_python_not_filtered_in_sql(self):
-        """Both `account_unavailable` branches must leave the *same* statement (D-13).
-
-        A `WHERE identity_state = 'active'` would make outcome 2 return no row -- collapsing it
-        into outcome 1, which §1.3 forbids -- and would put the two rejections on different paths.
-        """
+        """Filtering in SQL would collapse the two unavailable outcomes and put them on different paths."""
         _decision, session = await _resolve(_row(identity_state=IdentityState.historical))
         historical_sql = str(session.statements[0])
         _decision, session = await _resolve(_row(user_active=False))
@@ -276,13 +253,13 @@ class TestRecordRejection:
                                 "route": "/"}
 
     def test_the_route_field_is_the_path_template_not_the_raw_path(self, monkeypatch):
-        """T-35-06-05: a raw request path would put caller-controlled text in the log."""
+        """A raw request path would put caller-controlled text in the log."""
         events = self._capture(monkeypatch)
         record_rejection(result=AuthEventResult.blocked_user, bounded_reason=None,
                          route="/chats/{chat_id}")
         assert events[0][1]["route"] == "/chats/{chat_id}"
 
     def test_the_bounded_reason_never_reaches_the_client(self):
-        """§1.2: the reason lives in the security log only."""
+        """The reason lives in the security log only."""
         from nativespeaker.api.errors import ErrorResponse
         assert list(ErrorResponse.model_fields) == ["code"]
