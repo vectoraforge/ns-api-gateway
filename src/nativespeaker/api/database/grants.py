@@ -1,18 +1,4 @@
-"""Entitlement reads over `core.access_grants`, and the first implementation of the lock order.
-
-SHARED-INVARIANTS:33 fixes one global lock order for every path that touches grants, now and
-later: the grant row(s) `FOR UPDATE` first, ascending by grant id, and only then their
-`core.user_monthly_usage` rows in the same order. Never the reverse, and never a user-row lock
-tier ahead of the grants. This module is the first place that order is written down in code, so
-Phases 41, 42 and 45 copy the shape here rather than re-deriving it -- which is why the locking is
-two separate statements and not one locking join. A join gives no guarantee about which row the
-executor locks first *within* the statement, so it cannot be shown to satisfy the invariant;
-two statements make the order auditable by reading them in order.
-
-Nothing here reads the system clock. `evaluated_at` is a required parameter on every method that
-needs one, always supplied by the caller from `RequestContext.evaluated_at` (D-06), so two reads
-inside one request cannot straddle a period or grant boundary.
-"""
+"""Entitlement reads over `core.access_grants`. Global lock order: grant rows ascending by id, then usage rows."""
 from datetime import datetime
 from uuid import UUID
 
@@ -29,54 +15,25 @@ class GrantsDB:
 
     async def lock_effective_grants(self, user_id: UUID,
                                     evaluated_at: datetime) -> list[AccessGrant]:
-        """Lock and return every effective grant for `user_id` at `evaluated_at`, ascending by id.
-
-        "Effective" is the shared predicate SHARED-INVARIANTS names, never `status` alone.
-        """
+        """Lock and return every effective grant for `user_id` at `evaluated_at`, ascending by id."""
         statement = (
             select(AccessGrant)
             .where(col(AccessGrant.user_id) == user_id,
-                   # `== active`, not `!= revoked`: a NULL and any future enum member must fail
-                   # closed on this comparison rather than be admitted as "not terminal".
+                   # `== active`, not `!= revoked`: a NULL or a future member must fail closed here.
                    col(AccessGrant.status) == AccessGrantStatus.active,
                    col(AccessGrant.starts_at) <= evaluated_at,
-                   # Ruling 9.11 makes open-ended grants legal, so a NULL `ends_at` is effective
-                   # forever; a finite end is exclusive, so a grant ending exactly at
-                   # `evaluated_at` is already over.
                    or_(col(AccessGrant.ends_at).is_(None),
                        col(AccessGrant.ends_at) > evaluated_at))
-            # Ascending grant id is the lock order itself, not presentation: it is what makes two
-            # concurrent requests for the same user take the same rows in the same sequence.
             .order_by(col(AccessGrant.id).asc())
-            # No eager-loading option is applied here, and none may be added. PostgreSQL rejects
-            # FOR UPDATE combined with the outer join that `selectinload`/`joinedload` emit, so
-            # copying `ChatsDB.get_chat`'s option (database/chats.py:21) would turn this statement
-            # into a runtime error rather than a slower query.
+            # No eager-loading option here: Postgres rejects FOR UPDATE combined with the join those emit.
             .with_for_update()
         )
-        # Every matching row, with no `.limit(...)`. D-10 requires the caller to *see* a second
-        # effective grant and fail closed on it: more than one active grant is an integrity
-        # failure, and a cap here would let the database silently pick one and hide it. The
-        # partial unique index `ix_access_grants_one_active_per_user` is what makes that state
-        # unreachable in practice; the missing cap is what makes it detectable if it ever is not.
+        # No `.limit(...)`: the caller must see a second effective grant and fail closed on it.
         return list((await self.session.exec(statement)).all())
 
     async def lock_usage(self, grant_id: UUID) -> UserMonthlyUsage | None:
-        """Lock and return `grant_id`'s usage row, or `None` when the grant has none.
-
-        Second in the lock order and never first: the caller already holds the grant rows
-        `FOR UPDATE` when this runs (SHARED-INVARIANTS:33). Reversing the two, or reaching the
-        usage row through a locking join on `lock_effective_grants`, breaks the fixed global order
-        every future grant path copies from here.
-
-        **This method never inserts.** `None` is the fail-closed signal the caller acts on, not a
-        cue to mint the row: `core.user_monthly_usage` is written together with its grant by the
-        phases that issue grants, so a grant without one means a write path failed. A convenience
-        insert here -- even on a path that already holds the grant lock -- would turn that
-        detectable broken invariant into a silent free allowance.
-
-        `grant_id` is the table's whole primary key, so at most one row can match.
-        """
+        """Lock and return `grant_id`'s usage row, or `None`. Second in the lock order and never first."""
+        # Never inserts: `None` is the fail-closed signal, not a cue to mint a row and hand out an allowance.
         statement = (
             select(UserMonthlyUsage)
             .where(col(UserMonthlyUsage.grant_id) == grant_id)
@@ -85,18 +42,5 @@ class GrantsDB:
         return (await self.session.exec(statement)).first()
 
     async def monthly_credits(self, tier_id: str) -> int | None:
-        """The allowance `tier_id` carries, or `None` when no such tier row exists.
-
-        Deliberately **not** locked, and that is the one asymmetry in this module. `core.access_tiers`
-        is seeded reference data that no path in this phase writes, and it has three rows for the
-        whole service -- so taking `FOR UPDATE` on a tier row during every chat POST would serialise
-        every user on that tier against each other for the duration of each other's quota
-        transaction. The value read here is compared, never incremented, so a shared lock buys
-        nothing.
-
-        Equally deliberately a separate statement rather than an eager-loading option or an outer
-        join on `lock_effective_grants`: PostgreSQL rejects `FOR UPDATE` combined with the join
-        those emit, so folding the tier into the locking query would turn it into a runtime error.
-        """
         statement = select(AccessTier.monthly_credits).where(col(AccessTier.id) == tier_id)
         return (await self.session.exec(statement)).first()

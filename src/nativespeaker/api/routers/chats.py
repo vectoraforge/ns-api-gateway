@@ -10,19 +10,10 @@ from nativespeaker.api.auth.context import LinkedIdentity
 from nativespeaker.api.models.api import ChatRequest, ChatResponse, MessageRequest, MessageResponse
 from nativespeaker.api.services import ChatService
 
-# Authentication is default-on for this router (D-07); see `root.py` for why both levels declare it.
+# Authentication is default-on for every route on this router.
 router = APIRouter(tags=["chats"], dependencies=[Depends(get_linked_identity)])
 
-# Every handler below reads the one identity context the auth dependency resolved, through the §1.4
-# accessor and nothing else (D-02). `get_linked_identity` raises rather than returning `None`, so a
-# handler cannot serve a request admission refused. Handlers take `identity.user.id` -- the
-# resolved primary key -- and never a `User` row they could read a second classifier off.
-#
-# The two quota-consuming POSTs carry no decorator dependency: the charge used to be one, and
-# running before the handler body is exactly what made five of this router's own rejections -- an
-# unsupported language, either history limit, an unknown chat id, and the resilience layer's
-# backpressure -- charge a caller for a request that never reached the provider (REBIND-06). It now
-# travels inside `ChatService`, which spends at the provider-admission seam and nowhere else.
+# Quota travels inside `ChatService`, not a route dependency: a pre-handler charge bills callers for refused requests.
 
 
 @router.get("/chats",

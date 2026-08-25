@@ -1,14 +1,4 @@
-"""The auth-domain enums and the `core.auth_challenges` table.
-
-`AuthOperation` is backed by the `core.auth_operation` PostgreSQL type, because
-`core.auth_challenges.operation` stores it. `AuthEventResult` is **not** backed by a database type:
-it is the internal rejection vocabulary that identity resolution, account creation, the retry
-policy and the security log all classify against, and nothing persists it.
-
-The CHECKs `core.auth_challenges` carries stay in `migrations/20260818_01_initial-release.sql` and
-are deliberately not re-encoded here. A Python copy of a CHECK is a second source of truth that can
-drift from the one that actually enforces.
-"""
+"""The auth-domain enums and the `core.auth_challenges` table."""
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, cast
@@ -30,12 +20,7 @@ class AuthOperation(StrEnum):
 
 
 class AuthEventResult(StrEnum):
-    """The internal outcome vocabulary for an auth attempt.
-
-    Closed and exact (44 values). Never client-visible: the shared error registry maps these onto
-    the client-visible classes, and the internal result recorded in the security log is never less
-    specific than the class returned.
-    """
+    """The internal outcome vocabulary for an auth attempt. Never client-visible, and never persisted."""
     succeeded = "succeeded"
     challenge_expired = "challenge_expired"
     challenge_consumed = "challenge_consumed"
@@ -88,43 +73,24 @@ ByteaType = cast(Any, LargeBinary)
 
 
 class AuthChallenge(SQLModel, table=True):
-    """One challenge row (§6). Lifecycle is discriminated by column nullability, not by a state
-    column: `issued` while `claimed_at IS NULL`, `claimed` once `claimed_at` and the attempt's
-    server-generated `claim_attempt_id` are set, `consumed` once `consumed_at` is set.
-
-    Do not add a state column, and do **not** add an HMAC key-version column. The migration comment
-    forbids the second explicitly: verification uses the current active key alone, so a challenge
-    outstanding across a key rotation simply fails (D-21's accepted consequence).
-
-    The three CHECKs -- the lifecycle nullability rule, the operation-membership rule that admits
-    exactly the four challenge-bearing operations, and the binding rule that admits a cleared
-    `preauth_subject_hash` only once `consumed_at` is set -- live in the migration and are
-    deliberately not re-encoded here.
-    """
+    """One challenge row. There is no state column: the lifecycle is discriminated by column nullability."""
 
     __tablename__ = "auth_challenges"
     __table_args__ = {"schema": "core"}
 
-    # The internal correlation identifier, never returned to a client. This is the non-secret id
-    # that logs correlate on; the public `challenge_id` below never is.
+    # Logs correlate on this row id; the public `challenge_id` below is never logged.
     id: UUID = Field(default_factory=uuid7, primary_key=True)
-    # The single opaque random value that both locates the row and serves as the nonce (§6.5). A
-    # **secret capability handle**: body-only transport, and never in a URL, a log, a trace,
-    # analytics, or error text.
+    # A secret capability handle: body-only transport, never in a URL, a log, a trace, or error text.
     challenge_id: str = Field(unique=True)
     operation: AuthOperation = Field(sa_type=AuthOperationType)
-    # §6.4's linked arm. Exactly one of this and the pre-auth pair below is populated.
+    # Exactly one of this and the pre-auth pair below is populated.
     bound_external_identity_id: UUID | None = Field(default=None,
                                                     foreign_key="core.external_identities.id")
-    # Ruling 9.3: PLAINTEXT on purpose. A deployment-known provider string shared by every user of
-    # that provider -- do not hash it, encrypt it, or drop it.
+    # Plaintext on purpose: a deployment-known provider string shared by every user of that provider.
     preauth_issuer: str | None = Field(default=None)
-    # Ruling 9.4: the keyed hash of the backend-verified subject, never the raw subject and never a
-    # signed token the client carries. Cleared by consumption, in the same statement that sets
-    # `consumed_at` -- the binding CHECK admits a cleared hash only then.
+    # Keyed hash of the verified subject, cleared by consumption. No key-version column: a rotation fails it.
     preauth_subject_hash: bytes | None = Field(sa_type=ByteaType, default=None)
-    # Written by the application as `now + 300s` (§6.3). No database default, no per-operation
-    # override, and evaluated in exactly one place: the claim's WHERE.
+    # Written by the application as now + 300s, and evaluated in exactly one place: the claim's WHERE.
     expires_at: datetime = Field(sa_type=DateTimeType)
     claimed_at: datetime | None = Field(sa_type=DateTimeType, default=None)
     claim_attempt_id: UUID | None = Field(default=None)

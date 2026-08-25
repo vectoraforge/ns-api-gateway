@@ -13,12 +13,7 @@ LogLevel = StrEnum("LogLevel", {k: k for k in logging.getLevelNamesMapping()})
 
 
 class BaseConfig(BaseSettings):
-    # `hide_input_in_errors` is T-35-08-02: pydantic renders the pre-coercion input in
-    # `input_value=...`, and a nested model's error is rendered under the *outer* model's config,
-    # so `HmacConfig` setting the flag on itself is not enough -- an invalid `hmac:` block reaching
-    # validation through `AppConfig` would print the raw base64 key. The field path and the message
-    # still identify what was wrong; only the offending value is withheld. Every secret this
-    # project loads (`db.password`, the HMAC keys) travels through this tree.
+    # `hide_input_in_errors` belongs here, not on the nested models: a nested error renders under the outer config.
     model_config = SettingsConfigDict(env_nested_delimiter="_",
                                       env_nested_max_split=1,
                                       hide_input_in_errors=True)
@@ -64,34 +59,8 @@ class JWTConfig(BaseModel):
 
 
 class FirebaseConfig(BaseModel):
-    """The Firebase service-account credential, and nothing else (37 D-08).
-
-    Populated from the gitignored `.env` and nowhere else. `BaseConfig` sets
-    `env_nested_delimiter="_"` with `env_nested_max_split=1`, so
-    `FIREBASE_SERVICE_ACCOUNT_JSON` reaches `firebase.service_account_json` by the same rule that
-    carries `JWT_PROJECT_ID` to `jwt.project_id`.
-
-    **Never add a `firebase:` block to `config/config.yaml`.** That file is tracked in git, and it
-    is authoritative for anything it declares -- `AppConfig(**yaml_data, ...)` puts it in
-    `init_settings`, which pydantic-settings ranks above `env_settings`. A block added there to
-    document the shape would make the `.env` value permanently unreachable *and* commit real key
-    material. `.env.example` is where the shape is documented.
-
-    Two states, decided here rather than left to a raise site:
-
-    * **Absent** is supported. The service boots, `service_account_json` is `None`, and
-      `credential_dict()` returns `None`; prepare mode, the mode-signal partition, the classifier
-      and every substituted-adapter test run unaffected, while a real completion fails closed at
-      the adapter's selection arm as `verification_temporarily_unavailable` (503). Refusing to
-      boot without a credential would block all of that for a credential most paths never touch.
-    * **Present but unparseable** fails at configuration load, and the service does not start.
-      The parse happens once, here, so a malformed credential is a boot-time failure rather than a
-      surprise 503 on the first completion long after deploy.
-
-    Extra keys are ignored deliberately: `.env` already carries `FIREBASE_API_KEY` and
-    `FIREBASE_TEST_*` for the e2e sign-in fixture, and the nesting rule routes all of them here.
-    Rejecting them would take the e2e suite down.
-    """
+    """The Firebase service-account credential. Absent is supported; present but unparseable fails at boot."""
+    # `config/config.yaml` is tracked in git and ranks above the environment, so the credential lives only in `.env`.
     service_account_json: SecretStr | None = Field(
         default=None,
         description="The whole service-account JSON on one line, from the gitignored .env")
@@ -105,10 +74,7 @@ class FirebaseConfig(BaseModel):
         try:
             parsed = json.loads(self.service_account_json.get_secret_value())
         except json.JSONDecodeError:
-            # `from None` drops the JSONDecodeError, whose `doc` attribute holds the credential
-            # verbatim. The message names the field and nothing else; `BaseConfig` sets
-            # `hide_input_in_errors=True` for pydantic's own rendering, and this hand-written path
-            # must not undo it (T-37-09).
+            # `from None` drops the JSONDecodeError, whose `doc` attribute holds the credential verbatim.
             raise ValueError("service_account_json is not valid JSON") from None
         if not isinstance(parsed, dict):
             raise ValueError("service_account_json is not a JSON object")
@@ -116,19 +82,8 @@ class FirebaseConfig(BaseModel):
         return self
 
     def credential_dict(self) -> dict | None:
-        """The parsed credential for `credentials.Certificate`, or `None` when unconfigured.
-
-        Total over both supported states on purpose: the adapter's selection arm branches on the
-        `None` rather than catching an exception. A fresh copy each call, so a caller editing the
-        result cannot rewrite the process-wide credential.
-        """
+        """The parsed credential, or `None` when unconfigured. A fresh copy each call."""
         return None if self._credential is None else dict(self._credential)
-
-
-# `AppleConfig` is deleted with the subscription model layer (D-16). It mapped Apple product ids
-# onto `core.subscription_plan`, an enum the v2.0 schema dropped, and pointed the receipt verifier
-# at its certificate directory -- and the lifespan no longer builds that verifier. Phase 43 writes
-# `/webhooks/app-store` and whatever configuration it needs from scratch.
 
 
 class ModelConfig(BaseModel):
@@ -145,16 +100,10 @@ class AppConfig(BaseConfig):
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
     jwt: JWTConfig = Field(default_factory=JWTConfig)
-    # Defaulted, not required: the credential is absent today and every non-completion path in
-    # phase 37 must stay runnable without it. See `FirebaseConfig` for the absent/malformed split
-    # and for why no `firebase:` block may ever appear in `config/config.yaml`.
+    # Defaulted, not required: every non-completion path stays runnable without a credential.
     firebase: FirebaseConfig = Field(default_factory=FirebaseConfig)
-    # Required, with no default: D-22 fails closed on the active key, so a deployment with no
-    # `hmac:` block never starts rather than starting and failing every audit insert. Unlike the
-    # blocks above it takes no `default_factory` -- there is no safe key to default to.
+    # Required with no default: there is no safe key to default to, so a deployment without one never starts.
     hmac: HmacConfig
-    # No `quotas` mapping: v2.0 resolves a caller's allowance from `core.access_tiers.monthly_credits`
-    # through the grant Phase 36 wires, not from a per-plan table in this file.
 
     chats_limit: int = Field(default=50, ge=1)
     messages_limit: int = Field(default=50, ge=1)
