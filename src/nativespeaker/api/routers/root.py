@@ -6,10 +6,7 @@ from nativespeaker.api.app.dependencies import get_chat_service, get_linked_iden
 from nativespeaker.api.auth.context import LinkedIdentity
 from nativespeaker.api.services import ChatService
 
-# Authentication is default-on for this router (D-07). The router-level declaration is what makes
-# an endpoint added here later authenticated even if whoever adds it forgets the per-endpoint
-# `Depends`, and the per-endpoint declaration below names the identical callable so FastAPI's
-# per-request cache resolves both to one execution.
+# Router-level auth protects an endpoint added later whose own Depends is forgotten; the same callable runs once.
 router = APIRouter(tags=["root"], dependencies=[Depends(get_linked_identity)])
 
 
