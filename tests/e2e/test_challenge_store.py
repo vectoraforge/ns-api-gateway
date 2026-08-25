@@ -436,8 +436,8 @@ class TestTheBindingAgainstRealRows:
 
     async def test_a_preauth_row_read_back_matches_the_shared_derivation(self, store, keyring,
                                                                          _db_transaction):
-        """The stored bytes survive the BYTEA round trip and still satisfy the keyring that the
-        audit writer uses -- the one thing a locally-reimplemented derivation would break."""
+        """The stored bytes survive the BYTEA round trip and still satisfy the shared keyring --
+        the one thing a locally-reimplemented derivation would break."""
         handle, _ = await issue(_db_transaction, store)
         row = await read(_db_transaction, handle)
         assert row.preauth_subject_hash == keyring.actor_subject_hash(ISSUER, SUBJECT)

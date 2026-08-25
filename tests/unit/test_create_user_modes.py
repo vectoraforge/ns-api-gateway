@@ -65,23 +65,19 @@ class _RecordingChallengeStore:
         return None
 
 
-class _RecordingAuditWriter:
-    """Fails the assertion by *recording*, not by raising -- the count is the subject.
+class _InertWriter:
+    """Inert stand-in for the writer dependency the route still declares.
 
-    A mode-signal rejection must write zero `audit.auth_events` rows: it belongs to the admission
-    phase, has no internal `core.auth_event_result`, and is recorded in the structured security log
-    alone (§4.1, §02). Asserting on a recorder rather than on database rows is what keeps this a
-    unit test; the row-count version over a real database is 37-08's.
+    It records nothing and asserts nothing. It exists only because FastAPI resolves every declared
+    dependency before the handler runs, so the override has to answer with *something* until the
+    dependency itself is deleted from `routers/auth.py` later in this plan.
     """
 
-    def __init__(self) -> None:
-        self.writes: list[str] = []
-
     async def write_standalone(self, session_factory, **kwargs):
-        self.writes.append(str(kwargs.get("result")))
+        pass
 
     async def write_in_transaction(self, session, **kwargs):
-        self.writes.append(str(kwargs.get("result")))
+        pass
 
 
 class _EmptyResult:
@@ -102,9 +98,8 @@ class _UnlinkedSession:
     teardown, which this app overrides away.
 
     **`rollback` records rather than raising** (37-08). The two completion cases here reach
-    `challenge_not_found`, and that rejection now writes a standalone-durable audit row -- which
-    means releasing the read transaction `locate` opened first, exactly as prepare's already-linked
-    arm already did. The count is kept so the release stays observable rather than merely tolerated.
+    `challenge_not_found`, which releases the read transaction `locate` opened. The count is kept
+    so the release stays observable rather than merely tolerated.
     """
 
     def __init__(self) -> None:
@@ -128,8 +123,8 @@ def store() -> _RecordingChallengeStore:
 
 
 @pytest.fixture
-def writer() -> _RecordingAuditWriter:
-    return _RecordingAuditWriter()
+def writer() -> _InertWriter:
+    return _InertWriter()
 
 
 @pytest.fixture
@@ -188,9 +183,9 @@ class TestTheTwoModesDispatch:
         assert response.json() == {"code": "challenge_required"}
         assert store.located == ["a-handle"]
         assert store.issued == []
-        # The standalone-durable audit row requires releasing `locate`'s read transaction, so this
-        # arm rolls back exactly once. Asserted, not merely tolerated: the fake counts instead of
-        # raising, so without this a spurious rollback anywhere in the module would pass silently.
+        # This arm releases `locate`'s read transaction, so it rolls back exactly once. Asserted,
+        # not merely tolerated: the fake counts instead of raising, so without this a spurious
+        # rollback anywhere in the module would pass silently.
         assert session.rollbacks == 1
 
 
@@ -259,7 +254,7 @@ class TestTheWhitespaceAsymmetry:
 
 
 class TestTheRejectionHasNoSideEffects:
-    """§02: the rejection issues nothing, consumes nothing, and writes no audit row."""
+    """§02: the rejection issues nothing, consumes nothing, and reads nothing."""
 
     @pytest.mark.parametrize("kwargs", [
         {"params": {"challenge": "true"}, "json": {"challenge_id": "a-handle"}},
@@ -268,12 +263,11 @@ class TestTheRejectionHasNoSideEffects:
         {"params": {"challenge": "1"}},
         {"json": {"challenge_id": 123}},
     ])
-    def test_no_audit_row_is_written(self, client, store, writer, session,
-                                     fake_firebase_adapter, kwargs):
+    def test_nothing_is_issued_read_or_resolved(self, client, store, session,
+                                                fake_firebase_adapter, kwargs):
         response = client.post("/auth/create-user", **kwargs)
 
         _assert_invalid_request(response)
-        assert writer.writes == []
         assert store.issued == []
         assert store.located == []
         # The rejection is syntactic and precedes the pre-check too: it reads nothing at all.

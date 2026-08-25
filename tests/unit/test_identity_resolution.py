@@ -98,7 +98,7 @@ class TestOutcomeOneNoMatchingRow:
         assert decision.result is AuthEventResult.preauth_identity_not_allowed
 
     async def test_the_rejection_carries_the_verified_actor(self):
-        """Pitfall 10: the audit CHECK admits all-NULL actors only for `invalid_external_jwt`."""
+        """Pitfall 10: only `invalid_external_jwt` may reach a rejection with no actor at all."""
         decision, _ = await _resolve(None)
         assert (decision.actor_issuer, decision.actor_subject) == (ISSUER, SUBJECT)
 
@@ -289,6 +289,6 @@ class TestRecordRejection:
         assert events[0][1]["route"] == "/chats/{chat_id}"
 
     def test_the_bounded_reason_never_reaches_the_client(self):
-        """§1.2: the reason lives in the security log and audit `details.failure` only."""
+        """§1.2: the reason lives in the security log only."""
         from nativespeaker.api.errors import ErrorResponse
         assert list(ErrorResponse.model_fields) == ["code"]

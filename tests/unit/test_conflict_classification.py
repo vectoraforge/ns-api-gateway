@@ -17,8 +17,8 @@ Two subjects, both of which decide what a client is told and neither of which ne
    than asserted after the fact: every write entry point on it raises, so a branch that reached one
    fails here rather than in review.
 
-The savepoint's *durability* half -- that the consumption and the rejected audit row survive a
-rolled-back business insert -- is not provable against a stub and is not attempted here. It is
+The savepoint's *durability* half -- that the consumption survives a rolled-back business insert --
+is not provable against a stub and is not attempted here. It is
 `tests/schema/test_create_atomicity.py`'s, against a real committing PostgreSQL.
 """
 import ast
@@ -128,12 +128,15 @@ class _ConsumingStore:
         return True
 
 
-class _RecordingAuditWriter:
-    def __init__(self) -> None:
-        self.results: list[AuthEventResult] = []
+class _InertWriter:
+    """Inert stand-in for the writer parameter `create_account` still declares.
+
+    Records nothing and asserts nothing; it exists only so the call type-checks until the parameter
+    itself is deleted from `auth/creation.py` later in this plan.
+    """
 
     async def write_in_transaction(self, session, **kwargs) -> None:
-        self.results.append(kwargs["result"])
+        pass
 
 
 def _context() -> RequestContext:
@@ -157,11 +160,10 @@ def _identity_row(*, state: IdentityState, user_id=None) -> ExternalIdentity:
 
 
 async def _run(rows: list[object | None]) -> tuple[AuthEventResult, _NoMutationSession,
-                                                   _ConsumingStore, _RecordingAuditWriter]:
+                                                   _ConsumingStore]:
     """Drive `create_account` over a scripted read sequence and return everything observable."""
     session = _NoMutationSession(rows)
     store = _ConsumingStore()
-    writer = _RecordingAuditWriter()
     context = _context()
     challenge = AuthChallenge(challenge_id="scripted-handle",
                               operation=AuthOperation.create_user,
@@ -177,8 +179,8 @@ async def _run(rows: list[object | None]) -> tuple[AuthEventResult, _NoMutationS
                                   provider_uid=None,
                                   email=None,
                                   challenge_store=store,
-                                  audit_writer=writer)
-    return result, session, store, writer
+                                  audit_writer=_InertWriter())
+    return result, session, store
 
 
 class TestTheConstraintNamesAreDeclaredAsConstants:
@@ -216,7 +218,7 @@ class TestConflictDiscriminationByConstraintName:
 
         Distinctness is asserted on both layers because either one collapsing is the bug -- two
         internal results that map to one class would lose the client instruction, and one internal
-        result would lose the audited distinction.
+        result would lose the classified distinction.
         """
         linked = classify_insert_conflict(_integrity_error("external_identities_issuer_subject_key"))
         provider_account = classify_insert_conflict(_integrity_error(PROVIDER_ACCOUNT_INDEX_NAME))
@@ -274,14 +276,14 @@ class TestTheReResolutionsThreeNoMutationArms:
         user_id = uuid4()
         rows = [_identity_row(state=IdentityState.active, user_id=user_id),
                 User(id=user_id, active=True, created_at=NOW, updated_at=NOW)]
-        result, session, store, writer = await _run(rows)
+        result, session, store = await _run(rows)
 
         assert result is AuthEventResult.identity_already_linked
         assert CLIENT_CLASS_FOR_RESULT[result] is IDENTITY_ALREADY_LINKED
 
     async def test_a_historical_row_is_the_historical_result(self):
         """`historical` is a permanent tombstone: no creation, and no `preauth_identity_not_allowed`."""
-        result, _, _, _ = await _run([_identity_row(state=IdentityState.historical)])
+        result, _, _ = await _run([_identity_row(state=IdentityState.historical)])
 
         assert result is AuthEventResult.historical_identity
         assert CLIENT_CLASS_FOR_RESULT[result] is ACCOUNT_UNAVAILABLE
@@ -291,16 +293,16 @@ class TestTheReResolutionsThreeNoMutationArms:
         user_id = uuid4()
         rows = [_identity_row(state=IdentityState.active, user_id=user_id),
                 User(id=user_id, active=False, created_at=NOW, updated_at=NOW)]
-        result, _, _, _ = await _run(rows)
+        result, _, _ = await _run(rows)
 
         assert result is AuthEventResult.blocked_user
         assert CLIENT_CLASS_FOR_RESULT[result] is ACCOUNT_UNAVAILABLE
 
     async def test_the_two_unavailable_arms_are_indistinguishable_to_the_caller(self):
         """The pair §02 requires a client cannot tell apart -- asserted, not assumed."""
-        historical, _, _, _ = await _run([_identity_row(state=IdentityState.historical)])
+        historical, _, _ = await _run([_identity_row(state=IdentityState.historical)])
         blocked_user_id = uuid4()
-        blocked, _, _, _ = await _run([
+        blocked, _, _ = await _run([
             _identity_row(state=IdentityState.active, user_id=blocked_user_id),
             User(id=blocked_user_id, active=False, created_at=NOW, updated_at=NOW)])
 
@@ -312,25 +314,24 @@ class TestTheReResolutionsThreeNoMutationArms:
         If it ever does, §02's fail-closed rule applies: refuse, never invent or reassign an
         identity, and never fall through into a creation."""
         rows = [_identity_row(state=IdentityState.active), None]
-        result, _, _, _ = await _run(rows)
+        result, _, _ = await _run(rows)
 
         assert result is AuthEventResult.blocked_user
         assert CLIENT_CLASS_FOR_RESULT[result] is ACCOUNT_UNAVAILABLE
 
-    async def test_every_no_mutation_arm_still_consumes_audits_and_commits(self):
+    async def test_every_no_mutation_arm_still_consumes_and_commits(self):
         """§02 step 13: every rejection at or after the provider read consumes, in the same
-        transaction as its audit row. A rejection that skipped this would leave the challenge
-        replayable and the attempt unrecorded."""
-        result, session, store, writer = await _run([_identity_row(state=IdentityState.historical)])
+        transaction it commits. A rejection that skipped this would leave the challenge
+        replayable."""
+        _, session, store = await _run([_identity_row(state=IdentityState.historical)])
 
         assert store.consumed == ["scripted-handle"]
-        assert writer.results == [result]
         assert session.commits == 1
 
     async def test_the_historical_arm_reads_only_the_identity_row(self):
         """The user row is read only when the identity row is active -- a historical row is already
         decisive, and a second read would be work done to reach the same answer."""
-        _, session, _, _ = await _run([_identity_row(state=IdentityState.historical)])
+        _, session, _ = await _run([_identity_row(state=IdentityState.historical)])
 
         assert len(session.statements) == 1
 
@@ -391,7 +392,7 @@ class TestTheModuleUsesNoSecondRaceArbiter:
 
 
 class TestTheSavepointRollbackArmIsStructurallyPresent:
-    """T-37-42: without this arm a conflict poisons the session and the audit row is lost."""
+    """T-37-42: without this arm a conflict poisons the session and the consumption is lost."""
 
     def test_the_business_inserts_open_a_savepoint(self):
         assert "begin_nested" in _code_only(_CREATION_SOURCE)

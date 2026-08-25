@@ -33,12 +33,10 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid7
 
 import pytest
-from sqlalchemy import func
 from sqlmodel import col, select
 from unit.conftest import TEST_ISSUER
 
 from nativespeaker.api.models import AccessGrantStatus, UserMonthlyUsage
-from nativespeaker.api.models.auth import AuthEvent
 
 from .conftest import seed_grant, seed_identity
 
@@ -87,22 +85,11 @@ async def usage_rows(factory, grant_id: UUID) -> list[UserMonthlyUsage]:
     The factory argument is `_db_transaction`'s swapped `async_sessionmaker`, never a fresh engine:
     every row this package writes lives inside one uncommitted transaction, so a second engine
     would open a connection that cannot see any of it and every assertion here would read zero
-    rows. Same shape as `test_audit_writer.py::rows`.
+    rows.
     """
     async with factory() as session:
         statement = select(UserMonthlyUsage).where(col(UserMonthlyUsage.grant_id) == grant_id)
         return list((await session.exec(statement)).all())
-
-
-async def auth_event_count(factory) -> int:
-    """`audit.auth_events` row count, read through the same swapped factory as everything else.
-
-    Same form as `test_audit_writer.py::row_count`, and deliberately a copy rather than an import:
-    that module builds its own app with its own registry to reach the audited path at all, and
-    importing from it would drag that fixture graph into a module whose subject is the quota gate.
-    """
-    async with factory() as session:
-        return await session.scalar(select(func.count()).select_from(AuthEvent))
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -401,41 +388,6 @@ class TestACorrectPhraseIsServedAndCharged:
         content = response.json()["content"]
         assert content["issues"] == []
         assert content["suggestions"] == []
-
-
-@pytest.mark.asyncio(loop_scope="module")
-class TestAQuotaRejectionWritesNoAuditRow:
-    """REBIND-02 on the phase's new code path: a quota 429 writes nothing to `audit.auth_events`.
-
-    True by construction -- audited-path entry is gated solely on `meta.operation is not None`
-    (`auth/barrier.py:170-180`), all eight registry entries leave `operation` at its `None` default,
-    and the quota path never touches `AuditWriter`. Asserted anyway, because ROADMAP criterion 3's
-    "including on barrier rejection" leaves the *quota* rejection -- which is not a barrier
-    rejection, and is the one rejection this phase invented -- otherwise unproven on these routes.
-
-    The counter is read before and after rather than asserted against zero, so the case keeps
-    working if a future fixture ever seeds an unrelated row.
-    """
-
-    @pytest.mark.parametrize("path, body", QUOTA_ROUTES, ids=QUOTA_ROUTE_IDS)
-    async def test_a_quota_429_writes_no_audit_row(self, async_client, linked_firebase_identity,
-                                                   _db_transaction, own_chat, path, body):
-        before = await auth_event_count(_db_transaction)
-
-        response = await async_client.post(path.format(chat_id=own_chat), json=body)
-
-        assert response.status_code == 429
-        assert await auth_event_count(_db_transaction) == before
-
-    async def test_an_admitted_and_charged_request_writes_no_audit_row_either(
-            self, async_client, quota_grant, _db_transaction):
-        """The served outcome, not only the refused one -- REBIND-02 says "no row, ever"."""
-        before = await auth_event_count(_db_transaction)
-
-        response = await async_client.post("/chats", json=PHRASE)
-
-        assert response.status_code == 200
-        assert await auth_event_count(_db_transaction) == before
 
 
 @pytest.mark.asyncio(loop_scope="module")

@@ -3,9 +3,9 @@
 This is the fast feedback loop and it proves exactly one thing -- that when an insert fails, the
 creation function stops inserting, rolls back to its savepoint, and never falls through into the
 success path. It proves nothing about **durability**, because a stub session cannot: whether the
-challenge consumption and the rejected audit row actually survive a rolled-back business insert is
-a claim about what PostgreSQL committed, and `tests/schema/test_create_atomicity.py` settles it
-against a real database with real commits.
+challenge consumption actually survives a rolled-back business insert is a claim about what
+PostgreSQL committed, and `tests/schema/test_create_atomicity.py` settles it against a real
+database with real commits.
 
 The split is deliberate rather than duplicative. Control flow is cheap to check and breaks often;
 durability is expensive to check and breaks rarely but silently. Running only the cheap half would
@@ -119,14 +119,15 @@ class _ConsumingStore:
         return True
 
 
-class _RecordingAuditWriter:
-    """Records rather than writes, so the business `flush` counter stays the business one."""
+class _InertWriter:
+    """Inert stand-in for the writer parameter `create_account` still declares.
 
-    def __init__(self) -> None:
-        self.results: list[AuthEventResult] = []
+    Records nothing and asserts nothing; it exists only so the call type-checks until the parameter
+    itself is deleted from `auth/creation.py` later in this plan.
+    """
 
     async def write_in_transaction(self, session, **kwargs) -> None:
-        self.results.append(kwargs["result"])
+        pass
 
 
 def _context() -> RequestContext:
@@ -137,7 +138,7 @@ def _context() -> RequestContext:
                           attempt_id=uuid4())
 
 
-async def _create(session, store, writer) -> AuthEventResult:
+async def _create(session, store) -> AuthEventResult:
     context = _context()
     challenge = AuthChallenge(challenge_id="rollback-handle",
                               operation=AuthOperation.create_user,
@@ -153,11 +154,11 @@ async def _create(session, store, writer) -> AuthEventResult:
                                 provider_uid=None,
                                 email=None,
                                 challenge_store=store,
-                                audit_writer=writer)
+                                audit_writer=_InertWriter())
 
 
 def _harness(error: BaseException, **kwargs):
-    return _FlushFailingSession(error=error, **kwargs), _ConsumingStore(), _RecordingAuditWriter()
+    return _FlushFailingSession(error=error, **kwargs), _ConsumingStore()
 
 
 class TestAllThreeInsertsShareOneSavepoint:
@@ -165,8 +166,8 @@ class TestAllThreeInsertsShareOneSavepoint:
 
     async def test_the_savepoint_opens_before_the_first_insert(self):
         """Not around the last two, and not per-insert -- an insert outside it could not be undone."""
-        session, store, writer = _harness(integrity_error("external_identities_issuer_subject_key"))
-        await _create(session, store, writer)
+        session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
+        await _create(session, store)
 
         assert session.savepoint.rolled_back is True
         assert session.savepoint.committed is False
@@ -177,8 +178,8 @@ class TestAllThreeInsertsShareOneSavepoint:
         A savepoint scoped around only the first two inserts would leave the attribution tokens
         committed for a user that no longer exists.
         """
-        session, store, writer = _harness(integrity_error("external_identities_issuer_subject_key"))
-        await _create(session, store, writer)
+        session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
+        await _create(session, store)
 
         kinds = [type(instance) for instance in session.added_at_failure]
         assert kinds.count(User) == 1
@@ -190,34 +191,32 @@ class TestAFailedInsertStopsInserting:
     """The function must not carry on after the conflict, and must not report success."""
 
     async def test_no_further_row_is_added_after_the_failure(self):
-        session, store, writer = _harness(integrity_error("external_identities_issuer_subject_key"))
-        await _create(session, store, writer)
+        session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
+        await _create(session, store)
 
         assert session.added == session.added_at_failure
 
     async def test_no_second_attempt_at_the_business_inserts(self):
         """A retry loop here would be a second race entrant under the same claim."""
-        session, store, writer = _harness(integrity_error("external_identities_issuer_subject_key"))
-        await _create(session, store, writer)
+        session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
+        await _create(session, store)
 
         assert session.flushes == SECOND_FLUSH
 
     async def test_the_failure_is_never_swallowed_into_the_success_path(self):
-        session, store, writer = _harness(integrity_error("external_identities_issuer_subject_key"))
-        result = await _create(session, store, writer)
+        session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
+        result = await _create(session, store)
 
         assert result is not AuthEventResult.succeeded
         assert result is AuthEventResult.identity_already_linked
-        assert writer.results == [AuthEventResult.identity_already_linked]
 
-    async def test_the_rejection_still_consumes_audits_and_commits(self):
-        """§02 step 12's durability requirement, in control-flow form: the consume and the audit
-        write are *reached* after the rollback. That they actually commit is the schema test's."""
-        session, store, writer = _harness(integrity_error("external_identities_issuer_subject_key"))
-        await _create(session, store, writer)
+    async def test_the_rejection_still_consumes_and_commits(self):
+        """§02 step 12's durability requirement, in control-flow form: the consume is *reached*
+        after the rollback. That it actually commits is the schema test's."""
+        session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
+        await _create(session, store)
 
         assert store.consumed == ["rollback-handle"]
-        assert writer.results == [AuthEventResult.identity_already_linked]
         assert session.commits == 1
 
 
@@ -228,33 +227,31 @@ class TestAnUnclassifiableFailureIsNotAbsorbed:
         """The rollback still happens -- the outer transaction must be usable by whoever handles
         this -- but no business outcome is invented for a conflict nobody mapped."""
         error = integrity_error("store_purchase_tokens_provider_identity_value_key")
-        session, store, writer = _harness(error)
+        session, store = _harness(error)
 
         with pytest.raises(IntegrityError) as raised:
-            await _create(session, store, writer)
+            await _create(session, store)
 
         assert raised.value is error
         assert session.savepoint.rolled_back is True
         assert session.commits == 0
-        assert writer.results == []
 
     async def test_a_non_integrity_failure_is_not_caught_at_all(self):
         """Only `IntegrityError` is a candidate for classification. A connection drop or a
         programming error must not be reshaped into a uniqueness conflict."""
         error = RuntimeError("the connection went away mid-flush")
-        session, store, writer = _harness(error)
+        session, store = _harness(error)
 
         with pytest.raises(RuntimeError):
-            await _create(session, store, writer)
+            await _create(session, store)
 
         assert session.commits == 0
-        assert writer.results == []
 
     async def test_a_failure_on_the_very_first_insert_is_also_inside_the_savepoint(self):
         """The user row goes in on the first flush; a conflict there must undo just as cleanly."""
-        session, store, writer = _harness(integrity_error("external_identities_user_id_key"),
-                                          fail_on_flush=1)
-        result = await _create(session, store, writer)
+        session, store = _harness(integrity_error("external_identities_user_id_key"),
+                                  fail_on_flush=1)
+        result = await _create(session, store)
 
         assert result is AuthEventResult.identity_already_linked
         assert session.savepoint.rolled_back is True

@@ -307,9 +307,9 @@ class TestTheBindingWrittenAtIssuance:
         assert row.preauth_issuer == ISSUER
 
     async def test_the_preauth_hash_is_the_shared_keyrings_derivation(self):
-        """D-21: the same family and the same key as the audit writer's `actor_subject_hash`. A
-        local reimplementation would produce a plausible 32-byte value that silently never matches
-        at completion, so the assertion is against the keyring's own output."""
+        """D-21: the shared keyring's own `actor_subject_hash`, same family and same key. A local
+        reimplementation would produce a plausible 32-byte value that silently never matches at
+        completion, so the assertion is against the keyring's own output."""
         ring = keyring()
         _, _, row, _ = await issue_row(preauth_identity(), ring=ring)
         assert row.preauth_subject_hash == ring.actor_subject_hash(ISSUER, SUBJECT)
@@ -323,8 +323,8 @@ class TestTheBindingWrittenAtIssuance:
         assert one.preauth_subject_hash != two.preauth_subject_hash
 
     async def test_the_derivation_uses_the_active_key_with_no_version_argument(self):
-        """§6.4: "current active key only". The audit writer passes a version; this store must not,
-        because the row has nowhere to record which key produced the hash."""
+        """§6.4: "current active key only". This store must not pass a version, because the row has
+        nowhere to record which key produced the hash."""
         source = inspect.getsource(ChallengeStore.issue)
         assert "actor_subject_hash" in source
         assert "version=" not in source
@@ -533,7 +533,7 @@ class TestTheStoreBuildsNoMachineryTheDesignForbids:
         assert "logging" not in imported
 
     def test_the_module_derives_no_hash_of_its_own(self):
-        """D-21: one derivation, shared with the audit writer. A second one would produce a
+        """D-21: one derivation, shared through the keyring. A second one would produce a
         plausible 32-byte digest, raise nothing, and silently never match at completion.
 
         `base64` and `secrets` are legitimately here -- they build the handle, not a digest."""
@@ -545,10 +545,10 @@ class TestTheStoreBuildsNoMachineryTheDesignForbids:
         assert "hmac" not in imported
         assert "hashlib" not in imported
 
-    def test_the_rejection_names_are_the_audit_results_they_map_onto(self):
-        """Every `ChallengeRejection` is written into `audit.auth_events.result` by phases 37+.
-        Pinning the names here is what lets them write `AuthEventResult(rejection)` instead of each
-        maintaining a private mapping table that can drift."""
+    def test_the_rejection_names_are_the_internal_results_they_map_onto(self):
+        """Every `ChallengeRejection` value is also an `AuthEventResult` member. Pinning the names
+        here is what lets a caller write `AuthEventResult(rejection.value)` instead of maintaining a
+        private mapping table that can drift."""
         for rejection in ChallengeRejection:
             assert AuthEventResult(rejection.value)
 

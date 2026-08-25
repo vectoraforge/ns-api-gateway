@@ -3,10 +3,10 @@
 **This is the phase tracer's proof, and it is deliberately one case rather than a per-layer suite.**
 What it exercises is every layer at once, unstubbed: the real barrier admitting a pre-auth identity
 because the registry declares this route -- and only this route -- pre-auth callable; the real
-`ChallengeStore` issuing, claiming and consuming; the real mode-signal partition dispatching; the
-real consuming transaction against a real PostgreSQL; and the real audit writer. Two things are
-substituted, each for a stated reason: the token verifier, so an unlinked subject is expressible
-without minting a Firebase account per case, and the provider adapter, per D-09.
+`ChallengeStore` issuing, claiming and consuming; the real mode-signal partition dispatching; and
+the real consuming transaction against a real PostgreSQL. Two things are substituted, each for a
+stated reason: the token verifier, so an unlinked subject is expressible without minting a Firebase
+account per case, and the provider adapter, per D-09.
 
 **Why the provider adapter has to be substituted here.** The package's real credential fixture signs
 in with `accounts:signInWithPassword`, so its providerData is `[{providerId: "password"}]` -- a
@@ -23,7 +23,7 @@ from unit.conftest import TEST_ISSUER, make_token
 
 from nativespeaker.api.auth.adapters import ProviderDataEntry, ProviderDataOutcome
 from nativespeaker.api.auth.firebase import FirebaseAdminLookup
-from nativespeaker.api.models.auth import AuthChallenge, AuthEvent, AuthEventResult, AuthOperation
+from nativespeaker.api.models.auth import AuthChallenge
 from nativespeaker.api.models.grants import AccessGrant, UserMonthlyUsage
 from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.models.purchase_tokens import PurchaseProvider, StorePurchaseToken
@@ -54,8 +54,6 @@ async def _count(factory, statement) -> int:
 
 
 _CHALLENGES = select(func.count()).select_from(AuthChallenge)
-_ALREADY_LINKED_EVENTS = (select(func.count()).select_from(AuthEvent)
-                          .where(col(AuthEvent.result) == AuthEventResult.identity_already_linked))
 
 _GRANTS = select(func.count()).select_from(AccessGrant)
 _MONTHLY_USAGE = select(func.count()).select_from(UserMonthlyUsage)
@@ -177,34 +175,7 @@ class TestTheAnonymousHappyPath:
         assert challenge.consumed_at is not None
         assert challenge.preauth_subject_hash is None
 
-        # --- Exactly one audit row, and it carries no handle ----------------------------------
-        # Correlated on the NON-SECRET row id. The public handle is a secret capability and never
-        # reaches a row, a log, or error text.
-        async with _db_transaction() as session:
-            events = (await session.exec(
-                select(AuthEvent)
-                .where(col(AuthEvent.challenge_row_id) == challenge.id))).all()
-        assert len(events) == 1
-        assert events[0].operation is AuthOperation.create_user
-        assert events[0].result is AuthEventResult.succeeded
-        assert not _mentions(events[0].details, "challenge_id")
-        assert handle not in repr(events[0].details)
-
         await _assert_step_10s_global_invariants(_db_transaction)
-
-
-def _mentions(payload, needle: str) -> bool:
-    """True if `needle` appears as a key at ANY nesting depth.
-
-    A top-level-only check is the one that looks right in review and misses the leak, so this walks
-    mappings and sequences the way the redactor itself does.
-    """
-    if isinstance(payload, dict):
-        return any(needle in str(key) or _mentions(value, needle)
-                   for key, value in payload.items())
-    if isinstance(payload, list | tuple):
-        return any(_mentions(item, needle) for item in payload)
-    return False
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -243,36 +214,6 @@ class TestPrepareRejectsAnAlreadyLinkedCaller:
 
         assert await _count(_db_transaction, _CHALLENGES) == before
 
-    async def test_the_rejection_writes_exactly_one_audit_row(self, create_user_client,
-                                                              _db_transaction):
-        """Standalone-durable, because no consuming transaction exists at prepare time.
-
-        The route carries a non-`None` `operation`, which is what puts it on the audited path, so
-        this rejection owes exactly one row -- written before the response returns, not as a side
-        effect of having sent it.
-        """
-        subject = "already-linked-audited"
-        await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject)
-        before = await _count(_db_transaction, _ALREADY_LINKED_EVENTS)
-
-        await create_user_client.post("/auth/create-user?challenge=true", headers=_auth(subject))
-
-        assert await _count(_db_transaction, _ALREADY_LINKED_EVENTS) == before + 1
-        async with _db_transaction() as session:
-            event = (await session.exec(
-                select(AuthEvent)
-                .where(col(AuthEvent.result) == AuthEventResult.identity_already_linked)
-                .order_by(col(AuthEvent.created_at).desc()))).first()
-        assert event is not None
-        assert event.operation is AuthOperation.create_user
-        # The actor is known -- the token was verified -- so the all-or-nothing CHECK requires
-        # every actor field. The raw subject is never stored; only its keyed hash is.
-        assert event.actor_issuer == TEST_ISSUER
-        assert event.actor_subject_hash is not None
-        assert event.actor_subject_hash_key_version is not None
-        # No challenge existed to correlate on, and none was issued.
-        assert event.challenge_row_id is None
-
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestPrepareStillIssuesForAnUnlinkedCaller:
@@ -308,15 +249,10 @@ class TestPrepareStillIssuesForAnUnlinkedCaller:
 #
 # `tests/unit/test_create_user_precedence.py` proves the full precedence against fakes, at unit
 # speed. What only a real database can prove is the part the fakes stand in for: that a rejection
-# really wrote its `audit.auth_events` row and really moved the challenge's lifecycle, rather than
-# calling a recorder that agreed with the test.
+# really moved the challenge's lifecycle, rather than calling a recorder that agreed with the test.
 # ---------------------------------------------------------------------------
 
 _USERS = select(func.count()).select_from(User)
-
-
-def _events_with(result: AuthEventResult):
-    return select(func.count()).select_from(AuthEvent).where(col(AuthEvent.result) == result)
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -329,11 +265,9 @@ class TestCompletionRejectionsOnTheWire:
     side against real rows.
     """
 
-    async def test_an_unknown_handle_is_challenge_required_and_audited(
+    async def test_an_unknown_handle_is_challenge_required(
             self, create_user_client, _db_transaction):
         users_before = await _count(_db_transaction, _USERS)
-        events_before = await _count(_db_transaction,
-                                     _events_with(AuthEventResult.challenge_not_found))
 
         response = await create_user_client.post("/auth/create-user",
                                                  json={"challenge_id": "no-such-handle"},
@@ -341,8 +275,6 @@ class TestCompletionRejectionsOnTheWire:
 
         assert response.status_code == 409
         assert response.json() == {"code": "challenge_required"}
-        assert await _count(_db_transaction,
-                            _events_with(AuthEventResult.challenge_not_found)) == events_before + 1
         assert await _count(_db_transaction, _USERS) == users_before
         await _assert_step_10s_global_invariants(_db_transaction)
 
@@ -381,17 +313,6 @@ class TestCompletionRejectionsOnTheWire:
         # §02 step 13: every rejection at or after the Admin lookup consumes.
         assert challenge.consumed_at is not None
         assert challenge.preauth_subject_hash is None
-
-        async with _db_transaction() as session:
-            events = (await session.exec(
-                select(AuthEvent)
-                .where(col(AuthEvent.challenge_row_id) == challenge.id))).all()
-        assert len(events) == 1
-        assert events[0].result is AuthEventResult.provider_not_linked
-        assert events[0].operation is AuthOperation.create_user
-        assert events[0].details["failure"]["cause"] == "invalid-shape"
-        assert not _mentions(events[0].details, "challenge_id")
-        assert handle not in repr(events[0].details)
 
         await _assert_step_10s_global_invariants(_db_transaction)
 
@@ -514,19 +435,11 @@ async def _identity_and_user(factory, subject: str,
     return identity, user
 
 
-async def _challenge_and_events(factory, handle: str):
-    """The challenge row for `handle` and every audit row correlated on its **row id**.
-
-    Correlating on `challenge_row_id` rather than on the handle is not a convenience: the public
-    handle is a secret capability and never reaches a row (§4.4), so the row id is the only
-    correlation key there is.
-    """
+async def _challenge_for(factory, handle: str):
+    """The challenge row for `handle`, read back through the test's own factory."""
     async with factory() as session:
-        challenge = (await session.exec(
+        return (await session.exec(
             select(AuthChallenge).where(col(AuthChallenge.challenge_id) == handle))).one()
-        events = (await session.exec(
-            select(AuthEvent).where(col(AuthEvent.challenge_row_id) == challenge.id))).all()
-    return challenge, events
 
 
 # The two recognized provider ids, verbatim from §02 step 9, each with the `uid` the classifier is
@@ -588,12 +501,9 @@ class TestTheRegisteredFlow:
         # be a cross-store correlation key.
         assert len({token.identity_value for token in tokens}) == 2
 
-        challenge, events = await _challenge_and_events(_db_transaction, handle)
+        challenge = await _challenge_for(_db_transaction, handle)
         assert challenge.consumed_at is not None
         assert challenge.preauth_subject_hash is None
-        assert len(events) == 1
-        assert events[0].operation is AuthOperation.create_user
-        assert events[0].result is AuthEventResult.succeeded
 
         await _assert_step_10s_global_invariants(_db_transaction)
 
@@ -694,14 +604,11 @@ class TestTheProviderAccountReservation:
                                                col(ExternalIdentity.subject) == subject))).all()
         assert claimant_rows == []
 
-        challenge, events = await _challenge_and_events(_db_transaction, handle)
+        challenge = await _challenge_for(_db_transaction, handle)
         # §02 step 13: a rejection at or after the provider read consumes. A retry needs a fresh
         # prepare -- and will earn the same answer.
         assert challenge.consumed_at is not None
         assert challenge.preauth_subject_hash is None
-        assert len(events) == 1
-        assert events[0].operation is AuthOperation.create_user
-        assert events[0].result is AuthEventResult.provider_account_already_linked
 
         await _assert_step_10s_global_invariants(_db_transaction)
 
@@ -784,12 +691,9 @@ class TestTheRealAnonymousCompletion:
         assert {token.provider for token in tokens} == set(PurchaseProvider)
         assert len({token.identity_value for token in tokens}) == 2
 
-        challenge, events = await _challenge_and_events(_db_transaction, handle)
+        challenge = await _challenge_for(_db_transaction, handle)
         assert challenge.consumed_at is not None
         assert challenge.preauth_subject_hash is None
-        assert len(events) == 1
-        assert events[0].operation is AuthOperation.create_user
-        assert events[0].result is AuthEventResult.succeeded
 
         await _assert_step_10s_global_invariants(_db_transaction)
 

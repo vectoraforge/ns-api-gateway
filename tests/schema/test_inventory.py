@@ -78,23 +78,6 @@ EXPECTED_ENUM_LABELS = {
     "access_grant_status": [
         "active", "revoked", "expired"
     ],
-    "auth_event_result": [
-        "succeeded", "challenge_expired", "challenge_consumed", "challenge_identity_mismatch",
-        "challenge_operation_mismatch", "challenge_not_found", "invalid_external_jwt",
-        "preauth_identity_not_allowed", "identity_already_linked", "provider_not_linked",
-        "provider_transition_not_allowed", "provider_account_already_linked", "blocked_user", "historical_identity",
-        "invalid_restore_proof", "proof_malformed", "store_transaction_already_linked",
-        "restore_subscription_unlinked", "restore_subscription_not_entitled", "restore_purchase_uuid_unknown",
-        "restore_purchase_uuid_mismatch", "restore_subscription_grant_owner_mismatch",
-        "restore_branch_inconsistent", "restore_store_state_unverified", "restore_source_user_inactive",
-        "restore_destination_anonymous", "restore_destination_already_entitled", "anti_abuse_already_claimed",
-        "native_claim_already_claimed", "native_claim_unavailable", "native_claim_write_failed",
-        "devicecheck_read_budget_exhausted", "devicecheck_write_budget_exhausted",
-        "device_recall_read_budget_exhausted", "device_recall_write_budget_exhausted", "firebase_user_unresolved",
-        "idp_account_not_eligible", "firebase_lookup_unavailable", "verification_temporarily_unavailable",
-        "idp_account_already_claimed", "registered_grant_destination_incompatible", "policy_rejected",
-        "revocation_unconfirmed", "internal_error"
-    ],
     "auth_operation": [
         "create_user", "upgrade_anonymous_to_registered", "claim_anonymous_grant", "claim_registered_grant",
         "restore_subscription", "sign_out_all", "sync"
@@ -129,7 +112,7 @@ EXPECTED_CORE_TABLES = {
 }
 
 EXPECTED_AUDIT_TABLES = {
-    "auth_events", "subscription_events"
+    "subscription_events"
 }
 
 EXPECTED_CORE_INDEXES = {
@@ -153,8 +136,6 @@ EXPECTED_CORE_INDEXES = {
 }
 
 EXPECTED_AUDIT_INDEXES = {
-    "auth_events_pkey", "ix_auth_events_actor_issuer_subject_hash", "ix_auth_events_challenge_row_id",
-    "ix_auth_events_operation_created_at", "ix_auth_events_result_created_at",
     "ix_subscription_events_subscription_id", "subscription_events_notification_uuid_key",
     "subscription_events_pkey"
 }
@@ -228,7 +209,7 @@ class TestEnumTypes:
 
 
 class TestTables:
-    """SCHEMA-08: exactly 15 tables in core and 2 in audit -- add nothing not listed in the spec."""
+    """SCHEMA-08: exactly 15 tables in core and 1 in audit -- add nothing not listed in the spec."""
 
     async def test_core_table_set_is_exact(self, conn):
         actual = {row["tablename"] for row in await conn.fetch(TABLES, "core")}
@@ -320,9 +301,3 @@ class TestLegacyStructuresAreGone:
         labels = await fetch_enum_labels(conn, "access_grant_source")
         assert labels == EXPECTED_ENUM_LABELS["access_grant_source"], f"labels drifted: {labels}"
         assert len(labels) == 4, f"expected exactly four access_grant_source labels, got {len(labels)}"
-
-    async def test_auth_event_result_dropped_attestation_label(self, conn):
-        """Ruling 9.7 -- a positive consequence of the exact label list, not a separate grep."""
-        labels = await fetch_enum_labels(conn, "auth_event_result")
-        assert labels == EXPECTED_ENUM_LABELS["auth_event_result"], "auth_event_result labels drifted"
-        assert len(labels) == 44, f"expected exactly 44 auth_event_result labels, got {len(labels)}"
