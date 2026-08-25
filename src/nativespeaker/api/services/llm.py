@@ -31,13 +31,7 @@ class LLMService:
 
     async def ainvoke(self, history: list[HumanMessage | AIMessage], content: str, lang: str,
                       on_admitted: Callable[[], Awaitable] | None = None) -> dict:
-        """Invoke the chain under the resilience policy.
-
-        `on_admitted` is forwarded verbatim and called at most once, after the circuit breaker and
-        the execution gate have both admitted the call and before a single token is sent. It is the
-        seam a caller uses to do work that must happen if and only if the provider is really about
-        to be called -- `QuotaGate.charge` is the one caller today.
-        """
+        """Invoke the chain under the resilience policy. `on_admitted` fires once the call is certain."""
         return await self.policy.ainvoke(
             lambda: self.chain.ainvoke({"history": history, "content": content, "lang": lang}),
             on_admitted=on_admitted,

@@ -33,11 +33,7 @@ class ChatService:
         self.examples = examples
         self.messages_limit = messages_limit
         self.chats_limit = chats_limit
-        # Required, with no default. A default of `None` would mean a wiring slip in
-        # `get_chat_service` serves both quota-checked POSTs for free and nothing fails -- the
-        # silent free-service failure mode §2.3 condition 10 exists to make impossible. Tests that
-        # do not care about the charge pass an explicit stub, which is a visible choice rather than
-        # an omission.
+        # Required with no default: a `None` here would serve both quota-checked POSTs for free and fail nothing.
         self.quota_gate = quota_gate
 
     @property
@@ -53,17 +49,9 @@ class ChatService:
             else:
                 history.append(AIMessage(content=orjson.dumps(history_msg.content).decode()))
 
-        # The charge, handed to the resilience layer rather than performed here (REBIND-06).
-        #
-        # This is the single call site for both quota-checked routes: `create_chat` and
-        # `send_message` each do all of their own validation -- language, history limits,
-        # chat ownership -- before reaching this method, so every rejection either of them can
-        # make is already upstream of the charge. The resilience layer then withholds the callback
-        # from a request the circuit breaker or the queue refuses, which covers the last two.
-        #
-        # `chat.user_id` rather than a parameter: the charge must land on the owner of the chat
-        # being served, and taking it separately would let a caller's id and the chat's diverge.
+        # The charge is handed to the resilience layer: it fires after this service's rejections and after admission.
         async def charge() -> None:
+            # `chat.user_id`, not a parameter: the charge lands on the owner of the chat being served.
             await self.quota_gate.charge(chat.user_id)
 
         llm_response = await self.llm_service.ainvoke(
@@ -83,20 +71,7 @@ class ChatService:
         else:
             raise AnalysisError(f"Unexpected resolved_mode: {resolved_mode}")
 
-        # The **validated** model is what is persisted and returned, not the raw provider dict.
-        # Two reasons, and the first is why D-12 was only half-delivered without this:
-        #
-        # 1. `AnalyzeResponse.issues` and `.suggestions` default to `[]` (D-12), but a default only
-        #    materialises on the model. Discarding the model and storing `llm_response` meant a
-        #    grammatically correct phrase -- for which the unconstrained chain legitimately returns
-        #    only `resolved_mode` and `response` -- came back to the client with those two keys
-        #    simply absent. The 500 was fixed; the promised empty arrays never arrived.
-        # 2. The chain pipes through a plain `JsonOutputParser()`, so whatever extra keys the model
-        #    emits were persisted verbatim and echoed to the client. Dumping the validated model
-        #    drops them at the boundary instead of storing unvalidated provider output.
-        #
-        # `services/llm.py` binding these models as a strict schema on the call is still the
-        # general fix -- .planning/todos/pending/restore-strict-structured-output.md.
+        # The validated model is persisted, not the raw dict: that materialises the list defaults and drops extra keys.
         return Message(chat_id=chat.id, role=ChatRole.ai, content=validated.model_dump())
 
     async def create_chat(self,
