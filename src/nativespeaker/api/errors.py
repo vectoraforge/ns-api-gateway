@@ -70,9 +70,9 @@ def register_class(cls: ErrorClass) -> ErrorClass:
 def error_response(cls: ErrorClass, *, headers: dict[str, str] | None = None) -> JSONResponse:
     """Build the shared response for a registered class.
 
-    The barrier awaits the returned object against `(scope, receive, send)`; it never raises it.
-    `add_middleware` places user middleware outside Starlette's ExceptionMiddleware, so a raised
-    registry error would bypass every registered handler and surface as a 500 (D-01).
+    Every client-visible error body in the service is produced here, so a class's status, code and
+    copy cannot disagree between one call site and another. Handlers return it directly; raised
+    `ServiceError`s reach it through `app/errors.py::service_error_handler`.
     """
     return JSONResponse(status_code=cls.status,
                         content=ErrorResponse(code=cls.code).model_dump(),
@@ -259,9 +259,9 @@ OPERATION_NOT_ALLOWED = register_class(ErrorClass(
 #
 # 403 is deliberately absent. Two classes sit at 403 -- `preauth_identity_not_allowed` and
 # `account_unavailable` -- and neither is the generic answer, so any entry would be an arbitrary
-# lie of exactly the kind D-12 deletes. Both are emitted by the barrier through `error_response`,
-# which needs no status lookup. A bare framework 403 is therefore a programming error and takes
-# the loud unmapped-status path.
+# lie of exactly the kind D-12 deletes. Both are named explicitly by the auth dependency, which
+# carries the class on the `AuthRejectionError` it raises and needs no status lookup. A bare
+# framework 403 is therefore a programming error and takes the loud unmapped-status path.
 # ---------------------------------------------------------------------------
 
 STATUS_TO_CLASS: dict[int, ErrorClass] = {
@@ -439,6 +439,34 @@ class AuthenticationError(ServiceError):
 
     def extra_headers(self) -> dict[str, str]:
         return {"WWW-Authenticate": "Bearer"}
+
+
+class AuthRejectionError(ServiceError):
+    """A §1.5 admission rejection, raised by the auth dependency (37.1 D-06).
+
+    The barrier this replaced *returned* `error_response(...)` rather than raising, because
+    `add_middleware` places user middleware outside Starlette's `ExceptionMiddleware`. A dependency
+    runs inside it, so that constraint is gone and this raises like every other service error.
+
+    Two deliberate differences from `AuthenticationError`, both of which keep the wire response
+    byte-identical to what the middleware produced:
+
+    - **The error class is per-instance, not per-class.** Admission rejects with three different
+      classes -- `auth_required` (401), `preauth_identity_not_allowed` (403) and
+      `account_unavailable` (403) -- and `ServiceError.error_class` is a class attribute. Assigning
+      to `self.error_class` shadows it, so one subclass covers all three rather than three
+      subclasses covering one apiece.
+    - **`log_level` stays `None` and `extra_headers` is not overridden.** `record_rejection` has
+      already emitted the `auth_rejected` event by the time this is raised, so a second WARNING
+      here would double-log every rejection; and the barrier's 401 never carried a
+      `WWW-Authenticate: Bearer` header, so inheriting `AuthenticationError`'s would be a wire
+      change.
+    """
+    log_level = None
+
+    def __init__(self, error_class: ErrorClass, message: str):
+        self.error_class = error_class
+        super().__init__(message)
 
 
 class WebhookVerificationError(ServiceError):

@@ -39,9 +39,8 @@ from nativespeaker.api.app.dependencies import (
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth.adapters import ProviderDataEntry, ProviderDataOutcome
 from nativespeaker.api.auth.challenges import ChallengeStore
-from nativespeaker.api.auth.context import ClientIpBucketKind, PreAuthIdentity, RequestContext
+from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.keys import HmacKeyring
-from nativespeaker.api.auth.registry import lookup
 from nativespeaker.api.auth.retry import FIREBASE_LOOKUP_ATTEMPTS
 from nativespeaker.api.config import HmacConfig
 from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult, AuthOperation
@@ -55,7 +54,7 @@ OTHER_SUBJECT = "precedence-somebody-else"
 OTHER_ISSUER = "https://securetoken.google.com/some-other-project"
 HANDLE = "a-scripted-handle"
 
-CREATE_USER_META = lookup("POST", "/auth/create-user")
+CREATE_USER_ROUTE = "/auth/create-user"
 
 
 def _material(seed: int) -> str:
@@ -228,8 +227,7 @@ def creator(monkeypatch) -> _RecordingCreator:
 def context() -> RequestContext:
     return RequestContext(
         identity=PreAuthIdentity(issuer=TEST_ISSUER, subject=SUBJECT),
-        route_metadata=CREATE_USER_META,
-        client_ip_bucket_kind=ClientIpBucketKind.ipv4,
+        route=CREATE_USER_ROUTE,
         evaluated_at=datetime.now(UTC),
         attempt_id=uuid4(),
     )

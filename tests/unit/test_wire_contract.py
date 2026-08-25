@@ -10,9 +10,9 @@ cases here hand it exactly that. Two rules govern how those pairs are built:
   case in `TestTheHarnessMatchesTheWire` pins that so nobody writes one later.
 - **no value is normalized on the way in.** These are the bytes a client sent.
 
-`tests/e2e/test_barrier_wire_contract.py` runs the same six §1.1 cases through a real ASGI
+`tests/e2e/test_wire_contract.py` runs the same six §1.1 cases through a real ASGI
 transport. That module proves the duplicates survive the transport rather than being folded before
-the barrier sees them; this one reaches shapes a client cannot express at all -- a line-folded
+the server sees them; this one reaches shapes a client cannot express at all -- a line-folded
 value, a non-ASCII token byte -- and names the bounded reason each case earns, which never leaves
 the server.
 """
@@ -45,7 +45,7 @@ class TestTheSixWireCases:
         """HTTP field names are case-insensitive, so these are two instances of one field.
 
         The ASGI server folds `Authorization` and `AUTHORIZATION` onto the same lowercase key
-        before the barrier sees them; what reaches `extract_bearer` is two entries, not one.
+        before the server sees them; what reaches `extract_bearer` is two entries, not one.
         """
         raw = [(b"authorization", b"Bearer one"), (b"authorization", b"Bearer two")]
         assert extract_bearer(raw) == (None, BoundedReason.duplicate_authorization)

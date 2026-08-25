@@ -1,17 +1,30 @@
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
+from typing import NoReturn
+from uuid import uuid7
 
 from fastapi import Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import (
-    REQUEST_CONTEXT_SCOPE_KEY,
     LinkedIdentity,
     PreAuthIdentity,
     RequestContext,
 )
+from nativespeaker.api.auth.identity import Reject, resolve_identity
+from nativespeaker.api.auth.telemetry import record_rejection
+from nativespeaker.api.auth.wire import BoundedReason, extract_bearer
 from nativespeaker.api.config import AppConfig
-from nativespeaker.api.errors import AuthenticationError
+from nativespeaker.api.errors import (
+    AUTH_REQUIRED,
+    PREAUTH_IDENTITY_NOT_ALLOWED,
+    AuthenticationError,
+    AuthRejectionError,
+    ErrorClass,
+)
+from nativespeaker.api.models.auth import AuthEventResult
 from nativespeaker.api.quota import QuotaGate
 from nativespeaker.api.services import ChatService
 
@@ -30,63 +43,167 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession]:
             raise
 
 
+# ---------------------------------------------------------------------------
+# The §1.5 admission barrier, as a dependency (37.1 D-06, D-07)
+#
+# `get_request_context` is the ONE place JWT acceptance and identity resolution happen. It used to
+# read what a middleware had already resolved; it now does the resolving itself. The property that
+# matters is unchanged and the mechanism is what moved: every non-public router declares this in
+# `APIRouter(dependencies=[...])`, so authentication is default-on per router and an endpoint that
+# forgets its own declaration is still authenticated.
+#
+# **Both declaration levels must name the identical function object.** FastAPI keys its
+# per-request dependency cache on the callable, so the router-level `Depends(get_linked_identity)`
+# and the endpoint's own `Depends(get_linked_identity)` resolve to ONE execution -- and the two
+# accessors share the one cached `get_request_context` beneath them. Wrapping the callable at
+# either level, or turning that per-request cache off anywhere on this path, would run the JWT
+# verify twice and issue the identity query twice per request. Neither appears here, and neither
+# may be added. The `Depends` keyword that disables the cache is deliberately not spelled anywhere
+# in this file: a repository-wide grep for it is the mechanical check, and a comment naming it
+# would be the one hit that teaches a reader to ignore the result.
+#
+# Each accessor RAISES rather than returning None -- that is §1.4's "fails loudly". A None a
+# handler could treat as anonymous is exactly the silently-open route the rule exists to prevent.
+#
+# None of the three creates, links, repairs, reassigns, or merges a row on any path.
+# ---------------------------------------------------------------------------
+
+
+async def get_request_context(request: Request) -> RequestContext:
+    """Accept the token, resolve the identity, and build the §1.4 context -- once per request.
+
+    The six §1.5 steps, in order: read the matched route, apply the §1.1 wire contract, verify the
+    token, resolve `(issuer, subject)` from one short session, enforce the §1.3 admission matrix,
+    and return the context. Every rejection is recorded through `record_rejection` -- the only
+    record a rejection leaves -- and answered with the identical body its class declares.
+
+    Resolution passes `allow_preauth=True` and lets `get_linked_identity` do the narrowing. That
+    keeps ONE cached inner dependency for both accessors, and it is what lets
+    `POST /auth/create-user` read the variant off the context: §02 prepare step 1 owes an
+    already-linked caller `identity_already_linked` (409), which is unreachable if resolution 403s
+    on a linked caller first.
+    """
+    # One evaluation time and one attempt id per request. Every time-dependent value derives from
+    # this capture, so two reads within one request can never straddle a period boundary.
+    evaluated_at = datetime.now(UTC)
+    attempt_id = uuid7()
+
+    # FastAPI writes the matched route into the ASGI scope inside `APIRoute.matches`, which runs
+    # before any dependency is resolved -- so the path template is simply readable here. The
+    # middleware ran too early to see it and had to re-run the router's own matching to find out;
+    # that is the whole of what `barrier.py::_match_full` existed for, and it is why the function
+    # was deleted rather than moved.
+    route = request.scope["route"].path
+
+    # Step 2 -- the wire contract. `headers.raw` is the raw list of byte pairs, deliberately never
+    # `headers.get`: that folds duplicate fields and cannot see the desync §1.1 exists to reject.
+    token, reason = extract_bearer(request.headers.raw)
+    if token is None:
+        _reject(AUTH_REQUIRED, AuthEventResult.invalid_external_jwt, reason, route)
+
+    # Step 3 -- verification, off the loop, always. `verify` is synchronous, and on a `kid` the
+    # cached JWKS set does not match it performs a blocking `urlopen` inside PyJWT. Called directly
+    # from here that stalls every other coroutine in the process -- `/health/ready` included -- for
+    # one outbound round trip, at the choice of an unauthenticated caller who has not yet proven
+    # anything. Envoy bounds how many such requests arrive; it cannot un-block an event loop.
+    claims, reason = await run_in_threadpool(request.app.state.jwt_verifier.verify, token)
+    if claims is None:
+        _reject(AUTH_REQUIRED, AuthEventResult.invalid_external_jwt, reason, route)
+
+    # Step 4 -- resolution. Its own short session, opened here and closed before the handler runs.
+    # Deliberately NOT `Depends(get_db)`: that is a yield dependency holding its transaction open
+    # until after the handler returns, which would hold a read transaction across the LLM provider
+    # round trip on POST /chats -- the lock-across-a-provider-call shape SHARED-INVARIANTS forbids.
+    async with request.app.state.session_factory() as session:
+        decision = await resolve_identity(session, issuer=claims.issuer,
+                                          subject=claims.subject, allow_preauth=True)
+
+    # Step 5 -- the admission matrix.
+    if isinstance(decision, Reject):
+        _reject(decision.error_class, decision.result, None, route)
+
+    # Step 6 -- the §1.4 context.
+    return RequestContext(identity=decision.identity,
+                          route=route,
+                          evaluated_at=evaluated_at,
+                          attempt_id=attempt_id)
+
+
+def _reject(error_class: ErrorClass, result: AuthEventResult,
+            bounded_reason: BoundedReason | None, route: str) -> NoReturn:
+    """Record the rejection, then raise it. `NoReturn` is load-bearing, not decoration.
+
+    It is what lets each call site above stand as a bare statement: the type checker knows control
+    does not come back, so `token` and `claims` are non-`None` on the lines that follow.
+
+    Telemetry fires for every rejection, on every route, before the raise: `record_rejection`
+    carries the specific internal result and the bounded reason into the structured security log,
+    and it is the only record a rejection leaves.
+    """
+    record_rejection(result=result, bounded_reason=bounded_reason, route=route)
+    raise AuthRejectionError(error_class, f"admission rejected on {route}: {result}")
+
+
+# Both narrowing accessors DECLARE the context rather than calling `get_request_context(request)`.
+# That is not a style choice and it is the whole of what makes the caching contract hold: FastAPI's
+# per-request cache lives in the dependency solver, so it only sees a dependency the solver
+# resolved. A direct call inside the function body is invisible to it, and a route declaring
+# `Depends(get_linked_identity)` *and* `Depends(get_request_context)` -- which is exactly what
+# `get_chat_service` produces on every /chats route -- would then verify the token twice and issue
+# the identity query twice. Measured, not assumed: it did, until these two took the parameter.
+#
+# Taking the context instead of the Request also removes their last route to application state, so
+# neither can reach a session, a verifier or a provider client at all.
+
+
+async def get_linked_identity(
+        context: RequestContext = Depends(get_request_context)) -> LinkedIdentity:
+    """The resolved user and identity row. Rejects an unlinked caller with 403.
+
+    `get_request_context` admits a pre-auth principal on every route, so this is where every route
+    but `POST /auth/create-user` narrows it back down -- and `preauth_identity_not_allowed` (403)
+    is exactly what `resolve_identity`'s non-pre-auth-callable arm used to produce for the same
+    caller. The rejection is recorded here for the same reason it was recorded there: after 37.1
+    D-01 the structured log is the only record.
+    """
+    identity = context.identity
+    if not isinstance(identity, LinkedIdentity):
+        _reject(PREAUTH_IDENTITY_NOT_ALLOWED, AuthEventResult.preauth_identity_not_allowed,
+                None, context.route)
+    return identity
+
+
+async def get_preauth_identity(
+        context: RequestContext = Depends(get_request_context)) -> PreAuthIdentity:
+    """The verified (issuer, subject) of an unlinked caller. Raises when the caller is linked.
+
+    Nothing declares this today. `POST /auth/create-user` is the only route an unlinked caller may
+    reach, and it deliberately reads the variant off the context instead (see `routers/auth.py`):
+    a linked caller there is a *client condition* answered with 409, not a wiring bug. The accessor
+    is kept because phases 40/41/42 register challenge-bearing routes that do want the narrowing.
+    """
+    identity = context.identity
+    if not isinstance(identity, PreAuthIdentity):
+        raise AuthenticationError("Identity context is linked on a route expecting a pre-auth identity")
+    return identity
+
+
+# Defined below the accessors, not above them, because its `Depends(get_request_context)` default
+# is evaluated at definition time and the name has to exist by then.
 def get_chat_service(request: Request,
                      db: AsyncSession = Depends(get_db),
-                     config: AppConfig = Depends(get_config)) -> ChatService:
+                     config: AppConfig = Depends(get_config),
+                     context: RequestContext = Depends(get_request_context)) -> ChatService:
+    # The context is *declared* rather than fetched: `get_quota_gate` needs it, and resolving it
+    # through `Depends` is what puts it on FastAPI's per-request cache alongside the router-level
+    # declaration. Calling `get_request_context(request)` here instead would bypass that cache and
+    # run a second JWT verify and a second identity query on every request (T-37.1-11).
     return ChatService(db=db,
                        llm_service=request.app.state.llm_service,
                        examples=config.examples,
                        chats_limit=config.chats_limit,
                        messages_limit=config.messages_limit,
-                       quota_gate=get_quota_gate(request))
-
-
-# ---------------------------------------------------------------------------
-# The §1.4 identity accessors (D-02)
-#
-# Routes stay Depends()-only: a handler reads the one object the barrier attached and never
-# re-verifies a token or re-resolves identity.
-#
-# Each accessor RAISES rather than returning None -- that is §1.4's "fails loudly". A route
-# registered outside the barrier has no identity context, and `auth_required` is the only safe
-# reading of that: a None a handler could treat as anonymous is exactly the silently-open route
-# the rule exists to prevent. Putting the check here, once, stops each of the seven later phases
-# re-implementing it.
-#
-# None of the three creates, links, repairs, reassigns, or merges a row on any path. They are
-# synchronous and take nothing but the Request -- there is no session to write through.
-# ---------------------------------------------------------------------------
-
-
-def get_request_context(request: Request) -> RequestContext:
-    """The §1.4 context the barrier attached. Raises when the barrier did not run."""
-    context = getattr(request.state, REQUEST_CONTEXT_SCOPE_KEY, None)
-    if not isinstance(context, RequestContext):
-        # isinstance, not `is None`: a wrong-typed value under the key is as unusable as an absent
-        # one and must fail closed too, rather than reach a handler as a duck-typed stand-in.
-        raise AuthenticationError("No identity context on this request: it ran outside the barrier")
-    return context
-
-
-def get_linked_identity(request: Request) -> LinkedIdentity:
-    """The resolved user and identity row. Raises when absent, and when the variant is pre-auth."""
-    identity = get_request_context(request).identity
-    if not isinstance(identity, LinkedIdentity):
-        # Reaching here means a route's registry declaration and its handler disagree: the barrier
-        # admits a pre-auth principal only where `preauth_callable` is declared, so a pre-auth
-        # variant arriving at a linked-only handler is a wiring bug, not a caller condition. The
-        # caller-facing `preauth_identity_not_allowed` rejection is the barrier's to emit
-        # (§1.5 step 5); this seam's only job is refusing to hand over the wrong variant.
-        raise AuthenticationError("Identity context is pre-auth on a route requiring a linked identity")
-    return identity
-
-
-def get_preauth_identity(request: Request) -> PreAuthIdentity:
-    """The verified (issuer, subject) of an unlinked caller. Raises when absent, and when linked."""
-    identity = get_request_context(request).identity
-    if not isinstance(identity, PreAuthIdentity):
-        raise AuthenticationError("Identity context is linked on a route expecting a pre-auth identity")
-    return identity
+                       quota_gate=get_quota_gate(request, context))
 
 
 # ---------------------------------------------------------------------------
@@ -130,12 +247,12 @@ def get_firebase_adapter(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# The §8.4 quota seam (D-04, D-05, REBIND-06)
+# The §8.4 quota seam (D-04, REBIND-06)
 #
-# A quota-checked route declares `quota_checked=True` on its registry entry, and its handler is
-# named in `auth/registry.py`'s quota-consuming handler set. Neither alone is enforcement: the
-# §2.3 condition-10 cross-check fails boot when the two disagree in either direction, which is what
-# stops a route from declaring the flag while serving requests free (D-05).
+# Which routes consume the allowance used to be declared twice -- a `quota_checked=True` flag on a
+# registry entry, cross-checked at boot against a named set of charging handlers. 37.1 D-06 deleted
+# the registry and both halves with it. What consumes the allowance is now simply what calls
+# `QuotaGate.charge`: `ChatService`, at the resilience layer's admission callback, and nothing else.
 #
 # **The charge is no longer a decorator dependency, and that is REBIND-06's fix.** It used to be:
 # `require_quota_*` wrappers in `dependencies=[...]`, committing in their own session before the
@@ -157,21 +274,21 @@ def get_firebase_adapter(request: Request):
 # ---------------------------------------------------------------------------
 
 
-def get_quota_gate(request: Request) -> QuotaGate:
-    """Build this request's charge seam from the context the barrier captured.
+def get_quota_gate(request: Request, context: RequestContext) -> QuotaGate:
+    """Build this request's charge seam from the context the auth dependency captured.
 
     Takes the app's real `session_factory` rather than `Depends(get_db)`: that is a
     yield-dependency committing after the handler returns, which is precisely the lock-across-the-
     provider-call shape D-04 forbids. `QuotaGate` opens its own short session instead.
 
-    Not itself declared in any route's `dependencies=[...]`. It is resolved by `get_chat_service`,
-    so a service that consumes the allowance cannot be constructed without one.
+    A plain function rather than a dependency: it is called by `get_chat_service`, which declares
+    the context and hands it over, so a service that consumes the allowance cannot be constructed
+    without one -- and the context it charges against is provably the one cached for this request.
     """
-    context = get_request_context(request)
     identity = context.identity
     if not isinstance(identity, LinkedIdentity):
-        # The quota-checked routes are `Category.authenticated`, so the barrier admits no pre-auth
-        # principal to them and this is unreachable through the registry. Asserted anyway, and
+        # The quota-checked routes carry `Depends(get_linked_identity)` at router level, which
+        # rejects a pre-auth caller before this runs, so this is unreachable. Asserted anyway, and
         # failing closed: a pre-auth caller reaching a charging service is a wiring bug, and the
         # alternative to raising is billing a principal with no user row.
         raise AuthenticationError("Identity context is pre-auth on a quota-checked route")
@@ -179,7 +296,7 @@ def get_quota_gate(request: Request) -> QuotaGate:
                      # Both from the instant the barrier captured for this request (D-06). Nothing
                      # on this path reads the system clock.
                      evaluated_at=context.evaluated_at,
-                     route=context.route_metadata.path)
+                     route=context.route)
 
 
 # ---------------------------------------------------------------------------

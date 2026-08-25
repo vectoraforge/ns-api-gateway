@@ -1,15 +1,17 @@
-"""End-to-end proof of the Phase 35 slice against the real application at real startup.
+"""What the real application answers an unauthenticated caller, at real startup.
 
-The lifespan runs the §2.3 enumeration assertion for real, and an unauthenticated request to an
-authenticated route is rejected by the barrier with a response the shared error registry produced.
+Every case here is about the *absence* of an Authorization header: which paths that still reaches,
+what each one answers, and that no path answers with a redirect. This module deliberately does not
+use the `async_client` fixture, which carries a real Firebase bearer token.
 
-This module deliberately does not use the `async_client` fixture: that fixture carries a real
-Firebase bearer token, and every assertion here is about the *absence* of an Authorization header.
+The two cases that used to head this file proved the §2.3 route-enumeration assertion ran during
+the lifespan. 37.1 D-06 deleted that assertion along with the registry it checked -- the property
+it protected is now asserted over the live router itself, in `tests/unit/test_app_wiring.py`. What
+remains here is the observable half, which no unit test can reach: a real request, over a real
+ASGI transport, through the real app.
 """
 import pytest
 from httpx import ASGITransport, AsyncClient
-
-from nativespeaker.api.auth.registry import assert_route_enumeration
 
 pytestmark = pytest.mark.e2e
 
@@ -24,17 +26,8 @@ def unauthenticated_client(_app_lifespan):
 
 
 @pytest.mark.asyncio(loop_scope="module")
-class TestStartupAssertion:
-    async def test_lifespan_completed(self, _app_lifespan):
-        """The fixture yielded, so assert_route_enumeration ran inside the lifespan and passed."""
-        assert _app_lifespan.state.config is not None
-        assert _app_lifespan.state.session_factory is not None
-
-    async def test_assertion_passes_against_the_live_app(self, _app_lifespan):
-        """Calling the assertion directly against the started app raises nothing."""
-        assert_route_enumeration(_app_lifespan)
-
-    async def test_unauthenticated_root_is_rejected_by_the_barrier(self, unauthenticated_client):
+class TestUnauthenticatedAccess:
+    async def test_unauthenticated_root_is_rejected(self, unauthenticated_client):
         """GET / with no Authorization header returns the registry's auth_required response."""
         async with unauthenticated_client as client:
             response = await client.get("/")
@@ -56,7 +49,12 @@ class TestStartupAssertion:
         assert response.status_code == 404
 
     async def test_trailing_slash_does_not_redirect(self, unauthenticated_client):
-        """redirect_slashes=False: GET /chats/ is a 404, never an unauthenticated 307."""
+        """redirect_slashes=False: GET /chats/ is a 404, never an unauthenticated 307.
+
+        The redirect is produced by the router before any route matches, so no route's auth
+        dependency has run when it is written -- it would name a real path to a caller who has
+        proven nothing.
+        """
         async with unauthenticated_client as client:
             response = await client.get("/chats/")
         assert response.status_code == 404

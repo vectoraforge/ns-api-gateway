@@ -32,7 +32,6 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
-from nativespeaker.api.auth.registry import RouteMetadata
 from nativespeaker.api.errors import (
     ACCOUNT_UNAVAILABLE,
     INTERNAL_ERROR,
@@ -69,10 +68,14 @@ AdmissionDecision = Admit | Reject
 
 
 async def resolve_identity(session: AsyncSession, *, issuer: str, subject: str,
-                           meta: RouteMetadata) -> AdmissionDecision:
+                           allow_preauth: bool) -> AdmissionDecision:
     """Resolve a verified `(issuer, subject)` into one of the four §1.3 outcomes.
 
     Exactly one statement is issued per call, whatever the outcome.
+
+    `allow_preauth` says whether an unlinked pair may be admitted on this route. It is the caller's
+    to decide, and only `POST /auth/create-user` passes `True`: an unlinked caller anywhere else
+    gets `preauth_identity_not_allowed`.
     """
     statement = (select(ExternalIdentity, User)
                  .join(User, col(ExternalIdentity.user_id) == col(User.id), isouter=True)
@@ -84,7 +87,7 @@ async def resolve_identity(session: AsyncSession, *, issuer: str, subject: str,
         # Outcomes 1 and 1'. Identity rows are never deleted, so "no matching row" can only mean
         # this pair was never linked -- an administratively retired identity still has a row and
         # takes the branch below, and can therefore never surface as a fresh identity here.
-        if meta.preauth_callable:
+        if allow_preauth:
             return Admit(PreAuthIdentity(issuer=issuer, subject=subject))
         return Reject(PREAUTH_IDENTITY_NOT_ALLOWED,
                       AuthEventResult.preauth_identity_not_allowed, issuer, subject)

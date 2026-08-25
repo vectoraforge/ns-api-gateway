@@ -38,10 +38,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth.challenges import ChallengeStore
-from nativespeaker.api.auth.context import ClientIpBucketKind, PreAuthIdentity, RequestContext
+from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.creation import create_account
 from nativespeaker.api.auth.keys import HmacConfig, HmacKeyring
-from nativespeaker.api.auth.registry import lookup
 from nativespeaker.api.models.auth import AuthEventResult
 from nativespeaker.api.models.identities import IdentityProvider
 
@@ -172,8 +171,7 @@ class _Attempt:
 async def prepare_attempt(harness: _Harness, *, subject: str, provider: IdentityProvider,
                           provider_uid: str | None) -> _Attempt:
     context = RequestContext(identity=PreAuthIdentity(issuer=harness.issuer, subject=subject),
-                             route_metadata=lookup("POST", "/auth/create-user"),
-                             client_ip_bucket_kind=ClientIpBucketKind.ipv4,
+                             route="/auth/create-user",
                              evaluated_at=NOW,
                              attempt_id=uuid.uuid4())
     row_id, challenge_id = await commit_claimed_challenge(harness, subject=subject,

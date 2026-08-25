@@ -30,7 +30,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.auth import creation
-from nativespeaker.api.auth.context import ClientIpBucketKind, PreAuthIdentity, RequestContext
+from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.creation import (
     CLIENT_CLASS_FOR_RESULT,
     PROVIDER_ACCOUNT_INDEX_NAME,
@@ -38,7 +38,6 @@ from nativespeaker.api.auth.creation import (
     classify_insert_conflict,
     create_account,
 )
-from nativespeaker.api.auth.registry import lookup
 from nativespeaker.api.errors import (
     ACCOUNT_UNAVAILABLE,
     IDENTITY_ALREADY_LINKED,
@@ -131,8 +130,7 @@ class _ConsumingStore:
 def _context() -> RequestContext:
     identity = PreAuthIdentity(issuer=ISSUER, subject=SUBJECT)
     return RequestContext(identity=identity,
-                          route_metadata=lookup("POST", "/auth/create-user"),
-                          client_ip_bucket_kind=ClientIpBucketKind.ipv4,
+                          route="/auth/create-user",
                           evaluated_at=NOW,
                           attempt_id=uuid4())
 

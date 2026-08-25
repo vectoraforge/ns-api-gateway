@@ -133,11 +133,11 @@ class FirebaseAdminAdapter(Protocol):
     def verify_id_token(self, raw_token: str) -> VerifiedClaims:
         """Verify an external ID token against the selected integration (§1.2's rules).
 
-        Note the barrier does **not** call this: it holds a `TokenVerifier` (auth/verification.py),
-        whose `verify` returns `(claims, reason)` rather than raising, because the barrier is
-        installed with `add_middleware` and sits outside Starlette's `ExceptionMiddleware` (D-01).
-        This is §7.1's declaration of the same capability behind the issuer-selected Admin client,
-        for the later phases that call it from inside a handler, where raising is the idiom.
+        Note the auth dependency does **not** call this: it holds a `TokenVerifier`
+        (auth/verification.py), whose `verify` returns `(claims, reason)` rather than raising, so
+        the bounded reason reaches the security log as a value. This is §7.1's declaration of the
+        same capability behind the issuer-selected Admin client, for the later phases that call it
+        from inside a handler, where raising is the idiom.
         """
         ...
 

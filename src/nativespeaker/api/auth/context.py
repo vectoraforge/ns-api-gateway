@@ -1,8 +1,8 @@
-"""The §1.4 typed identity context -- the one object the barrier attaches on admission.
+"""The §1.4 typed identity context -- the one object admission produces.
 
 Handlers consume this and nothing else. A handler must not perform or re-implement JWT acceptance
 or identity resolution, and must not reconstruct identity context from claims. Phases 36-46 import
-these five symbols by name; the field sets below are the seam, not an implementation detail.
+these four symbols by name; the field sets below are the seam, not an implementation detail.
 
 Two rules this module encodes structurally rather than by convention:
 
@@ -15,11 +15,10 @@ Two rules this module encodes structurally rather than by convention:
   identity row, no provider. A handler holding one cannot read an unlinked subject as if it were
   linked, because there is nothing there to read.
 
-**No client address is carried.** `ClientIpBucketKind` records the bucket kind only. §9 (the Envoy
-gateway contract) is deferred to the next milestone, so `xff_num_trusted_hops` is unpinned and any
-address stored here would be trusted rather than proven (A3). §4.4 needs the kind, not the address.
-The kind is derived once, from the gateway-resolved `scope["client"]`, and is **never** recomputed
-from raw forwarded headers -- by this module or any later one.
+**No client address is carried, in any form.** §9 (the Envoy gateway contract) is deferred to the
+next milestone, so `xff_num_trusted_hops` is unpinned and any address stored here would be trusted
+rather than proven (A3). Nothing on this context is derived from the client address, and no later
+module may recompute one from `X-Forwarded-For`, `Forwarded`, or any other client-supplied header.
 """
 from dataclasses import dataclass
 from datetime import datetime
@@ -27,27 +26,14 @@ from enum import StrEnum
 from typing import Literal
 from uuid import UUID
 
-from nativespeaker.api.auth.registry import RouteMetadata
 from nativespeaker.api.models.identities import ExternalIdentity
 from nativespeaker.api.models.users import User
-
-# The key the barrier stashes the context under, on `scope["state"]` / `request.state`. Pinned as a
-# module constant so the writer (the barrier) and the readers (the `Depends()` accessors) cannot
-# drift to two different strings, which would fail open as a missing context rather than loudly.
-REQUEST_CONTEXT_SCOPE_KEY = "ns_request_context"
 
 
 class IdentityKind(StrEnum):
     """The discriminator tag on the two §1.4 variants."""
     linked = "linked"
     preauth = "preauth"
-
-
-class ClientIpBucketKind(StrEnum):
-    """The client-address bucket kind (§4.4). The address itself is deliberately not carried."""
-    ipv4 = "ipv4"
-    ipv6 = "ipv6"
-    unresolved = "unresolved"
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,9 +71,13 @@ class RequestContext:
     `evaluated_at` is the single captured evaluation time for the whole request -- every
     time-dependent value derives from it, so two reads within one request can never straddle a
     period boundary. `attempt_id` is server-generated and never taken from client input.
+
+    `route` is the matched route's **path template** -- `/chats/{chat_id}`, never the concrete
+    `/chats/9f2.../`. It is the route identity the rejection log and the quota charge are keyed on,
+    and a template keeps both bounded: a concrete path would put an unbounded set of client-chosen
+    values into a log field and a quota key.
     """
     identity: LinkedIdentity | PreAuthIdentity
-    route_metadata: RouteMetadata
-    client_ip_bucket_kind: ClientIpBucketKind
+    route: str
     evaluated_at: datetime
     attempt_id: UUID

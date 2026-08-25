@@ -1,6 +1,6 @@
 """FOUND-01 / §1.3: the four-outcome admission matrix as logic, plus the §1.2 counter.
 
-`tests/e2e/test_barrier_admission.py` proves the matrix against real rows over the real transport.
+`tests/e2e/test_admission.py` proves the matrix against real rows over the real transport.
 This module proves the branches the *database* cannot produce. `core.identity_state` is a
 two-value `NOT NULL` enum and `core.external_identities.user_id` carries a `RESTRICT` foreign key,
 so a NULL state, an unrecognized state, and a dangling user reference are all unreachable through
@@ -15,7 +15,6 @@ from uuid import uuid7
 import pytest
 
 from nativespeaker.api.auth.identity import Admit, Reject, resolve_identity
-from nativespeaker.api.auth.registry import Category, RouteMetadata
 from nativespeaker.api.auth.telemetry import record_rejection
 from nativespeaker.api.errors import (
     ACCOUNT_UNAVAILABLE,
@@ -54,11 +53,6 @@ class _StubSession:
         return _StubResult(self._row)
 
 
-def _meta(*, preauth_callable: bool = False) -> RouteMetadata:
-    return RouteMetadata(method="GET", path="/chats", category=Category.authenticated,
-                         preauth_callable=preauth_callable)
-
-
 def _row(*, identity_state=IdentityState.active, user_active: bool = True, user=...):
     """An `(identity, user)` pair shaped exactly as the single joined statement returns one."""
     user_id = uuid7()
@@ -73,7 +67,7 @@ def _row(*, identity_state=IdentityState.active, user_active: bool = True, user=
 async def _resolve(row, *, preauth_callable: bool = False):
     session = _StubSession(row)
     decision = await resolve_identity(session, issuer=ISSUER, subject=SUBJECT,
-                                      meta=_meta(preauth_callable=preauth_callable))
+                                      allow_preauth=preauth_callable)
     return decision, session
 
 

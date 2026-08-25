@@ -1,8 +1,9 @@
 """§1.2 JWT verification rules: acceptance, bounded-reason rejection, and the anti-oracle shape.
 
-Every rejection branch returns `(None, BoundedReason.<member>)` rather than raising. Raising is
-wrong at this seam: the barrier is a pure-ASGI middleware outside Starlette's ExceptionMiddleware,
-so an exception raised here would surface as a 500 instead of `auth_required` (D-01).
+Every rejection branch returns `(None, BoundedReason.<member>)` rather than raising. The bounded
+reason is the only thing distinguishing one acceptance failure from another -- every one of them
+answers the client with the identical `auth_required` -- so it has to reach the security log as a
+*value*, which is what returning it buys and raising would not.
 """
 
 import threading
@@ -25,7 +26,7 @@ from unit.conftest import (
     make_test_verifier,
     make_token,
 )
-from unit.test_barrier_jwks_offload import (
+from unit.test_jwks_offload import (
     JWKS_URL,
     KNOWN_KID,
     install_counted_transport,

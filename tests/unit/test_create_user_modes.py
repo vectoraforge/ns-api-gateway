@@ -29,17 +29,17 @@ from nativespeaker.api.app.dependencies import (
     get_request_context,
 )
 from nativespeaker.api.app.errors import register_exception_handlers
-from nativespeaker.api.auth.context import ClientIpBucketKind, PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.registry import lookup
+from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.routers import auth_router
 
 from .conftest import TEST_ISSUER
 
 UNLINKED_SUBJECT = "unlinked-mode-signal-subject"
 
-# The **production** metadata for this route, looked up rather than hand-built: a fixture-only
-# RouteMetadata would let this module keep passing after the real declaration changed.
-CREATE_USER_META = lookup("POST", "/auth/create-user")
+# The path template the real dependency would put on the context for this route. Only the mode
+# signal is under test here, and nothing below reads this value -- it is supplied because
+# `RequestContext` requires it.
+CREATE_USER_ROUTE = "/auth/create-user"
 
 
 class _RecordingChallengeStore:
@@ -119,8 +119,7 @@ def client(store, session, fake_firebase_adapter):
 
     context = RequestContext(
         identity=PreAuthIdentity(issuer=TEST_ISSUER, subject=UNLINKED_SUBJECT),
-        route_metadata=CREATE_USER_META,
-        client_ip_bucket_kind=ClientIpBucketKind.ipv4,
+        route=CREATE_USER_ROUTE,
         evaluated_at=datetime.now(UTC),
         attempt_id=uuid4(),
     )
