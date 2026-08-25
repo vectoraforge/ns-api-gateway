@@ -1,20 +1,4 @@
-"""CREATE-02: the route's mode-signal **dispatch**, exhaustively, at unit speed.
-
-`tests/unit/test_mode_signal.py` already proves the classifier. This module proves the thing one
-layer up -- that `POST /auth/create-user` actually routes each classification to the right place,
-and that a rejected classification touches nothing.
-
-**Status and body code are both asserted on every rejection, always.** 37-RESEARCH Pitfall 6 is
-precisely the failure where the permissive body typing is quietly lost and every wrong-typed handle
-becomes FastAPI's 422 `validation_error` instead of §02's 400 `invalid_request`. Those are
-different classes saying different things, and a status-only assertion would not notice: both are
-4xx, both carry a JSON body, and the route would look fine in review.
-
-The app here mirrors `conftest.py`'s `client` fixture -- the identity context is supplied instead of
-installing the barrier, because what a handler does *once admitted* is this module's subject.
-`get_raw_query_string` is deliberately **not** overridden: the duplicated-`challenge` case is only
-visible in the raw ASGI bytes, so overriding that accessor would stub out the very thing under test.
-"""
+"""The route's mode-signal dispatch: every rejection asserts the body code as well as the status."""
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -36,19 +20,12 @@ from .conftest import TEST_ISSUER
 
 UNLINKED_SUBJECT = "unlinked-mode-signal-subject"
 
-# The path template the real dependency would put on the context for this route. Only the mode
-# signal is under test here, and nothing below reads this value -- it is supplied because
-# `RequestContext` requires it.
+# Supplied only because `RequestContext` requires it; nothing below reads the value.
 CREATE_USER_ROUTE = "/auth/create-user"
 
 
 class _RecordingChallengeStore:
-    """Records what the route asked of the store, and answers the minimum to observe dispatch.
-
-    `issue` returns a fixed pair, so prepare answers 200. `locate` returns `None`, so completion
-    answers `challenge_required` -- a 409 that could not have been produced by prepare or by a
-    mode-signal rejection, which makes it a positive signal of *which* branch ran.
-    """
+    """Records what the route asked of the store, and answers the minimum needed to observe dispatch."""
 
     def __init__(self) -> None:
         self.issued: list[str] = []
@@ -69,21 +46,7 @@ class _EmptyResult:
 
 
 class _UnlinkedSession:
-    """A session that answers "no such identity row" and records what it was asked.
-
-    Prepare mode really does read the database once, and that is not an accident to stub away: it
-    is §02 prepare step 1's racy already-linked pre-check, which for a pre-auth caller is a single
-    direct read. `statements` is recorded so a case can assert *one* -- a second read appearing
-    here would mean the handler had grown a second identity resolution, which §1.4 forbids.
-
-    `commit` still raises, because no path this module drives may reach one: a mode-signal
-    rejection precedes everything, and prepare's own transaction is committed by `get_db`'s
-    teardown, which this app overrides away.
-
-    **`rollback` records rather than raising** (37-08). The two completion cases here reach
-    `challenge_not_found`, which releases the read transaction `locate` opened. The count is kept
-    so the release stays observable rather than merely tolerated.
-    """
+    """Answers no-such-identity-row and records what it was asked, so a second read would be visible."""
 
     def __init__(self) -> None:
         self.statements: list[object] = []
@@ -146,8 +109,7 @@ class TestTheTwoModesDispatch:
         assert set(response.json()) == {"challenge_id", "expires_at"}
         assert store.issued == ["create_user"]
         assert store.located == []
-        # Exactly one read: §02 prepare step 1's racy pre-check, and nothing else. A second would
-        # mean the handler had grown an identity resolution of its own.
+        # A second read would mean the handler had grown an identity resolution of its own.
         assert len(session.statements) == 1
 
     def test_a_body_handle_with_no_challenge_parameter_is_completion(self, client, store, session):
@@ -158,14 +120,12 @@ class TestTheTwoModesDispatch:
         assert response.json() == {"code": "challenge_required"}
         assert store.located == ["a-handle"]
         assert store.issued == []
-        # This arm releases `locate`'s read transaction, so it rolls back exactly once. Asserted,
-        # not merely tolerated: the fake counts instead of raising, so without this a spurious
-        # rollback anywhere in the module would pass silently.
+        # This arm releases `locate`'s read transaction, so a spurious rollback elsewhere fails here.
         assert session.rollbacks == 1
 
 
 class TestTheInvalidRequestPartition:
-    """Every shape §02 pins to `invalid_request`, and each asserts the code as well as the status."""
+    """Every shape pinned to `invalid_request`, each asserting the code as well as the status."""
 
     def test_both_signals_together(self, client):
         _assert_invalid_request(
@@ -178,11 +138,7 @@ class TestTheInvalidRequestPartition:
         _assert_invalid_request(client.post("/auth/create-user", json={}))
 
     def test_a_duplicated_challenge_parameter(self, client):
-        """The case a first-value-wins query accessor cannot see.
-
-        `request.query_params.get("challenge")` folds duplicates and answers `"true"`, so this
-        would dispatch to prepare -- which is exactly why the route parses the raw ASGI bytes.
-        """
+        """A first-value-wins accessor folds duplicates, which is why the route parses the raw ASGI bytes."""
         _assert_invalid_request(client.post("/auth/create-user?challenge=true&challenge=true"))
 
     @pytest.mark.parametrize("query", ["challenge=1",
@@ -198,13 +154,7 @@ class TestTheInvalidRequestPartition:
     @pytest.mark.parametrize("handle", [None, "", "   ", "\t\n", 123, 0, 1.5, True,
                                         ["a-handle"], {"value": "a-handle"}])
     def test_an_unusable_body_handle_is_400_and_never_422(self, client, handle):
-        """Pitfall 6, parametrized.
-
-        `123` and `{"value": ...}` are the load-bearing members: a `challenge_id: str | None`
-        annotation would make both a Pydantic `validation_error` (422), a class §02 never names for
-        this route. The `True` case is subtler still -- `bool` is a subclass of `int`, so a
-        permissive annotation admits it and only the classifier's `isinstance(..., str)` rejects it.
-        """
+        """A typed annotation would make these a Pydantic 422, a class this route never answers with."""
         response = client.post("/auth/create-user", json={"challenge_id": handle})
 
         _assert_invalid_request(response)
@@ -213,13 +163,7 @@ class TestTheInvalidRequestPartition:
 
 class TestTheWhitespaceAsymmetry:
     def test_a_padded_handle_reaches_completion_untouched(self, client, store, session):
-        """Deliberately **not** `invalid_request` -- and it must arrive byte-for-byte.
-
-        `.strip()` in the classifier decides emptiness only; `locate` compares byte-for-byte, so a
-        padded handle is a handle that does not exist (`challenge_not_found`), not a malformed
-        request. Trimming it anywhere on the way down would widen a secret capability handle into a
-        family of handles, from two modules away.
-        """
+        """Trimming anywhere on the way down would widen a secret capability handle into a family of handles."""
         response = client.post("/auth/create-user", json={"challenge_id": "  a-handle  "})
 
         assert response.status_code == 409
@@ -229,7 +173,7 @@ class TestTheWhitespaceAsymmetry:
 
 
 class TestTheRejectionHasNoSideEffects:
-    """§02: the rejection issues nothing, consumes nothing, and reads nothing."""
+    """The rejection issues nothing, consumes nothing, and reads nothing."""
 
     @pytest.mark.parametrize("kwargs", [
         {"params": {"challenge": "true"}, "json": {"challenge_id": "a-handle"}},
@@ -251,11 +195,7 @@ class TestTheRejectionHasNoSideEffects:
         assert fake_firebase_adapter.calls == []
 
     def test_a_prepare_after_a_rejection_still_succeeds(self, client, store):
-        """The proof that the rejection left no residue.
-
-        A corrected retry may reuse the same unexpired challenge precisely because nothing was
-        touched, so the second request has to behave as though the first never happened.
-        """
+        """A corrected retry may reuse the same unexpired challenge, so the second request must behave as the first."""
         _assert_invalid_request(client.post("/auth/create-user"))
 
         response = client.post("/auth/create-user?challenge=true")

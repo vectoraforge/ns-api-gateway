@@ -1,34 +1,4 @@
-"""`ResiliencePolicy.ainvoke`'s retry contract, pinned by counts and classes (37 D-05).
-
-This is a **characterization** suite: it was written and made green against the hand-rolled
-`for attempt in range(...)` loop *before* that loop was converted to `tenacity`, so a behavioural
-drift introduced by the conversion is a red test here rather than a production incident on
-`POST /chats`.
-
-It exists because nothing else covers this code. `tests/unit/test_services.py` mocks
-`llm_service` wholesale -- `tests/unit/conftest.py` says so in as many words -- so the real
-`on_admitted` callback never fires there and the resilience layer is never entered. The plan
-described `test_services.py` as this conversion's primary oracle for the once-only contract; it is
-not one, and before this file the only coverage of the once-only rule lived in `tests/e2e/`,
-behind real infrastructure. That is the gap this file closes.
-
-Three behaviours are the whole point, and each is a way to lose a user's money or the product's
-primary route:
-
-1. **`on_admitted` fires at most once across every attempt.** It debits a paid allowance, so a
-   second fire is a second charge for one request (T-37-20). A callback that *raises* has still
-   had its one chance -- the flag is set before the await, deliberately -- so a retry must not
-   call it again to find out whether it raises twice.
-2. **A permanent error costs exactly one provider call** (T-37-21). A predicate that ignores
-   `_is_transient_error` turns every permanent failure into three calls.
-3. **The `_AdmissionRejected` path records no circuit-breaker failure** (T-37-22). It is the
-   caller's own callback refusing, not the provider; counting it would let one caller's exhausted
-   allowance trip the breaker and take the route down for everyone.
-
-Every assertion below is a count or an exception class. The breaker is *wrapped*, never replaced,
-so its own state transitions stay real -- `test_circuit_open_propagates_unwrapped` depends on the
-real breaker actually opening.
-"""
+"""A characterization suite for `ResiliencePolicy.ainvoke`: every assertion is a call count or an exception class."""
 import asyncio
 
 import pytest
@@ -47,21 +17,14 @@ MAX_ATTEMPTS = 3
 BACKOFF_BASE = 0.5
 BACKOFF_MAX = 1.5
 
-# `TimeoutError` is `asyncio.TimeoutError` since 3.11 -- the same object `_is_transient_error`
-# tests first. A real class, not a mock, so the predicate is exercised rather than stubbed.
+# A real class, not a mock, so `_is_transient_error` is exercised rather than stubbed.
 TRANSIENT = TimeoutError
-# Nothing in `_is_transient_error` matches a bare ValueError: no timeout base, no openai class, no
-# `status_code`, no `response.status_code`. It is the permanent case by construction.
+# Nothing in `_is_transient_error` matches a bare ValueError, so it is permanent by construction.
 PERMANENT = ValueError
 
 
 def make_config(**overrides) -> ResilienceConfig:
-    """A config whose gate never rejects and whose breaker never opens, unless a case says so.
-
-    Isolating one seam at a time is the point: with `pool_size`/`queue_size` roomy and the failure
-    threshold far above any single case's failure count, a retry-count assertion cannot be
-    satisfied (or broken) by the gate or the breaker instead of the retry policy.
-    """
+    """A config whose gate never rejects and whose breaker never opens, so a count can only move for one reason."""
     return ResilienceConfig(**{"pool_size": 4,
                                "queue_size": 8,
                                "queue_retry_after_seconds": 2,
@@ -80,12 +43,7 @@ def expected_backoff(attempt: int, *, base: float = BACKOFF_BASE, cap: float = B
 
 
 class ScriptedOperation:
-    """An async operation that raises or returns a scripted step per call, and counts its calls.
-
-    The last step repeats, so `ScriptedOperation(TRANSIENT)` fails on every attempt. Steps are
-    exception *classes*, not instances: a fresh instance per call keeps the `__context__` chain
-    that `raise ... from e` builds free of self-reference.
-    """
+    """An async operation raising or returning a scripted step per call; the last step repeats forever."""
 
     def __init__(self, *steps):
         self.steps = steps
@@ -100,11 +58,7 @@ class ScriptedOperation:
 
 
 class CountingCallback:
-    """An `on_admitted` that counts every fire, and optionally raises a caller-owned error.
-
-    The count is what proves the once-only rule; `raises` is what proves a raising callback is
-    still spent.
-    """
+    """An `on_admitted` that counts every fire, and optionally raises a caller-owned error."""
 
     def __init__(self, raises: BaseException | None = None):
         self.calls = 0
@@ -117,12 +71,7 @@ class CountingCallback:
 
 
 class BreakerSpy:
-    """Counts `record_failure` / `record_success` by wrapping the real methods on the real breaker.
-
-    Wrapping rather than replacing is load-bearing: the breaker's own failure counting and opening
-    must keep happening, because `test_circuit_open_propagates_unwrapped` drives it through a real
-    open transition rather than asserting against a stub.
-    """
+    """Counts by wrapping the real breaker's methods, so its own failure counting and opening keep happening."""
 
     def __init__(self, policy: ResiliencePolicy):
         breaker = policy._circuit_breaker
@@ -145,14 +94,7 @@ class BreakerSpy:
 
 @pytest.fixture
 def sleeps(monkeypatch):
-    """Record every backoff duration instead of waiting it out; returns the list of durations.
-
-    Patching the `asyncio` module attribute (rather than a name bound inside `resilience`) keeps
-    this working across the conversion: the hand-rolled loop and the converted policy both reach
-    `asyncio.sleep` by attribute lookup at call time. Delegating to a real zero-second sleep
-    preserves the event-loop yield, so concurrency-shaped behaviour is unchanged while the whole
-    file stays well inside the 30 s feedback budget.
-    """
+    """Record every backoff duration instead of waiting it out; returns the list of durations."""
     recorded: list[float] = []
     real_sleep = asyncio.sleep
 
@@ -175,7 +117,7 @@ def spy(policy) -> BreakerSpy:
 
 
 class TestOnAdmittedFiresAtMostOnce:
-    """T-37-20. Each case is one request; `admit.calls` must be 1 in all of them, never 2."""
+    """Each case is one request, and it debits a paid allowance, so a second fire is a second charge."""
 
     async def test_fires_once_when_the_first_attempt_succeeds(self, policy, spy, sleeps):
         operation = ScriptedOperation("ok")
@@ -217,7 +159,6 @@ class TestOnAdmittedFiresAtMostOnce:
         with pytest.raises(QuotaExceededError) as exc_info:
             await policy.ainvoke(operation, on_admitted=admit)
 
-        # The caller's own class and instance, not a TransientLLMError and not a PermanentLLMError:
         # `_AdmissionRejected` is unwrapped, so a 429 stays a 429 instead of becoming a 503.
         assert exc_info.value is rejection
         assert exc_info.value.__cause__ is None  # `raise ... from None`
@@ -230,8 +171,7 @@ class TestOnAdmittedFiresAtMostOnce:
         with pytest.raises(QuotaExceededError):
             await policy.ainvoke(operation, on_admitted=admit)
 
-        # T-37-22: a caller's own rejection must not count against the circuit breaker, or one
-        # exhausted allowance would open it for everybody.
+        # A caller's own rejection must not count, or one exhausted allowance would open the breaker for all.
         assert (spy.failures, spy.successes) == (0, 0)
         assert operation.calls == 0
         assert sleeps == []
@@ -263,8 +203,7 @@ class TestErrorClassification:
         with pytest.raises(PermanentLLMError) as exc_info:
             await policy.ainvoke(operation, on_admitted=CountingCallback())
 
-        # T-37-21: one call, not three. A predicate that ignores `_is_transient_error` triples the
-        # cost and the latency of every permanent failure.
+        # One call, not three: a predicate ignoring `_is_transient_error` triples every permanent failure.
         assert operation.calls == 1
         assert isinstance(exc_info.value.__cause__, PERMANENT)
         assert sleeps == []
@@ -279,8 +218,7 @@ class TestErrorClassification:
         assert spy.failures == 2
 
     async def test_an_operation_timeout_is_transient(self, spy, sleeps):
-        # The `asyncio.wait_for` wrapper, not a scripted raise: the timeout path is the one
-        # transient case the policy produces itself rather than receiving from the provider.
+        # The timeout is the one transient case the policy produces itself rather than receiving.
         policy = ResiliencePolicy(make_config(timeout_seconds=0.01))
         BreakerSpy(policy)
         calls = 0
@@ -300,8 +238,7 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
     """`QueueFullError` and `CircuitOpenError` are already the right answer with the right status."""
 
     async def test_queue_full_propagates_unwrapped_and_is_not_retried(self, policy, spy, sleeps):
-        # Drain every in-flight slot so the next admission is refused. Holding them with concurrent
-        # blocked operations would test the same branch less deterministically.
+        # Drain every in-flight slot so the next admission is refused, deterministically.
         while True:
             try:
                 policy._gate._slots.get_nowait()
@@ -362,7 +299,7 @@ class TestFailureAccounting:
 
 
 class TestBackoffSchedule:
-    """T-37-23. The converted policy must not lengthen the wait a caller already waits."""
+    """The converted policy must not lengthen the wait a caller already waits."""
 
     async def test_schedule_matches_the_exponential_formula(self, policy, spy, sleeps):
         with pytest.raises(TransientLLMError):
@@ -395,8 +332,7 @@ class TestBackoffSchedule:
         assert sleeps == []
 
     async def test_zero_backoff_records_no_sleep_at_all(self, spy, sleeps):
-        # `retry_backoff_base_seconds` is `ge=0`, so 0 is a legal config. The hand-rolled loop
-        # guards with `if backoff > 0`, so it issues no sleep call whatsoever -- not a sleep(0).
+        # A base of 0 is a legal config, and it must issue no sleep call at all rather than a sleep(0).
         policy = ResiliencePolicy(make_config(retry_backoff_base_seconds=0.0,
                                               retry_backoff_max_seconds=0.0))
         BreakerSpy(policy)

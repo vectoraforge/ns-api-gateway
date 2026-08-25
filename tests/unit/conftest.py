@@ -28,10 +28,7 @@ from nativespeaker.api.models.users import User
 from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router
 from nativespeaker.api.services import ChatService
 
-# ---------------------------------------------------------------------------
-# JWT test infrastructure -- ephemeral RSA keypair and token factory
-# (migrated from tests/jwt_helpers.py)
-# ---------------------------------------------------------------------------
+# JWT test infrastructure: an ephemeral RSA keypair and a token factory.
 
 TEST_PROJECT_ID = "test-project"
 TEST_ISSUER = f"https://securetoken.google.com/{TEST_PROJECT_ID}"
@@ -73,13 +70,7 @@ def make_token(sub: str = "test-user", *,
 
 
 class _FixedKeyVerifier:
-    """Standalone verifier that uses a fixed public key instead of fetching JWKS.
-
-    It differs from `JWTVerifier` in exactly one respect -- where the key comes from. The
-    algorithm pin, the `require` list, the exception -> bounded-reason mapping and the
-    non-empty-`sub` rule are the production ones, imported rather than reimplemented, so this stub
-    cannot drift away from what it stands in for.
-    """
+    """A fixed public key instead of JWKS; every other rule is imported from production, so this cannot drift."""
 
     def __init__(self):
         self._audience = TEST_PROJECT_ID
@@ -107,10 +98,7 @@ def make_test_verifier() -> _FixedKeyVerifier:
     return _FixedKeyVerifier()
 
 
-# The v1.6 `TEST_USER` was built from four columns the v2.0 schema dropped, so what stands in for
-# an authenticated caller now is the §1.4 identity context the barrier attaches -- built over the
-# real model classes, at their repaired shape. Handlers read `identity.user.id` and nothing else,
-# so the id is the whole contract.
+# Handlers read identity.user.id and nothing else, so the id is the whole contract.
 TEST_SUBJECT = "test-user"
 TEST_USER_ID = uuid7()
 TEST_IDENTITY = LinkedIdentity(
@@ -142,11 +130,7 @@ def mock_chats_db():
 @pytest.fixture
 def service(mock_chats_db):
     llm_service = AsyncMock()
-    # An explicit stub gate, not an omitted argument: `ChatService` requires one so that a wiring
-    # slip serves both quota-checked POSTs free instead of failing. These cases' subject is chat
-    # behaviour, not the charge, and `llm_service` is an `AsyncMock` here -- so the real
-    # `on_admitted` callback never fires and this gate is never called. `tests/e2e/test_quota.py`
-    # is where the charge itself is proven, against the real resilience layer.
+    # An explicit stub gate, not an omitted argument: ChatService requires one, so a wiring slip cannot serve free.
     quota_gate = AsyncMock()
     svc = ChatService(db=MagicMock(),
                       llm_service=llm_service,
@@ -161,17 +145,7 @@ def service(mock_chats_db):
 
 @pytest.fixture
 def client(mock_chats_db, service):
-    """The four surviving routers with the identity supplied instead of being resolved.
-
-    Overriding `get_linked_identity` is all it takes under D-07, and that is the simplification the
-    dependency swap bought: the accessor these routers declare at the router level is the same
-    object their endpoints declare, so one `dependency_overrides` entry covers both and no
-    middleware has to be installed or suppressed.
-
-    This fixture's subject is what a handler does *once admitted*. What happens when admission
-    refuses is `test_identity_accessors.py`'s and `test_auth_security.py`'s subject, and neither
-    overrides the accessor.
-    """
+    """Four routers with the identity supplied: one override covers both the router-level and endpoint declaration."""
     app = FastAPI()
     app.include_router(root_router)
     app.include_router(chats_router)
@@ -182,44 +156,17 @@ def client(mock_chats_db, service):
     app.dependency_overrides[get_db] = lambda: MagicMock()
     app.dependency_overrides[get_chat_service] = lambda: service
     app.dependency_overrides[get_linked_identity] = lambda: TEST_IDENTITY
-    # No quota override is needed, and there is nothing left to override (REBIND-06). The charge
-    # used to be two decorator dependencies, each needing its own line here because overrides key
-    # on the exact callable; it now travels inside the `ChatService` the line above already
-    # replaces, whose `quota_gate` is a stub. This app still has no `state.session_factory`, and
-    # no longer needs one: nothing on these paths reaches real quota code.
+    # No quota override is needed: the charge travels inside the ChatService replaced above, whose gate is a stub.
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client
 
 
-# ---------------------------------------------------------------------------
-# The shared §7.1 provider-seam fake (37-07 Task 3)
-#
-# It lives here rather than in a per-test module because every substituted create-user test needs
-# it: this phase's mode-signal, precedence and transaction suites, 37-08's rejection matrix, and
-# 37-10's step-10 email cases. `tests/e2e/conftest.py` imports it too, for the same reason it
-# already imports `make_test_verifier` from this file -- `pythonpath = ["."]` makes both packages
-# importable, and two copies of a fake are two things that can drift apart.
-# ---------------------------------------------------------------------------
+# The provider-seam fake lives here because the create-user suites and tests/e2e both need it.
 
 
 class FakeFirebaseAdapter:
-    """A stand-in for the provider seam whose answer the caller writes.
-
-    Scriptable on **all four** of `ProviderDataResult`'s fields -- `outcome`, `entries`, `email`
-    and `email_verified`. The last two are not optional extras: §02 step 10's copy rule reads that
-    pair, and a fake that could not vary them would send 37-10 looking for a second fake.
-
-    `calls` records every `(issuer, subject)` pair, so a test can assert both *that* the provider
-    was read and *how often*. §02 step 8 pins exactly one read per completion, and only a
-    `retryable_failure` may ever spend more -- an assertion on `len(calls)` is what keeps a future
-    stray second read visible instead of merely slow.
-
-    `async def`, matching the concrete adapter rather than the Protocol: `FirebaseAdminLookup`
-    offloads its blocking SDK call to a threadpool and is therefore awaitable, and `auth/retry.py`
-    awaits whatever it is handed. A synchronous fake would pass against itself and fail against
-    production wiring.
-    """
+    """A scriptable stand-in for the provider seam; async because a synchronous fake would fail against real wiring."""
 
     def __init__(self) -> None:
         self.result = ProviderDataResult(ProviderDataOutcome.ok)

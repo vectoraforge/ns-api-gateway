@@ -1,10 +1,4 @@
-"""§1.2 JWT verification rules: acceptance, bounded-reason rejection, and the anti-oracle shape.
-
-Every rejection branch returns `(None, BoundedReason.<member>)` rather than raising. The bounded
-reason is the only thing distinguishing one acceptance failure from another -- every one of them
-answers the client with the identical `auth_required` -- so it has to reach the security log as a
-*value*, which is what returning it buys and raising would not.
-"""
+"""Every rejection returns a bounded reason rather than raising, so the reason reaches the security log as a value."""
 
 import threading
 import time
@@ -40,12 +34,7 @@ def verifier():
 
 
 def hs256_over(secret: bytes, payload: dict) -> str:
-    """Hand-build an HS256 token keyed on `secret`.
-
-    PyJWT refuses to *encode* HS256 with a PEM key, so the classic confusion attack cannot be
-    expressed through `pyjwt.encode`. An attacker has no such guard -- they emit the compact form
-    directly, which is what this reproduces.
-    """
+    """Hand-build an HS256 token keyed on `secret`, because PyJWT refuses to encode one with a PEM key."""
     import base64
     import hashlib
     import hmac
@@ -247,7 +236,7 @@ class TestValidToken:
 
 
 class TestVerifiedClaims:
-    """§1.2: the accepted value object carries the verified (iss, sub) and nothing else."""
+    """The accepted value object carries the verified (iss, sub) and nothing else."""
 
     def test_carries_exactly_issuer_and_subject(self):
         assert sorted(VerifiedClaims.__dataclass_fields__) == ["issuer", "subject"]
@@ -263,14 +252,14 @@ class TestVerifiedClaims:
             claims.subject = "changed"  # type: ignore[invalid-assignment]
 
     def test_carries_no_email_or_name(self):
-        """§1.2 and SHARED-INVARIANTS forbid deriving identity or classification from claims."""
+        """Identity and classification are never derived from claims."""
         claims = VerifiedClaims(issuer=TEST_ISSUER, subject="abc123")
         assert not hasattr(claims, "email")
         assert not hasattr(claims, "name")
 
 
 class TestAntiOracle:
-    """§1.2: every acceptance-failure branch is shaped identically and none raises."""
+    """Every acceptance-failure branch is shaped identically and none raises."""
 
     @pytest.mark.parametrize("name,builder", [
         ("wrong_issuer", lambda: make_token("u", iss="https://evil.example.com")),
@@ -295,15 +284,7 @@ class TestAntiOracle:
 
 
 class TestProductionVerifier:
-    """The §1.2 claim rules against the real `JWTVerifier`, with the JWKS client substituted.
-
-    Substituting the client is legitimate isolation *here*: every case below is about issuer,
-    audience, algorithm or subject, and where the key came from is irrelevant to all four. It is
-    illegitimate for a case about fetch counts, which is why the one that used to live here was
-    deleted rather than repaired -- `get_signing_keys.call_count == 0` held whatever the production
-    code did, because `verify()` calls `get_signing_key_from_jwt` instead (WR-05). Fetch counts now
-    live in `TestTheJwksTransportIsNotHitPerRequest`, measured at the transport under a real client.
-    """
+    """The claim rules against the real verifier; substituting the JWKS client isolates them, not fetch counts."""
 
     @pytest.fixture
     def jwks_client(self):
@@ -337,11 +318,7 @@ class TestProductionVerifier:
         instance.get_signing_keys.assert_called_once_with()
 
     def test_the_default_fetch_timeout_is_bounded(self, jwks_client):
-        """The bound has to hold for the call site that passes nothing -- which is the real one.
-
-        `app/lifespan.py` constructs the verifier without the keyword, so pinning only the explicit
-        value would leave production on PyJWT 2.12.1's 30-second default with a green test beside it.
-        """
+        """The bound must hold for the call site that passes nothing, which is the one production uses."""
         mock_cls, _ = jwks_client
         JWTVerifier(jwks_url="https://jwks.invalid/keys",
                     audience=TEST_PROJECT_ID,
@@ -369,20 +346,7 @@ class TestProductionVerifier:
 
 
 class TestTheJwksTransportIsNotHitPerRequest:
-    """Fetch counts, measured at the transport under a **real** `PyJWKClient`.
-
-    This class replaces the deleted `TestProductionVerifier` fetch-count case, which counted calls
-    to a method the code under test never invoked, on a client class that had been substituted
-    wholesale -- an assertion that held whatever the production code did (WR-05). The seam here is
-    `urllib.request.urlopen`, the one blocking call `PyJWKClient.fetch_data` makes, so every fetch
-    the real path performs is counted and none can hide.
-
-    Two cases exist to keep the rest honest.
-    `test_with_the_negative_cache_disabled_each_repeat_costs_a_fetch` shows the harness registering
-    real fetches, so a zero is evidence rather than an artefact; and
-    `test_distinct_unknown_kids_still_cost_one_fetch_each` states the residual this fix deliberately
-    accepts (T-35-12-03) somewhere a later phase will find it.
-    """
+    """Fetch counts measured at `urlopen` under a real client, with a control case so a zero is evidence."""
 
     @pytest.fixture
     def counted_transport(self, monkeypatch):
@@ -393,7 +357,7 @@ class TestTheJwksTransportIsNotHitPerRequest:
                            **kwargs)
 
     def test_the_constructor_fetch_carries_a_bounded_timeout(self, counted_transport):
-        """T-35-12-02: the bound is observed on the wire, not read off the constructor."""
+        """The bound is observed on the wire, not read off the constructor."""
         self.build()
         assert len(counted_transport) == 1, "the warm-up is exactly one fetch"
         assert all(t is not None and t <= 5 for t in counted_transport.timeouts), \
@@ -417,12 +381,7 @@ class TestTheJwksTransportIsNotHitPerRequest:
         assert len(counted_transport) == 5
 
     def test_distinct_unknown_kids_still_cost_one_fetch_each(self, counted_transport):
-        """T-35-12-03, pinned rather than assumed away: the per-`kid` cache caps repeats, not spread.
-
-        Accepted because Envoy rate-limits by IP, user and URL, and because T-35-12-01 removes the
-        reason rate limiting could not help -- the fetch no longer blocks the loop. A global refresh
-        cooldown would cap this too, at the price of delaying a legitimate key rotation.
-        """
+        """The per-`kid` cache caps repeats, not spread; that residual is accepted because Envoy rate-limits."""
         verifier = self.build()
         counted_transport.timeouts.clear()
         for i in range(5):
@@ -430,7 +389,7 @@ class TestTheJwksTransportIsNotHitPerRequest:
         assert len(counted_transport) == 5
 
     def test_a_cached_rejection_is_indistinguishable_from_a_fetched_one(self, counted_transport):
-        """T-35-12-06: the cache-hit path yields the same bounded reason as the fetched path."""
+        """The cache-hit path yields the same bounded reason as the fetched path."""
         verifier = self.build()
         token = make_token("u", headers={"kid": "unknown-1"})
         counted_transport.timeouts.clear()
@@ -443,12 +402,7 @@ class TestTheJwksTransportIsNotHitPerRequest:
         assert fetched == cached == (None, BoundedReason.bad_signature)
 
     def test_a_jwks_connection_failure_does_not_mark_the_kid_unknown(self, counted_transport):
-        """T-35-12-04: an outage must not become a longer self-inflicted authentication outage.
-
-        `PyJWKClientConnectionError` says the *endpoint* was unreachable, not that the key id is
-        bogus. Recording it would reject legitimate tokens for the whole TTL after recovery -- the
-        difference between a cache and an outage amplifier.
-        """
+        """An unreachable endpoint is not a bogus key id; recording it would extend the outage past recovery."""
         verifier = self.build()
         rotated_kid = "rotated-key-2"
         token = make_token("u", headers={"kid": rotated_kid})
@@ -463,13 +417,7 @@ class TestTheJwksTransportIsNotHitPerRequest:
             "the outage poisoned the negative cache: the recovered kid is still rejected"
 
     def test_repeated_absent_kids_share_one_sentinel_entry_and_one_fetch(self, counted_transport):
-        """FOUND-02/empty: omitting one header field must not buy an unbounded per-request fetch.
-
-        `get_signing_keys` keeps only keys with a truthy `key_id`, so a `None` `kid` can never match
-        a candidate and `get_signing_key` always falls through to `get_signing_keys(refresh=True)`,
-        which bypasses the JWK-set TTL cache. Uncached, that is one real fetch per request forever,
-        reachable by leaving `kid` out.
-        """
+        """A missing `kid` never matches a candidate, so without the sentinel it is one real fetch per request."""
         verifier = self.build()
         counted_transport.timeouts.clear()
         for _ in range(5):
@@ -502,7 +450,7 @@ class TestTheJwksTransportIsNotHitPerRequest:
         assert list(verifier._unknown_kids) == [_ABSENT_KID_SENTINEL]
 
     def test_two_equal_unknown_kids_merge_into_one_cache_entry(self, counted_transport):
-        """FOUND-02/adjacency: two equal keys neither collide onto a wrong answer nor accumulate."""
+        """Two equal key ids neither collide onto a wrong answer nor accumulate entries."""
         verifier = self.build()
         token = make_token("u", headers={"kid": "unknown-1"})
         rejected(verifier, token)
@@ -526,18 +474,13 @@ class TestTheJwksTransportIsNotHitPerRequest:
         assert len(counted_transport) == 0
 
     def test_no_signing_key_or_decision_is_memoized(self, counted_transport):
-        """T-35-12-05: the cache is negative only -- nothing an acceptance could be replayed from.
-
-        A positive cache here would keep a rotated or withdrawn key working past its own lifetime,
-        which is why the stored value is a deadline and the stored key is a key id.
-        """
+        """The cache is negative only: it stores a deadline and a key id, never anything an acceptance could replay."""
         verifier = self.build()
         rejected(verifier, make_token("u", headers={"kid": "unknown-1"}))
         assert all(isinstance(k, str) and isinstance(v, float)
                    for k, v in verifier._unknown_kids.items())
 
-        # The endpoint withdraws the key it was serving; the next request stops being accepted, so
-        # no acceptance survived in memory.
+        # The endpoint withdraws the key it was serving, so no acceptance can have survived in memory.
         counted_transport.body = jwks_body("some-other-key")
         verifier._jwks_client.jwk_set_cache = None
         assert rejected(verifier, make_token("u", headers={"kid": KNOWN_KID})) \
@@ -545,15 +488,7 @@ class TestTheJwksTransportIsNotHitPerRequest:
 
 
 class TestVerifyIsTotalUnderConcurrency:
-    """`verify` never raises -- including out of its own cache, on the threadpool it runs on.
-
-    The offload that took the JWKS fetch off the event loop also made `_unknown_kids` shared
-    mutable state reachable from every anyio worker thread at once. Unsynchronized, the sweep in
-    `_record_unknown` raises `RuntimeError: OrderedDict mutated during iteration` and the expiring
-    `del` in `_is_known_unknown` races into a `KeyError`. Neither is a `PyJWTError`, so neither is
-    caught by `verify`'s clauses, by `run_in_threadpool`, or by the barrier -- an unauthenticated
-    caller would turn a 401 into a 500 (CR-01). These cases fail loudly if the lock is removed.
-    """
+    """`verify` never raises, including out of its own cache; every case here fails if `_cache_lock` is removed."""
 
     @pytest.fixture
     def counted_transport(self, monkeypatch):
@@ -584,16 +519,7 @@ class TestVerifyIsTotalUnderConcurrency:
         return escaped
 
     def test_the_cache_bookkeeping_survives_concurrent_readers_and_writers(self, counted_transport):
-        """The race at its own seam.
-
-        The parameters are load-bearing, not decorative. `_record_unknown`'s expiry sweep is what
-        races, so the cache has to be *full* for the iteration to span enough bytecodes to be
-        preempted: at 8 entries the sweep finishes inside a single scheduler slice and this case
-        passes with the lock removed -- vacuous, the exact failure WR-05 was raised for. At the
-        production 256 with a TTL short enough to keep entries turning over and a key space wider
-        than the cache, removing `_cache_lock` yields 23 `RuntimeError`s out of 24 threads, six runs
-        out of six.
-        """
+        """The parameters are load-bearing: with a small cache the sweep finishes in one slice and passes unlocked."""
         verifier = self.build(unknown_kid_ttl_seconds=0.05, unknown_kid_cache_size=256)
 
         def churn() -> None:
@@ -606,16 +532,9 @@ class TestVerifyIsTotalUnderConcurrency:
         assert not escaped, f"cache bookkeeping is not thread-safe: {escaped[:3]}"
 
     def test_concurrent_verification_of_unknown_kids_never_raises(self, counted_transport):
-        """The same race reached the way production reaches it -- through `verify` itself.
-
-        The `kid`s vary because that is what drives the sweep: a single repeated one short-circuits
-        on its cache hit and never reaches `_record_unknown`, which makes the case unable to fail.
-        Varying them is the reachable shape anyway -- the `kid` is attacker-chosen, and WR-03 records
-        that churning it is exactly what walks past the cache.
-        """
+        """The `kid`s must vary; a repeated one short-circuits on its cache hit and the case can never fail."""
         verifier = self.build(unknown_kid_ttl_seconds=0.05, unknown_kid_cache_size=128)
-        # 256 tokens, not more: each is a real RS256 signature, and the pool dominates this case's
-        # runtime. 128/256 still reproduces the race 8-11 times per run with the lock removed.
+        # 256 tokens, not more: each is a real RS256 signature and the pool dominates the runtime.
         tokens = [make_token("u", headers={"kid": f"unknown-{i}"}) for i in range(256)]
 
         def verify_repeatedly() -> None:
@@ -627,11 +546,7 @@ class TestVerifyIsTotalUnderConcurrency:
         assert not escaped, f"verify raised instead of returning a bounded reason: {escaped[:3]}"
 
     def test_a_non_json_jwks_body_rejects_rather_than_raising(self, counted_transport):
-        """WR-01: PyJWT wraps neither `json.JSONDecodeError` nor whatever a dependency invents next.
-
-        The last-resort clause makes "never raises" structural rather than a docstring promise, so
-        this returns the same bounded reason every other rejection does.
-        """
+        """The last-resort clause makes never-raising structural, so this returns the usual bounded reason."""
         verifier = self.build()
         counted_transport.body = b"<html>502 Bad Gateway</html>"
         verifier._jwks_client.jwk_set_cache = None
@@ -653,11 +568,7 @@ class TestVerifyIsTotalUnderConcurrency:
 
     def test_a_jwks_document_with_no_usable_keys_does_not_mark_the_kid_unknown(
             self, counted_transport):
-        """WR-02, the other endpoint shape: `{"keys": []}` is a degraded endpoint, not a miss.
-
-        `PyJWKClient` raises a plain `PyJWKClientError` for it, which the previous carve-out --
-        excluding only `PyJWKClientConnectionError` -- recorded as if the key id were bogus.
-        """
+        """An empty key set is a degraded endpoint, not a miss, so the key id must not be recorded as bogus."""
         verifier = self.build()
         counted_transport.body = b'{"keys": []}'
         verifier._jwks_client.jwk_set_cache = None
