@@ -35,7 +35,7 @@ the import ordering below it.
 __all__ = [
     "ACTOR_SUBJECT_PREFIX", "AdmissionDecision", "Admit", "AuthBarrierMiddleware",
     "BoundedReason", "CHALLENGE_ID_BYTES", "CHALLENGE_TTL_SECONDS", "Category", "ChallengeRejection",
-    "ChallengeStore", "ClaimKind", "ClientIpBucketKind", "DeviceBitState",
+    "ChallengeStore", "ClaimKind", "DeviceBitState",
     "FIREBASE_HTTP_TIMEOUT_SECONDS", "FIREBASE_LOOKUP_ATTEMPTS", "FirebaseAdminAdapter",
     "FirebaseAdminLookup", "HmacConfig", "HmacKeyring", "IDP_ACCOUNT_PREFIX", "IdentityKind",
     "JWTVerifier", "LinkedIdentity", "ModeSignal", "NamedVerifier", "PreAuthIdentity",
@@ -79,7 +79,6 @@ from nativespeaker.api.auth.challenges import (
 from nativespeaker.api.auth.classifier import classify_provider_data, email_to_persist
 from nativespeaker.api.auth.context import (
     REQUEST_CONTEXT_SCOPE_KEY,
-    ClientIpBucketKind,
     IdentityKind,
     LinkedIdentity,
     PreAuthIdentity,

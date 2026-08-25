@@ -18,9 +18,8 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from nativespeaker.api.auth.context import ClientIpBucketKind, PreAuthIdentity, RequestContext
+from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.creation import create_account
-from nativespeaker.api.auth.registry import lookup
 from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult, AuthOperation
 from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.models.purchase_tokens import StorePurchaseToken
@@ -121,8 +120,7 @@ class _ConsumingStore:
 
 def _context() -> RequestContext:
     return RequestContext(identity=PreAuthIdentity(issuer=ISSUER, subject=SUBJECT),
-                          route_metadata=lookup("POST", "/auth/create-user"),
-                          client_ip_bucket_kind=ClientIpBucketKind.ipv4,
+                          route="/auth/create-user",
                           evaluated_at=NOW,
                           attempt_id=uuid4())
 

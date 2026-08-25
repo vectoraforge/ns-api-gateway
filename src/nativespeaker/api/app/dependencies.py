@@ -179,7 +179,7 @@ def get_quota_gate(request: Request) -> QuotaGate:
                      # Both from the instant the barrier captured for this request (D-06). Nothing
                      # on this path reads the system clock.
                      evaluated_at=context.evaluated_at,
-                     route=context.route_metadata.path)
+                     route=context.route)
 
 
 # ---------------------------------------------------------------------------

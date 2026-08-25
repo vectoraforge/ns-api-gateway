@@ -25,7 +25,6 @@ below a `BaseHTTPMiddleware` never propagate back up, so binding identity to `st
 and expecting the request log line to carry it would silently produce nothing (D-03 pins the stack).
 """
 from datetime import UTC, datetime
-from ipaddress import IPv6Address, ip_address
 from uuid import uuid7
 
 import structlog
@@ -33,11 +32,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.routing import Match
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from nativespeaker.api.auth.context import (
-    REQUEST_CONTEXT_SCOPE_KEY,
-    ClientIpBucketKind,
-    RequestContext,
-)
+from nativespeaker.api.auth.context import REQUEST_CONTEXT_SCOPE_KEY, RequestContext
 from nativespeaker.api.auth.identity import Reject, resolve_identity
 from nativespeaker.api.auth.registry import Category, RouteMetadata, lookup
 from nativespeaker.api.auth.telemetry import record_rejection
@@ -122,7 +117,8 @@ class AuthBarrierMiddleware:
         # and no network call is made while it is open.
         async with scope["app"].state.session_factory() as session:
             decision = await resolve_identity(session, issuer=claims.issuer,
-                                              subject=claims.subject, meta=meta)
+                                              subject=claims.subject,
+                                              allow_preauth=meta.preauth_callable)
 
         # Step 5 -- the admission matrix.
         if isinstance(decision, Reject):
@@ -131,10 +127,11 @@ class AuthBarrierMiddleware:
             return
 
         # Step 6 -- attach and dispatch.
+        # `route.path` rather than `meta.path`: the two are equal by construction here, because the
+        # metadata was looked up under the path of this very route object.
         scope.setdefault("state", {})[REQUEST_CONTEXT_SCOPE_KEY] = RequestContext(
             identity=decision.identity,
-            route_metadata=meta,
-            client_ip_bucket_kind=_bucket_kind(scope.get("client")),
+            route=route.path,
             evaluated_at=evaluated_at,
             attempt_id=attempt_id,
         )
@@ -174,19 +171,3 @@ def _match_full(scope: Scope):
 def _strictest(method: str, path: str) -> RouteMetadata:
     """The disposition an undeclared route receives: authenticated, and nothing else granted."""
     return RouteMetadata(method=method, path=path, category=Category.authenticated)
-
-
-def _bucket_kind(client) -> ClientIpBucketKind:
-    """§4.4's bucket kind, from the gateway-resolved `scope["client"]` alone.
-
-    Never recomputed from `X-Forwarded-For`, `Forwarded`, or any other client-supplied header, by
-    this function or any later one. The address itself is not carried anywhere: §9 is deferred, so
-    `xff_num_trusted_hops` is unpinned and an address would be trusted rather than proven (A3).
-    """
-    if not client:
-        return ClientIpBucketKind.unresolved
-    try:
-        address = ip_address(client[0])
-    except ValueError:
-        return ClientIpBucketKind.unresolved
-    return ClientIpBucketKind.ipv6 if isinstance(address, IPv6Address) else ClientIpBucketKind.ipv4

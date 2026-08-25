@@ -24,13 +24,11 @@ from nativespeaker.api.app.dependencies import (
 from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth.context import (
     REQUEST_CONTEXT_SCOPE_KEY,
-    ClientIpBucketKind,
     IdentityKind,
     LinkedIdentity,
     PreAuthIdentity,
     RequestContext,
 )
-from nativespeaker.api.auth.registry import lookup
 from nativespeaker.api.errors import AUTH_REQUIRED, AuthenticationError
 from nativespeaker.api.models.identities import (
     ExternalIdentity,
@@ -44,8 +42,8 @@ ACCESSORS = (get_request_context, get_linked_identity, get_preauth_identity)
 ISSUER = "https://securetoken.google.com/native-speaker"
 SUBJECT = "firebase-uid-1"
 
-# The context declares a bucket KIND and no address (A3). Any field name matching one of these
-# would be an address sneaking back in. `client_ip_bucket_kind` deliberately matches none of them.
+# The context carries no client address in any form (A3). Any field name matching one of these
+# would be an address sneaking back in.
 _ADDRESS_MARKERS = ("addr", "remote", "host", "forwarded", "xff", "peer")
 
 
@@ -67,11 +65,8 @@ def _preauth() -> PreAuthIdentity:
 
 
 def _context(identity: LinkedIdentity | PreAuthIdentity) -> RequestContext:
-    route_metadata = lookup("GET", "/chats")
-    assert route_metadata is not None, "the real registry must still declare GET /chats"
     return RequestContext(identity=identity,
-                          route_metadata=route_metadata,
-                          client_ip_bucket_kind=ClientIpBucketKind.ipv4,
+                          route="/chats",
                           evaluated_at=datetime.now(UTC),
                           attempt_id=uuid7())
 
@@ -237,9 +232,9 @@ class TestAccessorsCannotWrite:
 class TestContextShape:
     """The §1.4 field sets. Phases 36-46 import these verbatim, so they are the contract."""
 
-    def test_request_context_carries_exactly_the_five_request_scoped_values(self):
+    def test_request_context_carries_exactly_the_four_request_scoped_values(self):
         assert sorted(RequestContext.__dataclass_fields__) == [
-            "attempt_id", "client_ip_bucket_kind", "evaluated_at", "identity", "route_metadata",
+            "attempt_id", "evaluated_at", "identity", "route",
         ]
 
     def test_preauth_carries_the_verified_pair_and_nothing_else(self):
@@ -277,10 +272,7 @@ class TestContextShape:
 
 
 class TestNoClientAddressIsCarried:
-    """A3 / T-35-03-04: bucket kind only. §9 is deferred, so an address would be trusted, not proven."""
-
-    def test_the_bucket_kinds_are_exactly_the_three_declared(self):
-        assert sorted(m.value for m in ClientIpBucketKind) == ["ipv4", "ipv6", "unresolved"]
+    """A3 / T-35-03-04: no address at all. §9 is deferred, so one would be trusted, not proven."""
 
     @pytest.mark.parametrize("cls", [LinkedIdentity, PreAuthIdentity, RequestContext],
                              ids=lambda c: c.__name__)
@@ -291,10 +283,16 @@ class TestNoClientAddressIsCarried:
 
     @pytest.mark.parametrize("cls", [LinkedIdentity, PreAuthIdentity, RequestContext],
                              ids=lambda c: c.__name__)
-    def test_the_only_string_fields_are_the_verified_issuer_and_subject(self, cls):
-        """An address would have to arrive as a str; only the verified pair is one."""
+    def test_the_only_string_fields_are_the_verified_pair_and_the_route_template(self, cls):
+        """An address would have to arrive as a str, so the str fields are an enumerated set.
+
+        `route` is the third and last one. It is a **path template** the router declared, drawn
+        from a closed set fixed at import time -- not a client-supplied value, and nothing a caller
+        can steer. The verified pair is the other two.
+        """
         strings = {name for name, hint in get_type_hints(cls).items() if hint is str}
-        assert strings <= {"issuer", "subject"}, f"unexpected str field(s) on {cls.__name__}: {strings}"
+        assert strings <= {"issuer", "subject", "route"}, \
+            f"unexpected str field(s) on {cls.__name__}: {strings}"
 
 
 class TestExternalIdentityModel:

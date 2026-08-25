@@ -15,7 +15,6 @@ from uuid import uuid7
 import pytest
 
 from nativespeaker.api.auth.identity import Admit, Reject, resolve_identity
-from nativespeaker.api.auth.registry import Category, RouteMetadata
 from nativespeaker.api.auth.telemetry import record_rejection
 from nativespeaker.api.errors import (
     ACCOUNT_UNAVAILABLE,
@@ -54,11 +53,6 @@ class _StubSession:
         return _StubResult(self._row)
 
 
-def _meta(*, preauth_callable: bool = False) -> RouteMetadata:
-    return RouteMetadata(method="GET", path="/chats", category=Category.authenticated,
-                         preauth_callable=preauth_callable)
-
-
 def _row(*, identity_state=IdentityState.active, user_active: bool = True, user=...):
     """An `(identity, user)` pair shaped exactly as the single joined statement returns one."""
     user_id = uuid7()
@@ -73,7 +67,7 @@ def _row(*, identity_state=IdentityState.active, user_active: bool = True, user=
 async def _resolve(row, *, preauth_callable: bool = False):
     session = _StubSession(row)
     decision = await resolve_identity(session, issuer=ISSUER, subject=SUBJECT,
-                                      meta=_meta(preauth_callable=preauth_callable))
+                                      allow_preauth=preauth_callable)
     return decision, session
 
 

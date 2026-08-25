@@ -39,14 +39,13 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth import creation
 from nativespeaker.api.auth.challenges import ChallengeStore
-from nativespeaker.api.auth.context import ClientIpBucketKind, PreAuthIdentity, RequestContext
+from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.creation import (
     PROVIDER_ACCOUNT_INDEX_NAME,
     RACE_CONSTRAINT_NAMES,
     create_account,
 )
 from nativespeaker.api.auth.keys import HmacConfig, HmacKeyring
-from nativespeaker.api.auth.registry import lookup
 from nativespeaker.api.models.auth import AuthEventResult
 from nativespeaker.api.models.identities import IdentityProvider
 
@@ -136,8 +135,7 @@ def keyring() -> HmacKeyring:
 def context(harness: _Harness, subject: str) -> RequestContext:
     """The production route metadata, looked up rather than hand-built."""
     return RequestContext(identity=PreAuthIdentity(issuer=harness.issuer, subject=subject),
-                          route_metadata=lookup("POST", "/auth/create-user"),
-                          client_ip_bucket_kind=ClientIpBucketKind.ipv4,
+                          route="/auth/create-user",
                           evaluated_at=NOW,
                           attempt_id=uuid.uuid4())
 

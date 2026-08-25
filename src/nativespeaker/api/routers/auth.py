@@ -144,7 +144,7 @@ async def create_user(body: CreateUserRequest | None = None,
     mode = classify_mode_signal(raw_query, body_challenge_id)
     if mode is None:
         logger.warning("auth_mode_signal_invalid",
-                       route=context.route_metadata.path,
+                       route=context.route,
                        operation=str(AuthOperation.create_user),
                        # The raw value is never logged: an unusable handle is still a handle
                        # somebody typed, and the shape is the whole diagnostic.
