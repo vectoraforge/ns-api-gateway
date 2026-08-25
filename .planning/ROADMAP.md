@@ -112,7 +112,9 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
                                 └─ 46 sign-out-all
 ```
 
-Phase 35 is the first **booting** app (D-14) — imports, lifespan, and the startup enumeration assertion all run. Phase 36 is the first **fully working** one, once the chat quota path is rewired onto the grant model.
+Phase 35 is the first **booting** app (D-14) — imports and lifespan all run. Phase 36 is the first **fully working** one, once the chat quota path is rewired onto the grant model.
+
+> **Phase 37.1 amended this milestone's criteria on 2026-08-24** for two deletions: the auth-event audit subsystem (D-01) and the auth barrier middleware plus route registry (D-06). Criteria below are marked **withdrawn** (subject deleted), **reworded** (mechanism changed, substance intact), **confirmed** (became trivially true), or **blocked** (an unbuilt phase must decide). Completed-plan checkboxes record what was built and are left exactly as written. Two conflicts against `SHARED-INVARIANTS.md` are flagged, not resolved — see `REQUIREMENTS.md` under FOUND-01 and FOUND-05. This line originally also named the startup enumeration assertion, which went with the route registry.
 
 #### Phase 34: Schema
 
@@ -143,14 +145,17 @@ Plans:
 1. A fresh `pogo apply` against an empty database produces the full schema with no error and no second migration file present
 2. `(issuer, subject)` → `core.users` resolution works through `core.external_identities`, with `identity_state` and tombstone retention expressible
 3. At most one `status='active'` grant per user is enforceable, and `core.user_monthly_usage` is keyed by grant id
-4. `audit.auth_events` rejects a row with partial actor fields per its CHECK constraints
+4. ~~`audit.auth_events` rejects a row with partial actor fields per its CHECK constraints~~ — **WITHDRAWN by Phase 37.1 (D-01), 2026-08-24.** Delivered as written by Phase 34 and true until that date; the table, its nine CHECK constraints and its four indexes were then deleted from the initial migration, together with the `core.auth_event_result` type. The `audit` schema, `audit.subscription_events` and `core.auth_operation` all survive (D-02/D-04). Matching requirement: SCHEMA-06, withdrawn.
 5. Every acceptance check in `00-schema.md §10` passes
 
 > Application code referencing dropped columns breaks at this commit. Expected — see Phase 36.
 
 #### Phase 35: Foundation
 
-**Goal:** Build the shared machinery every later phase calls and none rebuilds — barrier, route registry, error registry, audit writer, provider-call budget seam, challenge store, adapter interfaces — and repair the model layer so the application boots and the enumeration assertion runs for real.
+**Goal:** Build the shared machinery every later phase calls and none rebuilds — barrier, route registry, error registry, audit writer, provider-call budget seam, challenge store, adapter interfaces — and repair the model layer so the application boots and the enumeration assertion runs for real. **[AMENDED by Phase 37.1 — three items on this list no longer exist; see the note below.]**
+
+> **Amended by Phase 37.1 (D-01/D-06), 2026-08-24 — the goal text above is left as written, because it records what Phase 35 actually set out to build and did build.** Three items on that list no longer exist: the **audit writer** was deleted outright, and the **barrier** and **route registry** were replaced by a router-level FastAPI dependency, taking the enumeration assertion with them. Still standing: the error registry, the provider-call budget seam, the challenge store, the adapter interfaces, and the admission matrix and wire contract the barrier held — those were re-hosted into the dependency, not lost.
+
 **Requirements:** FOUND-01 … FOUND-08
 **Depends on:** 34
 **Plans:** 12/12 plans complete
@@ -203,17 +208,20 @@ Plans:
 
 **Success criteria:**
 
-1. The route-enumeration assertion passes, and a route declared in zero or in two categories fails it
+1. ~~The route-enumeration assertion passes, and a route declared in zero or in two categories fails it~~ — **WITHDRAWN by Phase 37.1 (D-06), 2026-08-24.** The assertion and the parallel declaration table it compared against are both deleted. The fail-closed property it protected is now obtained **structurally**: the router a route is registered on *is* its declaration, so there is no second table left to drift, and `tests/unit/test_app_wiring.py::TestEveryRouteIsAuthenticated` asserts over `app.routes` that the public allowlist is exactly `{/health/ready}` and every other route declares the auth dependency — negative-controlled against an injected undeclared route. Matching requirement: FOUND-03, deleted outright.
 2. Zero, duplicate, comma-joined, empty, and trailing-content Authorization values each reject as `auth_required` with identical body, status, and copy
-3. The barrier admits only `identity_state='active'` AND `users.active` TRUE; every other combination rejects with nothing falling through to pre-auth
-4. A barrier rejection produces exactly one `audit.auth_events` row with all three actor fields NULL and a bounded reason
-5. The application boots clean — `nativespeaker.api` imports, the lifespan runs, and the `§2.3` enumeration assertion executes at real startup against the real router
+3. The auth dependency admits only `identity_state='active'` AND `users.active` TRUE; every other combination rejects with nothing falling through to pre-auth — **noun reworded by Phase 37.1 (D-06/D-11), 2026-08-24; the admission rule is unchanged and still holds.** `tests/e2e/test_admission.py`'s 23-case matrix passed the move with zero edits to any status code or body literal. Matching requirement: FOUND-01.
+4. ~~A barrier rejection produces exactly one `audit.auth_events` row with all three actor fields NULL and a bounded reason~~ — **WITHDRAWN by Phase 37.1 (D-01), 2026-08-24.** No auth audit row is written anywhere, on any path. What survives is `auth/telemetry.py::record_rejection`, which emits the `auth_rejected` structured log event carrying the same stable internal result, the same bounded reason and the route template on every rejection (D-03) — a log line, not a durable queryable row. Matching requirement: FOUND-05, withdrawn, where the `SHARED-INVARIANTS.md` conflict is flagged.
+5. The application boots clean — `nativespeaker.api` imports and the lifespan runs at real startup against the real router — **amended by Phase 37.1 (D-06), 2026-08-24:** this criterion also named the `§2.3` enumeration assertion executing at startup, which was deleted with the route registry. The boot-clean half is unchanged and still holds.
 
 > Scope changed by the Phase 35 discussion (`35-CONTEXT.md`): `§5` backend rate limiting is deleted from the product (D-05, Envoy Gateway owns request-rate enforcement) and `§9` the Envoy contract is deferred to v2.1 (D-08). Per D-14/D-15 the phase now ends booting — chat and quota routes still fail at runtime until Phase 36 rewires them.
 
 #### Phase 36: Rebind Pre-existing Routes
 
-**Goal:** Put the eight pre-existing routes behind the barrier and rewire the chat quota path onto the grant model, restoring a running application. (The ninth was `GET /users/me`, deleted by Phase 35 D-16 alongside its router and re-declared in Phase 39 — `auth/registry.py` and success criterion 2 below both total eight.)
+**Goal:** Put the eight pre-existing routes behind the barrier and rewire the chat quota path onto the grant model, restoring a running application. (The ninth was `GET /users/me`, deleted by Phase 35 D-16 alongside its router and re-declared in Phase 39 — `auth/registry.py` and success criterion 2 below both total eight.) **[AMENDED by Phase 37.1 — the barrier is now a dependency and `auth/registry.py` is deleted; see the note below.]**
+
+> **Amended by Phase 37.1 (D-06), 2026-08-24.** "Behind the barrier" now means behind the router-level auth dependency, and `auth/registry.py` is deleted — the eight-route count is carried by success criterion 2 and `tests/unit/test_app_wiring.py` alone. **Which routes are authenticated did not change**, and neither did the quota rewiring this goal is mostly about.
+
 **Requirements:** REBIND-01 … REBIND-06 (REBIND-04 is void — see `REQUIREMENTS.md:49`)
 **Depends on:** 34, 35
 **Plans:** 5/5 plans complete
@@ -240,7 +248,7 @@ Plans:
 
 1. The application starts and every pre-existing route serves as it did in v1.6, apart from auth rejections now using the shared error classes
 2. `GET /health/ready` is reachable unauthenticated; `GET /`, `GET /examples`, and all five `/chats` routes reject an unauthenticated caller
-3. No `audit.auth_events` row is written by any of these routes, including on barrier rejection — the bounded counter metric increments instead
+3. No `audit.auth_events` row is written by any of these routes, including on admission rejection — the rejection's stable internal result goes to the structured security log instead. **CONFIRMED and reworded by Phase 37.1 (D-01/D-03), 2026-08-24:** the audit clause became **trivially true** rather than false — no route anywhere writes one and the table is gone — so it is kept rather than deleted, because it still binds. The counter clause was already false: Phase 36 D-15 removed the hand-rolled `RejectionCounter`. Matching requirement: REBIND-02.
 4. A missing usage row fails a quota-checked chat request closed rather than minting one (the `quota_checked_request` admission entry is void — Phase 35 D-05)
 5. Lazy rollover resets `monthly_used` inside the same locked transaction when the stored period is stale, with grant-then-usage lock order and no network call under lock
 
@@ -323,7 +331,7 @@ Plans:
 1. Grant, `current_period`, and `monthly_used` all derive from one evaluation time and match what quota enforcement would independently act on at the same instant
 2. Zero effective grants and a lapsed grant return byte-identical responses
 3. Table state is unchanged across a request — verified by comparing `core.*` before and after
-4. Every attempt writes exactly one `audit.auth_events` row with `operation='sync'`, barrier rejections included
+4. **BLOCKED: requires a mechanism Phase 37.1 deleted. Phase 38 must decide.** As written: every attempt writes exactly one `audit.auth_events` row with `operation='sync'`, admission rejections included. The table, the writer and every call site were deleted by Phase 37.1 (D-01), 2026-08-24, before this phase was built. **Phase 38 owns the decision and must make it explicitly, choosing one:** (a) rebuild a durable record for `operation='sync'`, accepting that it reintroduces the subsystem D-01 removed; or (b) drop the durable-row obligation and satisfy the intent with the structured log — `record_rejection` already covers the rejection arm, so only a success event would be new. Phase 37.1 deliberately does not choose. Matching requirement: SYNC-03, and see the flagged `SHARED-INVARIANTS.md` conflict under FOUND-05 — the binding specification still mandates the row.
 
 #### Phase 39: GET /users/me
 
@@ -334,7 +342,7 @@ Plans:
 
 1. The response carries an entry for every store provider regardless of client platform, User-Agent, or any client-supplied signal
 2. `identity_provider` comes from the stored column and matches what `/auth/sync` reports
-3. No `audit.auth_events` row is ever written by this route, including on barrier rejection
+3. No `audit.auth_events` row is ever written by this route, including on admission rejection — **CONFIRMED by Phase 37.1, 2026-08-24: trivially true**, since no route anywhere writes one and the table is gone. Kept rather than deleted, because it still binds. Matching requirement: PROF-02, whose counter clause was reworded to the structured log — Phase 36 D-15 had already removed the counter, so **Phase 39 inherits no obligation to build either subsystem**.
 4. A missing purchase-token row fails closed as an internal error rather than returning a null entry
 
 #### Phase 40: POST /auth/upgrade-anonymous
@@ -380,9 +388,9 @@ Plans:
 **Depends on:** 34, 35
 **Success criteria:**
 
-1. The route sits outside the barrier and authenticates solely by verifying Apple's `signedPayload` JWS
+1. The route sits outside the auth dependency and authenticates solely by verifying Apple's `signedPayload` JWS *(noun reworded by Phase 37.1 (D-06), 2026-08-24 — the barrier is a FastAPI dependency now; the requirement is unchanged)*
 2. A payload with an invalid or absent signature is rejected without touching subscription state
-3. The route appears in the provider-callback category by exact path and the enumeration assertion still passes
+3. **The category machinery this names was deleted by Phase 37.1. Phase 43 must answer it.** As written: the route appears in the provider-callback category by exact path and the enumeration assertion still passes. `Category`, `RouteMetadata`, `VERIFIERS` and `NamedVerifier` went with the route registry (D-06/D-10), 2026-08-24, before this phase exists. `VERIFIERS` had no members, so nothing regressed — but **the control is real**: exact-path enumeration is what stops a wildcard or prefix accidentally admitting an unauthenticated route, and `SHARED-INVARIANTS.md` still forbids wildcard or prefix membership. **A pointer, not a design:** a dedicated `APIRouter` carrying a named-verifier dependency, whose membership is the set of routes registered on it. Phase 43 evaluates that on its own terms; Phase 37.1 adds no replacement mechanism. Matching requirement: APPLEHOOK-02.
 4. Replayed notifications do not double-apply subscription state
 
 #### Phase 44: POST /webhooks/google-play/rtdn
@@ -394,7 +402,7 @@ Plans:
 
 1. The route authenticates solely by backend verification of Google's signed OIDC push token
 2. It calls Phase 43's shared ingestion module rather than a forked copy
-3. The provider-callback category contains exactly these two routes, both by exact path
+3. The provider-callback category contains exactly these two routes, both by exact path — **in whatever form Phase 43 defines, since Phase 37.1 deleted the category machinery (D-06), 2026-08-24.** Phase 44 inherits Phase 43's answer rather than inventing a second one; PLAYHOOK-02 already binds it to Phase 43's shared module, and two competing partition mechanisms would recreate the drift the registry died of. The "exactly two" clause needs that partition to be countable. Matching requirement: PLAYHOOK-03.
 4. A push with an invalid OIDC token is rejected without touching subscription state
 
 #### Phase 45: POST /auth/restore-subscription
@@ -418,7 +426,7 @@ Plans:
 
 1. Success is returned only after Firebase confirms revocation
 2. An indeterminate or failed revocation fails closed — never a success response
-3. Exactly one `audit.auth_events` row is written per attempt
+3. **BLOCKED: requires a mechanism Phase 37.1 deleted. Phase 46 must decide.** As written: exactly one `audit.auth_events` row is written per attempt. The table, the writer and every call site were deleted by Phase 37.1 (D-01), 2026-08-24, before this phase was built. **Phase 46 owns the decision** — the same choice Phase 38 faces — but must weigh it on this operation's own terms: criterion 2's fail-closed rule is untouched and still binding, and a sign-out-all that fails closed on an indeterminate revocation leaves *nothing* recording the attempt if the obligation is simply dropped. That is a different exposure from a read-only sync losing its attempt telemetry. Matching requirement: SIGNOUT-02.
 4. No backend token, session, or generation counter is introduced
 
 ## Progress
