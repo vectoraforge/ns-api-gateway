@@ -1,31 +1,4 @@
-"""ROADMAP criterion 3, against a real committing PostgreSQL: no partial account, ever.
-
-§02 step 12 asks for two things at once, and they pull in opposite directions: a failed business
-insert must leave **nothing** behind, while the challenge consumption that records the attempt was
-spent must **survive** it and commit. A savepoint is the mechanism, and neither half of the
-requirement is expressible against a mock -- "rolled back" and "committed" are claims about what
-the database did, so this module makes the database do it.
-
-**Where this lives, and why not `tests/e2e/`.** That package wraps every test in one outer
-transaction with savepoint-joined sessions, so nothing it writes is ever committed and two
-"concurrent" sessions share one connection. Both halves above would be unobservable there, and
-adding a commit-for-real fixture to that package would defeat the isolation every other module in
-it relies on. `tests/schema/` already owns a disposable scratch database with per-test connections
-and is the only harness in the repo that can commit.
-
-**This module imports application code and commits**, following the exception
-`test_store_purchase_tokens.py` documents at length for RESEARCH A2 -- the same reasoning applies
-unchanged and is not restated here. It cleans up after itself: every row it writes is keyed to a
-per-test random issuer, and the fixture deletes them in FK order on teardown.
-
-**The failure is forced the way production would hit it, not by patching the code under test.** For
-the `(issuer, subject)` conflict a second connection commits the contested row at the one moment
-that matters -- after this attempt's re-resolution has already seen an unlinked subject and before
-its insert -- which is exactly §02 step 12's "two completions that both observed an unlinked
-subject". The one case that cannot be arranged that way is the attribution-token conflict, whose
-key is a fresh `uuid4()` by design and therefore unpredictable; that case pins the RNG so the value
-is knowable, and the collision PostgreSQL then raises is entirely real.
-"""
+"""No partial account, ever: a failed business insert leaves nothing, while the challenge consumption commits."""
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -67,8 +40,7 @@ SELECT c.conname,
  WHERE c.conrelid = 'core.external_identities'::regclass AND c.contype = 'u'
 """
 
-# The partial unique *index*, which `pg_constraint` does not know about at all -- a standalone
-# `CREATE UNIQUE INDEX ... WHERE ...` is not a constraint. asyncpg still reports it by name.
+# The partial unique index, which pg_constraint does not know about at all; asyncpg still reports its name.
 _PARTIAL_UNIQUE_INDEXES = """
 SELECT i.relname,
        (SELECT array_agg(a.attname::text ORDER BY a.attname)
@@ -91,11 +63,7 @@ class _Harness:
     owned_user_ids: list[uuid.UUID] = field(default_factory=list)
 
     async def connection(self):
-        """A connection that is **not** the one the transaction under test used.
-
-        Every read-back below goes through this, so "committed" means committed rather than
-        "visible to the session that wrote it".
-        """
+        """A connection that is not the one the transaction under test used, so "committed" means committed."""
         return self.engine.begin()  # ty: ignore[possibly-unbound-attribute]
 
 
@@ -118,8 +86,7 @@ async def harness(_schema_db_uri):
                         "DELETE FROM core.external_identities WHERE issuer = :issuer",
                         "DELETE FROM core.auth_challenges WHERE preauth_issuer = :issuer"):
                     await conn.execute(text(statement), {"issuer": subject.issuer})
-                # Users last: the identity FK is ON DELETE RESTRICT, so the identity rows above
-                # have to go first. `core.store_purchase_tokens` cascades from the user.
+                # Users last: the identity FK is ON DELETE RESTRICT, so the identity rows have to go first.
                 for user_id in {*subject.owned_user_ids, *(row[0] for row in rows)}:
                     await conn.execute(text("DELETE FROM core.users WHERE id = :id"),
                                        {"id": user_id})
@@ -168,13 +135,7 @@ async def commit_identity(harness: _Harness, *, user_id: uuid.UUID, subject: str
 
 async def commit_claimed_challenge(harness: _Harness, *, subject: str,
                                    attempt_id: uuid.UUID) -> tuple[uuid.UUID, str]:
-    """Commit one challenge row already claimed under `attempt_id`, as step 5 would have left it.
-
-    The consuming transaction is step 10 onward; it never claims and never re-checks expiry, so the
-    row it is handed is a claimed one. `preauth_subject_hash` is the real derivation under the
-    production keyring -- the table's binding CHECK requires a non-NULL value here until
-    consumption clears it, and consumption clearing it is one of the things asserted below.
-    """
+    """Commit one challenge already claimed under attempt_id, which is the state the consuming transaction sees."""
     row_id = uuid.uuid4()
     challenge_id = f"handle-{uuid.uuid4().hex[:16]}"
     async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
@@ -202,13 +163,7 @@ async def row(harness: _Harness, sql: str, params: dict | None = None):
 
 
 class _RacingSession:
-    """A real session that lets a *second* connection commit a row right after this one's read.
-
-    The wrapping is the point: `create_account` is called unmodified and issues exactly the
-    statements it always issues, while the hook fires between its re-resolution and its insert --
-    the window §02 step 12 is about. Racing two threads and hoping to land in that window would
-    prove the same thing far less often and far less repeatably.
-    """
+    """A real session whose hook lets a second connection commit a row between the re-resolution and the insert."""
 
     def __init__(self, session, after_first_read) -> None:
         self._session = session
@@ -237,12 +192,7 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
         harness, subject=subject, attempt_id=ctx.attempt_id)
 
     class _Challenge:
-        """The two fields the transaction reads, both taken from the row committed above.
-
-        The non-secret `id` is what the tests below correlate on; the handle is what `consume`
-        matches. Building this rather than re-reading the row keeps the transaction under test the
-        only thing issuing statements on its session, so the read counter above stays meaningful.
-        """
+        """The two fields the transaction reads, built rather than re-read so the read counter stays meaningful."""
 
         id = row_id
         challenge_id = challenge_id_value
@@ -261,13 +211,7 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
 
 
 class TestTheConstraintNamesInTheCodeAreTheOnesPostgresReports:
-    """The discrimination keys are literals in `auth/creation.py`; the catalog is the authority.
-
-    The migration names none of these rules explicitly, so all three names are generated and are
-    not a stable contract. Asserting the literals against `pg_constraint` and `pg_class` here is
-    what makes a rename break a test instead of silently turning every conflict into an unmapped
-    re-raise -- which would surface to a client as a 500 rather than as its earned 409.
-    """
+    """The discrimination keys are literals in the source and the names are generated, so a rename breaks here."""
 
     async def test_the_two_race_constraints_are_named_as_the_module_declares(self, harness):
         async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
@@ -288,15 +232,11 @@ class TestTheConstraintNamesInTheCodeAreTheOnesPostgresReports:
 
 
 class TestAConflictOnTheIdentityInsertLeavesNoPartialAccount:
-    """Criterion 3, forced on the second insert -- §02 step 12's `(issuer, subject)` conflict."""
+    """No partial account, forced on the second insert by an (issuer, subject) conflict."""
 
     @pytest_asyncio.fixture
     async def collided(self, harness):
-        """Run one creation whose contested identity row is committed mid-transaction.
-
-        The seeded row's user exists *before* the run, so the `core.users` count taken here changes
-        only if the rolled-back attempt left its own user row behind -- which is the whole question.
-        """
+        """Run one creation whose contested identity row is committed mid-transaction; its user exists first."""
         subject = f"contested-{uuid.uuid4().hex[:8]}"
         winner_user = await commit_user(harness)
         users_before = await scalar(harness, "SELECT count(*) FROM core.users")
@@ -304,10 +244,7 @@ class TestAConflictOnTheIdentityInsertLeavesNoPartialAccount:
         observed: dict = {}
 
         async def seed_the_winner():
-            # Recorded so the premise is checked rather than assumed: at the instant the hook
-            # fires, the re-resolution has already run and there is still no row for the pair.
-            # That is §02 step 12's "two completions that both observed an unlinked subject", and
-            # without this reading the whole case could be passing through the no-mutation arm.
+            # Recorded so the premise is checked: at the hook, re-resolution has run and there is still no row.
             observed["identities_at_hook_time"] = await scalar(
                 harness,
                 "SELECT count(*) FROM core.external_identities "
@@ -325,24 +262,18 @@ class TestAConflictOnTheIdentityInsertLeavesNoPartialAccount:
                 "tokens_before": tokens_before, "observed": observed}
 
     async def test_the_attempt_genuinely_observed_an_unlinked_subject_first(self, collided):
-        """The premise, checked. If the contested row had existed at re-resolution time the case
-        would be exercising the no-mutation arm instead -- same result, none of the savepoint --
-        and every count below would pass while proving nothing about a rollback."""
+        """The premise, checked: had the contested row existed at re-resolution, no savepoint would be used."""
         assert collided["observed"]["identities_at_hook_time"] == 0
 
     async def test_the_conflict_earns_its_client_class_rather_than_escaping(self, collided):
-        """§02 step 12: the uniqueness violation must never surface as a generic 500 (T-37-46).
-
-        Reaching this assertion at all is half the proof -- an unhandled `IntegrityError` or a
-        `PendingRollbackError` would have raised out of the fixture.
-        """
+        """The uniqueness violation earns its client class rather than surfacing as a generic 500."""
         assert collided["result"] is AuthEventResult.identity_already_linked
 
     async def test_no_users_row_survives_the_rollback(self, harness, collided):
         assert await scalar(harness, "SELECT count(*) FROM core.users") == collided["users_before"]
 
     async def test_no_attribution_token_survives_the_rollback(self, harness, collided):
-        """A rejected completion mints nothing (§02 step 10)."""
+        """A rejected completion mints nothing."""
         assert await scalar(harness, "SELECT count(*) FROM core.store_purchase_tokens") == \
             collided["tokens_before"]
 
@@ -355,8 +286,7 @@ class TestAConflictOnTheIdentityInsertLeavesNoPartialAccount:
         assert found == 1
 
     async def test_the_winners_row_is_untouched(self, harness, collided):
-        """No merge and no overwrite: the loser's classified provider was `anonymous`, so a
-        surviving overwrite would be visible here as a NULL `provider_uid` (T-37-43)."""
+        """No merge and no overwrite: an overwrite would be visible here as a NULL provider_uid."""
         found = await row(
             harness,
             "SELECT user_id, provider::text, provider_uid FROM core.external_identities "
@@ -367,11 +297,7 @@ class TestAConflictOnTheIdentityInsertLeavesNoPartialAccount:
         assert found[2] == f"winner-{collided['subject']}"
 
     async def test_the_challenge_consumption_committed_despite_the_rollback(self, harness, collided):
-        """The savepoint's reason for existing, read back over a fresh connection.
-
-        Without it the consume would have raised `PendingRollbackError` on a poisoned session and
-        this row would still be claimed -- replayable, with the rejection unrecorded (T-37-42).
-        """
+        """The savepoint's reason for existing: without it this row would still be claimed, and replayable."""
         found = await row(
             harness,
             "SELECT consumed_at, preauth_subject_hash FROM core.auth_challenges WHERE id = :id",
@@ -381,12 +307,7 @@ class TestAConflictOnTheIdentityInsertLeavesNoPartialAccount:
 
 
 class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
-    """The case that exposes a savepoint scoped around only the user and the identity row.
-
-    The attribution key is a fresh `uuid4()` by design, so the only way to make it collide is to
-    know what it will be. Pinning the generator is not simulating the failure -- PostgreSQL raises
-    a real `store_purchase_tokens_provider_identity_value_key` violation on a real duplicate.
-    """
+    """The attribution key is a fresh uuid4, so the generator is pinned; the collision raised is a real one."""
 
     @pytest_asyncio.fixture
     async def token_collision(self, harness, monkeypatch):
@@ -412,8 +333,7 @@ class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
 
     async def test_an_unmapped_conflict_is_not_dressed_up_as_a_business_outcome(self,
                                                                                token_collision):
-        """No `AuthEventResult` member describes an attribution collision, so inventing one would
-        tell a client something false about their account."""
+        """No AuthEventResult member describes an attribution collision, so inventing one would tell a lie."""
         assert isinstance(token_collision["error"], IntegrityError)
 
     async def test_no_users_row_survives_a_third_insert_failure(self, harness, token_collision):
@@ -421,8 +341,7 @@ class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
             token_collision["users_before"]
 
     async def test_no_identity_row_survives_a_third_insert_failure(self, harness, token_collision):
-        """The identity row went in *before* the token that failed. If the savepoint covered only
-        the first two inserts, this count would have grown by one."""
+        """The identity row went in before the token that failed, so a narrower savepoint would leave it."""
         assert await scalar(harness, "SELECT count(*) FROM core.external_identities") == \
             token_collision["identities_before"]
 
@@ -435,8 +354,7 @@ class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
 
 
 class TestTheHappyPathStillCommitsEverything:
-    """The control. Without it, every count above is equally consistent with a transaction that
-    writes nothing at all."""
+    """The control: without it every count above is equally consistent with a transaction writing nothing."""
 
     async def test_an_uncontested_creation_commits_one_user_one_identity_and_two_tokens(self,
                                                                                        harness):

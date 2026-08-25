@@ -1,4 +1,4 @@
-"""SCHEMA-01 and D-20 -- one migration file, a clean apply from empty, and a clean pogo rollback."""
+"""One migration file, a clean apply from empty, and a clean rollback through pogo's own path."""
 import asyncpg
 import pytest
 from pogo_core.util import testing as pogo_testing
@@ -13,14 +13,12 @@ ROLLBACK_TEST_DB = "ns_schema_test_rollback"
 
 NAMESPACES = "SELECT count(*) FROM pg_namespace WHERE nspname IN ('core', 'audit')"
 
-# The reference rows the migration seeds. One per v2.0 grant source; 'manual' names a tier
-# rather than having its own. Kept in sync with the INSERT in the migration by
-# TestSeededTiers below, which is the only place the credit values are pinned.
+# The reference rows the migration seeds; TestSeededTiers below is the only place the credits are pinned.
 SEEDED_TIERS = {"anonymous", "registered", "paid"}
 
 
 class TestMigrationDirectory:
-    """SCHEMA-01: migrations/ holds exactly one .sql file, so pogo applies exactly that one."""
+    """migrations/ holds exactly one .sql file, so pogo applies exactly that one."""
 
     def test_exactly_one_sql_file(self):
         found = sorted(path.name for path in MIGRATIONS.glob("*.sql"))
@@ -28,7 +26,7 @@ class TestMigrationDirectory:
 
 
 class TestApply:
-    """SCHEMA-01: the session fixture's from-empty apply produced both schemas."""
+    """The session fixture's from-empty apply produced both schemas."""
 
     async def test_core_and_audit_namespaces_exist(self, conn):
         present = {
@@ -39,7 +37,7 @@ class TestApply:
 
 
 class TestRollback:
-    """D-20: the migration's own rollback section removes both schemas, proven via pogo's rollback."""
+    """The migration's own rollback section removes both schemas, driven through pogo's rollback."""
 
     async def test_pogo_rollback_leaves_neither_schema(self):
         uri = await create_database(ROLLBACK_TEST_DB)
@@ -49,8 +47,7 @@ class TestRollback:
                 await apply_migration(connection)
                 assert await connection.fetchval(NAMESPACES) == 2, "apply did not create core and audit"
 
-                # pogo's own rollback path, not a hand-written DROP SCHEMA -- a hand-written drop
-                # would prove nothing about the file's rollback section.
+                # pogo's own rollback path: a hand-written DROP would prove nothing about the file's rollback.
                 await pogo_testing.rollback(MIGRATIONS, db=connection, schema_name=POGO_SCHEMA)
 
                 remaining = await connection.fetch(
@@ -80,12 +77,7 @@ class TestSeededTiers:
         }
 
     async def test_registered_is_not_smaller_than_anonymous(self, conn):
-        """07-claim-registered-grant.md:59's sizing invariant, which no CHECK can express.
-
-        A registered claim carries the superseded anonymous grant's `monthly_used` across with
-        no reset or clamp. If the registered tier were the smaller of the two, that carry-over
-        could land above the new allowance and `remaining` would clamp to 0 on a fresh grant.
-        """
+        """A registered claim carries monthly_used across, so a smaller registered tier would clamp remaining."""
         anonymous, registered = await conn.fetchrow(
             "SELECT (SELECT monthly_credits FROM core.access_tiers WHERE id = 'anonymous'),"
             "       (SELECT monthly_credits FROM core.access_tiers WHERE id = 'registered')"
@@ -109,11 +101,6 @@ class TestHarnessIsolation:
             assert count == 0, f"{table} still holds {count} rows from a previous test"
 
     async def test_only_the_seeded_tiers_survive(self, conn):
-        """core.access_tiers is the one table the migration seeds, so 'empty' is the wrong bar.
-
-        The `tier` fixture inserts randomised `tier_<hex>` ids, so a leaked row shows up as an
-        id outside the seeded set -- a stricter check than a count, which a leak plus a
-        missing seed row could cancel out.
-        """
+        """core.access_tiers is seeded, so a leak shows up as an id outside the seeded set rather than a count."""
         ids = {row["id"] for row in await conn.fetch("SELECT id FROM core.access_tiers")}
         assert ids == SEEDED_TIERS, f"core.access_tiers holds {ids}, expected {SEEDED_TIERS}"
