@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
-current_phase: 38
-current_phase_name: POST /auth/sync
+current_phase: 37.2
+current_phase_name: Simplify auth module
 status: planning
-stopped_at: Phase 37.1 context gathered
-last_updated: "2026-08-25T19:01:07.879Z"
+stopped_at: Phase 37.2 context gathered
+last_updated: "2026-08-25T22:24:23.961Z"
 last_activity: 2026-08-25
 last_activity_desc: Phase 37.1 complete, transitioned to Phase 38
 progress:
-  total_phases: 14
+  total_phases: 15
   completed_phases: 5
   total_plans: 39
   completed_plans: 39
-  percent: 36
+  percent: 33
 state_head: 92e399fcab51df577ae334d869b849d0e154194f
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 38 — POST /auth/sync
+Phase: 37.2 — Simplify auth module
 Plan: Not started
 Status: Ready to plan
 Last activity: 2026-08-25 — Phase 37.1 complete, transitioned to Phase 38
@@ -99,6 +99,7 @@ None.
 ### Roadmap Evolution
 
 - Phase 37.1 inserted after Phase 37: Refactor machine-generated code (URGENT)
+- Phase 37.2 inserted after Phase 37: Simplify auth module: ADC-only Firebase, models out of routers, POST /auth/challenge replaces ?challenge=true, delete single-caller indirections, shrink auth/ from 14/28/57 (URGENT)
 
 ### Blockers/Concerns
 
@@ -116,11 +117,11 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-24T22:41:58.671Z
+**Last session:** 2026-08-25T22:24:23.940Z
 
 Last activity: 2026-03-26
-Stopped at: Phase 37.1 context gathered
-Resume file: .planning/phases/37.1-refactor-machine-generated-code/37.1-CONTEXT.md
+Stopped at: Phase 37.2 context gathered
+Resume file: .planning/phases/37.2-simplify-auth-module/37.2-CONTEXT.md
 
 ## Performance Metrics
 
