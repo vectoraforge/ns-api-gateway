@@ -1,32 +1,4 @@
-"""FOUND-07: the challenge store against the real `core.auth_challenges` table.
-
-`tests/unit/test_challenge_ids.py` proves the statements this store builds. This module proves what
-PostgreSQL does with them: that the claim genuinely serializes concurrent attempts, that expiry is
-evaluated at the claim and nowhere else, and that the lifecycle runs one direction only.
-
-**Two harnesses, on purpose, because one of them cannot host the concurrency case.**
-
-Everything except the race runs through the swapped `test_factory` from `_db_transaction`, so every
-row rolls back. Those cases are sequential, and sequential sessions on one shared connection behave
-exactly like sequential sessions anywhere.
-
-The race cannot run there. Every session `test_factory` produces is bound to the **same**
-connection under `join_transaction_mode="create_savepoint"`, and a connection executes one
-statement at a time -- so eight `claim`s driven through it are not concurrent, they are eight
-statements in one transaction. Worse, the interleaved `SAVEPOINT`/`RELEASE` pairs corrupt the
-savepoint stack: run that way, one contender returns `True` and the other seven raise
-`InvalidSavepointSpecificationError` and `InFailedSQLTransactionError` [measured]. A case asserting
-"exactly one True" would have gone green on that -- while seven contenders never reached the
-`UPDATE` at all, which is the opposite of what it claims to prove.
-
-`TestTheClaimSerializesConcurrentAttempts` therefore uses eight **independent** connections from a
-second engine, released together by an `asyncio.Barrier`, contending in eight real transactions.
-That is the arrangement in which the row lock and the re-evaluated `WHERE` are the arbiter, which
-is the property §6.1 actually asserts. Its rows must be committed for the other connections to see
-them, so the `_contended_challenge` fixture deletes exactly the handle it committed on teardown.
-That is a test tidying its own fixture, not a cleanup job: the product builds none, and expired,
-claimed and consumed rows are retained indefinitely by design (§6.2).
-"""
+"""The challenge store against the real core.auth_challenges table: claim, expiry and lifecycle."""
 import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid7
@@ -49,18 +21,13 @@ pytestmark = pytest.mark.e2e
 ISSUER = "https://securetoken.google.com/challenge-store-test"
 SUBJECT = "challenge-store-subject"
 
-# Eight, not two. Two contenders can both "win" a broken claim and still look like a coin toss;
-# eight makes a claim that stopped arbitrating unmistakable.
+# Eight, not two: two contenders can both "win" a broken claim and still look like a coin toss.
 CONTENDERS = 8
 
 
 @pytest.fixture
 def store(_app_lifespan):
-    """The store the *real* lifespan constructed, not a fresh one.
-
-    This is the only place `app.state.challenge_store` is exercised, so taking it from the started
-    application is what proves the wiring exists and shares the lifespan's keyring.
-    """
+    """The store the real lifespan constructed, so the wiring and the lifespan's keyring are exercised."""
     return _app_lifespan.state.challenge_store
 
 
@@ -89,11 +56,7 @@ async def issue(factory, store, identity=None, *, now=None,
 
 
 async def read(factory, handle: str) -> AuthChallenge | None:
-    """Read a row back through the same factory the store wrote through.
-
-    Never a fresh engine: the write lives inside the per-test transaction, and a second engine's
-    connection would be looking at a different one.
-    """
+    """Read a row back through the same factory the store wrote through, never a fresh engine."""
     async with factory() as session:
         return (await session.exec(select(AuthChallenge)
                                    .where(col(AuthChallenge.challenge_id) == handle))).first()
@@ -106,14 +69,7 @@ async def row_count(factory) -> int:
 
 @pytest_asyncio.fixture(loop_scope="module")
 async def _contended_challenge(_app_lifespan, store):
-    """One committed challenge and `CONTENDERS` independent connections racing to claim it.
-
-    Yields `(handle, attempts, results, factory)`. The race runs once per requesting test, so each
-    test asserts one property of one race rather than several properties of a shared one.
-
-    The engine is a second one on purpose -- see this module's docstring. Its rows are committed and
-    therefore outlive `_db_transaction`, so the handle is deleted here on teardown by exact value.
-    """
+    """One committed challenge and CONTENDERS connections from a second engine, since the shared one is serial."""
     config = _app_lifespan.state.config
     engine = create_async_engine(config.db.url, pool_size=CONTENDERS + 2, max_overflow=0)
     factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
@@ -121,9 +77,7 @@ async def _contended_challenge(_app_lifespan, store):
     handle, _ = await issue(factory, store, now=now)
     attempts = [uuid7() for _ in range(CONTENDERS)]
 
-    # Every contender checks a connection out and *then* waits, so the barrier releases eight
-    # transactions that are already connected. Without the explicit `connection()` the pool
-    # checkout would stagger them and the first claimant could finish before the last had begun.
+    # Each contender checks a connection out and then waits, so the barrier releases eight live transactions.
     barrier = asyncio.Barrier(CONTENDERS)
 
     async def contend(attempt_id: UUID) -> bool:
@@ -139,6 +93,7 @@ async def _contended_challenge(_app_lifespan, store):
     try:
         yield handle, attempts, results, factory
     finally:
+        # These rows are committed, so they outlive the per-test transaction and must be removed here.
         async with factory() as session:
             await session.exec(delete(AuthChallenge)  # ty: ignore[invalid-argument-type]
                                .where(col(AuthChallenge.challenge_id) == handle))
@@ -148,12 +103,10 @@ async def _contended_challenge(_app_lifespan, store):
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheClaimSerializesConcurrentAttempts:
-    """§6.1: "exactly one completion attempt can ever win it" -- T-35-10-01's whole mitigation."""
+    """Exactly one completion attempt can ever win a challenge."""
 
     async def test_no_contender_raised(self, _contended_challenge):
-        """Asserted first and separately. Every other case below counts `True`s, and an exception
-        counts as neither a win nor a loss -- so a harness that broke seven contenders would leave
-        exactly one `True` and satisfy them all while proving nothing."""
+        """Asserted first: an exception is neither a win nor a loss, so the counts below would pass anyway."""
         _, _, results, _ = _contended_challenge
         assert [r for r in results if isinstance(r, BaseException)] == []
 
@@ -163,16 +116,14 @@ class TestTheClaimSerializesConcurrentAttempts:
         assert results.count(False) == CONTENDERS - 1
 
     async def test_the_stored_claim_attempt_id_is_the_winners(self, _contended_challenge):
-        """The count alone would pass for a claim that returned `True` once and stamped whichever
-        attempt id happened to write last."""
+        """The count alone would pass for a claim that stamped whichever attempt id wrote last."""
         handle, attempts, results, factory = _contended_challenge
         winner = attempts[results.index(True)]
         row = await read(factory, handle)
         assert row.claim_attempt_id == winner
 
     async def test_the_losers_mutated_nothing(self, _contended_challenge):
-        """Seven transactions committed after matching zero rows. One row, claimed exactly once,
-        and not consumed by anybody."""
+        """Seven transactions committed after matching zero rows: one row, claimed once, consumed by nobody."""
         handle, _, _, factory = _contended_challenge
         row = await read(factory, handle)
         assert row.claimed_at is not None
@@ -186,8 +137,7 @@ class TestTheClaimSerializesConcurrentAttempts:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheClaimIsTheOnlyPlaceExpiryIsEvaluated:
-    """§6.1. Issued with a `now` far enough in the past that `expires_at` has already passed, then
-    claimed with the real current time."""
+    """Issued with a now far enough in the past that expires_at has passed, then claimed at the real time."""
 
     async def test_a_claim_against_an_expired_row_returns_false(self, store, _db_transaction):
         long_ago = datetime.now(UTC) - timedelta(hours=1)
@@ -212,9 +162,7 @@ class TestTheClaimIsTheOnlyPlaceExpiryIsEvaluated:
         assert row.claim_attempt_id is None
 
     async def test_locate_still_returns_an_expired_row(self, store, _db_transaction):
-        """The positive half of "the only place expiry is evaluated": a lookup that filtered on
-        `expires_at` would make an expired handle indistinguishable from an unknown one, and the
-        two are different rejections (`challenge_expired` vs `challenge_not_found`)."""
+        """A lookup filtering on expires_at would make an expired handle indistinguishable from an unknown one."""
         long_ago = datetime.now(UTC) - timedelta(hours=1)
         handle, _ = await issue(_db_transaction, store, now=long_ago)
         async with _db_transaction() as session:
@@ -223,8 +171,7 @@ class TestTheClaimIsTheOnlyPlaceExpiryIsEvaluated:
         assert located.expires_at < datetime.now(UTC)
 
     async def test_a_row_one_second_from_expiry_still_claims(self, store, _db_transaction):
-        """The boundary from the other side, so the case above cannot pass for a claim that
-        rejects everything."""
+        """The boundary from the other side, so the case above cannot pass for a claim that rejects all."""
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
         async with _db_transaction() as session:
@@ -236,7 +183,7 @@ class TestTheClaimIsTheOnlyPlaceExpiryIsEvaluated:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheLifecycleRunsOneDirectionOnly:
-    """§6.2: `issued -> claimed -> consumed`. Never back, never again, never by a later attempt."""
+    """issued -> claimed -> consumed: never back, never again, never by a later attempt."""
 
     async def test_a_second_claim_of_a_claimed_row_returns_false(self, store, _db_transaction):
         now = datetime.now(UTC)
@@ -274,18 +221,7 @@ class TestTheLifecycleRunsOneDirectionOnly:
 
     async def test_an_unclaimed_row_is_not_consumable_by_a_null_attempt_id(self, store,
                                                                            _db_transaction):
-        """The case `claimed_at IS NOT NULL` exists for, and the only one that distinguishes it.
-
-        Against a *claimed* row the condition is redundant: the table's lifecycle CHECK guarantees
-        that a non-NULL `claim_attempt_id` implies a non-NULL `claimed_at`, so dropping it changes
-        no answer -- verified by mutation. The exception is a caller whose attempt id is `None`,
-        from an uninitialised field or one that failed to populate. `col(...) == None` renders as
-        `IS NULL`, which matches every *issued* row, so without this condition such a caller would
-        consume a challenge nobody ever claimed -- skipping the serialization point entirely.
-
-        The signature says `UUID`, so this is a caller `ty` would reject in `src/`. It is exactly
-        the mistake a defensive `WHERE` is for.
-        """
+        """A None attempt id renders as IS NULL and would match every issued row but for claimed_at IS NOT NULL."""
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
         async with _db_transaction() as session:
@@ -312,9 +248,7 @@ class TestTheLifecycleRunsOneDirectionOnly:
 
     async def test_consume_clears_the_preauth_hash_on_a_preauth_bound_row(self, store,
                                                                           _db_transaction):
-        """Both column changes land in one `UPDATE`. The table's binding CHECK admits a cleared
-        hash only once `consumed_at` is set, so a two-statement consume would be rejected here by
-        PostgreSQL rather than by review."""
+        """Both column changes land in one UPDATE; the binding CHECK would reject a two-statement consume."""
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
         assert (await read(_db_transaction, handle)).preauth_subject_hash is not None
@@ -339,9 +273,7 @@ class TestTheLifecycleRunsOneDirectionOnly:
             await session.commit()
 
     async def test_a_losing_consume_changes_nothing(self, store, _db_transaction):
-        """The counterpart to the case above: a rejected consume must not half-apply. A statement
-        that cleared the hash without setting `consumed_at` would trip the CHECK; one that did
-        neither but returned `False` from a stale rowcount would look identical here."""
+        """A rejected consume must not half-apply: neither column moves."""
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
         async with _db_transaction() as session:
@@ -367,8 +299,7 @@ class TestTheLifecycleRunsOneDirectionOnly:
             await session.commit()
 
     async def test_a_consumed_row_is_never_returned_to_issued(self, store, _db_transaction):
-        """No reclaim, no reissue, no reuse (§6.2). The claim's `claimed_at IS NULL` is what makes
-        this structural rather than a rule somebody has to remember."""
+        """No reclaim, no reissue, no reuse: the claim's claimed_at IS NULL makes that structural."""
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
         attempt = uuid7()
@@ -382,12 +313,10 @@ class TestTheLifecycleRunsOneDirectionOnly:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheBindingAgainstRealRows:
-    """§6.4, against rows PostgreSQL accepted and read back rather than ones built in memory."""
+    """Asserted against rows PostgreSQL accepted and read back, not ones built in memory."""
 
     async def test_a_linked_bound_row_matches_its_own_identity(self, store, _db_transaction):
-        """The linked arm needs a real `core.external_identities` row, because
-        `bound_external_identity_id` carries a foreign key -- an invented UUID would be rejected at
-        insert, which is what makes this case worth running against a database at all."""
+        """The linked arm needs a real identity row, because bound_external_identity_id carries a foreign key."""
         user, identity = await seed_identity(_db_transaction, issuer=ISSUER, subject=SUBJECT)
         context = LinkedIdentity(user=user, identity=identity, issuer=ISSUER, subject=SUBJECT)
         handle, _ = await issue(_db_transaction, store, context,
@@ -414,10 +343,7 @@ class TestTheBindingAgainstRealRows:
 
     async def test_a_rejected_binding_leaves_the_challenge_unconsumed(self, store,
                                                                       _db_transaction):
-        """T-35-10-05. The bound-context mismatch is rejected *before* the claim, so presenting
-        someone else's handle at the wrong identity cannot burn the rightful user's in-flight
-        challenge. `verify_binding` is a pure comparison -- it takes no session and can issue no
-        statement -- and the row is read back afterwards to say so."""
+        """A bound-context mismatch is rejected before the claim, so a wrong identity burns nobody's challenge."""
         user, identity = await seed_identity(_db_transaction, issuer=ISSUER, subject=SUBJECT)
         other_user, other_identity = await seed_identity(_db_transaction, issuer=ISSUER,
                                                          subject="a-different-subject",
@@ -436,8 +362,7 @@ class TestTheBindingAgainstRealRows:
 
     async def test_a_preauth_row_read_back_matches_the_shared_derivation(self, store, keyring,
                                                                          _db_transaction):
-        """The stored bytes survive the BYTEA round trip and still satisfy the shared keyring --
-        the one thing a locally-reimplemented derivation would break."""
+        """The stored bytes survive the BYTEA round trip and still satisfy the shared keyring."""
         handle, _ = await issue(_db_transaction, store)
         row = await read(_db_transaction, handle)
         assert row.preauth_subject_hash == keyring.actor_subject_hash(ISSUER, SUBJECT)
@@ -446,10 +371,7 @@ class TestTheBindingAgainstRealRows:
 
     async def test_a_consumed_preauth_row_takes_the_already_used_rejection(self, store,
                                                                            _db_transaction):
-        """The full round trip for §6.4's "not compared at all" rule: consume clears the hash in
-        the database, and the row read back afterwards rejects `challenge_consumed` rather than
-        `challenge_identity_mismatch`. The distinction is the difference between telling a client
-        "you already used this" and telling it "you are not who you say you are"."""
+        """Consume clears the hash, so the row read back rejects challenge_consumed, not an identity mismatch."""
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
         attempt = uuid7()
@@ -464,14 +386,7 @@ class TestTheBindingAgainstRealRows:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestLocateIsByteForByteAgainstPostgres:
-    """§6.1, asserted against the comparison the database actually performs rather than against one
-    built in Python.
-
-    The handle here is a **fixed** value written directly, not one from `new_challenge_id()`. Its
-    generation is covered in the unit module, and a random handle makes the manglings
-    non-deterministic: `h.lower()` leaves an all-lowercase handle unchanged, which happens roughly
-    once in 25,000 and would turn this case into a silent skip on a CI run nobody looks at.
-    """
+    """Asserted against the database's own comparison, with a fixed handle so the manglings are deterministic."""
 
     PLANTED = "AbCdEfGhIjKlMnOpQrStUv"
 
@@ -503,9 +418,7 @@ class TestLocateIsByteForByteAgainstPostgres:
     ])
     async def test_a_handle_that_differs_at_all_locates_nothing(self, store, _db_transaction,
                                                                 mangled):
-        """A `TEXT` column under a case-insensitive collation, a `CHAR` column with its blank
-        padding, or a store that trimmed would each turn one secret capability handle into a family
-        of them."""
+        """A case-insensitive collation, CHAR blank padding, or a trimming store would turn one handle into many."""
         planted = await self.plant(_db_transaction)
         assert mangled != planted, "the mangling must actually differ"
         async with _db_transaction() as session:
@@ -521,9 +434,7 @@ class TestTheRollbackIsolatesEveryRow:
     """The operational proof that the store reads its session per call rather than caching one."""
 
     async def test_the_table_is_empty_at_the_start_of_a_test(self, _db_transaction):
-        """Every case above committed at least one row. If any of them had reached the real
-        database rather than the per-test transaction, this would be non-zero -- and the fixture's
-        own teardown could not remove it."""
+        """Every case above wrote a row, so a non-zero count means one escaped the per-test transaction."""
         assert await row_count(_db_transaction) == 0
 
     async def test_a_row_written_in_this_test_is_visible_and_still_rolls_back(self, store,

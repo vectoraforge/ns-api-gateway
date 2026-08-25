@@ -1,3 +1,1 @@
-# tests/conftest.py -- minimal shared root
-# Mocked fixtures: tests/unit/conftest.py
-# Real-infra fixtures: tests/e2e/conftest.py
+# Shared root. Mocked fixtures live in tests/unit/conftest.py, real-infra ones in tests/e2e/conftest.py.

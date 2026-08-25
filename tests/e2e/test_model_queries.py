@@ -1,15 +1,4 @@
-"""D-14's real claim: the model layer *queries* the applied v2.0 schema, not merely imports.
-
-`import nativespeaker.api.app.main` succeeded and the lifespan ran throughout Phase 35 while
-`select(User)` still raised `UndefinedColumnError: column users.jwt_sub does not exist`. SQLModel
-classes import fine when their columns are gone -- the failure appears only when a query runs,
-which is precisely the gap D-15 draws its line through. Every assertion in this module therefore
-issues a real statement against the real database.
-
-Reads and writes go through the `_db_transaction` fixture's swapped `test_factory`, never a fresh
-engine: the whole e2e strategy rests on that factory's `join_transaction_mode="create_savepoint"`,
-and a second engine would both miss the savepoint and leave rows behind.
-"""
+"""The model layer queries the applied schema rather than merely importing it: every case runs a statement."""
 from uuid import uuid7
 
 import pytest
@@ -38,10 +27,10 @@ MAPPED_TABLES = sorted(SQLModel.metadata.tables)
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestModelsMatchTheAppliedSchema:
-    """Each case here failed before this plan, with the error named in its docstring."""
+    """SQLModel classes import fine when their columns are gone, so only a real query catches drift."""
 
     async def test_select_user_executes(self, _db_transaction):
-        """`UndefinedColumnError: column users.jwt_sub does not exist` before the repair."""
+        """select(User) executes against the live schema."""
         async with _db_transaction() as session:
             result = await session.exec(select(User))
             assert result.all() is not None
@@ -53,13 +42,7 @@ class TestModelsMatchTheAppliedSchema:
 
     @pytest.mark.parametrize("table_name", MAPPED_TABLES)
     async def test_every_mapped_table_selects_all_of_its_columns(self, _db_transaction, table_name):
-        """The generalised form, and the one that catches the next drift rather than this one.
-
-        `SELECT <every declared column> FROM <table>` fails with `UndefinedColumnError` for a
-        column the database does not have and `UndefinedTableError` for a table it does not have.
-        A surviving `UsageMonthly` mapping `core.usage_monthly` -- a relation the v2.0 migration
-        dropped -- is caught here as the latter.
-        """
+        """Selecting every declared column of every mapped table catches a column or table the database lacks."""
         table = SQLModel.metadata.tables[table_name]
         async with _db_transaction() as session:
             await session.exec(sa_select(table).limit(1))  # ty: ignore[invalid-argument-type]
@@ -70,16 +53,7 @@ class TestRowsRoundTrip:
     """Writing is the other half: a shape that reads can still be rejected on insert."""
 
     async def test_user_and_identity_round_trip(self, _db_transaction):
-        """A NULL email survives the round trip, and an anonymous identity satisfies the CHECK.
-
-        `email` nullability cannot be proven in a unit test: SQLModel skips pydantic validation on
-        `table=True` classes, so `User(email=None)` constructs whatever the annotation says. Only
-        the database's own NOT NULL -- or its absence -- settles it.
-
-        `provider='anonymous'` with `provider_uid=None` is the left arm of the table's
-        provider/provider_uid agreement CHECK. Ruling 9.2 forbids inventing a sentinel
-        `provider_uid` for an anonymous row, so this is the only shape an anonymous seed can take.
-        """
+        """A NULL email survives the round trip, and an anonymous identity with a NULL provider_uid inserts."""
         async with _db_transaction() as session:
             session.add(User(id=LEAKED_USER_ID, email=None, display_name="round trip"))
             await session.flush()
@@ -105,11 +79,7 @@ class TestRowsRoundTrip:
             assert identity.identity_state is IdentityState.active
 
     async def test_the_previous_rows_were_rolled_back(self, _db_transaction):
-        """Runs after the case above, on a fresh transaction over a fresh connection.
-
-        This is the isolation guarantee itself: without it every case above would be seeding the
-        developer's database. Ordering is source order, which pytest preserves.
-        """
+        """The rows the case above wrote are gone, which is the per-test rollback guarantee itself."""
         async with _db_transaction() as session:
             assert (await session.exec(
                 select(User).where(User.id == LEAKED_USER_ID))).first() is None
@@ -120,7 +90,7 @@ class TestRowsRoundTrip:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestCreateChatSeedsAgainstV2:
-    """`create_chat` is the seeding helper the cases plan 11 restores all go through."""
+    """create_chat is the seeding helper every served case goes through."""
 
     async def test_seeds_a_user_an_identity_and_a_chat(self, _db_transaction):
         issuer = "https://securetoken.google.com/test-project"

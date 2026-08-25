@@ -1,21 +1,4 @@
-"""The six-step chat lifecycle end to end, over the real app with a real Firebase credential.
-
-Plan 35-04 deleted this module: its one case is six served steps, and none of them was reachable
-once the barrier resolved identity against a subject with no `core.external_identities` row.
-35-04-SUMMARY.md names it in the table of cases for plan 11 to restore, so it is restored here
-under its own name rather than folded into another module.
-
-`linked_firebase_identity` seeds the pair inside the per-test transaction, which is the whole
-difference between this and the twelve refusal cases in `test_chats.py` and `test_chat_queries.py`.
-Nothing else about the request path changes: the same real token, the same production verifier, the
-same single identity query, the same handlers. `quota_grant` seeds the allowance step 1 now
-spends, so the lifecycle still starts from a served create rather than from a 429.
-
-This is the only case that drives all five chat routes in sequence against one chat, so it is the
-one that would notice a route serving correctly in isolation but leaving state a later route
-cannot read -- a create whose row never commits, a followup that writes under a fresh chat id, a
-delete that reports 204 without matching.
-"""
+"""The only case that drives all five chat routes in sequence against one chat, over the real app."""
 import pytest
 
 pytestmark = pytest.mark.e2e
