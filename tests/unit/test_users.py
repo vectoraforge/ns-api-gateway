@@ -1,34 +1,16 @@
-"""USER-01: the `core.users` model at the section 2 target shape.
-
-`GET /users/me` is deleted under D-16: it read `user.name`, `user.subscription_plan`, and
-`UsageDB`, all three of which the v2.0 schema dropped, so it could not serve unchanged and is
-rewritten from scratch in Phase 39. The six cases that exercised it went with it -- see
-35-04-SUMMARY.md for the list.
-
-USER-01's identity value object is now `VerifiedClaims`, carrying only the verified (iss, sub).
-Its coverage lives beside the verification rules, in test_jwt_security.py::TestVerifiedClaims.
-
-These cases pin the model's *shape*. That the shape matches the schema actually applied to
-PostgreSQL is a different claim, and a model can satisfy every case here while still failing the
-first real query -- which is exactly what happened before this plan. That claim is proven against
-the live database in tests/e2e/test_model_queries.py.
-"""
+"""The `core.users` model at its target shape; that the shape matches the applied schema is an e2e claim."""
 import ast
 from pathlib import Path
 
 from nativespeaker.api import models
 from nativespeaker.api.models import User
 
-# migrations/20260818_01_initial-release.sql:150-158, in ordinal_position. The same seven names
-# tests/schema/test_inventory.py::EXPECTED_USERS_COLUMNS asserts against the live database.
+# The same seven names tests/schema/test_inventory.py asserts against the live database.
 EXPECTED_FIELDS = {
     "id", "email", "display_name", "registered_at", "active", "created_at", "updated_at",
 }
 
-# Deliberately absent, each for its own reason: `jwt_sub` because the external subject is never an
-# ownership or lookup key in v2.0 -- (issuer, subject) lives only on core.external_identities;
-# `name` because the schema renamed it `display_name`; `subscription_plan` because allowance moved
-# to core.access_tiers.monthly_credits.
+# Absent by design: the verified pair, the display name and the allowance all live elsewhere now.
 ABSENT_FIELDS = ("jwt_sub", "name", "subscription_plan")
 
 # Symbols that left with models/subscriptions.py and models.users.UsageMonthly.
@@ -38,22 +20,14 @@ REMOVED_SYMBOLS = frozenset({
     "SubscriptionStatusType", "UsageMonthly",
 })
 
-# Phase 36 introduces `core.user_monthly_usage`, keyed on grant_id -- a different table from the
-# dropped `core.usage_monthly`, as models/users.py's docstring records. It is exempted by name
-# rather than by weakening the substring backstop below, so every *other* Subscription/Usage
-# symbol still trips it.
+# Exempted by name rather than by weakening the backstop, so every other such symbol still trips it.
 ALLOWED_USAGE_SYMBOLS = frozenset({"UserMonthlyUsage"})
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _imported_names(path: Path) -> set[str]:
-    """Every name a module imports, read from its AST.
-
-    Reading imports rather than grepping text is what keeps this from firing on
-    tests/schema/, whose SQL strings name `core.subscription_plan` and `core.usage_monthly`
-    precisely in order to assert the database no longer has them.
-    """
+    """Every name a module imports, read from its AST, so a SQL string naming a dropped table is not a hit."""
     tree = ast.parse(path.read_text())
     names = set()
     for node in ast.walk(tree):
@@ -78,12 +52,7 @@ class TestUserModel:
             assert not hasattr(User, field), f"User still exposes {field}"
 
     def test_email_is_nullable(self):
-        """NULLABLE on purpose (00-schema.md:80).
-
-        `email` is copied only from a Firebase Admin record whose `emailVerified` is TRUE and
-        stays NULL otherwise, so a NOT NULL constraint or a non-None default would make the model
-        reject rows the database accepts.
-        """
+        """NULL unless a verified address was copied, so NOT NULL would reject rows the database accepts."""
         assert User(email=None).email is None
         assert User().email is None
 
@@ -111,7 +80,7 @@ class TestUserModel:
 
 
 class TestSubscriptionModelLayerIsGone:
-    """D-16: the model layer no longer describes subscription plans or monthly usage."""
+    """The model layer no longer describes subscription plans or monthly usage."""
 
     def test_barrel_exports_no_removed_symbol(self):
         assert REMOVED_SYMBOLS.isdisjoint(models.__all__)
@@ -130,12 +99,7 @@ class TestSubscriptionModelLayerIsGone:
         assert not (_REPO_ROOT / "src/nativespeaker/api/models/subscriptions.py").exists()
 
     def test_no_module_imports_a_removed_symbol(self):
-        """No module in src/ or tests/ imports one of the deleted model symbols.
-
-        A stale import is not a latent inconvenience here -- it is an ImportError at collection
-        time for the whole package, which is how config.py's `SubscriptionPlan` import made the
-        model repair and the config removal inseparable.
-        """
+        """A stale import is an ImportError at collection time for the whole package, not a latent nuisance."""
         offenders = {}
         for path in sorted((_REPO_ROOT / "src").rglob("*.py")) + \
                     sorted((_REPO_ROOT / "tests").rglob("*.py")):

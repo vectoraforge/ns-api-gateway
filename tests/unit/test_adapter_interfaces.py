@@ -1,24 +1,4 @@
-"""FOUND-08: the §7 adapter seams -- interfaces only, zero implementations.
-
-The whole value of this file is that it fails the moment `auth/adapters.py` grows an
-implementation. Foundation calls `get_user_provider_data`, `revoke_refresh_tokens`, and every
-store and vendor-proof method exactly zero times; §7.1 is explicit that there are exactly five
-enumerated providerData read points in the whole system and that none of them is here.
-
-The `firebase_admin` absence check runs in a **subprocess** on purpose. `app/lifespan.py` still
-imports `firebase_admin` at module scope until plan 04 deletes it (D-16), so an in-process
-`sys.modules` assertion would pass or fail on test ordering rather than on this module's imports.
-
-**Amended by plan 37-02.** The src-wide scan now carries a named, method-scoped allow-list
-(`ADAPTER_IMPLEMENTORS`) because this phase builds the first module that legitimately names an
-adapter method -- `auth/retry.py`, whose `lookup_with_retry` calls `get_user_provider_data`. It is
-an allow-list, not a widened skip: an entry permits exactly the methods it names and no others, so
-a listed module that later grows a second adapter method is still reported; every key must resolve
-to a file that exists, so a stale entry cannot silently widen the scan; and a control case pins
-that a non-exempt file naming any of `ADAPTER_METHODS` is still reported. Nothing above changes --
-this file still fails the moment `auth/adapters.py` grows an implementation, and §7.1's five
-enumerated providerData read points are still none of them.
-"""
+"""The adapter seams: interfaces only, and this fails the moment `auth/adapters.py` grows an implementation."""
 import ast
 import subprocess
 import sys
@@ -63,21 +43,10 @@ ADAPTER_METHODS = ("verify_id_token", "get_user_provider_data", "revoke_refresh_
                    "read_device_bit", "write_device_bit", "verify_integrity_verdict",
                    "verify_bot_check")
 
-# Only the standard library and this project. A provider SDK, an HTTP client, or a credential
-# source appearing here is the drift §7 exists to prevent.
+# Only the standard library and this project; a provider SDK or credential source here is the drift.
 ALLOWED_IMPORT_ROOTS = {"dataclasses", "datetime", "enum", "typing", "uuid", "nativespeaker"}
 
-# The modules under SRC_ROOT permitted to name an adapter method, each mapped to the exact methods
-# it may name. Stated in the positive: every other file under SRC_ROOT may name **none** of the ten
-# in `ADAPTER_METHODS`, and an entry here permits only the methods it lists -- a listed module that
-# later grows a second adapter method is reported anyway. Keys are `path.relative_to(SRC_ROOT)` in
-# posix form, the same shape the offender strings carry.
-#
-# Two entries, and both name exactly one method. `auth/firebase.py` is the concrete §7.1 adapter
-# (plan 37-05); it deliberately implements neither `verify_id_token` nor `revoke_refresh_tokens`,
-# and a one-method entry is what makes those omissions structural -- when Phase 46 adds
-# `revoke_refresh_tokens` to that module, the scan reports it and Phase 46 widens the entry
-# deliberately rather than inheriting a blanket exemption.
+# Modules permitted to name an adapter method, each mapped to the exact methods it may name.
 ADAPTER_IMPLEMENTORS: dict[str, frozenset[str]] = {
     "api/auth/retry.py": frozenset({"get_user_provider_data"}),
     "api/auth/firebase.py": frozenset({"get_user_provider_data"}),
@@ -98,12 +67,7 @@ def _run(code: str) -> subprocess.CompletedProcess:
 
 
 def _adapter_method_offenders(sources, implementors=None) -> list[str]:
-    """Sorted `"path: method"` strings for every adapter method named outside its permitted set.
-
-    Pure on purpose. `sources` is an iterable of `(relative_path, text)` pairs, so the real src-wide
-    walk and the control cases below run through the identical filter -- the controls prove the
-    scan still fires without writing a file into the tree to provoke it.
-    """
+    """Sorted `path: method` strings for every adapter method named outside its permitted set."""
     permitted = ADAPTER_IMPLEMENTORS if implementors is None else implementors
     return sorted(f"{path}: {method}"
                   for path, text in sources
@@ -112,7 +76,7 @@ def _adapter_method_offenders(sources, implementors=None) -> list[str]:
 
 
 class TestClosedOutcomeSets:
-    """§7's outcome sets are closed. A fifth member is a spec change, not a refactor."""
+    """The outcome sets are closed: a fifth member is a spec change, not a refactor."""
 
     def test_provider_data_outcome_has_exactly_the_four_71_members(self):
         assert [m.value for m in ProviderDataOutcome] == [
@@ -120,7 +84,7 @@ class TestClosedOutcomeSets:
         ]
 
     def test_revocation_outcome_is_two_valued(self):
-        """§7.1: `confirmed` only when Firebase confirmed; every other outcome is `unconfirmed`."""
+        """`confirmed` only when the provider confirmed; every other outcome is `unconfirmed`."""
         assert [m.value for m in RevocationOutcome] == ["confirmed", "unconfirmed"]
 
     def test_claim_kind_is_exactly_anonymous_and_registered(self):
@@ -168,11 +132,7 @@ class TestZeroImplementations:
         assert getattr(protocol, "_is_runtime_protocol", False) is False
 
     def test_foundation_calls_no_adapter_method_anywhere_in_src(self):
-        """§7.1: foundation calls `get_user_provider_data` zero times -- and the rest likewise.
-
-        `ADAPTER_IMPLEMENTORS` names the one module this phase gives a legitimate reason to call
-        one, and permits it that method alone.
-        """
+        """Foundation calls every adapter method zero times; the allow-list names the one module permitted one."""
         sources = [(path.relative_to(SRC_ROOT).as_posix(), path.read_text())
                    for path in sorted(SRC_ROOT.rglob("*.py")) if path != SOURCE_PATH]
         assert _adapter_method_offenders(sources) == []
@@ -189,18 +149,14 @@ class TestZeroImplementations:
         assert _adapter_method_offenders(sources) == ["api/app/main.py: get_user_provider_data"]
 
     def test_an_entry_permits_the_methods_it_names_and_no_others_control(self):
-        """The entry-scope control: an exemption admits one method, not a module.
-
-        Takes the first key rather than hard-coding a path, so a later plan's added entry needs no
-        edit here.
-        """
+        """The entry-scope control: an exemption admits one method, not a module."""
         listed = next(iter(ADAPTER_IMPLEMENTORS))
         sources = [(listed, "outcome = adapter.revoke_refresh_tokens(issuer, subject)")]
         assert _adapter_method_offenders(sources) == [f"{listed}: revoke_refresh_tokens"]
 
 
 class TestNoProviderDependency:
-    """§7.1 / RESEARCH Pattern 8: not one `firebase_admin` import, not one network client."""
+    """No `firebase_admin` in `sys.modules`, so a convenience import anywhere in the auth package fails this too."""
 
     def test_importing_the_module_does_not_import_firebase_admin(self):
         result = _run("import sys, nativespeaker.api.auth.adapters; "
@@ -280,7 +236,7 @@ class TestResultTypesAreImmutable:
 
 
 class TestFirebaseAdminAdapter:
-    """§7.1 -- three methods, one issuer-selected client, no fallback expressible."""
+    """Three methods, one issuer-selected client, and no fallback expressible."""
 
     def test_it_declares_exactly_the_three_71_methods(self):
         assert self._methods(FirebaseAdminAdapter) == {
@@ -297,7 +253,7 @@ class TestFirebaseAdminAdapter:
         assert self._returns(FirebaseAdminAdapter.revoke_refresh_tokens) is RevocationOutcome
 
     def test_the_lookup_methods_take_the_issuer_so_selection_is_per_call(self):
-        """§7.1: no ambient, default, global, or fallback client is expressible through the seam."""
+        """No ambient, default, global or fallback client is expressible through the seam."""
         import inspect
         for method in (FirebaseAdminAdapter.get_user_provider_data,
                        FirebaseAdminAdapter.revoke_refresh_tokens):
@@ -315,7 +271,7 @@ class TestFirebaseAdminAdapter:
 
 
 class TestStoreAdapter:
-    """§7.2 -- three methods, and a rejection that distinguishes nothing."""
+    """Three methods, and a rejection that distinguishes nothing."""
 
     def test_it_declares_exactly_the_three_72_methods(self):
         assert TestFirebaseAdminAdapter._methods(StoreAdapter) == {
@@ -328,7 +284,7 @@ class TestStoreAdapter:
         ("fetch_subscription_state", StoreState),
     ])
     def test_every_rejection_is_the_same_indistinguishable_none(self, method_name, payload):
-        """§7.2: rejection never distinguishes malformed from unverifiable material."""
+        """Rejection never distinguishes malformed from unverifiable material."""
         annotation = TestFirebaseAdminAdapter._returns(getattr(StoreAdapter, method_name))
         assert set(typing.get_args(annotation)) == {payload, type(None)}
 
@@ -362,7 +318,7 @@ class TestStoreAdapter:
 
 
 class TestVendorProofAdapter:
-    """§7.3 -- the adapter pins the device slot, and no value here becomes an identifier."""
+    """The adapter pins the device slot, and no value here becomes an identifier."""
 
     def test_it_declares_exactly_the_four_73_methods(self):
         assert TestFirebaseAdminAdapter._methods(VendorProofAdapter) == {
@@ -371,7 +327,7 @@ class TestVendorProofAdapter:
 
     @pytest.mark.parametrize("method_name", ["read_device_bit", "write_device_bit"])
     def test_every_device_slot_method_takes_a_claim_kind(self, method_name):
-        """§7.3: the adapter pins the bit, so phase 06 cannot reach phase 07's slot."""
+        """The adapter pins the bit, so one phase's flow cannot reach another's slot."""
         import inspect
         parameter = inspect.signature(getattr(VendorProofAdapter, method_name)).parameters["claim_kind"]
         assert parameter.annotation is ClaimKind
@@ -387,13 +343,13 @@ class TestVendorProofAdapter:
             assert "claim_kind" not in inspect.signature(method).parameters
 
     def test_the_seam_records_the_no_rate_limit_key_prohibition(self):
-        """T-35-07-04: a docstring-level prohibition that no future implementer can miss."""
+        """A docstring-level prohibition that no future implementer can miss."""
         assert "rate-limit key" in VendorProofAdapter.__doc__
         assert "device principal" in VendorProofAdapter.__doc__
 
 
 class TestSharedAdapterRules:
-    """§7's preamble binds every concrete adapter; the seam is where those rules belong."""
+    """The preamble binds every concrete adapter, and the seam is where those rules belong."""
 
     @pytest.mark.parametrize("phrase", [
         "no provider call while a database lock is held",

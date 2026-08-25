@@ -195,7 +195,7 @@ class TestRejectHandling:
 
     @pytest.mark.asyncio
     async def test_reject_no_messages_persisted(self, service, mock_chats_db):
-        """D-09: On reject, neither human nor AI message is persisted."""
+        """On reject, neither human nor AI message is persisted."""
         llm_response = {"resolved_mode": "reject",
                         "response": "Out of scope"}
         service.llm_service.ainvoke.return_value = llm_response

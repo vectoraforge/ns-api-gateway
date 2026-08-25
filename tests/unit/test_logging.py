@@ -12,15 +12,7 @@ from nativespeaker.api.logs import RequestLoggingMiddleware, setup_logging
 
 @pytest.fixture(autouse=True)
 def _reset_logging():
-    """Save and restore root logger state and structlog defaults around each test.
-
-    The reset runs *before* the test as well as after. `setup_logging` configures structlog with
-    `cache_logger_on_first_use=True`, so once any other module has called it -- an e2e module's
-    `_app_lifespan` fixture does, in a combined run -- `logs.py`'s module-level lazy proxy has
-    already bound and cached a concrete logger that `capture_logs` cannot intercept, and these
-    tests see an empty capture list. Restoring only afterwards never undid that, which is why they
-    passed alone and failed in a combined run (deferred item D-35-01-A).
-    """
+    """Save and restore logger state around each test; the reset runs before as well as after."""
     root = logging.getLogger()
     original_handlers = root.handlers[:]
     original_level = root.level
@@ -34,11 +26,7 @@ def _reset_logging():
 
 
 def _uncache_module_logger():
-    """Drop the concrete logger `logs.logger` cached on first use, restoring the lazy proxy.
-
-    `structlog.reset_defaults()` resets the *configuration*; it cannot reach into a proxy that has
-    already replaced its own `_logger` with a bound instance built from the old configuration.
-    """
+    """Drop the concrete logger cached on first use: resetting the configuration cannot reach a bound proxy."""
     logs_module.logger = structlog.get_logger()
 
 
@@ -50,6 +38,7 @@ def test_console_output_always_active():
 
 
 def test_request_id_bound_in_context():
+    """Request correlation travels through contextvars, which is what carries it into every record."""
     structlog.contextvars.clear_contextvars()
     structlog.contextvars.bind_contextvars(request_id="test-req-123")
     ctx = structlog.contextvars.get_contextvars()
@@ -60,8 +49,7 @@ def test_request_id_bound_in_context():
 def _logging_app():
     """Minimal FastAPI app with RequestLoggingMiddleware for testing."""
     app = FastAPI()
-    # See app/main.py: ty cannot match BaseHTTPMiddleware subclasses against
-    # Starlette's _MiddlewareFactory ParamSpec protocol.
+    # ty cannot match BaseHTTPMiddleware subclasses against Starlette's factory protocol.
     app.add_middleware(RequestLoggingMiddleware)  # ty: ignore[invalid-argument-type]
 
     @app.get("/test")

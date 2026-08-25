@@ -19,24 +19,20 @@ from nativespeaker.api.config import (
     ResilienceConfig,
 )
 
-# pytest-dotenv loads .env which sets CONFIG_DIR.
-# With env_nested_delimiter="_", pydantic-settings can misinterpret env vars.
-# Remove these env vars for MainConfig tests.
+# Removed for these cases: the nested delimiter makes pytest-dotenv's CONFIG_DIR ambiguous.
 _DOTENV_KEYS = ["CONFIG_DIR"]
 
 # The repository's tracked configuration file -- the one the application actually starts against.
 TRACKED_CONFIG = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
 
-# Synthetic values for the two blocks that live in the gitignored .env rather than the YAML, so the
-# cases below load the tracked file without depending on a developer's environment.
+# Synthetic values for the blocks that live in .env, so these cases ignore a developer's environment.
 _ENV_SECRETS = {
     "DB_HOST": "localhost", "DB_PORT": "5432", "DB_USER": "u",
     "DB_PASSWORD": "p", "DB_NAME": "d",
     "JWT_PROJECT_ID": "test-project", "JWT_API_KEY": "test-api-key",
 }
 
-# A locally-generated 32-byte key as base64 text -- the encoding pinned by this phase's checkpoint.
-# Not the committed development key: nothing here should break when that one is rotated.
+# A locally-generated key, not the committed one, so nothing here breaks when that one is rotated.
 _TEST_HMAC_KEY = base64.b64encode(bytes(range(32))).decode()
 _HMAC_YAML = f'hmac:\n  active_version: 1\n  keys:\n    1: "{_TEST_HMAC_KEY}"\n'
 
@@ -89,8 +85,7 @@ en:
 
         env_clean = {k: v for k, v in os.environ.items() if k not in _DOTENV_KEYS}
         with patch.dict(os.environ, env_clean, clear=True):
-            # _env_file is declared on BaseSettings.__init__, but ty sees only the
-            # __init__ synthesised from the model fields.
+            # _env_file is on BaseSettings.__init__, but ty sees only the synthesised one.
             config = EnvironmentConfig(config_dir=Path(tmp_dir),
                                        _env_file=None)  # ty: ignore[unknown-argument]
             assert config.app_config is not None
@@ -112,7 +107,7 @@ def test_main_config_missing_file():
 
 
 class TestSubscriptionConfigSurfaceIsGone:
-    """D-16: the model no longer describes subscription plans or Apple receipt verification."""
+    """The model no longer describes subscription plans or receipt verification."""
 
     def test_apple_config_class_is_gone(self):
         import nativespeaker.api.config as config_module
@@ -123,12 +118,7 @@ class TestSubscriptionConfigSurfaceIsGone:
         assert "quotas" not in AppConfig.model_fields
 
     def test_tracked_config_yaml_loads(self):
-        """The file the application actually starts against still validates.
-
-        `AppConfig(**yaml_data, ...)` splats the YAML into a settings model, so this loads the
-        tracked file rather than a hand-written copy -- a block left behind in `config/config.yaml`
-        after the fields were removed would fail here and nowhere else.
-        """
+        """Loads the tracked file, so a block left behind after the fields were removed fails here and nowhere else."""
         tmp_dir = tempfile.mkdtemp()
         try:
             Path(tmp_dir, "config.yaml").write_text(TRACKED_CONFIG.read_text())
@@ -144,15 +134,7 @@ class TestSubscriptionConfigSurfaceIsGone:
             shutil.rmtree(tmp_dir)
 
     def test_a_stale_block_fails_loudly(self):
-        """`extra='forbid'` is what makes the removal real: a leftover key raises, never coasts.
-
-        This is the honest failure mode, not something to work around with `extra='ignore'` -- a
-        silently-ignored `quotas:` block would read as configured allowance that nothing enforces.
-
-        `hmac` is supplied so the only thing wrong with this construction is the stale block. Let
-        it fall back on the required-field error and the case would pass without `extra='forbid'`
-        ever being consulted.
-        """
+        """`extra='forbid'` makes the removal real: an ignored block would read as allowance nothing enforces."""
         with pytest.raises(ValidationError, match="quotas"):
             AppConfig(quotas={"free": 10},  # ty: ignore[unknown-argument]
                       hmac={"active_version": 1, "keys": {1: _TEST_HMAC_KEY}},
@@ -161,14 +143,13 @@ class TestSubscriptionConfigSurfaceIsGone:
 
 
 class TestHmacConfigSurface:
-    """FOUND-05 / D-20 / D-22: the `hmac:` block is declared on the model and required at load."""
+    """The `hmac:` block is declared on the model and required at load."""
 
     def test_app_config_declares_hmac(self):
         assert "hmac" in AppConfig.model_fields
 
     def test_a_config_file_with_no_hmac_block_fails_to_load(self):
-        """D-22 at the boundary that matters: the process never starts without the key it needs
-        to write. The abort happens inside `EnvironmentConfig()`, before the lifespan runs."""
+        """The process never starts without the key it needs to write, and the abort precedes the lifespan."""
         tmp_dir = tempfile.mkdtemp()
         try:
             Path(tmp_dir, "config.yaml").write_text("log_level: INFO\nchats_limit: 50\n")
@@ -183,8 +164,7 @@ class TestHmacConfigSurface:
             shutil.rmtree(tmp_dir)
 
     def test_the_tracked_config_yaml_carries_a_usable_active_key(self):
-        """The committed development key is real material, not a REPLACE-ME placeholder: it
-        decodes, it is long enough, and it derives a 32-byte digest for the BYTEA column."""
+        """The committed development key is real material, not a placeholder: it decodes and derives 32 bytes."""
         tmp_dir = tempfile.mkdtemp()
         try:
             Path(tmp_dir, "config.yaml").write_text(TRACKED_CONFIG.read_text())
@@ -202,8 +182,7 @@ class TestHmacConfigSurface:
             shutil.rmtree(tmp_dir)
 
 
-# A structurally-valid service account with no real key material: the private key is a literal
-# placeholder, so nothing here is a credential even though it parses like one.
+# Structurally valid with a placeholder private key, so nothing here is a credential.
 _FAKE_SERVICE_ACCOUNT = json.dumps({
     "type": "service_account",
     "project_id": "test-project",
@@ -214,17 +193,12 @@ _FAKE_SERVICE_ACCOUNT = json.dumps({
     "token_uri": "https://oauth2.googleapis.com/token",
 })
 
-# Not JSON, and shaped like the real thing -- so a test asserting it is absent from an error
-# message is asserting the thing that would actually leak.
+# Not JSON, but shaped like the real thing, so asserting its absence asserts what would leak.
 _MALFORMED_CREDENTIAL = "-----BEGIN PRIVATE KEY-----WOULD-LEAK-----END PRIVATE KEY-----"
 
 
 def _load_against_tracked_yaml(**env: str) -> EnvironmentConfig:
-    """Load the tracked `config/config.yaml` under a controlled environment.
-
-    The tracked file rather than a hand-written copy: Pitfall 7 is about what that specific file
-    declares, and a local copy would not notice a `firebase:` block appearing in it.
-    """
+    """Load the tracked `config/config.yaml`, not a copy, since what that file declares is the subject."""
     tmp_dir = tempfile.mkdtemp()
     try:
         Path(tmp_dir, "config.yaml").write_text(TRACKED_CONFIG.read_text())
@@ -239,15 +213,13 @@ def _load_against_tracked_yaml(**env: str) -> EnvironmentConfig:
 
 
 class TestFirebaseConfigSurface:
-    """D-08: the service-account credential has exactly one home, the gitignored `.env`."""
+    """The service-account credential has exactly one home, the gitignored `.env`."""
 
     def test_app_config_declares_firebase(self):
         assert "firebase" in AppConfig.model_fields
 
     def test_the_field_is_defaulted_not_required(self):
-        """The credential is genuinely absent today, and every non-completion path in the phase
-        must stay runnable without it -- prepare mode, the mode-signal partition, the classifier,
-        and every substituted-adapter test."""
+        """The credential is genuinely absent today, and every non-completion path must stay runnable without it."""
         assert not AppConfig.model_fields["firebase"].is_required()
 
     def test_the_credential_is_typed_as_a_secret(self):
@@ -270,11 +242,7 @@ class TestFirebaseCredentialAbsent:
         assert config.app_config.firebase.credential_dict() is None
 
     def test_the_e2e_firebase_variables_do_not_collide_with_the_new_block(self):
-        """`.env` already carries FIREBASE_API_KEY / FIREBASE_TEST_* for the e2e sign-in fixture.
-
-        `env_nested_delimiter="_"` routes all of them at `firebase.*`, so the new block must
-        tolerate them rather than reject the load and take the whole e2e suite down with it.
-        """
+        """The nested delimiter routes the existing e2e variables here, so the block must tolerate them."""
         config = _load_against_tracked_yaml(FIREBASE_API_KEY="k",
                                             FIREBASE_TEST_EMAIL="e@example.com",
                                             FIREBASE_TEST_PASSWORD="p")
@@ -331,8 +299,7 @@ class TestFirebaseCredentialMalformed:
         assert "service_account_json" in str(excinfo.value)
 
     def test_the_failure_does_not_echo_the_offending_value(self):
-        """T-37-09. `hide_input_in_errors=True` covers pydantic's own rendering; the hand-written
-        parse must not undo it by putting the text in its own message."""
+        """The hand-written parse must not undo `hide_input_in_errors` by putting the text in its own message."""
         with pytest.raises(ValidationError) as excinfo:
             _load_against_tracked_yaml(FIREBASE_SERVICE_ACCOUNT_JSON=_MALFORMED_CREDENTIAL)
         rendered = str(excinfo.value)
@@ -341,13 +308,7 @@ class TestFirebaseCredentialMalformed:
 
 
 class TestTheTrackedYamlNeverShadowsTheCredential:
-    """Pitfall 7, as a standing test rather than a reviewer's memory.
-
-    `AppConfig(**yaml_data, ...)` puts the YAML in `init_settings`, which pydantic-settings ranks
-    above `env_settings`. A `firebase:` block added to the tracked file to "document the shape"
-    would therefore make the `.env` value permanently unreachable AND put real key material in a
-    file that is committed. `.env.example` is where the shape is documented.
-    """
+    """YAML outranks the environment, so a `firebase:` block here would make the `.env` value unreachable."""
 
     def test_the_tracked_config_yaml_declares_no_firebase_key(self):
         data = yaml.safe_load(TRACKED_CONFIG.read_text())

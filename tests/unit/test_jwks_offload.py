@@ -1,28 +1,4 @@
-"""The measured proof that an unrecognized `kid` never stalls the event loop (CR-01).
-
-`35-VERIFICATION.md` scored the fifth conjunct of 35-02's D10 -- "performs no per-request network
-call" -- as failed: the acceptance step called the synchronous `JWTVerifier.verify` directly from
-an `async def`, and that call reaches `PyJWKClient.get_signing_key_from_jwt`, which on an unmatched
-`kid` performs a blocking `urlopen` with PyJWT's 30-second default bound. One unauthenticated
-request was enough to stop every other coroutine in the process, `/health/ready` included.
-
-What that gap needs is a *measurement*, not a structural assertion. So the request here travels the
-whole stack -- ASGI, the auth dependency, the verifier, a real `PyJWKClient`, a stubbed transport
--- while a heartbeat coroutine counts its own ticks, and the case fails if the loop stops serving.
-The transport is stubbed at `urllib.request.urlopen`, the one blocking call PyJWT makes; the client
-itself is real, because the vacuous test this replaces (WR-05) substituted the client class and
-could therefore not fail (see `test_jwt_security.py::TestTheJwksTransportIsNotHitPerRequest` for
-the same seam applied to fetch counts).
-
-**37.1 D-06 moved the seam under test and changed nothing here that matters.** The offload is now
-`run_in_threadpool` inside `app/dependencies.py::get_request_context` rather than inside a
-middleware's `__call__`; the fetch it offloads, the bound it carries and the loop it must not stall
-are the same. What this module measures survives a mechanism change precisely because it measures
-behaviour rather than structure -- so the harness moved and every count assertion stayed.
-
-`test_the_harness_detects_a_starved_loop` is permanent, not scaffolding: without it, the case above
-is a green assertion nobody has shown can go red.
-"""
+"""The measured proof that an unrecognized `kid` never stalls the event loop, through the whole real stack."""
 import asyncio
 import io
 import json
@@ -42,20 +18,13 @@ from unit.conftest import PUBLIC_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_tok
 JWKS_URL = "https://jwks.invalid/keys"
 KNOWN_KID = "test-key-1"
 
-# A simulated round trip long enough that a blocked loop is unmistakable and short enough that the
-# suite does not pay for it: at 0.4s a 10ms heartbeat has room for ~40 ticks.
+# Long enough that a blocked loop is unmistakable, short enough that the suite does not pay for it.
 FETCH_DELAY = 0.4
 HEARTBEAT_INTERVAL = 0.01
 
 
 def jwks_body(kid: str = KNOWN_KID) -> bytes:
-    """A one-key JWKS document the stubbed endpoint serves, under whatever `kid` is asked for.
-
-    `PyJWKSet` rejects an empty `keys` list, so the document has to carry a real key even for cases
-    that only ever ask for a `kid` it does not contain. It is the test keypair's public half, which
-    is what makes the served `kid` verify for real rather than through a stub -- and what lets a case
-    re-serve the endpoint under a different `kid` to model a key rotation.
-    """
+    """A one-key JWKS document served under whatever `kid` is asked for; `PyJWKSet` rejects an empty key list."""
     key = RSAAlgorithm(RSAAlgorithm.SHA256).prepare_key(PUBLIC_KEY_PEM)
     jwk = json.loads(RSAAlgorithm.to_jwk(key))
     jwk.update(kid=kid, use="sig", alg="RS256")
@@ -66,13 +35,7 @@ JWKS_BODY = jwks_body()
 
 
 class CountedJwksTransport:
-    """A counted, optionally slow, optionally failing stand-in for PyJWT's one blocking call.
-
-    The signature mirrors `urllib.request.urlopen(r, timeout=..., context=...)` exactly as
-    `PyJWKClient.fetch_data` calls it, so every fetch the production path makes is recorded here and
-    nowhere else. `timeouts` doubles as the fetch count and as the record of what bound each fetch
-    carried -- the two things this gap has to prove.
-    """
+    """A counted, optionally slow, optionally failing stand-in for PyJWT's one blocking call."""
 
     def __init__(self) -> None:
         self.timeouts: list[float | None] = []
@@ -105,13 +68,7 @@ class _EmptyResult:
 
 
 class _NoIdentitySession:
-    """Step 4's session. Every case here is refused at step 2 or step 3, so it is never consulted.
-
-    It exists because the dependency reads `session_factory` off application state per request;
-    leaving it out would make a wrongly-*accepted* token fail with an attribute error instead of
-    the 403 the admission matrix owes it, and that failure would be about the fixture rather than
-    the code.
-    """
+    """Every case here is refused before the identity read, so this exists only so a wrong accept fails as 403."""
 
     async def __aenter__(self):
         return self
@@ -136,12 +93,7 @@ def verifier(transport) -> JWTVerifier:
 
 @pytest.fixture
 def probe_app(verifier) -> FastAPI:
-    """The real auth dependency in front of one route, wired the way the lifespan wires it.
-
-    `/probe` gets the dependency the way every non-public route does under D-07 -- declared on the
-    router and again in the endpoint signature -- so what these cases measure is the production
-    shape rather than a single hand-placed `Depends`.
-    """
+    """One route carrying the real dependency at router and endpoint level, which is the production shape."""
     app = FastAPI()
     register_exception_handlers(app)
     router = APIRouter(dependencies=[Depends(get_linked_identity)])
@@ -157,11 +109,7 @@ def probe_app(verifier) -> FastAPI:
 
 
 class Heartbeat:
-    """A coroutine that records when it got to run, and how often, inside a measured window.
-
-    This is the whole instrument. A tick is proof the loop scheduled something else while the JWKS
-    fetch was outstanding; the absence of ticks is proof it did not.
-    """
+    """The instrument: a tick proves the loop scheduled something else while the JWKS fetch was outstanding."""
 
     def __init__(self) -> None:
         self.ticks: list[float] = []
@@ -200,12 +148,7 @@ async def _get_probe(app: FastAPI, headers) -> tuple[int, dict, float, float]:
 
 
 async def test_an_unknown_kid_request_does_not_starve_the_event_loop(probe_app, transport):
-    """CR-01, measured: the loop keeps serving while an unrecognized `kid` is being fetched.
-
-    Ten ticks is a deliberate four-fold margin against scheduler noise -- an offloaded fetch of this
-    shape yields roughly forty, and a blocking one yields zero -- rather than a threshold tuned to
-    just pass.
-    """
+    """The loop keeps serving while an unrecognized `kid` is fetched; ten ticks is a fourfold margin on noise."""
     token = make_token("u", headers={"kid": "unrecognised-1"})
     transport.fetch_delay = FETCH_DELAY
 
@@ -221,11 +164,7 @@ async def test_an_unknown_kid_request_does_not_starve_the_event_loop(probe_app, 
 
 
 async def test_the_harness_detects_a_starved_loop(verifier, transport):
-    """The permanent control: the same instrument, against a call that is *not* offloaded.
-
-    Without this, the case above is a green assertion nobody has shown can go red -- which is the
-    exact defect WR-05 documents in the test this module replaces.
-    """
+    """Permanent, not scaffolding: without this control the case above is a green assertion never shown to fail."""
     token = make_token("u", headers={"kid": "unrecognised-control"})
     transport.fetch_delay = FETCH_DELAY
 
@@ -241,7 +180,7 @@ async def test_the_harness_detects_a_starved_loop(verifier, transport):
 
 
 async def test_a_duplicate_authorization_never_reaches_the_jwks_transport(probe_app, transport):
-    """FOUND-02 ordering: the §1.1 wire contract still precedes verification under the offload."""
+    """The wire contract still precedes verification under the offload."""
     token = make_token("u", headers={"kid": "unrecognised-2"})
     before = len(transport)
 

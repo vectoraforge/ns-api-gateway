@@ -1,23 +1,4 @@
-"""§7.1's concrete issuer-selected Firebase Admin adapter -- no network, no credential, no app.
-
-Everything here runs against a monkeypatched `firebase_admin.auth.get_user` and a monkeypatched
-`initialize_app`, so the suite needs neither a service account nor an outbound call. What it pins
-is the four things that cannot be checked by reading the code once:
-
-* **Selection fails closed.** An issuer with no configured app returns `selection_failure` and
-  makes **no call at all** (T-37-19). A fallback to "the app we do have" would be reading another
-  project's users.
-* **No `[DEFAULT]` app is ever created** (T-37-14). Not creating one is what makes a call site that
-  forgets `app=` fail loudly instead of silently picking up Application Default Credentials -- in
-  local dev, the developer's own gcloud identity.
-* **`provider_data` is materialized inside the threadpool call.** It is a *lazy* property that
-  constructs `ProviderUserInfo`, which raises `ValueError` on an empty `rawId`. Touched after the
-  call returns, that exception escapes the retry policy entirely and becomes an unhandled 500
-  (T-37-17). The `raising_provider_data` case below drives exactly that shape.
-* **The two email fields are read from the same `UserRecord`, on the `ok` arm only** -- §02 step 10
-  pins the copy to "the same successful `getUser` response", and every failure arm leaves both at
-  their defaults (T-37-34). The adapter *reports*; `classifier.email_to_persist` is what judges.
-"""
+"""The issuer-selected Firebase Admin adapter against a monkeypatched SDK: no network, no credential, no app."""
 import dataclasses
 import json
 
@@ -41,8 +22,7 @@ ISSUER = f"https://securetoken.google.com/{PROJECT_ID}"
 OTHER_ISSUER = "https://securetoken.google.com/some-other-project"
 SUBJECT = "firebase-uid-1"
 
-# Shaped like a service account, but never used as one: `credentials.Certificate` is monkeypatched
-# in the one test that reaches it, so no key material -- real or fake-but-valid -- exists here.
+# Shaped like a service account but never used as one, so no key material exists here.
 CREDENTIAL = {"type": "service_account", "project_id": PROJECT_ID,
               "client_email": f"admin@{PROJECT_ID}.iam.gserviceaccount.com", "private_key": "unused"}
 
@@ -88,13 +68,7 @@ class RecordingApp:
 
 @pytest.fixture
 def no_adc(monkeypatch):
-    """Force the environment to offer no Application Default Credentials.
-
-    `build_admin_apps` falls back to ADC when no key is configured, so a developer machine with a
-    gcloud login -- or a `GOOGLE_APPLICATION_CREDENTIALS` in `.env` -- makes the genuinely-absent
-    state unreachable. Any case asserting the absent state must take this fixture, or it quietly
-    starts asserting something else.
-    """
+    """Force the environment to offer no Application Default Credentials; any absent-state case must take this."""
     def no_credentials(*args, **kwargs):
         raise google.auth.exceptions.DefaultCredentialsError("no ADC in this test")
 
@@ -157,12 +131,7 @@ class TestBuildAdminApps:
                            "httpTimeout": FIREBASE_HTTP_TIMEOUT_SECONDS}
 
     def test_an_absent_credential_yields_an_empty_mapping_and_no_default_app(self, no_adc):
-        """Absent is a supported state (37-03): the service boots and completion fails closed.
-
-        `no_adc` is mandatory here. Since ADC became the second credential source, "absent" means
-        *both* sources absent -- and a developer machine with a gcloud login supplies the second
-        one, so without the fixture this case silently stops testing the state it names.
-        """
+        """Absent means both sources absent, so `no_adc` is mandatory or this stops testing the state it names."""
         assert build_admin_apps(StubConfig(None)) == {}
         assert firebase_admin._DEFAULT_APP_NAME not in firebase_admin._apps
 
@@ -175,11 +144,7 @@ class TestBuildAdminApps:
         assert build_admin_apps(StubConfig(None)) == {}
 
     def test_adc_supplies_the_credential_when_no_key_is_configured(self, monkeypatch):
-        """The second source: no key file, but the environment offers ADC.
-
-        This is the arm the organization policy forces -- `iam.disableServiceAccountKeyCreation`
-        means no key can be minted, so ADC is the only route to a real Admin call here.
-        """
+        """The arm the organization policy forces: no key can be minted, so ADC is the only route to a real call."""
         monkeypatch.setattr(google.auth, "default", lambda *a, **k: (object(), PROJECT_ID))
         passed = {}
 
@@ -192,8 +157,7 @@ class TestBuildAdminApps:
 
         assert apps == {ISSUER: "app-sentinel"}
         assert isinstance(passed["credential"], credentials.ApplicationDefault)
-        # Never inferred from the credential: user-scoped ADC carries no project, and an Admin
-        # client bound to the wrong one reads another project's users.
+        # Never inferred from the credential: a client bound to the wrong project reads other users.
         assert passed["options"]["projectId"] == PROJECT_ID
 
     def test_an_explicit_key_wins_over_adc(self, monkeypatch):
@@ -217,7 +181,7 @@ class TestBuildAdminApps:
 
 
 class TestSelection:
-    """§7.1: one client selected by issuer match, and no fallback expressible."""
+    """One client selected by issuer match, with no fallback expressible."""
 
     async def test_an_unconfigured_issuer_fails_closed_and_calls_nothing(self, adapter,
                                                                         get_user_calls):
@@ -260,7 +224,7 @@ class TestSuccessfulReads:
 
 
 class TestTheEmailFields:
-    """§02 step 10's carrier: read from the same record, on the `ok` arm, judged nowhere here."""
+    """Read from the same record on the `ok` arm; the adapter reports and judges nothing."""
 
     async def test_a_verified_address_rides_out_on_the_result(self, adapter, get_user_calls):
         get_user_calls(StubUserRecord(email="a@b.test", email_verified=True))
@@ -322,17 +286,7 @@ class TestFailureMapping:
 
     async def test_a_credential_refresh_failure_is_retryable_and_never_escapes(self, adapter,
                                                                               get_user_calls):
-        """CR-01. Credential acquisition happens before the request is sent, outside every arm.
-
-        `AuthorizedSession.request` calls `credentials.before_request()` first, and firebase-admin
-        converts only `requests.exceptions.RequestException` into a `FirebaseError`. `RefreshError`
-        is none of the three types the other arms catch, so without its own arm it escapes the
-        adapter: `retry_if_result` never sees a result, no retry is spent, and the caller gets 500
-        with the claim left unconsumed instead of 503.
-
-        This is the steady state under ADC, not an edge case -- the org policy blocks key creation,
-        so every deployment renews a short-lived token and every renewal can fail.
-        """
+        """A refresh error is none of the types the other arms catch, so without this arm it escapes as a 500."""
         assert not issubclass(google.auth.exceptions.RefreshError, exceptions.FirebaseError)
         assert not issubclass(google.auth.exceptions.RefreshError, ValueError)
         get_user_calls(google.auth.exceptions.RefreshError("token refresh failed"))
@@ -355,7 +309,7 @@ class TestFailureMapping:
 
     async def test_a_lazy_provider_data_value_error_is_retryable_and_never_escapes(self, adapter,
                                                                                   get_user_calls):
-        """Pitfall 3 / T-37-17 -- the empty-`rawId` shape, materialized inside the threadpool."""
+        """The empty-`rawId` shape, materialized inside the threadpool call rather than after it returns."""
         get_user_calls(StubUserRecord(raises=ValueError("User ID must not be None or empty.")))
         result = await adapter.get_user_provider_data(ISSUER, SUBJECT)
         assert result.outcome is ProviderDataOutcome.retryable_failure
@@ -402,14 +356,7 @@ class TestTheDeliberateNonImplementations:
 
 
 class TestTheLazyReExport:
-    """D-23's one import root still reaches this module -- just not eagerly.
-
-    `TestNoProviderDependency.test_importing_the_module_does_not_import_firebase_admin` pins the
-    other half in a subprocess: importing the adapters seam leaves `firebase_admin` out of
-    `sys.modules`. What is pinned here is that the lazy path is a genuine **re-export** and not a
-    copy, so a caller reaching a name through the root and a caller reaching it directly are
-    holding the same object.
-    """
+    """The lazy path is a genuine re-export, so a name reached through the root is the same object."""
 
     @pytest.mark.parametrize("name", ["build_admin_apps", "FirebaseAdminLookup",
                                       "FIREBASE_HTTP_TIMEOUT_SECONDS"])

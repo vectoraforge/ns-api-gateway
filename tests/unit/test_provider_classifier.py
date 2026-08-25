@@ -1,20 +1,4 @@
-"""§02 step 9's closed providerData classifier and step 10's email-copy predicate.
-
-Both sets below are **closed**, and both are written table-driven so that closure is visible: the
-accept set is exactly three shapes -- empty, exactly one `google.com` entry, exactly one
-`apple.com` entry -- and everything else rejects. The reject set is not a list of shapes anyone
-expects to see; it is the list of shapes that must never be linked to a provider account the
-caller may not own (T-37-15). "Never take the first recognized entry" is the rule a best-effort
-reading breaks, so the two-entry cases appear in **both** orderings: a classifier that scans for
-the first entry it recognizes passes one ordering and fails the other.
-
-`email_to_persist` is the single evaluation site of §02 step 10's two-condition copy rule -- "copy
-`email` only when the same successful `getUser` response has a non-empty address AND
-`emailVerified = true`, else NULL". The cases pin both conditions independently, pin that a
-non-`ok` outcome can never yield an address, and pin that the predicate does **not** transform the
-address it returns: the `.strip()` inside it is a non-empty *test*, not a normalization step
-(T-37-34).
-"""
+"""The closed providerData classifier and the email-copy predicate, both written table-driven."""
 import pytest
 
 from nativespeaker.api.auth.adapters import (
@@ -40,7 +24,7 @@ ACCEPTED = [
     ((APPLE,), (IdentityProvider.apple, "apple-uid-1"), "exactly one apple.com entry"),
 ]
 
-# Everything else. Each case names the §02 prohibition it would violate if it were accepted.
+# Everything else; each case names the prohibition it would violate if it were accepted.
 REJECTED = [
     ((GOOGLE, APPLE), "both providers, google first -- never take the first recognized entry"),
     ((APPLE, GOOGLE), "both providers, apple first -- rejection is order-independent"),
@@ -70,7 +54,7 @@ class TestTheAcceptSet:
     @pytest.mark.parametrize("entry,provider", [(GOOGLE, IdentityProvider.google),
                                                 (APPLE, IdentityProvider.apple)])
     def test_the_matching_entrys_uid_is_the_sole_source_of_provider_uid(self, entry, provider):
-        """§02 step 9: the matching entry's non-empty uid is the SOLE source of `provider_uid`."""
+        """The matching entry's non-empty uid is the only source of `provider_uid`."""
         assert classify_provider_data((entry,)) == (provider, entry.uid)
 
     def test_the_recognized_provider_map_has_exactly_two_keys(self):
@@ -80,7 +64,7 @@ class TestTheAcceptSet:
 
 
 class TestTheRejectSet:
-    """Every other shape is an unclassifiable account: reject, no persistence."""
+    """Shapes that must never be linked to a provider account the caller may not own."""
 
     @pytest.mark.parametrize("entries,why", REJECTED, ids=[case[1] for case in REJECTED])
     def test_an_unrecognized_shape_rejects(self, entries, why):
@@ -88,7 +72,7 @@ class TestTheRejectSet:
 
     @pytest.mark.parametrize("pair", [(GOOGLE, APPLE), (GOOGLE, FACEBOOK), (GOOGLE, GOOGLE_OTHER)])
     def test_rejection_is_order_independent(self, pair):
-        """A first-recognized-entry reading passes one ordering and fails the other."""
+        """Both orderings, because a classifier taking the first entry it recognizes passes only one of them."""
         first, second = pair
         assert classify_provider_data((first, second)) is None
         assert classify_provider_data((second, first)) is None
@@ -98,7 +82,7 @@ class TestTheRejectSet:
 
 
 class TestTheClassifierRecordsItsProhibitions:
-    """The three §02 prohibitions and D-12's two deletions, recorded where the next reader is."""
+    """The prohibitions recorded where the next reader is."""
 
     @pytest.mark.parametrize("phrase", [
         "never take the first recognized entry",
@@ -113,11 +97,7 @@ class TestTheClassifierRecordsItsProhibitions:
 
     @pytest.mark.parametrize("name", ["sign_in_provider", "required_flow"])
     def test_neither_deleted_concept_appears_outside_the_docstring(self, name):
-        """D-12: no declaration match, no `required_flow` -- and `sign_in_provider` is never read.
-
-        The module docstring names both, which is the point of it, so this checks the code rather
-        than the file: strip the docstring and neither identifier survives anywhere.
-        """
+        """Checks the code rather than the file: strip the docstrings and neither identifier survives."""
         import ast
         from pathlib import Path
 
@@ -128,7 +108,7 @@ class TestTheClassifierRecordsItsProhibitions:
 
 
 class TestEmailToPersist:
-    """§02 step 10's two-condition copy rule, evaluated in exactly one place."""
+    """The two-condition copy rule, evaluated in exactly one place."""
 
     @staticmethod
     def _ok(email, email_verified):
@@ -165,7 +145,7 @@ class TestEmailToPersist:
         assert email_to_persist(result) is None
 
     def test_the_address_is_returned_verbatim_and_never_normalized(self):
-        """The `.strip()` inside the predicate is a non-empty test, not a transform."""
+        """The `.strip()` inside the predicate is a non-empty test, not a normalization step."""
         assert email_to_persist(self._ok("  Mixed.Case@B.TEST  ", True)) == "  Mixed.Case@B.TEST  "
 
 

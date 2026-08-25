@@ -1,18 +1,4 @@
-"""§7.1's Firebase providerData retry: exact attempt counts per outcome, and no escaping RetryError.
-
-The value of this file is that it counts. `FirebaseAdminAdapter.get_user_provider_data` **returns**
-a closed `ProviderDataResult` and never raises, so the only predicate that can fire is a
-result-based one -- `retry_if_exception_type` would match nothing and the three-attempt budget
-would silently become a one-attempt budget (T-37-04). A wrong predicate is invisible in review and
-obvious here: every test below pins an exact call count, so the collapse is a red test rather than
-a production 503 on the first recoverable blip.
-
-The second thing it pins is that exhaustion **returns**. A result-based retry raises `RetryError`
-on exhaustion even with `reraise=True` -- there is no original exception for `reraise` to re-raise
--- so without `retry_error_callback` the caller gets an exception it does not catch, the
-`firebase_lookup_unavailable` -> `verification_temporarily_unavailable` mapping is lost, and a
-503 the spec earns becomes a 500 carrying provider text (T-37-06).
-"""
+"""Exact attempt counts per outcome: the adapter returns rather than raises, so only a result predicate fires."""
 import pytest
 import tenacity
 
@@ -39,11 +25,7 @@ DEFINITIVE = (ProviderDataOutcome.ok,
 
 
 class CountingAdapter:
-    """Returns a scripted sequence of `ProviderDataResult`s and records every call.
-
-    Sync, exactly as the `FirebaseAdminAdapter` Protocol declares the method -- and it never
-    raises, which is the whole reason the policy's predicate has to read the outcome enum.
-    """
+    """Returns a scripted sequence and records every call; it never raises, so the predicate reads outcomes."""
 
     def __init__(self, *outcomes: ProviderDataOutcome) -> None:
         self.scripted = tuple(ProviderDataResult(outcome=outcome) for outcome in outcomes)
@@ -52,8 +34,7 @@ class CountingAdapter:
     def get_user_provider_data(self, issuer: str, subject: str) -> ProviderDataResult:
         self.calls.append((issuer, subject))
         if len(self.calls) > len(self.scripted):
-            # Overrunning the script is the failure this file exists to catch, so say so rather
-            # than letting an IndexError describe it.
+            # Overrunning the script is the failure this file exists to catch, so name it.
             raise AssertionError(
                 f"attempt {len(self.calls)} exceeds the scripted {len(self.scripted)}")
         return self.scripted[len(self.calls) - 1]
@@ -67,7 +48,7 @@ class AsyncCountingAdapter(CountingAdapter):
 
 
 class TestAttemptCountsPerOutcome:
-    """§7.1: 3 attempts total for retryable causes only; every other outcome is definitive."""
+    """Three attempts total for retryable causes only; every other outcome is definitive."""
 
     def test_the_attempt_budget_is_the_71_three(self):
         """"3 attempts total -- the initial call plus up to two additional" (budgets.py:49-50)."""
@@ -101,11 +82,7 @@ class TestAttemptCountsPerOutcome:
 
     @pytest.mark.parametrize("outcome", DEFINITIVE, ids=lambda o: o.value)
     async def test_a_definitive_outcome_costs_exactly_one_attempt(self, outcome):
-        """`user_not_found` and `selection_failure` spend no further attempt; `ok` is a success.
-
-        Retrying `user_not_found` would burn two attempts proving a fact Firebase already stated,
-        and it maps to `firebase_user_unresolved` -> `auth_required`, not to a 503 (T-37-05).
-        """
+        """Retrying a definitive outcome would burn attempts proving a fact the provider already stated."""
         adapter = CountingAdapter(outcome)
 
         result = await lookup_with_retry(adapter, ISSUER, SUBJECT)
@@ -126,7 +103,7 @@ class TestAttemptCountsPerOutcome:
         assert isinstance(result, ProviderDataResult)
 
     async def test_the_lookup_forwards_the_issuer_and_subject_on_every_attempt(self):
-        """§7.1: selection happens per call, so no attempt may reach an ambient client."""
+        """Selection happens per call, so no attempt may reach an ambient client."""
         adapter = CountingAdapter(*[ProviderDataOutcome.retryable_failure] * 3)
 
         await lookup_with_retry(adapter, ISSUER, SUBJECT)
@@ -155,11 +132,7 @@ class TestAttemptCountsPerOutcome:
 
 
 class TestTheExhaustionMapping:
-    """What `budgets.BudgetExhausted` carried as class data, now as two named module constants.
-
-    Naming them is the point: a literal repeated at each of §7.1's five read points is a mapping
-    that drifts four ways, and a test can pin a name but not a literal.
-    """
+    """Two named constants rather than a literal repeated at each read point, because a test can pin a name."""
 
     def test_the_internal_result_is_firebase_lookup_unavailable(self):
         assert LOOKUP_UNAVAILABLE_RESULT is AuthEventResult.firebase_lookup_unavailable
@@ -173,5 +146,5 @@ class TestTheExhaustionMapping:
         assert LOOKUP_UNAVAILABLE_ERROR_CLASS.code == "verification_temporarily_unavailable"
 
     def test_exhaustion_is_not_the_user_not_found_mapping(self):
-        """§7.1 routes the two apart: unavailable is a 503, unresolved is a 401."""
+        """The two are routed apart: unavailable is a 503, unresolved is a 401."""
         assert LOOKUP_UNAVAILABLE_RESULT is not AuthEventResult.firebase_user_unresolved

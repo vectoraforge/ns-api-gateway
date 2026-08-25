@@ -1,17 +1,4 @@
-"""ROADMAP criterion 3, control-flow half: a failed business insert never becomes a partial account.
-
-This is the fast feedback loop and it proves exactly one thing -- that when an insert fails, the
-creation function stops inserting, rolls back to its savepoint, and never falls through into the
-success path. It proves nothing about **durability**, because a stub session cannot: whether the
-challenge consumption actually survives a rolled-back business insert is a claim about what
-PostgreSQL committed, and `tests/schema/test_create_atomicity.py` settles it against a real
-database with real commits.
-
-The split is deliberate rather than duplicative. Control flow is cheap to check and breaks often;
-durability is expensive to check and breaks rarely but silently. Running only the cheap half would
-leave §02 step 12's actual requirement unproven, and running only the expensive half would make
-every refactor wait on a database.
-"""
+"""Control flow only: a failed insert stops inserting and rolls back; durability is a schema-test claim."""
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -29,9 +16,7 @@ ISSUER = "https://securetoken.google.com/ns-rollback-test"
 SUBJECT = "rollback-control-flow-subject"
 NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
 
-# The insert order inside the savepoint: the user alone on the first flush, then the identity row
-# and both attribution tokens on the second. A conflict on the second is the shape §02 step 12
-# describes, and it is the second flush every case below fails.
+# The user flushes alone, then the identity row and both tokens; every case below fails the second.
 SECOND_FLUSH = 2
 
 
@@ -69,12 +54,7 @@ class _RecordingSavepoint:
 
 
 class _FlushFailingSession:
-    """A session whose chosen `flush()` raises, recording everything the function did around it.
-
-    `added_at_failure` is the snapshot that makes "attempted no further inserts" checkable: the
-    list is frozen at the moment the failure was raised, and a later `add` would make the final
-    list differ from it.
-    """
+    """A session whose chosen `flush()` raises, snapshotting what had been added at the moment of failure."""
 
     def __init__(self, *, error: BaseException, fail_on_flush: int = SECOND_FLUSH) -> None:
         self._error = error
@@ -148,7 +128,7 @@ def _harness(error: BaseException, **kwargs):
 
 
 class TestAllThreeInsertsShareOneSavepoint:
-    """T-37-45: a user row with no identity row is the partial account §02 forbids."""
+    """A user row with no identity row is the partial account this forbids."""
 
     async def test_the_savepoint_opens_before_the_first_insert(self):
         """Not around the last two, and not per-insert -- an insert outside it could not be undone."""
@@ -159,11 +139,7 @@ class TestAllThreeInsertsShareOneSavepoint:
         assert session.savepoint.committed is False
 
     async def test_all_three_row_kinds_were_inside_the_savepoint_that_rolled_back(self):
-        """The user, the identity and both attribution tokens -- one savepoint over all four rows.
-
-        A savepoint scoped around only the first two inserts would leave the attribution tokens
-        committed for a user that no longer exists.
-        """
+        """One savepoint over all four rows: a narrower one would leave tokens for a user that no longer exists."""
         session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
         await _create(session, store)
 
@@ -197,8 +173,7 @@ class TestAFailedInsertStopsInserting:
         assert result is AuthEventResult.identity_already_linked
 
     async def test_the_rejection_still_consumes_and_commits(self):
-        """§02 step 12's durability requirement, in control-flow form: the consume is *reached*
-        after the rollback. That it actually commits is the schema test's."""
+        """The consume is reached after the rollback; that it actually commits is the schema test's claim."""
         session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
         await _create(session, store)
 
@@ -210,8 +185,7 @@ class TestAnUnclassifiableFailureIsNotAbsorbed:
     """Fail loudly rather than answering the client something plausible and wrong."""
 
     async def test_an_unmapped_constraint_propagates_after_the_savepoint_is_rolled_back(self):
-        """The rollback still happens -- the outer transaction must be usable by whoever handles
-        this -- but no business outcome is invented for a conflict nobody mapped."""
+        """The rollback still happens, but no business outcome is invented for a conflict nobody mapped."""
         error = integrity_error("store_purchase_tokens_provider_identity_value_key")
         session, store = _harness(error)
 
@@ -223,8 +197,7 @@ class TestAnUnclassifiableFailureIsNotAbsorbed:
         assert session.commits == 0
 
     async def test_a_non_integrity_failure_is_not_caught_at_all(self):
-        """Only `IntegrityError` is a candidate for classification. A connection drop or a
-        programming error must not be reshaped into a uniqueness conflict."""
+        """A connection drop must not be reshaped into a uniqueness conflict."""
         error = RuntimeError("the connection went away mid-flush")
         session, store = _harness(error)
 

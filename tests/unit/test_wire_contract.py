@@ -1,21 +1,4 @@
-"""FOUND-02 / §1.1: the wire contract driven directly, with hand-built raw header lists.
-
-`extract_bearer` reads `scope["headers"]` -- the raw ASGI list of `(bytes, bytes)` pairs -- so the
-cases here hand it exactly that. Two rules govern how those pairs are built:
-
-- **every key is a lowercase byte string.** ASGI guarantees lowercased field names and every real
-  server produces them, which is precisely why `Authorization` and `AUTHORIZATION` arrive as the
-  same field and count as duplicates of each other. A hand-built capitalized key would be invisible
-  to the production path and would turn a genuine duplicate case into a silent false pass; the last
-  case in `TestTheHarnessMatchesTheWire` pins that so nobody writes one later.
-- **no value is normalized on the way in.** These are the bytes a client sent.
-
-`tests/e2e/test_wire_contract.py` runs the same six §1.1 cases through a real ASGI
-transport. That module proves the duplicates survive the transport rather than being folded before
-the server sees them; this one reaches shapes a client cannot express at all -- a line-folded
-value, a non-ASCII token byte -- and names the bounded reason each case earns, which never leaves
-the server.
-"""
+"""The wire contract driven directly: every hand-built key is lowercase, and no value is normalized."""
 import pytest
 
 from nativespeaker.api.auth.wire import BoundedReason, extract_bearer
@@ -42,11 +25,7 @@ class TestTheSixWireCases:
         assert (token, reason) == (None, BoundedReason.duplicate_authorization)
 
     def test_two_differently_cased_instances_are_duplicates(self):
-        """HTTP field names are case-insensitive, so these are two instances of one field.
-
-        The ASGI server folds `Authorization` and `AUTHORIZATION` onto the same lowercase key
-        before the server sees them; what reaches `extract_bearer` is two entries, not one.
-        """
+        """The server folds both onto one lowercase key, so what arrives is two entries of one field."""
         raw = [(b"authorization", b"Bearer one"), (b"authorization", b"Bearer two")]
         assert extract_bearer(raw) == (None, BoundedReason.duplicate_authorization)
 
@@ -63,7 +42,7 @@ class TestTheSixWireCases:
 
 
 class TestNoValueIsEverSelected:
-    """§1.1: duplicates are counted before any value is inspected -- there is nothing to steer."""
+    """Duplicates are counted before any value is inspected, so there is nothing to steer."""
 
     def test_a_valid_and_an_invalid_instance_still_reject(self):
         raw = [(b"authorization", f"Bearer {TOKEN}".encode()), (b"authorization", b"garbage")]
@@ -126,11 +105,6 @@ class TestTheHarnessMatchesTheWire:
         assert extract_bearer(_headers(f"Bearer {TOKEN}".encode())) == (TOKEN, None)
 
     def test_a_capitalised_key_would_be_invisible_and_must_never_be_written(self):
-        """A capitalised hand-built key does not behave the way the production path does.
-
-        `extract_bearer` compares against `b"authorization"`, because that is what ASGI delivers.
-        Building `b"Authorization"` in a test yields "no Authorization field at all" -- so a
-        duplicate-header case written that way would pass for entirely the wrong reason.
-        """
+        """A capitalised hand-built key is invisible to the production path, so it would pass for the wrong reason."""
         raw = [(b"Authorization", f"Bearer {TOKEN}".encode())]
         assert extract_bearer(raw) == (None, BoundedReason.missing_token)

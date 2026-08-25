@@ -1,22 +1,4 @@
-"""§8.4 / REBIND-05, REBIND-06: the resolver's pure policy, proved without a database.
-
-`tests/e2e/test_quota.py` proves the served behaviour against real rows over the real transport.
-This module proves the branches the *database* cannot produce, and the properties a served
-response cannot show.
-
-`ix_access_grants_one_active_per_user` (`migrations/20260818_01_initial-release.sql:458-460`) is a
-plain non-deferrable partial unique index permitting one `status='active'` row per user, and the
-effective-grant predicate is a strict subset of that -- so two effective grants are unreachable in
-real PostgreSQL. D-10 requires that state to raise rather than tie-break, and a stub session is the
-only way to put it in front of `consume_quota`. The stub is also what makes the lock-order claim
-checkable directly: it keeps every statement it was asked to run, in order, so
-"the grant rows are locked before the usage row" is asserted rather than read off the source.
-
-Both effective-grant boundaries -- `starts_at` inclusive, `ends_at` exclusive -- are asserted here
-against the *compiled* predicate rather than behaviourally, because a stub returns whatever it is
-handed and so cannot demonstrate a boundary at all. Their behavioural proof is
-`tests/e2e/test_quota.py`'s boundary class.
-"""
+"""The resolver's pure policy: the branches a real database cannot produce, and the lock order it cannot show."""
 from datetime import UTC, datetime, timedelta
 from uuid import uuid7
 
@@ -49,11 +31,7 @@ STALE_PERIOD = "2026-07"
 
 
 class _StubResult:
-    """Both accessor shapes the resolver uses, over one row list.
-
-    `.all()` is what the identity analog's stub lacks: the effective-grant select carries no
-    row-count cap (D-10), so its caller reads every row rather than the first.
-    """
+    """Both accessor shapes the resolver uses, over one row list."""
 
     def __init__(self, rows):
         self._rows = list(rows)
@@ -66,16 +44,7 @@ class _StubResult:
 
 
 class _StubSession:
-    """Stands in for the short session `require_quota` opens, and keeps what it was asked to run.
-
-    Rows are dispatched by the statement's target entity, not by call position. That is deliberate:
-    a position-keyed stub would happily hand the grant rows to a usage read if the resolver ever
-    swapped the two, quietly passing the very test that exists to catch it. Ordering is asserted
-    once, explicitly, by `TestGrantThenUsageOrder`.
-
-    `add` records rather than acting, so "nothing was minted" is an assertion about a call that was
-    never made rather than about a row that happens not to exist.
-    """
+    """Stands in for the short session `require_quota` opens, keeping every statement it was asked to run."""
 
     _ENTITY_KEY = {AccessGrant: "grants", UserMonthlyUsage: "usage", AccessTier: "allowance"}
 
@@ -137,7 +106,7 @@ def _compiled(statement) -> str:
 
 
 class TestNoEffectiveGrant:
-    """D-08: allowance 0 read across §8.4 steps 1 and 5, so the existing 429 contract answers."""
+    """An allowance of 0 is read across the whole flow, so the existing 429 contract answers."""
 
     async def test_zero_rows_is_quota_exceeded(self):
         with pytest.raises(QuotaExceededError):
@@ -152,7 +121,7 @@ class TestNoEffectiveGrant:
 
 
 class TestMultipleEffectiveGrants:
-    """D-10: the tripwire. Unreachable in PostgreSQL, asserted anyway so a schema change is loud."""
+    """The tripwire: unreachable in PostgreSQL, asserted anyway so a schema change is loud."""
 
     async def test_two_effective_grants_raise(self):
         with pytest.raises(MultipleEffectiveGrantsError):
@@ -174,7 +143,7 @@ class TestMultipleEffectiveGrants:
 
 
 class TestMissingUsageRow:
-    """D-09: fail closed, never lazily mint. A grant without a usage row is a failed write."""
+    """Fail closed, never lazily mint: a grant without a usage row is a failed write."""
 
     async def test_a_grant_with_no_usage_row_raises(self):
         with pytest.raises(MissingUsageRowError):
@@ -218,7 +187,7 @@ class TestUnknownTier:
 
 
 class TestRemainingNeverNegative:
-    """REBIND-05's "never lets `remaining` go negative", and the adjacency either side of it."""
+    """`remaining` never goes negative, and the adjacency either side of that boundary."""
 
     @pytest.mark.parametrize("used", [ALLOWANCE, ALLOWANCE + 1, ALLOWANCE + 49],
                              ids=["exactly-at", "one-over", "far-over"])
@@ -243,8 +212,7 @@ class TestRemainingNeverNegative:
         assert usage.monthly_used == ALLOWANCE
 
     async def test_the_next_request_after_that_rejects(self):
-        """Adjacency closed from both sides: admitting at `allowance - 1` must exhaust at
-        `allowance`, which is the same row the previous case just wrote."""
+        """Adjacency closed from both sides, against the same row the previous case just wrote."""
         grant, usage = _one_effective_grant(monthly_used=ALLOWANCE - 1)
         await _consume(grants=(grant,), usage=usage)
         with pytest.raises(QuotaExceededError):
@@ -258,7 +226,7 @@ class TestRemainingNeverNegative:
 
 
 class TestLazyRollover:
-    """§8.4 step 4: the reset happens before the allowance comparison, in the same transaction."""
+    """The reset happens before the allowance comparison, in the same transaction."""
 
     async def test_a_stale_period_resets_the_count_before_the_increment(self):
         grant, usage = _one_effective_grant(monthly_period=STALE_PERIOD, monthly_used=17)
@@ -271,8 +239,7 @@ class TestLazyRollover:
         assert usage.monthly_period == EVALUATED_AT.strftime("%Y-%m") == PERIOD
 
     async def test_a_stale_exhausted_row_does_not_refuse_the_new_period(self):
-        """The ordering claim, stated as the failure it prevents: last month's exhaustion must
-        not answer this month's first request."""
+        """The ordering claim as the failure it prevents: last month's exhaustion must not answer this month."""
         grant, usage = _one_effective_grant(monthly_period=STALE_PERIOD, monthly_used=ALLOWANCE)
         await _consume(grants=(grant,), usage=usage)
         assert (usage.monthly_period, usage.monthly_used) == (PERIOD, 1)
@@ -284,9 +251,7 @@ class TestLazyRollover:
 
 
 class TestTheLockingStatements:
-    """The lock, the order, and the two predicate boundaries -- none of them observable in a
-    response, and one of them (the tier read staying unlocked) invisible in any test that only
-    checks results."""
+    """The lock, the order and the two predicate boundaries, none of which a response can show."""
 
     async def _admitted_session(self) -> _StubSession:
         grant, usage = _one_effective_grant()
@@ -303,9 +268,7 @@ class TestTheLockingStatements:
         assert "FOR UPDATE" in _compiled(session.statements[1])
 
     async def test_the_tier_statement_takes_no_lock(self):
-        """`core.access_tiers` is three shared reference rows. Locking one on every chat POST
-        would serialise every user on that tier against each other for no gain -- the value is
-        compared, never incremented."""
+        """The tier value is compared, never incremented, so locking it would serialise a whole tier for no gain."""
         session = await self._admitted_session()
         assert "FOR UPDATE" not in _compiled(session.statements[2])
 
@@ -317,25 +280,20 @@ class TestTheLockingStatements:
         assert "core.access_grants.starts_at < " not in sql
 
     async def test_the_upper_bound_is_exclusive(self):
-        """A grant whose `ends_at` equals the evaluated instant is already over -- so a grant that
-        ends exactly when its successor starts is effective for exactly one of them."""
+        """A grant ending exactly when its successor starts is effective for exactly one of them."""
         session = await self._admitted_session()
         sql = _compiled(session.statements[0])
         assert "core.access_grants.ends_at > " in sql
         assert "core.access_grants.ends_at >= " not in sql
 
     async def test_an_open_ended_grant_is_admitted_by_the_predicate(self):
-        """Ruling 9.11 makes a NULL `ends_at` legal and effective forever."""
+        """A NULL `ends_at` is legal and effective forever."""
         session = await self._admitted_session()
         assert "core.access_grants.ends_at IS NULL" in _compiled(session.statements[0])
 
 
 class TestGrantThenUsageOrder:
-    """SHARED-INVARIANTS:33: the grant lock is held before the usage lock, on every path.
-
-    The order must be identical on every branch that reaches the usage read, because two requests
-    taking the same rows in different sequences is exactly how a deadlock is written.
-    """
+    """The grant lock is held before the usage lock on every path, because two orders is how a deadlock is written."""
 
     async def test_the_admitted_path_locks_the_grant_first(self):
         grant, usage = _one_effective_grant()
@@ -368,11 +326,7 @@ class TestGrantThenUsageOrder:
 
 
 class TestTheResolverReadsNoClock:
-    """D-06: one captured instant decides both the predicate and the period string.
-
-    Without this, a request could select a grant against one instant and compute its period
-    against another -- a rollover race that is unreproducible by construction.
-    """
+    """One captured instant decides both the predicate and the period, so a rollover cannot race itself."""
 
     async def test_the_period_is_the_evaluated_instants_utc_calendar_month(self):
         grant, usage = _one_effective_grant(monthly_period=STALE_PERIOD)
@@ -380,7 +334,7 @@ class TestTheResolverReadsNoClock:
         assert usage.monthly_period == "2026-08"
 
     async def test_a_different_instant_produces_a_different_period(self):
-        """The period tracks the argument, which is the only thing that makes D-06 checkable."""
+        """The period tracks the argument, which is the only thing that makes the captured instant checkable."""
         grant = _grant()
         usage = _usage(grant, monthly_period=STALE_PERIOD)
         session = _StubSession(grants=(grant,), usage=usage)

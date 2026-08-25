@@ -1,27 +1,4 @@
-"""§02's completion rejection precedence: four client classes over nine internal results.
-
-**The numbered completion flow IS the rejection precedence** ("reject for the earliest failed
-step"), and the mapping it defines is a client contract the client cannot audit. `challenge_required`
-says "prepare again", `auth_required` says "re-authenticate", `verification_temporarily_unavailable`
-says "back off and retry the whole operation", and `operation_not_allowed` is terminal and routes to
-support. Those are four incompatible instructions, so every arm here asserts three things that a
-status-only test would let drift apart: the client class, the internal `AuthEventResult` recorded
-beside it in the structured log, and whether the challenge was consumed.
-
-**Why the collaborators are fakes rather than a database.** The subject is the router's branch
-structure, and a fake store that models the two conditional updates exactly (`claim` fails on a
-claimed or expired row; `consume` fails under any other attempt id) reproduces every lifecycle
-outcome the branches depend on at unit speed. The *binding* comparison is not faked -- it delegates
-to the real `ChallengeStore.verify_binding`, through a keyring spy, because "the keyring was never
-consulted" is one of the assertions and a fake could only assert against itself. The row-level
-proofs over real PostgreSQL live in `tests/e2e/test_create_user.py`.
-
-**Why `create_account` is substituted.** It is `auth/creation.py`'s consuming transaction and this
-module is about what happens *before* it -- every case here either never reaches it or asserts
-precisely that it was not reached. Recording the call is the honest way to assert "the classifier's
-verdict reached the transaction unchanged" without this module growing an opinion about a function
-another plan owns and proves end to end.
-"""
+"""Completion rejection precedence: each arm asserts the client class, the internal result logged, and consumption."""
 import base64
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -62,13 +39,7 @@ def _material(seed: int) -> str:
 
 
 class _SpyKeyring:
-    """The real derivation, with the one comparison counted.
-
-    §6.4 says a pre-auth row whose `preauth_subject_hash` was already cleared is **not compared at
-    all** -- the keyring is never consulted and the row takes the already-used rejection. An
-    assertion on the returned rejection alone cannot tell "compared against NULL and rejected" from
-    "not compared", and only the second is the specified behaviour.
-    """
+    """The real derivation with the one comparison counted, since not-compared is what the cleared-hash arm asserts."""
 
     def __init__(self) -> None:
         self._ring = HmacKeyring(HmacConfig(active_version=1, keys={1: _material(1)}))
@@ -83,14 +54,7 @@ class _SpyKeyring:
 
 
 class _FakeChallengeStore:
-    """One in-memory row, with `claim` and `consume` modelling the real conditional updates.
-
-    Both mirror their WHERE clauses exactly -- `claim` requires `claimed_at IS NULL` **and** an
-    `expires_at` in the future, `consume` requires still-claimed under **this** attempt's id -- so
-    the router's branches see the same answers a real row would give them. `verify_binding` is not
-    modelled at all: it delegates to the real store, which is pure and is the thing whose
-    cleared-hash arm this module asserts against.
-    """
+    """One in-memory row whose `claim` and `consume` mirror the real conditional updates clause for clause."""
 
     def __init__(self, keyring: _SpyKeyring) -> None:
         self._binding = ChallengeStore(keyring)
@@ -129,14 +93,7 @@ class _FakeChallengeStore:
 
 
 class _RejectionLog:
-    """The rejection results the router logged, in order.
-
-    A recording spy on the router's logger, not `structlog.testing.capture_logs` -- see 35-02's
-    caching note. The three rejection helpers each name the specific internal result in their
-    structured event (`create_user_challenge_rejected`, `create_user_lookup_rejected`,
-    `create_user_transaction_rejected`); `_challenge_rejected` carries it under `stage` because for
-    that helper the stage *is* the result, so both keys are read.
-    """
+    """The rejection results the router logged, in order, read from a recording spy on its own logger."""
 
     _EVENTS = frozenset({"create_user_challenge_rejected", "create_user_lookup_rejected",
                          "create_user_transaction_rejected"})
@@ -154,13 +111,7 @@ class _RejectionLog:
 
 
 class _StubSession:
-    """Records the transaction boundaries and refuses to answer a query.
-
-    Nothing on the completion path may issue a statement through this session: the one read
-    completion owes is `auth/creation.py`'s in-transaction re-resolution, and that function is
-    substituted here. A statement arriving would mean the router had grown an identity resolution
-    of its own, which §1.4 forbids.
-    """
+    """Records transaction boundaries and refuses queries: a statement here would mean the router resolves identity."""
 
     def __init__(self) -> None:
         self.commits = 0
@@ -280,23 +231,13 @@ def _complete(client, handle: str = HANDLE):
 
 
 def _assert_challenge_required(response) -> None:
-    """Byte-identical across all five rejections -- completion is not an enumeration oracle.
-
-    Asserting the body by equality rather than by a key lookup is what makes a future "more
-    helpful" second field fail here instead of shipping (T-37-34).
-    """
+    """Byte-identical across all five rejections, asserted by equality so a more helpful field fails here."""
     assert response.status_code == 409
     assert response.json() == {"code": "challenge_required"}
 
 
 class TestTheFiveChallengeRejections:
-    """§02 completion steps 3, 4 and 5 -- one client class, five internal results, no consumption.
-
-    **None of the five consumes**, and that is the part easiest to get backwards: an identity or
-    operation mismatch is rejected before the claim precisely so a wrong presenter cannot burn the
-    rightful user's in-flight challenge (T-37-35), and a claim loser never held a claim, so it has
-    nothing to consume. Consumption begins at the Admin lookup.
-    """
+    """One client class, five internal results, and none of the five consumes."""
 
     def test_an_unknown_handle_is_challenge_not_found(self, client, store, rejections,
                                                       fake_firebase_adapter):
@@ -333,8 +274,7 @@ class TestTheFiveChallengeRejections:
 
     def test_a_challenge_for_another_operation_is_an_operation_mismatch(
             self, client, store, rejections, context, keyring, fake_firebase_adapter):
-        """D-12 removed the *variant* check, not this one. A challenge issued for a different
-        operation and presented here is still step 4's rejection, and still a pre-claim one."""
+        """A challenge issued for another operation is still rejected, and still before the claim."""
         store.row = _issued_row(context, keyring,
                                 operation=AuthOperation.claim_anonymous_grant)
 
@@ -359,8 +299,7 @@ class TestTheFiveChallengeRejections:
 
     def test_a_still_issued_but_expired_challenge_is_challenge_expired(
             self, client, store, rejections, context, keyring, fake_firebase_adapter):
-        """The claim's WHERE is the only expiry evaluation anywhere, so this rejection is reached
-        by losing the claim and re-reading the row, never by comparing `expires_at` in the router."""
+        """Reached by losing the claim and re-reading the row, never by comparing `expires_at` in the router."""
         store.row = _issued_row(context, keyring, ttl_seconds=-1)
 
         _assert_challenge_required(_complete(client))
@@ -372,9 +311,7 @@ class TestTheFiveChallengeRejections:
 
     def test_an_already_claimed_challenge_is_challenge_consumed(
             self, client, store, rejections, context, keyring, fake_firebase_adapter):
-        """The claim loser performs no work at all -- no provider read, no mutation -- and never
-        receives the claim-holder's stored outcome. There is no idempotent replay (§02 DELETIONS);
-        the client reconciles through `/auth/sync`."""
+        """The claim loser does no work and never receives the claim-holder's outcome; there is no idempotent replay."""
         store.row = _issued_row(context, keyring, claimed=True)
         holder = store.row.claim_attempt_id
 
@@ -389,12 +326,7 @@ class TestTheFiveChallengeRejections:
 
     def test_every_rejection_is_recorded_exactly_once_and_never_names_the_handle(
             self, client, store, rejections, context, keyring):
-        """One record per on-path rejection, and the public handle is never in it (§6.1, T-37-26).
-
-        "One" is as much the contract as "which": a second entry would mean an arm recorded its
-        rejection twice, and a caller-presented capability handle in the log is the disclosure the
-        non-secret row id exists to avoid.
-        """
+        """One record per rejection is as much the contract as which one, and the handle is never in it."""
         store.row = _issued_row(context, keyring, subject=OTHER_SUBJECT)
 
         _complete(client)
@@ -404,20 +336,11 @@ class TestTheFiveChallengeRejections:
 
 
 class TestTheProviderStageRejections:
-    """§02 completion steps 8 and 9 -- three outcomes, three client classes, all consuming.
-
-    **Collapsing any pair here is a client-contract bug the client cannot detect.**
-    `auth_required` (401) says the token no longer identifies a Firebase user;
-    `verification_temporarily_unavailable` (503) says the lookup itself failed and the whole
-    operation should be retried; `operation_not_allowed` (403) is a terminal statement about the
-    account. Telling a client with a deleted Firebase user to retry forever is exactly what
-    `user_not_found` mapping onto 503 would do, which is why those two are asserted at distinct
-    statuses with distinct internal results (T-37-38).
-    """
+    """Three outcomes, three client classes, all consuming; collapsing any pair is a bug clients cannot detect."""
 
     def test_user_not_found_is_auth_required_and_persists_nothing(
             self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
-        """A valid token for a deleted Firebase user must not create an account (T-37-37)."""
+        """A valid token for a deleted provider user must not create an account."""
         store.row = _issued_row(context, keyring)
         fake_firebase_adapter.script(ProviderDataOutcome.user_not_found)
 
@@ -432,12 +355,7 @@ class TestTheProviderStageRejections:
 
     def test_an_exhausted_retry_budget_is_verification_temporarily_unavailable(
             self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
-        """Three attempts, then the §7.1 exhaustion mapping -- and no `tenacity.RetryError`.
-
-        The call count is what proves the retry predicate is wired end to end rather than only in
-        37-02's isolated unit: a `retry_if_exception_type` predicate would match nothing here and
-        would silently turn the three-attempt budget into a one-attempt budget.
-        """
+        """The call count proves the retry predicate is wired: a mismatched one would allow a single attempt."""
         store.row = _issued_row(context, keyring)
         fake_firebase_adapter.script(ProviderDataOutcome.retryable_failure)
 
@@ -451,8 +369,7 @@ class TestTheProviderStageRejections:
 
     def test_a_selection_failure_is_unavailable_on_its_first_attempt(
             self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
-        """An issuer mismatch fails closed and never falls back to another project -- so it is
-        definitive, spends one attempt, and lands on the same internal result as exhaustion."""
+        """An issuer mismatch fails closed rather than falling back, so it is definitive and spends one attempt."""
         store.row = _issued_row(context, keyring)
         fake_firebase_adapter.script(ProviderDataOutcome.selection_failure)
 
@@ -469,8 +386,7 @@ class TestTheProviderStageRejections:
         (ProviderDataEntry("google.com", "g-uid"), ProviderDataEntry("apple.com", "a-uid")),
         # One unrecognized entry -- the exact shape the e2e email/password credential produces.
         (ProviderDataEntry("password", "someone@example.test"),),
-        # Recognized, but with no uid: §02 makes the entry's non-empty uid the SOLE source of
-        # `provider_uid`, so a missing one is a malformed lookup, not an anonymous account.
+        # The entry's non-empty uid is the only source of provider_uid, so a missing one is malformed.
         (ProviderDataEntry("google.com", ""),),
     ])
     def test_a_rejecting_provider_data_shape_is_operation_not_allowed(
@@ -484,8 +400,7 @@ class TestTheProviderStageRejections:
         assert response.status_code == 403
         assert response.json() == {"code": "operation_not_allowed"}
         assert rejections.results == [AuthEventResult.provider_not_linked]
-        # D-12 left the bounded cause with exactly two members; the third went with the declaration
-        # it described. It reaches the security log and never the response, where no flow is named.
+        # The bounded cause reaches the security log and never the response.
         assert rejections.entries[0][1]["cause"] == "invalid-shape"
         assert len(fake_firebase_adapter.calls) == 1
         assert creator.calls == []
@@ -509,8 +424,7 @@ class TestTheProviderStageRejections:
 
 
 class TestEveryProviderStageRejectionConsumes:
-    """§02 step 13: every rejection at or after the Admin lookup consumes, so a retry needs a fresh
-    prepare (T-37-39)."""
+    """Every rejection at or after the provider lookup consumes, so a retry needs a fresh prepare."""
 
     @pytest.mark.parametrize("outcome,entries", [
         (ProviderDataOutcome.user_not_found, ()),
@@ -527,13 +441,12 @@ class TestEveryProviderStageRejectionConsumes:
         _complete(client)
 
         assert store.row.consumed_at is not None
-        # Cleared in the same state transition -- which is why a later presentation of the same
-        # handle takes the already-used rejection rather than a mismatch.
+        # Cleared in the same transition, which is why a later presentation takes the already-used rejection.
         assert store.row.preauth_subject_hash is None
 
     def test_a_replay_after_a_rejection_is_challenge_required_and_mints_nothing(
             self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
-        """There is no idempotent replay and no `challenge_replayed` result (§02 DELETIONS)."""
+        """There is no idempotent replay and no `challenge_replayed` result."""
         store.row = _issued_row(context, keyring)
         fake_firebase_adapter.script(ProviderDataOutcome.user_not_found)
 
@@ -550,13 +463,7 @@ class TestEveryProviderStageRejectionConsumes:
 
 
 class TestThePrecedenceItself:
-    """§02 line 52: "numbered order is normative rejection precedence -- reject for the earliest
-    failed step".
-
-    **Precedence is a property of the ordering, not of any single branch**, so reading the handler
-    top to bottom proves nothing: every case below makes *two* things wrong at once and asserts
-    which one is reported. A reordering that a per-branch suite would wave through fails here.
-    """
+    """Precedence is a property of the ordering, so every case makes two things wrong and asserts which is reported."""
 
     def test_an_unknown_handle_beats_a_failing_provider(
             self, client, store, rejections, creator, fake_firebase_adapter):
@@ -572,12 +479,7 @@ class TestThePrecedenceItself:
 
     def test_an_identity_mismatch_beats_an_expired_row(
             self, client, store, rejections, context, keyring, fake_firebase_adapter):
-        """4 beats 5 -- and this ordering is load-bearing rather than cosmetic.
-
-        If the claim ran first, an expired row bound to somebody else would be reported as
-        `challenge_expired` and, worse, a *live* row bound to somebody else would be claimed by the
-        wrong presenter. The pre-claim placement is what makes T-37-35 structural.
-        """
+        """Were the claim first, a live row bound to somebody else would be claimed by the wrong presenter."""
         store.row = _issued_row(context, keyring, subject=OTHER_SUBJECT, ttl_seconds=-1)
 
         _assert_challenge_required(_complete(client))
@@ -588,14 +490,7 @@ class TestThePrecedenceItself:
 
     def test_the_identity_binding_is_checked_before_the_operation(
             self, client, store, rejections, context, keyring):
-        """§02 step 4 names both checks and orders neither, so this pins the choice.
-
-        The binding runs first, matching the order the sentence itself uses ("verify binding ...;
-        operation must be `create_user`") and matching `ChallengeStore.verify_binding` owning the
-        comparison the step is named for. Both are pre-claim rejections collapsing to the same
-        client class, so the choice is observable only in the structured log -- which is exactly why
-        it needs to be a decision on the record rather than an accident of line order.
-        """
+        """Both are pre-claim rejections collapsing to one client class, so the order shows only in the log."""
         store.row = _issued_row(context, keyring, subject=OTHER_SUBJECT,
                                 operation=AuthOperation.claim_anonymous_grant)
 
@@ -617,12 +512,7 @@ class TestThePrecedenceItself:
 
     def test_a_failed_lookup_beats_a_rejecting_shape(
             self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
-        """8 beats 9: the classifier is never reached.
-
-        The scripted result carries entries the classifier would reject, so a handler that
-        classified before checking the outcome would answer 403 `operation_not_allowed` -- terminal,
-        routed to support -- to a caller whose token simply no longer identifies a Firebase user.
-        """
+        """Classifying first would answer a terminal 403 to a caller whose token merely no longer identifies a user."""
         store.row = _issued_row(context, keyring)
         fake_firebase_adapter.script(
             ProviderDataOutcome.user_not_found,
