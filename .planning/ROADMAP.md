@@ -288,12 +288,12 @@ Plans:
 **Goal:** Strip the machine-generated excess out of phases 34-37: delete the auth-event audit subsystem, replace the auth barrier middleware and route registry with FastAPI dependencies, and rewrite the prose across `src/`, `tests/` and the migration in plain English. Behavior-reducing only — no endpoint changes shape and no route changes its authentication status.
 **Requirements**: none mapped — this phase is tracked against the CONTEXT.md decisions D-01 … D-17
 **Depends on:** Phase 37
-**Plans:** 8 plans
+**Plans:** 1/8 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 37.1-01-PLAN.md — TRACER: delete the auth-event audit subsystem, its call sites, and its schema objects (D-01…D-05) [wave 1]
+- [x] 37.1-01-PLAN.md — TRACER: delete the auth-event audit subsystem, its call sites, and its schema objects (D-01…D-05) [wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
