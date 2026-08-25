@@ -1,21 +1,21 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Authentication & Entitlements
+milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 37.1
 current_phase_name: Refactor machine-generated code
-status: planning
+status: executing
 stopped_at: Phase 37.1 context gathered
-last_updated: "2026-08-24T22:41:58.691Z"
+last_updated: "2026-08-25T01:26:14.071Z"
 last_activity: 2026-08-23
 last_activity_desc: 37-10 complete — D-09's split fully realized; all 10 plans of phase 37 executed
+state_head: 92e399fcab51df577ae334d869b849d0e154194f
 progress:
   total_phases: 14
   completed_phases: 4
-  total_plans: 31
+  total_plans: 40
   completed_plans: 31
   percent: 29
-state_head: 74f719641dcb5c703b9d1e3311ad264ffb3ce4bb
 ---
 
 # Project State
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 Phase: 37.1 — Refactor machine-generated code
 Plan: Not started
-Status: Ready to plan
+Status: Ready to execute
 Last activity: 2026-08-23 — Phase 37 complete, transitioned to Phase 38
 
 <!-- The plan counter was corrected from 3 to 8 on 2026-08-23, and from 9 to 10 on 2026-08-24, for

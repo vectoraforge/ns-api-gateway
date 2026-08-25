@@ -291,15 +291,27 @@ Plans:
 **Plans:** 8 plans
 
 Plans:
+**Wave 1**
 
 - [ ] 37.1-01-PLAN.md — TRACER: delete the auth-event audit subsystem, its call sites, and its schema objects (D-01…D-05) [wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 37.1-02-PLAN.md — Replace the auth barrier middleware and route registry with FastAPI dependencies (D-06…D-11) [wave 2]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 37.1-03-PLAN.md — Prose: the eight highest-density `auth/` modules (D-13…D-16) [wave 3]
 - [ ] 37.1-04-PLAN.md — Prose: remaining `auth/`, the `app/` composition root, `errors.py`; plus D-17's `logger.log` [wave 3]
 - [ ] 37.1-05-PLAN.md — Prose: routers, the `models/` package, and the top-level service modules (D-13…D-16) [wave 3]
 - [ ] 37.1-06-PLAN.md — Prose: `tests/e2e/`, `tests/schema/`, and the migration (D-13…D-16) [wave 3]
 - [ ] 37.1-07-PLAN.md — Prose: `tests/unit/` (D-13…D-16) [wave 3]
 - [ ] 37.1-08-PLAN.md — Amend REQUIREMENTS.md and ROADMAP.md for both deletions; flag the SHARED-INVARIANTS conflicts (D-12) [wave 3]
+
+**Cross-cutting constraints:**
+
+- No surviving comment or docstring in these files cites a spec section symbol, a ruling number, a decision id, a planning filename, a review ticket id, or a research pitfall number
+- .venv/bin/pytest -q -m '', -m e2e and -m schema all exit 0
 
 #### Phase 38: POST /auth/sync
 
