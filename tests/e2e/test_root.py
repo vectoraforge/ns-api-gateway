@@ -1,10 +1,4 @@
-"""`GET /` is an authenticated route (§8.1), so it serves only an admitted caller.
-
-Since plan 06 the barrier resolves identity, and the real Firebase credential `async_client`
-carries has no `core.external_identities` row of its own -- so this route now needs the pair
-seeded before it can be reached. `linked_firebase_identity` does exactly that, inside the
-per-test transaction, and rolls back with it.
-"""
+"""GET / is authenticated, and the test credential has no identity row, so each case seeds the link first."""
 import pytest
 
 pytestmark = pytest.mark.e2e

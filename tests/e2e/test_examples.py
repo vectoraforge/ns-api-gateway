@@ -1,4 +1,4 @@
-"""`GET /examples` is an authenticated route (§8.1) -- see `test_root.py` for why it seeds."""
+"""GET /examples is authenticated, so each case seeds a linked identity first."""
 import pytest
 
 pytestmark = pytest.mark.e2e

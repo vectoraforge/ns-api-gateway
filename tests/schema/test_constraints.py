@@ -1,4 +1,4 @@
-"""SCHEMA-02 .. SCHEMA-05 -- the 00-schema.md section 10 rejection cases, exercised with real rows."""
+"""The schema's rejection cases, exercised with real rows against a real PostgreSQL."""
 import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -10,12 +10,7 @@ from schema.helpers import insert_grant, insert_usage, insert_user
 
 pytestmark = pytest.mark.schema
 
-# Names asserted below were read out of a live applied schema rather than copied from the DDL by
-# eye, because PostgreSQL truncates generated identifiers at 63 characters. Only names that are
-# explicit in the migration, or derived from an explicit column name, appear here. The
-# auto-generated positional CHECK names are deliberately never asserted: they shift when two CHECK
-# clauses are reordered even though the schema is semantically unchanged (RESEARCH P-8). Those
-# cases assert the exception class only.
+# Only explicit or column-derived names are asserted; positional CHECK names shift when clauses are reordered.
 IX_ONE_ACTIVE_PER_USER = "ix_access_grants_one_active_per_user"
 IX_ONE_FREE_GRANT_PER_USER_SOURCE = "ix_access_grants_one_free_grant_per_user_source"
 IX_ONE_PER_SUBSCRIPTION = "ix_access_grants_one_per_subscription"
@@ -25,26 +20,16 @@ FK_ANTI_ABUSE_REQUIRED = "access_grants_anti_abuse_required_grant_id_fkey"
 PK_USER_MONTHLY_USAGE = "user_monthly_usage_pkey"
 CK_ANTI_ABUSE_GRANT_SOURCE = "access_grants_anti_abuse_grant_source_check"
 FK_GRANT_SUBSCRIPTION_ENTITLED = "access_grants_active_subscription_grant_subscription_id_fkey"
-# PostgreSQL truncates a generated identifier at 63 characters. This composite FK's full
-# column-derived name does not fit, and "_ac" is all that survives of its second column. The name
-# is still derived from explicit column names rather than from declaration order, so it is stable
-# in the way P-8 cares about -- and asserting it is the only way to show that case OWN rejects on
-# the ownership FK rather than on the entitlement FK above.
+# Truncated at 63 characters, so "_ac" is all that survives of the second column; still column-derived.
 FK_GRANT_SUBSCRIPTION_OWNER = "access_grants_active_subscription_grant_subscription_id_ac_fkey"
 
 ISSUER = "https://securetoken.google.com/native-speaker-test"
 _ACTOR_SUBJECT_HASH = bytes(range(32))
 _IDP_ACCOUNT_HASH = bytes(range(32, 64))
 
-# The COMMIT-time cases (LB, E1, E2, OWN) below drive the boundary with explicit SQL. The conn
-# fixture has already opened a transaction, so the "BEGIN" is a documented no-op the server warns
-# about; what matters is the explicit "COMMIT", because a DEFERRABLE INITIALLY DEFERRED constraint
-# is only checked there. The failure aborts the transaction server-side while asyncpg still
-# believes it is open, so none of those tests issues a ROLLBACK afterwards and none of them queries
-# the connection again (RESEARCH P-6).
+# A deferred constraint is checked only at COMMIT, and its failure aborts the transaction behind asyncpg's back.
 
-# Two literal statements rather than one assembled string: the identity_state default has to be
-# proven by omitting the column, and no f-string is allowed to build SQL text in this module.
+# Two literal statements rather than one assembled string: the identity_state default is proven by omission.
 _INSERT_IDENTITY = (
     "INSERT INTO core.external_identities "
     "(id, user_id, issuer, subject, provider, provider_uid, identity_state, historical_at, "
@@ -88,15 +73,8 @@ _INSERT_CHALLENGE = (
 
 @contextlib.asynccontextmanager
 async def _rejects(conn: asyncpg.Connection, exc_type: type[Exception]):
-    """Assert the wrapped statement is rejected with exc_type, leaving the transaction usable.
-
-    A rejected statement aborts the entire PostgreSQL transaction, so a bare pytest.raises leaves
-    the connection unable to answer the follow-up queries these tests use to show what did and did
-    not land. The savepoint confines the failure to the one statement. It is emphatically NOT what
-    proves the rejection: the exception class, and the constraint or index name where that name is
-    stable, are. Not usable for the COMMIT-time cases -- a deferred failure ends the transaction
-    outright and there is no savepoint left to return to (RESEARCH P-6).
-    """
+    """A rejected statement aborts the whole transaction, so the savepoint is what keeps a follow-up query possible."""
+    # Not usable for the COMMIT-time cases: a deferred failure leaves no savepoint to return to.
     await conn.execute("SAVEPOINT rejected_statement")
     with pytest.raises(exc_type) as exc_info:
         yield exc_info
@@ -113,12 +91,7 @@ async def _insert_identity(
     provider_uid: str | None = None,
     identity_state: str | None = None,
 ) -> uuid.UUID:
-    """Insert one core.external_identities row and return its id.
-
-    provider_uid is generated for a non-anonymous provider when the caller leaves it unset, so the
-    partial unique index on (issuer, provider, provider_uid) never collides by accident and a
-    duplicate-(issuer, subject) test can only be rejected by the reservation it names.
-    """
+    """Insert one core.external_identities row; provider_uid is generated so it never collides by accident."""
     identity_id = uuid.uuid4()
     if provider != "anonymous" and provider_uid is None:
         provider_uid = f"uid_{uuid.uuid4().hex[:16]}"
@@ -213,7 +186,7 @@ async def _insert_challenge(
 
 
 class TestExternalIdentityConstraints:
-    """SCHEMA-02 -- the (issuer, subject) reservation, the provider/provider_uid agreement, and D-16."""
+    """The (issuer, subject) reservation, the provider/provider_uid agreement, and the identity FK."""
 
     async def test_identity_duplicate_issuer_subject_rejected(self, conn):
         """A second identity row carrying an existing active row's (issuer, subject) is rejected."""
@@ -237,8 +210,7 @@ class TestExternalIdentityConstraints:
         second_user = await insert_user(conn)
         subject = f"sub_{uuid.uuid4().hex[:16]}"
         await _insert_identity(conn, user_id=first_user, subject=subject, identity_state="historical")
-        # The reservation would be freed by a state predicate on the index; there is none, and this
-        # test is what would catch one being added.
+        # A state predicate on the index would free the reservation; there is none, and this would catch one.
         assert await conn.fetchval(
             "SELECT identity_state::text FROM core.external_identities WHERE subject = $1", subject
         ) == "historical"
@@ -250,8 +222,7 @@ class TestExternalIdentityConstraints:
         """An anonymous identity carrying a provider_uid violates the provider agreement CHECK."""
         user_id = await insert_user(conn)
         async with _rejects(conn, asyncpg.CheckViolationError):
-            # Giving an anonymous row a provider_uid is the point of this test; ruling 9.2 forbids
-            # inventing any sentinel provider_uid for an anonymous identity.
+            # Giving an anonymous row a provider_uid is the point of this test; no sentinel value is allowed.
             await _insert_identity(conn, user_id=user_id, provider="anonymous", provider_uid="uid_not_allowed")
         assert await conn.fetchval("SELECT count(*) FROM core.external_identities") == 0
 
@@ -272,7 +243,7 @@ class TestExternalIdentityConstraints:
         ) == "active"
 
     async def test_identity_row_blocks_deleting_its_user(self, conn):
-        """D-16 -- ON DELETE RESTRICT stops a core.users row being deleted out from under an identity."""
+        """ON DELETE RESTRICT stops a core.users row being deleted out from under an identity."""
         user_id = await insert_user(conn)
         await _insert_identity(conn, user_id=user_id)
         async with _rejects(conn, asyncpg.ForeignKeyViolationError) as exc_info:
@@ -283,15 +254,14 @@ class TestExternalIdentityConstraints:
 
 
 class TestAccessGrantConstraints:
-    """SCHEMA-03 -- one active grant per user, the lifetime free-grant slot, and the anti-abuse lower bound."""
+    """One active grant per user, the lifetime free-grant slot, and the anti-abuse lower bound."""
 
     async def test_grant_second_active_grant_for_user_rejected(self, conn, tier):
         """Case R7 -- a user may hold at most one status='active' grant."""
         user_id = await insert_user(conn)
         await insert_grant(conn, user_id=user_id, tier_id=tier, source="anonymous_device_grant")
         async with _rejects(conn, asyncpg.UniqueViolationError) as exc_info:
-            # source='manual' keeps the lifetime free-grant index out of the way, so the only index
-            # this second active grant can violate is the one-active-per-user index.
+            # source='manual' keeps the free-grant index out of the way, leaving only one index to violate.
             await insert_grant(conn, user_id=user_id, tier_id=tier, source="manual")
         assert IX_ONE_ACTIVE_PER_USER in str(exc_info.value)
         assert await conn.fetchval(
@@ -303,8 +273,7 @@ class TestAccessGrantConstraints:
         user_id = await insert_user(conn)
         first = await insert_grant(conn, user_id=user_id, tier_id=tier, source="anonymous_device_grant")
         await conn.execute("UPDATE core.access_grants SET status = 'expired' WHERE id = $1", first)
-        # Without this the test would only re-prove R7. The one-active-per-user slot is now free;
-        # the only index left that can reject the second grant is the lifetime free-grant index.
+        # The one-active-per-user slot is now free, so only the lifetime free-grant index can reject.
         assert await conn.fetchval(
             "SELECT status::text FROM core.access_grants WHERE id = $1", first
         ) == "expired"
@@ -321,8 +290,7 @@ class TestAccessGrantConstraints:
             conn, user_id=owner, tier_id=tier, source="subscription", subscription_id=subscription_id
         )
         async with _rejects(conn, asyncpg.UniqueViolationError) as exc_info:
-            # A second user is used deliberately: a second grant for the same owner would trip the
-            # one-active-per-user index first and never reach the per-subscription index.
+            # A second user, because a second grant for the same owner would trip the per-user index first.
             await insert_grant(
                 conn, user_id=other, tier_id=tier, source="subscription", subscription_id=subscription_id
             )
@@ -334,8 +302,7 @@ class TestAccessGrantConstraints:
         grant_id = await insert_grant(conn, user_id=user_id, tier_id=tier, source="manual")
         await insert_usage(conn, grant_id=grant_id, monthly_period="2026-08")
         async with _rejects(conn, asyncpg.UniqueViolationError) as exc_info:
-            # A different monthly_period would be accepted under a composite key; it is rejected
-            # here, which is what proves the key is grant_id alone.
+            # A composite key would accept a different monthly_period; rejecting it proves the key is grant_id.
             await insert_usage(conn, grant_id=grant_id, monthly_period="2026-09")
         assert PK_USER_MONTHLY_USAGE in str(exc_info.value)
         assert await conn.fetchval(
@@ -351,8 +318,7 @@ class TestAccessGrantConstraints:
         with pytest.raises(asyncpg.ForeignKeyViolationError) as exc_info:
             await conn.execute("COMMIT")  # the deferred FK fires HERE, not on the INSERT above
         assert FK_ANTI_ABUSE_REQUIRED in str(exc_info.value)
-        # No ROLLBACK: the server already aborted this transaction, and asyncpg's Transaction object
-        # does not know it, so rolling back would raise a second exception masking this one (P-6).
+        # No ROLLBACK: the server aborted this transaction already, so rolling back would mask the exception.
 
     async def test_grant_free_source_with_anti_abuse_row_passes_the_deferred_check(self, conn, tier):
         """The lower bound accepts the valid pair -- so case LB above rejects for absence, not always."""
@@ -361,13 +327,12 @@ class TestAccessGrantConstraints:
         await _insert_anti_abuse(
             conn, grant_id=grant_id, grant_source="anonymous_device_grant", native_claim_provider="ios_devicecheck"
         )
-        # Forces every deferred constraint to be checked now, inside the per-test transaction, so the
-        # valid pair is proven without committing it and without breaking per-test rollback.
+        # Checks every deferred constraint now, so the valid pair is proven without committing it.
         await conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
 
 
 class TestAntiAbuseEvidenceConstraints:
-    """SCHEMA-03 -- the four-arm anti-abuse CHECK and the "free sources only" partition."""
+    """The four-arm anti-abuse CHECK and the "free sources only" partition."""
 
     async def _free_grant(self, conn, tier, source="anonymous_device_grant") -> uuid.UUID:
         user_id = await insert_user(conn)
@@ -384,7 +349,7 @@ class TestAntiAbuseEvidenceConstraints:
         ) == "ios_devicecheck"
 
     async def test_grant_anti_abuse_native_android_tuple_accepted(self, conn, tier):
-        """Case V2 -- native Android. Ruling 9.6 keeps that arm shape-only, so no value list is asserted."""
+        """Case V2, native Android: that arm is shape-only, so no value list is asserted."""
         grant_id = await self._free_grant(conn, tier)
         await _insert_anti_abuse(
             conn,
@@ -481,9 +446,7 @@ class TestAntiAbuseEvidenceConstraints:
         grant_id = await insert_grant(
             conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
         )
-        # The real subscription and the real subscription-backed grant above are what make this test
-        # mean anything: source='subscription' with a NULL subscription_id is rejected by the grant's
-        # own subscription_id CHECK and would never reach the anti-abuse table at all (RESEARCH P-11).
+        # A real subscription-backed grant is needed: a NULL subscription_id never reaches the anti-abuse table.
         async with _rejects(conn, asyncpg.CheckViolationError):
             await _insert_anti_abuse(
                 conn,
@@ -492,11 +455,7 @@ class TestAntiAbuseEvidenceConstraints:
                 idp_account_hash=_IDP_ACCOUNT_HASH,
                 idp_account_hash_key_version=1,
             )
-        # The class only, not the name. RESEARCH Code Example 5 recorded this case as reporting
-        # access_grants_anti_abuse_grant_source_check on PostgreSQL 16.2; on the PostgreSQL 17.11
-        # target it reports access_grants_anti_abuse_check instead. That is not a schema defect and
-        # not a weaker test -- the row is still rejected, by a constraint that subsumes the named
-        # one. test_grant_anti_abuse_grant_source_check_is_subsumed below pins the reason.
+        # The class only, not the name: which of the two CHECKs reports first varies by server version.
         assert await conn.fetchval("SELECT count(*) FROM core.access_grants_anti_abuse") == 0
 
     async def test_grant_anti_abuse_row_for_manual_grant_rejected(self, conn, tier):
@@ -515,15 +474,7 @@ class TestAntiAbuseEvidenceConstraints:
         assert await conn.fetchval("SELECT count(*) FROM core.access_grants_anti_abuse") == 0
 
     async def test_grant_anti_abuse_grant_source_check_is_subsumed(self, conn):
-        """Why cases R5 and R6 assert no constraint name: the named CHECK cannot be the reported one.
-
-        Both arms of the four-arm shape CHECK already pin grant_source to the two free sources, so
-        no row can satisfy that CHECK and still violate the grant_source CHECK. PostgreSQL evaluates
-        a table's CHECKs in constraint-name order, and access_grants_anti_abuse_check sorts before
-        access_grants_anti_abuse_grant_source_check, so the subsuming one always reports first. The
-        named CHECK is redundant belt-and-braces, exactly as the migration comment says. This test
-        asserts it is present and says what it says, which is what R5 and R6 can no longer assert.
-        """
+        """The grant_source CHECK is subsumed by the shape CHECK, so it can never be the reported one."""
         definition = await conn.fetchval(
             "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
             "WHERE conrelid = 'core.access_grants_anti_abuse'::regclass AND conname = $1",
@@ -537,15 +488,14 @@ class TestAntiAbuseEvidenceConstraints:
 
 
 class TestSubscriptionConstraints:
-    """SCHEMA-04 -- the STORED generated column and the two deferred entitlement foreign keys."""
+    """The STORED generated column and the two deferred entitlement foreign keys."""
 
     async def test_subscription_explicit_write_to_generated_column_rejected(self, conn, tier):
         """Case GEN -- product_entitled_subscription_id is GENERATED ALWAYS and refuses a direct write."""
         user_id = await insert_user(conn)
         subscription_id = uuid.uuid4()
         async with _rejects(conn, asyncpg.exceptions.GeneratedAlwaysError):
-            # Naming the generated column in the INSERT is the point of this test: forging
-            # entitlement would mean writing this column directly.
+            # Naming the generated column in the INSERT is the point: forging entitlement means writing it.
             await conn.execute(
                 _INSERT_SUBSCRIPTION_WITH_GENERATED_COLUMN,
                 subscription_id,
@@ -582,8 +532,7 @@ class TestSubscriptionConstraints:
             "SELECT product_entitled_subscription_id FROM core.subscriptions WHERE id = $1", subscription_id
         ) is None
         await conn.execute("BEGIN")
-        # Not a duplicate of E1: this is the ruling most likely to be widened by a later reader who
-        # reasons that a card retry should keep the subscriber served.
+        # Not a duplicate of E1: a later reader is most likely to widen this one for a card retry.
         await insert_grant(
             conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
         )
@@ -595,8 +544,7 @@ class TestSubscriptionConstraints:
         """Case OWN -- a grant may not point at another user's subscription."""
         owner = await insert_user(conn)
         thief = await insert_user(conn)
-        # The subscription stays entitled on purpose, so the entitlement FK is satisfied and the only
-        # constraint left to reject this grant is the composite ownership FK.
+        # The subscription stays entitled, so the only constraint left to reject is the ownership FK.
         subscription_id = await _insert_subscription(conn, user_id=owner, tier_id=tier, status="active")
         await conn.execute("BEGIN")
         await insert_grant(
@@ -627,20 +575,13 @@ class TestSubscriptionConstraints:
 
 
 class TestAuthChallengeConstraints:
-    """SCHEMA-05 -- ruling 9.8's operation partition and the lifecycle and binding CHECKs."""
+    """The challenge operation partition, and the lifecycle and binding CHECKs."""
 
     @pytest.mark.parametrize("operation", ["restore_subscription", "sign_out_all", "sync"])
     async def test_challenge_for_a_challenge_free_operation_rejected(self, conn, operation):
-        """Case R9 -- the three challenge-free operations, none of which may have a challenge row.
-
-        Widened from restore_subscription alone when D-12/D-13 collapsed the four-arm CHECK to a
-        membership test. The membership form is the one that could plausibly be written too
-        loosely -- an enum-wide CHECK, or none at all, would admit all three of these -- so all
-        three are asserted rather than the one the original ruling named.
-        """
+        """All three challenge-free operations are asserted, because a too-loose CHECK would admit all three."""
         async with _rejects(conn, asyncpg.CheckViolationError):
-            # These operations have no challenge row, no claim step and no consumption step;
-            # writing one is the point of this test.
+            # These operations have no challenge row, no claim and no consumption; writing one is the point.
             await _insert_challenge(conn, operation=operation)
         assert await conn.fetchval("SELECT count(*) FROM core.auth_challenges") == 0
 
@@ -649,13 +590,7 @@ class TestAuthChallengeConstraints:
         "claim_anonymous_grant", "claim_registered_grant",
     ])
     async def test_challenge_for_every_challenge_bearing_operation_accepted(self, conn, operation):
-        """The other half of the partition -- all four challenge-bearing operations insert.
-
-        `upgrade_anonymous_to_registered` is the load-bearing case: it was pinned to a
-        provider-variant arm (`IN ('google','apple')`) until D-13 removed that column, so this is
-        the assertion that Phase 40's rows survived the rewrite. Phase 40 must supply its own provider
-        binding; that it has none *here* is the recorded handoff, not a regression.
-        """
+        """The other half of the partition: all four challenge-bearing operations insert."""
         challenge_row_id = await _insert_challenge(conn, operation=operation)
         assert await conn.fetchval(
             "SELECT count(*) FROM core.auth_challenges WHERE id = $1", challenge_row_id

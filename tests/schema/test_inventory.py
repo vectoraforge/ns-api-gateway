@@ -1,9 +1,9 @@
-"""SCHEMA-07 and SCHEMA-08 -- exact-set object inventory, index predicates, and legacy absence."""
+"""Exact-set object inventory, index predicates, and the absence of the legacy structures."""
 import pytest
 
 pytestmark = pytest.mark.schema
 
-# --- Introspection queries (34-RESEARCH.md Code Example 3, unmodified) -------------------------
+# The introspection queries, read against pg_catalog.
 
 ENUMS = """
 SELECT t.typname, array_agg(e.enumlabel ORDER BY e.enumsortorder) AS labels
@@ -28,9 +28,7 @@ JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname IN ('core', 'audit')
 """
 
-# NOT t.tgisinternal is not an optimisation. A correct schema has 104 rows in pg_trigger for these
-# two schemas, because PostgreSQL implements every foreign key as a pair of internal trigger rows.
-# Without the filter this assertion fails on a correct schema (RESEARCH P-7).
+# NOT t.tgisinternal is required: PostgreSQL implements every foreign key as a pair of internal triggers.
 USER_TRIGGERS = """
 SELECT count(*) FROM pg_trigger t
 JOIN pg_class c     ON c.oid = t.tgrelid
@@ -57,20 +55,12 @@ WHERE table_schema = 'core' AND table_name = 'users'
 ORDER BY ordinal_position
 """
 
-# pg_get_expr renders an enum cast schema-qualified or bare depending on the reader's search_path,
-# so the same index has two correct-looking predicate strings (RESEARCH P-5). 34-INVENTORY-PG17.md
-# section 4 records both renderings and pins this one -- the default an ordinary asyncpg connection
-# already has. Pinning keeps EXPECTED_INDEX_PREDICATES literal instead of normalised after the fact.
+# pg_get_expr renders enum casts relative to search_path, so it is pinned and the expected strings stay literal.
 PINNED_SEARCH_PATH = '"$user", public'
 
-# --- Expected inventory, captured from the live PostgreSQL 17.11 apply -------------------------
-# Every value below is recorded in .planning/phases/34-schema/34-INVENTORY-PG17.md and was read out
-# of pg_catalog, not transcribed from 00-schema.md. Section 10 of the spec names 7 indexes while the
-# applied database has 54 (25 of them auto-named constraint indexes), so an exact-set assertion
-# built from the spec prose fails on its first run.
+# Every expected value below was read out of pg_catalog on a live apply, not transcribed from a document.
 
-# Labels are in enumsortorder -- the order 00-schema.md section 3 declares ("every value listed, in
-# this order"), asserted as an ordered sequence and never as an unordered set.
+# Labels are in enumsortorder, asserted as an ordered sequence and never as an unordered set.
 EXPECTED_ENUM_LABELS = {
     "access_grant_source": [
         "subscription", "anonymous_device_grant", "registered_account_grant", "manual"
@@ -140,8 +130,7 @@ EXPECTED_AUDIT_INDEXES = {
     "subscription_events_pkey"
 }
 
-# pg_get_expr output as rendered under PINNED_SEARCH_PATH. Under `core, public` the enum casts lose
-# their `core.` prefix and none of these strings match -- which is the whole reason for the pin.
+# pg_get_expr output as rendered under PINNED_SEARCH_PATH; without the pin none of these strings match.
 EXPECTED_INDEX_PREDICATES = {
     "ix_access_grants_anti_abuse_idp_account_hash": "(idp_account_hash IS NOT NULL)",
     "ix_access_grants_one_active_per_user": "(status = 'active'::core.access_grant_status)",
@@ -155,8 +144,7 @@ EXPECTED_INDEX_PREDICATES = {
     ),
     "ix_access_grants_subscription": "(subscription_id IS NOT NULL)",
     "ix_external_identities_provider_account": "(provider_uid IS NOT NULL)",
-    # Unique with no predicate. Asserting the absence is load-bearing: a predicate added
-    # here later would silently narrow the uniqueness guarantee.
+    # Unique with no predicate; asserting the absence stops a later predicate silently narrowing it.
     "ix_subscriptions_provider_external_id": None,
 }
 
@@ -164,8 +152,7 @@ EXPECTED_USER_TRIGGERS = 0
 EXPECTED_VIEWS = 0
 EXPECTED_MATVIEWS = 0
 
-# The section 2 target shape for core.users, in ordinal_position. Seven columns: no jwt_sub and no
-# subscription_plan.
+# The target shape for core.users, in ordinal_position: seven columns, no jwt_sub and no subscription_plan.
 EXPECTED_USERS_COLUMNS = [
     "id", "email", "display_name", "registered_at", "active", "created_at", "updated_at"
 ]
@@ -192,7 +179,7 @@ async def fetch_enum_labels(conn, type_name: str) -> list[str]:
 
 
 class TestEnumTypes:
-    """SCHEMA-08: exactly the 11 declared core enum types, each with its exact labels in order."""
+    """Exactly the 11 declared core enum types, each with its exact labels in order."""
 
     async def test_enum_type_name_set_is_exact(self, conn):
         actual = {row["typname"] for row in await conn.fetch(ENUMS)}
@@ -209,7 +196,7 @@ class TestEnumTypes:
 
 
 class TestTables:
-    """SCHEMA-08: exactly 15 tables in core and 1 in audit -- add nothing not listed in the spec."""
+    """Exactly 15 tables in core and 1 in audit, with nothing beyond the declared set."""
 
     async def test_core_table_set_is_exact(self, conn):
         actual = {row["tablename"] for row in await conn.fetch(TABLES, "core")}
@@ -221,7 +208,7 @@ class TestTables:
 
 
 class TestIndexes:
-    """SCHEMA-08: exactly the 54 captured indexes -- a renamed or stray index fails this suite."""
+    """Exactly the 54 captured indexes: a renamed or stray index fails this suite."""
 
     async def test_core_index_set_is_exact(self, conn):
         rows = await conn.fetch(INDEXES)
@@ -235,11 +222,7 @@ class TestIndexes:
 
 
 class TestIndexPredicates:
-    """D-19: the seven spec-named indexes carry exactly their captured pg_get_expr predicates.
-
-    search_path is pinned to PINNED_SEARCH_PATH before reading, because pg_get_expr renders enum
-    casts relative to it -- an unpinned assertion passes on one machine and fails on another.
-    """
+    """The seven named indexes carry exactly their captured predicates, read under a pinned search_path."""
 
     @pytest.mark.parametrize("index_name,expected_predicate", PREDICATE_CASES)
     async def test_predicate_matches_capture(self, conn, index_name, expected_predicate):
@@ -253,7 +236,7 @@ class TestIndexPredicates:
 
 
 class TestNoProceduralObjects:
-    """D-09 and D-18: the schema carries no user trigger, no view, and no materialized view."""
+    """The schema carries no user trigger, no view, and no materialized view."""
 
     async def test_no_user_triggers(self, conn):
         actual = await conn.fetchval(USER_TRIGGERS)
@@ -270,7 +253,7 @@ class TestNoProceduralObjects:
 
 
 class TestLegacyStructuresAreGone:
-    """SCHEMA-07: the v1.6 structures are absent from the schema, not merely unused by the code."""
+    """The v1.6 structures are absent from the schema, not merely unused by the code."""
 
     async def test_gone_query_negatives_all_hold(self, conn):
         row = await conn.fetchrow(GONE)
@@ -297,7 +280,7 @@ class TestLegacyStructuresAreGone:
         )
 
     async def test_access_grant_source_dropped_promo(self, conn):
-        """Ruling 9.1 -- a positive consequence of the exact label list, not a separate grep."""
+        """A positive consequence of the exact label list, not a separate grep."""
         labels = await fetch_enum_labels(conn, "access_grant_source")
         assert labels == EXPECTED_ENUM_LABELS["access_grant_source"], f"labels drifted: {labels}"
         assert len(labels) == 4, f"expected exactly four access_grant_source labels, got {len(labels)}"

@@ -1,31 +1,4 @@
-"""ROADMAP criterion 4: two concurrent creates for one `(issuer, subject)` yield exactly one account.
-
-§02 step 12 makes `UNIQUE (issuer, subject)` and `UNIQUE (user_id)` the **only** arbiters between
-two completions that both observed an unlinked subject. There is no advisory lock, no serializable
-isolation, no generation CAS and no loser-challenge cancellation anywhere in the design, so the
-only way to know the rule holds is to run two real transactions on two real connections against a
-real PostgreSQL and see which rows exist afterwards. That is what this module does.
-
-**The loser's remediation is `POST /auth/sync`** -- which is Phase 38 and is not served by this
-repo yet. That is what the 409 `identity_already_linked` is telling the client to do, and it is why
-the loser must never receive idempotent success: a caller told "created" would never reconcile, and
-would hold a handle to an account that is not the one its identity actually resolves to.
-
-**The interleaving is arranged, not raced.** Both attempts are driven under `asyncio.gather`, and a
-two-party barrier holds each one between its in-transaction re-resolution and its first insert
-until the other has also finished re-resolving. Past that barrier nothing is coordinated: both
-issue their inserts concurrently and PostgreSQL decides the winner, which is the part that must not
-be simulated. Racing two threads without the barrier would test the same rule only on the runs that
-happened to interleave, and would pass vacuously on the runs that did not -- so the barrier makes
-the *premise* reliable while leaving the *outcome* genuinely up to the database. Each attempt also
-records the identity-row count at its own barrier arrival, so "both observed an unlinked subject"
-is asserted rather than assumed.
-
-**This module imports application code and commits**, per the exception
-`test_store_purchase_tokens.py` documents; and it drives `create_account` directly rather than
-going over HTTP, because the race is a property of the database and a second transport would add a
-variable without adding evidence.
-"""
+"""Two concurrent creates for one (issuer, subject) yield exactly one account, with the unique indexes deciding."""
 import asyncio
 import uuid
 from dataclasses import dataclass, field
@@ -52,8 +25,7 @@ _SQLALCHEMY_PREFIX = "postgresql+asyncpg://"
 NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
 KEY_MATERIAL = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="  # 32 bytes, base64 -- test-only
 
-# A barrier that is never reached means a coroutine failed before its re-resolution, and its partner
-# would otherwise wait for it forever. Bounded so that shows up as a failure, not as a hung suite.
+# Bounded so a partner that fails before its re-resolution shows up as a failure rather than a hung suite.
 BARRIER_TIMEOUT_SECONDS = 20
 
 
@@ -110,11 +82,7 @@ async def scalar(harness: _Harness, sql: str, params: dict | None = None):
 
 async def commit_claimed_challenge(harness: _Harness, *, subject: str,
                                    attempt_id: uuid.UUID) -> tuple[uuid.UUID, str]:
-    """One challenge row already claimed under `attempt_id`, as §02 step 5 would have left it.
-
-    Each attempt gets its **own** challenge. That is not a convenience: §02 step 12 forbids
-    cancelling the loser's challenge beyond single-use, and both attempts must consume their own.
-    """
+    """One challenge already claimed under attempt_id; each attempt gets its own and must consume it."""
     row_id = uuid.uuid4()
     challenge_id = f"handle-{uuid.uuid4().hex[:16]}"
     async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
@@ -131,11 +99,7 @@ async def commit_claimed_challenge(harness: _Harness, *, subject: str,
 
 
 class _HookedSession:
-    """A real session that runs a callback once, immediately after its first read.
-
-    `create_account` is driven unmodified; the wrapper only observes. The first read is the
-    in-transaction re-resolution, so the callback fires in exactly the window §02 step 12 is about.
-    """
+    """A real session that runs a callback once after its first read, which is the in-transaction re-resolution."""
 
     def __init__(self, session, after_first_read=None) -> None:
         self._session = session
@@ -197,12 +161,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=Non
 
 
 def barrier_for(harness: _Harness, attempt: _Attempt, mine: asyncio.Event, theirs: asyncio.Event):
-    """Announce that this attempt has re-resolved, then wait for its partner to do the same.
-
-    Recording the identity-row count first is what makes the premise checkable: both attempts must
-    have seen an unlinked subject, or the case is exercising the no-mutation arm and proving
-    nothing about the constraint.
-    """
+    """Announce that this attempt has re-resolved, then wait for its partner; the row count records the premise."""
 
     async def hold() -> None:
         attempt.identities_seen_at_barrier = await scalar(
@@ -220,13 +179,7 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
 
     @pytest_asyncio.fixture
     async def raced(self, harness):
-        """Two attempts on the same `(issuer, subject)`, released together past the barrier.
-
-        Their classified providers deliberately **differ** -- one google, one apple. Two attempts
-        can legitimately classify differently if the provider record changed between their reads,
-        and the difference is what makes a merge or an overwrite visible: the surviving row must
-        carry the winner's pair and nothing of the loser's.
-        """
+        """Two attempts on the same pair, released together; their providers differ so an overwrite is visible."""
         subject = f"contested-{uuid.uuid4().hex[:8]}"
         first = await prepare_attempt(harness, subject=subject, provider=IdentityProvider.google,
                                       provider_uid=f"google-uid-{subject}")
@@ -242,12 +195,11 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
         return {"subject": subject, "attempts": (first, second), "by_result": by_result}
 
     async def test_both_attempts_observed_an_unlinked_subject(self, raced):
-        """§02 step 12's premise. Without this the case could be two sequential creations."""
+        """The premise: without this the case could be two sequential creations."""
         assert [attempt.identities_seen_at_barrier for attempt in raced["attempts"]] == [0, 0]
 
     async def test_exactly_one_succeeded_and_the_other_is_already_linked(self, raced):
-        """Never two successes, and never idempotent success for the loser: the loser is being
-        told to reconcile through `/auth/sync`, which is a different instruction from "created"."""
+        """Never two successes, and never idempotent success: the loser is told to reconcile, not "created"."""
         assert set(raced["by_result"]) == {AuthEventResult.succeeded,
                                            AuthEventResult.identity_already_linked}
 
@@ -268,9 +220,7 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
         assert rows[0][0] == 1
 
     async def test_the_loser_left_no_orphaned_user_row(self, harness, raced):
-        """A `core.users` row with no identity row is §02's partial account (T-37-45). Every user
-        this test's issuer could have produced is reachable through an identity row, so any extra
-        one is an orphan."""
+        """A core.users row with no identity row is a partial account, so any extra one is an orphan."""
         assert await scalar(
             harness,
             "SELECT count(*) FROM core.users u WHERE u.created_at = :now "
@@ -279,9 +229,7 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
 
     async def test_the_surviving_row_carries_the_winners_pair_and_none_of_the_losers(self, harness,
                                                                                     raced):
-        """No merge, no overwrite (T-37-43). The two attempts classified differently on purpose, so
-        a row carrying the loser's provider or uid would be visible here rather than invisible
-        behind two identical values."""
+        """No merge and no overwrite: the attempts classified differently, so the loser's pair would show here."""
         winner = raced["by_result"][AuthEventResult.succeeded]
         loser = raced["by_result"][AuthEventResult.identity_already_linked]
         rows = await read(
@@ -294,8 +242,7 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
         assert rows[0][1] != loser.provider_uid
 
     async def test_the_winner_minted_two_tokens_and_the_loser_none(self, harness, raced):
-        """"A rejected or replayed completion mints nothing" (§02 step 10), and the winner gets
-        exactly one row per store -- so the total for the contested pair is two, not four."""
+        """A rejected completion mints nothing and the winner gets one row per store, so the total is two."""
         assert await scalar(
             harness,
             "SELECT count(*) FROM core.store_purchase_tokens t "
@@ -311,8 +258,7 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
             {"now": NOW}) == 0
 
     async def test_both_challenges_were_consumed_and_their_verifiers_cleared(self, harness, raced):
-        """The loser consumes too (§02 step 13): every rejection at or after the provider read
-        does, and retry requires a fresh prepare rather than a replay of this one."""
+        """The loser consumes too, so a retry needs a fresh prepare rather than a replay of this one."""
         for attempt in raced["attempts"]:
             rows = await read(
                 harness,
@@ -323,12 +269,7 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
 
 
 class TestRunningTheSameCreationTwiceSequentially:
-    """The "runs twice on the same input" question, answered beside the concurrent one.
-
-    Both answers must be the same -- one account, the second call rejects, nothing extra minted --
-    and they arrive by different routes: the concurrent loser is rejected by the constraint, the
-    sequential one by the in-transaction re-resolution that finds the committed row.
-    """
+    """The same input run twice must answer as the race does, though re-resolution rejects rather than an index."""
 
     @pytest_asyncio.fixture
     async def twice(self, harness):
@@ -384,8 +325,7 @@ class TestRunningTheSameCreationTwiceSequentially:
         assert twice["counts_after_second"] == twice["counts_after_first"]
 
     async def test_the_second_run_overwrites_nothing_on_the_first_runs_row(self, twice, harness):
-        """Byte-identical before and after, including the `user_id`: the second run declared a
-        different provider and a different uid, and neither reached the row."""
+        """Identical before and after: the second run declared a different provider and uid, and neither landed."""
         after_second = await read(
             harness,
             "SELECT provider::text, provider_uid, user_id FROM core.external_identities "

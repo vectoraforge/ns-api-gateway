@@ -1,20 +1,4 @@
-"""FOUND-02 / §1.1: the same six wire cases, over a real ASGI transport.
-
-`tests/unit/test_wire_contract.py` drives `extract_bearer` with hand-built header lists.
-This module is worth having beside it for one reason: it proves the awkward shapes **survive the
-transport**. A duplicate `Authorization` field, a differently-cased pair of them, and a
-comma-joined value all reach `scope["headers"]` byte-for-byte instead of being folded, deduplicated,
-or first-value-selected between the client and `extract_bearer`. If they were folded, the unit
-module would still pass while the deployed service quietly authenticated one of two credentials --
-which is the desync §1.1 exists to make impossible.
-
-The bodies are compared byte-for-byte across all six. §3.1's anti-oracle rule is not "the same
-status": it is the same status, the same body, and the same copy, so a caller cannot tell which of
-the six conditions it tripped.
-
-No stub verifier is used and none is needed: every case here is refused at step 2, before the token
-is ever handed to a verifier.
-"""
+"""The six Authorization wire cases over a real ASGI transport, where the awkward header shapes survive."""
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -23,7 +7,7 @@ pytestmark = pytest.mark.e2e
 
 TOKEN = "header.payload.signature"
 
-# The six §1.1 cases, as the header list each sends. `None` means "send no Authorization field".
+# Each case is the header list it sends; the first sends no Authorization field at all.
 WIRE_CASES: list[tuple[str, list[tuple[str, str]]]] = [
     ("zero values", []),
     ("two instances", [("authorization", f"Bearer {TOKEN}"),
@@ -56,7 +40,7 @@ class TestTheSixCasesOverTheWire:
         assert response.json() == {"code": "auth_required"}
 
     async def test_all_six_bodies_are_byte_identical(self, wire_client):
-        """§3.1: one class, one body -- not merely one status."""
+        """One class and one body, not merely one status."""
         bodies = [(await wire_client.get("/chats", headers=headers)).content
                   for _, headers in WIRE_CASES]
         assert len(set(bodies)) == 1
@@ -85,13 +69,7 @@ async def _delivered(headers: list[tuple[str, str]]) -> list[tuple[bytes, bytes]
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheTransportPreservesTheAwkwardShapes:
-    """This module's whole reason for existing: the shapes are not folded before the server reads them.
-
-    Asserted against a bare recording app rather than the real one, because what is under test
-    here is the transport, not admission. If httpx folded a duplicate into one comma-joined
-    value the cases above would still return 401 -- but for the wrong reason, and the deployed
-    service's behaviour would no longer be what they claim to prove.
-    """
+    """The shapes are not folded before the server reads them, asserted against a bare recording app."""
 
     async def test_a_duplicate_survives_as_two_fields_not_one(self):
         delivered = await _delivered([("authorization", "Bearer a"),
@@ -111,7 +89,7 @@ class TestTheTransportPreservesTheAwkwardShapes:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheContractRunsOnEveryAuthenticatedRoute:
-    """§1.1 belongs to admission, so it does not vary by route -- and does not apply to the allowlist."""
+    """The wire contract belongs to admission, so it does not vary by route and skips the public route."""
 
     @pytest.mark.parametrize("path", ["/", "/examples", "/chats"])
     async def test_a_duplicate_is_refused_identically_on_every_authenticated_route(
@@ -122,7 +100,7 @@ class TestTheContractRunsOnEveryAuthenticatedRoute:
         assert response.json() == {"code": "auth_required"}
 
     async def test_the_public_readiness_probe_is_not_subject_to_it(self, wire_client):
-        """§2.1's allowlist declares no auth dependency at all: wire contract included."""
+        """The readiness probe declares no auth dependency at all, wire contract included."""
         response = await wire_client.get("/health/ready",
                                          headers=[("authorization", "Bearer a"),
                                                   ("authorization", "Bearer b")])

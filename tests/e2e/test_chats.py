@@ -1,27 +1,4 @@
-"""The two mutating chat routes, over the real app with a real Firebase credential.
-
-The module carries both halves of the same fact, and each is the other's control:
-
-* `TestCreateChat` / `TestFollowup` — the five served cases plan 35-04 removed, restored. The
-  caller is the genuine Firebase credential `async_client` carries, admitted because
-  `linked_firebase_identity` seeded its `(issuer, subject)` pair inside the per-test transaction.
-  A real token, verified by the production verifier, resolved through a real
-  `core.external_identities` row, reaching a handler that reads `identity.user.id` off the
-  barrier's context and nothing else.
-* `TestUnlinkedCallerIsRefused` — the same client, the same routes, the same credential, with the
-  one difference that no identity row exists. §1.3 outcome 1' answers
-  `preauth_identity_not_allowed`.
-
-That difference is exactly one seeded row, which is what makes each class load-bearing: the served
-cases cannot be passing because the barrier was skipped (the refusals prove it runs on this client),
-and the refusals cannot be a blanket deny (the served cases prove the routes serve).
-
-Every served case here runs against a grant seeded by `quota_grant`, so its subject stays the
-chat behaviour rather than the allowance. `POST /chats` now carries `require_quota_create_chat`
-and answers 429 to a caller with no effective grant; what that gate does is
-`test_quota.py`'s subject, and pinning it here too would make these cases fail for the wrong
-reason the moment the allowance arithmetic lands.
-"""
+"""The two mutating chat routes, each asserted for a linked caller and for an unlinked one."""
 from uuid import UUID, uuid4
 
 import pytest
@@ -33,7 +10,7 @@ pytestmark = pytest.mark.e2e
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestCreateChat:
-    """`POST /chats` served end to end, LLM included."""
+    """POST /chats served end to end, LLM included."""
 
     async def test_create_chat_english(self, async_client, linked_firebase_identity,
                                        quota_grant):
@@ -62,22 +39,7 @@ class TestCreateChat:
 
     async def test_create_chat_autodetect_lang(self, async_client, linked_firebase_identity,
                                                quota_grant):
-        """A request omitting `lang` is served -- `ask_llm` sends the autodetect directive.
-
-        **The phrase changed on restoration, and the reason is a live defect, recorded rather than
-        worked around silently.** This case used to send `"I am going home."`, which is *correct*
-        English. `config/prompt.txt` asks for `issues` and `suggestions` only when issues exist,
-        but `AnalyzeResponse` declares both required -- so a correct phrase makes
-        `AnalyzeResponse.model_validate` raise and `POST /chats` answers **500**, whatever `lang`
-        says. Deferred item D-35-11-A; `models/llm.py` and `config/prompt.txt` are outside this
-        phase, and §8.3 requires existing non-auth contracts unchanged.
-
-        The assertions are the original ones, unweakened, and the property under test is unchanged:
-        an omitted `lang` is served. Only the input moved to the incorrect phrase the four
-        neighbouring cases already use, so the case exercises autodetect rather than the defect.
-        No case here asserts the 500 -- pinning a bug as expected behaviour would make it look
-        intended and would have to be deleted the moment it is fixed.
-        """
+        """An omitted lang is served; the phrase must be incorrect English, as a correct one trips a known 500."""
         response = await async_client.post("/chats",
                                            json={"phrase": "I am going to home."})
         assert response.status_code == 200
@@ -102,13 +64,7 @@ class TestCreateChat:
                                                                  linked_firebase_identity,
                                                                  quota_grant,
                                                                  _db_transaction):
-        """The row lands under the id the barrier resolved, not under anything off the token.
-
-        The four cases above assert the response shape, which a handler ignoring the identity
-        context entirely would also produce. This one reads `core.chats.user_id` straight back out
-        and requires it to equal the seeded `core.users.id` -- the only assertion in the module that
-        a `create_chat` writing some other user's id could fail.
-        """
+        """The row lands under the resolved user's id, read straight back out of core.chats."""
         user, _ = linked_firebase_identity
         created = await async_client.post("/chats",
                                           json={"phrase": "I am going to home.", "lang": "en"})
@@ -145,14 +101,7 @@ class TestFollowup:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestUnlinkedCallerIsRefused:
-    """The same credential with no identity row: §1.3 outcome 1', on every mutating chat route.
-
-    Plan 06 sharpened this from `auth_required` to `preauth_identity_not_allowed`, and the change
-    is the point. The old 401 was consistent with a barrier that never touched the database; this
-    403 is not, because it is reachable only after acceptance succeeded and the identity query ran.
-    Chat routes are not pre-auth-callable -- only the two `create-user` phases are -- so an unlinked
-    caller can never reach a handler here whatever the token says.
-    """
+    """The same credential with no identity row, on every mutating chat route."""
 
     async def test_create_chat_is_refused(self, async_client):
         response = await async_client.post("/chats",
@@ -167,14 +116,7 @@ class TestUnlinkedCallerIsRefused:
         assert response.json() == {"code": "preauth_identity_not_allowed"}
 
     async def test_the_refusal_precedes_body_validation(self, async_client):
-        """A malformed body still answers the barrier's rejection, never 422.
-
-        §3.1's anti-oracle rule: the rejection an unadmitted caller sees must not vary with
-        anything about the request it could steer. A 422 here would tell an unadmitted caller that
-        its credential was fine and only its body was wrong. Its admitted counterpart --
-        `test_error_cases.py::TestErrorCases::test_missing_phrase_returns_422` -- is what proves
-        this is a suppressed 422 rather than a route that never validates bodies at all.
-        """
+        """A malformed body still answers the refusal, never 422, so an unadmitted caller learns nothing."""
         response = await async_client.post("/chats", json={"lang": "en"})
         assert response.status_code == 403
         assert response.json() == {"code": "preauth_identity_not_allowed"}

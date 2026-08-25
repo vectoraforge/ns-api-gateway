@@ -3,9 +3,7 @@ import uuid
 
 import asyncpg
 
-# Every row value binds through an asyncpg $N positional parameter (T-34-03-01). No helper in this
-# module builds row data into SQL text, and no helper commits -- the per-test transaction in
-# conftest.py owns the transaction boundary so each test rolls back cleanly (D-15).
+# Every row value binds through an asyncpg $N parameter, and no helper commits or owns a transaction.
 
 
 async def insert_user(
@@ -28,11 +26,7 @@ async def insert_user(
 
 
 async def insert_tier(conn: asyncpg.Connection, *, monthly_credits: int = 100) -> str:
-    """Insert one core.access_tiers row and return its id.
-
-    The id is randomised rather than fixed so two tiers can coexist inside a single test
-    without colliding on the TEXT primary key.
-    """
+    """Insert one core.access_tiers row with a randomised id, so two tiers can coexist in one test."""
     tier_id = f"tier_{uuid.uuid4().hex[:12]}"
     await conn.execute(
         "INSERT INTO core.access_tiers (id, monthly_credits) VALUES ($1, $2)",
@@ -51,11 +45,7 @@ async def insert_grant(
     status: str = "active",
     subscription_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
-    """Insert one core.access_grants row and return its id.
-
-    source and status bind as text against the core.access_grant_source and
-    core.access_grant_status enum columns; asyncpg's enum codec accepts the label string.
-    """
+    """Insert one core.access_grants row; source and status bind as text against the enum columns."""
     grant_id = uuid.uuid4()
     await conn.execute(
         "INSERT INTO core.access_grants (id, user_id, tier_id, source, status, subscription_id) "
@@ -77,11 +67,7 @@ async def insert_usage(
     monthly_period: str = "2026-08",
     monthly_used: int = 0,
 ) -> None:
-    """Insert one core.user_monthly_usage row. Returns nothing -- grant_id is already the key.
-
-    created_at and updated_at are named explicitly because this is the one table in the schema
-    whose timestamps are NOT NULL with no DB DEFAULT; omitting them is a NOT NULL violation.
-    """
+    """Insert one core.user_monthly_usage row; its timestamps are NOT NULL with no default, so both are named."""
     await conn.execute(
         "INSERT INTO core.user_monthly_usage "
         "(grant_id, monthly_period, monthly_used, created_at, updated_at) "
