@@ -321,6 +321,45 @@ Plans:
 - No surviving comment or docstring in these files cites a spec section symbol, a ruling number, a decision id, a planning filename, a review ticket id, or a research pitfall number
 - .venv/bin/pytest -q -m '', -m e2e and -m schema all exit 0
 
+#### Phase 37.2: Simplify auth module (INSERTED)
+
+**Goal:** Continue Phase 37.1's de-complication into the auth feature itself: collapse the `auth/` package (currently 14 files, 28 classes, 57 functions for one create-user feature) to the minimum that carries the behavior, drop the `credentials.Certificate()` path so Firebase initializes via ADC only, move the request/response models out of `routers/auth.py` into `models/auth.py`, and replace the `?challenge=true` mode signal with an explicit `POST /auth/challenge` endpoint taking `{"operation": "create_user"}` — deleting the mode-signal classifier that existed only to disambiguate the old shape.
+**Requirements**: none mapped — scope is the five directives recorded in this entry; admission rules, status codes, and the Phase 37 e2e matrix must survive unchanged except where the challenge endpoint split explicitly moves them
+**Depends on:** Phase 37.1
+**Plans:** 7 plans
+
+**Success Criteria:**
+
+1. `credentials.Certificate()` and the credential-dict path are gone from `auth/firebase.py`; Firebase initializes via Application Default Credentials only
+2. `CreateUserRequest`, `PrepareResponse`, and `CompletionResponse` live in `models/auth.py`; `routers/auth.py` defines no Pydantic models
+3. Challenge issuance is `POST /auth/challenge` with body `{"operation": "create_user"}` (operation values extensible for later phases); the `?challenge=true` query-param mode and `auth/modesignal.py` are deleted, and `POST /auth/create-user` handles completion only
+4. `_classification_cause` and functions like it — single-caller indirections that exist to name a value rather than compute one — are inlined or deleted
+5. The `auth/` package is measurably smaller in files, classes, and functions than the 14/28/57 baseline, with every deletion justified as carrying no behavior; the e2e admission matrix and unit suites pass with edits only where the challenge-endpoint split moved a contract
+
+Plans:
+
+**Wave 1**
+
+- [ ] 37.2-01-PLAN.md — TRACER: `POST /auth/challenge` wired end to end, models move to `models/auth.py` (D-01, D-02) [wave 1]
+- [ ] 37.2-02-PLAN.md — Firebase collapses to Application Default Credentials; the service-account config surface is deleted (D-06…D-08) [wave 1]
+- [ ] 37.2-03-PLAN.md — Folded todo: strict structured output bound at the LLM call, with a real-provider gate [wave 1]
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 37.2-04-PLAN.md — Delete the zero-consumer adapter interfaces and the lazy re-export facade (D-09, D-11) [wave 2]
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 37.2-05-PLAN.md — `POST /auth/create-user` becomes completion-only; the mode signal and its query accessor die (D-03…D-05) [wave 3]
+
+**Wave 4** *(blocked on Wave 3)*
+
+- [ ] 37.2-06-PLAN.md — Cohesion merges, the single-caller inline sweep, and the package-shape gate (D-10, directives 4 and 5) [wave 4]
+
+**Wave 5** *(blocked on Wave 4)*
+
+- [ ] 37.2-07-PLAN.md — Amend REQUIREMENTS.md and ROADMAP.md; record the third flagged conflict (CREATE-01, CREATE-02, FOUND-08) [wave 5]
+
 #### Phase 38: POST /auth/sync
 
 **Goal:** Ship the read-only auth-state reconciliation surface clients call after sign-in or a lost response.
