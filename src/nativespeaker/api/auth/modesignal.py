@@ -12,8 +12,8 @@ over the other. Guessing on the client's behalf is how an ambiguous request ends
 challenge the client meant to reuse.
 
 **The check is purely syntactic and has no side effects.** It issues nothing, looks up nothing,
-consumes nothing, and changes no state. It has no internal `core.auth_event_result`, belongs to the
-admission phase, and writes no `audit.auth_events` row (§4.1): a rejection here is recorded only in
+consumes nothing, and changes no state. It has no internal `AuthEventResult` and belongs to the
+admission phase: a rejection here is recorded only in
 the structured security log and the counter metric. That matters concretely -- a corrected retry
 may reuse the same unexpired challenge, and it can only do so because this ran without touching the
 row.

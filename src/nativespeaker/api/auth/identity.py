@@ -55,9 +55,9 @@ class Reject:
     """The barrier must answer: the client-visible class, and the internal result that never is.
 
     `actor_issuer` and `actor_subject` are populated on **every** branch reachable here, because
-    every one of them is reached only after the token was verified. `audit.auth_events` admits
-    all-NULL actor fields for `invalid_external_jwt` alone; each result below requires them
-    non-NULL, so a writer handed a NULL actor would hit the table's CHECK.
+    every one of them is reached only after the token was verified. `invalid_external_jwt` is the
+    sole result that may carry no actor at all; each result below has one, and a NULL actor here
+    would mean a rejection had been classified before the token was verified.
     """
     error_class: ErrorClass
     result: AuthEventResult
