@@ -296,7 +296,7 @@ Plans:
 **Goal:** Strip the machine-generated excess out of phases 34-37: delete the auth-event audit subsystem, replace the auth barrier middleware and route registry with FastAPI dependencies, and rewrite the prose across `src/`, `tests/` and the migration in plain English. Behavior-reducing only — no endpoint changes shape and no route changes its authentication status.
 **Requirements**: none mapped — this phase is tracked against the CONTEXT.md decisions D-01 … D-17
 **Depends on:** Phase 37
-**Plans:** 8/8 plans executed
+**Plans:** 8/8 plans complete
 
 Plans:
 **Wave 1**
