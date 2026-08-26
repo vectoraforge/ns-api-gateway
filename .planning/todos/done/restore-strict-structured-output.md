@@ -3,7 +3,9 @@ title: Restore strict structured output on the LLM chain
 area: llm
 created: 2026-08-21
 source: Phase 36 D-13
-status: open
+completed: 2026-08-25
+completed_in: 37.2
+status: done
 ---
 
 # Restore strict structured output on the LLM chain
@@ -42,3 +44,27 @@ instruction alone is demonstrably not holding; strengthening the wording will no
 - Revisit the D-12 defaults afterwards. They are a knowing, narrow exception to
   `01-foundation.md §8.3`; once the schema is enforced, decide deliberately whether the empty-list
   defaults stay (they are also the client-facing contract now) or revert to required fields.
+
+## Closed in Phase 37.2 (plan 03)
+
+Moved here from `todos/pending/restore-strict-structured-output.md`. The schema is now bound at the
+call and the source plus its two test files hold the implementation; what follows is only the two
+decisions this item asked to be made deliberately rather than by default.
+
+**The post-hoc re-validation in `ChatService.ask_llm` stays.** `strict` travels in provider-specific
+keyword arguments — every wrapper accepts it and only some enforce it — so the guarantee is a
+property of the provider and model in use, not of our code. A second in-process check of the shape
+costs almost nothing and is the only part of the guarantee we own outright, so it stays as defence
+in depth rather than being deleted as now-redundant.
+
+**The empty-list defaults on `AnalyzeResponse` stay.** Under a strict schema they no longer do any
+provider-boundary work: the strict rewrite marks every declared field required regardless of a
+Pydantic default, so the provider can no longer omit `issues` or `suggestions` for them to catch.
+They stay because they stopped being a workaround and became the client-facing contract — a client
+reading the response can rely on both keys being present — and because they remain the fallback on
+any future model that accepts `strict` without honouring it.
+
+One scope note for whoever reads this next: the union/discriminated schema this item originally
+proposed was deliberately **not** built. The strict conversion does not descend into a root-level
+union, so a union root would have shipped looking strict while leaving every branch unconstrained.
+One flat model carrying every field the three modes can produce is what got bound instead.
