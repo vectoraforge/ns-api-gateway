@@ -20,17 +20,13 @@ FIREBASE_HTTP_TIMEOUT_SECONDS = 8
 
 def build_admin_apps(config) -> dict[str, firebase_admin.App]:
     """One named Admin app per configured issuer, built once at boot. Never a `[DEFAULT]` one."""
-    # An explicit key if configured, else ADC, else no app at all -- a supported state that boots
-    credential_dict = config.firebase.credential_dict()
-    if credential_dict is not None:
-        credential = credentials.Certificate(credential_dict)
-    else:
-        credential = _application_default_credential()
-        if credential is None:
-            logger.warning("firebase_admin_credential_absent",
-                           consequence="user creation fails closed as verification_temporarily_unavailable "
-                                       "until FIREBASE_SERVICE_ACCOUNT_JSON is set or ADC is configured")
-            return {}
+    # ADC if the environment supplies it, else no app at all -- a supported state that boots
+    credential = _application_default_credential()
+    if credential is None:
+        logger.warning("firebase_admin_credential_absent",
+                       consequence="user creation fails closed as verification_temporarily_unavailable "
+                                   "until Application Default Credentials are available in this environment")
+        return {}
     # Explicit projectId and name, never inferred: with no [DEFAULT] app a forgotten app= fails loudly.
     app = firebase_admin.initialize_app(
         credential,
