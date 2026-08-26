@@ -326,7 +326,7 @@ Plans:
 **Goal:** Continue Phase 37.1's de-complication into the auth feature itself: collapse the `auth/` package (currently 14 files, 28 classes, 57 functions for one create-user feature) to the minimum that carries the behavior, drop the `credentials.Certificate()` path so Firebase initializes via ADC only, move the request/response models out of `routers/auth.py` into `models/auth.py`, and replace the `?challenge=true` mode signal with an explicit `POST /auth/challenge` endpoint taking `{"operation": "create_user"}` — deleting the mode-signal classifier that existed only to disambiguate the old shape.
 **Requirements**: none mapped — scope is the five directives recorded in this entry; admission rules, status codes, and the Phase 37 e2e matrix must survive unchanged except where the challenge endpoint split explicitly moves them
 **Depends on:** Phase 37.1
-**Plans:** 7 plans
+**Plans:** 3/7 plans executed
 
 **Success Criteria:**
 
@@ -340,9 +340,9 @@ Plans:
 
 **Wave 1**
 
-- [ ] 37.2-01-PLAN.md — TRACER: `POST /auth/challenge` wired end to end, models move to `models/auth.py` (D-01, D-02) [wave 1]
-- [ ] 37.2-02-PLAN.md — Firebase collapses to Application Default Credentials; the service-account config surface is deleted (D-06…D-08) [wave 1]
-- [ ] 37.2-03-PLAN.md — Folded todo: strict structured output bound at the LLM call, with a real-provider gate [wave 1]
+- [x] 37.2-01-PLAN.md — TRACER: `POST /auth/challenge` wired end to end, models move to `models/auth.py` (D-01, D-02) [wave 1]
+- [x] 37.2-02-PLAN.md — Firebase collapses to Application Default Credentials; the service-account config surface is deleted (D-06…D-08) [wave 1]
+- [x] 37.2-03-PLAN.md — Folded todo: strict structured output bound at the LLM call, with a real-provider gate [wave 1]
 
 **Wave 2** *(blocked on Wave 1)*
 
