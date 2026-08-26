@@ -1,10 +1,11 @@
 __all__ = [
     "AccessGrant", "AccessGrantSource", "AccessGrantStatus", "AccessTier", "AnalyzeInput",
     "AnalyzeResponse", "AuthChallenge", "AuthEventResult", "AuthOperation", "ChallengeRequest",
-    "Chat", "ChatRequest", "ChatResponse", "ChatRole", "ExamplesResponse", "ExternalIdentity",
-    "FollowUpInput", "FollowUpResponse", "IdentityProvider", "IdentityState", "Issue", "Message",
-    "MessageRequest", "MessageResponse", "NativeClaimProvider", "PrepareResponse",
-    "PurchaseProvider", "RejectResponse", "StorePurchaseToken", "User", "UserMonthlyUsage",
+    "Chat", "ChatRequest", "ChatResponse", "ChatRole", "CompletionResponse", "CreateUserRequest",
+    "ExamplesResponse", "ExternalIdentity", "FollowUpInput", "FollowUpResponse", "IdentityProvider",
+    "IdentityState", "Issue", "Message", "MessageRequest", "MessageResponse", "NativeClaimProvider",
+    "PrepareResponse", "PurchaseProvider", "RejectResponse", "StorePurchaseToken", "User",
+    "UserMonthlyUsage",
 ]
 
 from nativespeaker.api.models.api import (
@@ -19,6 +20,8 @@ from nativespeaker.api.models.auth import (
     AuthEventResult,
     AuthOperation,
     ChallengeRequest,
+    CompletionResponse,
+    CreateUserRequest,
     PrepareResponse,
 )
 from nativespeaker.api.models.chats import Chat, ChatRole, Message
