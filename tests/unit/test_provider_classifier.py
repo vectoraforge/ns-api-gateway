@@ -6,7 +6,7 @@ from nativespeaker.api.auth.adapters import (
     ProviderDataOutcome,
     ProviderDataResult,
 )
-from nativespeaker.api.auth.classifier import classify_provider_data, email_to_persist
+from nativespeaker.api.auth.firebase import classify_provider_data, email_to_persist
 from nativespeaker.api.models.identities import IdentityProvider
 
 GOOGLE = ProviderDataEntry(provider_id="google.com", uid="google-uid-1")
@@ -59,8 +59,8 @@ class TestTheAcceptSet:
 
     def test_the_recognized_provider_map_has_exactly_two_keys(self):
         """A third recognized provider is a spec change, not a refactor."""
-        from nativespeaker.api.auth import classifier
-        assert set(classifier._RECOGNIZED) == {"google.com", "apple.com"}
+        from nativespeaker.api.auth import firebase
+        assert set(firebase._RECOGNIZED) == {"google.com", "apple.com"}
 
 
 class TestTheRejectSet:
@@ -92,8 +92,8 @@ class TestTheClassifierRecordsItsProhibitions:
         "no `required_flow`",
     ])
     def test_the_module_docstring_records_the_prohibitions(self, phrase):
-        from nativespeaker.api.auth import classifier
-        assert phrase in classifier.__doc__.lower()
+        from nativespeaker.api.auth import firebase
+        assert phrase in firebase.__doc__.lower()
 
     @pytest.mark.parametrize("name", ["sign_in_provider", "required_flow"])
     def test_neither_deleted_concept_appears_outside_the_docstring(self, name):
@@ -101,8 +101,8 @@ class TestTheClassifierRecordsItsProhibitions:
         import ast
         from pathlib import Path
 
-        from nativespeaker.api.auth import classifier
-        source = Path(classifier.__file__).read_text()
+        from nativespeaker.api.auth import firebase
+        source = Path(firebase.__file__).read_text()
         code = source.replace(ast.get_docstring(ast.parse(source), clean=False), "", 1)
         assert name not in code
 

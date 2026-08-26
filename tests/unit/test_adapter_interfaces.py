@@ -35,7 +35,6 @@ ALLOWED_IMPORT_ROOTS = {"dataclasses", "datetime", "enum", "typing", "uuid", "na
 
 # Modules permitted to name an adapter method, each mapped to the exact methods it may name.
 ADAPTER_IMPLEMENTORS: dict[str, frozenset[str]] = {
-    "api/auth/retry.py": frozenset({"get_user_provider_data"}),
     "api/auth/firebase.py": frozenset({"get_user_provider_data"}),
 }
 

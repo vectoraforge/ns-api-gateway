@@ -1,21 +1,37 @@
-"""The Firebase Admin integration: one named app per issuer, and one adapter method, never a [DEFAULT] app."""
+"""The Firebase Admin integration: one named app per issuer, and one adapter method, never a [DEFAULT] app.
+
+It also holds the two things that exist only to serve that lookup: the closed providerData classifier
+with its email-copy rule, and the one retry policy -- three attempts, then the unavailable pair.
+
+Never take the first recognized entry, never classify non-empty providerData as anonymous,
+never read `firebase.sign_in_provider`. There is no declaration match here and no `required_flow` anywhere."""
 import firebase_admin
 import google.auth
 import google.auth.exceptions
 import structlog
 from firebase_admin import auth, credentials, exceptions
 from starlette.concurrency import run_in_threadpool
+from tenacity import AsyncRetrying, retry_if_result, stop_after_attempt
 
 from nativespeaker.api.auth.adapters import (
     ProviderDataEntry,
     ProviderDataOutcome,
     ProviderDataResult,
 )
+from nativespeaker.api.errors import VERIFICATION_TEMPORARILY_UNAVAILABLE, ErrorClass
+from nativespeaker.api.models.auth import AuthEventResult
+from nativespeaker.api.models.identities import IdentityProvider
 
 logger = structlog.get_logger()
 
 # An app-level option because the SDK exposes no per-call timeout: every call through the app inherits it.
 FIREBASE_HTTP_TIMEOUT_SECONDS = 8
+
+# The whole budget for one lookup: the initial call plus up to two more, spent on retryable outcomes only.
+FIREBASE_LOOKUP_ATTEMPTS = 3
+
+LOOKUP_UNAVAILABLE_RESULT: AuthEventResult = AuthEventResult.firebase_lookup_unavailable
+LOOKUP_UNAVAILABLE_ERROR_CLASS: ErrorClass = VERIFICATION_TEMPORARILY_UNAVAILABLE
 
 
 def build_admin_apps(config) -> dict[str, firebase_admin.App]:
@@ -89,3 +105,51 @@ class FirebaseAdminLookup:
             return ProviderDataResult(ProviderDataOutcome.retryable_failure)
         return ProviderDataResult(ProviderDataOutcome.ok, entries,
                                   email=email, email_verified=email_verified)
+
+
+# Exactly two recognized provider ids. A third is a spec change: a new enum value and a migration.
+_RECOGNIZED: dict[str, IdentityProvider] = {
+    "google.com": IdentityProvider.google,
+    "apple.com": IdentityProvider.apple,
+}
+
+
+def classify_provider_data(entries: tuple[ProviderDataEntry, ...]) -> tuple[IdentityProvider, str | None] | None:
+    """Classify a providerData read. `None` rejects; `provider_uid` is `None` exactly for anonymous."""
+    if not entries:
+        return IdentityProvider.anonymous, None
+    if len(entries) != 1:
+        return None
+    provider = _RECOGNIZED.get(entries[0].provider_id)
+    if provider is None:
+        return None
+    if not entries[0].uid:
+        return None
+    return provider, entries[0].uid
+
+
+def email_to_persist(result: ProviderDataResult) -> str | None:
+    """Copy the address only from an `ok` result with a non-empty, verified value. Never normalized."""
+    if result.outcome is not ProviderDataOutcome.ok:
+        return None
+    if result.email is None or not result.email.strip():
+        return None
+    if not result.email_verified:
+        return None
+    return result.email
+
+
+def _is_retryable(result: ProviderDataResult) -> bool:
+    return result.outcome is ProviderDataOutcome.retryable_failure
+
+
+async def lookup_with_retry(adapter, issuer: str, subject: str) -> ProviderDataResult:
+    """Call the adapter up to `FIREBASE_LOOKUP_ATTEMPTS` times, returning a result under every outcome."""
+    retrying = AsyncRetrying(
+        stop=stop_after_attempt(FIREBASE_LOOKUP_ATTEMPTS),
+        # `retry_if_result`, not `retry_if_exception_type`: the adapter returns rather than raises.
+        retry=retry_if_result(_is_retryable),
+        # Hands the last result back; with no original exception, `reraise=True` would not help.
+        retry_error_callback=lambda retry_state: retry_state.outcome.result(),
+    )
+    return await retrying(adapter.get_user_provider_data, issuer, subject)
