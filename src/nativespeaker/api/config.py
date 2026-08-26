@@ -1,10 +1,9 @@
-import json
 import logging
 from enum import StrEnum
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, PrivateAttr, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from nativespeaker.api.auth.keys import HmacConfig
@@ -58,34 +57,6 @@ class JWTConfig(BaseModel):
         return  f"https://securetoken.google.com/{self.project_id}"
 
 
-class FirebaseConfig(BaseModel):
-    """The Firebase service-account credential. Absent is supported; present but unparseable fails at boot."""
-    # `config/config.yaml` is tracked in git and ranks above the environment, so the credential lives only in `.env`.
-    service_account_json: SecretStr | None = Field(
-        default=None,
-        description="The whole service-account JSON on one line, from the gitignored .env")
-
-    _credential: dict | None = PrivateAttr(default=None)
-
-    @model_validator(mode="after")
-    def _parse_credential(self):
-        if self.service_account_json is None:
-            return self
-        try:
-            parsed = json.loads(self.service_account_json.get_secret_value())
-        except json.JSONDecodeError:
-            # `from None` drops the JSONDecodeError, whose `doc` attribute holds the credential verbatim.
-            raise ValueError("service_account_json is not valid JSON") from None
-        if not isinstance(parsed, dict):
-            raise ValueError("service_account_json is not a JSON object")
-        self._credential = parsed
-        return self
-
-    def credential_dict(self) -> dict | None:
-        """The parsed credential, or `None` when unconfigured. A fresh copy each call."""
-        return None if self._credential is None else dict(self._credential)
-
-
 class ModelConfig(BaseModel):
     name: str = Field(default="gpt-4o-mini")
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
@@ -100,8 +71,6 @@ class AppConfig(BaseConfig):
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
     jwt: JWTConfig = Field(default_factory=JWTConfig)
-    # Defaulted, not required: every non-completion path stays runnable without a credential.
-    firebase: FirebaseConfig = Field(default_factory=FirebaseConfig)
     # Required with no default: there is no safe key to default to, so a deployment without one never starts.
     hmac: HmacConfig
 
