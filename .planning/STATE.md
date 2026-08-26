@@ -5,10 +5,10 @@ milestone_name: Authentication & Entitlements
 current_phase: 38
 current_phase_name: POST /auth/sync
 status: planning
-stopped_at: Phase 37.2 context gathered
+stopped_at: Phase 37.2 complete — UAT passed, security verified
 last_updated: "2026-08-26T04:30:24.896Z"
 last_activity: 2026-08-25
-last_activity_desc: Phase 37.1 complete, transitioned to Phase 38
+last_activity_desc: Phase 37.2 complete (UAT 1/1, threats_open 0), transitioned to Phase 38
 progress:
   total_phases: 15
   completed_phases: 6
