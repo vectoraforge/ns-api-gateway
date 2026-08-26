@@ -1,31 +1,21 @@
-"""The adapter seams: interfaces only, and this fails the moment `auth/adapters.py` grows an implementation."""
+"""The adapter seam: an interface only, and this fails the moment `auth/adapters.py` grows an implementation."""
 import ast
+import inspect
 import subprocess
 import sys
-import typing
 from dataclasses import FrozenInstanceError, is_dataclass
 from enum import StrEnum
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
 
 from nativespeaker.api.auth import adapters as adapters_module
 from nativespeaker.api.auth.adapters import (
-    ClaimKind,
-    DeviceBitState,
     FirebaseAdminAdapter,
     ProviderDataEntry,
     ProviderDataOutcome,
     ProviderDataResult,
-    RevocationOutcome,
-    StoreAdapter,
-    StoreState,
-    VendorProofAdapter,
-    VerifiedNotification,
-    VerifiedTransaction,
 )
-from nativespeaker.api.auth.verification import VerifiedClaims
 
 SOURCE_PATH = Path(adapters_module.__file__)
 SOURCE = SOURCE_PATH.read_text()
@@ -33,15 +23,12 @@ TREE = ast.parse(SOURCE)
 
 SRC_ROOT = SOURCE_PATH.parents[2]
 
-PROTOCOLS = (FirebaseAdminAdapter, StoreAdapter, VendorProofAdapter)
-ENUMS = (ProviderDataOutcome, RevocationOutcome, ClaimKind, DeviceBitState)
-FROZEN = (ProviderDataEntry, ProviderDataResult, VerifiedNotification, VerifiedTransaction, StoreState)
+PROTOCOLS = (FirebaseAdminAdapter,)
+ENUMS = (ProviderDataOutcome,)
+FROZEN = (ProviderDataEntry, ProviderDataResult)
 
-# Every method across the three seams. Foundation names none of them outside adapters.py.
-ADAPTER_METHODS = ("verify_id_token", "get_user_provider_data", "revoke_refresh_tokens",
-                   "verify_provider_callback", "verify_store_artifact", "fetch_subscription_state",
-                   "read_device_bit", "write_device_bit", "verify_integrity_verdict",
-                   "verify_bot_check")
+# Every method on the seam. Foundation names it only where the allow-list below permits it.
+ADAPTER_METHODS = ("get_user_provider_data",)
 
 # Only the standard library and this project; a provider SDK or credential source here is the drift.
 ALLOWED_IMPORT_ROOTS = {"dataclasses", "datetime", "enum", "typing", "uuid", "nativespeaker"}
@@ -76,22 +63,12 @@ def _adapter_method_offenders(sources, implementors=None) -> list[str]:
 
 
 class TestClosedOutcomeSets:
-    """The outcome sets are closed: a fifth member is a spec change, not a refactor."""
+    """The outcome set is closed: a fifth member is a spec change, not a refactor."""
 
     def test_provider_data_outcome_has_exactly_the_four_71_members(self):
         assert [m.value for m in ProviderDataOutcome] == [
             "ok", "user_not_found", "retryable_failure", "selection_failure",
         ]
-
-    def test_revocation_outcome_is_two_valued(self):
-        """`confirmed` only when the provider confirmed; every other outcome is `unconfirmed`."""
-        assert [m.value for m in RevocationOutcome] == ["confirmed", "unconfirmed"]
-
-    def test_claim_kind_is_exactly_anonymous_and_registered(self):
-        assert [m.value for m in ClaimKind] == ["anonymous", "registered"]
-
-    def test_device_bit_state_has_exactly_three_members(self):
-        assert [m.value for m in DeviceBitState] == ["set", "unset", "unavailable"]
 
     def test_every_enum_member_value_repeats_its_name(self):
         """The repo convention (models/chats.py) -- the wire value cannot drift from the member."""
@@ -132,7 +109,7 @@ class TestZeroImplementations:
         assert getattr(protocol, "_is_runtime_protocol", False) is False
 
     def test_foundation_calls_no_adapter_method_anywhere_in_src(self):
-        """Foundation calls every adapter method zero times; the allow-list names the one module permitted one."""
+        """Foundation calls the adapter method zero times; the allow-list names the modules permitted one."""
         sources = [(path.relative_to(SRC_ROOT).as_posix(), path.read_text())
                    for path in sorted(SRC_ROOT.rglob("*.py")) if path != SOURCE_PATH]
         assert _adapter_method_offenders(sources) == []
@@ -149,10 +126,12 @@ class TestZeroImplementations:
         assert _adapter_method_offenders(sources) == ["api/app/main.py: get_user_provider_data"]
 
     def test_an_entry_permits_the_methods_it_names_and_no_others_control(self):
-        """The entry-scope control: an exemption admits one method, not a module."""
+        """The entry-scope control: an exemption admits a named method, not the module holding it."""
         listed = next(iter(ADAPTER_IMPLEMENTORS))
-        sources = [(listed, "outcome = adapter.revoke_refresh_tokens(issuer, subject)")]
-        assert _adapter_method_offenders(sources) == [f"{listed}: revoke_refresh_tokens"]
+        sources = [(listed, "result = adapter.get_user_provider_data(issuer, subject)")]
+        assert _adapter_method_offenders(sources, {listed: frozenset()}) == [
+            f"{listed}: get_user_provider_data",
+        ]
 
 
 class TestNoProviderDependency:
@@ -236,28 +215,18 @@ class TestResultTypesAreImmutable:
 
 
 class TestFirebaseAdminAdapter:
-    """Three methods, one issuer-selected client, and no fallback expressible."""
+    """One method, one issuer-selected client, and no fallback expressible."""
 
-    def test_it_declares_exactly_the_three_71_methods(self):
-        assert self._methods(FirebaseAdminAdapter) == {
-            "verify_id_token", "get_user_provider_data", "revoke_refresh_tokens",
-        }
-
-    def test_verify_id_token_returns_verified_claims(self):
-        assert self._returns(FirebaseAdminAdapter.verify_id_token) is VerifiedClaims
+    def test_it_declares_exactly_the_one_surviving_method(self):
+        assert self._methods(FirebaseAdminAdapter) == {"get_user_provider_data"}
 
     def test_get_user_provider_data_returns_a_provider_data_result(self):
         assert self._returns(FirebaseAdminAdapter.get_user_provider_data) is ProviderDataResult
 
-    def test_revoke_refresh_tokens_returns_a_revocation_outcome(self):
-        assert self._returns(FirebaseAdminAdapter.revoke_refresh_tokens) is RevocationOutcome
-
-    def test_the_lookup_methods_take_the_issuer_so_selection_is_per_call(self):
+    def test_the_lookup_method_takes_the_issuer_so_selection_is_per_call(self):
         """No ambient, default, global or fallback client is expressible through the seam."""
-        import inspect
-        for method in (FirebaseAdminAdapter.get_user_provider_data,
-                       FirebaseAdminAdapter.revoke_refresh_tokens):
-            assert "issuer" in inspect.signature(method).parameters
+        parameters = inspect.signature(FirebaseAdminAdapter.get_user_provider_data).parameters
+        assert "issuer" in parameters
 
     @staticmethod
     def _methods(protocol) -> set[str]:
@@ -266,90 +235,11 @@ class TestFirebaseAdminAdapter:
 
     @staticmethod
     def _returns(method):
-        import inspect
         return inspect.signature(method).return_annotation
 
 
-class TestStoreAdapter:
-    """Three methods, and a rejection that distinguishes nothing."""
-
-    def test_it_declares_exactly_the_three_72_methods(self):
-        assert TestFirebaseAdminAdapter._methods(StoreAdapter) == {
-            "verify_provider_callback", "verify_store_artifact", "fetch_subscription_state",
-        }
-
-    @pytest.mark.parametrize("method_name,payload", [
-        ("verify_provider_callback", VerifiedNotification),
-        ("verify_store_artifact", VerifiedTransaction),
-        ("fetch_subscription_state", StoreState),
-    ])
-    def test_every_rejection_is_the_same_indistinguishable_none(self, method_name, payload):
-        """Rejection never distinguishes malformed from unverifiable material."""
-        annotation = TestFirebaseAdminAdapter._returns(getattr(StoreAdapter, method_name))
-        assert set(typing.get_args(annotation)) == {payload, type(None)}
-
-    def test_verify_store_artifact_takes_the_submitted_artifact_not_a_resolved_pair(self):
-        import inspect
-        parameters = set(inspect.signature(StoreAdapter.verify_store_artifact).parameters)
-        assert "artifact" in parameters
-        assert "external_id" not in parameters
-
-    def test_a_verified_transaction_carries_the_72_resolution(self):
-        """The resolved pair, the transaction's stable identity, any purchase UUID, and context."""
-        transaction = VerifiedTransaction(provider="apple",
-                                          external_id="ext-1",
-                                          transaction_identity="original-txn-1",
-                                          purchase_uuid=uuid4(),
-                                          app_id="com.example.app",
-                                          product_id="sub.monthly",
-                                          environment="Production")
-        assert transaction.provider == "apple"
-        assert transaction.external_id == "ext-1"
-
-    def test_a_carried_purchase_uuid_is_optional(self):
-        transaction = VerifiedTransaction(provider="google",
-                                          external_id="ext-2",
-                                          transaction_identity="token-2",
-                                          purchase_uuid=None,
-                                          app_id="com.example.app",
-                                          product_id="sub.monthly",
-                                          environment="Production")
-        assert transaction.purchase_uuid is None
-
-
-class TestVendorProofAdapter:
-    """The adapter pins the device slot, and no value here becomes an identifier."""
-
-    def test_it_declares_exactly_the_four_73_methods(self):
-        assert TestFirebaseAdminAdapter._methods(VendorProofAdapter) == {
-            "read_device_bit", "write_device_bit", "verify_integrity_verdict", "verify_bot_check",
-        }
-
-    @pytest.mark.parametrize("method_name", ["read_device_bit", "write_device_bit"])
-    def test_every_device_slot_method_takes_a_claim_kind(self, method_name):
-        """The adapter pins the bit, so one phase's flow cannot reach another's slot."""
-        import inspect
-        parameter = inspect.signature(getattr(VendorProofAdapter, method_name)).parameters["claim_kind"]
-        assert parameter.annotation is ClaimKind
-
-    def test_read_device_bit_returns_the_three_state_bit(self):
-        assert TestFirebaseAdminAdapter._returns(VendorProofAdapter.read_device_bit) is DeviceBitState
-
-    def test_no_non_slot_method_takes_a_claim_kind(self):
-        """Only the two slot methods address a slot; widening that is an EoP surface."""
-        import inspect
-        for method_name in ("verify_integrity_verdict", "verify_bot_check"):
-            method = getattr(VendorProofAdapter, method_name)
-            assert "claim_kind" not in inspect.signature(method).parameters
-
-    def test_the_seam_records_the_no_rate_limit_key_prohibition(self):
-        """A docstring-level prohibition that no future implementer can miss."""
-        assert "rate-limit key" in VendorProofAdapter.__doc__
-        assert "device principal" in VendorProofAdapter.__doc__
-
-
 class TestSharedAdapterRules:
-    """The preamble binds every concrete adapter, and the seam is where those rules belong."""
+    """The preamble binds the concrete adapter, and the seam is where those rules belong."""
 
     @pytest.mark.parametrize("phrase", [
         "no provider call while a database lock is held",
@@ -358,6 +248,3 @@ class TestSharedAdapterRules:
     ])
     def test_the_module_docstring_records_the_shared_rules(self, phrase):
         assert phrase in adapters_module.__doc__
-
-    def test_the_coalescing_seam_is_recorded_as_a_later_phase_obligation(self):
-        assert "coalesc" in StoreAdapter.__doc__.lower()

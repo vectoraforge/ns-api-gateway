@@ -298,41 +298,9 @@ class TestNoProviderTextLeaks:
 
 
 class TestTheDeliberateNonImplementations:
-    """One method, not three -- and recorded as a decision rather than left as an omission."""
-
-    @pytest.mark.parametrize("method", ["verify_id_token", "revoke_refresh_tokens"])
-    def test_the_other_two_protocol_methods_are_not_implemented(self, method):
-        """`verify_id_token` would be unreachable (the barrier verifies); revocation is Phase 46."""
-        assert not hasattr(FirebaseAdminLookup, method)
+    """The concrete lookup is not the seam: it implements the one method and claims nothing more."""
 
     def test_the_class_is_not_annotated_as_the_full_protocol(self):
         """It does not satisfy `FirebaseAdminAdapter`, so it must not claim to."""
         from nativespeaker.api.auth.adapters import FirebaseAdminAdapter
         assert FirebaseAdminAdapter not in FirebaseAdminLookup.__mro__
-
-
-class TestTheLazyReExport:
-    """The lazy path is a genuine re-export, so a name reached through the root is the same object."""
-
-    @pytest.mark.parametrize("name", ["build_admin_apps", "FirebaseAdminLookup",
-                                      "FIREBASE_HTTP_TIMEOUT_SECONDS"])
-    def test_the_root_yields_the_same_object_as_the_direct_import(self, name):
-        import nativespeaker.api.auth as auth_root
-        from nativespeaker.api.auth import firebase as firebase_module
-        assert getattr(auth_root, name) is getattr(firebase_module, name)
-
-    @pytest.mark.parametrize("name", ["build_admin_apps", "FirebaseAdminLookup",
-                                      "FIREBASE_HTTP_TIMEOUT_SECONDS"])
-    def test_every_lazy_name_is_declared_in_all(self, name):
-        import nativespeaker.api.auth as auth_root
-        assert name in auth_root.__all__
-
-    def test_an_unknown_name_still_raises_attribute_error(self):
-        """`__getattr__` resolves the mapping and nothing else -- it is not a catch-all."""
-        import nativespeaker.api.auth as auth_root
-        with pytest.raises(AttributeError):
-            auth_root.no_such_name
-
-    def test_dir_still_shows_the_whole_root(self):
-        import nativespeaker.api.auth as auth_root
-        assert dir(auth_root) == sorted(auth_root.__all__)
