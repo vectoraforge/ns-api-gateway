@@ -3,12 +3,11 @@ from typing import Any
 
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import RunnableSerializable
-from pydantic import BaseModel
+from langchain_core.runnables import RunnableLambda, RunnableSerializable
 
 from nativespeaker.api.config import ModelConfig, ResilienceConfig
+from nativespeaker.api.models.llm import ChatModelResponse
 from nativespeaker.api.resilience import ResiliencePolicy
 
 
@@ -23,11 +22,16 @@ class LLMService:
         self.policy = ResiliencePolicy(resilence_config)
         self.chain = self.create_chain(prompt=system_prompt)
 
-    def create_chain(self, prompt: str) -> RunnableSerializable[dict, dict[str, Any] | BaseModel]:
+    def create_chain(self, prompt: str) -> RunnableSerializable[dict, dict[str, Any]]:
         prompt_template = ChatPromptTemplate.from_messages([("system", prompt),
                                                             MessagesPlaceholder("history"),
                                                             ("human", "{content}")])
-        return prompt_template | self.llm | JsonOutputParser()
+        # The schema rides on the call, so the provider cannot omit a declared key -- the previous
+        # parse-then-validate chain let it, and an already-correct phrase came back as a 500.
+        constrained = self.llm.with_structured_output(ChatModelResponse, method="json_schema", strict=True)
+        # Back to a plain dict on the way out: `ChatService.ask_llm` dispatches on `resolved_mode`
+        # off a mapping and re-validates into the mode-specific model, and both still hold.
+        return prompt_template | constrained | RunnableLambda(lambda answer: answer.model_dump())
 
     async def ainvoke(self, history: list[HumanMessage | AIMessage], content: str, lang: str,
                       on_admitted: Callable[[], Awaitable] | None = None) -> dict:
