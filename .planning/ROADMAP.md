@@ -326,7 +326,7 @@ Plans:
 **Goal:** Continue Phase 37.1's de-complication into the auth feature itself: collapse the `auth/` package (currently 14 files, 28 classes, 57 functions for one create-user feature) to the minimum that carries the behavior, drop the `credentials.Certificate()` path so Firebase initializes via ADC only, move the request/response models out of `routers/auth.py` into `models/auth.py`, and replace the `?challenge=true` mode signal with an explicit `POST /auth/challenge` endpoint taking `{"operation": "create_user"}` — deleting the mode-signal classifier that existed only to disambiguate the old shape.
 **Requirements**: none mapped — scope is the five directives recorded in this entry; admission rules, status codes, and the Phase 37 e2e matrix must survive unchanged except where the challenge endpoint split explicitly moves them
 **Depends on:** Phase 37.1
-**Plans:** 3/7 plans executed
+**Plans:** 4/7 plans executed
 
 **Success Criteria:**
 
@@ -346,7 +346,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1)*
 
-- [ ] 37.2-04-PLAN.md — Delete the zero-consumer adapter interfaces and the lazy re-export facade (D-09, D-11) [wave 2]
+- [x] 37.2-04-PLAN.md — Delete the zero-consumer adapter interfaces and the lazy re-export facade (D-09, D-11) [wave 2]
 
 **Wave 3** *(blocked on Wave 2)*
 
