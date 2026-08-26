@@ -9,7 +9,7 @@ DOC_PATHS = {"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
 
 # Literals rather than derived from anything, so widening the exemption is a visible edit here.
 PUBLIC_PATHS = {"/health/ready"}
-PREAUTH_CALLABLE_PATHS = {"/auth/create-user"}
+PREAUTH_CALLABLE_PATHS = {"/auth/create-user", "/auth/challenge"}
 
 
 def _api_routes() -> list[APIRoute]:

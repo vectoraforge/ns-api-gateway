@@ -1,5 +1,4 @@
-"""`POST /auth/create-user`: one route that dispatches on the mode signal to prepare or to completion."""
-from datetime import datetime
+"""The two auth routes: `/auth/challenge` issues a challenge, and `/auth/create-user` prepares or completes."""
 from typing import Any
 
 import structlog
@@ -39,7 +38,13 @@ from nativespeaker.api.errors import (
     ErrorClass,
     error_response,
 )
-from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult, AuthOperation
+from nativespeaker.api.models.auth import (
+    AuthChallenge,
+    AuthEventResult,
+    AuthOperation,
+    ChallengeRequest,
+    PrepareResponse,
+)
 from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
 
 logger = structlog.get_logger()
@@ -53,15 +58,33 @@ class CreateUserRequest(BaseModel):
     challenge_id: Any = None
 
 
-class PrepareResponse(BaseModel):
-    """The prepare body: the handle and its expiry, and nothing else about the challenge is disclosed."""
-    challenge_id: str
-    expires_at: datetime
-
-
 class CompletionResponse(BaseModel):
     """The completion body: the registration state. There is no backend session tier, so nothing is minted."""
     identity_provider: IdentityProvider
+
+
+@router.post("/auth/challenge",
+             summary="Issue a single-use challenge for a challenge-bearing operation")
+async def issue_challenge(body: ChallengeRequest,
+                          context: RequestContext = Depends(get_request_context),
+                          session: AsyncSession = Depends(get_db),
+                          challenge_store: ChallengeStore = Depends(get_challenge_store)) -> Response:
+    """Issue one challenge for an operation this route serves. It reads no provider and mutates no account."""
+    if body.operation != AuthOperation.create_user.value:
+        # The rejected string is caller-supplied and bounded, so logging it is safe; a handle never is.
+        logger.warning("auth_challenge_operation_not_issuable",
+                       route=context.route,
+                       operation=body.operation)
+        return error_response(INVALID_REQUEST)
+
+    challenge_id, expires_at = await challenge_store.issue(session,
+                                                           operation=AuthOperation.create_user,
+                                                           identity=context.identity,
+                                                           now=context.evaluated_at)
+    # `no-store` rather than `no-cache`: the handle is a secret, and a revalidatable copy is a copy.
+    return JSONResponse(content=PrepareResponse(challenge_id=challenge_id, expires_at=expires_at)
+                        .model_dump(mode="json"),
+                        headers={"Cache-Control": "no-store"})
 
 
 @router.post("/auth/create-user",

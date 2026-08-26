@@ -146,6 +146,56 @@ class TestTheAnonymousHappyPath:
 
 
 @pytest.mark.asyncio(loop_scope="module")
+class TestTheChallengeEndpoint:
+    """The split path: one caller asks the challenge route for a handle, then spends it at completion."""
+
+    async def test_a_handle_from_the_challenge_route_completes_an_account(
+            self, create_user_client, _db_transaction, scripted_firebase_adapter):
+        subject = "challenge-endpoint-anonymous"
+        # The classifier answers anonymous to an EMPTY providerData and to nothing else.
+        scripted_firebase_adapter.script(entries=(), email=None, email_verified=False)
+        users_before = await _count(_db_transaction, select(func.count()).select_from(User))
+
+        issued = await create_user_client.post("/auth/challenge",
+                                               json={"operation": "create_user"},
+                                               headers=_auth(subject))
+
+        assert issued.status_code == 200, issued.text
+        # The key set is asserted rather than two known keys, since a third field would pass the weaker check.
+        assert set(issued.json()) == {"challenge_id", "expires_at"}
+        assert issued.headers["cache-control"] == "no-store"
+        handle = issued.json()["challenge_id"]
+
+        # Issuance mutates no business state, and it reads no provider: the one read is at completion.
+        assert await _count(_db_transaction, select(func.count()).select_from(User)) == users_before
+        assert scripted_firebase_adapter.calls == []
+
+        completion = await create_user_client.post("/auth/create-user",
+                                                   json={"challenge_id": handle},
+                                                   headers=_auth(subject))
+
+        assert completion.status_code == 200, completion.text
+        assert completion.json() == {"identity_provider": "anonymous"}
+        assert scripted_firebase_adapter.calls == [(TEST_ISSUER, subject)]
+        assert await _count(_db_transaction,
+                            select(func.count()).select_from(User)) == users_before + 1
+
+    async def test_an_operation_this_route_will_not_issue_for_is_rejected(
+            self, create_user_client, _db_transaction, scripted_firebase_adapter):
+        """A valid enum member whose phase is unbuilt rejects exactly as an unknown string would."""
+        challenges_before = await _count(_db_transaction, _CHALLENGES)
+
+        response = await create_user_client.post("/auth/challenge",
+                                                 json={"operation": "sync"},
+                                                 headers=_auth("challenge-endpoint-sync"))
+
+        assert response.status_code == 400
+        assert response.json() == {"code": "invalid_request"}
+        assert await _count(_db_transaction, _CHALLENGES) == challenges_before
+        assert scripted_firebase_adapter.calls == []
+
+
+@pytest.mark.asyncio(loop_scope="module")
 class TestPrepareRejectsAnAlreadyLinkedCaller:
     """A caller who already has an account is told so at prepare, which is why this route admits both contexts."""
 

@@ -1,9 +1,10 @@
-"""The auth-domain enums and the `core.auth_challenges` table."""
+"""The auth-domain enums, the challenge request and response bodies, and the `core.auth_challenges` table."""
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, cast
 from uuid import UUID, uuid7
 
+from pydantic import BaseModel
 from sqlalchemy import DateTime, Enum, LargeBinary
 from sqlmodel import Field, SQLModel
 
@@ -65,6 +66,17 @@ class AuthEventResult(StrEnum):
     policy_rejected = "policy_rejected"
     revocation_unconfirmed = "revocation_unconfirmed"
     internal_error = "internal_error"
+
+
+class ChallengeRequest(BaseModel):
+    """The issuance body. `operation` is a plain `str`, never a Literal: an unissuable value is the handler's 400."""
+    operation: str
+
+
+class PrepareResponse(BaseModel):
+    """The prepare body: the handle and its expiry, and nothing else about the challenge is disclosed."""
+    challenge_id: str
+    expires_at: datetime
 
 
 AuthOperationType = cast(Any, Enum(AuthOperation, name='auth_operation', schema='core'))
