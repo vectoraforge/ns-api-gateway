@@ -179,6 +179,29 @@ class TestHmacConfigSurface:
             shutil.rmtree(tmp_dir)
 
 
+class TestFirebaseCredentialSurfaceIsGone:
+    """The credential is discovered from the environment now, so the model declares no Firebase key at all."""
+
+    def test_app_config_declares_no_firebase_field(self):
+        assert "firebase" not in AppConfig.model_fields
+
+    def test_a_leftover_credential_variable_in_a_developers_env_is_ignored(self):
+        """T-37.2-07: an orphaned value must not fail the load -- nothing reads it, and boot still succeeds."""
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            Path(tmp_dir, "config.yaml").write_text(TRACKED_CONFIG.read_text())
+            Path(tmp_dir, "prompt.txt").write_text("Analyze {lang} phrase: {phrase}")
+            Path(tmp_dir, "examples.yaml").write_text('en:\n  - "Example 1"\n')
+
+            stale = {**_ENV_SECRETS, "FIREBASE_SERVICE_ACCOUNT_JSON": '{"type": "service_account"}'}
+            with patch.dict(os.environ, stale, clear=True):
+                config = EnvironmentConfig(config_dir=Path(tmp_dir),
+                                           _env_file=None)  # ty: ignore[unknown-argument]
+                assert config.app_config is not None
+        finally:
+            shutil.rmtree(tmp_dir)
+
+
 class TestNoTrackedYamlCarriesKeyMaterial:
     """The tracked configuration is a public file: a credential pasted into it would be committed."""
 
