@@ -1,5 +1,4 @@
 import base64
-import json
 import os
 import shutil
 import tempfile
@@ -7,14 +6,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import yaml
-from pydantic import SecretStr, ValidationError
+from pydantic import ValidationError
 
 from nativespeaker.api.auth.keys import HmacKeyring
 from nativespeaker.api.config import (
     AppConfig,
     EnvironmentConfig,
-    FirebaseConfig,
     ModelConfig,
     ResilienceConfig,
 )
@@ -182,145 +179,11 @@ class TestHmacConfigSurface:
             shutil.rmtree(tmp_dir)
 
 
-# Structurally valid with a placeholder private key, so nothing here is a credential.
-_FAKE_SERVICE_ACCOUNT = json.dumps({
-    "type": "service_account",
-    "project_id": "test-project",
-    "private_key_id": "0123456789abcdef0123456789abcdef01234567",
-    "private_key": "-----BEGIN PRIVATE KEY-----\nPLACEHOLDER\n-----END PRIVATE KEY-----\n",
-    "client_email": "svc@test-project.iam.gserviceaccount.com",
-    "client_id": "123456789012345678901",
-    "token_uri": "https://oauth2.googleapis.com/token",
-})
-
-# Not JSON, but shaped like the real thing, so asserting its absence asserts what would leak.
-_MALFORMED_CREDENTIAL = "-----BEGIN PRIVATE KEY-----WOULD-LEAK-----END PRIVATE KEY-----"
-
-
-def _load_against_tracked_yaml(**env: str) -> EnvironmentConfig:
-    """Load the tracked `config/config.yaml`, not a copy, since what that file declares is the subject."""
-    tmp_dir = tempfile.mkdtemp()
-    try:
-        Path(tmp_dir, "config.yaml").write_text(TRACKED_CONFIG.read_text())
-        Path(tmp_dir, "prompt.txt").write_text("Analyze {lang} phrase: {phrase}")
-        Path(tmp_dir, "examples.yaml").write_text('en:\n  - "Example 1"\n')
-        with patch.dict(os.environ, {**_ENV_SECRETS, **env}, clear=True):
-            # See above: _env_file is invisible to ty's synthesised __init__.
-            return EnvironmentConfig(config_dir=Path(tmp_dir),
-                                     _env_file=None)  # ty: ignore[unknown-argument]
-    finally:
-        shutil.rmtree(tmp_dir)
-
-
-class TestFirebaseConfigSurface:
-    """The service-account credential has exactly one home, the gitignored `.env`."""
-
-    def test_app_config_declares_firebase(self):
-        assert "firebase" in AppConfig.model_fields
-
-    def test_the_field_is_defaulted_not_required(self):
-        """The credential is genuinely absent today, and every non-completion path must stay runnable without it."""
-        assert not AppConfig.model_fields["firebase"].is_required()
-
-    def test_the_credential_is_typed_as_a_secret(self):
-        annotation = FirebaseConfig.model_fields["service_account_json"].annotation
-        assert annotation == (SecretStr | None)
-
-
-class TestFirebaseCredentialAbsent:
-    """Absent is a supported state: the service boots and completions fail closed downstream."""
-
-    def test_config_loads_with_the_variable_unset(self):
-        config = _load_against_tracked_yaml()
-        assert config.app_config is not None
-        assert config.app_config.firebase.service_account_json is None
-
-    def test_credential_dict_is_none_rather_than_raising(self):
-        """The adapter's selection arm branches on this; it must not have to catch an exception."""
-        config = _load_against_tracked_yaml()
-        assert config.app_config is not None
-        assert config.app_config.firebase.credential_dict() is None
-
-    def test_the_e2e_firebase_variables_do_not_collide_with_the_new_block(self):
-        """The nested delimiter routes the existing e2e variables here, so the block must tolerate them."""
-        config = _load_against_tracked_yaml(FIREBASE_API_KEY="k",
-                                            FIREBASE_TEST_EMAIL="e@example.com",
-                                            FIREBASE_TEST_PASSWORD="p")
-        assert config.app_config is not None
-        assert config.app_config.firebase.service_account_json is None
-
-
-class TestFirebaseCredentialPresent:
-    """Present and well-formed: parsed once, at configuration time, never per request."""
-
-    def test_the_value_arrives_through_the_nesting_rule(self):
-        config = _load_against_tracked_yaml(FIREBASE_SERVICE_ACCOUNT_JSON=_FAKE_SERVICE_ACCOUNT)
-        assert config.app_config is not None
-        secret = config.app_config.firebase.service_account_json
-        assert isinstance(secret, SecretStr)
-        assert secret.get_secret_value() == _FAKE_SERVICE_ACCOUNT
-
-    def test_credential_dict_carries_what_certificate_needs(self):
-        config = _load_against_tracked_yaml(FIREBASE_SERVICE_ACCOUNT_JSON=_FAKE_SERVICE_ACCOUNT)
-        assert config.app_config is not None
-        credential = config.app_config.firebase.credential_dict()
-        assert credential is not None
-        for key in ("project_id", "private_key_id", "client_email"):
-            assert key in credential
-
-    def test_the_parse_result_cannot_be_mutated_through_the_accessor(self):
-        """A caller editing the returned dict must not rewrite the process-wide credential."""
-        config = _load_against_tracked_yaml(FIREBASE_SERVICE_ACCOUNT_JSON=_FAKE_SERVICE_ACCOUNT)
-        assert config.app_config is not None
-        firebase = config.app_config.firebase
-        first = firebase.credential_dict()
-        assert first is not None
-        first["project_id"] = "hijacked"
-        second = firebase.credential_dict()
-        assert second is not None
-        assert second["project_id"] == "test-project"
-
-    def test_the_secret_is_masked_in_the_models_repr(self):
-        config = _load_against_tracked_yaml(FIREBASE_SERVICE_ACCOUNT_JSON=_FAKE_SERVICE_ACCOUNT)
-        assert config.app_config is not None
-        assert "PLACEHOLDER" not in repr(config.app_config.firebase)
-
-
-class TestFirebaseCredentialMalformed:
-    """Present but unparseable is a boot-time failure -- never a first-completion 503."""
-
-    def test_a_non_json_value_fails_the_load(self):
-        with pytest.raises(ValidationError):
-            _load_against_tracked_yaml(FIREBASE_SERVICE_ACCOUNT_JSON=_MALFORMED_CREDENTIAL)
-
-    def test_the_failure_names_the_field(self):
-        with pytest.raises(ValidationError) as excinfo:
-            _load_against_tracked_yaml(FIREBASE_SERVICE_ACCOUNT_JSON=_MALFORMED_CREDENTIAL)
-        assert "service_account_json" in str(excinfo.value)
-
-    def test_the_failure_does_not_echo_the_offending_value(self):
-        """The hand-written parse must not undo `hide_input_in_errors` by putting the text in its own message."""
-        with pytest.raises(ValidationError) as excinfo:
-            _load_against_tracked_yaml(FIREBASE_SERVICE_ACCOUNT_JSON=_MALFORMED_CREDENTIAL)
-        rendered = str(excinfo.value)
-        assert "WOULD-LEAK" not in rendered
-        assert "BEGIN PRIVATE KEY" not in rendered
-
-
-class TestTheTrackedYamlNeverShadowsTheCredential:
-    """YAML outranks the environment, so a `firebase:` block here would make the `.env` value unreachable."""
-
-    def test_the_tracked_config_yaml_declares_no_firebase_key(self):
-        data = yaml.safe_load(TRACKED_CONFIG.read_text())
-        assert "firebase" not in data
+class TestNoTrackedYamlCarriesKeyMaterial:
+    """The tracked configuration is a public file: a credential pasted into it would be committed."""
 
     def test_no_tracked_yaml_under_config_carries_service_account_material(self):
         for path in TRACKED_CONFIG.parent.rglob("*.y*ml"):
             text = path.read_text()
             assert "private_key" not in text, f"{path} carries key material"
             assert "service_account" not in text, f"{path} carries key material"
-
-    def test_the_env_example_documents_the_variable(self):
-        env_example = TRACKED_CONFIG.parents[1] / ".env.example"
-        assert any(line.startswith("FIREBASE_SERVICE_ACCOUNT_JSON=")
-                   for line in env_example.read_text().splitlines())

@@ -60,17 +60,14 @@ def firebase_token(_app_config):
     return token
 
 
-def _admin_credential_configured(app_config) -> bool:
-    """Whether build_admin_apps would find a credential, asked with the same two calls in the same order."""
-    if app_config.firebase.credential_dict() is not None:
-        return True
+def _admin_credential_configured() -> bool:
+    """Whether build_admin_apps would find a credential, asked with the one call it makes."""
     return _application_default_credential() is not None
 
 
-# Names both routes: either satisfies the requirement, and org policy forbids minting a key at all.
 _NO_ADMIN_CREDENTIAL = (
-    "no Firebase Admin credential: set FIREBASE_SERVICE_ACCOUNT_JSON (a service-account key) or "
-    "GOOGLE_APPLICATION_CREDENTIALS (Application Default Credentials) in .env"
+    "no Firebase Admin credential: set GOOGLE_APPLICATION_CREDENTIALS (Application Default "
+    "Credentials) in .env"
 )
 
 
@@ -78,7 +75,7 @@ _NO_ADMIN_CREDENTIAL = (
 @pytest.fixture(scope="session")
 def anonymous_firebase_credential(_app_config):
     """A genuinely anonymous Firebase user, minted for real; returns (id_token, local_id), or skips."""
-    if not _admin_credential_configured(_app_config):
+    if not _admin_credential_configured():
         pytest.skip(_NO_ADMIN_CREDENTIAL)
     # Each call leaves a permanent user in the shared Firebase project, and nothing deletes it.
     resp = httpx.post(
