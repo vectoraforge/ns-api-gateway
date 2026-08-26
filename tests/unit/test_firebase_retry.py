@@ -8,7 +8,7 @@ from nativespeaker.api.auth.adapters import (
     ProviderDataOutcome,
     ProviderDataResult,
 )
-from nativespeaker.api.auth.retry import (
+from nativespeaker.api.auth.firebase import (
     FIREBASE_LOOKUP_ATTEMPTS,
     LOOKUP_UNAVAILABLE_ERROR_CLASS,
     LOOKUP_UNAVAILABLE_RESULT,

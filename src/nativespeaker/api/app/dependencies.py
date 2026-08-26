@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from typing import NoReturn
 from uuid import uuid7
 
+import structlog
 from fastapi import Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -14,7 +15,6 @@ from nativespeaker.api.auth.context import (
     RequestContext,
 )
 from nativespeaker.api.auth.identity import Reject, resolve_identity
-from nativespeaker.api.auth.telemetry import record_rejection
 from nativespeaker.api.auth.wire import BoundedReason, extract_bearer
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.errors import (
@@ -27,6 +27,8 @@ from nativespeaker.api.errors import (
 from nativespeaker.api.models.auth import AuthEventResult
 from nativespeaker.api.quota import QuotaGate
 from nativespeaker.api.services import ChatService
+
+logger = structlog.get_logger()
 
 
 def get_config(request: Request) -> AppConfig:
@@ -80,7 +82,9 @@ def _reject(error_class: ErrorClass, result: AuthEventResult,
             bounded_reason: BoundedReason | None, route: str) -> NoReturn:
     """Record the rejection, then raise it; `NoReturn` lets each call site stand as a bare statement."""
     # The structured security log is the only record a rejection leaves.
-    record_rejection(result=result, bounded_reason=bounded_reason, route=route)
+    # `route` is the path template, never the caller's raw path.
+    reason = None if bounded_reason is None else str(bounded_reason)
+    logger.warning("auth_rejected", result=str(result), bounded_reason=reason, route=route)
     raise AuthRejectionError(error_class, f"admission rejected on {route}: {result}")
 
 

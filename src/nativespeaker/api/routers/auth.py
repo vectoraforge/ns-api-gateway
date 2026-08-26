@@ -12,12 +12,13 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.auth.adapters import ProviderDataOutcome
 from nativespeaker.api.auth.challenges import ChallengeStore
-from nativespeaker.api.auth.classifier import classify_provider_data, email_to_persist
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.creation import CLIENT_CLASS_FOR_RESULT, create_account
-from nativespeaker.api.auth.retry import (
+from nativespeaker.api.auth.firebase import (
     LOOKUP_UNAVAILABLE_ERROR_CLASS,
     LOOKUP_UNAVAILABLE_RESULT,
+    classify_provider_data,
+    email_to_persist,
     lookup_with_retry,
 )
 from nativespeaker.api.errors import (

@@ -17,8 +17,8 @@ from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth.adapters import ProviderDataEntry, ProviderDataOutcome
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
+from nativespeaker.api.auth.firebase import FIREBASE_LOOKUP_ATTEMPTS
 from nativespeaker.api.auth.keys import HmacKeyring
-from nativespeaker.api.auth.retry import FIREBASE_LOOKUP_ATTEMPTS
 from nativespeaker.api.config import HmacConfig
 from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult, AuthOperation
 from nativespeaker.api.models.identities import IdentityProvider

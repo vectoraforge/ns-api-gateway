@@ -4,11 +4,12 @@ from uuid import uuid7
 import pytest
 
 from nativespeaker.api.auth.identity import Admit, Reject, resolve_identity
-from nativespeaker.api.auth.telemetry import record_rejection
 from nativespeaker.api.errors import (
     ACCOUNT_UNAVAILABLE,
+    AUTH_REQUIRED,
     INTERNAL_ERROR,
     PREAUTH_IDENTITY_NOT_ALLOWED,
+    AuthRejectionError,
 )
 from nativespeaker.api.models.auth import AuthEventResult
 from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
@@ -224,21 +225,28 @@ class TestTheResolutionStatement:
         assert historical_sql == str(session.statements[0])
 
 
-class TestRecordRejection:
-    """The barrier's one telemetry entry point -- it logs, and it never raises."""
+class TestTheRejectionLog:
+    """The barrier's one telemetry entry point, now inside the function that raises the rejection."""
 
     def _capture(self, monkeypatch):
-        from nativespeaker.api.auth import telemetry as telemetry_module
+        from nativespeaker.api.app import dependencies as dependencies_module
         events: list[tuple[str, dict]] = []
-        monkeypatch.setattr(telemetry_module.logger, "warning",
+        monkeypatch.setattr(dependencies_module.logger, "warning",
                             lambda event, **kw: events.append((event, kw)))
         return events
+
+    @staticmethod
+    def _record(*, result, bounded_reason, route):
+        """Drive the rejection path. `_reject` always raises; the raise is not what these cases assert."""
+        from nativespeaker.api.app.dependencies import _reject
+        with pytest.raises(AuthRejectionError):
+            _reject(AUTH_REQUIRED, result, bounded_reason, route)
 
     def test_it_logs_the_rejection(self, monkeypatch):
         """A recording spy, not `structlog.testing.capture_logs` -- see 35-02's caching note."""
         events = self._capture(monkeypatch)
-        record_rejection(result=AuthEventResult.historical_identity,
-                         bounded_reason=None, route="/examples")
+        self._record(result=AuthEventResult.historical_identity,
+                     bounded_reason=None, route="/examples")
         assert events == [("auth_rejected", {"result": "historical_identity",
                                              "bounded_reason": None,
                                              "route": "/examples"})]
@@ -246,8 +254,8 @@ class TestRecordRejection:
     def test_enum_labels_are_logged_as_their_string_values(self, monkeypatch):
         from nativespeaker.api.auth.wire import BoundedReason
         events = self._capture(monkeypatch)
-        record_rejection(result=AuthEventResult.invalid_external_jwt,
-                         bounded_reason=BoundedReason.duplicate_authorization, route="/")
+        self._record(result=AuthEventResult.invalid_external_jwt,
+                     bounded_reason=BoundedReason.duplicate_authorization, route="/")
         assert events[0][1] == {"result": "invalid_external_jwt",
                                 "bounded_reason": "duplicate_authorization",
                                 "route": "/"}
@@ -255,8 +263,8 @@ class TestRecordRejection:
     def test_the_route_field_is_the_path_template_not_the_raw_path(self, monkeypatch):
         """A raw request path would put caller-controlled text in the log."""
         events = self._capture(monkeypatch)
-        record_rejection(result=AuthEventResult.blocked_user, bounded_reason=None,
-                         route="/chats/{chat_id}")
+        self._record(result=AuthEventResult.blocked_user, bounded_reason=None,
+                     route="/chats/{chat_id}")
         assert events[0][1]["route"] == "/chats/{chat_id}"
 
     def test_the_bounded_reason_never_reaches_the_client(self):

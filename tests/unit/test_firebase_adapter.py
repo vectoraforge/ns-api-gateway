@@ -10,10 +10,11 @@ from firebase_admin import auth, credentials, exceptions
 from nativespeaker.api.auth.adapters import ProviderDataOutcome
 from nativespeaker.api.auth.firebase import (
     FIREBASE_HTTP_TIMEOUT_SECONDS,
+    FIREBASE_LOOKUP_ATTEMPTS,
     FirebaseAdminLookup,
     build_admin_apps,
+    lookup_with_retry,
 )
-from nativespeaker.api.auth.retry import FIREBASE_LOOKUP_ATTEMPTS, lookup_with_retry
 from nativespeaker.api.config import JWTConfig
 
 PROJECT_ID = "ns-test-project"
