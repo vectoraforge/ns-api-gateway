@@ -97,7 +97,6 @@ Scoped in `.planning/REQUIREMENTS.md` for v2.0. Summary:
 - [ ] Route registry with three closed categories and a startup/CI enumeration assertion
 - [ ] One shared error registry owning every client-visible response shape
 - [ ] `audit.auth_events` writer — exactly one durable row per on-path attempt
-- [ ] Config-driven backend rate limiting via the `limits` library (moving-window, Redis/Valkey)
 - [ ] Challenge store with claim/consume protocol for challenge-bearing operations
 - [ ] Explicit account creation replacing JIT provisioning (`POST /auth/create-user`)
 - [ ] Access-grant entitlement model — exactly one active grant per user, four enumerated sources
@@ -110,7 +109,7 @@ Scoped in `.planning/REQUIREMENTS.md` for v2.0. Summary:
 - LangChain/OpenAI provider abstraction — no multi-provider requirement yet
 - Message content encryption-at-rest — defer to infrastructure layer
 - Load/stress tests — not a current priority
-- ~~Application-level rate limiting (slowapi) — Envoy Gateway owns rate limiting~~ — **reversed in v2.0**: auth surfaces need identity-keyed and user-keyed limits the gateway cannot express. Backend limiting uses the `limits` library (moving-window, Redis/Valkey); Envoy limiting remains as defense-in-depth
+- Application-level rate limiting — ~~Envoy Gateway owns rate limiting~~ ~~**reversed in v2.0**: backend limiting uses the `limits` library~~ — **re-settled by Phase 35 D-05**: the backend rate-limit engine (`§5`) is **deleted from the product**, not deferred. No `limits` dependency, no Redis/Valkey, no `rate_limits` config block (REQUIREMENTS.md:42, FOUND-06). Envoy is the sole request-rate enforcement point *in principle* — but `§9`'s gateway contract is deferred to v2.1 (D-08), and Phase 37.2 confirmed no HTTPRoute matches `/auth` at all, so **no rate limit of any kind applies to the auth surface this milestone**. Knowingly accepted — see `37.2-SECURITY.md` AR-01
 - CORS middleware / security headers — Envoy Gateway handles at infrastructure level
 - Trusted host validation — Envoy Gateway perimeter control
 - Redis-backed circuit breaker — single-instance deployment; migration path documented in code
@@ -185,8 +184,8 @@ Known areas for future work:
 | Defer LangChain abstraction | No multi-provider requirement; premature | — Pending |
 | `app.state.verifier` resolved at request-time | Enables zero-code swapping of auth providers in tests and startup | ✓ Good |
 | Typed LLM errors with `__cause__` | Callers can distinguish transient vs permanent without inspecting internals | ✓ Good |
-| CORS, rate limiting, security headers → Envoy Gateway | Avoids redundant app-level middleware | ✓ Good |
-| `with_structured_output(strict=True, method='json_schema')` | Constrained decoding would eliminate fragile parsing — but the decision was never implemented. `services/llm.py` has always been `prompt_template \| self.llm \| JsonOutputParser()`, and `git log -S'with_structured_output' -- src/` returns nothing. That gap is what made D-35-11-A reachable: an already-correct phrase returned 500 because the model omitted two keys nothing forced it to emit. Corrected in Phase 36 per D-13 | ✗ Never implemented — filed as `todos/pending/restore-strict-structured-output.md` |
+| CORS, rate limiting, security headers → Envoy Gateway | Avoids redundant app-level middleware | ◐ Mixed — CORS and headers hold. **Rate limiting does not**: Phase 37.2 found no HTTPRoute matches `/auth`, so no `BackendTrafficPolicy` reaches it, and Phase 35 D-05 removed the in-process engine. The auth surface is unlimited this milestone (`37.2-SECURITY.md` AR-01) |
+| `with_structured_output(strict=True, method='json_schema')` | Constrained decoding would eliminate fragile parsing — but the decision was never implemented. `services/llm.py` has always been `prompt_template \| self.llm \| JsonOutputParser()`, and `git log -S'with_structured_output' -- src/` returns nothing. That gap is what made D-35-11-A reachable: an already-correct phrase returned 500 because the model omitted two keys nothing forced it to emit. Corrected in Phase 36 per D-13 | ✓ **Implemented in Phase 37.2** (plan 03) — `services/llm.py:31` binds `with_structured_output(ChatModelResponse, method="json_schema", strict=True)`, with a provider-free schema assertion and a real-provider e2e gate. Flat root model by construction: a union root would ship looking strict while leaving every branch unconstrained |
 | ResiliencePolicy composes existing CB/gate without modifying them | Facade pattern; composition over modification | ✓ Good |
 | Health endpoint unconditional 200/up | If lifespan fails, FastAPI never serves — probing backends is redundant | ✓ Good |
 | PyJWT 2.11.0 over python-jose | python-jose is abandoned; PyJWT is actively maintained | ✓ Good |
@@ -235,4 +234,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-08-21 after completing Phase 35*
+*Last updated: 2026-08-25 after completing Phase 37.2*
