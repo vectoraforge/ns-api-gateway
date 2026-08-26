@@ -55,7 +55,7 @@ async def _assert_step_10s_global_invariants(factory) -> None:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheAnonymousHappyPath:
-    """One unlinked caller, one prepare, one completion, and the exact row set that must result."""
+    """One unlinked caller, one issued challenge, one completion, and the exact row set that must result."""
 
     async def test_an_unlinked_caller_creates_an_anonymous_account(
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
@@ -64,17 +64,18 @@ class TestTheAnonymousHappyPath:
 
         users_before = await _count(_db_transaction, select(func.count()).select_from(User))
 
-        # --- Prepare -------------------------------------------------------------------------
-        prepare = await create_user_client.post("/auth/create-user?challenge=true",
-                                                headers=_auth())
+        # --- Issuance ------------------------------------------------------------------------
+        issued = await create_user_client.post("/auth/challenge",
+                                               json={"operation": "create_user"},
+                                               headers=_auth())
 
-        assert prepare.status_code == 200
+        assert issued.status_code == 200
         # The key set is asserted rather than two known keys, since a third field would pass the weaker check.
-        assert set(prepare.json()) == {"challenge_id", "expires_at"}
-        assert prepare.headers["cache-control"] == "no-store"
-        handle = prepare.json()["challenge_id"]
+        assert set(issued.json()) == {"challenge_id", "expires_at"}
+        assert issued.headers["cache-control"] == "no-store"
+        handle = issued.json()["challenge_id"]
 
-        # Prepare mutates no business state.
+        # Issuance mutates no business state.
         assert await _count(_db_transaction, select(func.count()).select_from(User)) == users_before
         # It has not called the provider either: there is exactly one read, and it is at completion.
         assert scripted_firebase_adapter.calls == []
@@ -196,49 +197,94 @@ class TestTheChallengeEndpoint:
 
 
 @pytest.mark.asyncio(loop_scope="module")
-class TestPrepareRejectsAnAlreadyLinkedCaller:
-    """A caller who already has an account is told so at prepare, which is why this route admits both contexts."""
+class TestCompletionRejectsAnAlreadyLinkedCaller:
+    """A caller who already has an account is told so at completion, which is why this route admits both contexts.
 
-    async def test_an_active_linked_identity_is_rejected(self, create_user_client, _db_transaction):
-        subject = "already-linked-prepare"
+    Issuance no longer pre-checks the linkage, so such a caller now spends a challenge row and one provider
+    lookup before hearing 409. That is a real, accepted cost: it fails closed, and it buys correctness --
+    the unique constraints inside the consuming transaction decide, where the old pre-check merely guessed.
+    """
+
+    async def test_an_active_linked_identity_is_rejected_at_completion(
+            self, create_user_client, _db_transaction, scripted_firebase_adapter):
+        subject = "already-linked-completion"
         await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject)
+        # A uid of its own, so the reservation index cannot be what answers: the re-resolution is.
+        scripted_firebase_adapter.script(
+            entries=(ProviderDataEntry("google.com", f"g-uid-{subject}"),))
 
-        response = await create_user_client.post("/auth/create-user?challenge=true",
-                                                 headers=_auth(subject))
+        issued = await create_user_client.post("/auth/challenge",
+                                               json={"operation": "create_user"},
+                                               headers=_auth(subject))
 
-        assert response.status_code == 409
+        # The challenge IS issued now -- the rejection has moved past this point.
+        assert issued.status_code == 200, issued.text
+        assert set(issued.json()) == {"challenge_id", "expires_at"}
+
+        completion = await create_user_client.post("/auth/create-user",
+                                                   json={"challenge_id": issued.json()["challenge_id"]},
+                                                   headers=_auth(subject))
+
+        assert completion.status_code == 409, completion.text
         # The shared one-field body, with the key set asserted exactly.
-        assert response.json() == {"code": "identity_already_linked"}
+        assert completion.json() == {"code": "identity_already_linked"}
 
-    async def test_the_rejection_issues_no_challenge(self, create_user_client, _db_transaction):
-        subject = "already-linked-issues-nothing"
+    async def test_the_rejection_mints_no_second_account_and_spends_the_challenge(
+            self, create_user_client, _db_transaction, scripted_firebase_adapter):
+        """What matters is no longer that nothing was issued -- it is that nothing was created and nothing survives."""
+        subject = "already-linked-mints-nothing"
         await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject)
-        before = await _count(_db_transaction, _CHALLENGES)
+        scripted_firebase_adapter.script(
+            entries=(ProviderDataEntry("google.com", f"g-uid-{subject}"),))
+        users_before = await _count(_db_transaction, _USERS)
 
-        await create_user_client.post("/auth/create-user?challenge=true", headers=_auth(subject))
+        issued = await create_user_client.post("/auth/challenge",
+                                               json={"operation": "create_user"},
+                                               headers=_auth(subject))
+        handle = issued.json()["challenge_id"]
+        completion = await create_user_client.post("/auth/create-user",
+                                                   json={"challenge_id": handle},
+                                                   headers=_auth(subject))
 
-        assert await _count(_db_transaction, _CHALLENGES) == before
+        assert completion.status_code == 409
+
+        # No second account, and still exactly one identity row for the pair.
+        assert await _count(_db_transaction, _USERS) == users_before
+        async with _db_transaction() as session:
+            rows = (await session.exec(
+                select(ExternalIdentity).where(col(ExternalIdentity.issuer) == TEST_ISSUER,
+                                               col(ExternalIdentity.subject) == subject))).all()
+        assert len(rows) == 1
+
+        # The challenge is spent, so the handle cannot be re-presented: a retry needs a fresh one.
+        challenge = await _challenge_for(_db_transaction, handle)
+        assert challenge.consumed_at is not None
+
+        await _assert_step_10s_global_invariants(_db_transaction)
 
 
 @pytest.mark.asyncio(loop_scope="module")
-class TestPrepareStillIssuesForAnUnlinkedCaller:
-    """The fail-fast must not have narrowed the path it guards."""
+class TestIssuanceStillServesAnUnlinkedCaller:
+    """The route the handle now comes from must not have narrowed the path it serves."""
 
     async def test_an_unlinked_caller_still_gets_the_two_field_body(self, create_user_client,
                                                                     _db_transaction):
-        response = await create_user_client.post("/auth/create-user?challenge=true",
+        response = await create_user_client.post("/auth/challenge",
+                                                 json={"operation": "create_user"},
                                                  headers=_auth("still-unlinked"))
 
         assert response.status_code == 200
         assert set(response.json()) == {"challenge_id", "expires_at"}
 
-    async def test_two_prepares_issue_two_distinct_challenges(self, create_user_client,
-                                                              _db_transaction):
-        """Prepare never reuses a row: reusing one would hand two attempts the same single-use capability."""
-        headers = _auth("prepares-twice")
+    async def test_two_issuances_produce_two_distinct_challenges(self, create_user_client,
+                                                                 _db_transaction):
+        """Issuance never reuses a row: reusing one would hand two attempts the same single-use capability."""
+        headers = _auth("issues-twice")
 
-        first = await create_user_client.post("/auth/create-user?challenge=true", headers=headers)
-        second = await create_user_client.post("/auth/create-user?challenge=true", headers=headers)
+        first = await create_user_client.post("/auth/challenge",
+                                              json={"operation": "create_user"}, headers=headers)
+        second = await create_user_client.post("/auth/challenge",
+                                               json={"operation": "create_user"}, headers=headers)
 
         assert first.status_code == second.status_code == 200
         assert first.json()["challenge_id"] != second.json()["challenge_id"]
@@ -274,9 +320,10 @@ class TestCompletionRejectionsOnTheWire:
             entries=(ProviderDataEntry("password", "someone@example.test"),))
         users_before = await _count(_db_transaction, _USERS)
 
-        prepare = await create_user_client.post("/auth/create-user?challenge=true",
-                                                headers=_auth(subject))
-        handle = prepare.json()["challenge_id"]
+        issued = await create_user_client.post("/auth/challenge",
+                                               json={"operation": "create_user"},
+                                               headers=_auth(subject))
+        handle = issued.json()["challenge_id"]
 
         completion = await create_user_client.post("/auth/create-user",
                                                    json={"challenge_id": handle},
@@ -300,15 +347,16 @@ class TestCompletionRejectionsOnTheWire:
 
     async def test_the_same_handle_replayed_after_a_rejection_mints_nothing(
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
-        """No idempotent replay: the second attempt is told to prepare again, not what the first one earned."""
+        """No idempotent replay: the second attempt is told to obtain a fresh challenge, not the first's outcome."""
         subject = "e2e-replayed-handle"
         scripted_firebase_adapter.script(
             entries=(ProviderDataEntry("password", "someone@example.test"),))
         users_before = await _count(_db_transaction, _USERS)
 
-        prepare = await create_user_client.post("/auth/create-user?challenge=true",
-                                                headers=_auth(subject))
-        handle = prepare.json()["challenge_id"]
+        issued = await create_user_client.post("/auth/challenge",
+                                               json={"operation": "create_user"},
+                                               headers=_auth(subject))
+        handle = issued.json()["challenge_id"]
         first = await create_user_client.post("/auth/create-user",
                                               json={"challenge_id": handle},
                                               headers=_auth(subject))
@@ -325,13 +373,14 @@ class TestCompletionRejectionsOnTheWire:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestCreate01AdmittedHereAndRefusedEverywhereElse:
-    """One token gets two different answers: this route admits an unlinked identity and no other does."""
+    """One token gets two different answers: the auth routes admit an unlinked identity and no other does."""
 
-    async def test_one_unlinked_token_is_admitted_at_create_user_and_refused_at_examples(
+    async def test_one_unlinked_token_is_admitted_at_the_auth_routes_and_refused_at_examples(
             self, create_user_client, _db_transaction):
         headers = _auth("e2e-create01-unlinked")
 
-        admitted = await create_user_client.post("/auth/create-user?challenge=true",
+        admitted = await create_user_client.post("/auth/challenge",
+                                                 json={"operation": "create_user"},
                                                  headers=headers)
         refused = await create_user_client.get("/examples?lang=en", headers=headers)
 
@@ -345,12 +394,14 @@ class TestCreate01AdmittedHereAndRefusedEverywhereElse:
 # The registered flow is scripted because no REST call links a Google or Apple provider without consent.
 
 
-async def _prepare_and_complete(client, subject: str | None = None):
-    """One prepare then one completion for subject; subject=None sends no header and keeps the client's own."""
+async def _issue_and_complete(client, subject: str | None = None):
+    """One issuance then one completion for subject; subject=None sends no header and keeps the client's own."""
     headers = {} if subject is None else _auth(subject)
-    prepare = await client.post("/auth/create-user?challenge=true", headers=headers)
-    assert prepare.status_code == 200, prepare.text
-    handle = prepare.json()["challenge_id"]
+    issued = await client.post("/auth/challenge",
+                               json={"operation": "create_user"},
+                               headers=headers)
+    assert issued.status_code == 200, issued.text
+    handle = issued.json()["challenge_id"]
     completion = await client.post("/auth/create-user",
                                    json={"challenge_id": handle},
                                    headers=headers)
@@ -394,7 +445,7 @@ class TestTheRegisteredFlow:
         scripted_firebase_adapter.script(entries=(ProviderDataEntry(provider_id, uid),))
         users_before = await _count(_db_transaction, _USERS)
 
-        handle, completion = await _prepare_and_complete(create_user_client, subject)
+        handle, completion = await _issue_and_complete(create_user_client, subject)
 
         assert completion.status_code == 200, completion.text
         # One field, the classified provider, and nothing else.
@@ -451,7 +502,7 @@ class TestStep10sEmailCopyRule:
                                          email=email,
                                          email_verified=email_verified)
 
-        _, completion = await _prepare_and_complete(create_user_client, subject)
+        _, completion = await _issue_and_complete(create_user_client, subject)
 
         assert completion.status_code == 200, completion.text
         assert completion.json() == {"identity_provider": "google"}
@@ -485,7 +536,7 @@ class TestTheProviderAccountReservation:
         subject = f"provider-account-claimant-{owner_state}"
         users_before = await _count(_db_transaction, _USERS)
 
-        handle, completion = await _prepare_and_complete(create_user_client, subject)
+        handle, completion = await _issue_and_complete(create_user_client, subject)
 
         # 403 with this code rather than account_unavailable: same status, different remediation.
         assert completion.status_code == 403, completion.text
@@ -500,7 +551,7 @@ class TestTheProviderAccountReservation:
         assert claimant_rows == []
 
         challenge = await _challenge_for(_db_transaction, handle)
-        # A rejection at or after the provider read consumes, so a retry needs a fresh prepare.
+        # A rejection at or after the provider read consumes, so a retry needs a freshly issued challenge.
         assert challenge.consumed_at is not None
         assert challenge.preauth_subject_hash is None
 
@@ -533,7 +584,7 @@ class TestTheRealAnonymousCompletion:
         assert isinstance(adapter, FirebaseAdminLookup)
         users_before = await _count(_db_transaction, _USERS)
 
-        handle, completion = await _prepare_and_complete(anonymous_client)
+        handle, completion = await _issue_and_complete(anonymous_client)
 
         assert completion.status_code == 200, completion.text
         assert completion.json() == {"identity_provider": "anonymous"}

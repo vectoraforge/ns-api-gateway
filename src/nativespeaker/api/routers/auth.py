@@ -1,9 +1,6 @@
-"""The two auth routes: `/auth/challenge` issues a challenge, and `/auth/create-user` prepares or completes."""
-from typing import Any
-
+"""The two auth routes: `/auth/challenge` issues a challenge, and `/auth/create-user` spends one."""
 import structlog
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.responses import JSONResponse, Response
 
@@ -11,19 +8,13 @@ from nativespeaker.api.app.dependencies import (
     get_challenge_store,
     get_db,
     get_firebase_adapter,
-    get_raw_query_string,
     get_request_context,
 )
-from nativespeaker.api.auth.adapters import ProviderDataEntry, ProviderDataOutcome
+from nativespeaker.api.auth.adapters import ProviderDataOutcome
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.classifier import classify_provider_data, email_to_persist
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.creation import (
-    CLIENT_CLASS_FOR_RESULT,
-    create_account,
-    resolve_existing_identity,
-)
-from nativespeaker.api.auth.modesignal import ModeSignal, classify_mode_signal
+from nativespeaker.api.auth.creation import CLIENT_CLASS_FOR_RESULT, create_account
 from nativespeaker.api.auth.retry import (
     LOOKUP_UNAVAILABLE_ERROR_CLASS,
     LOOKUP_UNAVAILABLE_RESULT,
@@ -32,7 +23,6 @@ from nativespeaker.api.auth.retry import (
 from nativespeaker.api.errors import (
     AUTH_REQUIRED,
     CHALLENGE_REQUIRED,
-    IDENTITY_ALREADY_LINKED,
     INVALID_REQUEST,
     OPERATION_NOT_ALLOWED,
     ErrorClass,
@@ -43,24 +33,16 @@ from nativespeaker.api.models.auth import (
     AuthEventResult,
     AuthOperation,
     ChallengeRequest,
+    CompletionResponse,
+    CreateUserRequest,
     PrepareResponse,
 )
-from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
+from nativespeaker.api.models.identities import IdentityProvider
 
 logger = structlog.get_logger()
 
 # Auth is default-on. The context is not narrowed to pre-auth: an already-linked caller is a 409 here, not a 401.
 router = APIRouter(tags=["auth"], dependencies=[Depends(get_request_context)])
-
-
-class CreateUserRequest(BaseModel):
-    """The completion body. `challenge_id` is `Any` so every unusable handle rejects as 400 rather than 422."""
-    challenge_id: Any = None
-
-
-class CompletionResponse(BaseModel):
-    """The completion body: the registration state. There is no backend session tier, so nothing is minted."""
-    identity_provider: IdentityProvider
 
 
 @router.post("/auth/challenge",
@@ -89,69 +71,19 @@ async def issue_challenge(body: ChallengeRequest,
 
 @router.post("/auth/create-user",
              summary="Create the account for a verified but unlinked identity",
-             description="Prepare mode (`?challenge=true`) issues a single-use challenge; "
-                         "completion mode (`challenge_id` in the body) creates the account.")
-async def create_user(body: CreateUserRequest | None = None,
-                      raw_query: bytes = Depends(get_raw_query_string),
+             description="Spends a single-use challenge obtained from `POST /auth/challenge`, "
+                         "supplied as `challenge_id` in the body, and creates the account.")
+async def create_user(body: CreateUserRequest,
                       context: RequestContext = Depends(get_request_context),
                       session: AsyncSession = Depends(get_db),
                       challenge_store: ChallengeStore = Depends(get_challenge_store),
                       adapter=Depends(get_firebase_adapter)) -> Response:
-    """Classify the mode signal, then dispatch. The classification itself has no side effects."""
-    body_challenge_id = None if body is None else body.challenge_id
-    mode = classify_mode_signal(raw_query, body_challenge_id)
-    if mode is None:
-        logger.warning("auth_mode_signal_invalid",
-                       route=context.route,
-                       operation=str(AuthOperation.create_user),
-                       # The raw handle is never logged; its shape is the whole diagnostic.
-                       body_present=body is not None)
-        return error_response(INVALID_REQUEST)
-
-    identity = context.identity
-    if mode is ModeSignal.prepare:
-        return await _prepare(session, context=context, identity=identity,
-                              challenge_store=challenge_store)
-
-    # Forwarded untouched and never logged. Byte-for-byte comparison makes a padded handle a not-found, not a 400.
-    completion_handle: str = body_challenge_id  # ty: ignore[invalid-assignment]
-    return await _complete(session, context=context, identity=identity,
-                           challenge_id=completion_handle,
+    """Complete the operation the body's handle stands for. The framework owns every malformed-body rejection."""
+    # Forwarded untouched and never logged. Byte-for-byte comparison makes a padded handle a not-found.
+    return await _complete(session, context=context, identity=context.identity,
+                           challenge_id=body.challenge_id,
                            challenge_store=challenge_store,
                            adapter=adapter)
-
-
-async def _prepare(session: AsyncSession, *,
-                   context: RequestContext,
-                   identity: LinkedIdentity | PreAuthIdentity,
-                   challenge_store: ChallengeStore) -> Response:
-    """Reject an already-linked caller, else issue one challenge. No business state is mutated."""
-    linked = await _already_linked(session, identity=identity)
-    if linked is not None:
-        # No rollback and no attribute read here: a rollback expires the row and the lazy load then fails.
-        return error_response(IDENTITY_ALREADY_LINKED)
-
-    challenge_id, expires_at = await challenge_store.issue(session,
-                                                           operation=AuthOperation.create_user,
-                                                           identity=identity,
-                                                           now=context.evaluated_at)
-    body = PrepareResponse(challenge_id=challenge_id, expires_at=expires_at)
-    # `no-store` rather than `no-cache`: the handle is a secret, and a revalidatable copy is a copy.
-    return JSONResponse(content=body.model_dump(mode="json"),
-                        headers={"Cache-Control": "no-store"})
-
-
-async def _already_linked(session: AsyncSession, *,
-                          identity: LinkedIdentity | PreAuthIdentity) -> ExternalIdentity | None:
-    """The active identity row when this caller already has an account, else `None`."""
-    # Best-effort and racy: the unique constraints in the consuming transaction are the authority.
-    if isinstance(identity, LinkedIdentity):
-        return identity.identity
-    existing = await resolve_existing_identity(session,
-                                               issuer=identity.issuer, subject=identity.subject)
-    if existing is not None and existing.identity_state is IdentityState.active:
-        return existing
-    return None
 
 
 async def _complete(session: AsyncSession, *,
@@ -206,7 +138,8 @@ async def _complete(session: AsyncSession, *,
                                           result=AuthEventResult.provider_not_linked,
                                           error_class=OPERATION_NOT_ALLOWED,
                                           stage="provider_classification",
-                                          cause=_classification_cause(provider_data.entries),
+                                          # The bounded reason it did not classify: no entries at all, or a bad shape.
+                                          cause="empty" if not provider_data.entries else "invalid-shape",
                                           challenge_store=challenge_store)
     provider, provider_uid = classified
     # The one place the copy rule is evaluated; `create_account` takes a plain `email` and re-derives nothing.
@@ -247,11 +180,6 @@ _LOOKUP_REJECTIONS: dict[ProviderDataOutcome, dict[str, object]] = {
         "error_class": LOOKUP_UNAVAILABLE_ERROR_CLASS,
     },
 }
-
-
-def _classification_cause(entries: tuple[ProviderDataEntry, ...]) -> str:
-    """The bounded reason a provider account did not classify: no entries at all, or an unusable shape."""
-    return "empty" if not entries else "invalid-shape"
 
 
 async def _consuming_rejection(session: AsyncSession, *,

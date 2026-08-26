@@ -119,13 +119,7 @@ def get_chat_service(request: Request,
                        quota_gate=get_quota_gate(request, context))
 
 
-# These accessors exist so a challenge-bearing route can stay Depends()-only and never take Request.
-def get_raw_query_string(request: Request) -> bytes:
-    """The ASGI `scope["query_string"]` bytes, unparsed."""
-    # Unparsed because a duplicated challenge parameter is its own rejection, invisible to a folding accessor.
-    return request.scope["query_string"]
-
-
+# These two accessors exist so a challenge-bearing route can stay Depends()-only and never take Request itself.
 def get_challenge_store(request: Request) -> ChallengeStore:
     """The one `ChallengeStore` the lifespan built. Read per request, never cached by a caller."""
     return request.app.state.challenge_store
