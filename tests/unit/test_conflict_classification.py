@@ -284,10 +284,18 @@ class TestAnUnrecognisedConflictIsReRaised:
         assert raised is conflict is error
 
     async def test_an_unknown_constraint_name_is_re_raised(self):
-        """A name nobody mapped -- a new constraint, or a rename -- must be loud, not guessed."""
-        raised, conflict, _, _ = await _insert("external_identities_some_future_key",
-                                               expect=IntegrityError)
-        assert raised is conflict
+        """A name nobody mapped -- a new constraint, or a rename -- must be loud, not guessed.
+
+        Written out rather than routed through the helper: this case is the 500 tripwire's only
+        guard, and it should be findable by searching for the exception type it insists on.
+        """
+        conflict = _integrity_error("external_identities_some_future_key")
+        session = _ConflictingSession(conflict)
+
+        with pytest.raises(IntegrityError) as raised:
+            await _create(session, _ConsumingStore())
+
+        assert raised.value is conflict
 
     async def test_the_unmapped_arm_is_not_a_member_of_the_rejection_family(self):
         """The tripwire's whole point: a 500, never a benign 409 the caller could believe."""

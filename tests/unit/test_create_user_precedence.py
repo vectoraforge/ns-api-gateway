@@ -1,7 +1,7 @@
 """Completion rejection precedence: each arm asserts the client class, the internal result logged, and consumption."""
 import base64
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -17,6 +17,7 @@ from nativespeaker.api.app.errors import register_exception_handlers
 from nativespeaker.api.auth.adapters import ProviderDataEntry, ProviderDataOutcome
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
+from nativespeaker.api.auth.exceptions import AuthRejected, IdentityAlreadyLinked
 from nativespeaker.api.auth.firebase import FIREBASE_LOOKUP_ATTEMPTS
 from nativespeaker.api.auth.keys import HmacKeyring
 from nativespeaker.api.config import HmacConfig
@@ -93,21 +94,40 @@ class _FakeChallengeStore:
 
 
 class _RejectionLog:
-    """The rejection results the router logged, in order, read from a recording spy on its own logger."""
+    """The rejections this request logged, in order, from a spy on each logger one can come from.
 
-    _EVENTS = frozenset({"create_user_challenge_rejected", "create_user_lookup_rejected",
-                         "create_user_transaction_rejected"})
+    Rejections are migrating from the router to the exception handler one arm at a time. Spying on
+    both loggers is what lets the asserted string lists below stay stable while an arm moves: the
+    snake_cased exception class names already equal the result values the router logs today.
+    """
+
+    # The router's own rejection events. The transaction arm's event retired with
+    # `_completion_response`; the two that remain move to the handler as plans 03 and 04 land.
+    _EVENTS = frozenset({"create_user_challenge_rejected", "create_user_lookup_rejected"})
 
     def __init__(self) -> None:
         self.entries: list[tuple[str, dict]] = []
+        self._sources: list[str] = []
 
-    def record(self, event: str, **kwargs) -> None:
+    def record_router(self, event: str, **kwargs) -> None:
         self.entries.append((event, kwargs))
+        self._sources.append("router")
+
+    def record_handler(self, event: str, **kwargs) -> None:
+        self.entries.append((event, kwargs))
+        self._sources.append("handler")
 
     @property
     def results(self) -> list[str]:
-        return [kwargs.get("result", kwargs.get("stage"))
-                for event, kwargs in self.entries if event in self._EVENTS]
+        """One string per rejection: the router's internal result, or the handler's event name."""
+        found: list[str] = []
+        for source, (event, kwargs) in zip(self._sources, self.entries, strict=True):
+            if source == "handler":
+                # The class name is the outcome vocabulary now (D-02): the event *is* the result.
+                found.append(event)
+            elif event in self._EVENTS:
+                found.append(kwargs.get("result", kwargs.get("stage")))
+        return found
 
 
 class _StubSession:
@@ -137,10 +157,14 @@ class _RecordingCreator:
 
     def __init__(self) -> None:
         self.calls: list[dict] = []
-        self.result = AuthEventResult.succeeded
+        # The new user's id on success; a scripted rejection is raised instead, as the real one does.
+        self.result = uuid4()
+        self.rejection: AuthRejected | None = None
 
-    async def __call__(self, session, **kwargs) -> AuthEventResult:
+    async def __call__(self, session, **kwargs) -> UUID:
         self.calls.append(kwargs)
+        if self.rejection is not None:
+            raise self.rejection
         return self.result
 
 
@@ -156,9 +180,10 @@ def store(keyring) -> _FakeChallengeStore:
 
 @pytest.fixture
 def rejections(monkeypatch) -> _RejectionLog:
-    """Spy on the router's logger, so "which internal result" stays observable."""
+    """Spy on both loggers a rejection can come from, so "which one" survives each arm's migration."""
     log = _RejectionLog()
-    monkeypatch.setattr("nativespeaker.api.routers.auth.logger.warning", log.record)
+    monkeypatch.setattr("nativespeaker.api.routers.auth.logger.warning", log.record_router)
+    monkeypatch.setattr("nativespeaker.api.app.errors.logger.warning", log.record_handler)
     return log
 
 
@@ -524,3 +549,58 @@ class TestThePrecedenceItself:
         assert response.json() == {"code": "auth_required"}
         assert rejections.results == [AuthEventResult.firebase_user_unresolved]
         assert creator.calls == []
+
+
+class TestTheTransactionRejectionIsObservedAtTheHandler:
+    """The arm this plan migrated: `create_account` raises, and the record is written at the handler."""
+
+    @staticmethod
+    def _reaching_the_transaction(store, context, keyring, creator, adapter) -> None:
+        """Get past every earlier rejection, then have the transaction reject the way the real one does."""
+        store.row = _issued_row(context, keyring)
+        adapter.script(ProviderDataOutcome.ok,
+                       entries=(ProviderDataEntry("google.com", "google-uid-1"),))
+        creator.rejection = IdentityAlreadyLinked()
+
+    def test_it_is_recorded_once_under_its_class_derived_event_name(
+            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
+        """Sourced from the handler's logger rather than the router's -- the migration this fixture spans."""
+        self._reaching_the_transaction(store, context, keyring, creator, fake_firebase_adapter)
+
+        _complete(client)
+
+        assert rejections.results == ["identity_already_linked"]
+        assert len(creator.calls) == 1
+
+    def test_it_consumes_the_challenge_exactly_once_before_the_client_is_answered(
+            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
+        """D-04: the route's except arm spends the handle, and `create_account` no longer also does."""
+        self._reaching_the_transaction(store, context, keyring, creator, fake_firebase_adapter)
+
+        _complete(client)
+
+        assert store.consume_calls == 1
+        assert store.row.consumed_at is not None
+        # Cleared in the same transition, which is why a replay takes the already-used rejection.
+        assert store.row.preauth_subject_hash is None
+
+    def test_a_replay_after_it_is_rejected_and_never_reaches_the_transaction_again(
+            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
+        """There is no idempotent replay: the second presentation is a spent handle, not a repeat answer."""
+        self._reaching_the_transaction(store, context, keyring, creator, fake_firebase_adapter)
+
+        _complete(client)
+        _complete(client)
+
+        assert rejections.results == ["identity_already_linked",
+                                      AuthEventResult.challenge_consumed]
+        assert len(creator.calls) == 1
+
+    def test_the_handle_never_reaches_either_log(
+            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
+        """The handle is a secret, and moving the record to a new logging site does not relax that."""
+        self._reaching_the_transaction(store, context, keyring, creator, fake_firebase_adapter)
+
+        _complete(client)
+
+        assert HANDLE not in repr(rejections.entries)
