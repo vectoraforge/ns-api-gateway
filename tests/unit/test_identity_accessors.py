@@ -202,7 +202,8 @@ class TestTheWireArmsRaiseAndTheHandlerRecordsThemOnce:
 
     @pytest.mark.parametrize("headers,expected_reason", [
         ({}, "missing_token"),
-        ({"Authorization": "Bearer not.a.jwt"}, "malformed"),
+        # Well-formed on the wire -- one Bearer credential -- so this is the verifier's own reason.
+        ({"Authorization": "Bearer not.a.jwt"}, "bad_signature"),
     ], ids=["absent-token", "failed-verify"])
     def test_each_arm_logs_one_record_naming_its_class_and_its_bounded_reason(
             self, headers, expected_reason, warnings):

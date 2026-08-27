@@ -1,34 +1,20 @@
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from typing import NoReturn
 from uuid import uuid7
 
-import structlog
 from fastapi import Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from nativespeaker.api.auth.challenges import ChallengeStore
-from nativespeaker.api.auth.context import (
-    LinkedIdentity,
-    PreAuthIdentity,
-    RequestContext,
-)
+from nativespeaker.api.auth.context import LinkedIdentity, RequestContext
+from nativespeaker.api.auth.exceptions import InvalidExternalJwt, PreAuthIdentityNotAllowed
 from nativespeaker.api.auth.identity import resolve_identity
-from nativespeaker.api.auth.wire import BoundedReason, extract_bearer
+from nativespeaker.api.auth.wire import extract_bearer
 from nativespeaker.api.config import AppConfig
-from nativespeaker.api.errors import (
-    AUTH_REQUIRED,
-    PREAUTH_IDENTITY_NOT_ALLOWED,
-    AuthenticationError,
-    AuthRejectionError,
-    ErrorClass,
-)
-from nativespeaker.api.models.auth import AuthEventResult
+from nativespeaker.api.errors import AuthenticationError
 from nativespeaker.api.quota import QuotaGate
 from nativespeaker.api.services import ChatService
-
-logger = structlog.get_logger()
 
 
 def get_config(request: Request) -> AppConfig:
@@ -56,12 +42,12 @@ async def get_request_context(request: Request) -> RequestContext:
 
     token, reason = extract_bearer(request.headers.raw)
     if token is None:
-        _reject(AUTH_REQUIRED, AuthEventResult.invalid_external_jwt, reason, route)
+        raise InvalidExternalJwt(bounded_reason=reason)
 
     # `verify` is synchronous and can block on a JWKS fetch, so it never runs on the event loop.
     claims, reason = await run_in_threadpool(request.app.state.jwt_verifier.verify, token)
     if claims is None:
-        _reject(AUTH_REQUIRED, AuthEventResult.invalid_external_jwt, reason, route)
+        raise InvalidExternalJwt(bounded_reason=reason)
 
     # Its own short session, closed before the handler: Depends(get_db) would hold it across the provider call.
     async with request.app.state.session_factory() as session:
@@ -76,34 +62,13 @@ async def get_request_context(request: Request) -> RequestContext:
                           attempt_id=attempt_id)
 
 
-def _reject(error_class: ErrorClass, result: AuthEventResult,
-            bounded_reason: BoundedReason | None, route: str) -> NoReturn:
-    """Record the rejection, then raise it; `NoReturn` lets each call site stand as a bare statement."""
-    # The structured security log is the only record a rejection leaves.
-    # `route` is the path template, never the caller's raw path.
-    reason = None if bounded_reason is None else str(bounded_reason)
-    logger.warning("auth_rejected", result=str(result), bounded_reason=reason, route=route)
-    raise AuthRejectionError(error_class, f"admission rejected on {route}: {result}")
-
-
 # Declared, never called directly: FastAPI's cache only sees solver-resolved deps, so a direct call re-verifies.
 async def get_linked_identity(
         context: RequestContext = Depends(get_request_context)) -> LinkedIdentity:
     """The resolved user and identity row; rejects an unlinked caller with 403."""
     identity = context.identity
     if not isinstance(identity, LinkedIdentity):
-        _reject(PREAUTH_IDENTITY_NOT_ALLOWED, AuthEventResult.preauth_identity_not_allowed,
-                None, context.route)
-    return identity
-
-
-async def get_preauth_identity(
-        context: RequestContext = Depends(get_request_context)) -> PreAuthIdentity:
-    """The verified (issuer, subject) of an unlinked caller. Raises when the caller is linked."""
-    # Nothing declares this today; create-user reads the variant off the context and answers 409.
-    identity = context.identity
-    if not isinstance(identity, PreAuthIdentity):
-        raise AuthenticationError("Identity context is linked on a route expecting a pre-auth identity")
+        raise PreAuthIdentityNotAllowed
     return identity
 
 

@@ -4,8 +4,10 @@ Auth code raises the outcome it discovered and stops there. One handler reads `e
 answers; nothing else in the codebase reads it. The class name is the outcome vocabulary -- the
 handler snake_cases it into the structured log event -- so a rename here renames a log event.
 """
+from nativespeaker.api.auth.wire import BoundedReason
 from nativespeaker.api.errors import (
     ACCOUNT_UNAVAILABLE,
+    AUTH_REQUIRED,
     IDENTITY_ALREADY_LINKED,
     INTERNAL_ERROR,
     OPERATION_NOT_ALLOWED,
@@ -43,6 +45,27 @@ class AuthRejected(Exception):
 # this file, so an arm stays where the plan that wrote it put it.
 
 # --- Admission arms: `auth/identity.py` and the barrier in `app/dependencies.py` ---
+
+
+class InvalidExternalJwt(AuthRejected):
+    """No usable bearer credential: either none was presented, or the one presented did not verify.
+
+    One class for both arms, because today they are one outcome to the client -- the same 401 and
+    the same body -- and `bounded_reason` is the only thing that tells them apart. Splitting them
+    would put that distinction in the class name, which D-02 makes the log event, without either
+    half meaning anything different to a caller.
+    """
+
+    error_class = AUTH_REQUIRED
+
+    def __init__(self, *, bounded_reason: BoundedReason | None) -> None:
+        self.bounded_reason = bounded_reason
+        super().__init__(f"invalid external jwt: {bounded_reason}")
+
+    def log_fields(self) -> dict[str, str | None]:
+        # A `StrEnum` member, stringified here exactly as the deleted `_reject` stringified it, so
+        # the field's type in the log pipeline is unchanged by the migration.
+        return {"bounded_reason": None if self.bounded_reason is None else str(self.bounded_reason)}
 
 
 class PreAuthIdentityNotAllowed(AuthRejected):
