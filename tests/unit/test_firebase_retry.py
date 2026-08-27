@@ -131,16 +131,38 @@ class TestTheExhaustionConversion:
 
         assert raised.value.stage == "provider_lookup"
 
-    async def test_no_retry_error_escapes(self):
-        """`RetryError` matches no handler, so it would answer 500 where a 503 was owed."""
+    async def test_neither_the_retry_error_nor_the_internal_marker_escapes(self):
+        """The two ways the 503 gets lost, both named rather than left to "something raised".
+
+        `RetryError` is tenacity's default on an exhausted budget and matches no handler.
+        `RetryableLookupError` is what `reraise=True` would surface instead, and it carries no
+        `error_class` at all. Either one answers a hard 500 where the caller is owed a retryable
+        503, and neither is visible to a test that only asserts that the call raised.
+        """
         adapter = CountingAdapter(*[_retryable() for _ in range(FIREBASE_LOOKUP_ATTEMPTS)])
 
-        try:
+        with pytest.raises(BaseException) as raised:  # noqa: B017 -- the class is the assertion
             await lookup_with_retry(adapter, ISSUER, SUBJECT)
-        except tenacity.RetryError as exc:  # pragma: no cover - the assertion this test exists for
-            pytest.fail(f"RetryError escaped the retry frame: {exc!r}")
-        except Unavailable:
-            pass
+
+        assert not isinstance(raised.value, tenacity.RetryError)
+        assert not isinstance(raised.value, RetryableLookupError)
+        assert isinstance(raised.value, Unavailable)
+
+    async def test_the_last_marker_survives_as_the_chained_cause(self):
+        """Converted, not swallowed: the provider's own diagnosis is still reachable from the traceback."""
+        last = _retryable()
+        adapter = CountingAdapter(_retryable(), _retryable(), last)
+
+        with pytest.raises(Unavailable) as raised:
+            await lookup_with_retry(adapter, ISSUER, SUBJECT)
+
+        assert raised.value.__cause__ is last
+
+    async def test_the_conversion_does_not_fire_on_a_budget_that_was_not_exhausted(self):
+        """The control: a callback that raised unconditionally would pass every case above."""
+        adapter = CountingAdapter(_retryable(), ANONYMOUS)
+
+        assert await lookup_with_retry(adapter, ISSUER, SUBJECT) is ANONYMOUS
 
     async def test_the_client_facing_pair_is_a_503_with_the_matching_code(self):
         """Byte-for-byte what budgets.py:65-66 declared, so nothing about the wire moved."""
