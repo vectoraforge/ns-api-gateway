@@ -368,6 +368,20 @@ Plans:
 
 **Measured outcome:** the `auth/` package is **10 files, 19 classes, 44 functions**, down from the recorded 14/28/57 baseline — 1 module from the mode-signal deletion plus 3 absorbed by cohesion merges; 9 classes from the mode signal and the eight adapter interfaces; 13 functions from those plus the nine adapter methods, the two re-export facade functions and the rejection log. `tests/unit/test_auth_package_shape.py` carries the baseline and the current shape as literals with two controls, so the numbers are a checked fact rather than a claim, and any regrowth is a visible edit.
 
+#### Phase 37.3: Machine-generated code refactoring, part 2 (INSERTED)
+
+**Goal:** Kill the last machine-generated pattern in `auth/` — functions that *return* a rejection vocabulary (enums, result dataclasses, mapping dicts) which callers then translate into client responses. It is replaced by a DRF-style exception family raised where the rejection is discovered and answered by one FastAPI handler, with zero client-visible change: every status code, error class, body, header, consumption semantic and admission decision is preserved exactly. Only the structured-log event vocabulary changes, which is sanctioned.
+**Requirements**: No new requirement IDs — this phase *amends* FOUND-08 (whose Phase 37.2 amendment names the `ProviderData*` surface this phase deletes). The requirement set is decisions D-01…D-19 in `37.3-CONTEXT.md`.
+**Depends on:** Phase 37.2
+**Plans:** 4 plans
+
+Plans:
+
+- [ ] 37.3-01-PLAN.md — The exception family, its one handler, and the consuming transaction (`auth/creation.py`) converted to raise
+- [ ] 37.3-02-PLAN.md — `resolve_identity` and `get_request_context` raise inline; the re-logging helper, the zero-declarer accessor and two stranded registry symbols die
+- [ ] 37.3-03-PLAN.md — The provider lookup: one seam value type, a raised lookup hierarchy, inline classification, and retry by exception type
+- [ ] 37.3-04-PLAN.md — The challenge binding raises under one 409 base; the outcome enum dies; FOUND-08 amended
+
 #### Phase 38: POST /auth/sync
 
 **Goal:** Ship the read-only auth-state reconciliation surface clients call after sign-in or a lost response.
