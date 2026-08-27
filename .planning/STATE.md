@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 37.3
 current_phase_name: machine-generated-code-refactoring-part-2
 status: executing
-stopped_at: Completed 37.3-01-PLAN.md
-last_updated: "2026-08-27T07:20:10.764Z"
+stopped_at: Completed 37.3-02-PLAN.md
+last_updated: "2026-08-27T07:38:48.218Z"
 last_activity: 2026-08-26
 last_activity_desc: Phase 37.3 execution started
-state_head: 8dc291ef13dec08430b4e702e86199909e622b00
+state_head: 8d8029f7a5661eceffa41a4074340a02d60c5d80
 progress:
   total_phases: 16
   completed_phases: 6
   total_plans: 50
-  completed_plans: 47
+  completed_plans: 48
   percent: 38
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 37.3 (machine-generated-code-refactoring-part-2) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-08-26 — Phase 37.3 execution started
 
@@ -118,10 +118,10 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-27T07:20:02.769Z
+**Last session:** 2026-08-27T07:38:41.205Z
 
 Last activity: 2026-03-26
-Stopped at: Completed 37.3-01-PLAN.md
+Stopped at: Completed 37.3-02-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -143,6 +143,7 @@ Resume file: None
 | Phase 37 P07 | 35min | 3 tasks | 12 files |
 | Phase 37 P10 | ~55 min | 3 tasks | 5 files |
 | Phase 37.3 P01 | 41min | 4 tasks | 12 files |
+| Phase 37.3 P02 | 34min | 3 tasks | 9 files |
 
 ## Decisions
 
@@ -187,3 +188,6 @@ Resume file: None
 - [Phase ?]: 37.3 Task 1: the auth package-shape class ceiling is removed by decision, not widened; D-01 stands and the family lives in auth/exceptions.py
 - [Phase ?]: 37.3: no deployed dashboard keys on the retiring log event names, so D-02 may retire auth_rejected, create_user_challenge_rejected and create_user_lookup_rejected freely
 - [Phase ?]: 37.3 (RESEARCH OQ 2): _complete owns the post-claim consume for raising arms; create_account keeps it for the success path only
+- [Phase ?]: InvalidExternalJwt is one class for both wire arms; bounded_reason distinguishes them in the log (37.3-02)
+- [Phase ?]: The log event pre_auth_identity_not_allowed diverges from the client code preauth_identity_not_allowed, by decision (37.3-02)
+- [Phase ?]: Ratchet literals (event vocabulary, package shape) are extended in the commit that adds each class, not batched (37.3-02)
