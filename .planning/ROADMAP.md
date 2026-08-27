@@ -376,10 +376,20 @@ Plans:
 **Plans:** 4 plans
 
 Plans:
+**Wave 1**
 
 - [ ] 37.3-01-PLAN.md — The exception family, its one handler, and the consuming transaction (`auth/creation.py`) converted to raise
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 37.3-02-PLAN.md — `resolve_identity` and `get_request_context` raise inline; the re-logging helper, the zero-declarer accessor and two stranded registry symbols die
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 37.3-03-PLAN.md — The provider lookup: one seam value type, a raised lookup hierarchy, inline classification, and retry by exception type
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 37.3-04-PLAN.md — The challenge binding raises under one 409 base; the outcome enum dies; FOUND-08 amended
 
 #### Phase 38: POST /auth/sync
