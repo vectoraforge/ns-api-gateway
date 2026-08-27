@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 37.3
 current_phase_name: machine-generated-code-refactoring-part-2
-status: executing
-stopped_at: Completed 37.3-03-PLAN.md
-last_updated: "2026-08-27T08:08:42.881Z"
-last_activity: 2026-08-26
-last_activity_desc: Phase 37.3 execution started
-state_head: 4e5bd520d376cbcce54996e51ad845a0b5d1fe91
+status: verifying
+stopped_at: Completed 37.3-04-PLAN.md (final plan of phase 37.3)
+last_updated: "2026-08-27T08:40:56.320Z"
+last_activity: 2026-08-27
+last_activity_desc: Phase 37.3 execution complete — all four plans landed
+state_head: de09e132f148d54680150e5cec94dde2eda8909e
 progress:
   total_phases: 16
   completed_phases: 6
   total_plans: 50
-  completed_plans: 49
+  completed_plans: 50
   percent: 38
 ---
 
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 37.3 (machine-generated-code-refactoring-part-2) — EXECUTING
+Phase: 37.3 (machine-generated-code-refactoring-part-2) — COMPLETE
 Plan: 4 of 4
-Status: Ready to execute
-Last activity: 2026-08-26 — Phase 37.3 execution started
+Status: Phase complete — ready for verification
+Last activity: 2026-08-27 — Phase 37.3 execution complete — all four plans landed
 
 <!-- The plan counter was corrected from 3 to 8 on 2026-08-23, and from 9 to 10 on 2026-08-24, for
      the same reason both times. Waves 1, 2 and 4 ran as parallel worktree agents which deliberately
@@ -118,10 +118,10 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-27T08:08:42.692Z
+**Last session:** 2026-08-27T08:40:46.370Z
 
 Last activity: 2026-03-26
-Stopped at: Completed 37.3-03-PLAN.md
+Stopped at: Completed 37.3-04-PLAN.md (final plan of phase 37.3)
 Resume file: None
 
 ## Performance Metrics
@@ -145,6 +145,7 @@ Resume file: None
 | Phase 37.3 P01 | 41min | 4 tasks | 12 files |
 | Phase 37.3 P02 | 34min | 3 tasks | 9 files |
 | Phase 37.3 P03 | 31min | 4 tasks | 13 files |
+| Phase 37.3 P04 | 38min | 4 tasks | 13 files |
 
 ## Decisions
 
@@ -195,3 +196,7 @@ Resume file: None
 - [Phase ?]: The shared provider-seam fake scripts the seam's answer, not the read's inputs: classification and the email rule live behind the seam, and a fake that re-applied them would be a second copy of the rule (37.3-03)
 - [Phase ?]: The plan's zero-edit gate on tests/unit/test_adapter_interfaces.py was unsatisfiable — that file imports all three deleted result types by name; the closed-outcome-set cases became a seam-declares-no-enum claim instead (37.3-03)
 - [Phase ?]: D-13 instance: the bounded cause 'empty' had no producer (an empty providerData classifies as anonymous and never reaches the rejection) and went with the sweep (37.3-03)
+- [Phase 37.3]: 37.3-04: the five challenge rejections share one 409 declared once on ChallengeRejected; no subclass declares an error_class, so the anti-oracle property is structural
+- [Phase 37.3]: 37.3-04: pre-claim rejections escape to the handler with no local catch — get_db is the single rollback boundary, and the test doubles are now faithful async generators
+- [Phase 37.3]: 37.3-04: AuthEventResult deleted entirely — 44 members, not D-12's 43. AuthOperation survives for core.auth_challenges.operation
+- [Phase 37.3]: 37.3-04: FOUND-08 carries a dated Phase 37.3 amendment naming VerifiedProviderIdentity and the raised ProviderLookupError hierarchy; SHARED-INVARIANTS re-check found no new conflict
