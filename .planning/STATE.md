@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 37.3
 current_phase_name: machine-generated-code-refactoring-part-2
 status: executing
-stopped_at: Completed 37.3-02-PLAN.md
-last_updated: "2026-08-27T07:38:48.218Z"
+stopped_at: Completed 37.3-03-PLAN.md
+last_updated: "2026-08-27T08:08:42.881Z"
 last_activity: 2026-08-26
 last_activity_desc: Phase 37.3 execution started
-state_head: 8d8029f7a5661eceffa41a4074340a02d60c5d80
+state_head: 4e5bd520d376cbcce54996e51ad845a0b5d1fe91
 progress:
   total_phases: 16
   completed_phases: 6
   total_plans: 50
-  completed_plans: 48
+  completed_plans: 49
   percent: 38
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 37.3 (machine-generated-code-refactoring-part-2) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-08-26 — Phase 37.3 execution started
 
@@ -118,10 +118,10 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-27T07:38:41.205Z
+**Last session:** 2026-08-27T08:08:42.692Z
 
 Last activity: 2026-03-26
-Stopped at: Completed 37.3-02-PLAN.md
+Stopped at: Completed 37.3-03-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -144,6 +144,7 @@ Resume file: None
 | Phase 37 P10 | ~55 min | 3 tasks | 5 files |
 | Phase 37.3 P01 | 41min | 4 tasks | 12 files |
 | Phase 37.3 P02 | 34min | 3 tasks | 9 files |
+| Phase 37.3 P03 | 31min | 4 tasks | 13 files |
 
 ## Decisions
 
@@ -191,3 +192,6 @@ Resume file: None
 - [Phase ?]: InvalidExternalJwt is one class for both wire arms; bounded_reason distinguishes them in the log (37.3-02)
 - [Phase ?]: The log event pre_auth_identity_not_allowed diverges from the client code preauth_identity_not_allowed, by decision (37.3-02)
 - [Phase ?]: Ratchet literals (event vocabulary, package shape) are extended in the commit that adds each class, not batched (37.3-02)
+- [Phase ?]: The shared provider-seam fake scripts the seam's answer, not the read's inputs: classification and the email rule live behind the seam, and a fake that re-applied them would be a second copy of the rule (37.3-03)
+- [Phase ?]: The plan's zero-edit gate on tests/unit/test_adapter_interfaces.py was unsatisfiable — that file imports all three deleted result types by name; the closed-outcome-set cases became a seam-declares-no-enum claim instead (37.3-03)
+- [Phase ?]: D-13 instance: the bounded cause 'empty' had no producer (an empty providerData classifies as anonymous and never reaches the rejection) and went with the sweep (37.3-03)
