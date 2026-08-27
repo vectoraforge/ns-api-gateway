@@ -102,38 +102,23 @@ class _FakeChallengeStore:
 class _RejectionLog:
     """The rejections this request logged, in order, from a spy on each logger one can come from.
 
-    Rejections are migrating from the router to the exception handler one arm at a time. Spying on
-    both loggers is what lets the asserted string lists below stay stable while an arm moves: the
-    snake_cased exception class names already equal the result values the router logs today.
+    The migration this recorder was built to span is finished: every rejection below is now recorded
+    by the exception handler, and the router records none. Both loggers stay spied anyway, and both
+    feed one list -- that is what makes "only the handler records a rejection" a tested property
+    rather than an assumption, since a rejection re-logged at the router would appear here as a
+    second entry and fail the exactly-once cases.
     """
-
-    # The router's own rejection events. The transaction arm's retired with `_completion_response`
-    # and the lookup arms' with `_consuming_rejection`; the challenge arm moves as plan 04 lands.
-    _EVENTS = frozenset({"create_user_challenge_rejected"})
 
     def __init__(self) -> None:
         self.entries: list[tuple[str, dict]] = []
-        self._sources: list[str] = []
 
-    def record_router(self, event: str, **kwargs) -> None:
+    def record(self, event: str, **kwargs) -> None:
         self.entries.append((event, kwargs))
-        self._sources.append("router")
-
-    def record_handler(self, event: str, **kwargs) -> None:
-        self.entries.append((event, kwargs))
-        self._sources.append("handler")
 
     @property
     def results(self) -> list[str]:
-        """One string per rejection: the router's internal result, or the handler's event name."""
-        found: list[str] = []
-        for source, (event, kwargs) in zip(self._sources, self.entries, strict=True):
-            if source == "handler":
-                # The class name is the outcome vocabulary now (D-02): the event *is* the result.
-                found.append(event)
-            elif event in self._EVENTS:
-                found.append(kwargs.get("result", kwargs.get("stage")))
-        return found
+        """One string per rejection. The class name, snake_cased, is the outcome vocabulary (D-02)."""
+        return [event for event, _ in self.entries]
 
 
 class _StubSession:
@@ -186,10 +171,10 @@ def store(keyring) -> _FakeChallengeStore:
 
 @pytest.fixture
 def rejections(monkeypatch) -> _RejectionLog:
-    """Spy on both loggers a rejection can come from, so "which one" survives each arm's migration."""
+    """Spy on both loggers a rejection can come from, so one logged at the wrong site is still seen."""
     log = _RejectionLog()
-    monkeypatch.setattr("nativespeaker.api.routers.auth.logger.warning", log.record_router)
-    monkeypatch.setattr("nativespeaker.api.app.errors.logger.warning", log.record_handler)
+    monkeypatch.setattr("nativespeaker.api.routers.auth.logger.warning", log.record)
+    monkeypatch.setattr("nativespeaker.api.app.errors.logger.warning", log.record)
     return log
 
 

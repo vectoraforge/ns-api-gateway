@@ -13,16 +13,17 @@ from nativespeaker.api.app.dependencies import (
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.creation import create_account
-from nativespeaker.api.auth.exceptions import AuthRejected
-from nativespeaker.api.auth.firebase import lookup_with_retry
-from nativespeaker.api.errors import (
-    CHALLENGE_REQUIRED,
-    INVALID_REQUEST,
-    error_response,
+from nativespeaker.api.auth.exceptions import (
+    AuthRejected,
+    ChallengeConsumed,
+    ChallengeExpired,
+    ChallengeNotFound,
+    ChallengeOperationMismatch,
 )
+from nativespeaker.api.auth.firebase import lookup_with_retry
+from nativespeaker.api.errors import INVALID_REQUEST, error_response
 from nativespeaker.api.models.auth import (
     AuthChallenge,
-    AuthEventResult,
     AuthOperation,
     ChallengeRequest,
     CompletionResponse,
@@ -83,20 +84,25 @@ async def _complete(session: AsyncSession, *,
                     challenge_id: str,
                     challenge_store: ChallengeStore,
                     adapter) -> Response:
-    """Create the account. The order of the rejections below is the rejection precedence."""
+    """Create the account. The order of the rejections below is the rejection precedence.
+
+    Every rejection before the claim is raised, never caught here: `get_db` rolls the session back
+    on the way out and the handler answers the one 409 they all share. None of them carries a field,
+    because the row they were discovered on is expired by that rollback -- reading an attribute off
+    it in the handler would be I/O outside a greenlet, and the client would get 500 where 409 is owed.
+    """
     # No rejection before the claim consumes anything, so a wrong presenter cannot burn a live challenge.
     challenge = await challenge_store.locate(session, challenge_id)
     if challenge is None:
         # A definitive no-row. A lookup outage raises out of `locate` instead of answering "no such challenge".
-        return await _challenge_rejected(session, result=AuthEventResult.challenge_not_found)
+        raise ChallengeNotFound()
 
     # A bare statement: the keyed comparison stays inside the store, and the mismatch it finds is
     # raised there rather than returned. Pre-claim, so nothing here consumes and nothing rolls back.
     challenge_store.verify_binding(challenge, identity)
     if challenge.operation is not AuthOperation.create_user:
         # A challenge issued for another operation is a pre-claim rejection, like the binding mismatch above.
-        return await _challenge_rejected(
-            session, result=AuthEventResult.challenge_operation_mismatch)
+        raise ChallengeOperationMismatch()
 
     if not await challenge_store.claim(session,
                                        challenge_id=challenge_id,
@@ -104,9 +110,10 @@ async def _complete(session: AsyncSession, *,
                                        now=context.evaluated_at):
         # `claimed_at` distinguishes the two losses; the claim's WHERE is the only expiry evaluation anywhere.
         await session.refresh(challenge)
-        lost = (AuthEventResult.challenge_expired if challenge.claimed_at is None
-                else AuthEventResult.challenge_consumed)
-        return await _challenge_rejected(session, result=lost)
+        if challenge.claimed_at is None:
+            raise ChallengeExpired()
+        else:
+            raise ChallengeConsumed()
 
     # Deliberate commit: an uncommitted claim across the provider call would let a second attempt win the challenge.
     await session.commit()
@@ -138,14 +145,6 @@ async def _complete(session: AsyncSession, *,
 
     return JSONResponse(content=CompletionResponse(identity_provider=facts.provider)
                         .model_dump(mode="json"))
-
-
-async def _challenge_rejected(session: AsyncSession, *, result: AuthEventResult) -> Response:
-    """Answer every challenge rejection with one class, so completion is not a challenge-enumeration oracle."""
-    # The specific result goes to the log only; the public handle is never logged.
-    logger.warning("create_user_challenge_rejected", stage=str(result))
-    await session.rollback()
-    return error_response(CHALLENGE_REQUIRED)
 
 
 async def _consume_and_commit(session: AsyncSession, *,
