@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
     get_linked_identity,
-    get_preauth_identity,
     get_request_context,
 )
 from nativespeaker.api.app.errors import register_exception_handlers
@@ -29,7 +28,7 @@ from nativespeaker.api.models.identities import (
 from nativespeaker.api.models.users import User
 from unit.conftest import TEST_ISSUER, make_test_verifier, make_token
 
-ACCESSORS = (get_request_context, get_linked_identity, get_preauth_identity)
+ACCESSORS = (get_request_context, get_linked_identity)
 ISSUER = TEST_ISSUER
 SUBJECT = "firebase-uid-1"
 
@@ -111,14 +110,13 @@ class _ProbeSession:
 
 
 def _client(row=None) -> TestClient:
-    """Three accessor-declaring routes over stubbed app state, each declaring its accessor at both levels."""
+    """Two accessor-declaring routes over stubbed app state, each declaring its accessor at both levels."""
     _ProbeSession.instances.clear()
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     register_exception_handlers(app)
 
     ctx_router = APIRouter(dependencies=[Depends(get_request_context)])
     linked_router = APIRouter(dependencies=[Depends(get_linked_identity)])
-    preauth_router = APIRouter(dependencies=[Depends(get_preauth_identity)])
 
     @ctx_router.get("/ctx")
     async def _ctx(context: RequestContext = Depends(get_request_context)):
@@ -128,13 +126,8 @@ def _client(row=None) -> TestClient:
     async def _linked_route(identity: LinkedIdentity = Depends(get_linked_identity)):
         return {"user_id": str(identity.user.id)}
 
-    @preauth_router.get("/preauth")
-    async def _preauth_route(identity: PreAuthIdentity = Depends(get_preauth_identity)):
-        return {"subject": identity.subject}
-
     app.include_router(ctx_router)
     app.include_router(linked_router)
-    app.include_router(preauth_router)
 
     # Read per request by the dependency, exactly as the real lifespan supplies them.
     app.state.jwt_verifier = make_test_verifier()
@@ -147,9 +140,9 @@ def _bearer(subject: str = SUBJECT) -> dict[str, str]:
 
 
 class TestNoCredentialIsRefused:
-    """A route declaring any of the three refuses a caller who presented nothing."""
+    """A route declaring either accessor refuses a caller who presented nothing."""
 
-    @pytest.mark.parametrize("path", ["/ctx", "/linked", "/preauth"])
+    @pytest.mark.parametrize("path", ["/ctx", "/linked"])
     def test_no_authorization_header_answers_auth_required(self, path):
         response = _client().get(path)
         assert response.status_code == 401
@@ -157,7 +150,7 @@ class TestNoCredentialIsRefused:
         assert list(body.keys()) == ["code"]
         assert body["code"] == "auth_required"
 
-    @pytest.mark.parametrize("path", ["/ctx", "/linked", "/preauth"])
+    @pytest.mark.parametrize("path", ["/ctx", "/linked"])
     def test_an_unverifiable_token_answers_auth_required(self, path):
         response = _client().get(path, headers={"Authorization": "Bearer not.a.jwt"})
         assert response.status_code == 401
@@ -178,23 +171,12 @@ class TestVariantConfusionIsRefused:
         assert response.status_code == 403
         assert response.json() == {"code": "preauth_identity_not_allowed"}
 
-    def test_a_linked_caller_on_a_preauth_route_answers_401(self):
-        user, identity = _rows()
-        response = _client(row=(identity, user)).get("/preauth", headers=_bearer())
-        assert response.status_code == 401
-        assert response.json() == {"code": "auth_required"}
-
     def test_a_linked_caller_reaches_a_linked_route(self):
         """The negative cases mean nothing unless the positive hand-off actually works."""
         user, identity = _rows()
         response = _client(row=(identity, user)).get("/linked", headers=_bearer())
         assert response.status_code == 200
         assert response.json() == {"user_id": str(user.id)}
-
-    def test_a_preauth_caller_reaches_a_preauth_route(self):
-        response = _client(row=None).get("/preauth", headers=_bearer())
-        assert response.status_code == 200
-        assert response.json() == {"subject": SUBJECT}
 
     def test_get_request_context_accepts_either_variant(self):
         user, identity = _rows()
@@ -207,6 +189,55 @@ class TestVariantConfusionIsRefused:
         assert _client(row=None).get("/ctx", headers=_bearer()).json()["route"] == "/ctx"
 
 
+class TestTheWireArmsRaiseAndTheHandlerRecordsThemOnce:
+    """D-06's single-logging-site rule, asserted where a re-logging catch would show up as a second record."""
+
+    @pytest.fixture
+    def warnings(self, monkeypatch) -> list[tuple[str, dict]]:
+        """A recording spy on the handler's own logger -- see 35-02's caching note on capture_logs."""
+        entries: list[tuple[str, dict]] = []
+        monkeypatch.setattr("nativespeaker.api.app.errors.logger.warning",
+                            lambda event, **kw: entries.append((event, kw)))
+        return entries
+
+    @pytest.mark.parametrize("headers,expected_reason", [
+        ({}, "missing_token"),
+        ({"Authorization": "Bearer not.a.jwt"}, "malformed"),
+    ], ids=["absent-token", "failed-verify"])
+    def test_each_arm_logs_one_record_naming_its_class_and_its_bounded_reason(
+            self, headers, expected_reason, warnings):
+        response = _client().get("/linked", headers=headers)
+
+        assert response.status_code == 401
+        assert response.json() == {"code": "auth_required"}
+        assert len(warnings) == 1, f"expected exactly one record, got {warnings}"
+        event, fields = warnings[0]
+        assert event == "invalid_external_jwt"
+        assert fields["bounded_reason"] == expected_reason
+        assert fields["route"] == "/linked"
+
+    def test_the_bounded_reason_is_logged_as_a_plain_string(self, warnings):
+        """`BoundedReason` is a StrEnum; the field's type in the log pipeline does not change."""
+        _client().get("/linked")
+        _event, fields = warnings[0]
+        assert type(fields["bounded_reason"]) is str
+
+    def test_a_resolution_rejection_is_recorded_once_and_only_by_the_handler(self, warnings):
+        """A thin re-logging catch anywhere between the raise and the handler would make this two."""
+        response = _client(row=None).get("/linked", headers=_bearer())
+
+        assert response.status_code == 403
+        assert [name for name, _ in warnings] == ["pre_auth_identity_not_allowed"]
+
+    def test_an_admitted_request_leaves_no_record_at_all(self, warnings):
+        """The control: a spy that recorded nothing either way would pass every case above."""
+        user, identity = _rows()
+        response = _client(row=(identity, user)).get("/linked", headers=_bearer())
+
+        assert response.status_code == 200
+        assert warnings == []
+
+
 class TestNeverReturnsNone:
     """No accessor has a path that yields None, which is the failure mode worth naming."""
 
@@ -215,7 +246,7 @@ class TestNeverReturnsNone:
         annotation = get_type_hints(accessor)["return"]
         assert "None" not in str(annotation), f"{accessor.__name__} may return None"
 
-    @pytest.mark.parametrize("path", ["/ctx", "/linked", "/preauth"])
+    @pytest.mark.parametrize("path", ["/ctx", "/linked"])
     @pytest.mark.parametrize("header", [None, "", "Bearer", "Basic dXNlcjpwYXNz", "Bearer  "],
                              ids=["absent", "empty", "scheme-only", "wrong-scheme", "blank-token"])
     def test_no_failing_credential_shape_reaches_a_handler(self, path, header):
@@ -232,16 +263,15 @@ class TestAccessorsCannotProvision:
     def test_only_the_resolving_accessor_takes_the_request(self):
         """The narrowing accessors take the resolved context, which is also what puts them on the cache."""
         assert list(inspect.signature(get_request_context).parameters) == ["request"]
-        for accessor in (get_linked_identity, get_preauth_identity):
-            params = list(inspect.signature(accessor).parameters)
-            assert params == ["context"], f"{accessor.__name__} takes {params}, not the context"
+        params = list(inspect.signature(get_linked_identity).parameters)
+        assert params == ["context"], f"get_linked_identity takes {params}, not the context"
 
     @pytest.mark.parametrize("accessor", ACCESSORS, ids=lambda f: f.__name__)
     def test_accessor_is_asynchronous(self, accessor):
-        """All three await resolution now, so FastAPI must not hand them to the threadpool."""
+        """Both await resolution now, so FastAPI must not hand them to the threadpool."""
         assert inspect.iscoroutinefunction(accessor)
 
-    @pytest.mark.parametrize("path", ["/ctx", "/linked", "/preauth"])
+    @pytest.mark.parametrize("path", ["/ctx", "/linked"])
     def test_the_declaration_resolves_once(self, path):
         """One session across both declarations; an accessor calling rather than declaring ran everything twice."""
         user, identity = _rows()
