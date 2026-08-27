@@ -6,7 +6,12 @@ import pytest
 from firebase_admin import auth, credentials, exceptions
 
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
-from nativespeaker.api.auth.exceptions import AuthRejected, Unavailable, UserNotFound
+from nativespeaker.api.auth.exceptions import (
+    AuthRejected,
+    NotLinked,
+    Unavailable,
+    UserNotFound,
+)
 from nativespeaker.api.auth.firebase import (
     FIREBASE_HTTP_TIMEOUT_SECONDS,
     FIREBASE_LOOKUP_ATTEMPTS,
@@ -53,6 +58,23 @@ class StubProviderUserInfo:
     def __init__(self, provider_id: str, uid: str) -> None:
         self.provider_id = provider_id
         self.uid = uid
+
+
+# The providerData shapes the accept and reject tables below are built from.
+GOOGLE = ("google.com", "google-uid-1")
+APPLE = ("apple.com", "apple-uid-1")
+PASSWORD = ("password", "user@example.test")
+FACEBOOK = ("facebook.com", "facebook-uid-1")
+GOOGLE_NO_UID = ("google.com", "")
+APPLE_NO_UID = ("apple.com", "")
+GOOGLE_OTHER = ("google.com", "google-uid-2")
+
+def _record(entries, email=None, email_verified=False) -> StubUserRecord:
+    """A `UserRecord` stand-in whose providerData is the given `(provider_id, uid)` shape."""
+    return StubUserRecord(provider_data=[StubProviderUserInfo(provider_id, uid)
+                                         for provider_id, uid in entries],
+                          email=email,
+                          email_verified=email_verified)
 
 
 class RecordingApp:
@@ -191,24 +213,45 @@ class TestSuccessfulReads:
 
 
 class TestTheEmailRuleIsAppliedInsideTheRead:
-    """Both conditions are evaluated here now, so no unjudged address crosses the seam."""
+    """The two-condition copy rule, relocated here with the read it now lives inside.
 
-    async def test_a_verified_address_rides_out_on_the_identity(self, adapter, get_user_calls):
+    Three independent guards in one order -- absent, empty after stripping, unverified -- and each
+    one alone is enough to withhold the address.
+    """
+
+    async def test_a_non_empty_verified_address_is_copied(self, adapter, get_user_calls):
         get_user_calls(StubUserRecord(email="a@b.test", email_verified=True))
         identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
         assert identity.email == "a@b.test"
 
-    async def test_an_unverified_address_is_suppressed_rather_than_carried(self, adapter,
-                                                                          get_user_calls):
-        """The read judges now; no downstream predicate is left to turn this pair into `None`."""
-        get_user_calls(StubUserRecord(email="a@b.test", email_verified=False))
+    @pytest.mark.parametrize("email,email_verified,why", [
+        ("a@b.test", False, "unverified -- the second condition fails"),
+        (None, True, "absent -- the first condition fails"),
+        ("", True, "empty -- the first condition fails"),
+        ("   ", True, "whitespace only is not an address"),
+        (None, False, "neither condition holds"),
+    ], ids=["unverified", "absent", "empty", "whitespace-only", "neither"])
+    async def test_every_other_combination_yields_none(self, adapter, get_user_calls,
+                                                       email, email_verified, why):
+        """The read judges now; no downstream predicate is left to turn any of these into `None`."""
+        get_user_calls(StubUserRecord(email=email, email_verified=email_verified))
         identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert identity.email is None
+        assert identity.email is None, why
 
-    async def test_an_absent_address_is_none(self, adapter, get_user_calls):
-        get_user_calls(StubUserRecord(email=None, email_verified=False))
+    async def test_the_address_is_returned_verbatim_and_never_normalized(self, adapter,
+                                                                        get_user_calls):
+        """The `.strip()` inside the rule is a non-empty test, not a normalization step."""
+        get_user_calls(StubUserRecord(email="  Mixed.Case@B.TEST  ", email_verified=True))
         identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert identity.email is None
+        assert identity.email == "  Mixed.Case@B.TEST  "
+
+    async def test_the_address_rides_out_on_a_classified_identity_too(self, adapter,
+                                                                     get_user_calls):
+        """Both rules are applied to the same read, so neither can quietly suppress the other."""
+        get_user_calls(_record((GOOGLE,), email="a@b.test", email_verified=True))
+        identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
+        assert (identity.provider, identity.provider_uid, identity.email) == (
+            IdentityProvider.google, "google-uid-1", "a@b.test")
 
 
 class TestFailureMapping:
@@ -297,6 +340,152 @@ class TestNoProviderTextLeaks:
         with pytest.raises(RetryableLookupError) as raised:
             await adapter.get_user_provider_data(ISSUER, SUBJECT)
         assert PROVIDER_TEXT in str(raised.value)
+
+
+
+# --- The classifier's accept and reject sets, relocated from `test_provider_classifier.py` --------
+# The subject is no longer a public function, so the cases drive the whole read. Every prose reason
+# is kept verbatim: those strings are the record of the two prohibitions the classifier enforces,
+# and losing them loses the reasoning rather than merely the coverage.
+
+# The whole accept set. Three shapes, no fourth.
+ACCEPTED = [
+    ((), (IdentityProvider.anonymous, None), "empty providerData is anonymous"),
+    ((GOOGLE,), (IdentityProvider.google, "google-uid-1"), "exactly one google.com entry"),
+    ((APPLE,), (IdentityProvider.apple, "apple-uid-1"), "exactly one apple.com entry"),
+]
+
+# Everything else; each case names the prohibition it would violate if it were accepted.
+REJECTED = [
+    ((GOOGLE, APPLE), "both providers, google first -- never take the first recognized entry"),
+    ((APPLE, GOOGLE), "both providers, apple first -- rejection is order-independent"),
+    ((GOOGLE, GOOGLE_OTHER), "two google.com entries -- multiple entries never classify"),
+    ((PASSWORD,), "the e2e credential's shape -- `password` is not a recognized provider"),
+    ((FACEBOOK,), "an unrecognized provider id"),
+    ((GOOGLE_NO_UID,), "an empty uid is malformed/indeterminate, never persisted"),
+    ((APPLE_NO_UID,), "an empty uid is malformed/indeterminate, never persisted"),
+    ((GOOGLE, FACEBOOK), "recognized first, unrecognized second -- the recognized one is not taken"),
+    ((FACEBOOK, GOOGLE), "unrecognized first, recognized second -- same answer, either way"),
+]
+
+
+class TestTheAcceptSet:
+    """Exactly three shapes classify. `provider_uid` is NULL for anonymous and the uid otherwise."""
+
+    @pytest.mark.parametrize("entries,expected,why", ACCEPTED, ids=[case[2] for case in ACCEPTED])
+    async def test_a_recognized_shape_classifies(self, adapter, get_user_calls,
+                                                 entries, expected, why):
+        get_user_calls(_record(entries))
+        identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
+        assert (identity.provider, identity.provider_uid) == expected, why
+
+    async def test_anonymous_carries_no_provider_uid(self, adapter, get_user_calls):
+        """`core.external_identities`' CHECK requires NULL for anonymous and forbids a sentinel."""
+        get_user_calls(_record(()))
+        identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
+        assert identity.provider is IdentityProvider.anonymous
+        assert identity.provider_uid is None
+
+    @pytest.mark.parametrize("entry,provider", [(GOOGLE, IdentityProvider.google),
+                                                (APPLE, IdentityProvider.apple)])
+    async def test_the_matching_entrys_uid_is_the_sole_source_of_provider_uid(
+            self, adapter, get_user_calls, entry, provider):
+        """The matching entry's non-empty uid is the only source of `provider_uid`."""
+        get_user_calls(_record((entry,)))
+        identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
+        assert (identity.provider, identity.provider_uid) == (provider, entry[1])
+
+    def test_the_recognized_provider_map_has_exactly_two_keys(self):
+        """A third recognized provider is a spec change, not a refactor."""
+        from nativespeaker.api.auth import firebase
+        assert set(firebase._RECOGNIZED) == {"google.com", "apple.com"}
+
+
+class TestTheRejectSet:
+    """Shapes that must never be linked to a provider account the caller may not own."""
+
+    @pytest.mark.parametrize("entries,why", REJECTED, ids=[case[1] for case in REJECTED])
+    async def test_an_unrecognized_shape_rejects(self, adapter, get_user_calls, entries, why):
+        get_user_calls(_record(entries))
+        with pytest.raises(NotLinked) as raised:
+            await adapter.get_user_provider_data(ISSUER, SUBJECT)
+        assert raised.value.stage == "provider_classification", why
+
+    async def test_the_rejection_carries_the_one_bounded_cause(self, adapter, get_user_calls):
+        """The bounded string is ours; the shape that produced it never reaches a client."""
+        get_user_calls(_record((PASSWORD,)))
+        with pytest.raises(NotLinked) as raised:
+            await adapter.get_user_provider_data(ISSUER, SUBJECT)
+        assert raised.value.cause == "invalid-shape"
+        assert raised.value.error_class.status == 403
+
+    @pytest.mark.parametrize("pair", [(GOOGLE, APPLE), (GOOGLE, FACEBOOK), (GOOGLE, GOOGLE_OTHER)])
+    async def test_rejection_is_order_independent(self, adapter, get_user_calls, pair):
+        """Both orderings, because a classifier taking the first entry it recognizes passes only one of them."""
+        first, second = pair
+        get_user_calls(_record((first, second)))
+        with pytest.raises(NotLinked):
+            await adapter.get_user_provider_data(ISSUER, SUBJECT)
+        get_user_calls(_record((second, first)))
+        with pytest.raises(NotLinked):
+            await adapter.get_user_provider_data(ISSUER, SUBJECT)
+
+    async def test_a_two_entry_shape_rejects_even_when_both_entries_are_the_same_provider(
+            self, adapter, get_user_calls):
+        get_user_calls(_record((GOOGLE, GOOGLE)))
+        with pytest.raises(NotLinked):
+            await adapter.get_user_provider_data(ISSUER, SUBJECT)
+
+    async def test_a_rejecting_shape_spends_exactly_one_attempt(self, adapter, monkeypatch):
+        """Classification is definitive, so the budget is for outages and not for a settled verdict."""
+        calls = []
+
+        def counting_get_user(uid, app=None):
+            calls.append(uid)
+            return _record((PASSWORD,))
+
+        monkeypatch.setattr(auth, "get_user", counting_get_user)
+        with pytest.raises(NotLinked):
+            await lookup_with_retry(adapter, ISSUER, SUBJECT)
+        assert len(calls) == 1
+
+    async def test_a_not_found_read_is_answered_before_any_shape_is_classified(
+            self, adapter, get_user_calls):
+        """Relocated from the precedence suite, which can no longer set up both facts at once.
+
+        Classifying first would answer a terminal 403 to a caller whose token merely no longer
+        identifies a user -- so the record here carries a shape that *would* reject, and the
+        not-found arm must still be what answers.
+        """
+        get_user_calls(auth.UserNotFoundError(PROVIDER_TEXT))
+        with pytest.raises(UserNotFound):
+            await adapter.get_user_provider_data(ISSUER, SUBJECT)
+
+
+class TestTheClassifierRecordsItsProhibitions:
+    """The prohibitions recorded where the next reader is."""
+
+    @pytest.mark.parametrize("phrase", [
+        "never take the first recognized entry",
+        "never classify non-empty providerdata as anonymous",
+        "never read `firebase.sign_in_provider`",
+        "no declaration match",
+        "no `required_flow`",
+    ])
+    def test_the_module_docstring_records_the_prohibitions(self, phrase):
+        from nativespeaker.api.auth import firebase
+        assert phrase in firebase.__doc__.lower()
+
+    @pytest.mark.parametrize("name", ["sign_in_provider", "required_flow"])
+    def test_neither_deleted_concept_appears_outside_the_docstring(self, name):
+        """Checks the code rather than the file: strip the docstrings and neither identifier survives."""
+        import ast
+        from pathlib import Path
+
+        from nativespeaker.api.auth import firebase
+        source = Path(firebase.__file__).read_text()
+        code = source.replace(ast.get_docstring(ast.parse(source), clean=False), "", 1)
+        assert name not in code
 
 
 class TestTheDeliberateNonImplementations:
