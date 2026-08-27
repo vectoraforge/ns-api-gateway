@@ -373,7 +373,7 @@ Plans:
 **Goal:** Kill the last machine-generated pattern in `auth/` — functions that *return* a rejection vocabulary (enums, result dataclasses, mapping dicts) which callers then translate into client responses. It is replaced by a DRF-style exception family raised where the rejection is discovered and answered by one FastAPI handler, with zero client-visible change: every status code, error class, body, header, consumption semantic and admission decision is preserved exactly. Only the structured-log event vocabulary changes, which is sanctioned.
 **Requirements**: No new requirement IDs — this phase *amends* FOUND-08 (whose Phase 37.2 amendment names the `ProviderData*` surface this phase deletes). The requirement set is decisions D-01…D-19 in `37.3-CONTEXT.md`.
 **Depends on:** Phase 37.2
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans executed
 
 Plans:
 **Wave 1**
@@ -390,7 +390,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 37.3-04-PLAN.md — The challenge binding raises under one 409 base; the outcome enum dies; FOUND-08 amended
+- [x] 37.3-04-PLAN.md — The challenge binding raises under one 409 base; the outcome enum dies; FOUND-08 amended
 
 #### Phase 38: POST /auth/sync
 
