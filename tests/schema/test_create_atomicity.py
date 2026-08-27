@@ -1,7 +1,9 @@
 """No partial account, ever: a failed business insert leaves nothing, while the challenge consumption commits."""
+import ast
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -13,13 +15,9 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from nativespeaker.api.auth import creation
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.creation import (
-    PROVIDER_ACCOUNT_INDEX_NAME,
-    RACE_CONSTRAINT_NAMES,
-    create_account,
-)
+from nativespeaker.api.auth.creation import create_account
+from nativespeaker.api.auth.exceptions import AuthRejected, IdentityAlreadyLinked
 from nativespeaker.api.auth.keys import HmacConfig, HmacKeyring
-from nativespeaker.api.models.auth import AuthEventResult
 from nativespeaker.api.models.identities import IdentityProvider
 
 pytestmark = pytest.mark.schema
@@ -29,6 +27,20 @@ _SQLALCHEMY_PREFIX = "postgresql+asyncpg://"
 
 NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
 KEY_MATERIAL = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="  # 32 bytes, base64 -- test-only
+
+# The names the production arm now writes as literals inline. Declared here so the cases below read
+# plainly, and checked against the source itself below, so neither side can be renamed alone.
+RACE_CONSTRAINT_NAMES = ("external_identities_issuer_subject_key",
+                         "external_identities_user_id_key")
+PROVIDER_ACCOUNT_INDEX_NAME = "ix_external_identities_provider_account"
+
+
+def constraint_names_in_the_source() -> set[str]:
+    """Every constraint name the transaction names, read off the code rather than re-declared here."""
+    tree = ast.parse(Path(creation.__file__).read_text())
+    return {node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and "external_identities" in node.value}
 
 # Every UNIQUE *constraint* on the table, with its columns, read from the live catalog.
 _UNIQUE_CONSTRAINTS = """
@@ -197,21 +209,39 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
         id = row_id
         challenge_id = challenge_id_value
 
+    store = ChallengeStore(keyring())
     async with harness.factory() as real_session:
         session = _RacingSession(real_session, after_first_read)
-        result = await create_account(session,
-                                      context=ctx,
-                                      identity=ctx.identity,
-                                      challenge=_Challenge(),
-                                      provider=provider,
-                                      provider_uid=provider_uid,
-                                      email=None,
-                                      challenge_store=ChallengeStore(keyring()))
+        try:
+            result = await create_account(session,
+                                          context=ctx,
+                                          identity=ctx.identity,
+                                          challenge=_Challenge(),
+                                          provider=provider,
+                                          provider_uid=provider_uid,
+                                          email=None,
+                                          challenge_store=store)
+        except AuthRejected as rejection:
+            # The route's own except arm (`routers/auth.py::_complete`): a rejection after the claim
+            # consumes and commits before the client is answered. That commit surviving the
+            # savepoint rollback is the property this file exists to measure, so the driver has to
+            # perform it here rather than leaving half the choreography out.
+            await store.consume(session,
+                                challenge_id=challenge_id_value,
+                                claim_attempt_id=ctx.attempt_id,
+                                now=ctx.evaluated_at)
+            await session.commit()
+            result = rejection
     return result, row_id, challenge_id_value
 
 
 class TestTheConstraintNamesInTheCodeAreTheOnesPostgresReports:
     """The discrimination keys are literals in the source and the names are generated, so a rename breaks here."""
+
+    def test_the_source_names_exactly_the_three_constraints_this_file_declares(self):
+        """The helper and its two constants were deleted, so the literals in the arm are the declaration."""
+        assert constraint_names_in_the_source() == {*RACE_CONSTRAINT_NAMES,
+                                                    PROVIDER_ACCOUNT_INDEX_NAME}
 
     async def test_the_two_race_constraints_are_named_as_the_module_declares(self, harness):
         async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
@@ -267,7 +297,8 @@ class TestAConflictOnTheIdentityInsertLeavesNoPartialAccount:
 
     async def test_the_conflict_earns_its_client_class_rather_than_escaping(self, collided):
         """The uniqueness violation earns its client class rather than surfacing as a generic 500."""
-        assert collided["result"] is AuthEventResult.identity_already_linked
+        assert isinstance(collided["result"], IdentityAlreadyLinked)
+        assert collided["result"].error_class.status == 409
 
     async def test_no_users_row_survives_the_rollback(self, harness, collided):
         assert await scalar(harness, "SELECT count(*) FROM core.users") == collided["users_before"]
@@ -333,7 +364,7 @@ class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
 
     async def test_an_unmapped_conflict_is_not_dressed_up_as_a_business_outcome(self,
                                                                                token_collision):
-        """No AuthEventResult member describes an attribution collision, so inventing one would tell a lie."""
+        """No member of the rejection family describes an attribution collision, so raising one would lie."""
         assert isinstance(token_collision["error"], IntegrityError)
 
     async def test_no_users_row_survives_a_third_insert_failure(self, harness, token_collision):
@@ -362,7 +393,7 @@ class TestTheHappyPathStillCommitsEverything:
         result, row_id, _ = await run_creation(harness, subject=subject,
                                                provider=IdentityProvider.anonymous,
                                                provider_uid=None)
-        assert result is AuthEventResult.succeeded
+        assert isinstance(result, uuid.UUID)
 
         user_id = await scalar(
             harness,

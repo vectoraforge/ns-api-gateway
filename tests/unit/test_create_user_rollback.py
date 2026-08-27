@@ -1,13 +1,14 @@
 """Control flow only: a failed insert stops inserting and rolls back; durability is a schema-test claim."""
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.creation import create_account
-from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult, AuthOperation
+from nativespeaker.api.auth.exceptions import IdentityAlreadyLinked
+from nativespeaker.api.models.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.models.purchase_tokens import StorePurchaseToken
 from nativespeaker.api.models.users import User
@@ -105,7 +106,7 @@ def _context() -> RequestContext:
                           attempt_id=uuid4())
 
 
-async def _create(session, store) -> AuthEventResult:
+async def _create(session, store) -> UUID:
     context = _context()
     challenge = AuthChallenge(challenge_id="rollback-handle",
                               operation=AuthOperation.create_user,
@@ -127,13 +128,20 @@ def _harness(error: BaseException, **kwargs):
     return _FlushFailingSession(error=error, **kwargs), _ConsumingStore()
 
 
+async def _rejected(session, store, expect=IdentityAlreadyLinked):
+    """Drive the conflict arm to the rejection it raises, and hand the rejection back."""
+    with pytest.raises(expect) as raised:
+        await _create(session, store)
+    return raised.value
+
+
 class TestAllThreeInsertsShareOneSavepoint:
     """A user row with no identity row is the partial account this forbids."""
 
     async def test_the_savepoint_opens_before_the_first_insert(self):
         """Not around the last two, and not per-insert -- an insert outside it could not be undone."""
         session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
-        await _create(session, store)
+        await _rejected(session, store)
 
         assert session.savepoint.rolled_back is True
         assert session.savepoint.committed is False
@@ -141,7 +149,7 @@ class TestAllThreeInsertsShareOneSavepoint:
     async def test_all_three_row_kinds_were_inside_the_savepoint_that_rolled_back(self):
         """One savepoint over all four rows: a narrower one would leave tokens for a user that no longer exists."""
         session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
-        await _create(session, store)
+        await _rejected(session, store)
 
         kinds = [type(instance) for instance in session.added_at_failure]
         assert kinds.count(User) == 1
@@ -154,31 +162,32 @@ class TestAFailedInsertStopsInserting:
 
     async def test_no_further_row_is_added_after_the_failure(self):
         session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
-        await _create(session, store)
+        await _rejected(session, store)
 
         assert session.added == session.added_at_failure
 
     async def test_no_second_attempt_at_the_business_inserts(self):
         """A retry loop here would be a second race entrant under the same claim."""
         session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
-        await _create(session, store)
+        await _rejected(session, store)
 
         assert session.flushes == SECOND_FLUSH
 
     async def test_the_failure_is_never_swallowed_into_the_success_path(self):
+        """There is no success arm left to fall into: the conflict raises, so nothing can return an id."""
         session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
-        result = await _create(session, store)
+        rejection = await _rejected(session, store)
 
-        assert result is not AuthEventResult.succeeded
-        assert result is AuthEventResult.identity_already_linked
+        assert isinstance(rejection, IdentityAlreadyLinked)
+        assert rejection.error_class.status == 409
 
-    async def test_the_rejection_still_consumes_and_commits(self):
-        """The consume is reached after the rollback; that it actually commits is the schema test's claim."""
+    async def test_the_rejection_leaves_the_consume_to_the_route(self):
+        """D-04 put the post-claim consume in `_complete`'s except arm; doing it here too spends the handle twice."""
         session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
-        await _create(session, store)
+        await _rejected(session, store)
 
-        assert store.consumed == ["rollback-handle"]
-        assert session.commits == 1
+        assert store.consumed == []
+        assert session.commits == 0
 
 
 class TestAnUnclassifiableFailureIsNotAbsorbed:
@@ -210,8 +219,8 @@ class TestAnUnclassifiableFailureIsNotAbsorbed:
         """The user row goes in on the first flush; a conflict there must undo just as cleanly."""
         session, store = _harness(integrity_error("external_identities_user_id_key"),
                                   fail_on_flush=1)
-        result = await _create(session, store)
+        rejection = await _rejected(session, store)
 
-        assert result is AuthEventResult.identity_already_linked
+        assert isinstance(rejection, IdentityAlreadyLinked)
         assert session.savepoint.rolled_back is True
         assert [type(instance) for instance in session.added_at_failure] == [User]

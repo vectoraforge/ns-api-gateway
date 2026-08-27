@@ -13,8 +13,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.creation import create_account
+from nativespeaker.api.auth.exceptions import AuthRejected
 from nativespeaker.api.auth.keys import HmacConfig, HmacKeyring
-from nativespeaker.api.models.auth import AuthEventResult
 from nativespeaker.api.models.identities import IdentityProvider
 
 pytestmark = pytest.mark.schema
@@ -128,8 +128,14 @@ class _Attempt:
     context: RequestContext
     challenge_row_id: uuid.UUID
     challenge_id: str
-    result: AuthEventResult | None = None
+    # What the call produced: the new user's id on success, the rejection it raised otherwise.
+    result: uuid.UUID | AuthRejected | None = None
     identities_seen_at_barrier: int | None = None
+
+
+def outcome_name(attempt: _Attempt) -> str:
+    """The bucket an attempt lands in: `succeeded` for a returned id, the class name for a rejection."""
+    return "succeeded" if isinstance(attempt.result, uuid.UUID) else type(attempt.result).__name__
 
 
 async def prepare_attempt(harness: _Harness, *, subject: str, provider: IdentityProvider,
@@ -148,15 +154,28 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=Non
     """Drive the production consuming transaction once, on its own session and connection."""
     stored = type("_Challenge", (), {"id": attempt.challenge_row_id,
                                      "challenge_id": attempt.challenge_id})()
+    store = ChallengeStore(keyring())
     async with harness.factory() as real_session:
-        attempt.result = await create_account(_HookedSession(real_session, after_first_read),
-                                              context=attempt.context,
-                                              identity=attempt.context.identity,
-                                              challenge=stored,
-                                              provider=attempt.provider,
-                                              provider_uid=attempt.provider_uid,
-                                              email=None,
-                                              challenge_store=ChallengeStore(keyring()))
+        session = _HookedSession(real_session, after_first_read)
+        try:
+            attempt.result = await create_account(session,
+                                                  context=attempt.context,
+                                                  identity=attempt.context.identity,
+                                                  challenge=stored,
+                                                  provider=attempt.provider,
+                                                  provider_uid=attempt.provider_uid,
+                                                  email=None,
+                                                  challenge_store=store)
+        except AuthRejected as rejection:
+            # The route's own except arm (`routers/auth.py::_complete`): a rejection after the claim
+            # consumes and commits before the client is answered. Driving the transaction without it
+            # would measure half the choreography and read the missing half as a leaked challenge.
+            await store.consume(session,
+                                challenge_id=attempt.challenge_id,
+                                claim_attempt_id=attempt.context.attempt_id,
+                                now=attempt.context.evaluated_at)
+            await session.commit()
+            attempt.result = rejection
     return attempt
 
 
@@ -191,7 +210,7 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
             run_attempt(harness, first, barrier_for(harness, first, first_ready, second_ready)),
             run_attempt(harness, second, barrier_for(harness, second, second_ready, first_ready)))
 
-        by_result = {attempt.result: attempt for attempt in (first, second)}
+        by_result = {outcome_name(attempt): attempt for attempt in (first, second)}
         return {"subject": subject, "attempts": (first, second), "by_result": by_result}
 
     async def test_both_attempts_observed_an_unlinked_subject(self, raced):
@@ -200,8 +219,7 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
 
     async def test_exactly_one_succeeded_and_the_other_is_already_linked(self, raced):
         """Never two successes, and never idempotent success: the loser is told to reconcile, not "created"."""
-        assert set(raced["by_result"]) == {AuthEventResult.succeeded,
-                                           AuthEventResult.identity_already_linked}
+        assert set(raced["by_result"]) == {"succeeded", "IdentityAlreadyLinked"}
 
     async def test_exactly_one_identity_row_exists_for_the_contested_pair(self, harness, raced):
         """Two rows would mean the constraint did not arbitrate; zero would mean both rolled back."""
@@ -230,8 +248,8 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
     async def test_the_surviving_row_carries_the_winners_pair_and_none_of_the_losers(self, harness,
                                                                                     raced):
         """No merge and no overwrite: the attempts classified differently, so the loser's pair would show here."""
-        winner = raced["by_result"][AuthEventResult.succeeded]
-        loser = raced["by_result"][AuthEventResult.identity_already_linked]
+        winner = raced["by_result"]["succeeded"]
+        loser = raced["by_result"]["IdentityAlreadyLinked"]
         rows = await read(
             harness,
             "SELECT provider::text, provider_uid FROM core.external_identities "
@@ -264,7 +282,7 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
                 harness,
                 "SELECT consumed_at, preauth_subject_hash FROM core.auth_challenges WHERE id = :id",
                 {"id": attempt.challenge_row_id})
-            assert rows[0][0] is not None, f"{attempt.result} left its challenge unconsumed"
+            assert rows[0][0] is not None, f"{outcome_name(attempt)} left its challenge unconsumed"
             assert rows[0][1] is None
 
 
@@ -314,12 +332,12 @@ class TestRunningTheSameCreationTwiceSequentially:
         return identities, users, tokens
 
     async def test_the_first_run_creates_the_account(self, twice):
-        assert twice["first"].result is AuthEventResult.succeeded
+        assert isinstance(twice["first"].result, uuid.UUID)
         assert twice["counts_after_first"] == (1, 1, 2)
 
     async def test_the_second_run_rejects_rather_than_returning_idempotent_success(self, twice):
         """Not "already created, here you go" -- a 409 whose remediation is `/auth/sync`."""
-        assert twice["second"].result is AuthEventResult.identity_already_linked
+        assert outcome_name(twice["second"]) == "IdentityAlreadyLinked"
 
     async def test_the_second_run_changes_no_row_count(self, twice):
         assert twice["counts_after_second"] == twice["counts_after_first"]

@@ -13,7 +13,8 @@ from nativespeaker.api.app.dependencies import (
 from nativespeaker.api.auth.adapters import ProviderDataOutcome
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.creation import CLIENT_CLASS_FOR_RESULT, create_account
+from nativespeaker.api.auth.creation import create_account
+from nativespeaker.api.auth.exceptions import AuthRejected
 from nativespeaker.api.auth.firebase import (
     LOOKUP_UNAVAILABLE_ERROR_CLASS,
     LOOKUP_UNAVAILABLE_RESULT,
@@ -38,7 +39,6 @@ from nativespeaker.api.models.auth import (
     CreateUserRequest,
     PrepareResponse,
 )
-from nativespeaker.api.models.identities import IdentityProvider
 
 logger = structlog.get_logger()
 
@@ -146,16 +146,26 @@ async def _complete(session: AsyncSession, *,
     # The one place the copy rule is evaluated; `create_account` takes a plain `email` and re-derives nothing.
     email = email_to_persist(provider_data)
 
-    result = await create_account(session,
-                                  context=context,
-                                  identity=identity,
-                                  challenge=challenge,
-                                  provider=provider,
-                                  provider_uid=provider_uid,
-                                  email=email,
+    try:
+        await create_account(session,
+                             context=context,
+                             identity=identity,
+                             challenge=challenge,
+                             provider=provider,
+                             provider_uid=provider_uid,
+                             email=email,
+                             challenge_store=challenge_store)
+    except AuthRejected:
+        # D-04: the transaction's raising arms leave the consume here, so the two paths spend the
+        # handle exactly once between them. The bare re-raise is safe because after the commit the
+        # session holds no transaction, so `get_db`'s rollback-on-exception cannot un-consume it --
+        # the client spent this handle and must not get it back.
+        await _consume_and_commit(session, context=context, challenge=challenge,
                                   challenge_store=challenge_store)
+        raise
 
-    return _completion_response(result, provider)
+    return JSONResponse(content=CompletionResponse(identity_provider=provider)
+                        .model_dump(mode="json"))
 
 
 async def _challenge_rejected(session: AsyncSession, *, result: AuthEventResult) -> Response:
@@ -194,6 +204,16 @@ async def _consuming_rejection(session: AsyncSession, *,
     """Reject after the provider read, consuming the challenge so the handle cannot be re-presented."""
     bounded = {} if cause is None else {"cause": cause}
     logger.warning("create_user_lookup_rejected", stage=stage, result=str(result), **bounded)
+    await _consume_and_commit(session, context=context, challenge=challenge,
+                              challenge_store=challenge_store)
+    return error_response(error_class)
+
+
+async def _consume_and_commit(session: AsyncSession, *,
+                              context: RequestContext,
+                              challenge: AuthChallenge,
+                              challenge_store: ChallengeStore) -> None:
+    """Spend the handle and commit, so a rejection after the claim cannot be re-presented."""
     consumed = await challenge_store.consume(session,
                                              challenge_id=challenge.challenge_id,
                                              claim_attempt_id=context.attempt_id,
@@ -203,13 +223,3 @@ async def _consuming_rejection(session: AsyncSession, *,
         logger.error("challenge_consume_did_not_match", challenge_row_id=str(challenge.id))
 
     await session.commit()
-    return error_response(error_class)
-
-
-def _completion_response(result: AuthEventResult, provider: IdentityProvider) -> Response:
-    """Map the internal result onto the client's answer. The internal result is never client-visible."""
-    if result is not AuthEventResult.succeeded:
-        logger.warning("create_user_transaction_rejected", result=str(result))
-        return error_response(CLIENT_CLASS_FOR_RESULT[result])
-    return JSONResponse(content=CompletionResponse(identity_provider=provider)
-                        .model_dump(mode="json"))

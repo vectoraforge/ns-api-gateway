@@ -1,5 +1,6 @@
 """The consuming transaction for `create_user`: one function, one transaction, every input a parameter."""
 from datetime import datetime
+from typing import NoReturn
 from uuid import UUID, uuid4
 
 import structlog
@@ -9,35 +10,17 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
-from nativespeaker.api.errors import (
-    ACCOUNT_UNAVAILABLE,
-    IDENTITY_ALREADY_LINKED,
-    OPERATION_NOT_ALLOWED,
-    ErrorClass,
+from nativespeaker.api.auth.exceptions import (
+    AccountUnavailable,
+    IdentityAlreadyLinked,
+    ProviderAccountAlreadyLinked,
 )
-from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult
+from nativespeaker.api.models.auth import AuthChallenge
 from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.models.purchase_tokens import PurchaseProvider, StorePurchaseToken
 from nativespeaker.api.models.users import User
 
 logger = structlog.get_logger()
-
-# PostgreSQL's generated names for the two UNIQUE rules on external_identities; a schema test pins them.
-RACE_CONSTRAINT_NAMES = frozenset({
-    "external_identities_issuer_subject_key",
-    "external_identities_user_id_key",
-})
-
-# A partial UNIQUE index, which asyncpg reports by name exactly as it reports a constraint.
-PROVIDER_ACCOUNT_INDEX_NAME = "ix_external_identities_provider_account"
-
-# The client class each non-succeeded result earns; the router maps it and never re-derives it.
-CLIENT_CLASS_FOR_RESULT: dict[AuthEventResult, ErrorClass] = {
-    AuthEventResult.identity_already_linked: IDENTITY_ALREADY_LINKED,
-    AuthEventResult.provider_account_already_linked: OPERATION_NOT_ALLOWED,
-    AuthEventResult.historical_identity: ACCOUNT_UNAVAILABLE,
-    AuthEventResult.blocked_user: ACCOUNT_UNAVAILABLE,
-}
 
 
 async def create_account(session: AsyncSession, *,
@@ -47,22 +30,28 @@ async def create_account(session: AsyncSession, *,
                          provider: IdentityProvider,
                          provider_uid: str | None,
                          email: str | None,
-                         challenge_store: ChallengeStore) -> AuthEventResult:
-    """Run the consuming transaction and return the internal result it earned."""
+                         challenge_store: ChallengeStore) -> UUID:
+    """Return the new user's id, or raise the rejection the transaction earned.
+
+    Total rather than narrowed: the existing-identity branch has no success arm -- all three of its
+    outcomes are rejections -- and the insert branch either succeeds or conflicts.
+    """
     existing = await resolve_existing_identity(session, issuer=identity.issuer, subject=identity.subject)
 
-    if existing is None:
-        _, result = await _insert_account(session,
-                                          evaluated_at=context.evaluated_at,
-                                          identity=identity,
-                                          provider=provider,
-                                          provider_uid=provider_uid,
-                                          email=email)
-    else:
+    if existing is not None:
         # The prepare-time pre-check is racy, so this resolution is the one that decides.
-        result = await _result_for_existing(session, existing)
+        await _reject_existing_identity(session, existing)
 
-    # On the outer transaction, on success and rejection alike, before the commit and never itself.
+    user_id = await _insert_account(session,
+                                    evaluated_at=context.evaluated_at,
+                                    identity=identity,
+                                    provider=provider,
+                                    provider_uid=provider_uid,
+                                    email=email)
+
+    # The success path's consume, on the outer transaction, before the commit and never itself.
+    # A raising arm never reaches this line: it leaves the consume to the route's except arm, so
+    # the two paths spend the handle exactly once between them.
     consumed = await challenge_store.consume(session,
                                              challenge_id=challenge.challenge_id,
                                              claim_attempt_id=context.attempt_id,
@@ -72,7 +61,7 @@ async def create_account(session: AsyncSession, *,
         logger.error("challenge_consume_did_not_match", challenge_row_id=str(challenge.id))
 
     await session.commit()
-    return result
+    return user_id
 
 
 async def resolve_existing_identity(session: AsyncSession, *,
@@ -83,34 +72,16 @@ async def resolve_existing_identity(session: AsyncSession, *,
     return (await session.exec(statement)).first()
 
 
-def classify_insert_conflict(exc: IntegrityError) -> AuthEventResult:
-    """Which business outcome a rejected `INSERT` earned. An unmapped constraint re-raises, loudly."""
-    name = _conflicting_constraint_name(exc)
-    if name in RACE_CONSTRAINT_NAMES:
-        return AuthEventResult.identity_already_linked
-    if name == PROVIDER_ACCOUNT_INDEX_NAME:
-        return AuthEventResult.provider_account_already_linked
-    raise exc
-
-
-def _conflicting_constraint_name(exc: IntegrityError) -> str | None:
-    """The driver's `constraint_name`, walked down the cause chain -- never the rendered message."""
-    cause: BaseException | None = exc.orig
-    while cause is not None and not hasattr(cause, "constraint_name"):
-        cause = cause.__cause__
-    return getattr(cause, "constraint_name", None)
-
-
-async def _result_for_existing(session: AsyncSession,
-                               existing: ExternalIdentity) -> AuthEventResult:
-    """Map an already-present identity row onto its result. No mutation, and every test fails closed."""
+async def _reject_existing_identity(session: AsyncSession,
+                                    existing: ExternalIdentity) -> NoReturn:
+    """Raise what an already-present identity row earned. No mutation, and every test fails closed."""
     if existing.identity_state != IdentityState.active:
-        return AuthEventResult.historical_identity
+        raise AccountUnavailable(cause="historical_identity")
 
     user = (await session.exec(select(User).where(col(User.id) == existing.user_id))).first()
     if user is None or user.active is not True:
-        return AuthEventResult.blocked_user
-    return AuthEventResult.identity_already_linked
+        raise AccountUnavailable(cause="blocked_user")
+    raise IdentityAlreadyLinked()
 
 
 async def _insert_account(session: AsyncSession, *,
@@ -118,7 +89,7 @@ async def _insert_account(session: AsyncSession, *,
                           identity: LinkedIdentity | PreAuthIdentity,
                           provider: IdentityProvider,
                           provider_uid: str | None,
-                          email: str | None) -> tuple[UUID | None, AuthEventResult]:
+                          email: str | None) -> UUID:
     """All three inserts in one savepoint: a conflict rolls them back but leaves the consume able to commit."""
     savepoint = await session.begin_nested()
     try:
@@ -128,7 +99,20 @@ async def _insert_account(session: AsyncSession, *,
     except IntegrityError as conflict:
         # Rollback FIRST, classify second: until then the session refuses every further statement.
         await savepoint.rollback()
-        return None, classify_insert_conflict(conflict)
+        # The driver's own `constraint_name`, walked down the cause chain -- never the rendered
+        # message, whose text depends on the server's locale and names no rule unambiguously.
+        cause: BaseException | None = conflict.orig
+        while cause is not None and not hasattr(cause, "constraint_name"):
+            cause = cause.__cause__
+        name = getattr(cause, "constraint_name", None)
+
+        if name in ("external_identities_issuer_subject_key", "external_identities_user_id_key"):
+            raise IdentityAlreadyLinked() from conflict
+        if name == "ix_external_identities_provider_account":
+            raise ProviderAccountAlreadyLinked() from conflict
+        # A name nobody mapped is a new constraint or a rename, which is a bug. Re-raising it
+        # unchanged is a deliberate 500 tripwire: reported as a benign 409 it would never be found.
+        raise conflict
 
 
 async def _flush_account(session: AsyncSession, savepoint, *,
@@ -136,7 +120,7 @@ async def _flush_account(session: AsyncSession, savepoint, *,
                          identity: LinkedIdentity | PreAuthIdentity,
                          provider: IdentityProvider,
                          provider_uid: str | None,
-                         email: str | None) -> tuple[UUID, AuthEventResult]:
+                         email: str | None) -> UUID:
     """The inserts themselves, so the arm above reads as one rollback around one body."""
     user = User(email=email,
                 registered_at=None if provider is IdentityProvider.anonymous else evaluated_at,
@@ -164,4 +148,4 @@ async def _flush_account(session: AsyncSession, savepoint, *,
 
     await session.flush()
     await savepoint.commit()
-    return user.id, AuthEventResult.succeeded
+    return user.id
