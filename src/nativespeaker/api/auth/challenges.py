@@ -2,7 +2,6 @@
 import base64
 import secrets
 from datetime import datetime, timedelta
-from enum import StrEnum
 from uuid import UUID
 
 from sqlalchemy import update
@@ -10,6 +9,7 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
+from nativespeaker.api.auth.exceptions import ChallengeConsumed, ChallengeIdentityMismatch
 from nativespeaker.api.auth.keys import HmacKeyring
 from nativespeaker.api.models.auth import AuthChallenge, AuthOperation
 
@@ -23,15 +23,6 @@ CHALLENGE_ID_BYTES = 16
 def new_challenge_id() -> str:
     """A fresh opaque handle: 16 CSPRNG bytes, base64url, unpadded, with nothing in it to parse."""
     return base64.urlsafe_b64encode(secrets.token_bytes(CHALLENGE_ID_BYTES)).rstrip(b"=").decode()
-
-
-class ChallengeRejection(StrEnum):
-    """The five rejections. Every value is also an `AuthEventResult` member; none is client-visible."""
-    challenge_not_found = "challenge_not_found"
-    challenge_expired = "challenge_expired"
-    challenge_consumed = "challenge_consumed"
-    challenge_identity_mismatch = "challenge_identity_mismatch"
-    challenge_operation_mismatch = "challenge_operation_mismatch"
 
 
 class ChallengeStore:
@@ -106,20 +97,24 @@ class ChallengeStore:
         return len(result.all()) == 1
 
     def verify_binding(self, row: AuthChallenge,
-                       identity: LinkedIdentity | PreAuthIdentity) -> ChallengeRejection | None:
-        """The completion comparison. `None` means it matches; keyed material compares only via the keyring."""
+                       identity: LinkedIdentity | PreAuthIdentity) -> None:
+        """The completion comparison. It returns when the binding matches, and raises what it earned otherwise.
+
+        The raises carry nothing: the caller is pre-claim, so the rejection travels out through
+        `get_db`'s rollback, and a field read on the far side of that would be I/O outside a
+        greenlet. Keyed material still compares only via the keyring.
+        """
         if row.bound_external_identity_id is not None:
             if (isinstance(identity, LinkedIdentity)
                     and identity.identity.id == row.bound_external_identity_id):
-                return None
-            return ChallengeRejection.challenge_identity_mismatch
+                return
+            raise ChallengeIdentityMismatch()
 
         # The pre-auth arm. A cleared hash is never compared: the row takes the already-used answer.
         if row.preauth_subject_hash is None:
-            return ChallengeRejection.challenge_consumed
+            raise ChallengeConsumed()
         if row.preauth_issuer != identity.issuer:
-            return ChallengeRejection.challenge_identity_mismatch
+            raise ChallengeIdentityMismatch()
         if not self._keyring.actor_subject_matches(row.preauth_subject_hash,
                                                    identity.issuer, identity.subject):
-            return ChallengeRejection.challenge_identity_mismatch
-        return None
+            raise ChallengeIdentityMismatch()

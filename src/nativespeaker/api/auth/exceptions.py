@@ -8,6 +8,7 @@ from nativespeaker.api.auth.wire import BoundedReason
 from nativespeaker.api.errors import (
     ACCOUNT_UNAVAILABLE,
     AUTH_REQUIRED,
+    CHALLENGE_REQUIRED,
     IDENTITY_ALREADY_LINKED,
     INTERNAL_ERROR,
     OPERATION_NOT_ALLOWED,
@@ -170,3 +171,45 @@ class NotLinked(ProviderLookupError):
     """
 
     error_class = OPERATION_NOT_ALLOWED
+
+
+# --- Challenge arms: the binding comparison in `auth/challenges.py`, and the precedence block in
+# `routers/auth.py::_complete` that surrounds it ---
+
+
+class ChallengeRejected(AuthRejected):
+    """The five challenge rejections' one shape, and never raised itself -- only its leaves are.
+
+    The 409 is declared here and nowhere below, deliberately. Completion must not become a
+    challenge-enumeration oracle, so there is exactly *one* answer for all five, in one place: a
+    future edit cannot make one of them answer differently without overriding this on purpose,
+    where a reviewer sees it. That is a deliberate divergence from the
+    `AnalysisError`/`TransientLLMError` pair in `errors.py`, which re-declares `error_class` on the
+    child; here the re-declaration is the failure mode, not the convention.
+
+    None of the five carries an `__init__` or a field, so none can be handed the secret challenge
+    handle to put in a log line. The vocabulary test's leaf rule is satisfied by inheritance from
+    this class -- a strict ancestor other than `AuthRejected` -- rather than by five declarations.
+    """
+
+    error_class = CHALLENGE_REQUIRED
+
+
+class ChallengeNotFound(ChallengeRejected):
+    """No row carries the handle presented, compared byte for byte and never trimmed."""
+
+
+class ChallengeExpired(ChallengeRejected):
+    """The claim found the row still unclaimed but past its expiry -- the one expiry evaluation."""
+
+
+class ChallengeConsumed(ChallengeRejected):
+    """The handle was already spent, or another attempt holds the claim; there is no replay."""
+
+
+class ChallengeIdentityMismatch(ChallengeRejected):
+    """The row is bound to an identity that is not the caller's, linked or pre-auth."""
+
+
+class ChallengeOperationMismatch(ChallengeRejected):
+    """The row was issued for another operation, so this route may not spend it."""

@@ -90,10 +90,9 @@ async def _complete(session: AsyncSession, *,
         # A definitive no-row. A lookup outage raises out of `locate` instead of answering "no such challenge".
         return await _challenge_rejected(session, result=AuthEventResult.challenge_not_found)
 
-    # `ChallengeRejection` values are `AuthEventResult` values; the keyed comparison stays inside the store.
-    rejection = challenge_store.verify_binding(challenge, identity)
-    if rejection is not None:
-        return await _challenge_rejected(session, result=AuthEventResult(rejection.value))
+    # A bare statement: the keyed comparison stays inside the store, and the mismatch it finds is
+    # raised there rather than returned. Pre-claim, so nothing here consumes and nothing rolls back.
+    challenge_store.verify_binding(challenge, identity)
     if challenge.operation is not AuthOperation.create_user:
         # A challenge issued for another operation is a pre-claim rejection, like the binding mismatch above.
         return await _challenge_rejected(
