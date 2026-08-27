@@ -11,8 +11,8 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from e2e.conftest import seed_identity
-from nativespeaker.api.auth.challenges import ChallengeRejection
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
+from nativespeaker.api.auth.exceptions import ChallengeConsumed, ChallengeIdentityMismatch
 from nativespeaker.api.models.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.models.identities import IdentityProvider
 
@@ -338,8 +338,8 @@ class TestTheBindingAgainstRealRows:
                                 operation=AuthOperation.claim_registered_grant)
 
         row = await read(_db_transaction, handle)
-        assert (store.verify_binding(row, intruder)
-                is ChallengeRejection.challenge_identity_mismatch)
+        with pytest.raises(ChallengeIdentityMismatch):
+            store.verify_binding(row, intruder)
 
     async def test_a_rejected_binding_leaves_the_challenge_unconsumed(self, store,
                                                                       _db_transaction):
@@ -354,7 +354,8 @@ class TestTheBindingAgainstRealRows:
         handle, _ = await issue(_db_transaction, store, context,
                                 operation=AuthOperation.claim_registered_grant)
 
-        store.verify_binding(await read(_db_transaction, handle), intruder)
+        with pytest.raises(ChallengeIdentityMismatch):
+            store.verify_binding(await read(_db_transaction, handle), intruder)
 
         row = await read(_db_transaction, handle)
         assert row.claimed_at is None
@@ -381,7 +382,8 @@ class TestTheBindingAgainstRealRows:
             await session.commit()
 
         row = await read(_db_transaction, handle)
-        assert store.verify_binding(row, preauth()) is ChallengeRejection.challenge_consumed
+        with pytest.raises(ChallengeConsumed):
+            store.verify_binding(row, preauth())
 
 
 @pytest.mark.asyncio(loop_scope="module")

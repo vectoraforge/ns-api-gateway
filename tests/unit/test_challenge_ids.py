@@ -15,13 +15,13 @@ import pytest
 from nativespeaker.api.auth.challenges import (
     CHALLENGE_ID_BYTES,
     CHALLENGE_TTL_SECONDS,
-    ChallengeRejection,
     ChallengeStore,
     new_challenge_id,
 )
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
+from nativespeaker.api.auth.exceptions import ChallengeConsumed, ChallengeIdentityMismatch
 from nativespeaker.api.auth.keys import HmacConfig, HmacKeyring
-from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult, AuthOperation
+from nativespeaker.api.models.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.models.users import User
 
@@ -300,8 +300,8 @@ class TestTheCompletionComparison:
                             operation=AuthOperation.claim_registered_grant,
                             bound_external_identity_id=uuid7(),
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
-        assert (store().verify_binding(row, linked_identity())
-                is ChallengeRejection.challenge_identity_mismatch)
+        with pytest.raises(ChallengeIdentityMismatch):
+            store().verify_binding(row, linked_identity())
 
     def test_a_linked_row_rejects_a_preauth_request(self):
         """A pre-auth request resolved to no identity row, so it must not be waved through for lack of a comparison."""
@@ -309,8 +309,8 @@ class TestTheCompletionComparison:
                             operation=AuthOperation.claim_registered_grant,
                             bound_external_identity_id=uuid7(),
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
-        assert (store().verify_binding(row, preauth_identity())
-                is ChallengeRejection.challenge_identity_mismatch)
+        with pytest.raises(ChallengeIdentityMismatch):
+            store().verify_binding(row, preauth_identity())
 
     def test_a_preauth_row_matches_the_subject_it_was_issued_for(self):
         ring = keyring()
@@ -328,8 +328,8 @@ class TestTheCompletionComparison:
                             preauth_issuer=ISSUER,
                             preauth_subject_hash=ring.actor_subject_hash(ISSUER, SUBJECT),
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
-        assert (store(ring).verify_binding(row, preauth_identity("someone-else"))
-                is ChallengeRejection.challenge_identity_mismatch)
+        with pytest.raises(ChallengeIdentityMismatch):
+            store(ring).verify_binding(row, preauth_identity("someone-else"))
 
     def test_a_preauth_row_rejects_a_different_issuer(self):
         """A subject is unique only within its issuer, so the hash alone would admit another provider's subject."""
@@ -339,8 +339,8 @@ class TestTheCompletionComparison:
                             preauth_issuer="https://securetoken.google.com/other-project",
                             preauth_subject_hash=ring.actor_subject_hash(ISSUER, SUBJECT),
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
-        assert (store(ring).verify_binding(row, preauth_identity())
-                is ChallengeRejection.challenge_identity_mismatch)
+        with pytest.raises(ChallengeIdentityMismatch):
+            store(ring).verify_binding(row, preauth_identity())
 
     def test_a_preauth_row_still_matches_a_subject_that_has_since_become_linked(self):
         """What fails a pre-auth binding is a differing hash, not the subject having since become linked."""
@@ -359,8 +359,8 @@ class TestTheCompletionComparison:
                             preauth_issuer=ISSUER,
                             preauth_subject_hash=keyring(1).actor_subject_hash(ISSUER, SUBJECT),
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
-        assert (store(keyring(2)).verify_binding(row, preauth_identity())
-                is ChallengeRejection.challenge_identity_mismatch)
+        with pytest.raises(ChallengeIdentityMismatch):
+            store(keyring(2)).verify_binding(row, preauth_identity())
 
     def test_a_cleared_preauth_hash_takes_the_already_used_rejection(self):
         row = AuthChallenge(challenge_id=new_challenge_id(),
@@ -369,8 +369,8 @@ class TestTheCompletionComparison:
                             preauth_subject_hash=None,
                             consumed_at=FIXED_NOW,
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
-        assert (store().verify_binding(row, preauth_identity())
-                is ChallengeRejection.challenge_consumed)
+        with pytest.raises(ChallengeConsumed):
+            store().verify_binding(row, preauth_identity())
 
     def test_a_cleared_preauth_hash_is_not_compared_at_all(self):
         """Not-compared is a property of the code path, not of the answer, so the keyring is one that explodes."""
@@ -381,7 +381,8 @@ class TestTheCompletionComparison:
                             consumed_at=FIXED_NOW,
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
         exploding = ChallengeStore(_ExplodingKeyring())  # ty: ignore[invalid-argument-type]
-        assert exploding.verify_binding(row, preauth_identity()) is ChallengeRejection.challenge_consumed
+        with pytest.raises(ChallengeConsumed):
+            exploding.verify_binding(row, preauth_identity())
 
     def test_the_hash_comparison_goes_through_the_shared_constant_time_seam(self):
         """Asserted on the AST, because `compare_digest` and `==` return identical answers for every input."""
@@ -470,15 +471,10 @@ class TestTheStoreBuildsNoMachineryTheDesignForbids:
         assert "hmac" not in imported
         assert "hashlib" not in imported
 
-    def test_the_rejection_names_are_the_internal_results_they_map_onto(self):
-        """Pinning the names lets a caller convert directly instead of maintaining a mapping table that drifts."""
-        for rejection in ChallengeRejection:
-            assert AuthEventResult(rejection.value)
-
-    def test_the_five_rejections_are_exactly_the_challenge_results(self):
-        assert {r.value for r in ChallengeRejection} == {
-            "challenge_not_found", "challenge_expired", "challenge_consumed",
-            "challenge_identity_mismatch", "challenge_operation_mismatch"}
+    # The two cases that pinned `ChallengeRejection`'s member names against `AuthEventResult` went
+    # with both enums. What they were really guarding -- that the five rejection names are exactly
+    # these five and a rename is a visible edit -- now lives in `test_rejection_vocabulary.py`,
+    # where the class names *are* the vocabulary and the whole family is enumerated at once.
 
 
 def _non_docstring_strings(tree: ast.Module) -> list[str]:

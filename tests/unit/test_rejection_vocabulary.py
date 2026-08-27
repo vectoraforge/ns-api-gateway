@@ -14,8 +14,24 @@ import pytest
 
 from nativespeaker.api.app.errors import camel_to_snake
 from nativespeaker.api.auth import exceptions as exceptions_module
-from nativespeaker.api.auth.exceptions import AuthRejected, NotLinked, Unavailable, UserNotFound
+from nativespeaker.api.auth.exceptions import (
+    AuthRejected,
+    ChallengeConsumed,
+    ChallengeExpired,
+    ChallengeIdentityMismatch,
+    ChallengeNotFound,
+    ChallengeOperationMismatch,
+    ChallengeRejected,
+    NotLinked,
+    Unavailable,
+    UserNotFound,
+)
 from nativespeaker.api.errors import IDENTITY_ALREADY_LINKED, INTERNAL_ERROR
+
+# The five leaves under one 409 base, listed here rather than derived, for the same reason the event
+# names below are: this file is where a change to the family is meant to become a visible edit.
+CHALLENGE_ARMS = (ChallengeNotFound, ChallengeExpired, ChallengeConsumed,
+                  ChallengeIdentityMismatch, ChallengeOperationMismatch)
 
 FAMILY_MODULE = exceptions_module.__name__
 
@@ -35,6 +51,13 @@ EVENT_NAMES = frozenset({
     "user_not_found",
     "unavailable",
     "not_linked",
+    # The challenge arms, on the same terms: the group base is a member of the family too.
+    "challenge_rejected",
+    "challenge_not_found",
+    "challenge_expired",
+    "challenge_consumed",
+    "challenge_identity_mismatch",
+    "challenge_operation_mismatch",
 })
 
 
@@ -113,6 +136,42 @@ class TestTheLookupArmsCarryStageAndOnlyABoundedCause:
     def test_every_logged_value_is_a_plain_string(self, rejection):
         """The provider's own text must never become a log value here; both fields are ours."""
         assert all(isinstance(value, str) for value in rejection.log_fields().values())
+
+
+class TestTheChallengeArmsAnswerOneThingAndDeclareNothing:
+    """D-14's anti-oracle property, asserted as structure rather than as five equal answers.
+
+    Five equal answers is what a client sees; what makes it stay true is that there is only one
+    answer to change. The 409 is declared once on `ChallengeRejected` and each of the five inherits
+    it, so making one of them answer differently takes a deliberate override that a reviewer sees.
+    """
+
+    def test_the_five_are_exactly_the_leaves_under_the_shared_base(self):
+        """A sixth arm added without coming here would be a rejection nobody checked the answer of."""
+        assert set(_family(ChallengeRejected)) == set(CHALLENGE_ARMS)
+
+    @pytest.mark.parametrize("arm", CHALLENGE_ARMS, ids=lambda c: c.__name__)
+    def test_no_arm_declares_an_error_class_of_its_own(self, arm):
+        """Deliberately unlike `AnalysisError`/`TransientLLMError` in `errors.py`, which re-declares."""
+        assert "error_class" not in vars(arm)
+        assert arm.error_class is ChallengeRejected.error_class
+
+    @pytest.mark.parametrize("arm", CHALLENGE_ARMS, ids=lambda c: c.__name__)
+    def test_every_arm_answers_the_one_challenge_required_class(self, arm):
+        assert arm.error_class.status == 409
+        assert arm.error_class.code == "challenge_required"
+
+    @pytest.mark.parametrize("arm", CHALLENGE_ARMS, ids=lambda c: c.__name__)
+    def test_no_arm_can_carry_anything_into_its_log_line(self, arm):
+        """No `__init__` and no fields, so the secret handle cannot be passed to one of these."""
+        assert arm().log_fields() == {}
+
+    def test_the_five_are_still_five_distinct_log_events(self):
+        """One answer to the client and five records in the log is the whole point of the shape."""
+        events = [camel_to_snake(arm.__name__) for arm in CHALLENGE_ARMS]
+        assert sorted(events) == sorted(set(events))
+        assert set(events) == {"challenge_not_found", "challenge_expired", "challenge_consumed",
+                               "challenge_identity_mismatch", "challenge_operation_mismatch"}
 
 
 class TestNoLeafSilentlyAnswersTheFailClosedDefault:
