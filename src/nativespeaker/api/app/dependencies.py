@@ -14,7 +14,7 @@ from nativespeaker.api.auth.context import (
     PreAuthIdentity,
     RequestContext,
 )
-from nativespeaker.api.auth.identity import Reject, resolve_identity
+from nativespeaker.api.auth.identity import resolve_identity
 from nativespeaker.api.auth.wire import BoundedReason, extract_bearer
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.errors import (
@@ -66,13 +66,11 @@ async def get_request_context(request: Request) -> RequestContext:
     # Its own short session, closed before the handler: Depends(get_db) would hold it across the provider call.
     async with request.app.state.session_factory() as session:
         # allow_preauth=True here; get_linked_identity narrows, so create-user can answer 409 not 403.
-        decision = await resolve_identity(session, issuer=claims.issuer,
+        # Rejections raise through untouched: the handler is the one site that records them.
+        identity = await resolve_identity(session, issuer=claims.issuer,
                                           subject=claims.subject, allow_preauth=True)
 
-    if isinstance(decision, Reject):
-        _reject(decision.error_class, decision.result, None, route)
-
-    return RequestContext(identity=decision.identity,
+    return RequestContext(identity=identity,
                           route=route,
                           evaluated_at=evaluated_at,
                           attempt_id=attempt_id)

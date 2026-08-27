@@ -9,6 +9,7 @@ from nativespeaker.api.errors import (
     IDENTITY_ALREADY_LINKED,
     INTERNAL_ERROR,
     OPERATION_NOT_ALLOWED,
+    PREAUTH_IDENTITY_NOT_ALLOWED,
     ErrorClass,
 )
 
@@ -40,6 +41,26 @@ class AuthRejected(Exception):
 # The subclasses are grouped by arm, in the order D-17 converts them: admission arms, creation
 # arms, lookup arms, challenge arms. Later plans append inside their own group. No plan reorganises
 # this file, so an arm stays where the plan that wrote it put it.
+
+# --- Admission arms: `auth/identity.py` and the barrier in `app/dependencies.py` ---
+
+
+class PreAuthIdentityNotAllowed(AuthRejected):
+    """A verified pair that matched no identity row, on a route that admits only linked callers."""
+
+    error_class = PREAUTH_IDENTITY_NOT_ALLOWED
+
+
+class IdentityUnresolvable(AuthRejected):
+    """An identity row whose `user_id` resolves to nothing: unresolvable state, read fail-closed.
+
+    The one class in the family that legitimately *declares* `INTERNAL_ERROR` rather than inheriting
+    the base's fail-closed default -- a broken identity->user link is a real 500, not a leaf that
+    forgot to name its class. Declared explicitly so the vocabulary test can tell the two apart.
+    """
+
+    error_class = INTERNAL_ERROR
+
 
 # --- Creation arms: the consuming transaction in `auth/creation.py` ---
 
