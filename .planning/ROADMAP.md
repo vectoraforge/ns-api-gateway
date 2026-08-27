@@ -373,12 +373,12 @@ Plans:
 **Goal:** Kill the last machine-generated pattern in `auth/` — functions that *return* a rejection vocabulary (enums, result dataclasses, mapping dicts) which callers then translate into client responses. It is replaced by a DRF-style exception family raised where the rejection is discovered and answered by one FastAPI handler, with zero client-visible change: every status code, error class, body, header, consumption semantic and admission decision is preserved exactly. Only the structured-log event vocabulary changes, which is sanctioned.
 **Requirements**: No new requirement IDs — this phase *amends* FOUND-08 (whose Phase 37.2 amendment names the `ProviderData*` surface this phase deletes). The requirement set is decisions D-01…D-19 in `37.3-CONTEXT.md`.
 **Depends on:** Phase 37.2
-**Plans:** 4 plans
+**Plans:** 1/4 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 37.3-01-PLAN.md — The exception family, its one handler, and the consuming transaction (`auth/creation.py`) converted to raise
+- [x] 37.3-01-PLAN.md — The exception family, its one handler, and the consuming transaction (`auth/creation.py`) converted to raise
 
 **Wave 2** *(blocked on Wave 1 completion)*
 

@@ -3,18 +3,18 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 37.3
-current_phase_name: Machine-generated code refactoring, part 2
+current_phase_name: machine-generated-code-refactoring-part-2
 status: executing
-stopped_at: Phase 37.3 context gathered
-last_updated: "2026-08-27T05:08:03.368Z"
-last_activity: 2026-08-25
-last_activity_desc: Phase 37.3 inserted after Phase 37 (urgent); next-up moved from Phase 38 to 37.3
-state_head: 8347debb0c89f07cb67d1868d1d238bd171db2fa
+stopped_at: Completed 37.3-01-PLAN.md
+last_updated: "2026-08-27T07:20:10.764Z"
+last_activity: 2026-08-26
+last_activity_desc: Phase 37.3 execution started
+state_head: 8dc291ef13dec08430b4e702e86199909e622b00
 progress:
   total_phases: 16
   completed_phases: 6
   total_plans: 50
-  completed_plans: 46
+  completed_plans: 47
   percent: 38
 ---
 
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 37.3 — Machine-generated code refactoring, part 2
-Plan: Not started
+Phase: 37.3 (machine-generated-code-refactoring-part-2) — EXECUTING
+Plan: 2 of 4
 Status: Ready to execute
-Last activity: 2026-08-25 — Phase 37.3 inserted after Phase 37 (urgent), ahead of Phase 38
+Last activity: 2026-08-26 — Phase 37.3 execution started
 
 <!-- The plan counter was corrected from 3 to 8 on 2026-08-23, and from 9 to 10 on 2026-08-24, for
      the same reason both times. Waves 1, 2 and 4 ran as parallel worktree agents which deliberately
@@ -118,11 +118,11 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-27T02:47:22.001Z
+**Last session:** 2026-08-27T07:20:02.769Z
 
 Last activity: 2026-03-26
-Stopped at: Phase 37.3 context gathered
-Resume file: .planning/phases/37.3-machine-generated-code-refactoring-part-2/37.3-CONTEXT.md
+Stopped at: Completed 37.3-01-PLAN.md
+Resume file: None
 
 ## Performance Metrics
 
@@ -142,6 +142,7 @@ Resume file: .planning/phases/37.3-machine-generated-code-refactoring-part-2/37.
 | Phase 37 P01 | ~20min | 3 tasks | 8 files |
 | Phase 37 P07 | 35min | 3 tasks | 12 files |
 | Phase 37 P10 | ~55 min | 3 tasks | 5 files |
+| Phase 37.3 P01 | 41min | 4 tasks | 12 files |
 
 ## Decisions
 
@@ -183,3 +184,6 @@ Resume file: .planning/phases/37.3-machine-generated-code-refactoring-part-2/37.
 - [Phase ?]: 37-07: the consuming transaction is auth/creation.py::create_account, a plain function over (session + resolved facts), so 37-09 can drive it with two real sessions; begin_nested() wraps the business inserts
 - [Phase ?]: D-08 amended (37-10): the Firebase Admin credential arrives via Application Default Credentials, not a service-account key — org policy iam.disableServiceAccountKeyCreation forbids minting one. Named per-issuer app, explicit projectId and no [DEFAULT] app are unchanged; only the credential source moved.
 - [Phase ?]: RESEARCH A5 closed by measurement (37-10): httpTimeout bounds each get_user transport attempt exactly, but the SDK makes two per call — one get_user costs up to 2x httpTimeout (16s at 8s), and with auth/retry.py's 3 attempts a worst-case completion holds ~48s. Fails closed; latency exposure only.
+- [Phase ?]: 37.3 Task 1: the auth package-shape class ceiling is removed by decision, not widened; D-01 stands and the family lives in auth/exceptions.py
+- [Phase ?]: 37.3: no deployed dashboard keys on the retiring log event names, so D-02 may retire auth_rejected, create_user_challenge_rejected and create_user_lookup_rejected freely
+- [Phase ?]: 37.3 (RESEARCH OQ 2): _complete owns the post-claim consume for raising arms; create_account keeps it for the success path only
