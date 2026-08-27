@@ -1,21 +1,22 @@
 """The issuer-selected Firebase Admin adapter against a monkeypatched SDK: no network, no credential, no app."""
-import dataclasses
-
 import firebase_admin
 import google.auth
 import google.auth.exceptions
 import pytest
 from firebase_admin import auth, credentials, exceptions
 
-from nativespeaker.api.auth.adapters import ProviderDataOutcome
+from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
+from nativespeaker.api.auth.exceptions import AuthRejected, Unavailable, UserNotFound
 from nativespeaker.api.auth.firebase import (
     FIREBASE_HTTP_TIMEOUT_SECONDS,
     FIREBASE_LOOKUP_ATTEMPTS,
     FirebaseAdminLookup,
+    RetryableLookupError,
     build_admin_apps,
     lookup_with_retry,
 )
 from nativespeaker.api.config import JWTConfig
+from nativespeaker.api.models.identities import IdentityProvider
 
 PROJECT_ID = "ns-test-project"
 ISSUER = f"https://securetoken.google.com/{PROJECT_ID}"
@@ -133,7 +134,7 @@ class TestBuildAdminApps:
         assert build_admin_apps(StubConfig()) == {}
 
     def test_the_per_attempt_timeout_sits_inside_the_mandated_band(self):
-        """`adapters.py:16-17`: a fixed configured per-attempt timeout on the order of 5-10 s."""
+        """`adapters.py`'s preamble: a fixed configured per-attempt timeout on the order of 5-10 s."""
         assert 5 <= FIREBASE_HTTP_TIMEOUT_SECONDS <= 10
 
 
@@ -143,15 +144,24 @@ class TestSelection:
     async def test_an_unconfigured_issuer_fails_closed_and_calls_nothing(self, adapter,
                                                                         get_user_calls):
         calls = get_user_calls(StubUserRecord())
-        result = await adapter.get_user_provider_data(OTHER_ISSUER, SUBJECT)
-        assert result.outcome is ProviderDataOutcome.selection_failure
+        with pytest.raises(Unavailable) as raised:
+            await adapter.get_user_provider_data(OTHER_ISSUER, SUBJECT)
+        assert raised.value.stage == "issuer_selection"
         assert calls == []
 
     async def test_an_empty_mapping_fails_closed_for_every_issuer(self, get_user_calls):
         calls = get_user_calls(StubUserRecord())
-        result = await FirebaseAdminLookup({}).get_user_provider_data(ISSUER, SUBJECT)
-        assert result.outcome is ProviderDataOutcome.selection_failure
+        with pytest.raises(Unavailable) as raised:
+            await FirebaseAdminLookup({}).get_user_provider_data(ISSUER, SUBJECT)
+        assert raised.value.stage == "issuer_selection"
         assert calls == []
+
+    async def test_the_issuer_arm_answers_the_retryable_class_not_a_hard_failure(self, adapter):
+        """503, not 500: a misconfigured issuer is ours to fix, and the caller may usefully come back."""
+        with pytest.raises(Unavailable) as raised:
+            await adapter.get_user_provider_data(OTHER_ISSUER, SUBJECT)
+        assert raised.value.error_class.status == 503
+        assert raised.value.error_class.code == "verification_temporarily_unavailable"
 
     async def test_a_configured_issuer_passes_its_own_app_explicitly(self, adapter, app,
                                                                     get_user_calls):
@@ -162,84 +172,60 @@ class TestSelection:
 
 
 class TestSuccessfulReads:
-    """`ok` carries foundation's own frozen entries, never the SDK's objects."""
+    """A completed read produces the seam's one value type, never the SDK's own objects."""
 
-    async def test_empty_provider_data_is_an_ok_with_no_entries(self, adapter, get_user_calls):
+    async def test_empty_provider_data_is_the_anonymous_identity(self, adapter, get_user_calls):
         get_user_calls(StubUserRecord(provider_data=()))
-        result = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert result.outcome is ProviderDataOutcome.ok
-        assert result.entries == ()
+        identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
+        assert isinstance(identity, VerifiedProviderIdentity)
+        assert identity.provider is IdentityProvider.anonymous
+        assert identity.provider_uid is None
 
-    async def test_entries_are_foundation_dataclasses_carrying_provider_id_and_uid(self, adapter,
-                                                                                  get_user_calls):
+    async def test_one_recognized_entry_yields_that_provider_and_its_uid(self, adapter,
+                                                                        get_user_calls):
         get_user_calls(StubUserRecord(
             provider_data=[StubProviderUserInfo("google.com", "google-uid-1")]))
-        result = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert result.outcome is ProviderDataOutcome.ok
-        assert [(e.provider_id, e.uid) for e in result.entries] == [("google.com", "google-uid-1")]
-        assert all(dataclasses.is_dataclass(entry) for entry in result.entries)
+        identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
+        assert (identity.provider, identity.provider_uid) == (IdentityProvider.google,
+                                                              "google-uid-1")
 
 
-class TestTheEmailFields:
-    """Read from the same record on the `ok` arm; the adapter reports and judges nothing."""
+class TestTheEmailRuleIsAppliedInsideTheRead:
+    """Both conditions are evaluated here now, so no unjudged address crosses the seam."""
 
-    async def test_a_verified_address_rides_out_on_the_result(self, adapter, get_user_calls):
+    async def test_a_verified_address_rides_out_on_the_identity(self, adapter, get_user_calls):
         get_user_calls(StubUserRecord(email="a@b.test", email_verified=True))
-        result = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert result.outcome is ProviderDataOutcome.ok
-        assert result.email == "a@b.test"
-        assert result.email_verified is True
+        identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
+        assert identity.email == "a@b.test"
 
-    async def test_an_unverified_address_is_reported_verbatim_not_suppressed(self, adapter,
-                                                                            get_user_calls):
-        """The adapter reports; `email_to_persist` is what turns this pair into `None`."""
+    async def test_an_unverified_address_is_suppressed_rather_than_carried(self, adapter,
+                                                                          get_user_calls):
+        """The read judges now; no downstream predicate is left to turn this pair into `None`."""
         get_user_calls(StubUserRecord(email="a@b.test", email_verified=False))
-        result = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert result.outcome is ProviderDataOutcome.ok
-        assert result.email == "a@b.test"
-        assert result.email_verified is False
+        identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
+        assert identity.email is None
 
     async def test_an_absent_address_is_none(self, adapter, get_user_calls):
         get_user_calls(StubUserRecord(email=None, email_verified=False))
-        result = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert result.outcome is ProviderDataOutcome.ok
-        assert result.email is None
-        assert result.email_verified is False
-
-    @pytest.mark.parametrize("answer,expected", [
-        (auth.UserNotFoundError(PROVIDER_TEXT), ProviderDataOutcome.user_not_found),
-        (exceptions.FirebaseError("unavailable", PROVIDER_TEXT), ProviderDataOutcome.retryable_failure),
-        (StubUserRecord(raises=ValueError("User ID must not be None or empty.")),
-         ProviderDataOutcome.retryable_failure),
-    ], ids=["user_not_found", "firebase_error", "malformed_provider_data"])
-    async def test_every_non_ok_result_carries_the_defaults(self, adapter, get_user_calls,
-                                                            answer, expected):
-        get_user_calls(answer)
-        result = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert result.outcome is expected
-        assert result.email is None
-        assert result.email_verified is False
-        assert result.entries == ()
-
-    async def test_a_selection_failure_carries_the_defaults_too(self, adapter):
-        result = await adapter.get_user_provider_data(OTHER_ISSUER, SUBJECT)
-        assert result.email is None
-        assert result.email_verified is False
+        identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
+        assert identity.email is None
 
 
 class TestFailureMapping:
-    """Every SDK failure mode lands in the closed four-value outcome set. Nothing escapes."""
+    """Every SDK failure mode becomes either the internal retry marker or a family rejection."""
 
     async def test_user_not_found_is_definitive(self, adapter, get_user_calls):
-        """Non-retryable: it spends no retry budget (`adapters.py:52-54`)."""
+        """Non-retryable, so it is deliberately not the marker the retry predicate catches."""
         get_user_calls(auth.UserNotFoundError(PROVIDER_TEXT))
-        result = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert result.outcome is ProviderDataOutcome.user_not_found
+        with pytest.raises(UserNotFound) as raised:
+            await adapter.get_user_provider_data(ISSUER, SUBJECT)
+        assert raised.value.stage == "provider_lookup"
+        assert raised.value.error_class.status == 401
 
     async def test_a_firebase_error_is_retryable(self, adapter, get_user_calls):
         get_user_calls(exceptions.FirebaseError("unavailable", PROVIDER_TEXT))
-        result = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert result.outcome is ProviderDataOutcome.retryable_failure
+        with pytest.raises(RetryableLookupError):
+            await adapter.get_user_provider_data(ISSUER, SUBJECT)
 
     async def test_a_credential_refresh_failure_is_retryable_and_never_escapes(self, adapter,
                                                                               get_user_calls):
@@ -247,11 +233,11 @@ class TestFailureMapping:
         assert not issubclass(google.auth.exceptions.RefreshError, exceptions.FirebaseError)
         assert not issubclass(google.auth.exceptions.RefreshError, ValueError)
         get_user_calls(google.auth.exceptions.RefreshError("token refresh failed"))
-        result = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert result.outcome is ProviderDataOutcome.retryable_failure
+        with pytest.raises(RetryableLookupError):
+            await adapter.get_user_provider_data(ISSUER, SUBJECT)
 
     async def test_a_credential_failure_spends_the_full_retry_budget(self, adapter, monkeypatch):
-        """The point of returning a result rather than raising: the policy can actually retry it."""
+        """The point of a separate internal marker: the policy can actually retry this one."""
         calls = []
 
         def failing_get_user(uid, app=None):
@@ -259,43 +245,58 @@ class TestFailureMapping:
             raise google.auth.exceptions.RefreshError("token refresh failed")
 
         monkeypatch.setattr(auth, "get_user", failing_get_user)
-        result = await lookup_with_retry(adapter, ISSUER, SUBJECT)
+        with pytest.raises(Unavailable) as raised:
+            await lookup_with_retry(adapter, ISSUER, SUBJECT)
 
-        assert result.outcome is ProviderDataOutcome.retryable_failure
+        assert raised.value.stage == "provider_lookup"
         assert len(calls) == FIREBASE_LOOKUP_ATTEMPTS
 
     async def test_a_lazy_provider_data_value_error_is_retryable_and_never_escapes(self, adapter,
                                                                                   get_user_calls):
         """The empty-`rawId` shape, materialized inside the threadpool call rather than after it returns."""
         get_user_calls(StubUserRecord(raises=ValueError("User ID must not be None or empty.")))
-        result = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert result.outcome is ProviderDataOutcome.retryable_failure
+        with pytest.raises(RetryableLookupError):
+            await adapter.get_user_provider_data(ISSUER, SUBJECT)
 
     async def test_user_not_found_is_not_swallowed_by_the_firebase_error_arm(self, adapter,
                                                                             get_user_calls):
         """`UserNotFoundError` subclasses `FirebaseError`; a reordered `except` would misclassify."""
         assert issubclass(auth.UserNotFoundError, exceptions.FirebaseError)
         get_user_calls(auth.UserNotFoundError(PROVIDER_TEXT))
-        result = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert result.outcome is not ProviderDataOutcome.retryable_failure
+        with pytest.raises(UserNotFound):
+            await adapter.get_user_provider_data(ISSUER, SUBJECT)
+
+    def test_the_internal_marker_is_not_a_member_of_the_rejection_family(self):
+        """It carries no `error_class`, so an escape is a loud 500 rather than a quietly wrong body."""
+        assert not issubclass(RetryableLookupError, AuthRejected)
+        assert not hasattr(RetryableLookupError, "error_class")
 
 
 class TestNoProviderTextLeaks:
-    """`adapters.py:19-20`: provider diagnostics are log material, never response material."""
+    """The seam's preamble: provider diagnostics are log material, never response material."""
 
     @pytest.mark.parametrize("answer", [
         auth.UserNotFoundError(PROVIDER_TEXT),
         exceptions.FirebaseError("unavailable", PROVIDER_TEXT),
         StubUserRecord(raises=ValueError(PROVIDER_TEXT)),
     ], ids=["user_not_found", "firebase_error", "malformed_provider_data"])
-    async def test_no_field_of_a_failure_result_carries_the_providers_message(self, adapter,
-                                                                             get_user_calls,
-                                                                             answer):
+    async def test_the_client_facing_rejection_carries_none_of_the_providers_message(
+            self, adapter, get_user_calls, answer):
+        """Driven through the retry frame, so the internal marker is already converted to what a client sees."""
         get_user_calls(answer)
-        result = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        rendered = repr(dataclasses.asdict(result))
+        with pytest.raises(AuthRejected) as raised:
+            await lookup_with_retry(adapter, ISSUER, SUBJECT)
+
+        rendered = repr(raised.value.log_fields()) + repr(raised.value.args)
         assert PROVIDER_TEXT not in rendered
         assert "ns-test-project" not in rendered
+
+    async def test_the_internal_marker_does_carry_it_for_the_log(self, adapter, get_user_calls):
+        """The control: the text is not merely absent everywhere, it is kept where the log needs it."""
+        get_user_calls(exceptions.FirebaseError("unavailable", PROVIDER_TEXT))
+        with pytest.raises(RetryableLookupError) as raised:
+            await adapter.get_user_provider_data(ISSUER, SUBJECT)
+        assert PROVIDER_TEXT in str(raised.value)
 
 
 class TestTheDeliberateNonImplementations:

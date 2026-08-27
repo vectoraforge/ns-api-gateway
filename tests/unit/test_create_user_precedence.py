@@ -14,11 +14,17 @@ from nativespeaker.api.app.dependencies import (
     get_request_context,
 )
 from nativespeaker.api.app.errors import register_exception_handlers
-from nativespeaker.api.auth.adapters import ProviderDataEntry, ProviderDataOutcome
+from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.exceptions import AuthRejected, IdentityAlreadyLinked
-from nativespeaker.api.auth.firebase import FIREBASE_LOOKUP_ATTEMPTS
+from nativespeaker.api.auth.exceptions import (
+    AuthRejected,
+    IdentityAlreadyLinked,
+    NotLinked,
+    Unavailable,
+    UserNotFound,
+)
+from nativespeaker.api.auth.firebase import FIREBASE_LOOKUP_ATTEMPTS, RetryableLookupError
 from nativespeaker.api.auth.keys import HmacKeyring
 from nativespeaker.api.config import HmacConfig
 from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult, AuthOperation
@@ -101,9 +107,9 @@ class _RejectionLog:
     snake_cased exception class names already equal the result values the router logs today.
     """
 
-    # The router's own rejection events. The transaction arm's event retired with
-    # `_completion_response`; the two that remain move to the handler as plans 03 and 04 land.
-    _EVENTS = frozenset({"create_user_challenge_rejected", "create_user_lookup_rejected"})
+    # The router's own rejection events. The transaction arm's retired with `_completion_response`
+    # and the lookup arms' with `_consuming_rejection`; the challenge arm moves as plan 04 lands.
+    _EVENTS = frozenset({"create_user_challenge_rejected"})
 
     def __init__(self) -> None:
         self.entries: list[tuple[str, dict]] = []
@@ -367,13 +373,14 @@ class TestTheProviderStageRejections:
             self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
         """A valid token for a deleted provider user must not create an account."""
         store.row = _issued_row(context, keyring)
-        fake_firebase_adapter.script(ProviderDataOutcome.user_not_found)
+        fake_firebase_adapter.script(UserNotFound(stage="provider_lookup"))
 
         response = _complete(client)
 
         assert response.status_code == 401
         assert response.json() == {"code": "auth_required"}
-        assert rejections.results == [AuthEventResult.firebase_user_unresolved]
+        assert rejections.results == ["user_not_found"]
+        assert rejections.entries[0][1]["stage"] == "provider_lookup"
         # Definitive and non-retryable: it spends no further attempt.
         assert len(fake_firebase_adapter.calls) == 1
         assert creator.calls == []
@@ -382,13 +389,14 @@ class TestTheProviderStageRejections:
             self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
         """The call count proves the retry predicate is wired: a mismatched one would allow a single attempt."""
         store.row = _issued_row(context, keyring)
-        fake_firebase_adapter.script(ProviderDataOutcome.retryable_failure)
+        fake_firebase_adapter.script(RetryableLookupError("the provider is unreachable"))
 
         response = _complete(client)
 
         assert response.status_code == 503
         assert response.json() == {"code": "verification_temporarily_unavailable"}
-        assert rejections.results == [AuthEventResult.firebase_lookup_unavailable]
+        assert rejections.results == ["unavailable"]
+        assert rejections.entries[0][1]["stage"] == "provider_lookup"
         assert len(fake_firebase_adapter.calls) == FIREBASE_LOOKUP_ATTEMPTS == 3
         assert creator.calls == []
 
@@ -396,35 +404,33 @@ class TestTheProviderStageRejections:
             self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
         """An issuer mismatch fails closed rather than falling back, so it is definitive and spends one attempt."""
         store.row = _issued_row(context, keyring)
-        fake_firebase_adapter.script(ProviderDataOutcome.selection_failure)
+        fake_firebase_adapter.script(Unavailable(stage="issuer_selection"))
 
         response = _complete(client)
 
         assert response.status_code == 503
         assert response.json() == {"code": "verification_temporarily_unavailable"}
-        assert rejections.results == [AuthEventResult.firebase_lookup_unavailable]
+        assert rejections.results == ["unavailable"]
+        # The same class as an exhausted budget, told apart in the log by its stage and nowhere else.
+        assert rejections.entries[0][1]["stage"] == "issuer_selection"
         assert len(fake_firebase_adapter.calls) == 1
         assert creator.calls == []
 
-    @pytest.mark.parametrize("entries", [
-        # Both providers at once. There is no first recognized entry to take.
-        (ProviderDataEntry("google.com", "g-uid"), ProviderDataEntry("apple.com", "a-uid")),
-        # One unrecognized entry -- the exact shape the e2e email/password credential produces.
-        (ProviderDataEntry("password", "someone@example.test"),),
-        # The entry's non-empty uid is the only source of provider_uid, so a missing one is malformed.
-        (ProviderDataEntry("google.com", ""),),
-    ])
     def test_a_rejecting_provider_data_shape_is_operation_not_allowed(
-            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter,
-            entries):
+            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
+        """Which shapes reject is now decided behind the seam, so the shape table lives at adapter
+        level in `test_firebase_adapter.py`. What this layer still owns is the answer the rejection
+        earns: a terminal class whose body names no shape, and no attempt at the transaction."""
         store.row = _issued_row(context, keyring)
-        fake_firebase_adapter.script(ProviderDataOutcome.ok, entries=entries)
+        fake_firebase_adapter.script(NotLinked(stage="provider_classification",
+                                               cause="invalid-shape"))
 
         response = _complete(client)
 
         assert response.status_code == 403
         assert response.json() == {"code": "operation_not_allowed"}
-        assert rejections.results == [AuthEventResult.provider_not_linked]
+        assert rejections.results == ["not_linked"]
+        assert rejections.entries[0][1]["stage"] == "provider_classification"
         # The bounded cause reaches the security log and never the response.
         assert rejections.entries[0][1]["cause"] == "invalid-shape"
         assert len(fake_firebase_adapter.calls) == 1
@@ -434,9 +440,9 @@ class TestTheProviderStageRejections:
             self, client, store, context, keyring, creator, fake_firebase_adapter):
         """The classifier's verdict is carried through unchanged; the router re-derives nothing."""
         store.row = _issued_row(context, keyring)
-        fake_firebase_adapter.script(ProviderDataOutcome.ok,
-                                     entries=(ProviderDataEntry("google.com", "google-uid-1"),),
-                                     email="someone@example.test", email_verified=True)
+        fake_firebase_adapter.script(VerifiedProviderIdentity(provider=IdentityProvider.google,
+                                                              provider_uid="google-uid-1",
+                                                              email="someone@example.test"))
 
         response = _complete(client)
 
@@ -451,17 +457,16 @@ class TestTheProviderStageRejections:
 class TestEveryProviderStageRejectionConsumes:
     """Every rejection at or after the provider lookup consumes, so a retry needs a fresh prepare."""
 
-    @pytest.mark.parametrize("outcome,entries", [
-        (ProviderDataOutcome.user_not_found, ()),
-        (ProviderDataOutcome.retryable_failure, ()),
-        (ProviderDataOutcome.selection_failure, ()),
-        (ProviderDataOutcome.ok, (ProviderDataEntry("password", "someone@example.test"),)),
-    ])
+    @pytest.mark.parametrize("rejection", [
+        UserNotFound(stage="provider_lookup"),
+        RetryableLookupError("the provider is unreachable"),
+        Unavailable(stage="issuer_selection"),
+        NotLinked(stage="provider_classification", cause="invalid-shape"),
+    ], ids=["user_not_found", "exhausted_budget", "issuer_selection", "not_linked"])
     def test_the_challenge_is_consumed_and_its_binding_cleared(
-            self, client, store, context, keyring, fake_firebase_adapter,
-            outcome, entries):
+            self, client, store, context, keyring, fake_firebase_adapter, rejection):
         store.row = _issued_row(context, keyring)
-        fake_firebase_adapter.script(outcome, entries=entries)
+        fake_firebase_adapter.script(rejection)
 
         _complete(client)
 
@@ -473,15 +478,15 @@ class TestEveryProviderStageRejectionConsumes:
             self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
         """There is no idempotent replay and no `challenge_replayed` result."""
         store.row = _issued_row(context, keyring)
-        fake_firebase_adapter.script(ProviderDataOutcome.user_not_found)
+        fake_firebase_adapter.script(UserNotFound(stage="provider_lookup"))
 
         first = _complete(client)
         second = _complete(client)
 
         assert first.status_code == 401
         _assert_challenge_required(second)
-        assert rejections.results == [AuthEventResult.firebase_user_unresolved,
-                                  AuthEventResult.challenge_consumed]
+        assert rejections.results == ["user_not_found",
+                                      AuthEventResult.challenge_consumed]
         assert creator.calls == []
         # The second attempt performs no work at all: the provider was not read a second time.
         assert len(fake_firebase_adapter.calls) == 1
@@ -494,7 +499,7 @@ class TestThePrecedenceItself:
             self, client, store, rejections, creator, fake_firebase_adapter):
         """3 beats 8. The adapter is scripted to fail and is never asked."""
         store.row = None
-        fake_firebase_adapter.script(ProviderDataOutcome.retryable_failure)
+        fake_firebase_adapter.script(RetryableLookupError("the provider is unreachable"))
 
         _assert_challenge_required(_complete(client))
 
@@ -527,7 +532,7 @@ class TestThePrecedenceItself:
             self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
         """5 beats 8. The claim loser performs no work at all."""
         store.row = _issued_row(context, keyring, ttl_seconds=-1)
-        fake_firebase_adapter.script(ProviderDataOutcome.user_not_found)
+        fake_firebase_adapter.script(UserNotFound(stage="provider_lookup"))
 
         _assert_challenge_required(_complete(client))
 
@@ -535,20 +540,10 @@ class TestThePrecedenceItself:
         assert fake_firebase_adapter.calls == []
         assert creator.calls == []
 
-    def test_a_failed_lookup_beats_a_rejecting_shape(
-            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
-        """Classifying first would answer a terminal 403 to a caller whose token merely no longer identifies a user."""
-        store.row = _issued_row(context, keyring)
-        fake_firebase_adapter.script(
-            ProviderDataOutcome.user_not_found,
-            entries=(ProviderDataEntry("password", "someone@example.test"),))
-
-        response = _complete(client)
-
-        assert response.status_code == 401
-        assert response.json() == {"code": "auth_required"}
-        assert rejections.results == [AuthEventResult.firebase_user_unresolved]
-        assert creator.calls == []
+    # `a failed lookup beats a rejecting shape` is no longer expressible here: the seam admits one
+    # answer per call, because the read now decides the lookup before it ever classifies. The case
+    # moved to `test_firebase_adapter.py`, where both facts can still be set up at once -- a
+    # not-found `get_user` on a record whose providerData would reject.
 
 
 class TestTheTransactionRejectionIsObservedAtTheHandler:
@@ -558,8 +553,8 @@ class TestTheTransactionRejectionIsObservedAtTheHandler:
     def _reaching_the_transaction(store, context, keyring, creator, adapter) -> None:
         """Get past every earlier rejection, then have the transaction reject the way the real one does."""
         store.row = _issued_row(context, keyring)
-        adapter.script(ProviderDataOutcome.ok,
-                       entries=(ProviderDataEntry("google.com", "google-uid-1"),))
+        adapter.script(VerifiedProviderIdentity(provider=IdentityProvider.google,
+                                                provider_uid="google-uid-1"))
         creator.rejection = IdentityAlreadyLinked()
 
     def test_it_is_recorded_once_under_its_class_derived_event_name(

@@ -6,8 +6,9 @@ from sqlalchemy import func
 from sqlmodel import col, select
 from unit.conftest import TEST_ISSUER, make_token
 
-from nativespeaker.api.auth.adapters import ProviderDataEntry, ProviderDataOutcome
-from nativespeaker.api.auth.firebase import FirebaseAdminLookup
+from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
+from nativespeaker.api.auth.exceptions import NotLinked
+from nativespeaker.api.auth.firebase import FirebaseAdminLookup, _verified_email
 from nativespeaker.api.models.auth import AuthChallenge
 from nativespeaker.api.models.grants import AccessGrant, UserMonthlyUsage
 from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
@@ -59,8 +60,9 @@ class TestTheAnonymousHappyPath:
 
     async def test_an_unlinked_caller_creates_an_anonymous_account(
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
-        # The classifier answers anonymous to an EMPTY providerData and to nothing else.
-        scripted_firebase_adapter.script(entries=(), email=None, email_verified=False)
+        # The read answers anonymous to an EMPTY providerData and to nothing else.
+        scripted_firebase_adapter.script(
+            VerifiedProviderIdentity(provider=IdentityProvider.anonymous, provider_uid=None))
 
         users_before = await _count(_db_transaction, select(func.count()).select_from(User))
 
@@ -153,8 +155,9 @@ class TestTheChallengeEndpoint:
     async def test_a_handle_from_the_challenge_route_completes_an_account(
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
         subject = "challenge-endpoint-anonymous"
-        # The classifier answers anonymous to an EMPTY providerData and to nothing else.
-        scripted_firebase_adapter.script(entries=(), email=None, email_verified=False)
+        # The read answers anonymous to an EMPTY providerData and to nothing else.
+        scripted_firebase_adapter.script(
+            VerifiedProviderIdentity(provider=IdentityProvider.anonymous, provider_uid=None))
         users_before = await _count(_db_transaction, select(func.count()).select_from(User))
 
         issued = await create_user_client.post("/auth/challenge",
@@ -211,7 +214,8 @@ class TestCompletionRejectsAnAlreadyLinkedCaller:
         await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject)
         # A uid of its own, so the reservation index cannot be what answers: the re-resolution is.
         scripted_firebase_adapter.script(
-            entries=(ProviderDataEntry("google.com", f"g-uid-{subject}"),))
+            VerifiedProviderIdentity(provider=IdentityProvider.google,
+                                     provider_uid=f"g-uid-{subject}"))
 
         issued = await create_user_client.post("/auth/challenge",
                                                json={"operation": "create_user"},
@@ -235,7 +239,8 @@ class TestCompletionRejectsAnAlreadyLinkedCaller:
         subject = "already-linked-mints-nothing"
         await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject)
         scripted_firebase_adapter.script(
-            entries=(ProviderDataEntry("google.com", f"g-uid-{subject}"),))
+            VerifiedProviderIdentity(provider=IdentityProvider.google,
+                                     provider_uid=f"g-uid-{subject}"))
         users_before = await _count(_db_transaction, _USERS)
 
         issued = await create_user_client.post("/auth/challenge",
@@ -316,8 +321,10 @@ class TestCompletionRejectionsOnTheWire:
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
         """One unrecognized entry is an unclassifiable account: terminal operation_not_allowed, persisting nothing."""
         subject = "e2e-password-shape"
-        scripted_firebase_adapter.script(
-            entries=(ProviderDataEntry("password", "someone@example.test"),))
+        # The `password` shape the e2e credential produces; which shapes reject is settled
+        # behind the seam now, and asserted against the real read in test_firebase_adapter.py.
+        scripted_firebase_adapter.script(NotLinked(stage="provider_classification",
+                                                   cause="invalid-shape"))
         users_before = await _count(_db_transaction, _USERS)
 
         issued = await create_user_client.post("/auth/challenge",
@@ -349,8 +356,10 @@ class TestCompletionRejectionsOnTheWire:
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
         """No idempotent replay: the second attempt is told to obtain a fresh challenge, not the first's outcome."""
         subject = "e2e-replayed-handle"
-        scripted_firebase_adapter.script(
-            entries=(ProviderDataEntry("password", "someone@example.test"),))
+        # The `password` shape the e2e credential produces; which shapes reject is settled
+        # behind the seam now, and asserted against the real read in test_firebase_adapter.py.
+        scripted_firebase_adapter.script(NotLinked(stage="provider_classification",
+                                                   cause="invalid-shape"))
         users_before = await _count(_db_transaction, _USERS)
 
         issued = await create_user_client.post("/auth/challenge",
@@ -442,7 +451,8 @@ class TestTheRegisteredFlow:
             self, create_user_client, _db_transaction, scripted_firebase_adapter,
             provider_id, expected, uid):
         subject = f"registered-{expected}-subject"
-        scripted_firebase_adapter.script(entries=(ProviderDataEntry(provider_id, uid),))
+        scripted_firebase_adapter.script(VerifiedProviderIdentity(provider=expected,
+                                                                  provider_uid=uid))
         users_before = await _count(_db_transaction, _USERS)
 
         handle, completion = await _issue_and_complete(create_user_client, subject)
@@ -498,9 +508,12 @@ class TestStep10sEmailCopyRule:
             self, create_user_client, _db_transaction, scripted_firebase_adapter,
             email, email_verified, persisted):
         subject = f"email-rule-{email!r}-{email_verified}"
-        scripted_firebase_adapter.script(entries=(ProviderDataEntry("google.com", "g-email-case"),),
-                                         email=email,
-                                         email_verified=email_verified)
+        # The rule itself runs, in production code: what the read establishes is what this asserts
+        # reaches the column, verbatim. The five rows still pin the rule; the wire still pins the copy.
+        scripted_firebase_adapter.script(
+            VerifiedProviderIdentity(provider=IdentityProvider.google,
+                                     provider_uid="g-email-case",
+                                     email=_verified_email(email, email_verified)))
 
         _, completion = await _issue_and_complete(create_user_client, subject)
 
@@ -532,7 +545,8 @@ class TestTheProviderAccountReservation:
         # Read back rather than rederived: a second derivation would stop colliding the day the helper changes.
         assert owner.provider_uid is not None
         scripted_firebase_adapter.script(
-            entries=(ProviderDataEntry("google.com", owner.provider_uid),))
+            VerifiedProviderIdentity(provider=IdentityProvider.google,
+                                     provider_uid=owner.provider_uid))
         subject = f"provider-account-claimant-{owner_state}"
         users_before = await _count(_db_transaction, _USERS)
 
@@ -621,10 +635,9 @@ class TestTheRealAnonymousCompletion:
         assert isinstance(adapter, FirebaseAdminLookup)
         _, local_id = anonymous_firebase_credential
 
-        result = await adapter.get_user_provider_data(_app_config.jwt.issuer, local_id)
+        identity = await adapter.get_user_provider_data(_app_config.jwt.issuer, local_id)
 
-        assert result.outcome is ProviderDataOutcome.ok
-        assert result.entries == ()
-        # The same response's address fields, from real values rather than scripted ones.
-        assert result.email is None
-        assert result.email_verified is False
+        assert identity.provider is IdentityProvider.anonymous
+        assert identity.provider_uid is None
+        # The same response's address field, from real values rather than scripted ones.
+        assert identity.email is None

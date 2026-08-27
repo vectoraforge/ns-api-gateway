@@ -1,21 +1,22 @@
-"""The closed providerData classifier and the email-copy predicate, both written table-driven."""
+"""The closed providerData classifier and the email-copy rule, both written table-driven.
+
+Both now live inside `_read` rather than beside it, so this file drives the two module-private
+helpers directly. The same cases against the whole adapter -- which is where they belong once the
+classification is adapter-internal -- are the subject of the next task.
+"""
 import pytest
 
-from nativespeaker.api.auth.adapters import (
-    ProviderDataEntry,
-    ProviderDataOutcome,
-    ProviderDataResult,
-)
-from nativespeaker.api.auth.firebase import classify_provider_data, email_to_persist
+from nativespeaker.api.auth.exceptions import NotLinked
+from nativespeaker.api.auth.firebase import _resolve_provider, _verified_email
 from nativespeaker.api.models.identities import IdentityProvider
 
-GOOGLE = ProviderDataEntry(provider_id="google.com", uid="google-uid-1")
-APPLE = ProviderDataEntry(provider_id="apple.com", uid="apple-uid-1")
-PASSWORD = ProviderDataEntry(provider_id="password", uid="user@example.test")
-FACEBOOK = ProviderDataEntry(provider_id="facebook.com", uid="facebook-uid-1")
-GOOGLE_NO_UID = ProviderDataEntry(provider_id="google.com", uid="")
-APPLE_NO_UID = ProviderDataEntry(provider_id="apple.com", uid="")
-GOOGLE_OTHER = ProviderDataEntry(provider_id="google.com", uid="google-uid-2")
+GOOGLE = ("google.com", "google-uid-1")
+APPLE = ("apple.com", "apple-uid-1")
+PASSWORD = ("password", "user@example.test")
+FACEBOOK = ("facebook.com", "facebook-uid-1")
+GOOGLE_NO_UID = ("google.com", "")
+APPLE_NO_UID = ("apple.com", "")
+GOOGLE_OTHER = ("google.com", "google-uid-2")
 
 # The whole accept set. Three shapes, no fourth.
 ACCEPTED = [
@@ -43,11 +44,11 @@ class TestTheAcceptSet:
 
     @pytest.mark.parametrize("entries,expected,why", ACCEPTED, ids=[case[2] for case in ACCEPTED])
     def test_a_recognized_shape_classifies(self, entries, expected, why):
-        assert classify_provider_data(entries) == expected, why
+        assert _resolve_provider(entries) == expected, why
 
     def test_anonymous_carries_no_provider_uid(self):
         """`core.external_identities`' CHECK requires NULL for anonymous and forbids a sentinel."""
-        provider, provider_uid = classify_provider_data(())
+        provider, provider_uid = _resolve_provider(())
         assert provider is IdentityProvider.anonymous
         assert provider_uid is None
 
@@ -55,7 +56,7 @@ class TestTheAcceptSet:
                                                 (APPLE, IdentityProvider.apple)])
     def test_the_matching_entrys_uid_is_the_sole_source_of_provider_uid(self, entry, provider):
         """The matching entry's non-empty uid is the only source of `provider_uid`."""
-        assert classify_provider_data((entry,)) == (provider, entry.uid)
+        assert _resolve_provider((entry,)) == (provider, entry[1])
 
     def test_the_recognized_provider_map_has_exactly_two_keys(self):
         """A third recognized provider is a spec change, not a refactor."""
@@ -68,17 +69,28 @@ class TestTheRejectSet:
 
     @pytest.mark.parametrize("entries,why", REJECTED, ids=[case[1] for case in REJECTED])
     def test_an_unrecognized_shape_rejects(self, entries, why):
-        assert classify_provider_data(entries) is None, why
+        with pytest.raises(NotLinked) as raised:
+            _resolve_provider(entries)
+        assert raised.value.stage == "provider_classification", why
+
+    def test_the_rejection_carries_the_one_bounded_cause(self):
+        """The bounded string is ours; the shape that produced it never reaches a client."""
+        with pytest.raises(NotLinked) as raised:
+            _resolve_provider((PASSWORD,))
+        assert raised.value.cause == "invalid-shape"
 
     @pytest.mark.parametrize("pair", [(GOOGLE, APPLE), (GOOGLE, FACEBOOK), (GOOGLE, GOOGLE_OTHER)])
     def test_rejection_is_order_independent(self, pair):
         """Both orderings, because a classifier taking the first entry it recognizes passes only one of them."""
         first, second = pair
-        assert classify_provider_data((first, second)) is None
-        assert classify_provider_data((second, first)) is None
+        with pytest.raises(NotLinked):
+            _resolve_provider((first, second))
+        with pytest.raises(NotLinked):
+            _resolve_provider((second, first))
 
     def test_a_two_entry_shape_rejects_even_when_both_entries_are_the_same_provider(self):
-        assert classify_provider_data((GOOGLE, GOOGLE)) is None
+        with pytest.raises(NotLinked):
+            _resolve_provider((GOOGLE, GOOGLE))
 
 
 class TestTheClassifierRecordsItsProhibitions:
@@ -107,18 +119,11 @@ class TestTheClassifierRecordsItsProhibitions:
         assert name not in code
 
 
-class TestEmailToPersist:
+class TestTheVerifiedEmailRule:
     """The two-condition copy rule, evaluated in exactly one place."""
 
-    @staticmethod
-    def _ok(email, email_verified):
-        return ProviderDataResult(outcome=ProviderDataOutcome.ok,
-                                  entries=(GOOGLE,),
-                                  email=email,
-                                  email_verified=email_verified)
-
     def test_a_non_empty_verified_address_is_copied(self):
-        assert email_to_persist(self._ok("a@b.test", True)) == "a@b.test"
+        assert _verified_email("a@b.test", True) == "a@b.test"
 
     @pytest.mark.parametrize("email,email_verified,why", [
         ("a@b.test", False, "unverified -- the second condition fails"),
@@ -128,40 +133,8 @@ class TestEmailToPersist:
         (None, False, "neither condition holds"),
     ], ids=["unverified", "absent", "empty", "whitespace-only", "neither"])
     def test_every_other_combination_yields_none(self, email, email_verified, why):
-        assert email_to_persist(self._ok(email, email_verified)) is None, why
-
-    @pytest.mark.parametrize("outcome", [ProviderDataOutcome.user_not_found,
-                                         ProviderDataOutcome.retryable_failure,
-                                         ProviderDataOutcome.selection_failure])
-    def test_a_non_ok_outcome_never_yields_an_address(self, outcome):
-        """The defaults make `None` the only reachable answer on a failure arm."""
-        assert email_to_persist(ProviderDataResult(outcome)) is None
-
-    def test_a_non_ok_outcome_yields_none_even_if_the_fields_were_somehow_populated(self):
-        """The outcome gate is checked, not merely implied by the defaults."""
-        result = ProviderDataResult(outcome=ProviderDataOutcome.retryable_failure,
-                                    email="a@b.test",
-                                    email_verified=True)
-        assert email_to_persist(result) is None
+        assert _verified_email(email, email_verified) is None, why
 
     def test_the_address_is_returned_verbatim_and_never_normalized(self):
-        """The `.strip()` inside the predicate is a non-empty test, not a normalization step."""
-        assert email_to_persist(self._ok("  Mixed.Case@B.TEST  ", True)) == "  Mixed.Case@B.TEST  "
-
-
-class TestTheProviderDataResultAmendment:
-    """The Phase 35 foundation amendment: two fields, both defaulted, no caller changed."""
-
-    def test_the_result_declares_exactly_four_fields(self):
-        from dataclasses import fields
-        assert [f.name for f in fields(ProviderDataResult)] == [
-            "outcome", "entries", "email", "email_verified",
-        ]
-
-    def test_a_pre_existing_construction_site_still_takes_one_positional_argument(self):
-        """`ProviderDataResult(ProviderDataOutcome.selection_failure)` -- unchanged by the amendment."""
-        result = ProviderDataResult(ProviderDataOutcome.selection_failure)
-        assert result.outcome is ProviderDataOutcome.selection_failure
-        assert result.entries == ()
-        assert result.email is None
-        assert result.email_verified is False
+        """The `.strip()` inside the rule is a non-empty test, not a normalization step."""
+        assert _verified_email("  Mixed.Case@B.TEST  ", True) == "  Mixed.Case@B.TEST  "

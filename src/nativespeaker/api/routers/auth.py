@@ -10,24 +10,14 @@ from nativespeaker.api.app.dependencies import (
     get_firebase_adapter,
     get_request_context,
 )
-from nativespeaker.api.auth.adapters import ProviderDataOutcome
 from nativespeaker.api.auth.challenges import ChallengeStore
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.creation import create_account
 from nativespeaker.api.auth.exceptions import AuthRejected
-from nativespeaker.api.auth.firebase import (
-    LOOKUP_UNAVAILABLE_ERROR_CLASS,
-    LOOKUP_UNAVAILABLE_RESULT,
-    classify_provider_data,
-    email_to_persist,
-    lookup_with_retry,
-)
+from nativespeaker.api.auth.firebase import lookup_with_retry
 from nativespeaker.api.errors import (
-    AUTH_REQUIRED,
     CHALLENGE_REQUIRED,
     INVALID_REQUEST,
-    OPERATION_NOT_ALLOWED,
-    ErrorClass,
     error_response,
 )
 from nativespeaker.api.models.auth import (
@@ -122,41 +112,24 @@ async def _complete(session: AsyncSession, *,
     # Deliberate commit: an uncommitted claim across the provider call would let a second attempt win the challenge.
     await session.commit()
 
-    # Per-minute traffic limits live in the gateway, not here; only the retry budget below is enforced in-process.
-    provider_data = await lookup_with_retry(adapter, identity.issuer, identity.subject)
-
-    if provider_data.outcome is not ProviderDataOutcome.ok:
-        return await _consuming_rejection(session, context=context,
-                                          challenge=challenge,
-                                          stage="provider_lookup",
-                                          challenge_store=challenge_store,
-                                          **_LOOKUP_REJECTIONS[provider_data.outcome])
-
-    classified = classify_provider_data(provider_data.entries)
-    if classified is None:
-        return await _consuming_rejection(session, context=context,
-                                          challenge=challenge,
-                                          result=AuthEventResult.provider_not_linked,
-                                          error_class=OPERATION_NOT_ALLOWED,
-                                          stage="provider_classification",
-                                          # The bounded reason it did not classify: no entries at all, or a bad shape.
-                                          cause="empty" if not provider_data.entries else "invalid-shape",
-                                          challenge_store=challenge_store)
-    provider, provider_uid = classified
-    # The one place the copy rule is evaluated; `create_account` takes a plain `email` and re-derives nothing.
-    email = email_to_persist(provider_data)
-
     try:
+        # One arm covers the whole post-claim region -- the lookup, the classification now inside it,
+        # and the transaction -- because the lookup's rejections are members of the same family. No
+        # arm is missing here; that shared base is the payoff of consolidating them in `exceptions.py`.
+        #
+        # Per-minute traffic limits live in the gateway, not here; only the retry budget is in-process.
+        facts = await lookup_with_retry(adapter, identity.issuer, identity.subject)
         await create_account(session,
                              context=context,
                              identity=identity,
                              challenge=challenge,
-                             provider=provider,
-                             provider_uid=provider_uid,
-                             email=email,
+                             provider=facts.provider,
+                             provider_uid=facts.provider_uid,
+                             # The copy rule was evaluated once, inside the read; nothing re-derives it.
+                             email=facts.email,
                              challenge_store=challenge_store)
     except AuthRejected:
-        # D-04: the transaction's raising arms leave the consume here, so the two paths spend the
+        # D-04/D-11: every raising arm past the claim leaves the consume here, so the paths spend the
         # handle exactly once between them. The bare re-raise is safe because after the commit the
         # session holds no transaction, so `get_db`'s rollback-on-exception cannot un-consume it --
         # the client spent this handle and must not get it back.
@@ -164,7 +137,7 @@ async def _complete(session: AsyncSession, *,
                                   challenge_store=challenge_store)
         raise
 
-    return JSONResponse(content=CompletionResponse(identity_provider=provider)
+    return JSONResponse(content=CompletionResponse(identity_provider=facts.provider)
                         .model_dump(mode="json"))
 
 
@@ -174,39 +147,6 @@ async def _challenge_rejected(session: AsyncSession, *, result: AuthEventResult)
     logger.warning("create_user_challenge_rejected", stage=str(result))
     await session.rollback()
     return error_response(CHALLENGE_REQUIRED)
-
-
-# `user_not_found` is definitive; the unavailable pair is retryable, and collapsing them misleads the client.
-_LOOKUP_REJECTIONS: dict[ProviderDataOutcome, dict[str, object]] = {
-    ProviderDataOutcome.user_not_found: {
-        "result": AuthEventResult.firebase_user_unresolved,
-        "error_class": AUTH_REQUIRED,
-    },
-    ProviderDataOutcome.retryable_failure: {
-        "result": LOOKUP_UNAVAILABLE_RESULT,
-        "error_class": LOOKUP_UNAVAILABLE_ERROR_CLASS,
-    },
-    ProviderDataOutcome.selection_failure: {
-        "result": LOOKUP_UNAVAILABLE_RESULT,
-        "error_class": LOOKUP_UNAVAILABLE_ERROR_CLASS,
-    },
-}
-
-
-async def _consuming_rejection(session: AsyncSession, *,
-                               context: RequestContext,
-                               challenge: AuthChallenge,
-                               result: AuthEventResult,
-                               error_class: ErrorClass,
-                               stage: str,
-                               challenge_store: ChallengeStore,
-                               cause: str | None = None) -> Response:
-    """Reject after the provider read, consuming the challenge so the handle cannot be re-presented."""
-    bounded = {} if cause is None else {"cause": cause}
-    logger.warning("create_user_lookup_rejected", stage=stage, result=str(result), **bounded)
-    await _consume_and_commit(session, context=context, challenge=challenge,
-                              challenge_store=challenge_store)
-    return error_response(error_class)
 
 
 async def _consume_and_commit(session: AsyncSession, *,
