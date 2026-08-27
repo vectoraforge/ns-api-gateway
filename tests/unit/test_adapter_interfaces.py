@@ -4,18 +4,13 @@ import inspect
 import subprocess
 import sys
 from dataclasses import FrozenInstanceError, is_dataclass
-from enum import StrEnum
 from pathlib import Path
 
 import pytest
 
 from nativespeaker.api.auth import adapters as adapters_module
-from nativespeaker.api.auth.adapters import (
-    FirebaseAdminAdapter,
-    ProviderDataEntry,
-    ProviderDataOutcome,
-    ProviderDataResult,
-)
+from nativespeaker.api.auth.adapters import FirebaseAdminAdapter, VerifiedProviderIdentity
+from nativespeaker.api.models.identities import IdentityProvider
 
 SOURCE_PATH = Path(adapters_module.__file__)
 SOURCE = SOURCE_PATH.read_text()
@@ -24,8 +19,7 @@ TREE = ast.parse(SOURCE)
 SRC_ROOT = SOURCE_PATH.parents[2]
 
 PROTOCOLS = (FirebaseAdminAdapter,)
-ENUMS = (ProviderDataOutcome,)
-FROZEN = (ProviderDataEntry, ProviderDataResult)
+FROZEN = (VerifiedProviderIdentity,)
 
 # Every method on the seam. Foundation names it only where the allow-list below permits it.
 ADAPTER_METHODS = ("get_user_provider_data",)
@@ -61,18 +55,27 @@ def _adapter_method_offenders(sources, implementors=None) -> list[str]:
                   if method in text and method not in permitted.get(path, frozenset()))
 
 
-class TestClosedOutcomeSets:
-    """The outcome set is closed: a fifth member is a spec change, not a refactor."""
+class TestTheOutcomeVocabularyLeftTheSeam:
+    """The seam carries the success value only; every failure is a raised member of the rejection family.
 
-    def test_provider_data_outcome_has_exactly_the_four_71_members(self):
-        assert [m.value for m in ProviderDataOutcome] == [
-            "ok", "user_not_found", "retryable_failure", "selection_failure",
-        ]
+    This replaces a closed four-member `ProviderDataOutcome` and the two result types that wrapped
+    it. The closure property did not evaporate -- it moved to `test_rejection_vocabulary.py`, where
+    the same "a fifth member is a spec change" rule is enforced over the exception family. What
+    belongs *here* is the narrower claim that the seam declares no outcome vocabulary of its own,
+    because a second one would put failure classification back on the value path D-09 removed it
+    from.
+    """
 
-    def test_every_enum_member_value_repeats_its_name(self):
-        """The repo convention (models/chats.py) -- the wire value cannot drift from the member."""
-        for enum in ENUMS:
-            assert all(member.value == member.name for member in enum), enum.__name__
+    def test_the_seam_declares_no_enum_at_all(self):
+        from enum import Enum
+        offenders = [name for name, value in vars(adapters_module).items()
+                     if isinstance(value, type) and issubclass(value, Enum)
+                     and value.__module__ == adapters_module.__name__]
+        assert offenders == []
+
+    def test_the_seam_declares_exactly_one_value_type(self):
+        """One type crosses the seam on success. A second would be an outcome discriminator again."""
+        assert [t.__name__ for t in FROZEN] == ["VerifiedProviderIdentity"]
 
 
 class TestZeroImplementations:
@@ -185,32 +188,36 @@ class TestImportIsSideEffectFree:
         assert mutable == set()
 
 
-class TestResultTypesAreImmutable:
-    """Every result type is a frozen dataclass or a StrEnum; none is mutable."""
+class TestTheValueTypeIsImmutable:
+    """The one type that crosses the seam is a frozen, slotted dataclass and nothing else."""
 
-    @pytest.mark.parametrize("result_type", FROZEN, ids=lambda t: t.__name__)
-    def test_every_dataclass_is_frozen_and_slotted(self, result_type):
-        assert is_dataclass(result_type)
-        assert result_type.__dataclass_params__.frozen is True
-        assert hasattr(result_type, "__slots__")
+    @pytest.mark.parametrize("value_type", FROZEN, ids=lambda t: t.__name__)
+    def test_every_dataclass_is_frozen_and_slotted(self, value_type):
+        assert is_dataclass(value_type)
+        assert value_type.__dataclass_params__.frozen is True
+        assert hasattr(value_type, "__slots__")
 
-    def test_a_constructed_result_cannot_be_reassigned(self):
-        result = ProviderDataResult(outcome=ProviderDataOutcome.user_not_found)
+    def test_a_constructed_identity_cannot_be_reassigned(self):
+        identity = VerifiedProviderIdentity(provider=IdentityProvider.google,
+                                            provider_uid="google-uid-1")
         with pytest.raises(FrozenInstanceError):
-            result.outcome = ProviderDataOutcome.ok  # ty: ignore[invalid-assignment]
+            identity.provider_uid = "somebody-elses-uid"  # ty: ignore[invalid-assignment]
 
-    def test_every_enum_is_a_strenum(self):
-        for enum in ENUMS:
-            assert issubclass(enum, StrEnum)
+    def test_a_constructed_identity_carries_no_instance_dict(self):
+        """Slotted, so a field this type never declared cannot be smuggled onto an instance."""
+        identity = VerifiedProviderIdentity(provider=IdentityProvider.anonymous, provider_uid=None)
+        assert not hasattr(identity, "__dict__")
+        with pytest.raises(AttributeError):
+            identity.email_verified = True  # ty: ignore[unresolved-attribute]
 
-    def test_every_public_class_is_a_protocol_a_frozen_dataclass_or_a_strenum(self):
+    def test_every_public_class_is_a_protocol_or_a_frozen_dataclass(self):
         declared = {node.name for node in _classes()}
-        assert declared == {t.__name__ for t in PROTOCOLS + ENUMS + FROZEN}
+        assert declared == {t.__name__ for t in PROTOCOLS + FROZEN}
 
-    def test_provider_data_entries_default_to_an_empty_tuple(self):
-        """A non-`ok` outcome carries no entries, and the empty default is immutable."""
-        result = ProviderDataResult(outcome=ProviderDataOutcome.retryable_failure)
-        assert result.entries == ()
+    def test_the_email_defaults_to_none(self):
+        """An anonymous record has no verified address, so the field it would ride on defaults absent."""
+        identity = VerifiedProviderIdentity(provider=IdentityProvider.anonymous, provider_uid=None)
+        assert identity.email is None
 
 
 class TestFirebaseAdminAdapter:
@@ -219,8 +226,9 @@ class TestFirebaseAdminAdapter:
     def test_it_declares_exactly_the_one_surviving_method(self):
         assert self._methods(FirebaseAdminAdapter) == {"get_user_provider_data"}
 
-    def test_get_user_provider_data_returns_a_provider_data_result(self):
-        assert self._returns(FirebaseAdminAdapter.get_user_provider_data) is ProviderDataResult
+    def test_get_user_provider_data_returns_the_verified_identity(self):
+        """The seam's whole return surface: the verified identity, or a raise. No result wrapper."""
+        assert self._returns(FirebaseAdminAdapter.get_user_provider_data) is VerifiedProviderIdentity
 
     def test_the_lookup_method_takes_the_issuer_so_selection_is_per_call(self):
         """No ambient, default, global or fallback client is expressible through the seam."""

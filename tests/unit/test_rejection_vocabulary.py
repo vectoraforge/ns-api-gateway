@@ -10,9 +10,11 @@ The second case guards the other direction: the base's `error_class` is `INTERNA
 subclass that forgets to declare one fails closed, and this file is what stops that fail-closed
 default from becoming a silent 500 nobody notices.
 """
+import pytest
+
 from nativespeaker.api.app.errors import camel_to_snake
 from nativespeaker.api.auth import exceptions as exceptions_module
-from nativespeaker.api.auth.exceptions import AuthRejected
+from nativespeaker.api.auth.exceptions import AuthRejected, NotLinked, Unavailable, UserNotFound
 from nativespeaker.api.errors import IDENTITY_ALREADY_LINKED, INTERNAL_ERROR
 
 FAMILY_MODULE = exceptions_module.__name__
@@ -27,6 +29,12 @@ EVENT_NAMES = frozenset({
     # follows `PreAuthIdentity` in `auth/context.py`, and D-02 makes the event whatever it spells.
     "pre_auth_identity_not_allowed",
     "identity_unresolvable",
+    # The lookup arms. The group base is listed too: it is a member of the family the walk finds,
+    # even though nothing raises it -- an intermediate base is not a place to hide from this file.
+    "provider_lookup_error",
+    "user_not_found",
+    "unavailable",
+    "not_linked",
 })
 
 
@@ -74,6 +82,37 @@ class TestTheEventVocabularyIsWrittenDown:
         """D-01 names one path; a second home would mean two vocabularies and one of them unwatched."""
         assert FAMILY_MODULE == "nativespeaker.api.auth.exceptions"
         assert _production_family(), "the walk found no subclasses at all"
+
+
+class TestTheLookupArmsCarryStageAndOnlyABoundedCause:
+    """`stage` always, `cause` only when there is one, and nothing else reaches a log line."""
+
+    @pytest.mark.parametrize("rejection,status", [
+        (UserNotFound(stage="provider_lookup"), 401),
+        (Unavailable(stage="provider_lookup"), 503),
+        (NotLinked(stage="provider_classification", cause="invalid-shape"), 403),
+    ], ids=["user_not_found", "unavailable", "not_linked"])
+    def test_each_arm_answers_the_status_the_returned_outcome_earned(self, rejection, status):
+        assert rejection.error_class.status == status
+
+    def test_an_arm_with_no_cause_emits_no_cause_key_at_all(self):
+        """Not `{"cause": None}`: the absent key is what the deleted `bounded = {} if ...` produced."""
+        assert UserNotFound(stage="provider_lookup").log_fields() == {"stage": "provider_lookup"}
+        assert Unavailable(stage="issuer_selection").log_fields() == {"stage": "issuer_selection"}
+
+    def test_the_classification_arm_emits_both_keys(self):
+        assert NotLinked(stage="provider_classification", cause="invalid-shape").log_fields() == {
+            "stage": "provider_classification", "cause": "invalid-shape",
+        }
+
+    @pytest.mark.parametrize("rejection", [
+        UserNotFound(stage="provider_lookup"),
+        Unavailable(stage="provider_lookup"),
+        NotLinked(stage="provider_classification", cause="invalid-shape"),
+    ], ids=["user_not_found", "unavailable", "not_linked"])
+    def test_every_logged_value_is_a_plain_string(self, rejection):
+        """The provider's own text must never become a log value here; both fields are ours."""
+        assert all(isinstance(value, str) for value in rejection.log_fields().values())
 
 
 class TestNoLeafSilentlyAnswersTheFailClosedDefault:
