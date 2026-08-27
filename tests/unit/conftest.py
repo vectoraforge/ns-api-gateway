@@ -15,11 +15,7 @@ from nativespeaker.api.app.dependencies import (
     get_linked_identity,
 )
 from nativespeaker.api.app.errors import register_exception_handlers
-from nativespeaker.api.auth.adapters import (
-    ProviderDataEntry,
-    ProviderDataOutcome,
-    ProviderDataResult,
-)
+from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.context import LinkedIdentity
 from nativespeaker.api.auth.verification import VerificationResult, bounded_reason_for, claims_from_payload
 from nativespeaker.api.database import ChatsDB
@@ -165,26 +161,34 @@ def client(mock_chats_db, service):
 # The provider-seam fake lives here because the create-user suites and tests/e2e both need it.
 
 
+ANONYMOUS_IDENTITY = VerifiedProviderIdentity(provider=IdentityProvider.anonymous,
+                                              provider_uid=None)
+
+
 class FakeFirebaseAdapter:
-    """A scriptable stand-in for the provider seam; async because a synchronous fake would fail against real wiring."""
+    """A scriptable stand-in for the provider seam; async because a synchronous fake would fail against real wiring.
+
+    It scripts the seam's answer and nothing behind it. Classification and the email rule live inside
+    the read now, so a fake that re-applied them would be a second copy of rules that are tested
+    against the real `_read` in `test_firebase_adapter.py` -- and a copy is what drifts.
+    """
 
     def __init__(self) -> None:
-        self.result = ProviderDataResult(ProviderDataOutcome.ok)
+        self.answer: BaseException | VerifiedProviderIdentity = ANONYMOUS_IDENTITY
         self.calls: list[tuple[str, str]] = []
 
-    def script(self, outcome: ProviderDataOutcome = ProviderDataOutcome.ok, *,
-               entries: tuple[ProviderDataEntry, ...] = (),
-               email: str | None = None,
-               email_verified: bool = False) -> None:
-        self.result = ProviderDataResult(outcome, entries,
-                                         email=email, email_verified=email_verified)
+    def script(self, answer: BaseException | VerifiedProviderIdentity) -> None:
+        """Raise-or-return: a scripted exception is raised, a scripted identity is returned."""
+        self.answer = answer
 
-    async def get_user_provider_data(self, issuer: str, subject: str) -> ProviderDataResult:
+    async def get_user_provider_data(self, issuer: str, subject: str) -> VerifiedProviderIdentity:
         self.calls.append((issuer, subject))
-        return self.result
+        if isinstance(self.answer, BaseException):
+            raise self.answer
+        return self.answer
 
 
 @pytest.fixture
 def fake_firebase_adapter() -> FakeFirebaseAdapter:
-    """A fresh fake per test, defaulting to `ok` with empty providerData -- the anonymous shape."""
+    """A fresh fake per test, defaulting to the anonymous identity -- what an empty read establishes."""
     return FakeFirebaseAdapter()

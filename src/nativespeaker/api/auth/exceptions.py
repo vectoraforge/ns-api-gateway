@@ -12,6 +12,7 @@ from nativespeaker.api.errors import (
     INTERNAL_ERROR,
     OPERATION_NOT_ALLOWED,
     PREAUTH_IDENTITY_NOT_ALLOWED,
+    VERIFICATION_TEMPORARILY_UNAVAILABLE,
     ErrorClass,
 )
 
@@ -116,3 +117,56 @@ class AccountUnavailable(AuthRejected):
 
     def log_fields(self) -> dict[str, str | None]:
         return {"cause": self.cause}
+
+
+# --- Lookup arms: the providerData read in `auth/firebase.py` ---
+
+
+class ProviderLookupError(AuthRejected):
+    """The provider lookup's rejections, and never raised itself -- it is the group's shared shape.
+
+    They consolidate here rather than beside the seam in `auth/adapters.py` so that the whole family
+    keeps one `add_exception_handler` registration and one vocabulary test. Like the rest of the
+    family these are outside the service-error tree in `errors.py`.
+
+    Per D-12 there is no `result` attribute: the internal outcome enum these arms used to carry has
+    no consumer once the class itself is the vocabulary.
+    """
+
+    def __init__(self, *, stage: str, cause: str | None = None) -> None:
+        # Plain strings, both of them ours: no provider text is ever admissible in either field.
+        self.stage = stage
+        self.cause = cause
+        super().__init__(f"{type(self).__name__.lower()} at {stage}")
+
+    def log_fields(self) -> dict[str, str | None]:
+        fields: dict[str, str | None] = {"stage": self.stage}
+        if self.cause is not None:
+            fields["cause"] = self.cause
+        return fields
+
+
+class UserNotFound(ProviderLookupError):
+    """The provider stated the account does not exist: definitive, and it spends no retry budget."""
+
+    error_class = AUTH_REQUIRED
+
+
+class Unavailable(ProviderLookupError):
+    """The read could not be completed: an exhausted retry budget, or no app configured for the issuer.
+
+    Retryable to the client, which is the whole reason it is not collapsed into the 401 above: a 503
+    tells a caller to come back, and a 401 tells it its token is no good.
+    """
+
+    error_class = VERIFICATION_TEMPORARILY_UNAVAILABLE
+
+
+class NotLinked(ProviderLookupError):
+    """A providerData shape outside the accept set, so no provider account may be claimed for it.
+
+    `cause` names the real reason and is a bounded string of our own choosing. The real reason never
+    reaches the client -- the body is the shared one-field `operation_not_allowed` and nothing else.
+    """
+
+    error_class = OPERATION_NOT_ALLOWED

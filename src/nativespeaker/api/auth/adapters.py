@@ -1,40 +1,35 @@
-"""The providerData adapter seam: an interface and its result types, with no provider SDK import and no
-I/O. Its implementation must make no provider call while a database lock is held, must bound each attempt
-at a fixed 5-10 seconds, and must never leak provider text to clients."""
+"""The providerData adapter seam: an interface and the one value type a successful read produces, with no
+provider SDK import and no I/O. Its implementation must make no provider call while a database lock is
+held, must bound each attempt at a fixed 5-10 seconds, and must never leak provider text to clients.
+
+Failure is raised, never returned: the rejections live in `auth/exceptions.py` and this module does not
+name them. A read either produced a verified identity or it did not happen."""
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Protocol
 
-
-class ProviderDataOutcome(StrEnum):
-    ok = "ok"
-    # Terminal: Firebase stated the account does not exist, so no retry attempt is spent on it.
-    user_not_found = "user_not_found"
-    # The only outcome the retry budget is for: outage, malformed response, or integration failure.
-    retryable_failure = "retryable_failure"
-    # Terminal: the issuer did not match the configured integration. Fails closed, never falls back.
-    selection_failure = "selection_failure"
+from nativespeaker.api.models.identities import IdentityProvider
 
 
 @dataclass(frozen=True, slots=True)
-class ProviderDataEntry:
-    provider_id: str
-    uid: str
+class VerifiedProviderIdentity:
+    """What one completed providerData read established: which provider owns the caller, and its uid.
 
+    Every field here has already passed its rule -- the shape classified, and the address was both
+    non-empty and verified. Adding a field would put an unjudged value on this path and let a
+    consumer re-derive a decision the read already made; adding an unjudged *raw* field would let one
+    apply a weaker rule than the read's.
+    """
 
-@dataclass(frozen=True, slots=True)
-class ProviderDataResult:
-    """One providerData read. `entries`, `email` and `email_verified` are set only on `ok`."""
-
-    outcome: ProviderDataOutcome
-    entries: tuple[ProviderDataEntry, ...] = ()
+    provider: IdentityProvider
+    # `None` exactly for the anonymous arm: `core.external_identities`' CHECK requires NULL there.
+    provider_uid: str | None
+    # Absent by default because an anonymous record has no verified address to carry.
     email: str | None = None
-    email_verified: bool = False
 
 
 class FirebaseAdminAdapter(Protocol):
     """One configured integration, one client selected by issuer match, and no ambient fallback."""
 
-    def get_user_provider_data(self, issuer: str, subject: str) -> ProviderDataResult:
-        """The providerData read. Retry-gated, and never called on an ordinary request path."""
+    def get_user_provider_data(self, issuer: str, subject: str) -> VerifiedProviderIdentity:
+        """The providerData read: the verified identity, or a raise. Never called on an ordinary path."""
         ...
