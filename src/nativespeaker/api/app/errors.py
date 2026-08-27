@@ -1,4 +1,5 @@
 import logging
+import re
 
 import structlog
 from fastapi import FastAPI, Request
@@ -6,6 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
+from nativespeaker.api.auth.exceptions import AuthRejected
 from nativespeaker.api.errors import (
     INTERNAL_ERROR,
     STATUS_TO_CLASS,
@@ -18,6 +20,19 @@ logger = structlog.get_logger()
 
 _LOGGABLE = frozenset({logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL})
 
+_FIRST = re.compile(r"(.)([A-Z][a-z]+)")
+_REST = re.compile(r"([a-z0-9])([A-Z])")
+
+
+def camel_to_snake(name: str) -> str:
+    r"""An exception class name as the log event name it stands for.
+
+    Two substitutions rather than one, because a single `\B([A-Z])` rule splits inside an acronym:
+    `IdentityAlreadyLinked` -> `identity_already_linked`, and `InvalidExternalJwt` ->
+    `invalid_external_jwt` rather than `invalid_external_j_w_t`.
+    """
+    return _REST.sub(r"\1_\2", _FIRST.sub(r"\1_\2", name)).lower()
+
 
 async def service_error_handler(_: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, ServiceError)
@@ -27,6 +42,20 @@ async def service_error_handler(_: Request, exc: Exception) -> JSONResponse:
         logger.log(level, str(exc), error_type=type(exc).__name__,
                    exc_info=(exc.log_level >= logging.ERROR))
     return error_response(exc.error_class, headers=exc.extra_headers())
+
+
+async def auth_rejected_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Record one auth rejection, then answer with the class the exception declared."""
+    assert isinstance(exc, AuthRejected)
+    # The structured security log is the only record a rejection leaves, and `log_fields()` is the
+    # only channel into this line -- which is how the challenge handle stays out of it.
+    # `route` is the matched route's path template, never the caller's raw path. FastAPI sets
+    # `scope["route"]` when a route matches and Starlette builds this Request from that same scope;
+    # a request that matched nothing has no key, and reading it must not raise here.
+    logger.warning(camel_to_snake(type(exc).__name__),
+                   route=getattr(request.scope.get("route"), "path", None),
+                   **exc.log_fields())
+    return error_response(exc.error_class)
 
 
 async def validation_error_handler(_: Request, exc: Exception) -> JSONResponse:
@@ -52,6 +81,8 @@ async def generic_error_handler(_: Request, exc: Exception) -> JSONResponse:
 
 
 def register_exception_handlers(app: FastAPI) -> None:
+    # One entry covers every subclass: Starlette resolves a handler by walking `type(exc).__mro__`.
+    app.add_exception_handler(AuthRejected, auth_rejected_handler)
     app.add_exception_handler(ServiceError, service_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
