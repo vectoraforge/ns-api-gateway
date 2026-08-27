@@ -28,11 +28,10 @@ ErrorCode = Literal["auth_required",
 
 @dataclass(frozen=True, slots=True)
 class ErrorClass:
-    """One client-visible error class: exactly one status, one code, one copy."""
+    """One client-visible error class: exactly one status and one code."""
     name: str
     status: int
     code: ErrorCode
-    copy: str
 
 
 class ErrorResponse(BaseModel):
@@ -61,47 +60,41 @@ def error_response(cls: ErrorClass, *, headers: dict[str, str] | None = None) ->
                         headers=headers)
 
 
-# Copy is neutral by construction: no branch within a class is distinguishable from another.
+# Neutral by construction: no branch within a class is distinguishable from another.
 AUTH_REQUIRED = register_class(ErrorClass(
     name="auth_required",
     status=401,
     code="auth_required",
-    copy="Authentication is required. Sign in again and retry with a fresh token.",
 ))
 
 PREAUTH_IDENTITY_NOT_ALLOWED = register_class(ErrorClass(
     name="preauth_identity_not_allowed",
     status=403,
     code="preauth_identity_not_allowed",
-    copy="Account setup must be completed before this request.",
 ))
 
 ACCOUNT_UNAVAILABLE = register_class(ErrorClass(
     name="account_unavailable",
     status=403,
     code="account_unavailable",
-    copy="Account unavailable -- contact support.",
 ))
 
 CHALLENGE_REQUIRED = register_class(ErrorClass(
     name="challenge_required",
     status=409,
     code="challenge_required",
-    copy="Prepare a fresh challenge and retry.",
 ))
 
 INVALID_REQUEST = register_class(ErrorClass(
     name="invalid_request",
     status=400,
     code="invalid_request",
-    copy="The request is invalid. Correct it and resend.",
 ))
 
 VERIFICATION_TEMPORARILY_UNAVAILABLE = register_class(ErrorClass(
     name="verification_temporarily_unavailable",
     status=503,
     code="verification_temporarily_unavailable",
-    copy="Temporarily unavailable. Retry the whole operation later with backoff.",
 ))
 
 # The generic 429 every unspecialized rate-limit rejection carries, including Envoy's.
@@ -109,21 +102,18 @@ RATE_LIMITED = register_class(ErrorClass(
     name="rate_limited",
     status=429,
     code="rate_limited",
-    copy="Too many requests. Wait for the indicated interval and retry.",
 ))
 
 VALIDATION_ERROR = register_class(ErrorClass(
     name="validation_error",
     status=422,
     code="validation_error",
-    copy="The request body did not match the expected shape. Correct it and resend.",
 ))
 
 NOT_FOUND = register_class(ErrorClass(
     name="not_found",
     status=404,
     code="not_found",
-    copy="No such resource at this path.",
 ))
 
 # 405 keeps its own status. An unauthenticated caller can reach it, and it discloses only that the path exists.
@@ -131,35 +121,30 @@ METHOD_NOT_ALLOWED = register_class(ErrorClass(
     name="method_not_allowed",
     status=405,
     code="method_not_allowed",
-    copy="This path does not serve that method. The Allow header lists the ones it does.",
 ))
 
 INTERNAL_ERROR = register_class(ErrorClass(
     name="internal_error",
     status=500,
     code="internal_error",
-    copy="The request could not be completed. Retry later.",
 ))
 
 SERVICE_UNAVAILABLE = register_class(ErrorClass(
     name="service_unavailable",
     status=503,
     code="service_unavailable",
-    copy="The service is busy. Wait for the indicated interval and retry.",
 ))
 
 QUOTA_EXCEEDED = register_class(ErrorClass(
     name="quota_exceeded",
     status=429,
     code="quota_exceeded",
-    copy="The allowance for the current period is used up. It refreshes next period.",
 ))
 
 OUT_OF_SCOPE = register_class(ErrorClass(
     name="out_of_scope",
     status=400,
     code="out_of_scope",
-    copy="This request is outside the scope of linguistic analysis. Send a phrase to analyse.",
 ))
 
 # Shares 409 with `challenge_required`: codes must be unique, statuses need not be.
@@ -167,14 +152,12 @@ IDENTITY_ALREADY_LINKED = register_class(ErrorClass(
     name="identity_already_linked",
     status=409,
     code="identity_already_linked",
-    copy="An account already exists for this identity -- synchronise it rather than creating one.",
 ))
 
 OPERATION_NOT_ALLOWED = register_class(ErrorClass(
     name="operation_not_allowed",
     status=403,
     code="operation_not_allowed",
-    copy="This operation cannot be completed for this account -- contact support.",
 ))
 
 # No 415: `python-multipart` is absent, so a Form or File parameter cannot be declared at all.
@@ -335,16 +318,6 @@ class AuthenticationError(ServiceError):
 
     def extra_headers(self) -> dict[str, str]:
         return {"WWW-Authenticate": "Bearer"}
-
-
-class AuthRejectionError(ServiceError):
-    """An admission rejection raised by the auth dependency, carrying its error class per instance."""
-    # It logs nothing itself: the security log already recorded the rejection.
-    log_level = None
-
-    def __init__(self, error_class: ErrorClass, message: str):
-        self.error_class = error_class
-        super().__init__(message)
 
 
 class WebhookVerificationError(ServiceError):

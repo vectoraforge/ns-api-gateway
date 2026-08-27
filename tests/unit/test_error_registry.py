@@ -80,11 +80,6 @@ class TestRegistryTotality:
     def test_error_code_literal_equals_the_registered_code_set(self):
         assert set(get_args(ErrorCode)) == {cls.code for cls in REGISTRY.values()}
 
-    def test_every_class_carries_copy(self):
-        """Every class pins a remediation; an empty one would leave a client stuck."""
-        for cls in REGISTRY.values():
-            assert cls.copy.strip(), f"{cls.name} declares no copy"
-
     def test_assert_registry_total_passes_as_shipped(self):
         assert_registry_total() is None
 
@@ -97,21 +92,21 @@ class TestRegistryTotalityCatchesDefects:
         with registry_mutation():
             with pytest.raises(ValueError, match="already registered"):
                 register_class(ErrorClass(name="second_not_found", status=404,
-                                          code="not_found", copy="A near-duplicate."))
+                                          code="not_found"))
         assert "second_not_found" not in REGISTRY
 
     def test_duplicate_code_smuggled_past_registration_fails_the_self_check(self):
         """Belt and braces: a class written straight into the table is still caught at boot."""
         with registry_mutation():
             REGISTRY["smuggled"] = ErrorClass(name="smuggled", status=404,
-                                              code="not_found", copy="Smuggled in.")
+                                              code="not_found")
             with pytest.raises(RuntimeError, match="shared by"):
                 assert_registry_total()
 
     def test_status_mapping_to_an_unregistered_class_fails_the_self_check(self):
         with registry_mutation():
             STATUS_TO_CLASS[418] = ErrorClass(name="ghost", status=418,
-                                              code="not_found", copy="Never registered.")
+                                              code="not_found")
             with pytest.raises(RuntimeError, match="unregistered class"):
                 assert_registry_total()
 
@@ -305,17 +300,6 @@ class TestPhase37Classes:
         at_403 = sorted(cls.name for cls in REGISTRY.values() if cls.status == 403)
         assert at_403 == ["account_unavailable", "operation_not_allowed",
                           "preauth_identity_not_allowed"]
-
-    @pytest.mark.parametrize("name", ["identity_already_linked", "operation_not_allowed"])
-    def test_copy_is_one_neutral_sentence(self, name):
-        """No issuer, no integration, no failed check, no accusation."""
-        copy = REGISTRY[name].copy
-        assert copy.strip()
-        assert copy.count(".") == 1 and copy.endswith(".")
-        lowered = copy.lower()
-        for word in ("firebase", "google", "apple", "provider", "token", "lookup",
-                     "you ", "your ", "invalid", "failed"):
-            assert word not in lowered, f"{name} copy names {word!r}"
 
 
 class TestDeliberatelyUnregisteredClasses:
