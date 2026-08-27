@@ -2,20 +2,20 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements (Phases 34-46)
-current_phase: 37.3
-current_phase_name: machine-generated-code-refactoring-part-2
-status: verifying
+current_phase: 38
+current_phase_name: POST /auth/sync
+status: planning
 stopped_at: Completed 37.3-04-PLAN.md (final plan of phase 37.3)
-last_updated: "2026-08-27T08:40:56.320Z"
+last_updated: "2026-08-27T09:07:39.582Z"
 last_activity: 2026-08-27
 last_activity_desc: Phase 37.3 execution complete — all four plans landed
-state_head: de09e132f148d54680150e5cec94dde2eda8909e
+state_head: 3727793a3b57611f7329caf578de7532e2541a8a
 progress:
   total_phases: 16
-  completed_phases: 6
+  completed_phases: 7
   total_plans: 50
   completed_plans: 50
-  percent: 38
+  percent: 44
 ---
 
 # Project State
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 37.3 (machine-generated-code-refactoring-part-2) — COMPLETE
-Plan: 4 of 4
-Status: Phase complete — ready for verification
-Last activity: 2026-08-27 — Phase 37.3 execution complete — all four plans landed
+Phase: 38 — POST /auth/sync
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-08-27 — Phase 37.3 complete, transitioned to Phase 38
 
 <!-- The plan counter was corrected from 3 to 8 on 2026-08-23, and from 9 to 10 on 2026-08-24, for
      the same reason both times. Waves 1, 2 and 4 ran as parallel worktree agents which deliberately
