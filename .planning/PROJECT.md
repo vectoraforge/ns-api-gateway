@@ -137,7 +137,9 @@ Added in v2.0 (from `SHARED-INVARIANTS.md` "Global deletions" — build none of 
 
 ## Current State
 
-Shipped v1.6. All milestones through v1.6 complete. v2.0 (Authentication & Entitlements) in progress — Phase 34 (schema) and Phase 35 (foundation) complete. Phase 35 delivered the shared auth machinery and the app now boots with the route enumeration assertion running for real; chat and quota routes still fail at runtime until Phase 36 rewires them (D-14/D-15).
+Shipped v1.6. All milestones through v1.6 complete. v2.0 (Authentication & Entitlements) in progress — Phases 34 (schema), 35 (foundation), 36 (rebind pre-existing routes) and 37 (`POST /auth/create-user`) complete, followed by three refactoring phases: 37.1 (machine-generated code, part 1), 37.2 (simplify auth module) and 37.3 (machine-generated code, part 2). Chat and quota routes were rewired by Phase 36 and no longer fail at runtime.
+
+Phase 37.3 completed the auth module's move away from machine-generated shape: functions that *returned* a rejection vocabulary (enums, result dataclasses, mapping dicts) for callers to translate now raise a DRF-style exception family, answered by one FastAPI handler. Client-visible behaviour is unchanged — every status code, error class, body, header, consumption semantic and admission decision is preserved; only the structured-log event vocabulary changed. Next: Phase 38 (`POST /auth/sync`), which must decide SYNC-03, blocked since Phase 37.1 deleted the mechanism it assumed.
 
 ## Context
 
@@ -234,4 +236,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-08-25 after completing Phase 37.2*
+*Last updated: 2026-08-27 after completing Phase 37.3*
