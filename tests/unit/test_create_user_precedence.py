@@ -222,7 +222,17 @@ def client(store, session, context, creator, fake_firebase_adapter):
     register_exception_handlers(app)
 
     app.dependency_overrides[get_request_context] = lambda: context
-    app.dependency_overrides[get_db] = lambda: session
+    # An async generator, not a plain callable: `get_db` releases the read transaction itself, and a
+    # callable has no `try`/`except` to do it with. Mirrors `app/dependencies.py::get_db` exactly.
+    async def _db():
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+    app.dependency_overrides[get_db] = _db
     app.dependency_overrides[get_challenge_store] = lambda: store
     app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
 
