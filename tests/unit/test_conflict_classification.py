@@ -9,25 +9,35 @@ from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.auth import creation
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.creation import (
-    CLIENT_CLASS_FOR_RESULT,
-    PROVIDER_ACCOUNT_INDEX_NAME,
-    RACE_CONSTRAINT_NAMES,
-    classify_insert_conflict,
-    create_account,
+from nativespeaker.api.auth.creation import create_account
+from nativespeaker.api.auth.exceptions import (
+    AccountUnavailable,
+    AuthRejected,
+    IdentityAlreadyLinked,
+    ProviderAccountAlreadyLinked,
 )
 from nativespeaker.api.errors import (
     ACCOUNT_UNAVAILABLE,
     IDENTITY_ALREADY_LINKED,
     OPERATION_NOT_ALLOWED,
 )
-from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult, AuthOperation
+from nativespeaker.api.models.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.models.users import User
 
 ISSUER = "https://securetoken.google.com/ns-conflict-test"
 SUBJECT = "conflict-classification-subject"
 NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
+
+# PostgreSQL's generated names for the two UNIQUE rules on external_identities, and the partial
+# UNIQUE index asyncpg reports by name exactly as it reports a constraint. The production arm now
+# writes these as literals inline, and this file is the only other place that names them: a rename
+# on one side and not the other fails this suite loudly rather than drifting.
+RACE_ISSUER_SUBJECT_KEY = "external_identities_issuer_subject_key"
+RACE_USER_ID_KEY = "external_identities_user_id_key"
+PROVIDER_ACCOUNT_INDEX = "ix_external_identities_provider_account"
+
+RACE_CONSTRAINT_NAMES = (RACE_ISSUER_SUBJECT_KEY, RACE_USER_ID_KEY)
 
 
 class _DriverViolation(Exception):
@@ -85,8 +95,55 @@ class _NoMutationSession:
         raise AssertionError("a no-mutation arm has nothing to roll back")
 
 
+class _Savepoint:
+    """Records the two boundaries the conflict arm is required to use, and rejects the third."""
+
+    def __init__(self) -> None:
+        self.rollbacks = 0
+        self.commits = 0
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+
+class _ConflictingSession:
+    """Finds no existing row, opens the savepoint, then fails the identity insert as PostgreSQL would."""
+
+    def __init__(self, conflict: IntegrityError) -> None:
+        self._conflict = conflict
+        self.savepoint = _Savepoint()
+        self.added: list[object] = []
+        self.flushes = 0
+        self.commits = 0
+        self.rollbacks = 0
+
+    async def exec(self, statement):
+        return _Result(None)
+
+    async def begin_nested(self) -> _Savepoint:
+        return self.savepoint
+
+    def add(self, instance) -> None:
+        self.added.append(instance)
+
+    async def flush(self) -> None:
+        # The second flush is the one carrying the identity row, so that is where the race is lost.
+        self.flushes += 1
+        if self.flushes >= 2:
+            raise self._conflict
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
 class _ConsumingStore:
-    """Consumes successfully and records that it was asked, which every arm must do."""
+    """Consumes successfully and records that it was asked, which the success path must do."""
 
     def __init__(self) -> None:
         self.consumed: list[str] = []
@@ -115,11 +172,8 @@ def _identity_row(*, state: IdentityState, user_id=None) -> ExternalIdentity:
                             updated_at=NOW)
 
 
-async def _run(rows: list[object | None]) -> tuple[AuthEventResult, _NoMutationSession,
-                                                   _ConsumingStore]:
-    """Drive `create_account` over a scripted read sequence and return everything observable."""
-    session = _NoMutationSession(rows)
-    store = _ConsumingStore()
+async def _create(session, store: _ConsumingStore):
+    """Drive `create_account` over whichever session the case scripted."""
     context = _context()
     challenge = AuthChallenge(challenge_id="scripted-handle",
                               operation=AuthOperation.create_user,
@@ -127,151 +181,196 @@ async def _run(rows: list[object | None]) -> tuple[AuthEventResult, _NoMutationS
                               preauth_subject_hash=b"\x00" * 32,
                               expires_at=NOW,
                               created_at=NOW)
-    result = await create_account(session,
-                                  context=context,
-                                  identity=context.identity,
-                                  challenge=challenge,
-                                  provider=IdentityProvider.anonymous,
-                                  provider_uid=None,
-                                  email=None,
-                                  challenge_store=store)
-    return result, session, store
+    return await create_account(session,
+                                context=context,
+                                identity=context.identity,
+                                challenge=challenge,
+                                provider=IdentityProvider.anonymous,
+                                provider_uid=None,
+                                email=None,
+                                challenge_store=store)
 
 
-class TestTheConstraintNamesAreDeclaredAsConstants:
-    """The mapping is data, in one place, rather than a chain of string comparisons."""
+async def _run(rows: list[object | None]) -> tuple[_NoMutationSession, _ConsumingStore]:
+    """Drive the re-resolution over a scripted read sequence; every arm of it raises."""
+    session = _NoMutationSession(rows)
+    store = _ConsumingStore()
+    await _create(session, store)
+    return session, store
 
-    def test_exactly_the_two_race_constraints(self):
-        """Two arbiters and only two; a third would mean another rule had been folded into the race."""
-        assert RACE_CONSTRAINT_NAMES == frozenset({"external_identities_issuer_subject_key",
-                                                   "external_identities_user_id_key"})
 
-    def test_the_provider_account_reservation_is_a_separate_name(self):
-        assert PROVIDER_ACCOUNT_INDEX_NAME == "ix_external_identities_provider_account"
-        assert PROVIDER_ACCOUNT_INDEX_NAME not in RACE_CONSTRAINT_NAMES
+async def _insert(constraint_name: str | None, *, expect: type[BaseException] = AuthRejected,
+                  conflict: IntegrityError | None = None):
+    """Drive the insert arm into its `except IntegrityError` branch and return all it left behind."""
+    conflict = conflict if conflict is not None else _integrity_error(constraint_name)
+    session = _ConflictingSession(conflict)
+    store = _ConsumingStore()
+    with pytest.raises(expect) as raised:
+        await _create(session, store)
+    return raised.value, conflict, session, store
+
+
+class TestTheArmNamesExactlyTheThreeLiveConstraints:
+    """Two race arbiters and one reservation; a fourth would mean another rule folded into the race."""
+
+    def test_the_code_names_exactly_the_three_constraints_this_file_names(self):
+        """Asserted against the code with prose stripped, so a name mentioned only in a comment misses."""
+        named = {node.value for node in ast.walk(ast.parse(_code_only(_CREATION_SOURCE)))
+                 if isinstance(node, ast.Constant) and isinstance(node.value, str)
+                 and "external_identities" in node.value}
+        assert named == {RACE_ISSUER_SUBJECT_KEY, RACE_USER_ID_KEY, PROVIDER_ACCOUNT_INDEX}
+
+    def test_the_reservation_is_not_one_of_the_race_arbiters(self):
+        assert PROVIDER_ACCOUNT_INDEX not in RACE_CONSTRAINT_NAMES
 
 
 class TestConflictDiscriminationByConstraintName:
-    """Three live names, two internal results, two client classes."""
+    """Three live names, two rejections, two client classes."""
 
-    @pytest.mark.parametrize("constraint_name", sorted(RACE_CONSTRAINT_NAMES))
-    def test_a_race_constraint_is_the_already_linked_result(self, constraint_name):
+    @pytest.mark.parametrize("constraint_name", RACE_CONSTRAINT_NAMES)
+    async def test_a_race_constraint_raises_already_linked(self, constraint_name):
         """Both unique constraints mean the same thing to the caller: an account exists, reconcile it."""
-        assert classify_insert_conflict(_integrity_error(constraint_name)) is \
-            AuthEventResult.identity_already_linked
+        rejection, _, _, _ = await _insert(constraint_name, expect=IdentityAlreadyLinked)
+        assert rejection.error_class is IDENTITY_ALREADY_LINKED
 
-    def test_the_provider_account_index_is_a_different_result(self):
+    async def test_the_provider_account_index_raises_a_different_rejection(self):
         """asyncpg reports a standalone partial unique index by name exactly as it reports a constraint."""
-        assert classify_insert_conflict(_integrity_error(PROVIDER_ACCOUNT_INDEX_NAME)) is \
-            AuthEventResult.provider_account_already_linked
+        rejection, _, _, _ = await _insert(PROVIDER_ACCOUNT_INDEX,
+                                           expect=ProviderAccountAlreadyLinked)
+        assert rejection.error_class is OPERATION_NOT_ALLOWED
 
-    def test_the_two_outcomes_are_distinct_results_and_distinct_client_classes(self):
+    async def test_the_two_outcomes_are_distinct_classes_and_distinct_client_classes(self):
         """Distinctness is asserted on both layers, because either one collapsing loses a client instruction."""
-        linked = classify_insert_conflict(_integrity_error("external_identities_issuer_subject_key"))
-        provider_account = classify_insert_conflict(_integrity_error(PROVIDER_ACCOUNT_INDEX_NAME))
+        linked, _, _, _ = await _insert(RACE_ISSUER_SUBJECT_KEY)
+        provider_account, _, _, _ = await _insert(PROVIDER_ACCOUNT_INDEX)
 
-        assert linked is not provider_account
-        assert CLIENT_CLASS_FOR_RESULT[linked] is IDENTITY_ALREADY_LINKED
-        assert CLIENT_CLASS_FOR_RESULT[provider_account] is OPERATION_NOT_ALLOWED
-        assert CLIENT_CLASS_FOR_RESULT[linked] is not CLIENT_CLASS_FOR_RESULT[provider_account]
-        assert CLIENT_CLASS_FOR_RESULT[linked].status == 409
-        assert CLIENT_CLASS_FOR_RESULT[provider_account].status == 403
+        assert type(linked) is not type(provider_account)
+        assert linked.error_class is not provider_account.error_class
+        assert linked.error_class.status == 409
+        assert provider_account.error_class.status == 403
 
-    def test_both_unavailable_results_share_one_client_class(self):
-        """The mutually-indistinguishable pair: the internal results differ, the answer does not."""
-        assert CLIENT_CLASS_FOR_RESULT[AuthEventResult.historical_identity] is ACCOUNT_UNAVAILABLE
-        assert CLIENT_CLASS_FOR_RESULT[AuthEventResult.blocked_user] is ACCOUNT_UNAVAILABLE
+    async def test_the_conflict_rolls_back_the_savepoint_and_commits_nothing(self):
+        """Until the rollback runs the session refuses every further statement, including the consume."""
+        _, _, session, _ = await _insert(RACE_ISSUER_SUBJECT_KEY)
+        assert (session.savepoint.rollbacks, session.savepoint.commits) == (1, 0)
+
+    async def test_the_conflict_leaves_the_consume_to_the_route(self):
+        """D-04: the raising arms consume in `_complete`'s except arm, so the handle is spent once."""
+        _, _, session, store = await _insert(PROVIDER_ACCOUNT_INDEX)
+        assert store.consumed == []
+        assert session.commits == 0
+
+    async def test_the_violation_survives_as_the_rejections_cause(self):
+        """The rejection is the client's answer; the violation is the reason, and the traceback keeps it."""
+        rejection, conflict, _, _ = await _insert(RACE_USER_ID_KEY)
+        assert rejection.__cause__ is conflict
 
 
 class TestAnUnrecognisedConflictIsReRaised:
     """Swallowing one would turn a programming error into a plausible client response."""
 
-    def test_the_provider_agreement_check_is_not_a_business_branch(self):
+    async def test_the_provider_agreement_check_is_not_a_business_branch(self):
         """`provider_uid` is derived so this CHECK cannot fire; reaching it is a defect here, not a client fact."""
-        error = _integrity_error("external_identities_check")
-        with pytest.raises(IntegrityError) as raised:
-            classify_insert_conflict(error)
-        assert raised.value is error
+        raised, conflict, _, _ = await _insert("external_identities_check", expect=IntegrityError)
+        assert raised is conflict
 
-    def test_a_cause_chain_with_no_constraint_name_is_re_raised(self):
-        error = _integrity_error(None)
-        with pytest.raises(IntegrityError) as raised:
-            classify_insert_conflict(error)
-        assert raised.value is error
+    async def test_a_cause_chain_with_no_constraint_name_is_re_raised(self):
+        raised, conflict, _, _ = await _insert(None, expect=IntegrityError)
+        assert raised is conflict
 
-    def test_an_integrity_error_with_no_orig_at_all_is_re_raised(self):
+    async def test_an_integrity_error_with_no_orig_at_all_is_re_raised(self):
         error = IntegrityError("INSERT INTO core.external_identities ...", {}, None)
-        with pytest.raises(IntegrityError) as raised:
-            classify_insert_conflict(error)
-        assert raised.value is error
+        raised, conflict, _, _ = await _insert(None, expect=IntegrityError, conflict=error)
+        assert raised is conflict is error
 
-    def test_an_unknown_constraint_name_is_re_raised(self):
+    async def test_an_unknown_constraint_name_is_re_raised(self):
         """A name nobody mapped -- a new constraint, or a rename -- must be loud, not guessed."""
-        error = _integrity_error("external_identities_some_future_key")
-        with pytest.raises(IntegrityError) as raised:
-            classify_insert_conflict(error)
-        assert raised.value is error
+        raised, conflict, _, _ = await _insert("external_identities_some_future_key",
+                                               expect=IntegrityError)
+        assert raised is conflict
+
+    async def test_the_unmapped_arm_is_not_a_member_of_the_rejection_family(self):
+        """The tripwire's whole point: a 500, never a benign 409 the caller could believe."""
+        raised, _, _, _ = await _insert("external_identities_some_future_key",
+                                        expect=IntegrityError)
+        assert not isinstance(raised, AuthRejected)
+
+    async def test_the_unmapped_arm_still_rolled_the_savepoint_back_first(self):
+        """A poisoned session would fail the request differently from the way this one is meant to fail."""
+        _, _, session, store = await _insert("external_identities_some_future_key",
+                                             expect=IntegrityError)
+        assert session.savepoint.rollbacks == 1
+        assert store.consumed == []
 
 
 class TestTheReResolutionsThreeNoMutationArms:
     """An already-present identity row means this attempt creates nothing."""
 
-    async def test_an_active_linked_row_is_already_linked_and_inserts_nothing(self):
+    async def test_an_active_linked_row_raises_already_linked_and_inserts_nothing(self):
         """The pre-check at prepare is racy and never authoritative; this read decides."""
         user_id = uuid4()
         rows = [_identity_row(state=IdentityState.active, user_id=user_id),
                 User(id=user_id, active=True, created_at=NOW, updated_at=NOW)]
-        result, session, store = await _run(rows)
+        with pytest.raises(IdentityAlreadyLinked) as raised:
+            await _run(rows)
+        assert raised.value.error_class is IDENTITY_ALREADY_LINKED
 
-        assert result is AuthEventResult.identity_already_linked
-        assert CLIENT_CLASS_FOR_RESULT[result] is IDENTITY_ALREADY_LINKED
-
-    async def test_a_historical_row_is_the_historical_result(self):
+    async def test_a_historical_row_raises_account_unavailable(self):
         """`historical` is a permanent tombstone: no creation, and no `preauth_identity_not_allowed`."""
-        result, _, _ = await _run([_identity_row(state=IdentityState.historical)])
+        with pytest.raises(AccountUnavailable) as raised:
+            await _run([_identity_row(state=IdentityState.historical)])
 
-        assert result is AuthEventResult.historical_identity
-        assert CLIENT_CLASS_FOR_RESULT[result] is ACCOUNT_UNAVAILABLE
+        assert raised.value.error_class is ACCOUNT_UNAVAILABLE
+        assert raised.value.cause == "historical_identity"
 
-    async def test_an_active_row_whose_user_is_blocked_is_the_blocked_result(self):
-        """Distinct from `historical_identity` internally, identical to the caller."""
+    async def test_an_active_row_whose_user_is_blocked_raises_account_unavailable(self):
+        """Distinct from the historical arm in the log alone, identical to the caller."""
         user_id = uuid4()
         rows = [_identity_row(state=IdentityState.active, user_id=user_id),
                 User(id=user_id, active=False, created_at=NOW, updated_at=NOW)]
-        result, _, _ = await _run(rows)
+        with pytest.raises(AccountUnavailable) as raised:
+            await _run(rows)
 
-        assert result is AuthEventResult.blocked_user
-        assert CLIENT_CLASS_FOR_RESULT[result] is ACCOUNT_UNAVAILABLE
+        assert raised.value.error_class is ACCOUNT_UNAVAILABLE
+        assert raised.value.cause == "blocked_user"
 
     async def test_the_two_unavailable_arms_are_indistinguishable_to_the_caller(self):
         """The pair a client must not be able to tell apart, asserted rather than assumed."""
-        historical, _, _ = await _run([_identity_row(state=IdentityState.historical)])
-        blocked_user_id = uuid4()
-        blocked, _, _ = await _run([
-            _identity_row(state=IdentityState.active, user_id=blocked_user_id),
-            User(id=blocked_user_id, active=False, created_at=NOW, updated_at=NOW)])
+        with pytest.raises(AccountUnavailable) as historical:
+            await _run([_identity_row(state=IdentityState.historical)])
 
-        assert historical is not blocked
-        assert CLIENT_CLASS_FOR_RESULT[historical] is CLIENT_CLASS_FOR_RESULT[blocked]
+        blocked_user_id = uuid4()
+        with pytest.raises(AccountUnavailable) as blocked:
+            await _run([_identity_row(state=IdentityState.active, user_id=blocked_user_id),
+                        User(id=blocked_user_id, active=False, created_at=NOW, updated_at=NOW)])
+
+        # One class, one client class: the only difference is the field that reaches the log.
+        assert type(historical.value) is type(blocked.value)
+        assert historical.value.error_class is blocked.value.error_class
+        assert historical.value.cause != blocked.value.cause
 
     async def test_a_missing_user_row_fails_closed(self):
         """The FK makes this unreachable; if it ever happens, refuse rather than invent or reassign an identity."""
-        rows = [_identity_row(state=IdentityState.active), None]
-        result, _, _ = await _run(rows)
+        with pytest.raises(AccountUnavailable) as raised:
+            await _run([_identity_row(state=IdentityState.active), None])
 
-        assert result is AuthEventResult.blocked_user
-        assert CLIENT_CLASS_FOR_RESULT[result] is ACCOUNT_UNAVAILABLE
+        assert raised.value.cause == "blocked_user"
 
-    async def test_every_no_mutation_arm_still_consumes_and_commits(self):
-        """A rejection that skipped consumption would leave the challenge replayable."""
-        _, session, store = await _run([_identity_row(state=IdentityState.historical)])
+    async def test_every_no_mutation_arm_leaves_the_consume_to_the_route(self):
+        """D-04 moved the post-claim consume to `_complete`; consuming here too would spend the handle twice."""
+        session = _NoMutationSession([_identity_row(state=IdentityState.historical)])
+        store = _ConsumingStore()
+        with pytest.raises(AccountUnavailable):
+            await _create(session, store)
 
-        assert store.consumed == ["scripted-handle"]
-        assert session.commits == 1
+        assert store.consumed == []
+        assert session.commits == 0
 
     async def test_the_historical_arm_reads_only_the_identity_row(self):
         """A historical row is already decisive, so reading the user row would be work done to reach the same answer."""
-        _, session, _ = await _run([_identity_row(state=IdentityState.historical)])
+        session = _NoMutationSession([_identity_row(state=IdentityState.historical)])
+        with pytest.raises(AccountUnavailable):
+            await _create(session, _ConsumingStore())
 
         assert len(session.statements) == 1
 
@@ -318,6 +417,12 @@ class TestTheModuleUsesNoSecondRaceArbiter:
         assert "str(exc" not in code
         assert "str(e)" not in code
 
+    def test_the_constraint_name_is_read_off_the_driver_and_not_the_message(self):
+        """The cause-chain walk moved inline when the helper was deleted; the rule it carried did not move."""
+        code = _code_only(_CREATION_SOURCE)
+        assert "constraint_name" in code
+        assert "__cause__" in code
+
 
 class TestTheSavepointRollbackArmIsStructurallyPresent:
     """Without this arm a conflict poisons the session and the consumption is lost."""
@@ -337,3 +442,15 @@ class TestTheSavepointRollbackArmIsStructurallyPresent:
                      if isinstance(node, ast.Attribute) and node.attr == "rollback"
                      and isinstance(node.value, ast.Name) and node.value.id == "savepoint"]
         assert rollbacks, "an `except IntegrityError` arm that does not roll back to the savepoint"
+
+    def test_the_rollback_is_the_first_await_in_the_arm(self):
+        """Rollback FIRST, classify second: until then the session refuses every further statement."""
+        tree = ast.parse(_CREATION_SOURCE)
+        handler = next(node for node in ast.walk(tree)
+                       if isinstance(node, ast.ExceptHandler)
+                       and isinstance(node.type, ast.Name) and node.type.id == "IntegrityError")
+        first_await = next(node for statement in handler.body for node in ast.walk(statement)
+                           if isinstance(node, ast.Await))
+        assert isinstance(first_await.value, ast.Call)
+        assert first_await.value.func.attr == "rollback"
+        assert first_await.value.func.value.id == "savepoint"
