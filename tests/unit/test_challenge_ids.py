@@ -471,10 +471,10 @@ class TestTheStoreBuildsNoMachineryTheDesignForbids:
         assert "hmac" not in imported
         assert "hashlib" not in imported
 
-    # The two cases that pinned `ChallengeRejection`'s member names against `AuthEventResult` went
-    # with both enums. What they were really guarding -- that the five rejection names are exactly
-    # these five and a rename is a visible edit -- now lives in `test_rejection_vocabulary.py`,
-    # where the class names *are* the vocabulary and the whole family is enumerated at once.
+    # The two cases that pinned the store's rejection enum against the outcome enum went with both
+    # of them. What they were really guarding -- that the five rejection names are exactly these
+    # five and a rename is a visible edit -- now lives in `test_rejection_vocabulary.py`, where the
+    # class names *are* the vocabulary and the whole family is enumerated at once.
 
 
 def _non_docstring_strings(tree: ast.Module) -> list[str]:

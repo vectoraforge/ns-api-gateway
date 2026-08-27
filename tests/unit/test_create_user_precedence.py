@@ -27,7 +27,7 @@ from nativespeaker.api.auth.exceptions import (
 from nativespeaker.api.auth.firebase import FIREBASE_LOOKUP_ATTEMPTS, RetryableLookupError
 from nativespeaker.api.auth.keys import HmacKeyring
 from nativespeaker.api.config import HmacConfig
-from nativespeaker.api.models.auth import AuthChallenge, AuthEventResult, AuthOperation
+from nativespeaker.api.models.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.models.identities import IdentityProvider
 from nativespeaker.api.routers import auth_router
 
@@ -271,7 +271,7 @@ class TestTheFiveChallengeRejections:
 
         _assert_challenge_required(_complete(client))
 
-        assert rejections.results == [AuthEventResult.challenge_not_found]
+        assert rejections.results == ["challenge_not_found"]
         assert fake_firebase_adapter.calls == []
 
     def test_a_challenge_bound_to_another_subject_is_an_identity_mismatch(
@@ -280,7 +280,7 @@ class TestTheFiveChallengeRejections:
 
         _assert_challenge_required(_complete(client))
 
-        assert rejections.results == [AuthEventResult.challenge_identity_mismatch]
+        assert rejections.results == ["challenge_identity_mismatch"]
         # Rejected BEFORE the claim: the rightful owner's row is untouched.
         assert store.row.claimed_at is None
         assert store.row.consumed_at is None
@@ -293,7 +293,7 @@ class TestTheFiveChallengeRejections:
 
         _assert_challenge_required(_complete(client))
 
-        assert rejections.results == [AuthEventResult.challenge_identity_mismatch]
+        assert rejections.results == ["challenge_identity_mismatch"]
         assert store.row.claimed_at is None
         assert store.row.consumed_at is None
         assert fake_firebase_adapter.calls == []
@@ -306,7 +306,7 @@ class TestTheFiveChallengeRejections:
 
         _assert_challenge_required(_complete(client))
 
-        assert rejections.results == [AuthEventResult.challenge_operation_mismatch]
+        assert rejections.results == ["challenge_operation_mismatch"]
         assert store.row.claimed_at is None
         assert store.row.consumed_at is None
         assert store.consume_calls == 0
@@ -318,7 +318,7 @@ class TestTheFiveChallengeRejections:
 
         _assert_challenge_required(_complete(client))
 
-        assert rejections.results == [AuthEventResult.challenge_consumed]
+        assert rejections.results == ["challenge_consumed"]
         # The whole point of the cleared-hash arm: the comparison is skipped entirely.
         assert keyring.comparisons == 0
         assert fake_firebase_adapter.calls == []
@@ -330,7 +330,7 @@ class TestTheFiveChallengeRejections:
 
         _assert_challenge_required(_complete(client))
 
-        assert rejections.results == [AuthEventResult.challenge_expired]
+        assert rejections.results == ["challenge_expired"]
         assert store.row.claimed_at is None
         assert store.consume_calls == 0
         assert fake_firebase_adapter.calls == []
@@ -343,7 +343,7 @@ class TestTheFiveChallengeRejections:
 
         _assert_challenge_required(_complete(client))
 
-        assert rejections.results == [AuthEventResult.challenge_consumed]
+        assert rejections.results == ["challenge_consumed"]
         # The holder's claim is untouched, and the loser consumed nothing.
         assert store.row.claim_attempt_id == holder
         assert store.row.consumed_at is None
@@ -481,7 +481,7 @@ class TestEveryProviderStageRejectionConsumes:
         assert first.status_code == 401
         _assert_challenge_required(second)
         assert rejections.results == ["user_not_found",
-                                      AuthEventResult.challenge_consumed]
+                                      "challenge_consumed"]
         assert creator.calls == []
         # The second attempt performs no work at all: the provider was not read a second time.
         assert len(fake_firebase_adapter.calls) == 1
@@ -498,7 +498,7 @@ class TestThePrecedenceItself:
 
         _assert_challenge_required(_complete(client))
 
-        assert rejections.results == [AuthEventResult.challenge_not_found]
+        assert rejections.results == ["challenge_not_found"]
         assert fake_firebase_adapter.calls == []
         assert creator.calls == []
 
@@ -509,7 +509,7 @@ class TestThePrecedenceItself:
 
         _assert_challenge_required(_complete(client))
 
-        assert rejections.results == [AuthEventResult.challenge_identity_mismatch]
+        assert rejections.results == ["challenge_identity_mismatch"]
         assert store.row.claimed_at is None
         assert fake_firebase_adapter.calls == []
 
@@ -521,7 +521,7 @@ class TestThePrecedenceItself:
 
         _assert_challenge_required(_complete(client))
 
-        assert rejections.results == [AuthEventResult.challenge_identity_mismatch]
+        assert rejections.results == ["challenge_identity_mismatch"]
 
     def test_an_expired_row_beats_a_failing_provider(
             self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
@@ -531,7 +531,7 @@ class TestThePrecedenceItself:
 
         _assert_challenge_required(_complete(client))
 
-        assert rejections.results == [AuthEventResult.challenge_expired]
+        assert rejections.results == ["challenge_expired"]
         assert fake_firebase_adapter.calls == []
         assert creator.calls == []
 
@@ -583,7 +583,7 @@ class TestTheTransactionRejectionIsObservedAtTheHandler:
         _complete(client)
 
         assert rejections.results == ["identity_already_linked",
-                                      AuthEventResult.challenge_consumed]
+                                      "challenge_consumed"]
         assert len(creator.calls) == 1
 
     def test_the_handle_never_reaches_either_log(
