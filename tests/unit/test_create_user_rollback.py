@@ -5,8 +5,8 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user
+from nativespeaker.api.auth.identity import Identity, RequestContext
 from nativespeaker.api.errors import IdentityAlreadyLinked
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
@@ -100,7 +100,7 @@ class _ConsumingStore:
 
 
 def _context() -> RequestContext:
-    return RequestContext(identity=PreAuthIdentity(issuer=ISSUER, subject=SUBJECT),
+    return RequestContext(identity=Identity(issuer=ISSUER, subject=SUBJECT),
                           route="/auth/create-user",
                           evaluated_at=NOW,
                           attempt_id=uuid4())

@@ -8,8 +8,8 @@ from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
 from nativespeaker.api.auth.hmac_keyring import HmacKeyring
+from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.errors import ChallengeConsumed, ChallengeIdentityMismatch
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 
@@ -36,7 +36,7 @@ class ChallengesDB:
 
     async def issue(self, session: AsyncSession, *,
                     operation: AuthOperation,
-                    identity: LinkedIdentity | PreAuthIdentity,
+                    identity: Identity,
                     now: datetime) -> tuple[str, datetime]:
         """Insert one row, returning only `(challenge_id, expires_at)`: from the caller's `now`, never renewed."""
         challenge_id = new_challenge_id()
@@ -45,7 +45,7 @@ class ChallengesDB:
         bound_identity_id = None
         preauth_issuer = None
         preauth_subject_hash = None
-        if isinstance(identity, LinkedIdentity):
+        if identity.identity is not None:
             bound_identity_id = identity.identity.id
         else:
             preauth_issuer = identity.issuer
@@ -96,18 +96,15 @@ class ChallengesDB:
             .returning(col(AuthChallenge.id)))
         return len(result.all()) == 1
 
-    def verify_binding(self, row: AuthChallenge,
-                       identity: LinkedIdentity | PreAuthIdentity) -> None:
-        """The completion comparison. It returns when the binding matches, and raises what it earned otherwise.
+    def verify_binding(self, row: AuthChallenge, identity: Identity) -> AuthChallenge:
+        """Return `row` when `identity` is the presenter it was bound to, and raise what it earned otherwise.
 
-        The raises carry nothing: the caller is pre-claim, so the rejection travels out through
-        `get_db`'s rollback, and a field read on the far side of that would be I/O outside a
-        greenlet. Keyed material still compares only via the keyring.
+        The raises carry nothing, because the caller is pre-claim and the row is expired by the rollback.
         """
         if row.bound_external_identity_id is not None:
-            if (isinstance(identity, LinkedIdentity)
+            if (identity.identity is not None
                     and identity.identity.id == row.bound_external_identity_id):
-                return
+                return row
             raise ChallengeIdentityMismatch()
 
         # The pre-auth arm. A cleared hash is never compared: the row takes the already-used answer.
@@ -118,3 +115,4 @@ class ChallengesDB:
         if not self._keyring.actor_subject_matches(row.preauth_subject_hash,
                                                    identity.issuer, identity.subject):
             raise ChallengeIdentityMismatch()
+        return row

@@ -15,9 +15,9 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
-from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.firebase import FIREBASE_LOOKUP_ATTEMPTS, RetryableLookupError
 from nativespeaker.api.auth.hmac_keyring import HmacKeyring
+from nativespeaker.api.auth.identity import Identity, RequestContext
 from nativespeaker.api.config import HmacConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import (
@@ -193,7 +193,7 @@ def creator(monkeypatch) -> _RecordingCreator:
 @pytest.fixture
 def context() -> RequestContext:
     return RequestContext(
-        identity=PreAuthIdentity(issuer=TEST_ISSUER, subject=SUBJECT),
+        identity=Identity(issuer=TEST_ISSUER, subject=SUBJECT),
         route=CREATE_USER_ROUTE,
         evaluated_at=datetime.now(UTC),
         attempt_id=uuid4(),

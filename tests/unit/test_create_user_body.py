@@ -18,7 +18,7 @@ from nativespeaker.api.app.dependencies import (
     get_request_context,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
+from nativespeaker.api.auth.identity import Identity, RequestContext
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.tables.auth import CreateUserRequest
 
@@ -88,7 +88,7 @@ def client(store, session, fake_firebase_adapter):
     register_exception_handlers(app)
 
     context = RequestContext(
-        identity=PreAuthIdentity(issuer=TEST_ISSUER, subject=UNLINKED_SUBJECT),
+        identity=Identity(issuer=TEST_ISSUER, subject=UNLINKED_SUBJECT),
         route=CREATE_USER_ROUTE,
         evaluated_at=datetime.now(UTC),
         attempt_id=uuid4(),

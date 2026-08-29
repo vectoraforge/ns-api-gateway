@@ -16,7 +16,7 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
-from nativespeaker.api.auth.context import LinkedIdentity
+from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.auth.jwt_verifier import VerificationResult, bounded_reason_for, claims_from_payload
 from nativespeaker.api.crud import ChatsDB
 from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router
@@ -97,7 +97,7 @@ def make_test_verifier() -> _FixedKeyVerifier:
 # Handlers read identity.user.id and nothing else, so the id is the whole contract.
 TEST_SUBJECT = "test-user"
 TEST_USER_ID = uuid7()
-TEST_IDENTITY = LinkedIdentity(
+TEST_IDENTITY = Identity(
     user=User(id=TEST_USER_ID, active=True),
     identity=ExternalIdentity(id=uuid7(),
                               user_id=TEST_USER_ID,

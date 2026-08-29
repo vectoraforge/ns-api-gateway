@@ -1,8 +1,11 @@
-"""Identity resolution: one query, four outcomes. The two account_unavailable arms do identical work."""
+"""The identity a verified credential resolves to, and the single query that resolves it."""
+from dataclasses import dataclass
+from datetime import datetime
+from uuid import UUID
+
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
 from nativespeaker.api.errors import (
     BlockedUser,
     HistoricalIdentity,
@@ -13,8 +16,29 @@ from nativespeaker.api.tables.identities import ExternalIdentity, IdentityState
 from nativespeaker.api.tables.users import User
 
 
+@dataclass(frozen=True, slots=True)
+class Identity:
+    """A verified `(issuer, subject)` and the rows it resolved to.
+
+    Both row fields are `None` together when the pair is linked to no account.
+    """
+    issuer: str
+    subject: str
+    user: User | None = None
+    identity: ExternalIdentity | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RequestContext:
+    """The request-scoped values later phases read and never recompute."""
+    identity: Identity
+    route: str
+    evaluated_at: datetime
+    attempt_id: UUID
+
+
 async def resolve_identity(session: AsyncSession, *, issuer: str, subject: str,
-                           allow_preauth: bool) -> LinkedIdentity | PreAuthIdentity:
+                           allow_preauth: bool) -> Identity:
     """Resolve a verified `(issuer, subject)` or raise the rejection it earned, using a single query."""
     # Outer join: an identity row whose user_id resolves to nothing must stay distinct from no row.
     statement = (select(ExternalIdentity, User)
@@ -26,7 +50,7 @@ async def resolve_identity(session: AsyncSession, *, issuer: str, subject: str,
     if row is None:
         # Identity rows are never deleted, so no row can only mean this pair was never linked.
         if allow_preauth:  # only POST /auth/create-user passes True
-            return PreAuthIdentity(issuer=issuer, subject=subject)
+            return Identity(issuer=issuer, subject=subject)
         raise PreAuthIdentityNotAllowed
 
     identity, user = row
@@ -38,4 +62,4 @@ async def resolve_identity(session: AsyncSession, *, issuer: str, subject: str,
         raise HistoricalIdentity
     if user.active is not True:
         raise BlockedUser
-    return LinkedIdentity(user=user, identity=identity, issuer=issuer, subject=subject)
+    return Identity(issuer=issuer, subject=subject, user=user, identity=identity)

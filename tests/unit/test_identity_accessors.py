@@ -13,12 +13,7 @@ from nativespeaker.api.app.dependencies import (
     get_request_context,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.auth.context import (
-    IdentityKind,
-    LinkedIdentity,
-    PreAuthIdentity,
-    RequestContext,
-)
+from nativespeaker.api.auth.identity import Identity, RequestContext
 from nativespeaker.api.tables.identities import (
     ExternalIdentity,
     IdentityProvider,
@@ -36,10 +31,10 @@ SUBJECT = "firebase-uid-1"
 _ADDRESS_MARKERS = ("addr", "remote", "host", "forwarded", "xff", "peer")
 
 
-def _linked() -> LinkedIdentity:
-    """A linked variant over the real model classes -- no mock stands in for the resolved rows."""
+def _linked() -> Identity:
+    """A linked identity over the real model classes -- no mock stands in for the resolved rows."""
     user, identity = _rows()
-    return LinkedIdentity(user=user, identity=identity, issuer=ISSUER, subject=SUBJECT)
+    return Identity(issuer=ISSUER, subject=SUBJECT, user=user, identity=identity)
 
 
 def _rows() -> tuple[User, ExternalIdentity]:
@@ -55,11 +50,11 @@ def _rows() -> tuple[User, ExternalIdentity]:
     return user, identity
 
 
-def _preauth() -> PreAuthIdentity:
-    return PreAuthIdentity(issuer=ISSUER, subject=SUBJECT)
+def _preauth() -> Identity:
+    return Identity(issuer=ISSUER, subject=SUBJECT)
 
 
-def _context(identity: LinkedIdentity | PreAuthIdentity) -> RequestContext:
+def _context(identity: Identity) -> RequestContext:
     return RequestContext(identity=identity,
                           route="/chats",
                           evaluated_at=datetime.now(UTC),
@@ -120,10 +115,10 @@ def _client(row=None) -> TestClient:
 
     @ctx_router.get("/ctx")
     async def _ctx(context: RequestContext = Depends(get_request_context)):
-        return {"kind": context.identity.kind, "route": context.route}
+        return {"linked": context.identity.user is not None, "route": context.route}
 
     @linked_router.get("/linked")
-    async def _linked_route(identity: LinkedIdentity = Depends(get_linked_identity)):
+    async def _linked_route(identity: Identity = Depends(get_linked_identity)):
         return {"user_id": str(identity.user.id)}
 
     app.include_router(ctx_router)
@@ -180,9 +175,9 @@ class TestVariantConfusionIsRefused:
 
     def test_get_request_context_accepts_either_variant(self):
         user, identity = _rows()
-        assert _client(row=None).get("/ctx", headers=_bearer()).json()["kind"] == "preauth"
+        assert _client(row=None).get("/ctx", headers=_bearer()).json()["linked"] is False
         assert _client(row=(identity, user)).get(
-            "/ctx", headers=_bearer()).json()["kind"] == "linked"
+            "/ctx", headers=_bearer()).json()["linked"] is True
 
     def test_the_context_carries_the_matched_path_template(self):
         """`RequestContext.route` is the route's declared template, read from the ASGI scope."""
@@ -292,32 +287,30 @@ class TestContextShape:
             "attempt_id", "evaluated_at", "identity", "route",
         ]
 
-    def test_preauth_carries_the_verified_pair_and_nothing_else(self):
-        """No user row, no identity row, no provider -- there is nothing to misread as linked."""
-        assert sorted(PreAuthIdentity.__dataclass_fields__) == ["issuer", "kind", "subject"]
+    def test_the_identity_carries_the_verified_pair_and_the_two_nullable_rows(self):
+        assert sorted(Identity.__dataclass_fields__) == ["identity", "issuer", "subject", "user"]
+
+    def test_unlinked_is_both_row_fields_none_together(self):
+        """There is no tag to misread: nullability is the whole distinction the store branches on."""
         identity = _preauth()
-        for absent in ("user", "identity", "provider", "provider_uid", "user_id"):
+        assert identity.user is None
+        assert identity.identity is None
+        for absent in ("kind", "provider", "provider_uid", "user_id"):
             assert not hasattr(identity, absent)
 
-    def test_linked_carries_both_rows_and_the_verified_pair(self):
-        assert sorted(LinkedIdentity.__dataclass_fields__) == [
-            "identity", "issuer", "kind", "subject", "user",
-        ]
+    def test_linked_carries_both_rows(self):
+        identity = _linked()
+        assert identity.user is not None
+        assert identity.identity is not None
 
-    @pytest.mark.parametrize("cls", [LinkedIdentity, PreAuthIdentity, RequestContext],
-                             ids=lambda c: c.__name__)
+    @pytest.mark.parametrize("cls", [Identity, RequestContext], ids=lambda c: c.__name__)
     def test_every_context_dataclass_is_frozen_and_slotted(self, cls):
         assert cls.__dataclass_params__.frozen
         assert "__slots__" in cls.__dict__
 
-    def test_the_kind_tags_discriminate_the_two_variants(self):
-        assert _linked().kind is IdentityKind.linked
-        assert _preauth().kind is IdentityKind.preauth
-        assert sorted(m.value for m in IdentityKind) == ["linked", "preauth"]
-
-    def test_a_frozen_variant_cannot_be_retagged(self):
+    def test_a_frozen_identity_cannot_be_relinked(self):
         with pytest.raises(Exception):
-            _preauth().kind = IdentityKind.linked  # ty: ignore[invalid-assignment]
+            _preauth().user = _rows()[0]  # ty: ignore[invalid-assignment]
 
     def test_the_linked_classifier_is_the_stored_provider_column(self):
         """The sole per-request classifier is read off the resolved row, not off a claim."""
@@ -329,15 +322,13 @@ class TestContextShape:
 class TestNoClientAddressIsCarried:
     """No client address in any form, since deriving trust from one would assume rather than prove it."""
 
-    @pytest.mark.parametrize("cls", [LinkedIdentity, PreAuthIdentity, RequestContext],
-                             ids=lambda c: c.__name__)
+    @pytest.mark.parametrize("cls", [Identity, RequestContext], ids=lambda c: c.__name__)
     def test_no_field_name_reads_as_an_address(self, cls):
         for name in cls.__dataclass_fields__:
             offenders = [m for m in _ADDRESS_MARKERS if m in name]
             assert not offenders, f"{cls.__name__}.{name} looks like an address field ({offenders})"
 
-    @pytest.mark.parametrize("cls", [LinkedIdentity, PreAuthIdentity, RequestContext],
-                             ids=lambda c: c.__name__)
+    @pytest.mark.parametrize("cls", [Identity, RequestContext], ids=lambda c: c.__name__)
     def test_the_only_string_fields_are_the_verified_pair_and_the_route_template(self, cls):
         """An address would arrive as a str, and the route is a declared template no caller can steer."""
         strings = {name for name, hint in get_type_hints(cls).items() if hint is str}

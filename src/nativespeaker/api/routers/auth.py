@@ -10,9 +10,9 @@ from nativespeaker.api.app.dependencies import (
     get_firebase_adapter,
     get_request_context,
 )
-from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user as create_account
 from nativespeaker.api.auth.firebase import lookup_with_retry
+from nativespeaker.api.auth.identity import Identity, RequestContext
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import (
     AppError,
@@ -80,7 +80,7 @@ async def create_user(body: CreateUserRequest,
 
 async def _complete(session: AsyncSession, *,
                     context: RequestContext,
-                    identity: LinkedIdentity | PreAuthIdentity,
+                    identity: Identity,
                     challenge_id: str,
                     challenge_store: ChallengesDB,
                     adapter) -> Response:
@@ -92,14 +92,13 @@ async def _complete(session: AsyncSession, *,
     it in the handler would be I/O outside a greenlet, and the client would get 500 where 409 is owed.
     """
     # No rejection before the claim consumes anything, so a wrong presenter cannot burn a live challenge.
-    challenge = await challenge_store.locate(session, challenge_id)
-    if challenge is None:
+    located = await challenge_store.locate(session, challenge_id)
+    if located is None:
         # A definitive no-row. A lookup outage raises out of `locate` instead of answering "no such challenge".
         raise ChallengeNotFound()
 
-    # A bare statement: the keyed comparison stays inside the store, and the mismatch it finds is
-    # raised there rather than returned. Pre-claim, so nothing here consumes and nothing rolls back.
-    challenge_store.verify_binding(challenge, identity)
+    # Every line below reads `challenge`, which only the binding check produces: deleting it is a NameError.
+    challenge = challenge_store.verify_binding(located, identity)
     if challenge.operation is not AuthOperation.create_user:
         # A challenge issued for another operation is a pre-claim rejection, like the binding mismatch above.
         raise ChallengeOperationMismatch()

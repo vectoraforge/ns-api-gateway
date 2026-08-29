@@ -10,9 +10,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user
 from nativespeaker.api.auth.hmac_keyring import HmacConfig, HmacKeyring
+from nativespeaker.api.auth.identity import Identity, RequestContext
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError
 from nativespeaker.api.tables.identities import IdentityProvider
@@ -140,7 +140,7 @@ def outcome_name(attempt: _Attempt) -> str:
 
 async def prepare_attempt(harness: _Harness, *, subject: str, provider: IdentityProvider,
                           provider_uid: str | None) -> _Attempt:
-    context = RequestContext(identity=PreAuthIdentity(issuer=harness.issuer, subject=subject),
+    context = RequestContext(identity=Identity(issuer=harness.issuer, subject=subject),
                              route="/auth/create-user",
                              evaluated_at=NOW,
                              attempt_id=uuid.uuid4())

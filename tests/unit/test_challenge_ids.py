@@ -12,8 +12,8 @@ from uuid import UUID, uuid7
 
 import pytest
 
-from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
 from nativespeaker.api.auth.hmac_keyring import HmacConfig, HmacKeyring
+from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.crud.challenges import (
     CHALLENGE_ID_BYTES,
     CHALLENGE_TTL_SECONDS,
@@ -101,7 +101,7 @@ class _ExplodingKeyring:
 
 
 def linked_identity(subject: str = SUBJECT, *, issuer: str = ISSUER,
-                    identity_id: UUID | None = None) -> LinkedIdentity:
+                    identity_id: UUID | None = None) -> Identity:
     user = User()
     identity = ExternalIdentity(id=identity_id if identity_id is not None else uuid7(),
                                 user_id=user.id,
@@ -109,11 +109,11 @@ def linked_identity(subject: str = SUBJECT, *, issuer: str = ISSUER,
                                 subject=subject,
                                 provider=IdentityProvider.google,
                                 provider_uid=f"google-uid-{subject}")
-    return LinkedIdentity(user=user, identity=identity, issuer=issuer, subject=subject)
+    return Identity(user=user, identity=identity, issuer=issuer, subject=subject)
 
 
-def preauth_identity(subject: str = SUBJECT, *, issuer: str = ISSUER) -> PreAuthIdentity:
-    return PreAuthIdentity(issuer=issuer, subject=subject)
+def preauth_identity(subject: str = SUBJECT, *, issuer: str = ISSUER) -> Identity:
+    return Identity(issuer=issuer, subject=subject)
 
 
 async def issue_row(identity, *, ring: HmacKeyring | None = None,
@@ -293,7 +293,7 @@ class TestTheCompletionComparison:
                             operation=AuthOperation.claim_registered_grant,
                             bound_external_identity_id=identity.identity.id,
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
-        assert store().verify_binding(row, identity) is None
+        assert store().verify_binding(row, identity) is row
 
     def test_a_linked_row_rejects_a_different_identity_row(self):
         row = AuthChallenge(challenge_id=new_challenge_id(),
@@ -319,7 +319,7 @@ class TestTheCompletionComparison:
                             preauth_issuer=ISSUER,
                             preauth_subject_hash=ring.actor_subject_hash(ISSUER, SUBJECT),
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
-        assert store(ring).verify_binding(row, preauth_identity()) is None
+        assert store(ring).verify_binding(row, preauth_identity()) is row
 
     def test_a_preauth_row_rejects_a_different_subject(self):
         ring = keyring()
@@ -350,7 +350,7 @@ class TestTheCompletionComparison:
                             preauth_issuer=ISSUER,
                             preauth_subject_hash=ring.actor_subject_hash(ISSUER, SUBJECT),
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
-        assert store(ring).verify_binding(row, linked_identity(SUBJECT)) is None
+        assert store(ring).verify_binding(row, linked_identity(SUBJECT)) is row
 
     def test_a_preauth_row_under_a_rotated_key_rejects(self):
         """The row stores no key version, so a rotation invalidates every outstanding pre-auth-bound challenge."""

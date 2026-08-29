@@ -6,9 +6,8 @@ from fastapi import Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from nativespeaker.api.auth.context import LinkedIdentity, RequestContext
 from nativespeaker.api.auth.extract_bearer import extract_bearer
-from nativespeaker.api.auth.resolve_identity import resolve_identity
+from nativespeaker.api.auth.identity import Identity, RequestContext, resolve_identity
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AuthenticationError, InvalidExternalJwt, PreAuthIdentityNotAllowed
@@ -63,10 +62,10 @@ async def get_request_context(request: Request) -> RequestContext:
 
 # Declared, never called directly: FastAPI's cache only sees solver-resolved deps, so a direct call re-verifies.
 async def get_linked_identity(
-        context: RequestContext = Depends(get_request_context)) -> LinkedIdentity:
+        context: RequestContext = Depends(get_request_context)) -> Identity:
     """The resolved user and identity row; rejects an unlinked caller with 403."""
     identity = context.identity
-    if not isinstance(identity, LinkedIdentity):
+    if identity.user is None:
         raise PreAuthIdentityNotAllowed
     return identity
 
@@ -102,7 +101,7 @@ def get_quota_gate(request: Request, context: RequestContext) -> QuotaGate:
     """Build the charge seam; QuotaGate takes the session factory, so no transaction spans the provider call."""
     # A route-level charge would bill callers for requests the service then refuses.
     identity = context.identity
-    if not isinstance(identity, LinkedIdentity):
+    if identity.user is None:
         # Unreachable: these routes declare get_linked_identity at router level. Fails closed anyway.
         raise AuthenticationError("Identity context is pre-auth on a quota-checked route")
     return QuotaGate(request.app.state.session_factory,

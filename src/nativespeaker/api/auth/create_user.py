@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
+from nativespeaker.api.auth.identity import Identity, RequestContext
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import (
     BlockedUser,
@@ -26,7 +26,7 @@ logger = structlog.get_logger()
 
 async def create_user(session: AsyncSession, *,
                       context: RequestContext,
-                      identity: LinkedIdentity | PreAuthIdentity,
+                      identity: Identity,
                       challenge: AuthChallenge,
                       provider: IdentityProvider,
                       provider_uid: str | None,
@@ -87,7 +87,7 @@ async def _reject_existing_identity(session: AsyncSession,
 
 async def _insert_account(session: AsyncSession, *,
                           evaluated_at: datetime,
-                          identity: LinkedIdentity | PreAuthIdentity,
+                          identity: Identity,
                           provider: IdentityProvider,
                           provider_uid: str | None,
                           email: str | None) -> UUID:
@@ -118,7 +118,7 @@ async def _insert_account(session: AsyncSession, *,
 
 async def _flush_account(session: AsyncSession, savepoint, *,
                          evaluated_at: datetime,
-                         identity: LinkedIdentity | PreAuthIdentity,
+                         identity: Identity,
                          provider: IdentityProvider,
                          provider_uid: str | None,
                          email: str | None) -> UUID:

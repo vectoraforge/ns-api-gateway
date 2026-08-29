@@ -8,8 +8,8 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.auth import create_user as creation
-from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user
+from nativespeaker.api.auth.identity import Identity, RequestContext
 from nativespeaker.api.errors import (
     AccountUnavailable,
     AppError,
@@ -151,7 +151,7 @@ class _ConsumingStore:
 
 
 def _context() -> RequestContext:
-    identity = PreAuthIdentity(issuer=ISSUER, subject=SUBJECT)
+    identity = Identity(issuer=ISSUER, subject=SUBJECT)
     return RequestContext(identity=identity,
                           route="/auth/create-user",
                           evaluated_at=NOW,

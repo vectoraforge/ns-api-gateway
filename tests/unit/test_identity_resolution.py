@@ -5,7 +5,7 @@ from uuid import uuid7
 import pytest
 
 from nativespeaker.api.app.error_handlers import camel_to_snake
-from nativespeaker.api.auth.resolve_identity import resolve_identity
+from nativespeaker.api.auth.identity import resolve_identity
 from nativespeaker.api.errors import (
     AccountUnavailable,
     AppError,
@@ -90,10 +90,11 @@ class TestOutcomeOneNoMatchingRow:
         assert identity.issuer == ISSUER
         assert identity.subject == SUBJECT
 
-    async def test_the_preauth_variant_carries_nothing_else(self):
+    async def test_the_unlinked_identity_carries_no_row(self):
+        """Unlinked is both row fields `None` together, which is what the store branches on."""
         identity, _ = await _resolve(None, preauth_callable=True)
-        assert not hasattr(identity, "user")
-        assert not hasattr(identity, "identity")
+        assert identity.user is None
+        assert identity.identity is None
 
     async def test_any_other_route_rejects_preauth_identity_not_allowed(self):
         rejection, _ = await _rejected(None, PreAuthIdentityNotAllowed)
@@ -210,7 +211,7 @@ class TestOneQueryOneCodePath:
         """Padding and constant-time delays are deliberately absent for this product."""
         import inspect
 
-        from nativespeaker.api.auth import resolve_identity as identity_module
+        from nativespeaker.api.auth import identity as identity_module
         source = inspect.getsource(identity_module)
         assert "sleep" not in source
         assert "perf_counter" not in source
