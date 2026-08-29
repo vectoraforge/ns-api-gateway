@@ -56,8 +56,8 @@ CASES = [
 ]
 
 
-# The rejection family answers through its own handler. Each route name is the event name the
-# handler must derive from the class, written out rather than re-derived with `camel_to_snake`.
+# Each route name is the event name the handler must derive from the class, written out rather than
+# re-derived with `camel_to_snake`.
 REJECTION_CASES = [
     ("identity_already_linked", IdentityAlreadyLinked(), 409, "identity_already_linked"),
     ("provider_account_already_linked", ProviderAccountAlreadyLinked(), 403,
