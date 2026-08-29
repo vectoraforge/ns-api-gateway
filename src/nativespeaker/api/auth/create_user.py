@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.database.challenges import ChallengeStore
+from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.exceptions import (
     AccountUnavailable,
@@ -30,7 +30,7 @@ async def create_user(session: AsyncSession, *,
                       provider: IdentityProvider,
                       provider_uid: str | None,
                       email: str | None,
-                      challenge_store: ChallengeStore) -> UUID:
+                      challenge_store: ChallengesDB) -> UUID:
     """Return the new user's id, or raise the rejection the transaction earned.
 
     Total rather than narrowed: the existing-identity branch has no success arm -- all three of its

@@ -441,7 +441,7 @@ class TestTheEffectiveGrantStatement:
 
     async def test_the_statement_locks_the_rows_and_orders_ascending_by_grant_id(self):
         # Imported inside the test: this is the only case here that needs GrantsDB.
-        from nativespeaker.api.database import GrantsDB
+        from nativespeaker.api.crud import GrantsDB
 
         session = _StubSession()
         rows = await GrantsDB(session).lock_effective_grants(uuid7(), datetime.now(UTC))

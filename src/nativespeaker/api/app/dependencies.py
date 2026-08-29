@@ -6,7 +6,7 @@ from fastapi import Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from nativespeaker.api.database.challenges import ChallengeStore
+from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.auth.context import LinkedIdentity, RequestContext
 from nativespeaker.api.auth.exceptions import InvalidExternalJwt, PreAuthIdentityNotAllowed
 from nativespeaker.api.auth.resolve_identity import resolve_identity
@@ -87,8 +87,8 @@ def get_chat_service(request: Request,
 
 
 # These two accessors exist so a challenge-bearing route can stay Depends()-only and never take Request itself.
-def get_challenge_store(request: Request) -> ChallengeStore:
-    """The one `ChallengeStore` the lifespan built. Read per request, never cached by a caller."""
+def get_challenge_store(request: Request) -> ChallengesDB:
+    """The one `ChallengesDB` the lifespan built. Read per request, never cached by a caller."""
     return request.app.state.challenge_store
 
 

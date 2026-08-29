@@ -10,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.database.challenges import ChallengeStore
+from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user
 from nativespeaker.api.auth.exceptions import AuthRejected
@@ -154,7 +154,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=Non
     """Drive the production consuming transaction once, on its own session and connection."""
     stored = type("_Challenge", (), {"id": attempt.challenge_row_id,
                                      "challenge_id": attempt.challenge_id})()
-    store = ChallengeStore(keyring())
+    store = ChallengesDB(keyring())
     async with harness.factory() as real_session:
         session = _HookedSession(real_session, after_first_read)
         try:

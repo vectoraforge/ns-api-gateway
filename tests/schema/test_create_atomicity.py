@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth import create_user
-from nativespeaker.api.database.challenges import ChallengeStore
+from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user
 from nativespeaker.api.auth.exceptions import AuthRejected, IdentityAlreadyLinked
@@ -209,7 +209,7 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
         id = row_id
         challenge_id = challenge_id_value
 
-    store = ChallengeStore(keyring())
+    store = ChallengesDB(keyring())
     async with harness.factory() as real_session:
         session = _RacingSession(real_session, after_first_read)
         try:

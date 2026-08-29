@@ -32,7 +32,7 @@ class ChallengesDB:
         self._keyring = keyring
 
     def __repr__(self) -> str:
-        return f"ChallengeStore(ttl_seconds={CHALLENGE_TTL_SECONDS})"
+        return f"ChallengesDB(ttl_seconds={CHALLENGE_TTL_SECONDS})"
 
     async def issue(self, session: AsyncSession, *,
                     operation: AuthOperation,

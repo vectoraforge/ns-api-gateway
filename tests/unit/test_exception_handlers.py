@@ -79,7 +79,7 @@ class _WarningSpy:
 @pytest.fixture
 def warnings(monkeypatch) -> _WarningSpy:
     spy = _WarningSpy()
-    monkeypatch.setattr("nativespeaker.api.app.errors.logger.warning", spy.record)
+    monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.warning", spy.record)
     return spy
 
 

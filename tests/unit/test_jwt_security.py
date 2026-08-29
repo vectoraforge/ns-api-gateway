@@ -288,7 +288,7 @@ class TestProductionVerifier:
 
     @pytest.fixture
     def jwks_client(self):
-        with patch("nativespeaker.api.auth.verification.PyJWKClient") as mock_cls:
+        with patch("nativespeaker.api.auth.jwt_verifier.PyJWKClient") as mock_cls:
             instance = mock_cls.return_value
             instance.get_signing_keys.return_value = []
             instance.get_signing_key_from_jwt.return_value = PUBLIC_KEY_PEM

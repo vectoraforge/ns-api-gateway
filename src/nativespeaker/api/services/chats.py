@@ -4,7 +4,7 @@ import orjson
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.database import ChatsDB
+from nativespeaker.api.crud import ChatsDB
 from nativespeaker.api.errors import (
     AnalysisError,
     ChatHistoryLimitError,
