@@ -324,7 +324,7 @@ class TestTheBindingAgainstRealRows:
 
         row = await read(_db_transaction, handle)
         assert row.bound_external_identity_id == identity.id
-        assert store.verify_binding(row, context) is None
+        assert store.verify_binding(row, context) is row
 
     async def test_a_linked_bound_row_rejects_a_different_identity(self, store, _db_transaction):
         user, identity = await seed_identity(_db_transaction, issuer=ISSUER, subject=SUBJECT)
@@ -368,7 +368,7 @@ class TestTheBindingAgainstRealRows:
         row = await read(_db_transaction, handle)
         assert row.preauth_subject_hash == keyring.actor_subject_hash(ISSUER, SUBJECT)
         assert keyring.actor_subject_matches(row.preauth_subject_hash, ISSUER, SUBJECT)
-        assert store.verify_binding(row, preauth()) is None
+        assert store.verify_binding(row, preauth()) is row
 
     async def test_a_consumed_preauth_row_takes_the_already_used_rejection(self, store,
                                                                            _db_transaction):

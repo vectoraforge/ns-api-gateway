@@ -92,5 +92,5 @@ def get_quota_gate(request: Request, identity: Identity) -> QuotaGate:
     return QuotaGate(request.app.state.session_factory,
                      # One instant for this request; nothing downstream reads the clock again.
                      evaluated_at=datetime.now(UTC),
-                     # Both arguments die with `QuotaGate` in plan 37.4-05; D-03 keeps no route field.
+                     # Both arguments die with `QuotaGate` in plan 37.4-04; D-03 keeps no route field.
                      route=request.scope["route"].path)

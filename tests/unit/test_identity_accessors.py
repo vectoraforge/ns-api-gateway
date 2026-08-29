@@ -1,4 +1,4 @@
-"""The typed identity context and the accessors that are admission: what the seam refuses, over real routers."""
+"""The two identity accessors, driven over real routers: what each one admits and what each one refuses."""
 import inspect
 from typing import get_type_hints
 from uuid import uuid7
@@ -26,7 +26,7 @@ ACCESSORS = (get_identity, get_linked_identity)
 ISSUER = TEST_ISSUER
 SUBJECT = "firebase-uid-1"
 
-# A field name matching any of these would be a client address sneaking back into the context.
+# A field name matching any of these would be a client address sneaking onto the identity.
 _ADDRESS_MARKERS = ("addr", "remote", "host", "forwarded", "xff", "peer")
 
 
@@ -49,7 +49,7 @@ def _rows() -> tuple[User, ExternalIdentity]:
     return user, identity
 
 
-def _preauth() -> Identity:
+def _unlinked() -> Identity:
     return Identity(issuer=ISSUER, subject=SUBJECT)
 
 
@@ -149,11 +149,11 @@ class TestNoCredentialIsRefused:
         assert _ProbeSession.instances == []
 
 
-class TestVariantConfusionIsRefused:
-    """An accessor refuses the wrong variant rather than handing it over."""
+class TestTheNarrowingHoldsInBothDirections:
+    """With the type split gone, this is where D-02's narrowing is asserted at the accessor level."""
 
-    def test_a_preauth_caller_on_a_linked_route_answers_403(self):
-        """Resolution admits a pre-auth principal everywhere and this accessor rejects it, so create-user reads it."""
+    def test_an_unlinked_caller_on_a_linked_route_answers_403(self):
+        """The replacement for the deleted type guarantee: the declaration is what refuses the read."""
         response = _client(row=None).get("/linked", headers=_bearer())
         assert response.status_code == 403
         assert response.json() == {"code": "preauth_identity_not_allowed"}
@@ -252,7 +252,7 @@ class TestAccessorsCannotProvision:
     """Exactly one read and no reachable write verb, asserted now that the accessors do open a session."""
 
     def test_only_the_resolving_accessor_takes_the_request(self):
-        """The narrowing accessors take the resolved context, which is also what puts them on the cache."""
+        """The narrowing accessor takes the resolved identity, which is what puts it on the cache."""
         assert list(inspect.signature(get_identity).parameters) == ["request"]
         params = list(inspect.signature(get_linked_identity).parameters)
         assert params == ["identity"], f"get_linked_identity takes {params}, not the identity"
@@ -273,15 +273,15 @@ class TestAccessorsCannotProvision:
         assert session.closed, "the session closes before the handler runs"
 
 
-class TestContextShape:
-    """The field sets later phases import verbatim, so they are the contract."""
+class TestTheIdentityShape:
+    """The one class's field set, which later phases import verbatim."""
 
     def test_the_identity_carries_the_verified_pair_and_the_two_nullable_rows(self):
         assert sorted(Identity.__dataclass_fields__) == ["identity", "issuer", "subject", "user"]
 
     def test_unlinked_is_both_row_fields_none_together(self):
         """There is no tag to misread: nullability is the whole distinction the store branches on."""
-        identity = _preauth()
+        identity = _unlinked()
         assert identity.user is None
         assert identity.identity is None
         for absent in ("kind", "provider", "provider_uid", "user_id"):
@@ -298,13 +298,13 @@ class TestContextShape:
 
     def test_a_frozen_identity_cannot_be_relinked(self):
         with pytest.raises(Exception):
-            _preauth().user = _rows()[0]  # ty: ignore[invalid-assignment]
+            _unlinked().user = _rows()[0]  # ty: ignore[invalid-assignment]
 
     def test_the_linked_classifier_is_the_stored_provider_column(self):
         """The sole per-request classifier is read off the resolved row, not off a claim."""
         identity = _linked()
         assert identity.identity.provider is IdentityProvider.google
-        assert not hasattr(identity, "provider"), "a context-level provider would compete with the column"
+        assert not hasattr(identity, "provider"), "an identity-level provider would compete with the column"
 
 
 class TestNoClientAddressIsCarried:

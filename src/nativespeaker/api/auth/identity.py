@@ -16,10 +16,7 @@ from nativespeaker.api.tables.users import User
 
 @dataclass(frozen=True, slots=True)
 class Identity:
-    """A verified `(issuer, subject)` and the rows it resolved to.
-
-    Both row fields are `None` together when the pair is linked to no account.
-    """
+    """A verified `(issuer, subject)` and the rows it resolved to, both `None` when it is unlinked."""
     issuer: str
     subject: str
     user: User | None = None

@@ -57,7 +57,7 @@ def _row(*, identity_state=IdentityState.active, user_active: bool = True, user=
 
 
 async def _resolve(row, *, preauth_callable: bool = False):
-    """The admitting half: resolution returns the identity variant it resolved to."""
+    """The admitting half: resolution returns the `Identity` it resolved."""
     session = _StubSession(row)
     identity = await resolve_identity(session, issuer=ISSUER, subject=SUBJECT,
                                       allow_preauth=preauth_callable)
@@ -154,7 +154,7 @@ class TestOutcomeFourLinkedAndActive:
         assert identity.identity is row[0]
         assert identity.user is row[1]
 
-    async def test_the_admitted_context_carries_the_verified_pair(self):
+    async def test_the_admitted_identity_carries_the_verified_pair(self):
         identity, _ = await _resolve(_row())
         assert (identity.issuer, identity.subject) == (ISSUER, SUBJECT)
 
