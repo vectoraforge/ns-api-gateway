@@ -461,3 +461,91 @@ class TestStartupFailsClosedOnATreeDefect:
         assert result.returncode == 0
         assert "_Duplicate" not in result.stdout
         assert "_HalfDeclared" not in result.stdout
+
+
+@pytest.fixture(scope="module")
+def framework_client():
+    """Routes that raise the framework's own exception, which no class in the tree inherits from."""
+    app = FastAPI()
+    register_exception_handlers(app)
+
+    @app.get("/only-get")
+    async def _only_get():
+        return {"ok": True}
+
+    app.add_api_route("/raise/framework/418",
+                      _make_raise_route(StarletteHTTPException(status_code=418)), methods=["GET"])
+
+    @app.post("/needs-a-body")
+    async def _needs_a_body(body: _Body):
+        return body
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield client
+
+
+class TestAFrameworkStatusStillReachesTheOneResponseBuilder:
+    """The two framework adapters construct the tree's own exception and delegate to the handler."""
+
+    def test_an_unrouted_path_answers_the_404_class(self, framework_client):
+        response = framework_client.get("/no-such-route")
+        assert response.status_code == 404
+        assert response.json() == {"code": "not_found"}
+
+    def test_a_wrong_method_answers_the_405_class_and_keeps_the_routers_allow_header(
+            self, framework_client):
+        """`Allow` is the router's, not the class's, so only forwarding `headers` preserves it."""
+        response = framework_client.post("/only-get")
+        assert response.status_code == 405
+        assert response.json() == {"code": "method_not_allowed"}
+        assert "GET" in response.headers["allow"]
+
+    def test_a_schema_violation_answers_the_422_class(self, framework_client):
+        response = framework_client.post("/needs-a-body", json={})
+        assert response.status_code == 422
+        assert response.json() == {"code": "validation_error"}
+
+    @pytest.mark.parametrize("path,expected_code", [("/no-such-route", "not_found"),
+                                                    ("/needs-a-body", "validation_error")])
+    def test_every_framework_answer_body_is_still_exactly_one_field(self, framework_client, path,
+                                                                    expected_code):
+        response = (framework_client.post(path, json={}) if path == "/needs-a-body"
+                    else framework_client.get(path))
+        assert list(response.json().keys()) == ["code"]
+        assert response.json()["code"] == expected_code
+
+    def test_a_status_no_class_answers_logs_loudly_and_answers_500(self, framework_client,
+                                                                   monkeypatch):
+        """The fail-loudly branch is a control: an unmapped status must never default silently."""
+        recorder = []
+        monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.error",
+                            lambda event, **kwargs: recorder.append((event, kwargs)))
+
+        response = framework_client.get("/raise/framework/418")
+
+        assert response.status_code == 500
+        assert response.json() == {"code": "internal_error"}
+        assert recorder == [("error_registry_unmapped_status", {"unmapped_status": 418})]
+
+
+class TestTheHeadersEachClassComputesStillReachTheClient:
+    """`extra_headers()` is the one channel, and three classes use it for two different reasons."""
+
+    def test_the_401_class_carries_www_authenticate(self, handler_client):
+        response = handler_client.get("/raise/missing_token")
+        assert response.status_code == 401
+        assert response.headers["www-authenticate"] == "Bearer"
+
+    @pytest.mark.parametrize("name,seconds", [("queue_full", "30"), ("circuit_open", "60")])
+    def test_the_two_503_classes_carry_the_retry_after_they_computed(self, handler_client, name,
+                                                                    seconds):
+        response = handler_client.get(f"/raise/{name}")
+        assert response.status_code == 503
+        assert response.headers["retry-after"] == seconds
+
+    def test_a_class_that_computes_no_header_sends_none(self, handler_client):
+        """The control: without it the two cases above would pass on a header added to every answer."""
+        response = handler_client.get("/raise/transient_llm")
+        assert response.status_code == 503
+        assert "retry-after" not in response.headers
+        assert "www-authenticate" not in response.headers
