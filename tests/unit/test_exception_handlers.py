@@ -11,7 +11,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.auth.resolve_identity import resolve_identity
+from nativespeaker.api.auth.identity import resolve_identity
 from nativespeaker.api.errors import (
     AuthenticationError,
     BlockedUser,

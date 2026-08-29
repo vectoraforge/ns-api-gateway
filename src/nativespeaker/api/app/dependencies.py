@@ -1,14 +1,12 @@
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from uuid import uuid7
 
 from fastapi import Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from nativespeaker.api.auth.context import LinkedIdentity, RequestContext
 from nativespeaker.api.auth.extract_bearer import extract_bearer
-from nativespeaker.api.auth.resolve_identity import resolve_identity
+from nativespeaker.api.auth.identity import Identity, resolve_identity
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AuthenticationError, InvalidExternalJwt, PreAuthIdentityNotAllowed
@@ -31,14 +29,8 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession]:
 
 
 # Declared in `APIRouter(dependencies=[...])` on every non-public router, so auth is default-on.
-async def get_request_context(request: Request) -> RequestContext:
-    """Accept the token, resolve the identity, and build the request context -- once per request."""
-    # One evaluation time and one attempt id per request, so no two reads straddle a boundary.
-    evaluated_at = datetime.now(UTC)
-    attempt_id = uuid7()
-
-    route = request.scope["route"].path
-
+async def get_identity(request: Request) -> Identity:
+    """Accept the token and resolve the identity it names -- once per request."""
     token, reason = extract_bearer(request.headers.raw)
     if token is None:
         raise InvalidExternalJwt(bounded_reason=reason)
@@ -52,21 +44,14 @@ async def get_request_context(request: Request) -> RequestContext:
     async with request.app.state.session_factory() as session:
         # allow_preauth=True here; get_linked_identity narrows, so create-user can answer 409 not 403.
         # Rejections raise through untouched: the handler is the one site that records them.
-        identity = await resolve_identity(session, issuer=claims.issuer,
-                                          subject=claims.subject, allow_preauth=True)
-
-    return RequestContext(identity=identity,
-                          route=route,
-                          evaluated_at=evaluated_at,
-                          attempt_id=attempt_id)
+        return await resolve_identity(session, issuer=claims.issuer,
+                                      subject=claims.subject, allow_preauth=True)
 
 
 # Declared, never called directly: FastAPI's cache only sees solver-resolved deps, so a direct call re-verifies.
-async def get_linked_identity(
-        context: RequestContext = Depends(get_request_context)) -> LinkedIdentity:
+async def get_linked_identity(identity: Identity = Depends(get_identity)) -> Identity:
     """The resolved user and identity row; rejects an unlinked caller with 403."""
-    identity = context.identity
-    if not isinstance(identity, LinkedIdentity):
+    if identity.user is None:
         raise PreAuthIdentityNotAllowed
     return identity
 
@@ -75,14 +60,14 @@ async def get_linked_identity(
 def get_chat_service(request: Request,
                      db: AsyncSession = Depends(get_db),
                      config: AppConfig = Depends(get_config),
-                     context: RequestContext = Depends(get_request_context)) -> ChatService:
-    # Declared, not fetched, so it shares the one cached context this request already resolved.
+                     identity: Identity = Depends(get_identity)) -> ChatService:
+    # Declared, not fetched, so it shares the one identity this request already resolved.
     return ChatService(db=db,
                        llm_service=request.app.state.llm_service,
                        examples=config.examples,
                        chats_limit=config.chats_limit,
                        messages_limit=config.messages_limit,
-                       quota_gate=get_quota_gate(request, context))
+                       quota_gate=get_quota_gate(request, identity))
 
 
 # These two accessors exist so a challenge-bearing route can stay Depends()-only and never take Request itself.
@@ -98,14 +83,14 @@ def get_firebase_adapter(request: Request):
 
 
 # Consumption travels as QuotaGate, which ChatService calls at the resilience layer's admission callback.
-def get_quota_gate(request: Request, context: RequestContext) -> QuotaGate:
+def get_quota_gate(request: Request, identity: Identity) -> QuotaGate:
     """Build the charge seam; QuotaGate takes the session factory, so no transaction spans the provider call."""
     # A route-level charge would bill callers for requests the service then refuses.
-    identity = context.identity
-    if not isinstance(identity, LinkedIdentity):
+    if identity.user is None:
         # Unreachable: these routes declare get_linked_identity at router level. Fails closed anyway.
-        raise AuthenticationError("Identity context is pre-auth on a quota-checked route")
+        raise AuthenticationError("Identity is unlinked on a quota-checked route")
     return QuotaGate(request.app.state.session_factory,
-                     # Both from the request's captured instant; nothing here reads the clock.
-                     evaluated_at=context.evaluated_at,
-                     route=context.route)
+                     # One instant for this request; nothing downstream reads the clock again.
+                     evaluated_at=datetime.now(UTC),
+                     # Both arguments die with `QuotaGate` in plan 37.4-04; D-03 keeps no route field.
+                     route=request.scope["route"].path)

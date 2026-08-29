@@ -5,7 +5,6 @@ can raise is whether it is a usable string -- and the framework, not the handler
 asserts the body code as well as the status, since a status alone would also pass for some other code.
 """
 from datetime import UTC, datetime
-from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -15,10 +14,10 @@ from nativespeaker.api.app.dependencies import (
     get_challenge_store,
     get_db,
     get_firebase_adapter,
-    get_request_context,
+    get_identity,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
+from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.tables.auth import CreateUserRequest
 
@@ -26,8 +25,6 @@ from .conftest import TEST_ISSUER
 
 UNLINKED_SUBJECT = "unlinked-body-subject"
 
-# Supplied only because `RequestContext` requires it; nothing below reads the value.
-CREATE_USER_ROUTE = "/auth/create-user"
 
 
 class _RecordingChallengeStore:
@@ -87,13 +84,8 @@ def client(store, session, fake_firebase_adapter):
     app.include_router(auth_router)
     register_exception_handlers(app)
 
-    context = RequestContext(
-        identity=PreAuthIdentity(issuer=TEST_ISSUER, subject=UNLINKED_SUBJECT),
-        route=CREATE_USER_ROUTE,
-        evaluated_at=datetime.now(UTC),
-        attempt_id=uuid4(),
-    )
-    app.dependency_overrides[get_request_context] = lambda: context
+    identity = Identity(issuer=TEST_ISSUER, subject=UNLINKED_SUBJECT)
+    app.dependency_overrides[get_identity] = lambda: identity
     # An async generator, not a plain callable: `get_db` releases the read transaction itself, and a
     # callable has no `try`/`except` to do it with. Mirrors `app/dependencies.py::get_db` exactly.
     async def _db():

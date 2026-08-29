@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 
 from nativespeaker.api.app.dependencies import get_chat_service, get_linked_identity
-from nativespeaker.api.auth.context import LinkedIdentity
+from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.schemas.api import ExamplesResponse
 from nativespeaker.api.services import ChatService
 
@@ -14,6 +14,6 @@ router = APIRouter(tags=["examples"], dependencies=[Depends(get_linked_identity)
             summary="Get example phrases",
             description="Returns example phrases for a given language to help users get started.")
 async def get_examples(lang: str = Query(..., description="Language code (e.g., 'en', 'es')"),
-                       identity: LinkedIdentity = Depends(get_linked_identity),
+                       identity: Identity = Depends(get_linked_identity),
                        service: ChatService = Depends(get_chat_service)) -> ExamplesResponse:
     return service.get_examples(lang)

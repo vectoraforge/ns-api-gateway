@@ -5,7 +5,6 @@ operations exist. A value that is not a string at all never reaches the handler 
 first -- and that arm is pinned here rather than worked around.
 """
 from datetime import UTC, datetime
-from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -15,17 +14,16 @@ from nativespeaker.api.app.dependencies import (
     get_challenge_store,
     get_db,
     get_firebase_adapter,
-    get_request_context,
+    get_identity,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
+from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.routers import auth_router
 
 from .conftest import TEST_ISSUER
 
 UNLINKED_SUBJECT = "unlinked-challenge-subject"
 
-CHALLENGE_ROUTE = "/auth/challenge"
 
 # What the fake store answers with; nothing under test parses either value.
 ISSUED_HANDLE = "issued-handle"
@@ -82,13 +80,8 @@ def client(store, session, fake_firebase_adapter):
     app.include_router(auth_router)
     register_exception_handlers(app)
 
-    context = RequestContext(
-        identity=PreAuthIdentity(issuer=TEST_ISSUER, subject=UNLINKED_SUBJECT),
-        route=CHALLENGE_ROUTE,
-        evaluated_at=datetime.now(UTC),
-        attempt_id=uuid4(),
-    )
-    app.dependency_overrides[get_request_context] = lambda: context
+    identity = Identity(issuer=TEST_ISSUER, subject=UNLINKED_SUBJECT)
+    app.dependency_overrides[get_identity] = lambda: identity
     app.dependency_overrides[get_db] = lambda: session
     app.dependency_overrides[get_challenge_store] = lambda: store
     app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter

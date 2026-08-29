@@ -369,7 +369,7 @@ class CircuitOpenError(ServiceUnavailable):
         return {"Retry-After": str(self.retry_after_seconds)}
 
 
-# --- Admission arms: `auth/resolve_identity.py` and the barrier in `app/dependencies.py` ---
+# --- Admission arms: `auth/identity.py` and the barrier in `app/dependencies.py` ---
 
 
 class InvalidExternalJwt(AppError):

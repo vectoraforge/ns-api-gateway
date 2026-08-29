@@ -1,6 +1,5 @@
-"""The typed identity context and the accessors that are admission: what the seam refuses, over real routers."""
+"""The two identity accessors, driven over real routers: what each one admits and what each one refuses."""
 import inspect
-from datetime import UTC, datetime
 from typing import get_type_hints
 from uuid import uuid7
 
@@ -9,16 +8,11 @@ from fastapi import APIRouter, Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
+    get_identity,
     get_linked_identity,
-    get_request_context,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.auth.context import (
-    IdentityKind,
-    LinkedIdentity,
-    PreAuthIdentity,
-    RequestContext,
-)
+from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.tables.identities import (
     ExternalIdentity,
     IdentityProvider,
@@ -28,18 +22,18 @@ from nativespeaker.api.tables.identities import (
 from nativespeaker.api.tables.users import User
 from unit.conftest import TEST_ISSUER, make_test_verifier, make_token
 
-ACCESSORS = (get_request_context, get_linked_identity)
+ACCESSORS = (get_identity, get_linked_identity)
 ISSUER = TEST_ISSUER
 SUBJECT = "firebase-uid-1"
 
-# A field name matching any of these would be a client address sneaking back into the context.
+# A field name matching any of these would be a client address sneaking onto the identity.
 _ADDRESS_MARKERS = ("addr", "remote", "host", "forwarded", "xff", "peer")
 
 
-def _linked() -> LinkedIdentity:
-    """A linked variant over the real model classes -- no mock stands in for the resolved rows."""
+def _linked() -> Identity:
+    """A linked identity over the real model classes -- no mock stands in for the resolved rows."""
     user, identity = _rows()
-    return LinkedIdentity(user=user, identity=identity, issuer=ISSUER, subject=SUBJECT)
+    return Identity(issuer=ISSUER, subject=SUBJECT, user=user, identity=identity)
 
 
 def _rows() -> tuple[User, ExternalIdentity]:
@@ -55,15 +49,8 @@ def _rows() -> tuple[User, ExternalIdentity]:
     return user, identity
 
 
-def _preauth() -> PreAuthIdentity:
-    return PreAuthIdentity(issuer=ISSUER, subject=SUBJECT)
-
-
-def _context(identity: LinkedIdentity | PreAuthIdentity) -> RequestContext:
-    return RequestContext(identity=identity,
-                          route="/chats",
-                          evaluated_at=datetime.now(UTC),
-                          attempt_id=uuid7())
+def _unlinked() -> Identity:
+    return Identity(issuer=ISSUER, subject=SUBJECT)
 
 
 class _Result:
@@ -115,18 +102,18 @@ def _client(row=None) -> TestClient:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     register_exception_handlers(app)
 
-    ctx_router = APIRouter(dependencies=[Depends(get_request_context)])
+    admit_router = APIRouter(dependencies=[Depends(get_identity)])
     linked_router = APIRouter(dependencies=[Depends(get_linked_identity)])
 
-    @ctx_router.get("/ctx")
-    async def _ctx(context: RequestContext = Depends(get_request_context)):
-        return {"kind": context.identity.kind, "route": context.route}
+    @admit_router.get("/admitted")
+    async def _admitted(identity: Identity = Depends(get_identity)):
+        return {"linked": identity.user is not None}
 
     @linked_router.get("/linked")
-    async def _linked_route(identity: LinkedIdentity = Depends(get_linked_identity)):
+    async def _linked_route(identity: Identity = Depends(get_linked_identity)):
         return {"user_id": str(identity.user.id)}
 
-    app.include_router(ctx_router)
+    app.include_router(admit_router)
     app.include_router(linked_router)
 
     # Read per request by the dependency, exactly as the real lifespan supplies them.
@@ -142,7 +129,7 @@ def _bearer(subject: str = SUBJECT) -> dict[str, str]:
 class TestNoCredentialIsRefused:
     """A route declaring either accessor refuses a caller who presented nothing."""
 
-    @pytest.mark.parametrize("path", ["/ctx", "/linked"])
+    @pytest.mark.parametrize("path", ["/admitted", "/linked"])
     def test_no_authorization_header_answers_auth_required(self, path):
         response = _client().get(path)
         assert response.status_code == 401
@@ -150,7 +137,7 @@ class TestNoCredentialIsRefused:
         assert list(body.keys()) == ["code"]
         assert body["code"] == "auth_required"
 
-    @pytest.mark.parametrize("path", ["/ctx", "/linked"])
+    @pytest.mark.parametrize("path", ["/admitted", "/linked"])
     def test_an_unverifiable_token_answers_auth_required(self, path):
         response = _client().get(path, headers={"Authorization": "Bearer not.a.jwt"})
         assert response.status_code == 401
@@ -162,11 +149,11 @@ class TestNoCredentialIsRefused:
         assert _ProbeSession.instances == []
 
 
-class TestVariantConfusionIsRefused:
-    """An accessor refuses the wrong variant rather than handing it over."""
+class TestTheNarrowingHoldsInBothDirections:
+    """With the type split gone, this is where D-02's narrowing is asserted at the accessor level."""
 
-    def test_a_preauth_caller_on_a_linked_route_answers_403(self):
-        """Resolution admits a pre-auth principal everywhere and this accessor rejects it, so create-user reads it."""
+    def test_an_unlinked_caller_on_a_linked_route_answers_403(self):
+        """The replacement for the deleted type guarantee: the declaration is what refuses the read."""
         response = _client(row=None).get("/linked", headers=_bearer())
         assert response.status_code == 403
         assert response.json() == {"code": "preauth_identity_not_allowed"}
@@ -178,15 +165,17 @@ class TestVariantConfusionIsRefused:
         assert response.status_code == 200
         assert response.json() == {"user_id": str(user.id)}
 
-    def test_get_request_context_accepts_either_variant(self):
-        user, identity = _rows()
-        assert _client(row=None).get("/ctx", headers=_bearer()).json()["kind"] == "preauth"
-        assert _client(row=(identity, user)).get(
-            "/ctx", headers=_bearer()).json()["kind"] == "linked"
+    def test_an_unlinked_caller_on_an_admitting_route_is_admitted(self):
+        """The other direction of D-02's narrowing: get_identity is what create-user declares."""
+        response = _client(row=None).get("/admitted", headers=_bearer())
+        assert response.status_code == 200
+        assert response.json() == {"linked": False}
 
-    def test_the_context_carries_the_matched_path_template(self):
-        """`RequestContext.route` is the route's declared template, read from the ASGI scope."""
-        assert _client(row=None).get("/ctx", headers=_bearer()).json()["route"] == "/ctx"
+    def test_a_linked_caller_on_an_admitting_route_is_admitted_too(self):
+        user, identity = _rows()
+        response = _client(row=(identity, user)).get("/admitted", headers=_bearer())
+        assert response.status_code == 200
+        assert response.json() == {"linked": True}
 
 
 class TestTheWireArmsRaiseAndTheHandlerRecordsThemOnce:
@@ -248,7 +237,7 @@ class TestNeverReturnsNone:
         annotation = get_type_hints(accessor)["return"]
         assert "None" not in str(annotation), f"{accessor.__name__} may return None"
 
-    @pytest.mark.parametrize("path", ["/ctx", "/linked"])
+    @pytest.mark.parametrize("path", ["/admitted", "/linked"])
     @pytest.mark.parametrize("header", [None, "", "Bearer", "Basic dXNlcjpwYXNz", "Bearer  "],
                              ids=["absent", "empty", "scheme-only", "wrong-scheme", "blank-token"])
     def test_no_failing_credential_shape_reaches_a_handler(self, path, header):
@@ -263,17 +252,17 @@ class TestAccessorsCannotProvision:
     """Exactly one read and no reachable write verb, asserted now that the accessors do open a session."""
 
     def test_only_the_resolving_accessor_takes_the_request(self):
-        """The narrowing accessors take the resolved context, which is also what puts them on the cache."""
-        assert list(inspect.signature(get_request_context).parameters) == ["request"]
+        """The narrowing accessor takes the resolved identity, which is what puts it on the cache."""
+        assert list(inspect.signature(get_identity).parameters) == ["request"]
         params = list(inspect.signature(get_linked_identity).parameters)
-        assert params == ["context"], f"get_linked_identity takes {params}, not the context"
+        assert params == ["identity"], f"get_linked_identity takes {params}, not the identity"
 
     @pytest.mark.parametrize("accessor", ACCESSORS, ids=lambda f: f.__name__)
     def test_accessor_is_asynchronous(self, accessor):
         """Both await resolution now, so FastAPI must not hand them to the threadpool."""
         assert inspect.iscoroutinefunction(accessor)
 
-    @pytest.mark.parametrize("path", ["/ctx", "/linked"])
+    @pytest.mark.parametrize("path", ["/admitted", "/linked"])
     def test_the_declaration_resolves_once(self, path):
         """One session across both declarations; an accessor calling rather than declaring ran everything twice."""
         user, identity = _rows()
@@ -284,65 +273,53 @@ class TestAccessorsCannotProvision:
         assert session.closed, "the session closes before the handler runs"
 
 
-class TestContextShape:
-    """The field sets later phases import verbatim, so they are the contract."""
+class TestTheIdentityShape:
+    """The one class's field set, which later phases import verbatim."""
 
-    def test_request_context_carries_exactly_the_four_request_scoped_values(self):
-        assert sorted(RequestContext.__dataclass_fields__) == [
-            "attempt_id", "evaluated_at", "identity", "route",
-        ]
+    def test_the_identity_carries_the_verified_pair_and_the_two_nullable_rows(self):
+        assert sorted(Identity.__dataclass_fields__) == ["identity", "issuer", "subject", "user"]
 
-    def test_preauth_carries_the_verified_pair_and_nothing_else(self):
-        """No user row, no identity row, no provider -- there is nothing to misread as linked."""
-        assert sorted(PreAuthIdentity.__dataclass_fields__) == ["issuer", "kind", "subject"]
-        identity = _preauth()
-        for absent in ("user", "identity", "provider", "provider_uid", "user_id"):
+    def test_unlinked_is_both_row_fields_none_together(self):
+        """There is no tag to misread: nullability is the whole distinction the store branches on."""
+        identity = _unlinked()
+        assert identity.user is None
+        assert identity.identity is None
+        for absent in ("kind", "provider", "provider_uid", "user_id"):
             assert not hasattr(identity, absent)
 
-    def test_linked_carries_both_rows_and_the_verified_pair(self):
-        assert sorted(LinkedIdentity.__dataclass_fields__) == [
-            "identity", "issuer", "kind", "subject", "user",
-        ]
+    def test_linked_carries_both_rows(self):
+        identity = _linked()
+        assert identity.user is not None
+        assert identity.identity is not None
 
-    @pytest.mark.parametrize("cls", [LinkedIdentity, PreAuthIdentity, RequestContext],
-                             ids=lambda c: c.__name__)
-    def test_every_context_dataclass_is_frozen_and_slotted(self, cls):
-        assert cls.__dataclass_params__.frozen
-        assert "__slots__" in cls.__dict__
+    def test_the_identity_is_frozen_and_slotted(self):
+        assert Identity.__dataclass_params__.frozen
+        assert "__slots__" in Identity.__dict__
 
-    def test_the_kind_tags_discriminate_the_two_variants(self):
-        assert _linked().kind is IdentityKind.linked
-        assert _preauth().kind is IdentityKind.preauth
-        assert sorted(m.value for m in IdentityKind) == ["linked", "preauth"]
-
-    def test_a_frozen_variant_cannot_be_retagged(self):
+    def test_a_frozen_identity_cannot_be_relinked(self):
         with pytest.raises(Exception):
-            _preauth().kind = IdentityKind.linked  # ty: ignore[invalid-assignment]
+            _unlinked().user = _rows()[0]  # ty: ignore[invalid-assignment]
 
     def test_the_linked_classifier_is_the_stored_provider_column(self):
         """The sole per-request classifier is read off the resolved row, not off a claim."""
         identity = _linked()
         assert identity.identity.provider is IdentityProvider.google
-        assert not hasattr(identity, "provider"), "a context-level provider would compete with the column"
+        assert not hasattr(identity, "provider"), "an identity-level provider would compete with the column"
 
 
 class TestNoClientAddressIsCarried:
     """No client address in any form, since deriving trust from one would assume rather than prove it."""
 
-    @pytest.mark.parametrize("cls", [LinkedIdentity, PreAuthIdentity, RequestContext],
-                             ids=lambda c: c.__name__)
-    def test_no_field_name_reads_as_an_address(self, cls):
+    def test_no_field_name_reads_as_an_address(self):
+        cls = Identity
         for name in cls.__dataclass_fields__:
             offenders = [m for m in _ADDRESS_MARKERS if m in name]
             assert not offenders, f"{cls.__name__}.{name} looks like an address field ({offenders})"
 
-    @pytest.mark.parametrize("cls", [LinkedIdentity, PreAuthIdentity, RequestContext],
-                             ids=lambda c: c.__name__)
-    def test_the_only_string_fields_are_the_verified_pair_and_the_route_template(self, cls):
-        """An address would arrive as a str, and the route is a declared template no caller can steer."""
-        strings = {name for name, hint in get_type_hints(cls).items() if hint is str}
-        assert strings <= {"issuer", "subject", "route"}, \
-            f"unexpected str field(s) on {cls.__name__}: {strings}"
+    def test_the_only_string_fields_are_the_verified_pair(self):
+        """An address would arrive as a str, so the two verified values are the whole allowance."""
+        strings = {name for name, hint in get_type_hints(Identity).items() if hint is str}
+        assert strings == {"issuer", "subject"}, f"unexpected str field(s) on Identity: {strings}"
 
 
 class TestExternalIdentityModel:

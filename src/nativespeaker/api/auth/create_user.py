@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
+from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import (
     BlockedUser,
@@ -25,8 +25,9 @@ logger = structlog.get_logger()
 
 
 async def create_user(session: AsyncSession, *,
-                      context: RequestContext,
-                      identity: LinkedIdentity | PreAuthIdentity,
+                      identity: Identity,
+                      evaluated_at: datetime,
+                      attempt_id: UUID,
                       challenge: AuthChallenge,
                       provider: IdentityProvider,
                       provider_uid: str | None,
@@ -44,7 +45,7 @@ async def create_user(session: AsyncSession, *,
         await _reject_existing_identity(session, existing)
 
     user_id = await _insert_account(session,
-                                    evaluated_at=context.evaluated_at,
+                                    evaluated_at=evaluated_at,
                                     identity=identity,
                                     provider=provider,
                                     provider_uid=provider_uid,
@@ -55,8 +56,8 @@ async def create_user(session: AsyncSession, *,
     # the two paths spend the handle exactly once between them.
     consumed = await challenge_store.consume(session,
                                              challenge_id=challenge.challenge_id,
-                                             claim_attempt_id=context.attempt_id,
-                                             now=context.evaluated_at)
+                                             claim_attempt_id=attempt_id,
+                                             now=evaluated_at)
     if not consumed:
         # This attempt holds the claim, so `False` means state diverged; the handle is never logged.
         logger.error("challenge_consume_did_not_match", challenge_row_id=str(challenge.id))
@@ -87,7 +88,7 @@ async def _reject_existing_identity(session: AsyncSession,
 
 async def _insert_account(session: AsyncSession, *,
                           evaluated_at: datetime,
-                          identity: LinkedIdentity | PreAuthIdentity,
+                          identity: Identity,
                           provider: IdentityProvider,
                           provider_uid: str | None,
                           email: str | None) -> UUID:
@@ -118,7 +119,7 @@ async def _insert_account(session: AsyncSession, *,
 
 async def _flush_account(session: AsyncSession, savepoint, *,
                          evaluated_at: datetime,
-                         identity: LinkedIdentity | PreAuthIdentity,
+                         identity: Identity,
                          provider: IdentityProvider,
                          provider_uid: str | None,
                          email: str | None) -> UUID:

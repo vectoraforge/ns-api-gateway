@@ -11,7 +11,7 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from e2e.conftest import seed_identity
-from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
+from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.errors import ChallengeConsumed, ChallengeIdentityMismatch
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import IdentityProvider
@@ -36,8 +36,8 @@ def keyring(_app_lifespan):
     return _app_lifespan.state.hmac_keyring
 
 
-def preauth(subject: str = SUBJECT, *, issuer: str = ISSUER) -> PreAuthIdentity:
-    return PreAuthIdentity(issuer=issuer, subject=subject)
+def preauth(subject: str = SUBJECT, *, issuer: str = ISSUER) -> Identity:
+    return Identity(issuer=issuer, subject=subject)
 
 
 async def issue(factory, store, identity=None, *, now=None,
@@ -318,21 +318,21 @@ class TestTheBindingAgainstRealRows:
     async def test_a_linked_bound_row_matches_its_own_identity(self, store, _db_transaction):
         """The linked arm needs a real identity row, because bound_external_identity_id carries a foreign key."""
         user, identity = await seed_identity(_db_transaction, issuer=ISSUER, subject=SUBJECT)
-        context = LinkedIdentity(user=user, identity=identity, issuer=ISSUER, subject=SUBJECT)
+        context = Identity(user=user, identity=identity, issuer=ISSUER, subject=SUBJECT)
         handle, _ = await issue(_db_transaction, store, context,
                                 operation=AuthOperation.claim_registered_grant)
 
         row = await read(_db_transaction, handle)
         assert row.bound_external_identity_id == identity.id
-        assert store.verify_binding(row, context) is None
+        assert store.verify_binding(row, context) is row
 
     async def test_a_linked_bound_row_rejects_a_different_identity(self, store, _db_transaction):
         user, identity = await seed_identity(_db_transaction, issuer=ISSUER, subject=SUBJECT)
         other_user, other_identity = await seed_identity(_db_transaction, issuer=ISSUER,
                                                          subject="a-different-subject",
                                                          provider=IdentityProvider.apple)
-        context = LinkedIdentity(user=user, identity=identity, issuer=ISSUER, subject=SUBJECT)
-        intruder = LinkedIdentity(user=other_user, identity=other_identity, issuer=ISSUER,
+        context = Identity(user=user, identity=identity, issuer=ISSUER, subject=SUBJECT)
+        intruder = Identity(user=other_user, identity=other_identity, issuer=ISSUER,
                                   subject="a-different-subject")
         handle, _ = await issue(_db_transaction, store, context,
                                 operation=AuthOperation.claim_registered_grant)
@@ -348,8 +348,8 @@ class TestTheBindingAgainstRealRows:
         other_user, other_identity = await seed_identity(_db_transaction, issuer=ISSUER,
                                                          subject="a-different-subject",
                                                          provider=IdentityProvider.apple)
-        context = LinkedIdentity(user=user, identity=identity, issuer=ISSUER, subject=SUBJECT)
-        intruder = LinkedIdentity(user=other_user, identity=other_identity, issuer=ISSUER,
+        context = Identity(user=user, identity=identity, issuer=ISSUER, subject=SUBJECT)
+        intruder = Identity(user=other_user, identity=other_identity, issuer=ISSUER,
                                   subject="a-different-subject")
         handle, _ = await issue(_db_transaction, store, context,
                                 operation=AuthOperation.claim_registered_grant)
@@ -368,7 +368,7 @@ class TestTheBindingAgainstRealRows:
         row = await read(_db_transaction, handle)
         assert row.preauth_subject_hash == keyring.actor_subject_hash(ISSUER, SUBJECT)
         assert keyring.actor_subject_matches(row.preauth_subject_hash, ISSUER, SUBJECT)
-        assert store.verify_binding(row, preauth()) is None
+        assert store.verify_binding(row, preauth()) is row
 
     async def test_a_consumed_preauth_row_takes_the_already_used_rejection(self, store,
                                                                            _db_transaction):

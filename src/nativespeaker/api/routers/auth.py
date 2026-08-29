@@ -1,4 +1,7 @@
 """The two auth routes: `/auth/challenge` issues a challenge, and `/auth/create-user` spends one."""
+from datetime import UTC, datetime
+from uuid import UUID, uuid7
+
 import structlog
 from fastapi import APIRouter, Depends
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -8,11 +11,11 @@ from nativespeaker.api.app.dependencies import (
     get_challenge_store,
     get_db,
     get_firebase_adapter,
-    get_request_context,
+    get_identity,
 )
-from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user as create_account
 from nativespeaker.api.auth.firebase import lookup_with_retry
+from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import (
     AppError,
@@ -33,28 +36,29 @@ from nativespeaker.api.tables.auth import (
 
 logger = structlog.get_logger()
 
-# Auth is default-on. The context is not narrowed to pre-auth: an already-linked caller is a 409 here, not a 401.
-router = APIRouter(tags=["auth"], dependencies=[Depends(get_request_context)])
+# Auth is default-on, and deliberately unnarrowed: an already-linked caller is a 409 here, not a 401.
+router = APIRouter(tags=["auth"], dependencies=[Depends(get_identity)])
 
 
 @router.post("/auth/challenge",
              summary="Issue a single-use challenge for a challenge-bearing operation")
 async def issue_challenge(body: ChallengeRequest,
-                          context: RequestContext = Depends(get_request_context),
+                          identity: Identity = Depends(get_identity),
                           session: AsyncSession = Depends(get_db),
                           challenge_store: ChallengesDB = Depends(get_challenge_store)) -> Response:
     """Issue one challenge for an operation this route serves. It reads no provider and mutates no account."""
+    # One instant for this request, so `created_at` and `expires_at` cannot straddle a boundary.
+    evaluated_at = datetime.now(UTC)
+
     if body.operation != AuthOperation.create_user.value:
         # The rejected string is caller-supplied and bounded, so logging it is safe; a handle never is.
-        logger.warning("auth_challenge_operation_not_issuable",
-                       route=context.route,
-                       operation=body.operation)
+        logger.warning("auth_challenge_operation_not_issuable", operation=body.operation)
         raise InvalidRequest
 
     challenge_id, expires_at = await challenge_store.issue(session,
                                                            operation=AuthOperation.create_user,
-                                                           identity=context.identity,
-                                                           now=context.evaluated_at)
+                                                           identity=identity,
+                                                           now=evaluated_at)
     # `no-store` rather than `no-cache`: the handle is a secret, and a revalidatable copy is a copy.
     return JSONResponse(content=PrepareResponse(challenge_id=challenge_id, expires_at=expires_at)
                         .model_dump(mode="json"),
@@ -66,21 +70,26 @@ async def issue_challenge(body: ChallengeRequest,
              description="Spends a single-use challenge obtained from `POST /auth/challenge`, "
                          "supplied as `challenge_id` in the body, and creates the account.")
 async def create_user(body: CreateUserRequest,
-                      context: RequestContext = Depends(get_request_context),
+                      identity: Identity = Depends(get_identity),
                       session: AsyncSession = Depends(get_db),
                       challenge_store: ChallengesDB = Depends(get_challenge_store),
                       adapter=Depends(get_firebase_adapter)) -> Response:
     """Complete the operation the body's handle stands for. The framework owns every malformed-body rejection."""
     # Forwarded untouched and never logged. Byte-for-byte comparison makes a padded handle a not-found.
-    return await _complete(session, context=context, identity=context.identity,
+    return await _complete(session, identity=identity,
+                           # One instant for this request; nothing below it reads the clock again.
+                           evaluated_at=datetime.now(UTC),
+                           # Plan 37.4-05 owns this: it drops the column, the CHECK conjunct and this value.
+                           attempt_id=uuid7(),
                            challenge_id=body.challenge_id,
                            challenge_store=challenge_store,
                            adapter=adapter)
 
 
 async def _complete(session: AsyncSession, *,
-                    context: RequestContext,
-                    identity: LinkedIdentity | PreAuthIdentity,
+                    identity: Identity,
+                    evaluated_at: datetime,
+                    attempt_id: UUID,
                     challenge_id: str,
                     challenge_store: ChallengesDB,
                     adapter) -> Response:
@@ -92,22 +101,21 @@ async def _complete(session: AsyncSession, *,
     it in the handler would be I/O outside a greenlet, and the client would get 500 where 409 is owed.
     """
     # No rejection before the claim consumes anything, so a wrong presenter cannot burn a live challenge.
-    challenge = await challenge_store.locate(session, challenge_id)
-    if challenge is None:
+    located = await challenge_store.locate(session, challenge_id)
+    if located is None:
         # A definitive no-row. A lookup outage raises out of `locate` instead of answering "no such challenge".
         raise ChallengeNotFound()
 
-    # A bare statement: the keyed comparison stays inside the store, and the mismatch it finds is
-    # raised there rather than returned. Pre-claim, so nothing here consumes and nothing rolls back.
-    challenge_store.verify_binding(challenge, identity)
+    # Every line below reads `challenge`, which only the binding check produces: deleting it is a NameError.
+    challenge = challenge_store.verify_binding(located, identity)
     if challenge.operation is not AuthOperation.create_user:
         # A challenge issued for another operation is a pre-claim rejection, like the binding mismatch above.
         raise ChallengeOperationMismatch()
 
     if not await challenge_store.claim(session,
                                        challenge_id=challenge_id,
-                                       claim_attempt_id=context.attempt_id,
-                                       now=context.evaluated_at):
+                                       claim_attempt_id=attempt_id,
+                                       now=evaluated_at):
         # `claimed_at` distinguishes the two losses; the claim's WHERE is the only expiry evaluation anywhere.
         await session.refresh(challenge)
         if challenge.claimed_at is None:
@@ -126,8 +134,9 @@ async def _complete(session: AsyncSession, *,
         # Per-minute traffic limits live in the gateway, not here; only the retry budget is in-process.
         facts = await lookup_with_retry(adapter, identity.issuer, identity.subject)
         await create_account(session,
-                             context=context,
                              identity=identity,
+                             evaluated_at=evaluated_at,
+                             attempt_id=attempt_id,
                              challenge=challenge,
                              provider=facts.provider,
                              provider_uid=facts.provider_uid,
@@ -139,8 +148,9 @@ async def _complete(session: AsyncSession, *,
         # handle exactly once between them. The bare re-raise is safe because after the commit the
         # session holds no transaction, so `get_db`'s rollback-on-exception cannot un-consume it --
         # the client spent this handle and must not get it back.
-        await _consume_and_commit(session, context=context, challenge=challenge,
-                                  challenge_store=challenge_store)
+        await _consume_and_commit(session, challenge=challenge,
+                                  challenge_store=challenge_store,
+                                  evaluated_at=evaluated_at, attempt_id=attempt_id)
         raise
 
     return JSONResponse(content=CompletionResponse(identity_provider=facts.provider)
@@ -148,14 +158,15 @@ async def _complete(session: AsyncSession, *,
 
 
 async def _consume_and_commit(session: AsyncSession, *,
-                              context: RequestContext,
                               challenge: AuthChallenge,
-                              challenge_store: ChallengesDB) -> None:
+                              challenge_store: ChallengesDB,
+                              evaluated_at: datetime,
+                              attempt_id: UUID) -> None:
     """Spend the handle and commit, so a rejection after the claim cannot be re-presented."""
     consumed = await challenge_store.consume(session,
                                              challenge_id=challenge.challenge_id,
-                                             claim_attempt_id=context.attempt_id,
-                                             now=context.evaluated_at)
+                                             claim_attempt_id=attempt_id,
+                                             now=evaluated_at)
     if not consumed:
         # Not recoverable: this attempt holds the claim, so a `False` means stored state diverged.
         logger.error("challenge_consume_did_not_match", challenge_row_id=str(challenge.id))

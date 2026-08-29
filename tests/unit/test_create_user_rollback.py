@@ -5,8 +5,8 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user
+from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.errors import IdentityAlreadyLinked
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
@@ -99,15 +99,11 @@ class _ConsumingStore:
         return True
 
 
-def _context() -> RequestContext:
-    return RequestContext(identity=PreAuthIdentity(issuer=ISSUER, subject=SUBJECT),
-                          route="/auth/create-user",
-                          evaluated_at=NOW,
-                          attempt_id=uuid4())
+def _identity() -> Identity:
+    return Identity(issuer=ISSUER, subject=SUBJECT)
 
 
 async def _create(session, store) -> UUID:
-    context = _context()
     challenge = AuthChallenge(challenge_id="rollback-handle",
                               operation=AuthOperation.create_user,
                               preauth_issuer=ISSUER,
@@ -115,8 +111,9 @@ async def _create(session, store) -> UUID:
                               expires_at=NOW,
                               created_at=NOW)
     return await create_user(session,
-                             context=context,
-                             identity=context.identity,
+                             identity=_identity(),
+                             evaluated_at=NOW,
+                             attempt_id=uuid4(),
                              challenge=challenge,
                              provider=IdentityProvider.anonymous,
                              provider_uid=None,

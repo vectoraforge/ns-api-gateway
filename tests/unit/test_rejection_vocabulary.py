@@ -68,8 +68,8 @@ EVENT_NAMES = frozenset({
     "circuit_open_error",
     # The admission arms.
     "invalid_external_jwt",
-    # Deliberately `pre_auth_...`, while the client-visible code stays `preauth_...`: the class name
-    # follows `PreAuthIdentity` in `auth/context.py`, and D-02 makes the event whatever it spells.
+    # Deliberately `pre_auth_...`, while the client-visible code stays `preauth_...`: the event is
+    # derived from the class name `PreAuthIdentityNotAllowed`, whatever that spells.
     "pre_auth_identity_not_allowed",
     "identity_unresolvable",
     # D-05's shared base and its two leaves, told apart in the log and nowhere else.

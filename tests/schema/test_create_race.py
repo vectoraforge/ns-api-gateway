@@ -10,9 +10,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user
 from nativespeaker.api.auth.hmac_keyring import HmacConfig, HmacKeyring
+from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError
 from nativespeaker.api.tables.identities import IdentityProvider
@@ -125,7 +125,8 @@ class _Attempt:
     subject: str
     provider: IdentityProvider
     provider_uid: str | None
-    context: RequestContext
+    identity: Identity
+    attempt_id: uuid.UUID
     challenge_row_id: uuid.UUID
     challenge_id: str
     # What the call produced: the new user's id on success, the rejection it raised otherwise.
@@ -140,14 +141,13 @@ def outcome_name(attempt: _Attempt) -> str:
 
 async def prepare_attempt(harness: _Harness, *, subject: str, provider: IdentityProvider,
                           provider_uid: str | None) -> _Attempt:
-    context = RequestContext(identity=PreAuthIdentity(issuer=harness.issuer, subject=subject),
-                             route="/auth/create-user",
-                             evaluated_at=NOW,
-                             attempt_id=uuid.uuid4())
+    identity = Identity(issuer=harness.issuer, subject=subject)
+    attempt_id = uuid.uuid4()
     row_id, challenge_id = await commit_claimed_challenge(harness, subject=subject,
-                                                          attempt_id=context.attempt_id)
+                                                          attempt_id=attempt_id)
     return _Attempt(subject=subject, provider=provider, provider_uid=provider_uid,
-                    context=context, challenge_row_id=row_id, challenge_id=challenge_id)
+                    identity=identity, attempt_id=attempt_id,
+                    challenge_row_id=row_id, challenge_id=challenge_id)
 
 
 async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=None) -> _Attempt:
@@ -159,8 +159,9 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=Non
         session = _HookedSession(real_session, after_first_read)
         try:
             attempt.result = await create_user(session,
-                                               context=attempt.context,
-                                               identity=attempt.context.identity,
+                                               identity=attempt.identity,
+                                               evaluated_at=NOW,
+                                               attempt_id=attempt.attempt_id,
                                                challenge=stored,
                                                provider=attempt.provider,
                                                provider_uid=attempt.provider_uid,
@@ -172,8 +173,8 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=Non
             # would measure half the choreography and read the missing half as a leaked challenge.
             await store.consume(session,
                                 challenge_id=attempt.challenge_id,
-                                claim_attempt_id=attempt.context.attempt_id,
-                                now=attempt.context.evaluated_at)
+                                claim_attempt_id=attempt.attempt_id,
+                                now=NOW)
             await session.commit()
             attempt.result = rejection
     return attempt
