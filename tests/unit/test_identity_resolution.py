@@ -5,19 +5,14 @@ from uuid import uuid7
 import pytest
 
 from nativespeaker.api.app.error_handlers import camel_to_snake
-from nativespeaker.api.auth.exceptions import (
-    AuthRejected,
-    IdentityUnresolvable,
-    PreAuthIdentityNotAllowed,
-)
 from nativespeaker.api.auth.resolve_identity import resolve_identity
 from nativespeaker.api.errors import (
-    INTERNAL_ERROR,
-    PREAUTH_IDENTITY_NOT_ALLOWED,
     AccountUnavailable,
     AppError,
     BlockedUser,
     HistoricalIdentity,
+    IdentityUnresolvable,
+    PreAuthIdentityNotAllowed,
 )
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.users import User
@@ -81,7 +76,7 @@ async def _rejected(row, expected: type[BaseException], *, preauth_callable: boo
 async def _drive(row, *, preauth_callable: bool = False) -> _StubSession:
     """Run resolution for its effect on the session, whichever way the outcome goes."""
     session = _StubSession(row)
-    with contextlib.suppress(AuthRejected, AppError):
+    with contextlib.suppress(AppError):
         await resolve_identity(session, issuer=ISSUER, subject=SUBJECT,
                                allow_preauth=preauth_callable)
     return session
@@ -102,7 +97,7 @@ class TestOutcomeOneNoMatchingRow:
 
     async def test_any_other_route_rejects_preauth_identity_not_allowed(self):
         rejection, _ = await _rejected(None, PreAuthIdentityNotAllowed)
-        assert rejection.error_class is PREAUTH_IDENTITY_NOT_ALLOWED
+        assert (rejection.status, rejection.code) == (403, "preauth_identity_not_allowed")
 
     async def test_the_rejection_carries_no_actor_material(self):
         """The verified pair is not a field on any rejection, so it cannot reach the log line."""
@@ -132,7 +127,7 @@ class TestOutcomeTwoIdentityStateIsNotExactlyActive:
         rejection, _ = await _rejected(_row(identity_state=IdentityState.historical),
                                        HistoricalIdentity)
         assert not isinstance(rejection, PreAuthIdentityNotAllowed)
-        assert rejection.code != PREAUTH_IDENTITY_NOT_ALLOWED.code
+        assert rejection.code != "preauth_identity_not_allowed"
 
 
 class TestOutcomeThreeUserIsNotExactlyTrue:
@@ -172,7 +167,7 @@ class TestUnresolvableUser:
 
     async def test_it_rejects_as_an_internal_error(self):
         rejection, _ = await _rejected(_row(user=None), IdentityUnresolvable)
-        assert rejection.error_class is INTERNAL_ERROR
+        assert (rejection.status, rejection.code) == (500, "internal_error")
 
     async def test_it_is_not_read_as_an_unlinked_pair(self):
         """The outer join is what keeps this case distinct from outcome 1."""

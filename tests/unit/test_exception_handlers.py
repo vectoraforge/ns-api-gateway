@@ -1,4 +1,3 @@
-import logging
 import subprocess
 import sys
 from typing import cast
@@ -12,7 +11,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.auth.exceptions import IdentityAlreadyLinked, ProviderAccountAlreadyLinked
 from nativespeaker.api.auth.resolve_identity import resolve_identity
 from nativespeaker.api.errors import (
     AuthenticationError,
@@ -21,11 +19,13 @@ from nativespeaker.api.errors import (
     CircuitOpenError,
     DatabaseNotInitializedError,
     HistoricalIdentity,
+    IdentityAlreadyLinked,
     InvalidChatError,
     InvalidCursorError,
     OutOfScopeError,
     PageSizeLimitError,
     PermanentLLMError,
+    ProviderAccountAlreadyLinked,
     QueueFullError,
     TransientLLMError,
     UnsupportedLanguageError,
@@ -92,27 +92,10 @@ class _WarningSpy:
         self.entries.append((event, kwargs))
 
 
-class _LogSpy:
-    """The same idiom against `logger.log`, which is the merged handler's one channel."""
-
-    def __init__(self) -> None:
-        self.entries: list[tuple[int, str, dict]] = []
-
-    def record(self, level: int, event: str, **kwargs) -> None:
-        self.entries.append((level, event, kwargs))
-
-
 @pytest.fixture
 def warnings(monkeypatch) -> _WarningSpy:
     spy = _WarningSpy()
     monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.warning", spy.record)
-    return spy
-
-
-@pytest.fixture
-def records(monkeypatch) -> _LogSpy:
-    spy = _LogSpy()
-    monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.log", spy.record)
     return spy
 
 
@@ -227,15 +210,14 @@ class TestTheHandlerRecordsTheRejectionExactlyOnce:
         handler_client.get(f"/reject/{name}")
 
         assert len(warnings.entries) == 1
-        event, fields = warnings.entries[0]
+        event, _fields = warnings.entries[0]
         assert event == name
-        assert fields["route"] == f"/reject/{name}"
 
     def test_a_rejection_carrying_no_extra_fields_logs_none(self, handler_client, warnings):
         """The base contributes `{}`, so nothing rides along that a subclass did not put there."""
         handler_client.get("/reject/identity_already_linked")
 
-        assert warnings.entries[0][1] == {"route": "/reject/identity_already_linked"}
+        assert warnings.entries[0][1] == {"exc_info": False}
 
 
 @pytest.fixture
@@ -267,15 +249,15 @@ class TestARejectionFromADependencyReachesTheSameHandler:
         assert response.status_code == 409
         assert response.json() == {"code": "identity_already_linked"}
 
-    def test_it_logs_the_path_template_and_never_the_callers_raw_path(self, dependency_client,
-                                                                     warnings):
-        """A raw path would put caller-controlled text in the security log."""
+    def test_it_is_recorded_once_and_names_no_caller_supplied_text(self, dependency_client,
+                                                                   warnings):
+        """D-03 dropped `route`; what remains must still carry nothing the caller chose."""
         dependency_client.get("/guarded/abc")
 
         assert len(warnings.entries) == 1
         event, fields = warnings.entries[0]
         assert event == "identity_already_linked"
-        assert fields["route"] == "/guarded/{item_id}"
+        assert "abc" not in str(fields)
 
 
 class _RollbackRecordingSession:
@@ -411,13 +393,13 @@ class TestAnAccountUnavailableArmTravelsTheWholeErrorPath:
         assert response.json() == {"code": "account_unavailable"}
 
     @pytest.mark.parametrize("arm", list(ADMISSION_ARMS), ids=list(ADMISSION_ARMS))
-    def test_it_produces_exactly_one_warning_named_for_its_class(self, admission_client, records,
+    def test_it_produces_exactly_one_warning_named_for_its_class(self, admission_client, warnings,
                                                                  arm):
         admission_client.get(f"/admit/{arm}")
 
-        assert len(records.entries) == 1
-        level, event, fields = records.entries[0]
-        assert (level, event) == (logging.WARNING, arm)
+        assert len(warnings.entries) == 1
+        event, fields = warnings.entries[0]
+        assert event == arm
         assert fields == {"exc_info": False}
 
     def test_the_two_arms_are_indistinguishable_to_the_client(self, admission_client):
@@ -427,13 +409,13 @@ class TestAnAccountUnavailableArmTravelsTheWholeErrorPath:
 
         assert _comparable(historical) == _comparable(blocked)
 
-    def test_neither_arm_carries_a_field_into_its_log_line(self, admission_client, records):
+    def test_neither_arm_carries_a_field_into_its_log_line(self, admission_client, warnings):
         """The `cause` field D-05 deleted was the only channel; the event name replaced it."""
         for arm in ADMISSION_ARMS:
             admission_client.get(f"/admit/{arm}")
 
-        assert [event for _, event, _ in records.entries] == list(ADMISSION_ARMS)
-        for _, _, fields in records.entries:
+        assert [event for event, _ in warnings.entries] == list(ADMISSION_ARMS)
+        for _, fields in warnings.entries:
             assert set(fields) == {"exc_info"}
 
 

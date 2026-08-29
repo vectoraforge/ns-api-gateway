@@ -12,16 +12,16 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user as create_account
-from nativespeaker.api.auth.exceptions import (
-    AuthRejected,
+from nativespeaker.api.auth.firebase import lookup_with_retry
+from nativespeaker.api.crud.challenges import ChallengesDB
+from nativespeaker.api.errors import (
+    AppError,
     ChallengeConsumed,
     ChallengeExpired,
     ChallengeNotFound,
     ChallengeOperationMismatch,
+    InvalidRequest,
 )
-from nativespeaker.api.auth.firebase import lookup_with_retry
-from nativespeaker.api.crud.challenges import ChallengesDB
-from nativespeaker.api.errors import INVALID_REQUEST, error_response
 from nativespeaker.api.tables.auth import (
     AuthChallenge,
     AuthOperation,
@@ -49,7 +49,7 @@ async def issue_challenge(body: ChallengeRequest,
         logger.warning("auth_challenge_operation_not_issuable",
                        route=context.route,
                        operation=body.operation)
-        return error_response(INVALID_REQUEST)
+        raise InvalidRequest
 
     challenge_id, expires_at = await challenge_store.issue(session,
                                                            operation=AuthOperation.create_user,
@@ -134,7 +134,7 @@ async def _complete(session: AsyncSession, *,
                              # The copy rule was evaluated once, inside the read; nothing re-derives it.
                              email=facts.email,
                              challenge_store=challenge_store)
-    except AuthRejected:
+    except AppError:
         # D-04/D-11: every raising arm past the claim leaves the consume here, so the paths spend the
         # handle exactly once between them. The bare re-raise is safe because after the commit the
         # session holds no transaction, so `get_db`'s rollback-on-exception cannot un-consume it --

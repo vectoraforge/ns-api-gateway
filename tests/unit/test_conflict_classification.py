@@ -10,17 +10,13 @@ from sqlalchemy.exc import IntegrityError
 from nativespeaker.api.auth import create_user as creation
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user
-from nativespeaker.api.auth.exceptions import (
-    AuthRejected,
-    IdentityAlreadyLinked,
-    ProviderAccountAlreadyLinked,
-)
 from nativespeaker.api.errors import (
-    IDENTITY_ALREADY_LINKED,
-    OPERATION_NOT_ALLOWED,
     AccountUnavailable,
+    AppError,
     BlockedUser,
     HistoricalIdentity,
+    IdentityAlreadyLinked,
+    ProviderAccountAlreadyLinked,
 )
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
@@ -200,7 +196,7 @@ async def _run(rows: list[object | None]) -> tuple[_NoMutationSession, _Consumin
     return session, store
 
 
-async def _insert(constraint_name: str | None, *, expect: type[BaseException] = AuthRejected,
+async def _insert(constraint_name: str | None, *, expect: type[BaseException] = AppError,
                   conflict: IntegrityError | None = None):
     """Drive the insert arm into its `except IntegrityError` branch and return all it left behind."""
     conflict = conflict if conflict is not None else _integrity_error(constraint_name)
@@ -232,13 +228,13 @@ class TestConflictDiscriminationByConstraintName:
     async def test_a_race_constraint_raises_already_linked(self, constraint_name):
         """Both unique constraints mean the same thing to the caller: an account exists, reconcile it."""
         rejection, _, _, _ = await _insert(constraint_name, expect=IdentityAlreadyLinked)
-        assert rejection.error_class is IDENTITY_ALREADY_LINKED
+        assert (rejection.status, rejection.code) == (409, "identity_already_linked")
 
     async def test_the_provider_account_index_raises_a_different_rejection(self):
         """asyncpg reports a standalone partial unique index by name exactly as it reports a constraint."""
         rejection, _, _, _ = await _insert(PROVIDER_ACCOUNT_INDEX,
                                            expect=ProviderAccountAlreadyLinked)
-        assert rejection.error_class is OPERATION_NOT_ALLOWED
+        assert (rejection.status, rejection.code) == (403, "operation_not_allowed")
 
     async def test_the_two_outcomes_are_distinct_classes_and_distinct_client_classes(self):
         """Distinctness is asserted on both layers, because either one collapsing loses a client instruction."""
@@ -246,9 +242,9 @@ class TestConflictDiscriminationByConstraintName:
         provider_account, _, _, _ = await _insert(PROVIDER_ACCOUNT_INDEX)
 
         assert type(linked) is not type(provider_account)
-        assert linked.error_class is not provider_account.error_class
-        assert linked.error_class.status == 409
-        assert provider_account.error_class.status == 403
+        assert linked.code != provider_account.code
+        assert linked.status == 409
+        assert provider_account.status == 403
 
     async def test_the_conflict_rolls_back_the_savepoint_and_commits_nothing(self):
         """Until the rollback runs the session refuses every further statement, including the consume."""
@@ -302,7 +298,7 @@ class TestAnUnrecognisedConflictIsReRaised:
         """The tripwire's whole point: a 500, never a benign 409 the caller could believe."""
         raised, _, _, _ = await _insert("external_identities_some_future_key",
                                         expect=IntegrityError)
-        assert not isinstance(raised, AuthRejected)
+        assert not isinstance(raised, AppError)
 
     async def test_the_unmapped_arm_still_rolled_the_savepoint_back_first(self):
         """A poisoned session would fail the request differently from the way this one is meant to fail."""
@@ -322,7 +318,7 @@ class TestTheReResolutionsThreeNoMutationArms:
                 User(id=user_id, active=True, created_at=NOW, updated_at=NOW)]
         with pytest.raises(IdentityAlreadyLinked) as raised:
             await _run(rows)
-        assert raised.value.error_class is IDENTITY_ALREADY_LINKED
+        assert (raised.value.status, raised.value.code) == (409, "identity_already_linked")
 
     async def test_a_historical_row_raises_account_unavailable(self):
         """`historical` is a permanent tombstone: no creation, and no `preauth_identity_not_allowed`."""

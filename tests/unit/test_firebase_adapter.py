@@ -6,12 +6,6 @@ import pytest
 from firebase_admin import auth, credentials, exceptions
 
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
-from nativespeaker.api.auth.exceptions import (
-    AuthRejected,
-    NotLinked,
-    Unavailable,
-    UserNotFound,
-)
 from nativespeaker.api.auth.firebase import (
     FIREBASE_HTTP_TIMEOUT_SECONDS,
     FIREBASE_LOOKUP_ATTEMPTS,
@@ -21,6 +15,7 @@ from nativespeaker.api.auth.firebase import (
     lookup_with_retry,
 )
 from nativespeaker.api.config import JWTConfig
+from nativespeaker.api.errors import AppError, NotLinked, Unavailable, UserNotFound
 from nativespeaker.api.tables.identities import IdentityProvider
 
 PROJECT_ID = "ns-test-project"
@@ -182,8 +177,8 @@ class TestSelection:
         """503, not 500: a misconfigured issuer is ours to fix, and the caller may usefully come back."""
         with pytest.raises(Unavailable) as raised:
             await adapter.get_user_provider_data(OTHER_ISSUER, SUBJECT)
-        assert raised.value.error_class.status == 503
-        assert raised.value.error_class.code == "verification_temporarily_unavailable"
+        assert raised.value.status == 503
+        assert raised.value.code == "verification_temporarily_unavailable"
 
     async def test_a_configured_issuer_passes_its_own_app_explicitly(self, adapter, app,
                                                                     get_user_calls):
@@ -263,7 +258,7 @@ class TestFailureMapping:
         with pytest.raises(UserNotFound) as raised:
             await adapter.get_user_provider_data(ISSUER, SUBJECT)
         assert raised.value.stage == "provider_lookup"
-        assert raised.value.error_class.status == 401
+        assert raised.value.status == 401
 
     async def test_a_firebase_error_is_retryable(self, adapter, get_user_calls):
         get_user_calls(exceptions.FirebaseError("unavailable", PROVIDER_TEXT))
@@ -310,9 +305,9 @@ class TestFailureMapping:
             await adapter.get_user_provider_data(ISSUER, SUBJECT)
 
     def test_the_internal_marker_is_not_a_member_of_the_rejection_family(self):
-        """It carries no `error_class`, so an escape is a loud 500 rather than a quietly wrong body."""
-        assert not issubclass(RetryableLookupError, AuthRejected)
-        assert not hasattr(RetryableLookupError, "error_class")
+        """It declares no status or code, so an escape is a loud 500 rather than a wrong body."""
+        assert not issubclass(RetryableLookupError, AppError)
+        assert not hasattr(RetryableLookupError, "code")
 
 
 class TestNoProviderTextLeaks:
@@ -327,7 +322,7 @@ class TestNoProviderTextLeaks:
             self, adapter, get_user_calls, answer):
         """Driven through the retry frame, so the internal marker is already converted to what a client sees."""
         get_user_calls(answer)
-        with pytest.raises(AuthRejected) as raised:
+        with pytest.raises(AppError) as raised:
             await lookup_with_retry(adapter, ISSUER, SUBJECT)
 
         rendered = repr(raised.value.log_fields()) + repr(raised.value.args)
@@ -417,7 +412,7 @@ class TestTheRejectSet:
         with pytest.raises(NotLinked) as raised:
             await adapter.get_user_provider_data(ISSUER, SUBJECT)
         assert raised.value.cause == "invalid-shape"
-        assert raised.value.error_class.status == 403
+        assert raised.value.status == 403
 
     @pytest.mark.parametrize("pair", [(GOOGLE, APPLE), (GOOGLE, FACEBOOK), (GOOGLE, GOOGLE_OTHER)])
     async def test_rejection_is_order_independent(self, adapter, get_user_calls, pair):

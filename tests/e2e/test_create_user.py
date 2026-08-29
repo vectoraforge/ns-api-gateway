@@ -7,8 +7,8 @@ from sqlmodel import col, select
 from unit.conftest import TEST_ISSUER, make_token
 
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
-from nativespeaker.api.auth.exceptions import NotLinked
 from nativespeaker.api.auth.firebase import FirebaseAdminLookup, _verified_email
+from nativespeaker.api.errors import NotLinked
 from nativespeaker.api.tables.auth import AuthChallenge
 from nativespeaker.api.tables.grants import AccessGrant, UserMonthlyUsage
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState

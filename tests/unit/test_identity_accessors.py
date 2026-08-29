@@ -214,8 +214,9 @@ class TestTheWireArmsRaiseAndTheHandlerRecordsThemOnce:
         assert len(warnings) == 1, f"expected exactly one record, got {warnings}"
         event, fields = warnings[0]
         assert event == "invalid_external_jwt"
+        # D-03 dropped `route`, so the reason is now the only field the record carries.
         assert fields["bounded_reason"] == expected_reason
-        assert fields["route"] == "/linked"
+        assert set(fields) == {"bounded_reason", "exc_info"}
 
     def test_the_bounded_reason_is_logged_as_a_plain_string(self, warnings):
         """`BoundedReason` is a StrEnum; the field's type in the log pipeline does not change."""

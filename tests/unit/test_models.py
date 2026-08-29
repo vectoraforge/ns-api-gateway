@@ -4,7 +4,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from nativespeaker.api.errors import AnalysisError, InvalidChatError, ServiceError, UnsupportedLanguageError
+from nativespeaker.api.errors import AnalysisError, AppError, InvalidChatError, UnsupportedLanguageError
 from nativespeaker.api.schemas.api import (
     ChatRequest,
     ChatResponse,
@@ -231,17 +231,17 @@ class TestExceptions:
     def test_analysis_error(self):
         error = AnalysisError("Something went wrong")
         assert "Something went wrong" in str(error)
-        assert isinstance(error, ServiceError)
+        assert isinstance(error, AppError)
 
     def test_invalid_chat_error(self):
         cid = uuid4()
         error = InvalidChatError(cid)
         assert error.chat_id == cid
         assert str(cid) in str(error)
-        assert isinstance(error, ServiceError)
+        assert isinstance(error, AppError)
 
     def test_service_error_base(self):
-        error = ServiceError("Base error")
+        error = AppError("Base error")
         assert isinstance(error, Exception)
 
 

@@ -3,8 +3,12 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
-from nativespeaker.api.auth.exceptions import IdentityUnresolvable, PreAuthIdentityNotAllowed
-from nativespeaker.api.errors import BlockedUser, HistoricalIdentity
+from nativespeaker.api.errors import (
+    BlockedUser,
+    HistoricalIdentity,
+    IdentityUnresolvable,
+    PreAuthIdentityNotAllowed,
+)
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityState
 from nativespeaker.api.tables.users import User
 
