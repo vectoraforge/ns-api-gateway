@@ -10,11 +10,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user
 from nativespeaker.api.auth.exceptions import AuthRejected
 from nativespeaker.api.auth.hmac_keyring import HmacConfig, HmacKeyring
+from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.tables.identities import IdentityProvider
 
 pytestmark = pytest.mark.schema

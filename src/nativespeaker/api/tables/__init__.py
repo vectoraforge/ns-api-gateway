@@ -15,6 +15,14 @@ from nativespeaker.api.schemas.api import (
     MessageRequest,
     MessageResponse,
 )
+from nativespeaker.api.schemas.llm import (
+    AnalyzeInput,
+    AnalyzeResponse,
+    FollowUpInput,
+    FollowUpResponse,
+    Issue,
+    RejectResponse,
+)
 from nativespeaker.api.tables.auth import (
     AuthChallenge,
     AuthOperation,
@@ -36,14 +44,6 @@ from nativespeaker.api.tables.identities import (
     IdentityProvider,
     IdentityState,
     NativeClaimProvider,
-)
-from nativespeaker.api.schemas.llm import (
-    AnalyzeInput,
-    AnalyzeResponse,
-    FollowUpInput,
-    FollowUpResponse,
-    Issue,
-    RejectResponse,
 )
 from nativespeaker.api.tables.purchases import (
     PurchaseProvider,

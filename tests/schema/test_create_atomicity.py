@@ -12,12 +12,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth import create_user
-from nativespeaker.api.crud.challenges import ChallengesDB
+from nativespeaker.api.auth import create_user as creation
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user
 from nativespeaker.api.auth.exceptions import AuthRejected, IdentityAlreadyLinked
 from nativespeaker.api.auth.hmac_keyring import HmacConfig, HmacKeyring
+from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.tables.identities import IdentityProvider
 
 pytestmark = pytest.mark.schema
@@ -37,7 +37,7 @@ PROVIDER_ACCOUNT_INDEX_NAME = "ix_external_identities_provider_account"
 
 def constraint_names_in_the_source() -> set[str]:
     """Every constraint name the transaction names, read off the code rather than re-declared here."""
-    tree = ast.parse(Path(create_user.__file__).read_text())
+    tree = ast.parse(Path(creation.__file__).read_text())
     return {node.value for node in ast.walk(tree)
             if isinstance(node, ast.Constant) and isinstance(node.value, str)
             and "external_identities" in node.value}

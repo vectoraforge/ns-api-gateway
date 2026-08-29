@@ -15,7 +15,6 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
-from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.exceptions import (
     AuthRejected,
@@ -27,9 +26,10 @@ from nativespeaker.api.auth.exceptions import (
 from nativespeaker.api.auth.firebase import FIREBASE_LOOKUP_ATTEMPTS, RetryableLookupError
 from nativespeaker.api.auth.hmac_keyring import HmacKeyring
 from nativespeaker.api.config import HmacConfig
+from nativespeaker.api.crud.challenges import ChallengesDB
+from nativespeaker.api.routers import auth_router
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import IdentityProvider
-from nativespeaker.api.routers import auth_router
 
 from .conftest import TEST_ISSUER
 

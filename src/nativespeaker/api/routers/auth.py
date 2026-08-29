@@ -10,7 +10,6 @@ from nativespeaker.api.app.dependencies import (
     get_firebase_adapter,
     get_request_context,
 )
-from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user as create_account
 from nativespeaker.api.auth.exceptions import (
@@ -21,6 +20,7 @@ from nativespeaker.api.auth.exceptions import (
     ChallengeOperationMismatch,
 )
 from nativespeaker.api.auth.firebase import lookup_with_retry
+from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import INVALID_REQUEST, error_response
 from nativespeaker.api.tables.auth import (
     AuthChallenge,

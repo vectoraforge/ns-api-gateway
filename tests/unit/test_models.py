@@ -5,7 +5,6 @@ import pytest
 from pydantic import ValidationError
 
 from nativespeaker.api.errors import AnalysisError, InvalidChatError, ServiceError, UnsupportedLanguageError
-from nativespeaker.api.tables import PurchaseProvider, StorePurchaseToken
 from nativespeaker.api.schemas.api import (
     ChatRequest,
     ChatResponse,
@@ -21,6 +20,7 @@ from nativespeaker.api.schemas.llm import (
     Issue,
     RejectResponse,
 )
+from nativespeaker.api.tables import PurchaseProvider, StorePurchaseToken
 
 
 class TestChatRequest:

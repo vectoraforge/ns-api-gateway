@@ -8,13 +8,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.exceptions import (
     AccountUnavailable,
     IdentityAlreadyLinked,
     ProviderAccountAlreadyLinked,
 )
+from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.tables.auth import AuthChallenge
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.purchases import PurchaseProvider, StorePurchaseToken

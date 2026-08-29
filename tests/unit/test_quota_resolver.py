@@ -12,6 +12,7 @@ from nativespeaker.api.errors import (
     QuotaExceededError,
     UnknownTierError,
 )
+from nativespeaker.api.quota import consume_quota
 from nativespeaker.api.tables import (
     AccessGrant,
     AccessGrantSource,
@@ -19,7 +20,6 @@ from nativespeaker.api.tables import (
     AccessTier,
     UserMonthlyUsage,
 )
-from nativespeaker.api.quota import consume_quota
 
 USER_ID = uuid7()
 ROUTE = "/chats"
