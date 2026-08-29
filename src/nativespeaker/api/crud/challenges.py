@@ -9,8 +9,8 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
-from nativespeaker.api.auth.exceptions import ChallengeConsumed, ChallengeIdentityMismatch
 from nativespeaker.api.auth.hmac_keyring import HmacKeyring
+from nativespeaker.api.errors import ChallengeConsumed, ChallengeIdentityMismatch
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 
 # One universal TTL for every operation: no per-operation override, no grace period, no renewal.

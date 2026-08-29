@@ -11,7 +11,7 @@ from nativespeaker.api.auth.hmac_keyring import HmacKeyring
 from nativespeaker.api.auth.jwt_verifier import JWTVerifier
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
-from nativespeaker.api.errors import assert_registry_total
+from nativespeaker.api.errors import assert_tree_total
 from nativespeaker.api.logs import setup_logging
 from nativespeaker.api.services import LLMService
 
@@ -27,8 +27,8 @@ async def lifespan(app: FastAPI):
 
     setup_logging(log_level=config.log_level)
 
-    # The error registry fails closed here, before any traffic is served.
-    assert_registry_total()
+    # The error tree fails closed here, before any traffic is served.
+    assert_tree_total()
 
     # One keyring for the process; a missing active key already raised out of EnvironmentConfig().
     app.state.hmac_keyring = HmacKeyring(config.hmac)

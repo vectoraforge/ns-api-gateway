@@ -3,12 +3,12 @@ import pytest
 import tenacity
 
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
-from nativespeaker.api.auth.exceptions import NotLinked, Unavailable, UserNotFound
 from nativespeaker.api.auth.firebase import (
     FIREBASE_LOOKUP_ATTEMPTS,
     RetryableLookupError,
     lookup_with_retry,
 )
+from nativespeaker.api.errors import NotLinked, Unavailable, UserNotFound
 from nativespeaker.api.tables.identities import IdentityProvider
 
 ISSUER = "https://securetoken.google.com/ns-prod"
@@ -135,8 +135,8 @@ class TestTheExhaustionConversion:
         """The two ways the 503 gets lost, both named rather than left to "something raised".
 
         `RetryError` is tenacity's default on an exhausted budget and matches no handler.
-        `RetryableLookupError` is what `reraise=True` would surface instead, and it carries no
-        `error_class` at all. Either one answers a hard 500 where the caller is owed a retryable
+        `RetryableLookupError` is what `reraise=True` would surface instead, and it declares no
+        status or code. Either one answers a hard 500 where the caller is owed a retryable
         503, and neither is visible to a test that only asserts that the call raised.
         """
         adapter = CountingAdapter(*[_retryable() for _ in range(FIREBASE_LOOKUP_ATTEMPTS)])
@@ -171,8 +171,8 @@ class TestTheExhaustionConversion:
         with pytest.raises(Unavailable) as raised:
             await lookup_with_retry(adapter, ISSUER, SUBJECT)
 
-        assert raised.value.error_class.status == 503
-        assert raised.value.error_class.code == "verification_temporarily_unavailable"
+        assert raised.value.status == 503
+        assert raised.value.code == "verification_temporarily_unavailable"
 
     async def test_exhaustion_is_not_the_user_not_found_mapping(self):
         """The two are routed apart: unavailable is a 503, unresolved is a 401."""
@@ -182,4 +182,4 @@ class TestTheExhaustionConversion:
             await lookup_with_retry(adapter, ISSUER, SUBJECT)
 
         assert not isinstance(raised.value, UserNotFound)
-        assert raised.value.error_class.status != UserNotFound.error_class.status
+        assert raised.value.status != UserNotFound.status

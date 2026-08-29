@@ -4,17 +4,15 @@ from uuid import uuid7
 
 import pytest
 
-from nativespeaker.api.auth.exceptions import (
-    AccountUnavailable,
-    AuthRejected,
-    IdentityUnresolvable,
-    PreAuthIdentityNotAllowed,
-)
+from nativespeaker.api.app.error_handlers import camel_to_snake
 from nativespeaker.api.auth.resolve_identity import resolve_identity
 from nativespeaker.api.errors import (
-    ACCOUNT_UNAVAILABLE,
-    INTERNAL_ERROR,
-    PREAUTH_IDENTITY_NOT_ALLOWED,
+    AccountUnavailable,
+    AppError,
+    BlockedUser,
+    HistoricalIdentity,
+    IdentityUnresolvable,
+    PreAuthIdentityNotAllowed,
 )
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.users import User
@@ -66,7 +64,7 @@ async def _resolve(row, *, preauth_callable: bool = False):
     return identity, session
 
 
-async def _rejected(row, expected: type[AuthRejected], *, preauth_callable: bool = False):
+async def _rejected(row, expected: type[BaseException], *, preauth_callable: bool = False):
     """The rejecting half: resolution raises, and the raised instance is what the cases read."""
     session = _StubSession(row)
     with pytest.raises(expected) as caught:
@@ -78,7 +76,7 @@ async def _rejected(row, expected: type[AuthRejected], *, preauth_callable: bool
 async def _drive(row, *, preauth_callable: bool = False) -> _StubSession:
     """Run resolution for its effect on the session, whichever way the outcome goes."""
     session = _StubSession(row)
-    with contextlib.suppress(AuthRejected):
+    with contextlib.suppress(AppError):
         await resolve_identity(session, issuer=ISSUER, subject=SUBJECT,
                                allow_preauth=preauth_callable)
     return session
@@ -99,7 +97,7 @@ class TestOutcomeOneNoMatchingRow:
 
     async def test_any_other_route_rejects_preauth_identity_not_allowed(self):
         rejection, _ = await _rejected(None, PreAuthIdentityNotAllowed)
-        assert rejection.error_class is PREAUTH_IDENTITY_NOT_ALLOWED
+        assert (rejection.status, rejection.code) == (403, "preauth_identity_not_allowed")
 
     async def test_the_rejection_carries_no_actor_material(self):
         """The verified pair is not a field on any rejection, so it cannot reach the log line."""
@@ -114,38 +112,36 @@ class TestOutcomeTwoIdentityStateIsNotExactlyActive:
 
     @pytest.mark.parametrize("state", [IdentityState.historical, None, "retired", ""])
     async def test_a_state_other_than_active_rejects_account_unavailable(self, state):
-        rejection, _ = await _rejected(_row(identity_state=state), AccountUnavailable)
-        assert rejection.error_class is ACCOUNT_UNAVAILABLE
-        assert rejection.cause == "historical_identity"
+        rejection, _ = await _rejected(_row(identity_state=state), HistoricalIdentity)
+        assert (rejection.status, rejection.code) == (403, "account_unavailable")
 
     @pytest.mark.parametrize("state", [IdentityState.historical, None, "retired", ""])
     async def test_it_never_falls_through_to_pre_auth(self, state):
         """Even on the one route that may admit a pre-auth principal."""
-        rejection, _ = await _rejected(_row(identity_state=state), AccountUnavailable,
+        rejection, _ = await _rejected(_row(identity_state=state), HistoricalIdentity,
                                        preauth_callable=True)
-        assert rejection.cause == "historical_identity"
+        assert isinstance(rejection, AccountUnavailable)
 
     async def test_a_retired_identity_never_surfaces_preauth_identity_not_allowed(self):
         """Identity rows are never deleted, so a retired pair still has a row."""
         rejection, _ = await _rejected(_row(identity_state=IdentityState.historical),
-                                       AccountUnavailable)
+                                       HistoricalIdentity)
         assert not isinstance(rejection, PreAuthIdentityNotAllowed)
-        assert rejection.error_class is not PREAUTH_IDENTITY_NOT_ALLOWED
+        assert rejection.code != "preauth_identity_not_allowed"
 
 
 class TestOutcomeThreeUserIsNotExactlyTrue:
     """A positive test on the user column, not a truthiness test."""
 
     async def test_an_inactive_user_rejects_account_unavailable(self):
-        rejection, _ = await _rejected(_row(user_active=False), AccountUnavailable)
-        assert rejection.error_class is ACCOUNT_UNAVAILABLE
-        assert rejection.cause == "blocked_user"
+        rejection, _ = await _rejected(_row(user_active=False), BlockedUser)
+        assert (rejection.status, rejection.code) == (403, "account_unavailable")
 
     @pytest.mark.parametrize("value", [None, 1, "true", "yes"])
     async def test_a_truthy_non_boolean_is_not_coerced_into_an_admission(self, value):
         """`user.active is not True` rejects; `not user.active` would admit 1, 'true' and 'yes'."""
-        rejection, _ = await _rejected(_row(user_active=value), AccountUnavailable)
-        assert rejection.cause == "blocked_user"
+        rejection, _ = await _rejected(_row(user_active=value), BlockedUser)
+        assert isinstance(rejection, AccountUnavailable)
 
 
 class TestOutcomeFourLinkedAndActive:
@@ -171,7 +167,7 @@ class TestUnresolvableUser:
 
     async def test_it_rejects_as_an_internal_error(self):
         rejection, _ = await _rejected(_row(user=None), IdentityUnresolvable)
-        assert rejection.error_class is INTERNAL_ERROR
+        assert (rejection.status, rejection.code) == (500, "internal_error")
 
     async def test_it_is_not_read_as_an_unlinked_pair(self):
         """The outer join is what keeps this case distinct from outcome 1."""
@@ -200,14 +196,15 @@ class TestOneQueryOneCodePath:
         session = await _drive(row)
         assert session.executed == 1
 
-    async def test_both_account_unavailable_branches_carry_the_same_class_object(self):
-        """One class, one status, one body, one copy -- differing only in the logged cause."""
+    async def test_both_account_unavailable_branches_carry_the_same_client_answer(self):
+        """Two classes, one answer: the 403 is declared on the base and neither leaf restates it."""
         historical, _ = await _rejected(_row(identity_state=IdentityState.historical),
-                                        AccountUnavailable)
-        blocked, _ = await _rejected(_row(user_active=False), AccountUnavailable)
-        assert type(historical) is type(blocked)
-        assert historical.error_class is blocked.error_class
-        assert historical.cause != blocked.cause
+                                        HistoricalIdentity)
+        blocked, _ = await _rejected(_row(user_active=False), BlockedUser)
+        assert type(historical) is not type(blocked)
+        assert (historical.status, historical.code) == (blocked.status, blocked.code)
+        for leaf in (HistoricalIdentity, BlockedUser):
+            assert "status" not in vars(leaf) and "code" not in vars(leaf)
 
     async def test_no_timing_normalisation_is_present(self):
         """Padding and constant-time delays are deliberately absent for this product."""
@@ -251,24 +248,25 @@ class TestTheResolutionStatement:
 class TestTheRejectionSaysNothingItWasNotAsked:
     """Resolution's rejections reach exactly one log line, and carry only what D-02 sanctions."""
 
-    async def test_only_the_account_arms_contribute_a_field_and_it_is_the_cause(self):
-        """The two indistinguishable arms are told apart in the log alone, by a scalar."""
+    async def test_the_account_arms_are_told_apart_by_class_name_and_carry_no_field(self):
+        """The distinction is the log event name, so neither arm needs a field that could leak."""
         historical, _ = await _rejected(_row(identity_state=IdentityState.historical),
-                                        AccountUnavailable)
-        assert historical.log_fields() == {"cause": "historical_identity"}
-        blocked, _ = await _rejected(_row(user_active=False), AccountUnavailable)
-        assert blocked.log_fields() == {"cause": "blocked_user"}
+                                        HistoricalIdentity)
+        blocked, _ = await _rejected(_row(user_active=False), BlockedUser)
+        assert historical.log_fields() == blocked.log_fields() == {}
+        assert camel_to_snake(type(historical).__name__) == "historical_identity"
+        assert camel_to_snake(type(blocked).__name__) == "blocked_user"
 
     async def test_every_logged_value_is_a_plain_scalar(self):
         """An ORM instance here is the expired-attribute 500 the family's scalars-only rule prevents."""
         for row, expected in ((None, PreAuthIdentityNotAllowed),
                               (_row(user=None), IdentityUnresolvable),
-                              (_row(user_active=False), AccountUnavailable)):
+                              (_row(user_active=False), BlockedUser)):
             rejection, _ = await _rejected(row, expected)
             for key, value in rejection.log_fields().items():
                 assert isinstance(value, str | None), f"{expected.__name__}.{key} is not a scalar"
 
-    def test_the_cause_never_reaches_the_client(self):
+    def test_the_arm_never_reaches_the_client(self):
         """The distinction lives in the security log only; the body carries one field."""
         from nativespeaker.api.errors import ErrorResponse
         assert list(ErrorResponse.model_fields) == ["code"]

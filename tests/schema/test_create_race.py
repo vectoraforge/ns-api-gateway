@@ -12,9 +12,9 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user
-from nativespeaker.api.auth.exceptions import AuthRejected
 from nativespeaker.api.auth.hmac_keyring import HmacConfig, HmacKeyring
 from nativespeaker.api.crud.challenges import ChallengesDB
+from nativespeaker.api.errors import AppError
 from nativespeaker.api.tables.identities import IdentityProvider
 
 pytestmark = pytest.mark.schema
@@ -129,7 +129,7 @@ class _Attempt:
     challenge_row_id: uuid.UUID
     challenge_id: str
     # What the call produced: the new user's id on success, the rejection it raised otherwise.
-    result: uuid.UUID | AuthRejected | None = None
+    result: uuid.UUID | AppError | None = None
     identities_seen_at_barrier: int | None = None
 
 
@@ -166,7 +166,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=Non
                                                provider_uid=attempt.provider_uid,
                                                email=None,
                                                challenge_store=store)
-        except AuthRejected as rejection:
+        except AppError as rejection:
             # The route's own except arm (`routers/auth.py::_complete`): a rejection after the claim
             # consumes and commits before the client is answered. Driving the transaction without it
             # would measure half the choreography and read the missing half as a leaked challenge.

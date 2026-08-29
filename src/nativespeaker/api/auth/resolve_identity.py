@@ -3,8 +3,9 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
-from nativespeaker.api.auth.exceptions import (
-    AccountUnavailable,
+from nativespeaker.api.errors import (
+    BlockedUser,
+    HistoricalIdentity,
     IdentityUnresolvable,
     PreAuthIdentityNotAllowed,
 )
@@ -34,7 +35,7 @@ async def resolve_identity(session: AsyncSession, *, issuer: str, subject: str,
         raise IdentityUnresolvable
     # Positive tests, so a NULL or any future enum member fails closed on these same two branches.
     if identity.identity_state != IdentityState.active:
-        raise AccountUnavailable(cause="historical_identity")
+        raise HistoricalIdentity
     if user.active is not True:
-        raise AccountUnavailable(cause="blocked_user")
+        raise BlockedUser
     return LinkedIdentity(user=user, identity=identity, issuer=issuer, subject=subject)

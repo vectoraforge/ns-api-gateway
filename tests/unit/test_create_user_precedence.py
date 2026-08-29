@@ -16,17 +16,17 @@ from nativespeaker.api.app.dependencies import (
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.exceptions import (
-    AuthRejected,
+from nativespeaker.api.auth.firebase import FIREBASE_LOOKUP_ATTEMPTS, RetryableLookupError
+from nativespeaker.api.auth.hmac_keyring import HmacKeyring
+from nativespeaker.api.config import HmacConfig
+from nativespeaker.api.crud.challenges import ChallengesDB
+from nativespeaker.api.errors import (
+    AppError,
     IdentityAlreadyLinked,
     NotLinked,
     Unavailable,
     UserNotFound,
 )
-from nativespeaker.api.auth.firebase import FIREBASE_LOOKUP_ATTEMPTS, RetryableLookupError
-from nativespeaker.api.auth.hmac_keyring import HmacKeyring
-from nativespeaker.api.config import HmacConfig
-from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import IdentityProvider
@@ -150,7 +150,7 @@ class _RecordingCreator:
         self.calls: list[dict] = []
         # The new user's id on success; a scripted rejection is raised instead, as the real one does.
         self.result = uuid4()
-        self.rejection: AuthRejected | None = None
+        self.rejection: AppError | None = None
 
     async def __call__(self, session, **kwargs) -> UUID:
         self.calls.append(kwargs)

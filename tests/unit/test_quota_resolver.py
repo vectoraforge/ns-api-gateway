@@ -6,7 +6,6 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from nativespeaker.api.errors import (
-    INTERNAL_ERROR,
     MissingUsageRowError,
     MultipleEffectiveGrantsError,
     QuotaExceededError,
@@ -138,7 +137,7 @@ class TestMultipleEffectiveGrants:
         """500, never 429: duplicated state is a broken invariant, not a used-up allowance."""
         with pytest.raises(MultipleEffectiveGrantsError) as caught:
             await _consume(grants=(_grant(), _grant()))
-        assert caught.value.error_class is INTERNAL_ERROR
+        assert (caught.value.status, caught.value.code) == (500, "internal_error")
         assert not isinstance(caught.value, QuotaExceededError)
 
 
@@ -160,7 +159,7 @@ class TestMissingUsageRow:
     async def test_it_is_an_internal_error_not_a_free_pass(self):
         with pytest.raises(MissingUsageRowError) as caught:
             await _consume(grants=(_grant(),), usage=None)
-        assert caught.value.error_class is INTERNAL_ERROR
+        assert (caught.value.status, caught.value.code) == (500, "internal_error")
 
 
 class TestUnknownTier:
@@ -177,7 +176,7 @@ class TestUnknownTier:
         with pytest.raises(UnknownTierError) as caught:
             await _consume(grants=(grant,), usage=usage, allowance=None)
         assert not isinstance(caught.value, QuotaExceededError)
-        assert caught.value.error_class is INTERNAL_ERROR
+        assert (caught.value.status, caught.value.code) == (500, "internal_error")
 
     async def test_it_does_not_silently_become_an_unbounded_allowance(self):
         grant, usage = _one_effective_grant()

@@ -12,7 +12,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from e2e.conftest import seed_identity
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
-from nativespeaker.api.auth.exceptions import ChallengeConsumed, ChallengeIdentityMismatch
+from nativespeaker.api.errors import ChallengeConsumed, ChallengeIdentityMismatch
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import IdentityProvider
 

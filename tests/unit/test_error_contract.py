@@ -1,12 +1,20 @@
 """The contract under test is that every branch within an error class returns identical copy."""
+from typing import cast
+from uuid import uuid7
+
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from nativespeaker.api.app.error_handlers import register_exception_handlers
+from nativespeaker.api.app.error_handlers import app_error_handler, register_exception_handlers
 from nativespeaker.api.app.main import app as real_app
+from nativespeaker.api.errors import (
+    MissingUsageRowError,
+    MultipleEffectiveGrantsError,
+    UnknownTierError,
+)
 
-# Written out rather than derived from REGISTRY: the mirror that catches an undecided code shipping.
+# Written out rather than derived from the tree: the mirror that catches an undecided code shipping.
 CONTRACT_CODES = {"auth_required", "preauth_identity_not_allowed", "account_unavailable",
                   "challenge_required", "invalid_request", "verification_temporarily_unavailable",
                   "rate_limited", "validation_error", "not_found", "method_not_allowed",
@@ -51,9 +59,49 @@ class TestStatusCodeRemapping:
         assert list(body.keys()) == ["code"]
 
     def test_error_code_is_from_contract_set(self, contract_client):
-        """Error code value is one the registry declares."""
+        """Error code value is one the tree declares."""
         response = contract_client.post("/only-get")
         assert response.json()["code"] in CONTRACT_CODES
+
+
+# The merged handler reads nothing off the request, which is what lets these cases skip building one.
+NO_REQUEST = cast(Request, None)
+
+
+def _id_carrying_cases():
+    """The three classes that format server-side identifiers into their own message."""
+    grant_id, user_id = uuid7(), uuid7()
+    return [
+        (MissingUsageRowError(grant_id), [str(grant_id)]),
+        (MultipleEffectiveGrantsError(3, user_id), [str(user_id), "3"]),
+        (UnknownTierError("a-private-tier-id", grant_id), ["a-private-tier-id", str(grant_id)]),
+    ]
+
+
+class TestTheBodyStaysOneFieldAndCarriesNoIdentifier:
+    """The message reaches the log and the traceback; the body is built from `code` alone."""
+
+    @pytest.mark.parametrize("exc,secrets", _id_carrying_cases(),
+                             ids=["missing_usage_row", "multiple_grants", "unknown_tier"])
+    async def test_the_body_is_exactly_the_code_key(self, exc, secrets):
+        response = await app_error_handler(NO_REQUEST, exc)
+        assert response.status_code == 500
+        assert response.body == b'{"code":"internal_error"}'
+
+    @pytest.mark.parametrize("exc,secrets", _id_carrying_cases(),
+                             ids=["missing_usage_row", "multiple_grants", "unknown_tier"])
+    async def test_no_identifier_the_exception_stored_appears_in_the_bytes(self, exc, secrets):
+        response = await app_error_handler(NO_REQUEST, exc)
+        for secret in secrets:
+            assert secret.encode() not in response.body
+            assert secret.encode() not in str(response.headers).encode()
+
+    @pytest.mark.parametrize("exc,secrets", _id_carrying_cases(),
+                             ids=["missing_usage_row", "multiple_grants", "unknown_tier"])
+    def test_the_premise_holds_and_each_message_really_names_its_identifiers(self, exc, secrets):
+        """The control: without it the case above would pass on a class that stored nothing."""
+        for secret in secrets:
+            assert secret in str(exc)
 
 
 class TestOpenAPISchema:

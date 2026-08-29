@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user
-from nativespeaker.api.auth.exceptions import IdentityAlreadyLinked
+from nativespeaker.api.errors import IdentityAlreadyLinked
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.purchases import StorePurchaseToken
@@ -179,7 +179,7 @@ class TestAFailedInsertStopsInserting:
         rejection = await _rejected(session, store)
 
         assert isinstance(rejection, IdentityAlreadyLinked)
-        assert rejection.error_class.status == 409
+        assert rejection.status == 409
 
     async def test_the_rejection_leaves_the_consume_to_the_route(self):
         """D-04 put the post-claim consume in `_complete`'s except arm; doing it here too spends the handle twice."""

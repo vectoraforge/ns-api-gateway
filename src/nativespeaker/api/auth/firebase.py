@@ -17,7 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
 
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
-from nativespeaker.api.auth.exceptions import NotLinked, Unavailable, UserNotFound
+from nativespeaker.api.errors import NotLinked, Unavailable, UserNotFound
 from nativespeaker.api.tables.identities import IdentityProvider
 
 logger = structlog.get_logger()
@@ -30,8 +30,7 @@ FIREBASE_LOOKUP_ATTEMPTS = 3
 
 
 class RetryableLookupError(Exception):
-    """The retry predicate's only target. Deliberately not a member of the rejection family: it
-    carries no `error_class`, never reaches a client, and is always converted before it can escape."""
+    """The retry predicate's only target, always converted before it can escape."""
 
 
 def build_admin_apps(config) -> dict[str, firebase_admin.App]:
@@ -148,7 +147,7 @@ def _exhausted(retry_state) -> NoReturn:
 
     Without this, tenacity's default raises `RetryError`, which matches no handler and so answers a
     hard 500 where the caller is owed a retryable 503. `reraise=True` would not do either: it would
-    surface `RetryableLookupError`, which is internal and has no `error_class` at all.
+    surface `RetryableLookupError`, which is internal and declares no status or code.
     """
     raise Unavailable(stage="provider_lookup") from retry_state.outcome.exception()
 

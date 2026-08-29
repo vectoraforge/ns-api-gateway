@@ -15,9 +15,9 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from nativespeaker.api.auth import create_user as creation
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user
-from nativespeaker.api.auth.exceptions import AuthRejected, IdentityAlreadyLinked
 from nativespeaker.api.auth.hmac_keyring import HmacConfig, HmacKeyring
 from nativespeaker.api.crud.challenges import ChallengesDB
+from nativespeaker.api.errors import AppError, IdentityAlreadyLinked
 from nativespeaker.api.tables.identities import IdentityProvider
 
 pytestmark = pytest.mark.schema
@@ -221,7 +221,7 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
                                        provider_uid=provider_uid,
                                        email=None,
                                        challenge_store=store)
-        except AuthRejected as rejection:
+        except AppError as rejection:
             # The route's own except arm (`routers/auth.py::_complete`): a rejection after the claim
             # consumes and commits before the client is answered. That commit surviving the
             # savepoint rollback is the property this file exists to measure, so the driver has to
@@ -298,7 +298,7 @@ class TestAConflictOnTheIdentityInsertLeavesNoPartialAccount:
     async def test_the_conflict_earns_its_client_class_rather_than_escaping(self, collided):
         """The uniqueness violation earns its client class rather than surfacing as a generic 500."""
         assert isinstance(collided["result"], IdentityAlreadyLinked)
-        assert collided["result"].error_class.status == 409
+        assert collided["result"].status == 409
 
     async def test_no_users_row_survives_the_rollback(self, harness, collided):
         assert await scalar(harness, "SELECT count(*) FROM core.users") == collided["users_before"]
