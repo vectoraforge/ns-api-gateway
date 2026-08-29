@@ -1,21 +1,21 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Authentication & Entitlements (Phases 34-46)
-current_phase: 38
-current_phase_name: POST /auth/sync
+milestone_name: Authentication & Entitlements
+current_phase: 37.4
+current_phase_name: Machine-generated code refactoring, part 3
 status: planning
-stopped_at: Completed 37.3-04-PLAN.md (final plan of phase 37.3)
-last_updated: "2026-08-27T09:07:39.582Z"
+stopped_at: Phase 37.4 context gathered
+last_updated: "2026-08-29T08:53:15.814Z"
 last_activity: 2026-08-27
 last_activity_desc: Phase 37.3 execution complete — all four plans landed
-state_head: 3727793a3b57611f7329caf578de7532e2541a8a
 progress:
-  total_phases: 16
+  total_phases: 17
   completed_phases: 7
   total_plans: 50
   completed_plans: 50
-  percent: 44
+  percent: 41
+state_head: 3727793a3b57611f7329caf578de7532e2541a8a
 ---
 
 # Project State
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-19)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 37.3 — machine-generated-code-refactoring-part-2
+**Current focus:** Phase 37.4 — machine-generated-code-refactoring-part-3
 
 ## Current Position
 
-Phase: 38 — POST /auth/sync
+Phase: 37.4 — Machine-generated code refactoring, part 3
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-08-27 — Phase 37.3 complete, transitioned to Phase 38
+Last activity: 2026-08-27 — Phase 37.3 complete; Phase 37.4 inserted ahead of Phase 38
 
 <!-- The plan counter was corrected from 3 to 8 on 2026-08-23, and from 9 to 10 on 2026-08-24, for
      the same reason both times. Waves 1, 2 and 4 ran as parallel worktree agents which deliberately
@@ -101,6 +101,7 @@ None.
 - Phase 37.1 inserted after Phase 37: Refactor machine-generated code (URGENT)
 - Phase 37.2 inserted after Phase 37: Simplify auth module: ADC-only Firebase, models out of routers, POST /auth/challenge replaces ?challenge=true, delete single-caller indirections, shrink auth/ from 14/28/57 (URGENT)
 - Phase 37.3 inserted after Phase 37: Machine-generated code refactoring, part 2 (URGENT)
+- Phase 37.4 inserted after Phase 37.3: Machine-generated code refactoring, part 3 (URGENT)
 
 ### Blockers/Concerns
 
@@ -118,11 +119,11 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-08-27T08:40:46.370Z
+**Last session:** 2026-08-29T08:53:15.790Z
 
 Last activity: 2026-03-26
-Stopped at: Completed 37.3-04-PLAN.md (final plan of phase 37.3)
-Resume file: None
+Stopped at: Phase 37.4 context gathered
+Resume file: .planning/phases/37.4-machine-generated-code-refactoring-part-3/37.4-CONTEXT.md
 
 ## Performance Metrics
 
