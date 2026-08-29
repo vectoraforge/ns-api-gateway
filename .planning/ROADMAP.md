@@ -397,13 +397,13 @@ Plans:
 **Goal:** [Urgent work - to be planned] *(written by plan `37.4-07` under D-16 — the goal amendment is phase work, not planning work)*
 **Requirements**: TBD *(written by plan `37.4-07` under D-16; the requirement set is decisions D-01…D-16 and addenda A-00…A-10 in `37.4-CONTEXT.md`, with five conflicts recorded as FLAGGED in `REQUIREMENTS.md`)*
 **Depends on:** Phase 37.3
-**Plans:** 7 plans
+**Plans:** 1/7 plans executed
 
 Plans:
 
 **Wave 1** *(the A-00 precondition repair — pre-existing breakage from `d466a4b`, not 37.4 scope)*
 
-- [ ] 37.4-01-PLAN.md — Repair the 13 stale module paths and 9 stale class names; re-baseline lint, typecheck and the package-shape ratchet
+- [x] 37.4-01-PLAN.md — Repair the 13 stale module paths and 9 stale class names; re-baseline lint, typecheck and the package-shape ratchet
 
 **Wave 2** *(the tracer — blocked on Wave 1)*
 

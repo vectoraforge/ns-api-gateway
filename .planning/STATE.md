@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 37.4
-current_phase_name: Machine-generated code refactoring, part 3
+current_phase_name: machine-generated-code-refactoring-part-3
 status: executing
 stopped_at: Phase 37.4 context gathered
-last_updated: "2026-08-29T09:54:32.501Z"
-last_activity: 2026-08-27
-last_activity_desc: Phase 37.3 execution complete — all four plans landed
+last_updated: "2026-08-29T10:01:12.001Z"
+last_activity: 2026-08-29
+last_activity_desc: Phase 37.4 execution started
 progress:
   total_phases: 17
   completed_phases: 7
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 37.4 — Machine-generated code refactoring, part 3
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-08-27 — Phase 37.3 complete; Phase 37.4 inserted ahead of Phase 38
+Phase: 37.4 (machine-generated-code-refactoring-part-3) — EXECUTING
+Plan: 1 of 7
+Status: Executing Phase 37.4
+Last activity: 2026-08-29 — Phase 37.4 execution started
 
 <!-- The plan counter was corrected from 3 to 8 on 2026-08-23, and from 9 to 10 on 2026-08-24, for
      the same reason both times. Waves 1, 2 and 4 ran as parallel worktree agents which deliberately
