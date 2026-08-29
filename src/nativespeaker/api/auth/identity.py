@@ -1,7 +1,5 @@
 """The identity a verified credential resolves to, and the single query that resolves it."""
 from dataclasses import dataclass
-from datetime import datetime
-from uuid import UUID
 
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -26,15 +24,6 @@ class Identity:
     subject: str
     user: User | None = None
     identity: ExternalIdentity | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class RequestContext:
-    """The request-scoped values later phases read and never recompute."""
-    identity: Identity
-    route: str
-    evaluated_at: datetime
-    attempt_id: UUID
 
 
 async def resolve_identity(session: AsyncSession, *, issuer: str, subject: str,

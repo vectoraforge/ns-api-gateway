@@ -2,7 +2,7 @@
 from fastapi import Depends
 from fastapi.routing import APIRoute
 
-from nativespeaker.api.app.dependencies import get_linked_identity, get_request_context
+from nativespeaker.api.app.dependencies import get_identity, get_linked_identity
 from nativespeaker.api.app.main import app as real_app
 
 DOC_PATHS = {"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
@@ -30,17 +30,17 @@ class TestEveryRouteIsAuthenticated:
                    and get_linked_identity not in _declared(route)]
         assert missing == [], f"routes serving without a linked-identity declaration: {missing}"
 
-    def test_the_preauth_callable_route_still_resolves_the_context(self):
+    def test_the_preauth_callable_route_still_resolves_the_identity(self):
         """Create-user is exempt from the narrowing, not from authentication: a linked caller is owed a 409."""
         for route in _api_routes():
             if route.path in PREAUTH_CALLABLE_PATHS:
-                assert get_request_context in _declared(route), route.path
+                assert get_identity in _declared(route), route.path
 
     def test_the_public_allowlist_is_exactly_the_readiness_probe(self):
         """A second public route would have to be added to `PUBLIC_PATHS` above to pass."""
         unauthenticated = {route.path for route in _api_routes()
                            if get_linked_identity not in _declared(route)
-                           and get_request_context not in _declared(route)}
+                           and get_identity not in _declared(route)}
         assert unauthenticated == PUBLIC_PATHS
 
     def test_no_route_declares_a_wrapper_around_an_accessor(self):
@@ -48,7 +48,7 @@ class TestEveryRouteIsAuthenticated:
         for route in _api_routes():
             for call in _declared(route):
                 wrapped = getattr(call, "__wrapped__", None)
-                assert wrapped not in (get_linked_identity, get_request_context), \
+                assert wrapped not in (get_linked_identity, get_identity), \
                     f"{route.path} declares a wrapper around {getattr(wrapped, '__name__', wrapped)}"
 
 
@@ -81,7 +81,7 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
         from fastapi.testclient import TestClient
 
         from nativespeaker.api.app.error_handlers import register_exception_handlers
-        from nativespeaker.api.auth.identity import Identity, RequestContext
+        from nativespeaker.api.auth.identity import Identity
         from nativespeaker.api.tables.identities import (
             ExternalIdentity,
             IdentityProvider,
@@ -128,8 +128,8 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
         @router.get("/chats/{chat_id}")
         async def _handler(chat_id: str,
                            who: Identity = Depends(get_linked_identity),
-                           context: RequestContext = Depends(get_request_context)):
-            return {"route": context.route, "user": str(who.user.id)}
+                           admitted: Identity = Depends(get_identity)):
+            return {"same": who is admitted, "user": str(who.user.id)}
 
         app.include_router(router)
         app.state.jwt_verifier = _CountingVerifier()
@@ -142,5 +142,5 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
         assert response.status_code == 200, response.json()
         assert counts["verify"] == 1, f"the JWT was verified {counts['verify']} times"
         assert counts["query"] == 1, f"identity was resolved {counts['query']} times"
-        # And the context carries the declared template, not the concrete id the caller sent.
-        assert response.json()["route"] == "/chats/{chat_id}"
+        # Both declarations received the one cached object, not two equal resolutions.
+        assert response.json()["same"] is True

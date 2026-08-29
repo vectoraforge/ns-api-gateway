@@ -15,7 +15,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from nativespeaker.api.auth import create_user as creation
 from nativespeaker.api.auth.create_user import create_user
 from nativespeaker.api.auth.hmac_keyring import HmacConfig, HmacKeyring
-from nativespeaker.api.auth.identity import Identity, RequestContext
+from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError, IdentityAlreadyLinked
 from nativespeaker.api.tables.identities import IdentityProvider
@@ -111,12 +111,9 @@ def keyring() -> HmacKeyring:
 
 
 
-def context(harness: _Harness, subject: str) -> RequestContext:
-    """The production route metadata, looked up rather than hand-built."""
-    return RequestContext(identity=Identity(issuer=harness.issuer, subject=subject),
-                          route="/auth/create-user",
-                          evaluated_at=NOW,
-                          attempt_id=uuid.uuid4())
+def identity_for(harness: _Harness, subject: str) -> Identity:
+    """The unlinked identity the create-user route resolves for this subject."""
+    return Identity(issuer=harness.issuer, subject=subject)
 
 
 async def commit_user(harness: _Harness, *, active: bool = True) -> uuid.UUID:
@@ -196,12 +193,14 @@ class _RacingSession:
 
 async def run_creation(harness: _Harness, *, subject: str, provider: IdentityProvider,
                        provider_uid: str | None, after_first_read=None,
-                       ctx: RequestContext | None = None,
+                       identity: Identity | None = None,
+                       attempt_id: uuid.UUID | None = None,
                        challenge: tuple[uuid.UUID, str] | None = None):
     """Drive the production consuming transaction once, on its own real session."""
-    ctx = ctx or context(harness, subject)
+    identity = identity or identity_for(harness, subject)
+    attempt_id = attempt_id or uuid.uuid4()
     row_id, challenge_id_value = challenge or await commit_claimed_challenge(
-        harness, subject=subject, attempt_id=ctx.attempt_id)
+        harness, subject=subject, attempt_id=attempt_id)
 
     class _Challenge:
         """The two fields the transaction reads, built rather than re-read so the read counter stays meaningful."""
@@ -214,8 +213,9 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
         session = _RacingSession(real_session, after_first_read)
         try:
             result = await create_user(session,
-                                       context=ctx,
-                                       identity=ctx.identity,
+                                       identity=identity,
+                                       evaluated_at=NOW,
+                                       attempt_id=attempt_id,
                                        challenge=_Challenge(),
                                        provider=provider,
                                        provider_uid=provider_uid,
@@ -228,8 +228,8 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
             # perform it here rather than leaving half the choreography out.
             await store.consume(session,
                                 challenge_id=challenge_id_value,
-                                claim_attempt_id=ctx.attempt_id,
-                                now=ctx.evaluated_at)
+                                claim_attempt_id=attempt_id,
+                                now=NOW)
             await session.commit()
             result = rejection
     return result, row_id, challenge_id_value

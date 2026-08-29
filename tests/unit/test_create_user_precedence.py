@@ -11,13 +11,13 @@ from nativespeaker.api.app.dependencies import (
     get_challenge_store,
     get_db,
     get_firebase_adapter,
-    get_request_context,
+    get_identity,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.firebase import FIREBASE_LOOKUP_ATTEMPTS, RetryableLookupError
 from nativespeaker.api.auth.hmac_keyring import HmacKeyring
-from nativespeaker.api.auth.identity import Identity, RequestContext
+from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.config import HmacConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import (
@@ -38,7 +38,6 @@ OTHER_SUBJECT = "precedence-somebody-else"
 OTHER_ISSUER = "https://securetoken.google.com/some-other-project"
 HANDLE = "a-scripted-handle"
 
-CREATE_USER_ROUTE = "/auth/create-user"
 
 
 def _material(seed: int) -> str:
@@ -191,22 +190,17 @@ def creator(monkeypatch) -> _RecordingCreator:
 
 
 @pytest.fixture
-def context() -> RequestContext:
-    return RequestContext(
-        identity=Identity(issuer=TEST_ISSUER, subject=SUBJECT),
-        route=CREATE_USER_ROUTE,
-        evaluated_at=datetime.now(UTC),
-        attempt_id=uuid4(),
-    )
+def identity() -> Identity:
+    return Identity(issuer=TEST_ISSUER, subject=SUBJECT)
 
 
 @pytest.fixture
-def client(store, session, context, creator, fake_firebase_adapter):
+def client(store, session, identity, creator, fake_firebase_adapter):
     app = FastAPI()
     app.include_router(auth_router)
     register_exception_handlers(app)
 
-    app.dependency_overrides[get_request_context] = lambda: context
+    app.dependency_overrides[get_identity] = lambda: identity
     # An async generator, not a plain callable: `get_db` releases the read transaction itself, and a
     # callable has no `try`/`except` to do it with. Mirrors `app/dependencies.py::get_db` exactly.
     async def _db():
@@ -225,7 +219,7 @@ def client(store, session, context, creator, fake_firebase_adapter):
         yield test_client
 
 
-def _issued_row(context: RequestContext, keyring: _SpyKeyring, *,
+def _issued_row(keyring: _SpyKeyring, *,
                 operation: AuthOperation = AuthOperation.create_user,
                 issuer: str = TEST_ISSUER,
                 subject: str = SUBJECT,
@@ -234,7 +228,7 @@ def _issued_row(context: RequestContext, keyring: _SpyKeyring, *,
                 consumed: bool = False,
                 cleared_hash: bool = False) -> AuthChallenge:
     """A pre-auth-bound challenge row in whichever lifecycle state the case needs."""
-    now = context.evaluated_at
+    now = datetime.now(UTC)
     row = AuthChallenge(
         challenge_id=HANDLE,
         operation=operation,
@@ -275,8 +269,8 @@ class TestTheFiveChallengeRejections:
         assert fake_firebase_adapter.calls == []
 
     def test_a_challenge_bound_to_another_subject_is_an_identity_mismatch(
-            self, client, store, rejections, context, keyring, fake_firebase_adapter):
-        store.row = _issued_row(context, keyring, subject=OTHER_SUBJECT)
+            self, client, store, rejections, keyring, fake_firebase_adapter):
+        store.row = _issued_row(keyring, subject=OTHER_SUBJECT)
 
         _assert_challenge_required(_complete(client))
 
@@ -288,8 +282,8 @@ class TestTheFiveChallengeRejections:
         assert fake_firebase_adapter.calls == []
 
     def test_a_challenge_bound_to_another_issuer_is_an_identity_mismatch(
-            self, client, store, rejections, context, keyring, fake_firebase_adapter):
-        store.row = _issued_row(context, keyring, issuer=OTHER_ISSUER)
+            self, client, store, rejections, keyring, fake_firebase_adapter):
+        store.row = _issued_row(keyring, issuer=OTHER_ISSUER)
 
         _assert_challenge_required(_complete(client))
 
@@ -299,9 +293,9 @@ class TestTheFiveChallengeRejections:
         assert fake_firebase_adapter.calls == []
 
     def test_a_challenge_for_another_operation_is_an_operation_mismatch(
-            self, client, store, rejections, context, keyring, fake_firebase_adapter):
+            self, client, store, rejections, keyring, fake_firebase_adapter):
         """A challenge issued for another operation is still rejected, and still before the claim."""
-        store.row = _issued_row(context, keyring,
+        store.row = _issued_row(keyring,
                                 operation=AuthOperation.claim_anonymous_grant)
 
         _assert_challenge_required(_complete(client))
@@ -313,8 +307,8 @@ class TestTheFiveChallengeRejections:
         assert fake_firebase_adapter.calls == []
 
     def test_a_cleared_binding_hash_is_already_used_and_is_never_compared(
-            self, client, store, rejections, context, keyring, fake_firebase_adapter):
-        store.row = _issued_row(context, keyring, claimed=True, consumed=True, cleared_hash=True)
+            self, client, store, rejections, keyring, fake_firebase_adapter):
+        store.row = _issued_row(keyring, claimed=True, consumed=True, cleared_hash=True)
 
         _assert_challenge_required(_complete(client))
 
@@ -324,9 +318,9 @@ class TestTheFiveChallengeRejections:
         assert fake_firebase_adapter.calls == []
 
     def test_a_still_issued_but_expired_challenge_is_challenge_expired(
-            self, client, store, rejections, context, keyring, fake_firebase_adapter):
+            self, client, store, rejections, keyring, fake_firebase_adapter):
         """Reached by losing the claim and re-reading the row, never by comparing `expires_at` in the router."""
-        store.row = _issued_row(context, keyring, ttl_seconds=-1)
+        store.row = _issued_row(keyring, ttl_seconds=-1)
 
         _assert_challenge_required(_complete(client))
 
@@ -336,9 +330,9 @@ class TestTheFiveChallengeRejections:
         assert fake_firebase_adapter.calls == []
 
     def test_an_already_claimed_challenge_is_challenge_consumed(
-            self, client, store, rejections, context, keyring, fake_firebase_adapter):
+            self, client, store, rejections, keyring, fake_firebase_adapter):
         """The claim loser does no work and never receives the claim-holder's outcome; there is no idempotent replay."""
-        store.row = _issued_row(context, keyring, claimed=True)
+        store.row = _issued_row(keyring, claimed=True)
         holder = store.row.claim_attempt_id
 
         _assert_challenge_required(_complete(client))
@@ -351,9 +345,9 @@ class TestTheFiveChallengeRejections:
         assert fake_firebase_adapter.calls == []
 
     def test_every_rejection_is_recorded_exactly_once_and_never_names_the_handle(
-            self, client, store, rejections, context, keyring):
+            self, client, store, rejections, keyring):
         """One record per rejection is as much the contract as which one, and the handle is never in it."""
-        store.row = _issued_row(context, keyring, subject=OTHER_SUBJECT)
+        store.row = _issued_row(keyring, subject=OTHER_SUBJECT)
 
         _complete(client)
 
@@ -365,9 +359,9 @@ class TestTheProviderStageRejections:
     """Three outcomes, three client classes, all consuming; collapsing any pair is a bug clients cannot detect."""
 
     def test_user_not_found_is_auth_required_and_persists_nothing(
-            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
+            self, client, store, rejections, keyring, creator, fake_firebase_adapter):
         """A valid token for a deleted provider user must not create an account."""
-        store.row = _issued_row(context, keyring)
+        store.row = _issued_row(keyring)
         fake_firebase_adapter.script(UserNotFound(stage="provider_lookup"))
 
         response = _complete(client)
@@ -381,9 +375,9 @@ class TestTheProviderStageRejections:
         assert creator.calls == []
 
     def test_an_exhausted_retry_budget_is_verification_temporarily_unavailable(
-            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
+            self, client, store, rejections, keyring, creator, fake_firebase_adapter):
         """The call count proves the retry predicate is wired: a mismatched one would allow a single attempt."""
-        store.row = _issued_row(context, keyring)
+        store.row = _issued_row(keyring)
         fake_firebase_adapter.script(RetryableLookupError("the provider is unreachable"))
 
         response = _complete(client)
@@ -396,9 +390,9 @@ class TestTheProviderStageRejections:
         assert creator.calls == []
 
     def test_a_selection_failure_is_unavailable_on_its_first_attempt(
-            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
+            self, client, store, rejections, keyring, creator, fake_firebase_adapter):
         """An issuer mismatch fails closed rather than falling back, so it is definitive and spends one attempt."""
-        store.row = _issued_row(context, keyring)
+        store.row = _issued_row(keyring)
         fake_firebase_adapter.script(Unavailable(stage="issuer_selection"))
 
         response = _complete(client)
@@ -412,11 +406,11 @@ class TestTheProviderStageRejections:
         assert creator.calls == []
 
     def test_a_rejecting_provider_data_shape_is_operation_not_allowed(
-            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
+            self, client, store, rejections, keyring, creator, fake_firebase_adapter):
         """Which shapes reject is now decided behind the seam, so the shape table lives at adapter
         level in `test_firebase_adapter.py`. What this layer still owns is the answer the rejection
         earns: a terminal class whose body names no shape, and no attempt at the transaction."""
-        store.row = _issued_row(context, keyring)
+        store.row = _issued_row(keyring)
         fake_firebase_adapter.script(NotLinked(stage="provider_classification",
                                                cause="invalid-shape"))
 
@@ -432,9 +426,9 @@ class TestTheProviderStageRejections:
         assert creator.calls == []
 
     def test_one_recognized_entry_with_a_uid_reaches_the_consuming_transaction(
-            self, client, store, context, keyring, creator, fake_firebase_adapter):
+            self, client, store, keyring, creator, fake_firebase_adapter):
         """The classifier's verdict is carried through unchanged; the router re-derives nothing."""
-        store.row = _issued_row(context, keyring)
+        store.row = _issued_row(keyring)
         fake_firebase_adapter.script(VerifiedProviderIdentity(provider=IdentityProvider.google,
                                                               provider_uid="google-uid-1",
                                                               email="someone@example.test"))
@@ -459,8 +453,8 @@ class TestEveryProviderStageRejectionConsumes:
         NotLinked(stage="provider_classification", cause="invalid-shape"),
     ], ids=["user_not_found", "exhausted_budget", "issuer_selection", "not_linked"])
     def test_the_challenge_is_consumed_and_its_binding_cleared(
-            self, client, store, context, keyring, fake_firebase_adapter, rejection):
-        store.row = _issued_row(context, keyring)
+            self, client, store, keyring, fake_firebase_adapter, rejection):
+        store.row = _issued_row(keyring)
         fake_firebase_adapter.script(rejection)
 
         _complete(client)
@@ -470,9 +464,9 @@ class TestEveryProviderStageRejectionConsumes:
         assert store.row.preauth_subject_hash is None
 
     def test_a_replay_after_a_rejection_is_challenge_required_and_mints_nothing(
-            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
+            self, client, store, rejections, keyring, creator, fake_firebase_adapter):
         """There is no idempotent replay and no `challenge_replayed` result."""
-        store.row = _issued_row(context, keyring)
+        store.row = _issued_row(keyring)
         fake_firebase_adapter.script(UserNotFound(stage="provider_lookup"))
 
         first = _complete(client)
@@ -503,9 +497,9 @@ class TestThePrecedenceItself:
         assert creator.calls == []
 
     def test_an_identity_mismatch_beats_an_expired_row(
-            self, client, store, rejections, context, keyring, fake_firebase_adapter):
+            self, client, store, rejections, keyring, fake_firebase_adapter):
         """Were the claim first, a live row bound to somebody else would be claimed by the wrong presenter."""
-        store.row = _issued_row(context, keyring, subject=OTHER_SUBJECT, ttl_seconds=-1)
+        store.row = _issued_row(keyring, subject=OTHER_SUBJECT, ttl_seconds=-1)
 
         _assert_challenge_required(_complete(client))
 
@@ -514,9 +508,9 @@ class TestThePrecedenceItself:
         assert fake_firebase_adapter.calls == []
 
     def test_the_identity_binding_is_checked_before_the_operation(
-            self, client, store, rejections, context, keyring):
+            self, client, store, rejections, keyring):
         """Both are pre-claim rejections collapsing to one client class, so the order shows only in the log."""
-        store.row = _issued_row(context, keyring, subject=OTHER_SUBJECT,
+        store.row = _issued_row(keyring, subject=OTHER_SUBJECT,
                                 operation=AuthOperation.claim_anonymous_grant)
 
         _assert_challenge_required(_complete(client))
@@ -524,9 +518,9 @@ class TestThePrecedenceItself:
         assert rejections.results == ["challenge_identity_mismatch"]
 
     def test_an_expired_row_beats_a_failing_provider(
-            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
+            self, client, store, rejections, keyring, creator, fake_firebase_adapter):
         """5 beats 8. The claim loser performs no work at all."""
-        store.row = _issued_row(context, keyring, ttl_seconds=-1)
+        store.row = _issued_row(keyring, ttl_seconds=-1)
         fake_firebase_adapter.script(UserNotFound(stage="provider_lookup"))
 
         _assert_challenge_required(_complete(client))
@@ -545,17 +539,17 @@ class TestTheTransactionRejectionIsObservedAtTheHandler:
     """The arm this plan migrated: `create_account` raises, and the record is written at the handler."""
 
     @staticmethod
-    def _reaching_the_transaction(store, context, keyring, creator, adapter) -> None:
+    def _reaching_the_transaction(store, keyring, creator, adapter) -> None:
         """Get past every earlier rejection, then have the transaction reject the way the real one does."""
-        store.row = _issued_row(context, keyring)
+        store.row = _issued_row(keyring)
         adapter.script(VerifiedProviderIdentity(provider=IdentityProvider.google,
                                                 provider_uid="google-uid-1"))
         creator.rejection = IdentityAlreadyLinked()
 
     def test_it_is_recorded_once_under_its_class_derived_event_name(
-            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
+            self, client, store, rejections, keyring, creator, fake_firebase_adapter):
         """Sourced from the handler's logger rather than the router's -- the migration this fixture spans."""
-        self._reaching_the_transaction(store, context, keyring, creator, fake_firebase_adapter)
+        self._reaching_the_transaction(store, keyring, creator, fake_firebase_adapter)
 
         _complete(client)
 
@@ -563,9 +557,9 @@ class TestTheTransactionRejectionIsObservedAtTheHandler:
         assert len(creator.calls) == 1
 
     def test_it_consumes_the_challenge_exactly_once_before_the_client_is_answered(
-            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
+            self, client, store, rejections, keyring, creator, fake_firebase_adapter):
         """D-04: the route's except arm spends the handle, and `create_account` no longer also does."""
-        self._reaching_the_transaction(store, context, keyring, creator, fake_firebase_adapter)
+        self._reaching_the_transaction(store, keyring, creator, fake_firebase_adapter)
 
         _complete(client)
 
@@ -575,9 +569,9 @@ class TestTheTransactionRejectionIsObservedAtTheHandler:
         assert store.row.preauth_subject_hash is None
 
     def test_a_replay_after_it_is_rejected_and_never_reaches_the_transaction_again(
-            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
+            self, client, store, rejections, keyring, creator, fake_firebase_adapter):
         """There is no idempotent replay: the second presentation is a spent handle, not a repeat answer."""
-        self._reaching_the_transaction(store, context, keyring, creator, fake_firebase_adapter)
+        self._reaching_the_transaction(store, keyring, creator, fake_firebase_adapter)
 
         _complete(client)
         _complete(client)
@@ -587,9 +581,9 @@ class TestTheTransactionRejectionIsObservedAtTheHandler:
         assert len(creator.calls) == 1
 
     def test_the_handle_never_reaches_either_log(
-            self, client, store, rejections, context, keyring, creator, fake_firebase_adapter):
+            self, client, store, rejections, keyring, creator, fake_firebase_adapter):
         """The handle is a secret, and moving the record to a new logging site does not relax that."""
-        self._reaching_the_transaction(store, context, keyring, creator, fake_firebase_adapter)
+        self._reaching_the_transaction(store, keyring, creator, fake_firebase_adapter)
 
         _complete(client)
 
