@@ -397,7 +397,7 @@ Plans:
 **Goal:** [Urgent work - to be planned] *(written by plan `37.4-07` under D-16 — the goal amendment is phase work, not planning work)*
 **Requirements**: TBD *(written by plan `37.4-07` under D-16; the requirement set is decisions D-01…D-16 and addenda A-00…A-10 in `37.4-CONTEXT.md`, with five conflicts recorded as FLAGGED in `REQUIREMENTS.md`)*
 **Depends on:** Phase 37.3
-**Plans:** 1/7 plans executed
+**Plans:** 2/7 plans executed
 
 Plans:
 
@@ -407,7 +407,7 @@ Plans:
 
 **Wave 2** *(the tracer — blocked on Wave 1)*
 
-- [ ] 37.4-02-PLAN.md — One exception tree in `errors.py`, one handler, a registry-free startup totality walk, and D-05's two account classes
+- [x] 37.4-02-PLAN.md — One exception tree in `errors.py`, one handler, a registry-free startup totality walk, and D-05's two account classes
 
 **Wave 3** *(blocked on Wave 2)*
 
