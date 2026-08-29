@@ -392,6 +392,40 @@ Plans:
 
 - [x] 37.3-04-PLAN.md — The challenge binding raises under one 409 base; the outcome enum dies; FOUND-08 amended
 
+#### Phase 37.4: Machine-generated code refactoring, part 3 (INSERTED)
+
+**Goal:** [Urgent work - to be planned] *(written by plan `37.4-07` under D-16 — the goal amendment is phase work, not planning work)*
+**Requirements**: TBD *(written by plan `37.4-07` under D-16; the requirement set is decisions D-01…D-16 and addenda A-00…A-10 in `37.4-CONTEXT.md`, with five conflicts recorded as FLAGGED in `REQUIREMENTS.md`)*
+**Depends on:** Phase 37.3
+**Plans:** 7 plans
+
+Plans:
+
+**Wave 1** *(the A-00 precondition repair — pre-existing breakage from `d466a4b`, not 37.4 scope)*
+
+- [ ] 37.4-01-PLAN.md — Repair the 13 stale module paths and 9 stale class names; re-baseline lint, typecheck and the package-shape ratchet
+
+**Wave 2** *(the tracer — blocked on Wave 1)*
+
+- [ ] 37.4-02-PLAN.md — One exception tree in `errors.py`, one handler, a registry-free startup totality walk, and D-05's two account classes
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 37.4-03-PLAN.md — The identity collapse: one `Identity`, two accessors, `RequestContext` retired, `auth/identity.py` folded
+
+**Wave 4** *(two parallel plans, blocked on Wave 3, no shared file)*
+
+- [ ] 37.4-04-PLAN.md — The quota seam: `charge_quota()` called inside the two service methods, the callback chain deleted
+- [ ] 37.4-05-PLAN.md — The two in-place migration edits, the HMAC keyring's deletion, and the dev-database re-apply *(has a blocking decision checkpoint)*
+
+**Wave 5** *(blocked on Wave 4)*
+
+- [ ] 37.4-06-PLAN.md — The create-user conflict collapse and the `HTTPBearer` substitution
+
+**Wave 6** *(blocked on Wave 5)*
+
+- [ ] 37.4-07-PLAN.md — The ROADMAP goal, the five flagged conflicts, and the phase's records
+
 #### Phase 38: POST /auth/sync
 
 **Goal:** Ship the read-only auth-state reconciliation surface clients call after sign-in or a lost response.
