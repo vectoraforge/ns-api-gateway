@@ -12,6 +12,8 @@ from nativespeaker.api.errors import (
     INTERNAL_ERROR,
     STATUS_TO_CLASS,
     VALIDATION_ERROR,
+    AppError,
+    ErrorResponse,
     ServiceError,
     error_response,
 )
@@ -27,11 +29,23 @@ _REST = re.compile(r"([a-z0-9])([A-Z])")
 def camel_to_snake(name: str) -> str:
     r"""An exception class name as the log event name it stands for.
 
-    Two substitutions rather than one, because a single `\B([A-Z])` rule splits inside an acronym:
-    `IdentityAlreadyLinked` -> `identity_already_linked`, and `InvalidExternalJwt` ->
-    `invalid_external_jwt` rather than `invalid_external_j_w_t`.
+    Two substitutions, because a single `\B([A-Z])` rule splits an acronym:
+    `InvalidExternalJwt` -> `invalid_external_jwt`, not `invalid_external_j_w_t`.
     """
     return _REST.sub(r"\1_\2", _FIRST.sub(r"\1_\2", name)).lower()
+
+
+async def app_error_handler(_: Request, exc: Exception) -> JSONResponse:
+    """Record the failure once, then answer with the status and code its class declared."""
+    assert isinstance(exc, AppError)
+    if exc.log_level is not None:
+        # structlog's filtering logger indexes the five standard levels and raises on any other.
+        level = exc.log_level if exc.log_level in _LOGGABLE else logging.ERROR
+        logger.log(level, camel_to_snake(type(exc).__name__),
+                   exc_info=(exc.log_level >= logging.ERROR), **exc.log_fields())
+    return JSONResponse(status_code=exc.status,
+                        content=ErrorResponse(code=exc.code).model_dump(),
+                        headers=exc.extra_headers())
 
 
 async def service_error_handler(_: Request, exc: Exception) -> JSONResponse:
@@ -77,6 +91,7 @@ async def generic_error_handler(_: Request, exc: Exception) -> JSONResponse:
 
 def register_exception_handlers(app: FastAPI) -> None:
     # One entry covers every subclass: Starlette resolves a handler by walking `type(exc).__mro__`.
+    app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(AuthRejected, auth_rejected_handler)
     app.add_exception_handler(ServiceError, service_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)

@@ -11,15 +11,16 @@ from nativespeaker.api.auth import create_user as creation
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.create_user import create_user
 from nativespeaker.api.auth.exceptions import (
-    AccountUnavailable,
     AuthRejected,
     IdentityAlreadyLinked,
     ProviderAccountAlreadyLinked,
 )
 from nativespeaker.api.errors import (
-    ACCOUNT_UNAVAILABLE,
     IDENTITY_ALREADY_LINKED,
     OPERATION_NOT_ALLOWED,
+    AccountUnavailable,
+    BlockedUser,
+    HistoricalIdentity,
 )
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
@@ -325,22 +326,20 @@ class TestTheReResolutionsThreeNoMutationArms:
 
     async def test_a_historical_row_raises_account_unavailable(self):
         """`historical` is a permanent tombstone: no creation, and no `preauth_identity_not_allowed`."""
-        with pytest.raises(AccountUnavailable) as raised:
+        with pytest.raises(HistoricalIdentity) as raised:
             await _run([_identity_row(state=IdentityState.historical)])
 
-        assert raised.value.error_class is ACCOUNT_UNAVAILABLE
-        assert raised.value.cause == "historical_identity"
+        assert (raised.value.status, raised.value.code) == (403, "account_unavailable")
 
     async def test_an_active_row_whose_user_is_blocked_raises_account_unavailable(self):
         """Distinct from the historical arm in the log alone, identical to the caller."""
         user_id = uuid4()
         rows = [_identity_row(state=IdentityState.active, user_id=user_id),
                 User(id=user_id, active=False, created_at=NOW, updated_at=NOW)]
-        with pytest.raises(AccountUnavailable) as raised:
+        with pytest.raises(BlockedUser) as raised:
             await _run(rows)
 
-        assert raised.value.error_class is ACCOUNT_UNAVAILABLE
-        assert raised.value.cause == "blocked_user"
+        assert (raised.value.status, raised.value.code) == (403, "account_unavailable")
 
     async def test_the_two_unavailable_arms_are_indistinguishable_to_the_caller(self):
         """The pair a client must not be able to tell apart, asserted rather than assumed."""
@@ -352,17 +351,18 @@ class TestTheReResolutionsThreeNoMutationArms:
             await _run([_identity_row(state=IdentityState.active, user_id=blocked_user_id),
                         User(id=blocked_user_id, active=False, created_at=NOW, updated_at=NOW)])
 
-        # One class, one client class: the only difference is the field that reaches the log.
-        assert type(historical.value) is type(blocked.value)
-        assert historical.value.error_class is blocked.value.error_class
-        assert historical.value.cause != blocked.value.cause
+        # Two classes, one answer: the difference reaches the log event name and nothing else.
+        assert type(historical.value) is not type(blocked.value)
+        assert (historical.value.status, historical.value.code) == (blocked.value.status,
+                                                                    blocked.value.code)
+        assert historical.value.log_fields() == blocked.value.log_fields() == {}
 
     async def test_a_missing_user_row_fails_closed(self):
         """The FK makes this unreachable; if it ever happens, refuse rather than invent or reassign an identity."""
-        with pytest.raises(AccountUnavailable) as raised:
+        with pytest.raises(BlockedUser) as raised:
             await _run([_identity_row(state=IdentityState.active), None])
 
-        assert raised.value.cause == "blocked_user"
+        assert (raised.value.status, raised.value.code) == (403, "account_unavailable")
 
     async def test_every_no_mutation_arm_leaves_the_consume_to_the_route(self):
         """D-04 moved the post-claim consume to `_complete`; consuming here too would spend the handle twice."""

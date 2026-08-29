@@ -1,5 +1,6 @@
 """The one client-visible error registry: one response model, one table, one factory, one hierarchy."""
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, get_args
 from uuid import UUID
@@ -207,6 +208,116 @@ def assert_registry_total() -> None:
 
     if problems:
         raise RuntimeError("error registry is not total:\n  " + "\n  ".join(problems))
+
+
+class AppError(Exception):
+    """Base for every failure that has a client-visible answer."""
+
+    # A class declaring neither answers 500 `internal_error`: the fail-closed default, not a shortcut.
+    status: int = 500
+    code: ErrorCode = "internal_error"
+    log_level: int | None = logging.WARNING
+    answers_framework_status: bool = False
+
+    def extra_headers(self) -> dict[str, str] | None:
+        return None
+
+    def log_fields(self) -> dict[str, str | None]:
+        """The extra fields this failure contributes to its one log line, and the only such channel."""
+        return {}
+
+
+def _family[T](root: type[T]) -> list[type[T]]:
+    """Every class under `root`, at any depth -- an intermediate base is not a place to hide."""
+    found: list[type[T]] = []
+    for subclass in root.__subclasses__():
+        found.append(subclass)
+        found.extend(_family(subclass))
+    return found
+
+
+def _undeclared(classes: Sequence[type], *, root: type) -> list[str]:
+    """Leaves that would answer the root's fail-closed default because nothing below it declares."""
+    problems: list[str] = []
+    for cls in classes:
+        if cls.__subclasses__():
+            # An intermediate base answers through its leaves; the one-409 challenge base is this.
+            continue
+        declared = any(ancestor is not root and "code" in vars(ancestor)
+                       for ancestor in cls.__mro__)
+        if not declared:
+            problems.append(f"{cls.__name__} declares no status or code and inherits none below "
+                            f"{root.__name__}, so it would answer the base default")
+    return problems
+
+
+def _tree_problems(root: type[AppError], *,
+                   declared_codes: frozenset[str] | None = None) -> list[str]:
+    """Every defect under `root`, collected so one run reports them all rather than the first."""
+    classes = _family(root)
+    problems: list[str] = []
+
+    status_of_code: dict[str, tuple[str, int]] = {}
+    for cls in classes:
+        own = vars(cls)
+        if ("status" in own) != ("code" in own):
+            problems.append(f"{cls.__name__} declares only "
+                            f"{'status' if 'status' in own else 'code'}; declare both or neither")
+        code, status = own.get("code"), own.get("status")
+        if code is None or status is None:
+            continue
+        owner, owned_status = status_of_code.get(code, (None, status))
+        if owner is not None and owned_status != status:
+            problems.append(f"code {code!r} is claimed at status {owned_status} by {owner} and at "
+                            f"status {status} by {cls.__name__}")
+        else:
+            status_of_code[code] = (cls.__name__, status)
+
+    problems.extend(_undeclared(classes, root=root))
+
+    if declared_codes is not None:
+        carried = {cls.code for cls in classes}
+        if declared_codes - carried:
+            problems.append(f"ErrorCode declares codes the tree never carries: "
+                            f"{sorted(declared_codes - carried)}")
+        if carried - declared_codes:
+            problems.append(f"the tree carries codes absent from ErrorCode: "
+                            f"{sorted(carried - declared_codes)}")
+
+    answering: dict[int, str] = {}
+    for cls in classes:
+        if not vars(cls).get("answers_framework_status"):
+            continue
+        if cls.status in answering:
+            problems.append(f"status {cls.status} is answered by both {answering[cls.status]} "
+                            f"and {cls.__name__}")
+        else:
+            answering[cls.status] = cls.__name__
+
+    return problems
+
+
+def assert_tree_total() -> None:
+    """Fail closed on a defect in the error tree, from the lifespan, before traffic is served."""
+    problems = _tree_problems(AppError, declared_codes=frozenset(get_args(ErrorCode)))
+    if problems:
+        raise RuntimeError("error tree is not total:\n  " + "\n  ".join(problems))
+
+
+class AccountUnavailable(AppError):
+    """A historical identity row, or an active row whose user is not active."""
+
+    # Declared once here: making one leaf answer differently takes an override a reviewer sees.
+    status = 403
+    code = "account_unavailable"
+
+
+class HistoricalIdentity(AccountUnavailable):
+    """The identity row's state is anything other than active."""
+
+
+class BlockedUser(AccountUnavailable):
+    """The identity row is active, but the user it resolves to is not."""
 
 
 # One `error_class` per subclass, so a status and a code can never be named in disagreement.

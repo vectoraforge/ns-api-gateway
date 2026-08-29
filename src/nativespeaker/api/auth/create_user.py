@@ -9,12 +9,9 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.exceptions import (
-    AccountUnavailable,
-    IdentityAlreadyLinked,
-    ProviderAccountAlreadyLinked,
-)
+from nativespeaker.api.auth.exceptions import IdentityAlreadyLinked, ProviderAccountAlreadyLinked
 from nativespeaker.api.crud.challenges import ChallengesDB
+from nativespeaker.api.errors import BlockedUser, HistoricalIdentity
 from nativespeaker.api.tables.auth import AuthChallenge
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.purchases import PurchaseProvider, StorePurchaseToken
@@ -76,11 +73,11 @@ async def _reject_existing_identity(session: AsyncSession,
                                     existing: ExternalIdentity) -> NoReturn:
     """Raise what an already-present identity row earned. No mutation, and every test fails closed."""
     if existing.identity_state != IdentityState.active:
-        raise AccountUnavailable(cause="historical_identity")
+        raise HistoricalIdentity
 
     user = (await session.exec(select(User).where(col(User.id) == existing.user_id))).first()
     if user is None or user.active is not True:
-        raise AccountUnavailable(cause="blocked_user")
+        raise BlockedUser
     raise IdentityAlreadyLinked()
 
 

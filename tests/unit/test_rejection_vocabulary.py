@@ -39,7 +39,6 @@ FAMILY_MODULE = exceptions_module.__name__
 EVENT_NAMES = frozenset({
     "identity_already_linked",
     "provider_account_already_linked",
-    "account_unavailable",
     "invalid_external_jwt",
     # Deliberately `pre_auth_...`, while the client-visible code stays `preauth_...`: the class name
     # follows `PreAuthIdentity` in `auth/context.py`, and D-02 makes the event whatever it spells.

@@ -6,7 +6,6 @@ handler snake_cases it into the structured log event -- so a rename here renames
 """
 from nativespeaker.api.auth.extract_bearer import BoundedReason
 from nativespeaker.api.errors import (
-    ACCOUNT_UNAVAILABLE,
     AUTH_REQUIRED,
     CHALLENGE_REQUIRED,
     IDENTITY_ALREADY_LINKED,
@@ -100,24 +99,6 @@ class ProviderAccountAlreadyLinked(AuthRejected):
     """The provider account is already reserved, so this attempt may not claim it for a second user."""
 
     error_class = OPERATION_NOT_ALLOWED
-
-
-class AccountUnavailable(AuthRejected):
-    """A historical identity row, or an active row whose user is not active.
-
-    One class for both arms on purpose: the two are indistinguishable to clients, and telling them
-    apart would make completion an account-state oracle. `cause` carries the distinction to the
-    structured log and nowhere else -- it never reaches a response body.
-    """
-
-    error_class = ACCOUNT_UNAVAILABLE
-
-    def __init__(self, *, cause: str) -> None:
-        self.cause = cause
-        super().__init__(f"account unavailable: {cause}")
-
-    def log_fields(self) -> dict[str, str | None]:
-        return {"cause": self.cause}
 
 
 # --- Lookup arms: the providerData read in `auth/firebase.py` ---
