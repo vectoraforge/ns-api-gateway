@@ -6,11 +6,11 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.database.challenges import ChallengeStore
 from nativespeaker.api.auth.firebase import FirebaseAdminLookup, build_admin_apps
 from nativespeaker.api.auth.hmac_keyring import HmacKeyring
 from nativespeaker.api.auth.jwt_verifier import JWTVerifier
 from nativespeaker.api.config import EnvironmentConfig
+from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import assert_registry_total
 from nativespeaker.api.logs import setup_logging
 from nativespeaker.api.services import LLMService
@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
     app.state.hmac_keyring.warn_missing_older(logger)
 
     # The challenge store shares that keyring rather than deriving a key of its own.
-    app.state.challenge_store = ChallengeStore(app.state.hmac_keyring)
+    app.state.challenge_store = ChallengesDB(app.state.hmac_keyring)
 
     # One named Firebase app per configured issuer; an absent credential returns {} and boot proceeds.
     firebase_apps = build_admin_apps(config)

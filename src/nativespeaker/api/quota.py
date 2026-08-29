@@ -7,7 +7,7 @@ import structlog
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.database import GrantsDB
+from nativespeaker.api.crud import GrantsDB
 from nativespeaker.api.errors import (
     MissingUsageRowError,
     MultipleEffectiveGrantsError,

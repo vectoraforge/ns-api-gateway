@@ -4,7 +4,7 @@ import orjson
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.database import ChatsDB
+from nativespeaker.api.crud import ChatsDB
 from nativespeaker.api.errors import (
     AnalysisError,
     ChatHistoryLimitError,
@@ -12,11 +12,11 @@ from nativespeaker.api.errors import (
     OutOfScopeError,
     UnsupportedLanguageError,
 )
-from nativespeaker.api.tables import Chat, ChatRole, Message
+from nativespeaker.api.quota import QuotaGate
 from nativespeaker.api.schemas.api import ExamplesResponse
 from nativespeaker.api.schemas.llm import AnalyzeInput, AnalyzeResponse, FollowUpInput, FollowUpResponse
-from nativespeaker.api.quota import QuotaGate
 from nativespeaker.api.services.llm import LLMService
+from nativespeaker.api.tables import Chat, ChatRole, Message
 
 
 class ChatService:

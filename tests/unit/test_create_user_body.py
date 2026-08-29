@@ -19,8 +19,8 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
-from nativespeaker.api.tables.auth import CreateUserRequest
 from nativespeaker.api.routers import auth_router
+from nativespeaker.api.tables.auth import CreateUserRequest
 
 from .conftest import TEST_ISSUER
 

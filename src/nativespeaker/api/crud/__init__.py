@@ -1,4 +1,4 @@
 __all__ = ["ChatsDB", "GrantsDB"]
 
-from nativespeaker.api.database.chats import ChatsDB
-from nativespeaker.api.database.grants import GrantsDB
+from nativespeaker.api.crud.chats import ChatsDB
+from nativespeaker.api.crud.grants import GrantsDB

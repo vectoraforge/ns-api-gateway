@@ -10,9 +10,8 @@ from nativespeaker.api.app.dependencies import (
     get_firebase_adapter,
     get_request_context,
 )
-from nativespeaker.api.database.challenges import ChallengeStore
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.create_user import create_user
+from nativespeaker.api.auth.create_user import create_user as create_account
 from nativespeaker.api.auth.exceptions import (
     AuthRejected,
     ChallengeConsumed,
@@ -21,6 +20,7 @@ from nativespeaker.api.auth.exceptions import (
     ChallengeOperationMismatch,
 )
 from nativespeaker.api.auth.firebase import lookup_with_retry
+from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import INVALID_REQUEST, error_response
 from nativespeaker.api.tables.auth import (
     AuthChallenge,
@@ -42,7 +42,7 @@ router = APIRouter(tags=["auth"], dependencies=[Depends(get_request_context)])
 async def issue_challenge(body: ChallengeRequest,
                           context: RequestContext = Depends(get_request_context),
                           session: AsyncSession = Depends(get_db),
-                          challenge_store: ChallengeStore = Depends(get_challenge_store)) -> Response:
+                          challenge_store: ChallengesDB = Depends(get_challenge_store)) -> Response:
     """Issue one challenge for an operation this route serves. It reads no provider and mutates no account."""
     if body.operation != AuthOperation.create_user.value:
         # The rejected string is caller-supplied and bounded, so logging it is safe; a handle never is.
@@ -68,7 +68,7 @@ async def issue_challenge(body: ChallengeRequest,
 async def create_user(body: CreateUserRequest,
                       context: RequestContext = Depends(get_request_context),
                       session: AsyncSession = Depends(get_db),
-                      challenge_store: ChallengeStore = Depends(get_challenge_store),
+                      challenge_store: ChallengesDB = Depends(get_challenge_store),
                       adapter=Depends(get_firebase_adapter)) -> Response:
     """Complete the operation the body's handle stands for. The framework owns every malformed-body rejection."""
     # Forwarded untouched and never logged. Byte-for-byte comparison makes a padded handle a not-found.
@@ -82,7 +82,7 @@ async def _complete(session: AsyncSession, *,
                     context: RequestContext,
                     identity: LinkedIdentity | PreAuthIdentity,
                     challenge_id: str,
-                    challenge_store: ChallengeStore,
+                    challenge_store: ChallengesDB,
                     adapter) -> Response:
     """Create the account. The order of the rejections below is the rejection precedence.
 
@@ -125,15 +125,15 @@ async def _complete(session: AsyncSession, *,
         #
         # Per-minute traffic limits live in the gateway, not here; only the retry budget is in-process.
         facts = await lookup_with_retry(adapter, identity.issuer, identity.subject)
-        await create_user(session,
-                          context=context,
-                          identity=identity,
-                          challenge=challenge,
-                          provider=facts.provider,
-                          provider_uid=facts.provider_uid,
-                          # The copy rule was evaluated once, inside the read; nothing re-derives it.
-                          email=facts.email,
-                          challenge_store=challenge_store)
+        await create_account(session,
+                             context=context,
+                             identity=identity,
+                             challenge=challenge,
+                             provider=facts.provider,
+                             provider_uid=facts.provider_uid,
+                             # The copy rule was evaluated once, inside the read; nothing re-derives it.
+                             email=facts.email,
+                             challenge_store=challenge_store)
     except AuthRejected:
         # D-04/D-11: every raising arm past the claim leaves the consume here, so the paths spend the
         # handle exactly once between them. The bare re-raise is safe because after the commit the
@@ -150,7 +150,7 @@ async def _complete(session: AsyncSession, *,
 async def _consume_and_commit(session: AsyncSession, *,
                               context: RequestContext,
                               challenge: AuthChallenge,
-                              challenge_store: ChallengeStore) -> None:
+                              challenge_store: ChallengesDB) -> None:
     """Spend the handle and commit, so a rejection after the claim cannot be re-presented."""
     consumed = await challenge_store.consume(session,
                                              challenge_id=challenge.challenge_id,

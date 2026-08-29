@@ -196,7 +196,7 @@ class TestTheWireArmsRaiseAndTheHandlerRecordsThemOnce:
     def warnings(self, monkeypatch) -> list[tuple[str, dict]]:
         """A recording spy on the handler's own logger -- see 35-02's caching note on capture_logs."""
         entries: list[tuple[str, dict]] = []
-        monkeypatch.setattr("nativespeaker.api.app.errors.logger.warning",
+        monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.warning",
                             lambda event, **kw: entries.append((event, kw)))
         return entries
 

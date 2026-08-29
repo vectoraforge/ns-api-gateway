@@ -220,14 +220,14 @@ class TestHttpExceptionHandler:
         assert response.body == b'{"code":"challenge_required"}'
 
     async def test_unmapped_status_returns_500_internal_error(self, monkeypatch):
-        monkeypatch.setattr("nativespeaker.api.app.errors.logger", _RecordingLogger())
+        monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger", _RecordingLogger())
         response = await http_exception_handler(None, StarletteHTTPException(status_code=418))
         assert response.status_code == 500
         assert response.body == b'{"code":"internal_error"}'
 
     async def test_unmapped_status_logs_at_error_with_the_status_as_a_field(self, monkeypatch):
         recorder = _RecordingLogger()
-        monkeypatch.setattr("nativespeaker.api.app.errors.logger", recorder)
+        monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger", recorder)
         await http_exception_handler(None, StarletteHTTPException(status_code=418))
         assert recorder.events("error") == [("error_registry_unmapped_status",
                                              {"unmapped_status": 418})]
@@ -235,7 +235,7 @@ class TestHttpExceptionHandler:
     async def test_a_mapped_status_logs_nothing(self, monkeypatch):
         """The loud path must fire only on a registry hole, not on every framework rejection."""
         recorder = _RecordingLogger()
-        monkeypatch.setattr("nativespeaker.api.app.errors.logger", recorder)
+        monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger", recorder)
         await http_exception_handler(None, StarletteHTTPException(status_code=404))
         assert recorder.calls == []
 

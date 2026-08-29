@@ -9,8 +9,8 @@ from nativespeaker.api.errors import (
     PermanentLLMError,
     UnsupportedLanguageError,
 )
-from nativespeaker.api.tables import Chat, ChatRole, Message
 from nativespeaker.api.schemas.api import ExamplesResponse
+from nativespeaker.api.tables import Chat, ChatRole, Message
 from unit.conftest import TEST_USER_ID
 
 

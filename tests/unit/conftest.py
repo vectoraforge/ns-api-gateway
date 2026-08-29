@@ -18,11 +18,11 @@ from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.context import LinkedIdentity
 from nativespeaker.api.auth.jwt_verifier import VerificationResult, bounded_reason_for, claims_from_payload
-from nativespeaker.api.database import ChatsDB
-from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
-from nativespeaker.api.tables.users import User
+from nativespeaker.api.crud import ChatsDB
 from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router
 from nativespeaker.api.services import ChatService
+from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
+from nativespeaker.api.tables.users import User
 
 # JWT test infrastructure: an ephemeral RSA keypair and a token factory.
 

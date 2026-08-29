@@ -7,8 +7,8 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnableSerializable
 
 from nativespeaker.api.config import ModelConfig, ResilienceConfig
-from nativespeaker.api.schemas.llm import ChatModelResponse
 from nativespeaker.api.resilience import ResiliencePolicy
+from nativespeaker.api.schemas.llm import ChatModelResponse
 
 
 class LLMService:

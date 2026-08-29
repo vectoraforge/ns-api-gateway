@@ -10,8 +10,8 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from nativespeaker.api.auth.jwt_verifier import _ABSENT_KID_SENTINEL, JWTVerifier, VerifiedClaims
 from nativespeaker.api.auth.extract_bearer import BoundedReason
+from nativespeaker.api.auth.jwt_verifier import _ABSENT_KID_SENTINEL, JWTVerifier, VerifiedClaims
 from unit.conftest import (
     PRIVATE_KEY_PEM,
     PUBLIC_KEY_PEM,
@@ -288,7 +288,7 @@ class TestProductionVerifier:
 
     @pytest.fixture
     def jwks_client(self):
-        with patch("nativespeaker.api.auth.verification.PyJWKClient") as mock_cls:
+        with patch("nativespeaker.api.auth.jwt_verifier.PyJWKClient") as mock_cls:
             instance = mock_cls.return_value
             instance.get_signing_keys.return_value = []
             instance.get_signing_key_from_jwt.return_value = PUBLIC_KEY_PEM

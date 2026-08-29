@@ -15,7 +15,6 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
-from nativespeaker.api.database.challenges import ChallengeStore
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.exceptions import (
     AuthRejected,
@@ -27,9 +26,10 @@ from nativespeaker.api.auth.exceptions import (
 from nativespeaker.api.auth.firebase import FIREBASE_LOOKUP_ATTEMPTS, RetryableLookupError
 from nativespeaker.api.auth.hmac_keyring import HmacKeyring
 from nativespeaker.api.config import HmacConfig
+from nativespeaker.api.crud.challenges import ChallengesDB
+from nativespeaker.api.routers import auth_router
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import IdentityProvider
-from nativespeaker.api.routers import auth_router
 
 from .conftest import TEST_ISSUER
 
@@ -64,7 +64,7 @@ class _FakeChallengeStore:
     """One in-memory row whose `claim` and `consume` mirror the real conditional updates clause for clause."""
 
     def __init__(self, keyring: _SpyKeyring) -> None:
-        self._binding = ChallengeStore(keyring)
+        self._binding = ChallengesDB(keyring)
         self.row: AuthChallenge | None = None
         self.consume_calls = 0
 
@@ -174,7 +174,7 @@ def rejections(monkeypatch) -> _RejectionLog:
     """Spy on both loggers a rejection can come from, so one logged at the wrong site is still seen."""
     log = _RejectionLog()
     monkeypatch.setattr("nativespeaker.api.routers.auth.logger.warning", log.record)
-    monkeypatch.setattr("nativespeaker.api.app.errors.logger.warning", log.record)
+    monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.warning", log.record)
     return log
 
 

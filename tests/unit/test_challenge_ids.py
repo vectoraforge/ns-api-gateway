@@ -12,15 +12,15 @@ from uuid import UUID, uuid7
 
 import pytest
 
-from nativespeaker.api.database.challenges import (
-    CHALLENGE_ID_BYTES,
-    CHALLENGE_TTL_SECONDS,
-    ChallengeStore,
-    new_challenge_id,
-)
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
 from nativespeaker.api.auth.exceptions import ChallengeConsumed, ChallengeIdentityMismatch
 from nativespeaker.api.auth.hmac_keyring import HmacConfig, HmacKeyring
+from nativespeaker.api.crud.challenges import (
+    CHALLENGE_ID_BYTES,
+    CHALLENGE_TTL_SECONDS,
+    ChallengesDB,
+    new_challenge_id,
+)
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.users import User
@@ -49,8 +49,8 @@ def keyring(active: int = 1) -> HmacKeyring:
     return HmacKeyring(HmacConfig(active_version=active, keys={active: material(active)}))
 
 
-def store(ring: HmacKeyring | None = None) -> ChallengeStore:
-    return ChallengeStore(ring if ring is not None else keyring())
+def store(ring: HmacKeyring | None = None) -> ChallengesDB:
+    return ChallengesDB(ring if ring is not None else keyring())
 
 
 class _StubResult:
@@ -131,8 +131,8 @@ async def issue_row(identity, *, ring: HmacKeyring | None = None,
 
 
 def module_ast() -> ast.Module:
-    """The AST of `auth/challenges.py`, read from the file `ChallengeStore` was defined in, so the path cannot drift."""
-    return ast.parse(Path(inspect.getfile(ChallengeStore)).read_text())
+    """The AST of `auth/challenges.py`, read from the file `ChallengesDB` was defined in, so the path cannot drift."""
+    return ast.parse(Path(inspect.getfile(ChallengesDB)).read_text())
 
 
 def method_ast(method) -> ast.AST:
@@ -271,7 +271,7 @@ class TestTheBindingWrittenAtIssuance:
 
     async def test_the_derivation_uses_the_active_key_with_no_version_argument(self):
         """The active key only: the row has nowhere to record which key produced the hash."""
-        source = inspect.getsource(ChallengeStore.issue)
+        source = inspect.getsource(ChallengesDB.issue)
         assert "actor_subject_hash" in source
         assert "version=" not in source
 
@@ -380,13 +380,13 @@ class TestTheCompletionComparison:
                             preauth_subject_hash=None,
                             consumed_at=FIXED_NOW,
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
-        exploding = ChallengeStore(_ExplodingKeyring())  # ty: ignore[invalid-argument-type]
+        exploding = ChallengesDB(_ExplodingKeyring())  # ty: ignore[invalid-argument-type]
         with pytest.raises(ChallengeConsumed):
             exploding.verify_binding(row, preauth_identity())
 
     def test_the_hash_comparison_goes_through_the_shared_constant_time_seam(self):
         """Asserted on the AST, because `compare_digest` and `==` return identical answers for every input."""
-        tree = method_ast(ChallengeStore.verify_binding)
+        tree = method_ast(ChallengesDB.verify_binding)
         calls = {node.func.attr for node in ast.walk(tree)
                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
         assert "actor_subject_matches" in calls
