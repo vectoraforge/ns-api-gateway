@@ -7,7 +7,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
 from unit.conftest import TEST_ISSUER, make_token
 
-from nativespeaker.api.models.identities import IdentityProvider, IdentityState
+from nativespeaker.api.tables.identities import IdentityProvider, IdentityState
 
 from .conftest import create_chat, seed_identity
 
@@ -160,7 +160,7 @@ class TestAdmissionPhasePrecedesAuth:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestVerificationPrecedesResolution:
-    """Verification runs before resolution, so a bad token never reaches the database."""
+    """Verification runs before resolution, so a bad token never reaches the crud."""
 
     async def test_an_unverifiable_token_is_auth_required_not_preauth(self, admission_client):
         response = await admission_client.get("/chats",

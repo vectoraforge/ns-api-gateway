@@ -9,11 +9,11 @@ from unit.conftest import TEST_ISSUER, make_token
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.exceptions import NotLinked
 from nativespeaker.api.auth.firebase import FirebaseAdminLookup, _verified_email
-from nativespeaker.api.models.auth import AuthChallenge
-from nativespeaker.api.models.grants import AccessGrant, UserMonthlyUsage
-from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
-from nativespeaker.api.models.purchase_tokens import PurchaseProvider, StorePurchaseToken
-from nativespeaker.api.models.users import User
+from nativespeaker.api.tables.auth import AuthChallenge
+from nativespeaker.api.tables.grants import AccessGrant, UserMonthlyUsage
+from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
+from nativespeaker.api.tables.purchases import PurchaseProvider, StorePurchaseToken
+from nativespeaker.api.tables.users import User
 
 from .conftest import seed_identity
 
@@ -295,7 +295,7 @@ class TestIssuanceStillServesAnUnlinkedCaller:
         assert first.json()["challenge_id"] != second.json()["challenge_id"]
 
 
-# The rejection arms, over real HTTP and a real database, where a rejection really moves the lifecycle.
+# The rejection arms, over real HTTP and a real crud, where a rejection really moves the lifecycle.
 
 _USERS = select(func.count()).select_from(User)
 

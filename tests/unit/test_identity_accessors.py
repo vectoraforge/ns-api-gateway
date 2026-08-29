@@ -12,20 +12,20 @@ from nativespeaker.api.app.dependencies import (
     get_linked_identity,
     get_request_context,
 )
-from nativespeaker.api.app.errors import register_exception_handlers
+from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.context import (
     IdentityKind,
     LinkedIdentity,
     PreAuthIdentity,
     RequestContext,
 )
-from nativespeaker.api.models.identities import (
+from nativespeaker.api.tables.identities import (
     ExternalIdentity,
     IdentityProvider,
     IdentityState,
     NativeClaimProvider,
 )
-from nativespeaker.api.models.users import User
+from nativespeaker.api.tables.users import User
 from unit.conftest import TEST_ISSUER, make_test_verifier, make_token
 
 ACCESSORS = (get_request_context, get_linked_identity)

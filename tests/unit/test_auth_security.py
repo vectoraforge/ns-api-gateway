@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import get_linked_identity
-from nativespeaker.api.app.errors import register_exception_handlers
+from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.context import LinkedIdentity
 from unit.conftest import make_test_verifier, make_token
 

@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from nativespeaker.api.auth.keys import HmacKeyring
+from nativespeaker.api.auth.hmac_keyring import HmacKeyring
 from nativespeaker.api.config import (
     AppConfig,
     EnvironmentConfig,

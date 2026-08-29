@@ -10,9 +10,9 @@ from nativespeaker.api.app.dependencies import (
     get_firebase_adapter,
     get_request_context,
 )
-from nativespeaker.api.auth.challenges import ChallengeStore
+from nativespeaker.api.database.challenges import ChallengeStore
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.creation import create_account
+from nativespeaker.api.auth.create_user import create_user
 from nativespeaker.api.auth.exceptions import (
     AuthRejected,
     ChallengeConsumed,
@@ -22,7 +22,7 @@ from nativespeaker.api.auth.exceptions import (
 )
 from nativespeaker.api.auth.firebase import lookup_with_retry
 from nativespeaker.api.errors import INVALID_REQUEST, error_response
-from nativespeaker.api.models.auth import (
+from nativespeaker.api.tables.auth import (
     AuthChallenge,
     AuthOperation,
     ChallengeRequest,
@@ -125,15 +125,15 @@ async def _complete(session: AsyncSession, *,
         #
         # Per-minute traffic limits live in the gateway, not here; only the retry budget is in-process.
         facts = await lookup_with_retry(adapter, identity.issuer, identity.subject)
-        await create_account(session,
-                             context=context,
-                             identity=identity,
-                             challenge=challenge,
-                             provider=facts.provider,
-                             provider_uid=facts.provider_uid,
-                             # The copy rule was evaluated once, inside the read; nothing re-derives it.
-                             email=facts.email,
-                             challenge_store=challenge_store)
+        await create_user(session,
+                          context=context,
+                          identity=identity,
+                          challenge=challenge,
+                          provider=facts.provider,
+                          provider_uid=facts.provider_uid,
+                          # The copy rule was evaluated once, inside the read; nothing re-derives it.
+                          email=facts.email,
+                          challenge_store=challenge_store)
     except AuthRejected:
         # D-04/D-11: every raising arm past the claim leaves the consume here, so the paths spend the
         # handle exactly once between them. The bare re-raise is safe because after the commit the

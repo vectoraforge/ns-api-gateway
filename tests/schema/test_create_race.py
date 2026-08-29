@@ -10,12 +10,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth.challenges import ChallengeStore
+from nativespeaker.api.database.challenges import ChallengeStore
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.creation import create_account
+from nativespeaker.api.auth.create_user import create_user
 from nativespeaker.api.auth.exceptions import AuthRejected
-from nativespeaker.api.auth.keys import HmacConfig, HmacKeyring
-from nativespeaker.api.models.identities import IdentityProvider
+from nativespeaker.api.auth.hmac_keyring import HmacConfig, HmacKeyring
+from nativespeaker.api.tables.identities import IdentityProvider
 
 pytestmark = pytest.mark.schema
 
@@ -158,14 +158,14 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=Non
     async with harness.factory() as real_session:
         session = _HookedSession(real_session, after_first_read)
         try:
-            attempt.result = await create_account(session,
-                                                  context=attempt.context,
-                                                  identity=attempt.context.identity,
-                                                  challenge=stored,
-                                                  provider=attempt.provider,
-                                                  provider_uid=attempt.provider_uid,
-                                                  email=None,
-                                                  challenge_store=store)
+            attempt.result = await create_user(session,
+                                               context=attempt.context,
+                                               identity=attempt.context.identity,
+                                               challenge=stored,
+                                               provider=attempt.provider,
+                                               provider_uid=attempt.provider_uid,
+                                               email=None,
+                                               challenge_store=store)
         except AuthRejected as rejection:
             # The route's own except arm (`routers/auth.py::_complete`): a rejection after the claim
             # consumes and commits before the client is answered. Driving the transaction without it
@@ -194,7 +194,7 @@ def barrier_for(harness: _Harness, attempt: _Attempt, mine: asyncio.Event, their
 
 
 class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
-    """Criterion 4. The database arbitrates; nothing in the application does."""
+    """Criterion 4. The crud arbitrates; nothing in the application does."""
 
     @pytest_asyncio.fixture
     async def raced(self, harness):

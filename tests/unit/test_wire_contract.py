@@ -1,7 +1,7 @@
 """The wire contract driven directly: every hand-built key is lowercase, and no value is normalized."""
 import pytest
 
-from nativespeaker.api.auth.wire import BoundedReason, extract_bearer
+from nativespeaker.api.auth.extract_bearer import BoundedReason, extract_bearer
 
 TOKEN = "header.payload.signature"
 

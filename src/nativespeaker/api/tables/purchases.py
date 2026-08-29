@@ -24,7 +24,7 @@ class StorePurchaseToken(SQLModel, table=True):
     __tablename__ = "store_purchase_tokens"
     __table_args__ = {"schema": "core"}
 
-    # The table has no database primary key; these two markers are ORM-level, met by UNIQUE (user_id, provider).
+    # The table has no crud primary key; these two markers are ORM-level, met by UNIQUE (user_id, provider).
     user_id: UUID = Field(foreign_key="core.users.id", primary_key=True)
     provider: PurchaseProvider = Field(sa_type=PurchaseProviderType, primary_key=True)
     # Deliberately not `unique=True`: the table's rule is the composite UNIQUE (provider, identity_value).

@@ -3,7 +3,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from nativespeaker.api.models import Chat
+from nativespeaker.api.tables import Chat
 
 pytestmark = pytest.mark.e2e
 

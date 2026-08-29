@@ -1,4 +1,4 @@
-"""Whether the SQLAlchemy mapper accepts an ORM-level composite key the database does not have, and commits."""
+"""Whether the SQLAlchemy mapper accepts an ORM-level composite key the crud does not have, and commits."""
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.models import PurchaseProvider, StorePurchaseToken, User
+from nativespeaker.api.tables import PurchaseProvider, StorePurchaseToken, User
 
 pytestmark = pytest.mark.schema
 
@@ -41,7 +41,7 @@ _DELETE_USER = text("DELETE FROM core.users WHERE id = :id")
 
 @dataclass(frozen=True)
 class _Harness:
-    """A session factory over the scratch database, plus the engine and the rows to clean up."""
+    """A session factory over the scratch crud, plus the engine and the rows to clean up."""
     factory: async_sessionmaker
     engine: object
     owned_user_ids: list[uuid.UUID]
@@ -49,7 +49,7 @@ class _Harness:
 
 @pytest_asyncio.fixture
 async def orm(_schema_db_uri):
-    """An async engine over the scratch database, disposed per test so no connection outlives its loop."""
+    """An async engine over the scratch crud, disposed per test so no connection outlives its loop."""
     engine = create_async_engine(_schema_db_uri.replace(_ASYNCPG_PREFIX, _SQLALCHEMY_PREFIX, 1))
     factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
     owned: list[uuid.UUID] = []
@@ -137,7 +137,7 @@ class TestTheMapperCommitsAgainstAPkLessTable:
         assert all(row.created_at is not None for row in rows)
 
     async def test_a_committed_token_is_visible_to_a_fresh_session(self, orm):
-        """The control: re-reading through the same session could be the identity map, not the database."""
+        """The control: re-reading through the same session could be the identity map, not the crud."""
         user_id = await _commit_user(orm)
         identity_value = str(uuid.uuid4())
         await _commit_token(orm, user_id=user_id, provider=PurchaseProvider.apple,

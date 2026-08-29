@@ -13,8 +13,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from e2e.conftest import seed_identity
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
 from nativespeaker.api.auth.exceptions import ChallengeConsumed, ChallengeIdentityMismatch
-from nativespeaker.api.models.auth import AuthChallenge, AuthOperation
-from nativespeaker.api.models.identities import IdentityProvider
+from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
+from nativespeaker.api.tables.identities import IdentityProvider
 
 pytestmark = pytest.mark.e2e
 
@@ -388,7 +388,7 @@ class TestTheBindingAgainstRealRows:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestLocateIsByteForByteAgainstPostgres:
-    """Asserted against the database's own comparison, with a fixed handle so the manglings are deterministic."""
+    """Asserted against the crud's own comparison, with a fixed handle so the manglings are deterministic."""
 
     PLANTED = "AbCdEfGhIjKlMnOpQrStUv"
 

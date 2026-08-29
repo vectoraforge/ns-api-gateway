@@ -8,14 +8,14 @@ __all__ = [
     "UserMonthlyUsage",
 ]
 
-from nativespeaker.api.models.api import (
+from nativespeaker.api.schemas.api import (
     ChatRequest,
     ChatResponse,
     ExamplesResponse,
     MessageRequest,
     MessageResponse,
 )
-from nativespeaker.api.models.auth import (
+from nativespeaker.api.tables.auth import (
     AuthChallenge,
     AuthOperation,
     ChallengeRequest,
@@ -23,21 +23,21 @@ from nativespeaker.api.models.auth import (
     CreateUserRequest,
     PrepareResponse,
 )
-from nativespeaker.api.models.chats import Chat, ChatRole, Message
-from nativespeaker.api.models.grants import (
+from nativespeaker.api.tables.chats import Chat, ChatRole, Message
+from nativespeaker.api.tables.grants import (
     AccessGrant,
     AccessGrantSource,
     AccessGrantStatus,
     AccessTier,
     UserMonthlyUsage,
 )
-from nativespeaker.api.models.identities import (
+from nativespeaker.api.tables.identities import (
     ExternalIdentity,
     IdentityProvider,
     IdentityState,
     NativeClaimProvider,
 )
-from nativespeaker.api.models.llm import (
+from nativespeaker.api.schemas.llm import (
     AnalyzeInput,
     AnalyzeResponse,
     FollowUpInput,
@@ -45,8 +45,8 @@ from nativespeaker.api.models.llm import (
     Issue,
     RejectResponse,
 )
-from nativespeaker.api.models.purchase_tokens import (
+from nativespeaker.api.tables.purchases import (
     PurchaseProvider,
     StorePurchaseToken,
 )
-from nativespeaker.api.models.users import User
+from nativespeaker.api.tables.users import User

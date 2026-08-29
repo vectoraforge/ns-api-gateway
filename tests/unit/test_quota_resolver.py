@@ -1,4 +1,4 @@
-"""The resolver's pure policy: the branches a real database cannot produce, and the lock order it cannot show."""
+"""The resolver's pure policy: the branches a real crud cannot produce, and the lock order it cannot show."""
 from datetime import UTC, datetime, timedelta
 from uuid import uuid7
 
@@ -12,7 +12,7 @@ from nativespeaker.api.errors import (
     QuotaExceededError,
     UnknownTierError,
 )
-from nativespeaker.api.models import (
+from nativespeaker.api.tables import (
     AccessGrant,
     AccessGrantSource,
     AccessGrantStatus,

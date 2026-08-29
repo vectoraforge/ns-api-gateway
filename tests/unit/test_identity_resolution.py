@@ -1,4 +1,4 @@
-"""The four-outcome admission matrix as logic: the branches a real database cannot produce."""
+"""The four-outcome admission matrix as logic: the branches a real crud cannot produce."""
 import contextlib
 from uuid import uuid7
 
@@ -10,14 +10,14 @@ from nativespeaker.api.auth.exceptions import (
     IdentityUnresolvable,
     PreAuthIdentityNotAllowed,
 )
-from nativespeaker.api.auth.identity import resolve_identity
+from nativespeaker.api.auth.resolve_identity import resolve_identity
 from nativespeaker.api.errors import (
     ACCOUNT_UNAVAILABLE,
     INTERNAL_ERROR,
     PREAUTH_IDENTITY_NOT_ALLOWED,
 )
-from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
-from nativespeaker.api.models.users import User
+from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
+from nativespeaker.api.tables.users import User
 
 ISSUER = "https://securetoken.google.com/test-project"
 SUBJECT = "subject-under-test"
@@ -213,7 +213,7 @@ class TestOneQueryOneCodePath:
         """Padding and constant-time delays are deliberately absent for this product."""
         import inspect
 
-        from nativespeaker.api.auth import identity as identity_module
+        from nativespeaker.api.auth import resolve_identity as identity_module
         source = inspect.getsource(identity_module)
         assert "sleep" not in source
         assert "perf_counter" not in source

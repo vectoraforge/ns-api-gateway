@@ -13,9 +13,9 @@ from nativespeaker.api.app.dependencies import (
     get_firebase_adapter,
     get_request_context,
 )
-from nativespeaker.api.app.errors import register_exception_handlers
+from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
-from nativespeaker.api.auth.challenges import ChallengeStore
+from nativespeaker.api.database.challenges import ChallengeStore
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.auth.exceptions import (
     AuthRejected,
@@ -25,10 +25,10 @@ from nativespeaker.api.auth.exceptions import (
     UserNotFound,
 )
 from nativespeaker.api.auth.firebase import FIREBASE_LOOKUP_ATTEMPTS, RetryableLookupError
-from nativespeaker.api.auth.keys import HmacKeyring
+from nativespeaker.api.auth.hmac_keyring import HmacKeyring
 from nativespeaker.api.config import HmacConfig
-from nativespeaker.api.models.auth import AuthChallenge, AuthOperation
-from nativespeaker.api.models.identities import IdentityProvider
+from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
+from nativespeaker.api.tables.identities import IdentityProvider
 from nativespeaker.api.routers import auth_router
 
 from .conftest import TEST_ISSUER
@@ -144,7 +144,7 @@ class _StubSession:
 
 
 class _RecordingCreator:
-    """Stands in for `auth/creation.py::create_account` and records the facts handed to it."""
+    """Stands in for `auth/create_user.py::create_account` and records the facts handed to it."""
 
     def __init__(self) -> None:
         self.calls: list[dict] = []

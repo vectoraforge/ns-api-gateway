@@ -8,8 +8,8 @@ from nativespeaker.api.auth.exceptions import (
     IdentityUnresolvable,
     PreAuthIdentityNotAllowed,
 )
-from nativespeaker.api.models.identities import ExternalIdentity, IdentityState
-from nativespeaker.api.models.users import User
+from nativespeaker.api.tables.identities import ExternalIdentity, IdentityState
+from nativespeaker.api.tables.users import User
 
 
 async def resolve_identity(session: AsyncSession, *, issuer: str, subject: str,

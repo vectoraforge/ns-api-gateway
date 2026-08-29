@@ -6,10 +6,10 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth.challenges import ChallengeStore
+from nativespeaker.api.database.challenges import ChallengeStore
 from nativespeaker.api.auth.firebase import FirebaseAdminLookup, build_admin_apps
-from nativespeaker.api.auth.keys import HmacKeyring
-from nativespeaker.api.auth.verification import JWTVerifier
+from nativespeaker.api.auth.hmac_keyring import HmacKeyring
+from nativespeaker.api.auth.jwt_verifier import JWTVerifier
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.errors import assert_registry_total
 from nativespeaker.api.logs import setup_logging

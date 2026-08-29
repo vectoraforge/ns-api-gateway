@@ -1,4 +1,4 @@
-"""The consuming transaction's rejection arms at unit speed; savepoint durability needs a real database."""
+"""The consuming transaction's rejection arms at unit speed; savepoint durability needs a real crud."""
 import ast
 from datetime import UTC, datetime
 from pathlib import Path
@@ -7,9 +7,9 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from nativespeaker.api.auth import creation
+from nativespeaker.api.auth import create_user
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.creation import create_account
+from nativespeaker.api.auth.create_user import create_user
 from nativespeaker.api.auth.exceptions import (
     AccountUnavailable,
     AuthRejected,
@@ -21,9 +21,9 @@ from nativespeaker.api.errors import (
     IDENTITY_ALREADY_LINKED,
     OPERATION_NOT_ALLOWED,
 )
-from nativespeaker.api.models.auth import AuthChallenge, AuthOperation
-from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider, IdentityState
-from nativespeaker.api.models.users import User
+from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
+from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
+from nativespeaker.api.tables.users import User
 
 ISSUER = "https://securetoken.google.com/ns-conflict-test"
 SUBJECT = "conflict-classification-subject"
@@ -181,14 +181,14 @@ async def _create(session, store: _ConsumingStore):
                               preauth_subject_hash=b"\x00" * 32,
                               expires_at=NOW,
                               created_at=NOW)
-    return await create_account(session,
-                                context=context,
-                                identity=context.identity,
-                                challenge=challenge,
-                                provider=IdentityProvider.anonymous,
-                                provider_uid=None,
-                                email=None,
-                                challenge_store=store)
+    return await create_user(session,
+                             context=context,
+                             identity=context.identity,
+                             challenge=challenge,
+                             provider=IdentityProvider.anonymous,
+                             provider_uid=None,
+                             email=None,
+                             challenge_store=store)
 
 
 async def _run(rows: list[object | None]) -> tuple[_NoMutationSession, _ConsumingStore]:
@@ -444,7 +444,7 @@ class TestTheSavepointRollbackArmIsStructurallyPresent:
         handlers = [node for node in ast.walk(tree)
                     if isinstance(node, ast.ExceptHandler)
                     and isinstance(node.type, ast.Name) and node.type.id == "IntegrityError"]
-        assert handlers, "no `except IntegrityError` arm in auth/creation.py"
+        assert handlers, "no `except IntegrityError` arm in auth/create_user.py"
 
         rollbacks = [node for handler in handlers for node in ast.walk(handler)
                      if isinstance(node, ast.Attribute) and node.attr == "rollback"

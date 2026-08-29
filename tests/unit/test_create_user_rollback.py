@@ -6,12 +6,12 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.creation import create_account
+from nativespeaker.api.auth.create_user import create_user
 from nativespeaker.api.auth.exceptions import IdentityAlreadyLinked
-from nativespeaker.api.models.auth import AuthChallenge, AuthOperation
-from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider
-from nativespeaker.api.models.purchase_tokens import StorePurchaseToken
-from nativespeaker.api.models.users import User
+from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
+from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
+from nativespeaker.api.tables.purchases import StorePurchaseToken
+from nativespeaker.api.tables.users import User
 
 ISSUER = "https://securetoken.google.com/ns-rollback-test"
 SUBJECT = "rollback-control-flow-subject"
@@ -114,14 +114,14 @@ async def _create(session, store) -> UUID:
                               preauth_subject_hash=b"\x01" * 32,
                               expires_at=NOW,
                               created_at=NOW)
-    return await create_account(session,
-                                context=context,
-                                identity=context.identity,
-                                challenge=challenge,
-                                provider=IdentityProvider.anonymous,
-                                provider_uid=None,
-                                email=None,
-                                challenge_store=store)
+    return await create_user(session,
+                             context=context,
+                             identity=context.identity,
+                             challenge=challenge,
+                             provider=IdentityProvider.anonymous,
+                             provider_uid=None,
+                             email=None,
+                             challenge_store=store)
 
 
 def _harness(error: BaseException, **kwargs):

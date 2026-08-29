@@ -194,7 +194,7 @@ class TestErrorClassification:
             await policy.ainvoke(operation, on_admitted=CountingCallback())
 
         assert operation.calls == MAX_ATTEMPTS
-        # `__cause__` carries the last failed attempt's original exception (errors.py pins this).
+        # `__cause__` carries the last failed attempt's original exception (error_handlers.py pins this).
         assert isinstance(exc_info.value.__cause__, TRANSIENT)
 
     async def test_permanent_error_raises_after_exactly_one_call(self, policy, spy, sleeps):

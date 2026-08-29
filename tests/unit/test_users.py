@@ -2,10 +2,10 @@
 import ast
 from pathlib import Path
 
-from nativespeaker.api import models
-from nativespeaker.api.models import User
+from nativespeaker.api import tables
+from nativespeaker.api.tables import User
 
-# The same seven names tests/schema/test_inventory.py asserts against the live database.
+# The same seven names tests/schema/test_inventory.py asserts against the live crud.
 EXPECTED_FIELDS = {
     "id", "email", "display_name", "registered_at", "active", "created_at", "updated_at",
 }
@@ -13,7 +13,7 @@ EXPECTED_FIELDS = {
 # Absent by design: the verified pair, the display name and the allowance all live elsewhere now.
 ABSENT_FIELDS = ("jwt_sub", "name", "subscription_plan")
 
-# Symbols that left with models/subscriptions.py and models.users.UsageMonthly.
+# Symbols that left with tables/subscriptions.py and tables.users.UsageMonthly.
 REMOVED_SYMBOLS = frozenset({
     "Subscription", "SubscriptionEvent", "SubscriptionPlan", "SubscriptionPlanType",
     "SubscriptionProvider", "SubscriptionProviderType", "SubscriptionStatus",
@@ -52,7 +52,7 @@ class TestUserModel:
             assert not hasattr(User, field), f"User still exposes {field}"
 
     def test_email_is_nullable(self):
-        """NULL unless a verified address was copied, so NOT NULL would reject rows the database accepts."""
+        """NULL unless a verified address was copied, so NOT NULL would reject rows the crud accepts."""
         assert User(email=None).email is None
         assert User().email is None
 
@@ -83,20 +83,20 @@ class TestSubscriptionModelLayerIsGone:
     """The model layer no longer describes subscription plans or monthly usage."""
 
     def test_barrel_exports_no_removed_symbol(self):
-        assert REMOVED_SYMBOLS.isdisjoint(models.__all__)
+        assert REMOVED_SYMBOLS.isdisjoint(tables.__all__)
         suspect = [
-            name for name in models.__all__
+            name for name in tables.__all__
             if ("Subscription" in name or "Usage" in name) and name not in ALLOWED_USAGE_SYMBOLS
         ]
         assert not suspect, f"barrel exports a removed-layer symbol: {suspect}"
 
     def test_barrel_all_matches_its_namespace(self):
         """`__all__` is written by hand and listed first, so it can drift from what is imported."""
-        for name in models.__all__:
-            assert hasattr(models, name), f"models.__all__ names {name}, which it does not export"
+        for name in tables.__all__:
+            assert hasattr(tables, name), f"tables.__all__ names {name}, which it does not export"
 
     def test_subscriptions_module_does_not_exist(self):
-        assert not (_REPO_ROOT / "src/nativespeaker/api/models/subscriptions.py").exists()
+        assert not (_REPO_ROOT / "src/nativespeaker/api/tables/subscriptions.py").exists()
 
     def test_no_module_imports_a_removed_symbol(self):
         """A stale import is an ImportError at collection time for the whole package, not a latent nuisance."""
@@ -105,7 +105,7 @@ class TestSubscriptionModelLayerIsGone:
                     sorted((_REPO_ROOT / "tests").rglob("*.py")):
             imported = _imported_names(path)
             hits = sorted((imported & REMOVED_SYMBOLS)
-                          | {n for n in imported if n.endswith("models.subscriptions")})
+                          | {n for n in imported if n.endswith("tables.subscriptions")})
             if hits:
                 offenders[str(path.relative_to(_REPO_ROOT))] = hits
         assert not offenders, f"stale model imports: {offenders}"

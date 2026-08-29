@@ -6,13 +6,13 @@ import yaml
 from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from nativespeaker.api.auth.keys import HmacConfig
+from nativespeaker.api.auth.hmac_keyring import HmacConfig
 
 LogLevel = StrEnum("LogLevel", {k: k for k in logging.getLevelNamesMapping()})
 
 
 class BaseConfig(BaseSettings):
-    # `hide_input_in_errors` belongs here, not on the nested models: a nested error renders under the outer config.
+    # `hide_input_in_errors` belongs here, not on the nested tables: a nested error renders under the outer config.
     model_config = SettingsConfigDict(env_nested_delimiter="_",
                                       env_nested_max_split=1,
                                       hide_input_in_errors=True)

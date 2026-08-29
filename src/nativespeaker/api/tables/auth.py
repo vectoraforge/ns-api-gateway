@@ -10,7 +10,7 @@ from pydantic import Field as PydanticField
 from sqlalchemy import DateTime, Enum, LargeBinary
 from sqlmodel import Field, SQLModel
 
-from nativespeaker.api.models.identities import IdentityProvider
+from nativespeaker.api.tables.identities import IdentityProvider
 
 
 class AuthOperation(StrEnum):

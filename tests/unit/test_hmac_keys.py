@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from nativespeaker.api.auth.keys import (
+from nativespeaker.api.auth.hmac_keyring import (
     ACTOR_SUBJECT_PREFIX,
     IDP_ACCOUNT_PREFIX,
     HmacConfig,

@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from nativespeaker.api.app.errors import register_exception_handlers
+from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.exceptions import (
     AccountUnavailable,
     IdentityAlreadyLinked,

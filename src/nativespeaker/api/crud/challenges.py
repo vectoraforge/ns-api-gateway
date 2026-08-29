@@ -10,8 +10,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
 from nativespeaker.api.auth.exceptions import ChallengeConsumed, ChallengeIdentityMismatch
-from nativespeaker.api.auth.keys import HmacKeyring
-from nativespeaker.api.models.auth import AuthChallenge, AuthOperation
+from nativespeaker.api.auth.hmac_keyring import HmacKeyring
+from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 
 # One universal TTL for every operation: no per-operation override, no grace period, no renewal.
 CHALLENGE_TTL_SECONDS = 300
@@ -25,7 +25,7 @@ def new_challenge_id() -> str:
     return base64.urlsafe_b64encode(secrets.token_bytes(CHALLENGE_ID_BYTES)).rstrip(b"=").decode()
 
 
-class ChallengeStore:
+class ChallengesDB:
     """The four operations. No method commits, and the session is a parameter so tests can swap it."""
 
     def __init__(self, keyring: HmacKeyring) -> None:

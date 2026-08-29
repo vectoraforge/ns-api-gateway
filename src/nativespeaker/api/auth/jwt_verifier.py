@@ -17,7 +17,7 @@ from jwt.exceptions import (
     PyJWTError,
 )
 
-from nativespeaker.api.auth.wire import BoundedReason
+from nativespeaker.api.auth.extract_bearer import BoundedReason
 
 #: The negative-cache key an absent, empty, or non-string `kid` is recorded under.
 _ABSENT_KID_SENTINEL = ""

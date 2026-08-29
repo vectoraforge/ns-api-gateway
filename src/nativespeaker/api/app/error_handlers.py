@@ -47,11 +47,6 @@ async def service_error_handler(_: Request, exc: Exception) -> JSONResponse:
 async def auth_rejected_handler(request: Request, exc: Exception) -> JSONResponse:
     """Record one auth rejection, then answer with the class the exception declared."""
     assert isinstance(exc, AuthRejected)
-    # The structured security log is the only record a rejection leaves, and `log_fields()` is the
-    # only channel into this line -- which is how the challenge handle stays out of it.
-    # `route` is the matched route's path template, never the caller's raw path. FastAPI sets
-    # `scope["route"]` when a route matches and Starlette builds this Request from that same scope;
-    # a request that matched nothing has no key, and reading it must not raise here.
     logger.warning(camel_to_snake(type(exc).__name__),
                    route=getattr(request.scope.get("route"), "path", None),
                    **exc.log_fields())

@@ -10,7 +10,7 @@ import pytest
 
 from nativespeaker.api.auth import adapters as adapters_module
 from nativespeaker.api.auth.adapters import FirebaseAdminAdapter, VerifiedProviderIdentity
-from nativespeaker.api.models.identities import IdentityProvider
+from nativespeaker.api.tables.identities import IdentityProvider
 
 SOURCE_PATH = Path(adapters_module.__file__)
 SOURCE = SOURCE_PATH.read_text()
@@ -249,7 +249,7 @@ class TestSharedAdapterRules:
     """The preamble binds the concrete adapter, and the seam is where those rules belong."""
 
     @pytest.mark.parametrize("phrase", [
-        "no provider call while a database lock is held",
+        "no provider call while a crud lock is held",
         "5-10 seconds",
         "never leak provider text to clients",
     ])

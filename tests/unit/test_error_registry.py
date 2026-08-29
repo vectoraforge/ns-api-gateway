@@ -8,7 +8,7 @@ import pytest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import nativespeaker.api.errors
-from nativespeaker.api.app.errors import http_exception_handler, service_error_handler
+from nativespeaker.api.app.error_handlers import http_exception_handler, service_error_handler
 from nativespeaker.api.app.main import app as real_app
 from nativespeaker.api.errors import (
     CHALLENGE_REQUIRED,

@@ -17,7 +17,7 @@ from nativespeaker.api.app.dependencies import (
     get_firebase_adapter,
     get_request_context,
 )
-from nativespeaker.api.app.errors import register_exception_handlers
+from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
 from nativespeaker.api.routers import auth_router
 

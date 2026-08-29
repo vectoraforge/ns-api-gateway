@@ -18,7 +18,7 @@ from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
 
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.exceptions import NotLinked, Unavailable, UserNotFound
-from nativespeaker.api.models.identities import IdentityProvider
+from nativespeaker.api.tables.identities import IdentityProvider
 
 logger = structlog.get_logger()
 

@@ -10,8 +10,8 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from nativespeaker.api.auth.verification import _ABSENT_KID_SENTINEL, JWTVerifier, VerifiedClaims
-from nativespeaker.api.auth.wire import BoundedReason
+from nativespeaker.api.auth.jwt_verifier import _ABSENT_KID_SENTINEL, JWTVerifier, VerifiedClaims
+from nativespeaker.api.auth.extract_bearer import BoundedReason
 from unit.conftest import (
     PRIVATE_KEY_PEM,
     PUBLIC_KEY_PEM,

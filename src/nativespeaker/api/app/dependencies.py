@@ -6,11 +6,11 @@ from fastapi import Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from nativespeaker.api.auth.challenges import ChallengeStore
+from nativespeaker.api.database.challenges import ChallengeStore
 from nativespeaker.api.auth.context import LinkedIdentity, RequestContext
 from nativespeaker.api.auth.exceptions import InvalidExternalJwt, PreAuthIdentityNotAllowed
-from nativespeaker.api.auth.identity import resolve_identity
-from nativespeaker.api.auth.wire import extract_bearer
+from nativespeaker.api.auth.resolve_identity import resolve_identity
+from nativespeaker.api.auth.extract_bearer import extract_bearer
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.errors import AuthenticationError
 from nativespeaker.api.quota import QuotaGate

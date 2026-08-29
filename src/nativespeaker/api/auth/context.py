@@ -5,8 +5,8 @@ from enum import StrEnum
 from typing import Literal
 from uuid import UUID
 
-from nativespeaker.api.models.identities import ExternalIdentity
-from nativespeaker.api.models.users import User
+from nativespeaker.api.tables.identities import ExternalIdentity
+from nativespeaker.api.tables.users import User
 
 
 class IdentityKind(StrEnum):

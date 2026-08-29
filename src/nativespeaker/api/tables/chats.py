@@ -7,7 +7,7 @@ from sqlalchemy import DateTime, Enum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 
-from nativespeaker.api.models.users import User
+from nativespeaker.api.tables.users import User
 
 
 class ChatRole(StrEnum):

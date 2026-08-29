@@ -9,7 +9,7 @@ from nativespeaker.api.auth.firebase import (
     RetryableLookupError,
     lookup_with_retry,
 )
-from nativespeaker.api.models.identities import IdentityProvider
+from nativespeaker.api.tables.identities import IdentityProvider
 
 ISSUER = "https://securetoken.google.com/ns-prod"
 SUBJECT = "firebase-uid-1"

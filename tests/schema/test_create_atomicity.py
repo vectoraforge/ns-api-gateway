@@ -12,13 +12,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth import creation
-from nativespeaker.api.auth.challenges import ChallengeStore
+from nativespeaker.api.auth import create_user
+from nativespeaker.api.database.challenges import ChallengeStore
 from nativespeaker.api.auth.context import PreAuthIdentity, RequestContext
-from nativespeaker.api.auth.creation import create_account
+from nativespeaker.api.auth.create_user import create_user
 from nativespeaker.api.auth.exceptions import AuthRejected, IdentityAlreadyLinked
-from nativespeaker.api.auth.keys import HmacConfig, HmacKeyring
-from nativespeaker.api.models.identities import IdentityProvider
+from nativespeaker.api.auth.hmac_keyring import HmacConfig, HmacKeyring
+from nativespeaker.api.tables.identities import IdentityProvider
 
 pytestmark = pytest.mark.schema
 
@@ -37,7 +37,7 @@ PROVIDER_ACCOUNT_INDEX_NAME = "ix_external_identities_provider_account"
 
 def constraint_names_in_the_source() -> set[str]:
     """Every constraint name the transaction names, read off the code rather than re-declared here."""
-    tree = ast.parse(Path(creation.__file__).read_text())
+    tree = ast.parse(Path(create_user.__file__).read_text())
     return {node.value for node in ast.walk(tree)
             if isinstance(node, ast.Constant) and isinstance(node.value, str)
             and "external_identities" in node.value}
@@ -67,7 +67,7 @@ SELECT i.relname,
 
 @dataclass
 class _Harness:
-    """A committing session factory over the scratch database, plus this test's private issuer."""
+    """A committing session factory over the scratch crud, plus this test's private issuer."""
 
     engine: object
     factory: async_sessionmaker
@@ -213,14 +213,14 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
     async with harness.factory() as real_session:
         session = _RacingSession(real_session, after_first_read)
         try:
-            result = await create_account(session,
-                                          context=ctx,
-                                          identity=ctx.identity,
-                                          challenge=_Challenge(),
-                                          provider=provider,
-                                          provider_uid=provider_uid,
-                                          email=None,
-                                          challenge_store=store)
+            result = await create_user(session,
+                                       context=ctx,
+                                       identity=ctx.identity,
+                                       challenge=_Challenge(),
+                                       provider=provider,
+                                       provider_uid=provider_uid,
+                                       email=None,
+                                       challenge_store=store)
         except AuthRejected as rejection:
             # The route's own except arm (`routers/auth.py::_complete`): a rejection after the claim
             # consumes and commits before the client is answered. That commit surviving the

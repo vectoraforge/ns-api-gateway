@@ -13,7 +13,7 @@ honoured the constraint; `tests/e2e/test_llm_schema.py` is the gate for that.
 from langchain_core.runnables import RunnableLambda
 from langchain_core.utils.function_calling import convert_to_json_schema
 
-from nativespeaker.api.models.llm import ChatModelResponse
+from nativespeaker.api.schemas.llm import ChatModelResponse
 from nativespeaker.api.services.llm import LLMService
 
 DECLARED_KEYS = {"resolved_mode", "response", "issues", "suggestions"}

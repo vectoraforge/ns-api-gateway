@@ -3,7 +3,7 @@ from importlib.metadata import version
 import structlog
 from fastapi import FastAPI
 
-from nativespeaker.api.app.errors import register_exception_handlers
+from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.app.lifespan import lifespan
 from nativespeaker.api.errors import ErrorResponse
 from nativespeaker.api.logs import RequestLoggingMiddleware

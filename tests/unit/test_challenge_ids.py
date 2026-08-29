@@ -12,7 +12,7 @@ from uuid import UUID, uuid7
 
 import pytest
 
-from nativespeaker.api.auth.challenges import (
+from nativespeaker.api.database.challenges import (
     CHALLENGE_ID_BYTES,
     CHALLENGE_TTL_SECONDS,
     ChallengeStore,
@@ -20,10 +20,10 @@ from nativespeaker.api.auth.challenges import (
 )
 from nativespeaker.api.auth.context import LinkedIdentity, PreAuthIdentity
 from nativespeaker.api.auth.exceptions import ChallengeConsumed, ChallengeIdentityMismatch
-from nativespeaker.api.auth.keys import HmacConfig, HmacKeyring
-from nativespeaker.api.models.auth import AuthChallenge, AuthOperation
-from nativespeaker.api.models.identities import ExternalIdentity, IdentityProvider
-from nativespeaker.api.models.users import User
+from nativespeaker.api.auth.hmac_keyring import HmacConfig, HmacKeyring
+from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
+from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
+from nativespeaker.api.tables.users import User
 
 ISSUER = "https://securetoken.google.com/test-project"
 SUBJECT = "Xy7Q1s0K2mNb3fV4"

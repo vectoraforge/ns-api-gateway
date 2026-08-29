@@ -80,14 +80,14 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
         from fastapi import APIRouter, FastAPI
         from fastapi.testclient import TestClient
 
-        from nativespeaker.api.app.errors import register_exception_handlers
+        from nativespeaker.api.app.error_handlers import register_exception_handlers
         from nativespeaker.api.auth.context import LinkedIdentity, RequestContext
-        from nativespeaker.api.models.identities import (
+        from nativespeaker.api.tables.identities import (
             ExternalIdentity,
             IdentityProvider,
             IdentityState,
         )
-        from nativespeaker.api.models.users import User
+        from nativespeaker.api.tables.users import User
         from unit.conftest import TEST_ISSUER, make_test_verifier, make_token
 
         subject = "cache-contract-subject"

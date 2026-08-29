@@ -7,7 +7,7 @@ import pytest
 from sqlmodel import col, select
 from unit.conftest import TEST_ISSUER
 
-from nativespeaker.api.models import AccessGrantStatus, UserMonthlyUsage
+from nativespeaker.api.tables import AccessGrantStatus, UserMonthlyUsage
 
 from .conftest import seed_grant, seed_identity
 

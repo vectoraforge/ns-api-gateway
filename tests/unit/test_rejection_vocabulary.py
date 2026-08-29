@@ -12,7 +12,7 @@ default from becoming a silent 500 nobody notices.
 """
 import pytest
 
-from nativespeaker.api.app.errors import camel_to_snake
+from nativespeaker.api.app.error_handlers import camel_to_snake
 from nativespeaker.api.auth import exceptions as exceptions_module
 from nativespeaker.api.auth.exceptions import (
     AuthRejected,
@@ -78,7 +78,7 @@ def _production_family() -> list[type]:
 def _undeclared(classes: list[type], *, root: type) -> list[str]:
     """Leaves that would answer the base's fail-closed default because nothing below the base declares.
 
-    Reported all at once rather than one per run, the way `errors.py::assert_registry_total` reports
+    Reported all at once rather than one per run, the way `error_handlers.py::assert_registry_total` reports
     registry defects: finding the second defect should not cost a second edit-and-rerun.
     """
     problems: list[str] = []
@@ -152,7 +152,7 @@ class TestTheChallengeArmsAnswerOneThingAndDeclareNothing:
 
     @pytest.mark.parametrize("arm", CHALLENGE_ARMS, ids=lambda c: c.__name__)
     def test_no_arm_declares_an_error_class_of_its_own(self, arm):
-        """Deliberately unlike `AnalysisError`/`TransientLLMError` in `errors.py`, which re-declares."""
+        """Deliberately unlike `AnalysisError`/`TransientLLMError` in `error_handlers.py`, which re-declares."""
         assert "error_class" not in vars(arm)
         assert arm.error_class is ChallengeRejected.error_class
 

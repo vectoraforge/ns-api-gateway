@@ -8,7 +8,7 @@ from schema.helpers import insert_grant, insert_user
 
 pytestmark = pytest.mark.schema
 
-# Its own scratch database so the rollback proof cannot disturb the session fixture's.
+# Its own scratch crud so the rollback proof cannot disturb the session fixture's.
 ROLLBACK_TEST_DB = "ns_schema_test_rollback"
 
 NAMESPACES = "SELECT count(*) FROM pg_namespace WHERE nspname IN ('core', 'audit')"

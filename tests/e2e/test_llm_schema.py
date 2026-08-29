@@ -20,7 +20,7 @@ import os
 import pytest
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
-from nativespeaker.api.models.llm import ChatModelResponse
+from nativespeaker.api.schemas.llm import ChatModelResponse
 from nativespeaker.api.services.llm import LLMService
 
 pytestmark = pytest.mark.e2e

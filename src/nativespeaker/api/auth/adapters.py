@@ -1,5 +1,5 @@
 """The providerData adapter seam: an interface and the one value type a successful read produces, with no
-provider SDK import and no I/O. Its implementation must make no provider call while a database lock is held,
+provider SDK import and no I/O. Its implementation must make no provider call while a crud lock is held,
 must bound each attempt at a fixed 5-10 seconds, and must never leak provider text to clients.
 
 Failure is raised, never returned: the rejections live in `auth/exceptions.py` and this module does not
@@ -7,7 +7,7 @@ name them. A read either produced a verified identity or it did not happen."""
 from dataclasses import dataclass
 from typing import Protocol
 
-from nativespeaker.api.models.identities import IdentityProvider
+from nativespeaker.api.tables.identities import IdentityProvider
 
 
 @dataclass(frozen=True, slots=True)

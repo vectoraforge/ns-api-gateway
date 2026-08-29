@@ -5,7 +5,7 @@ from uuid import UUID
 from sqlmodel import col, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.models import AccessGrant, AccessGrantStatus, AccessTier, UserMonthlyUsage
+from nativespeaker.api.tables import AccessGrant, AccessGrantStatus, AccessTier, UserMonthlyUsage
 
 
 class GrantsDB:

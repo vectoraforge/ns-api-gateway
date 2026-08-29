@@ -14,7 +14,7 @@ from unit.conftest import FakeFirebaseAdapter, make_test_verifier
 from nativespeaker.api.app.main import app
 from nativespeaker.api.auth.firebase import _application_default_credential
 from nativespeaker.api.config import EnvironmentConfig
-from nativespeaker.api.models import (
+from nativespeaker.api.tables import (
     AccessGrant,
     AccessGrantSource,
     AccessGrantStatus,

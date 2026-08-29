@@ -53,7 +53,7 @@ class AccessGrant(SQLModel, table=True):
     tier_id: str = Field(foreign_key="core.access_tiers.id")
     source: AccessGrantSource = Field(sa_type=AccessGrantSourceType)
     status: AccessGrantStatus = Field(sa_type=AccessGrantStatusType, default=AccessGrantStatus.active)
-    # A database CHECK enforces the agreement with `source` in both directions.
+    # A crud CHECK enforces the agreement with `source` in both directions.
     subscription_id: UUID | None = Field(default=None)
     starts_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
     ends_at: datetime | None = Field(sa_type=DateTimeType, default=None)
@@ -68,9 +68,9 @@ class UserMonthlyUsage(SQLModel, table=True):
     __table_args__ = {"schema": "core"}
 
     grant_id: UUID = Field(foreign_key="core.access_grants.id", primary_key=True)
-    # Free text in YYYY-MM; the database enforces no format.
+    # Free text in YYYY-MM; the crud enforces no format.
     monthly_period: str = Field()
     monthly_used: int = Field(default=0)
-    # NOT NULL with no database DEFAULT, unlike every other table: these factories are the only source of a value.
+    # NOT NULL with no crud DEFAULT, unlike every other table: these factories are the only source of a value.
     created_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))

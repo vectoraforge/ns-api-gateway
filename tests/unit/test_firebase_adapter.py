@@ -21,7 +21,7 @@ from nativespeaker.api.auth.firebase import (
     lookup_with_retry,
 )
 from nativespeaker.api.config import JWTConfig
-from nativespeaker.api.models.identities import IdentityProvider
+from nativespeaker.api.tables.identities import IdentityProvider
 
 PROJECT_ID = "ns-test-project"
 ISSUER = f"https://securetoken.google.com/{PROJECT_ID}"

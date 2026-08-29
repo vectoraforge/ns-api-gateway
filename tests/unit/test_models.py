@@ -5,15 +5,15 @@ import pytest
 from pydantic import ValidationError
 
 from nativespeaker.api.errors import AnalysisError, InvalidChatError, ServiceError, UnsupportedLanguageError
-from nativespeaker.api.models import PurchaseProvider, StorePurchaseToken
-from nativespeaker.api.models.api import (
+from nativespeaker.api.tables import PurchaseProvider, StorePurchaseToken
+from nativespeaker.api.schemas.api import (
     ChatRequest,
     ChatResponse,
     ExamplesResponse,
     MessageRequest,
     MessageResponse,
 )
-from nativespeaker.api.models.llm import (
+from nativespeaker.api.schemas.llm import (
     AnalyzeInput,
     AnalyzeResponse,
     FollowUpInput,
@@ -246,7 +246,7 @@ class TestExceptions:
 
 
 class TestPurchaseProviderEnum:
-    """The Python mirror of the pre-existing database enum type, whose names deliberately differ."""
+    """The Python mirror of the pre-existing crud enum type, whose names deliberately differ."""
 
     def test_exactly_two_members_in_migration_order(self):
         assert list(PurchaseProvider) == [PurchaseProvider.apple, PurchaseProvider.google_play]
@@ -260,7 +260,7 @@ class TestStorePurchaseTokenMapping:
 
     def test_the_models_package_imports(self):
         """The mapper configures without raising 'could not assemble any primary key columns'."""
-        from nativespeaker.api import models as models_package
+        from nativespeaker.api import tables as models_package
 
         assert models_package.StorePurchaseToken is StorePurchaseToken
 
@@ -269,7 +269,7 @@ class TestStorePurchaseTokenMapping:
         assert StorePurchaseToken.__table_args__ == {"schema": "core"}
 
     def test_orm_primary_key_is_the_composite_user_id_provider(self):
-        """ORM-level only. The table has no database primary key by design (migration:327-338)."""
+        """ORM-level only. The table has no crud primary key by design (migration:327-338)."""
         columns = StorePurchaseToken.__table__.primary_key.columns
         assert {column.name for column in columns} == {"user_id", "provider"}
 

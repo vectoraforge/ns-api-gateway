@@ -12,9 +12,9 @@ from nativespeaker.api.errors import (
     OutOfScopeError,
     UnsupportedLanguageError,
 )
-from nativespeaker.api.models import Chat, ChatRole, Message
-from nativespeaker.api.models.api import ExamplesResponse
-from nativespeaker.api.models.llm import AnalyzeInput, AnalyzeResponse, FollowUpInput, FollowUpResponse
+from nativespeaker.api.tables import Chat, ChatRole, Message
+from nativespeaker.api.schemas.api import ExamplesResponse
+from nativespeaker.api.schemas.llm import AnalyzeInput, AnalyzeResponse, FollowUpInput, FollowUpResponse
 from nativespeaker.api.quota import QuotaGate
 from nativespeaker.api.services.llm import LLMService
 

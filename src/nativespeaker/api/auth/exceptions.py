@@ -4,7 +4,7 @@ Auth code raises the outcome it discovered and stops there. One handler reads `e
 answers; nothing else in the codebase reads it. The class name is the outcome vocabulary -- the
 handler snake_cases it into the structured log event -- so a rename here renames a log event.
 """
-from nativespeaker.api.auth.wire import BoundedReason
+from nativespeaker.api.auth.extract_bearer import BoundedReason
 from nativespeaker.api.errors import (
     ACCOUNT_UNAVAILABLE,
     AUTH_REQUIRED,
@@ -21,7 +21,7 @@ from nativespeaker.api.errors import (
 # `INTERNAL_ERROR` is the fail-closed control, not a convenience default: a subclass that forgets
 # to declare its own class answers 500, never 200 and never something weaker than it owed.
 class AuthRejected(Exception):
-    """Base for every auth rejection, and deliberately outside the service-error tree in `errors.py`.
+    """Base for every auth rejection, and deliberately outside the service-error tree in `error_handlers.py`.
 
     This family gets its own handler because `service_error_handler` takes `_: Request` and so
     cannot supply the `route` field every rejection's log line is required to carry. That is the
@@ -34,7 +34,7 @@ class AuthRejected(Exception):
         """The extra fields this rejection contributes to its one log line, and the only such channel.
 
         Every value here is a plain scalar -- `str`, `UUID`, `BoundedReason`, `None` -- and never a
-        SQLModel row. This is conformance, not a new rule: every `__init__` in `errors.py` already
+        SQLModel row. This is conformance, not a new rule: every `__init__` in `error_handlers.py` already
         keeps it. The failure it prevents is concrete. A rollback on the way out of the request
         expires an ORM instance's attributes; the handler's read of one then attempts I/O outside a
         greenlet; the handler itself raises; and the client is answered 500 where a 409 was owed.
@@ -46,7 +46,7 @@ class AuthRejected(Exception):
 # arms, lookup arms, challenge arms. Later plans append inside their own group. No plan reorganises
 # this file, so an arm stays where the plan that wrote it put it.
 
-# --- Admission arms: `auth/identity.py` and the barrier in `app/dependencies.py` ---
+# --- Admission arms: `auth/resolve_identity.py` and the barrier in `app/dependencies.py` ---
 
 
 class InvalidExternalJwt(AuthRejected):
@@ -87,7 +87,7 @@ class IdentityUnresolvable(AuthRejected):
     error_class = INTERNAL_ERROR
 
 
-# --- Creation arms: the consuming transaction in `auth/creation.py` ---
+# --- Creation arms: the consuming transaction in `auth/create_user.py` ---
 
 
 class IdentityAlreadyLinked(AuthRejected):
@@ -128,7 +128,7 @@ class ProviderLookupError(AuthRejected):
 
     They consolidate here rather than beside the seam in `auth/adapters.py` so that the whole family
     keeps one `add_exception_handler` registration and one vocabulary test. Like the rest of the
-    family these are outside the service-error tree in `errors.py`.
+    family these are outside the service-error tree in `error_handlers.py`.
 
     Per D-12 there is no `result` attribute: the internal outcome enum these arms used to carry has
     no consumer once the class itself is the vocabulary.
@@ -184,7 +184,7 @@ class ChallengeRejected(AuthRejected):
     challenge-enumeration oracle, so there is exactly *one* answer for all five, in one place: a
     future edit cannot make one of them answer differently without overriding this on purpose,
     where a reviewer sees it. That is a deliberate divergence from the
-    `AnalysisError`/`TransientLLMError` pair in `errors.py`, which re-declares `error_class` on the
+    `AnalysisError`/`TransientLLMError` pair in `error_handlers.py`, which re-declares `error_class` on the
     child; here the re-declaration is the failure mode, not the convention.
 
     None of the five carries an `__init__` or a field, so none can be handed the secret challenge
