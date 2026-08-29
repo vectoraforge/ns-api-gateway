@@ -4,15 +4,15 @@ milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 37.4
 current_phase_name: Machine-generated code refactoring, part 3
-status: planning
+status: executing
 stopped_at: Phase 37.4 context gathered
-last_updated: "2026-08-29T08:53:15.814Z"
+last_updated: "2026-08-29T09:54:32.501Z"
 last_activity: 2026-08-27
 last_activity_desc: Phase 37.3 execution complete — all four plans landed
 progress:
   total_phases: 17
   completed_phases: 7
-  total_plans: 50
+  total_plans: 57
   completed_plans: 50
   percent: 41
 state_head: 3727793a3b57611f7329caf578de7532e2541a8a
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 Phase: 37.4 — Machine-generated code refactoring, part 3
 Plan: Not started
-Status: Ready to plan
+Status: Ready to execute
 Last activity: 2026-08-27 — Phase 37.3 complete; Phase 37.4 inserted ahead of Phase 38
 
 <!-- The plan counter was corrected from 3 to 8 on 2026-08-23, and from 9 to 10 on 2026-08-24, for
