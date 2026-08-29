@@ -397,7 +397,7 @@ Plans:
 **Goal:** [Urgent work - to be planned] *(written by plan `37.4-07` under D-16 — the goal amendment is phase work, not planning work)*
 **Requirements**: TBD *(written by plan `37.4-07` under D-16; the requirement set is decisions D-01…D-16 and addenda A-00…A-10 in `37.4-CONTEXT.md`, with five conflicts recorded as FLAGGED in `REQUIREMENTS.md`)*
 **Depends on:** Phase 37.3
-**Plans:** 2/7 plans executed
+**Plans:** 3/7 plans executed
 
 Plans:
 
@@ -411,7 +411,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2)*
 
-- [ ] 37.4-03-PLAN.md — The identity collapse: one `Identity`, two accessors, `RequestContext` retired, `auth/identity.py` folded
+- [x] 37.4-03-PLAN.md — The identity collapse: one `Identity`, two accessors, `RequestContext` retired, `auth/identity.py` folded
 
 **Wave 4** *(two parallel plans, blocked on Wave 3, no shared file)*
 
