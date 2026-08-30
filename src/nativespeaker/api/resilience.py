@@ -70,14 +70,6 @@ class CircuitBreaker:
                 self._opened_at = time.monotonic()
 
 
-class _AdmissionRejected(Exception):
-    """Carries a callback's rejection out through the retry loop so it is not read as a provider failure."""
-
-    def __init__(self, cause: BaseException):
-        super().__init__(str(cause))
-        self.cause = cause
-
-
 class LLMExecutionGate:
     def __init__(self, max_concurrency: int, max_queue: int, retry_after_seconds: int):
         self._semaphore = asyncio.Semaphore(max_concurrency)
@@ -101,16 +93,10 @@ class LLMExecutionGate:
             except asyncio.QueueFull:
                 pass
 
-    async def run(self, operation: Callable[[], Awaitable],
-                  on_admitted: Callable[[], Awaitable] | None = None):
-        """Run `operation` under the gate, calling `on_admitted` only once the slot and the semaphore are held."""
+    async def run(self, operation: Callable[[], Awaitable]):
+        """Run `operation` holding both an in-flight slot and the concurrency semaphore."""
         async with self._inflight_slot():
             async with self._semaphore:
-                if on_admitted is not None:
-                    try:
-                        await on_admitted()
-                    except Exception as exc:
-                        raise _AdmissionRejected(exc) from exc
                 return await operation()
 
 
@@ -137,18 +123,8 @@ class ResiliencePolicy:
         self._retry_backoff_base = config.retry_backoff_base_seconds
         self._retry_backoff_max = config.retry_backoff_max_seconds
 
-    async def ainvoke(self, operation: Callable[[], Awaitable],
-                      on_admitted: Callable[[], Awaitable] | None = None) -> Any:
-        """Run `operation` under the breaker, the gate and the retry policy. `on_admitted` fires at most once."""
-        admitted = False
-
-        async def admit_once() -> None:
-            nonlocal admitted
-            if admitted or on_admitted is None:
-                return
-            # Set before awaiting: a callback that raises has still had its one chance.
-            admitted = True
-            await on_admitted()
+    async def ainvoke(self, operation: Callable[[], Awaitable]) -> Any:
+        """Run `operation` under the breaker, the gate and the retry policy."""
 
         async def attempt() -> Any:
             """One attempt, already triaged: everything `_should_retry` reads is decided here."""
@@ -158,13 +134,11 @@ class ResiliencePolicy:
                 async def timed_op():
                     return await asyncio.wait_for(operation(), timeout=self._timeout_seconds)
 
-                result = await self._gate.run(timed_op, on_admitted=admit_once)
-            except _AdmissionRejected:
-                # Not a provider failure: no `record_failure`, no retry, and it stays wrapped until outside the policy.
-                raise
+                result = await self._gate.run(timed_op)
             except (QueueFullError, CircuitOpenError):
                 raise
             except Exception as e:
+                # Everything reaching here came out of `operation` itself, so every classification is the provider's.
                 await self._circuit_breaker.record_failure()
                 if _is_transient_error(e):
                     raise TransientLLMError(str(e)) from e
@@ -183,8 +157,4 @@ class ResiliencePolicy:
             # Exhaustion re-raises the last attempt's `TransientLLMError`, so no `RetryError` reaches a caller.
             reraise=True,
         )
-        try:
-            return await retrying(attempt)
-        except _AdmissionRejected as rejected:
-            # Re-raised as the callback raised it, so a quota 429 stays a 429 instead of becoming a 503.
-            raise rejected.cause from None
+        return await retrying(attempt)

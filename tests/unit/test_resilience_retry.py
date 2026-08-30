@@ -8,7 +8,6 @@ from nativespeaker.api.errors import (
     CircuitOpenError,
     PermanentLLMError,
     QueueFullError,
-    QuotaExceededError,
     TransientLLMError,
 )
 from nativespeaker.api.resilience import ResiliencePolicy
@@ -57,19 +56,6 @@ class ScriptedOperation:
         return step
 
 
-class CountingCallback:
-    """An `on_admitted` that counts every fire, and optionally raises a caller-owned error."""
-
-    def __init__(self, raises: BaseException | None = None):
-        self.calls = 0
-        self.raises = raises
-
-    async def __call__(self) -> None:
-        self.calls += 1
-        if self.raises is not None:
-            raise self.raises
-
-
 class BreakerSpy:
     """Counts by wrapping the real breaker's methods, so its own failure counting and opening keep happening."""
 
@@ -116,82 +102,13 @@ def spy(policy) -> BreakerSpy:
     return BreakerSpy(policy)
 
 
-class TestOnAdmittedFiresAtMostOnce:
-    """Each case is one request, and it debits a paid allowance, so a second fire is a second charge."""
-
-    async def test_fires_once_when_the_first_attempt_succeeds(self, policy, spy, sleeps):
-        operation = ScriptedOperation("ok")
-        admit = CountingCallback()
-
-        assert await policy.ainvoke(operation, on_admitted=admit) == "ok"
-
-        assert admit.calls == 1
-        assert operation.calls == 1
-        assert (spy.successes, spy.failures) == (1, 0)
-        assert sleeps == []
-
-    async def test_fires_once_when_a_transient_first_attempt_is_retried(self, policy, spy, sleeps):
-        operation = ScriptedOperation(TRANSIENT, "ok")
-        admit = CountingCallback()
-
-        assert await policy.ainvoke(operation, on_admitted=admit) == "ok"
-
-        # Two provider calls, one charge. Firing again on the retry is the double-spend.
-        assert admit.calls == 1
-        assert operation.calls == 2
-        assert (spy.successes, spy.failures) == (1, 1)
-
-    async def test_fires_once_when_every_attempt_fails(self, policy, spy, sleeps):
-        operation = ScriptedOperation(TRANSIENT)
-        admit = CountingCallback()
-
-        with pytest.raises(TransientLLMError):
-            await policy.ainvoke(operation, on_admitted=admit)
-
-        assert admit.calls == 1
-        assert operation.calls == MAX_ATTEMPTS
-
-    async def test_a_raising_callback_is_spent_and_never_re_invoked(self, policy, spy, sleeps):
-        rejection = QuotaExceededError("allowance used up")
-        admit = CountingCallback(raises=rejection)
-        operation = ScriptedOperation("ok")
-
-        with pytest.raises(QuotaExceededError) as exc_info:
-            await policy.ainvoke(operation, on_admitted=admit)
-
-        # `_AdmissionRejected` is unwrapped, so a 429 stays a 429 instead of becoming a 503.
-        assert exc_info.value is rejection
-        assert exc_info.value.__cause__ is None  # `raise ... from None`
-        assert admit.calls == 1
-
-    async def test_a_raising_callback_stops_the_provider_call_and_the_breaker(self, policy, spy, sleeps):
-        admit = CountingCallback(raises=QuotaExceededError("allowance used up"))
-        operation = ScriptedOperation("ok")
-
-        with pytest.raises(QuotaExceededError):
-            await policy.ainvoke(operation, on_admitted=admit)
-
-        # A caller's own rejection must not count, or one exhausted allowance would open the breaker for all.
-        assert (spy.failures, spy.successes) == (0, 0)
-        assert operation.calls == 0
-        assert sleeps == []
-
-    async def test_no_callback_is_a_supported_call(self, policy, spy, sleeps):
-        operation = ScriptedOperation("ok")
-
-        assert await policy.ainvoke(operation) == "ok"
-
-        assert operation.calls == 1
-        assert spy.successes == 1
-
-
 class TestErrorClassification:
 
     async def test_transient_error_exhausts_the_budget_then_raises_transient(self, policy, spy, sleeps):
         operation = ScriptedOperation(TRANSIENT)
 
         with pytest.raises(TransientLLMError) as exc_info:
-            await policy.ainvoke(operation, on_admitted=CountingCallback())
+            await policy.ainvoke(operation)
 
         assert operation.calls == MAX_ATTEMPTS
         # `__cause__` carries the last failed attempt's original exception (error_handlers.py pins this).
@@ -201,7 +118,7 @@ class TestErrorClassification:
         operation = ScriptedOperation(PERMANENT)
 
         with pytest.raises(PermanentLLMError) as exc_info:
-            await policy.ainvoke(operation, on_admitted=CountingCallback())
+            await policy.ainvoke(operation)
 
         # One call, not three: a predicate ignoring `_is_transient_error` triples every permanent failure.
         assert operation.calls == 1
@@ -212,7 +129,7 @@ class TestErrorClassification:
         operation = ScriptedOperation(TRANSIENT, PERMANENT, "ok")
 
         with pytest.raises(PermanentLLMError):
-            await policy.ainvoke(operation, on_admitted=CountingCallback())
+            await policy.ainvoke(operation)
 
         assert operation.calls == 2
         assert spy.failures == 2
@@ -229,7 +146,7 @@ class TestErrorClassification:
             await asyncio.get_running_loop().create_future()  # never resolves
 
         with pytest.raises(TransientLLMError):
-            await policy.ainvoke(slow_operation, on_admitted=CountingCallback())
+            await policy.ainvoke(slow_operation)
 
         assert calls == MAX_ATTEMPTS
 
@@ -246,13 +163,11 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
                 break
 
         operation = ScriptedOperation("ok")
-        admit = CountingCallback()
 
         with pytest.raises(QueueFullError):
-            await policy.ainvoke(operation, on_admitted=admit)
+            await policy.ainvoke(operation)
 
         assert operation.calls == 0
-        assert admit.calls == 0  # refused before admission, so nothing is charged
         assert (spy.failures, spy.successes) == (0, 0)
         assert sleeps == []
 
@@ -261,21 +176,29 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         policy = ResiliencePolicy(make_config(circuit_breaker_failure_threshold=1))
         spy = BreakerSpy(policy)
         with pytest.raises(PermanentLLMError):
-            await policy.ainvoke(ScriptedOperation(PERMANENT), on_admitted=CountingCallback())
+            await policy.ainvoke(ScriptedOperation(PERMANENT))
         assert spy.failures == 1
 
         operation = ScriptedOperation("ok")
-        admit = CountingCallback()
 
         with pytest.raises(CircuitOpenError):
-            await policy.ainvoke(operation, on_admitted=admit)
+            await policy.ainvoke(operation)
 
         assert operation.calls == 0
-        assert admit.calls == 0
         assert spy.failures == 1  # unchanged: `before_call` refusing is not a new failure
 
 
 class TestFailureAccounting:
+
+    async def test_a_successful_call_returns_the_operations_value(self, policy, spy, sleeps):
+        """Carried over from the deleted admission suite, which was the only place the return value was pinned."""
+        operation = ScriptedOperation("ok")
+
+        assert await policy.ainvoke(operation) == "ok"
+
+        assert operation.calls == 1
+        assert (spy.successes, spy.failures) == (1, 0)
+        assert sleeps == []
 
     @pytest.mark.parametrize("steps,expected_failures,expected_successes", [
         (("ok",), 0, 1),
@@ -289,7 +212,7 @@ class TestFailureAccounting:
         operation = ScriptedOperation(*steps)
 
         try:
-            await policy.ainvoke(operation, on_admitted=CountingCallback())
+            await policy.ainvoke(operation)
         except (TransientLLMError, PermanentLLMError):
             pass
 
@@ -303,7 +226,7 @@ class TestBackoffSchedule:
 
     async def test_schedule_matches_the_exponential_formula(self, policy, spy, sleeps):
         with pytest.raises(TransientLLMError):
-            await policy.ainvoke(ScriptedOperation(TRANSIENT), on_admitted=CountingCallback())
+            await policy.ainvoke(ScriptedOperation(TRANSIENT))
 
         # One sleep between attempts, none after the last: MAX_ATTEMPTS - 1 in total.
         assert sleeps == [expected_backoff(attempt) for attempt in range(1, MAX_ATTEMPTS)]
@@ -314,7 +237,7 @@ class TestBackoffSchedule:
         BreakerSpy(policy)
 
         with pytest.raises(TransientLLMError):
-            await policy.ainvoke(ScriptedOperation(TRANSIENT), on_admitted=CountingCallback())
+            await policy.ainvoke(ScriptedOperation(TRANSIENT))
 
         assert sleeps == [expected_backoff(attempt) for attempt in range(1, 5)]
         # 0.5, 1.0, then the 2.0 and 4.0 the formula wants, both clamped to BACKOFF_MAX.
@@ -326,7 +249,7 @@ class TestBackoffSchedule:
         operation = ScriptedOperation(TRANSIENT)
 
         with pytest.raises(TransientLLMError):
-            await policy.ainvoke(operation, on_admitted=CountingCallback())
+            await policy.ainvoke(operation)
 
         assert operation.calls == 1
         assert sleeps == []
@@ -339,7 +262,7 @@ class TestBackoffSchedule:
         operation = ScriptedOperation(TRANSIENT)
 
         with pytest.raises(TransientLLMError):
-            await policy.ainvoke(operation, on_admitted=CountingCallback())
+            await policy.ainvoke(operation)
 
         assert operation.calls == MAX_ATTEMPTS
         assert sleeps == []

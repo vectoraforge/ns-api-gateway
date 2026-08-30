@@ -1,4 +1,3 @@
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 from langchain.chat_models import init_chat_model
@@ -33,10 +32,7 @@ class LLMService:
         # off a mapping and re-validates into the mode-specific model, and both still hold.
         return prompt_template | constrained | RunnableLambda(lambda answer: answer.model_dump())
 
-    async def ainvoke(self, history: list[HumanMessage | AIMessage], content: str, lang: str,
-                      on_admitted: Callable[[], Awaitable] | None = None) -> dict:
-        """Invoke the chain under the resilience policy. `on_admitted` fires once the call is certain."""
+    async def ainvoke(self, history: list[HumanMessage | AIMessage], content: str, lang: str) -> dict:
+        """Invoke the chain under the resilience policy."""
         return await self.policy.ainvoke(
-            lambda: self.chain.ainvoke({"history": history, "content": content, "lang": lang}),
-            on_admitted=on_admitted,
-        )
+            lambda: self.chain.ainvoke({"history": history, "content": content, "lang": lang}))
