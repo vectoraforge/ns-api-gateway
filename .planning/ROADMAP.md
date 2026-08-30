@@ -397,7 +397,7 @@ Plans:
 **Goal:** [Urgent work - to be planned] *(written by plan `37.4-07` under D-16 — the goal amendment is phase work, not planning work)*
 **Requirements**: TBD *(written by plan `37.4-07` under D-16; the requirement set is decisions D-01…D-16 and addenda A-00…A-10 in `37.4-CONTEXT.md`, with five conflicts recorded as FLAGGED in `REQUIREMENTS.md`)*
 **Depends on:** Phase 37.3
-**Plans:** 5/7 plans executed
+**Plans:** 6/7 plans executed
 
 Plans:
 
@@ -420,7 +420,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4)*
 
-- [ ] 37.4-06-PLAN.md — The create-user conflict collapse and the `HTTPBearer` substitution
+- [x] 37.4-06-PLAN.md — The create-user conflict collapse and the `HTTPBearer` substitution
 
 **Wave 6** *(blocked on Wave 5)*
 
