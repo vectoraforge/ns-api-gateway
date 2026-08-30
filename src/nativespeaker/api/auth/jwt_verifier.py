@@ -3,6 +3,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol
 
 import jwt
@@ -17,7 +18,15 @@ from jwt.exceptions import (
     PyJWTError,
 )
 
-from nativespeaker.api.auth.extract_bearer import BoundedReason
+
+class BoundedReason(StrEnum):
+    """Rejection reasons for logs and metric labels; all of them surface the same copy to the client."""
+    bad_signature = "bad_signature"
+    issuer_mismatch = "issuer_mismatch"
+    audience_mismatch = "audience_mismatch"
+    expired = "expired"
+    empty_subject = "empty_subject"
+
 
 #: The negative-cache key an absent, empty, or non-string `kid` is recorded under.
 _ABSENT_KID_SENTINEL = ""

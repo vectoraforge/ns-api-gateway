@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from nativespeaker.api.auth.extract_bearer import BoundedReason
+from nativespeaker.api.auth.jwt_verifier import BoundedReason
 
 # The codes the body may carry. A typo is a ValidationError at construction, not a runtime 500.
 ErrorCode = Literal["auth_required",

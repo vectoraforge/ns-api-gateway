@@ -2,11 +2,11 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 
 from fastapi import Depends, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from nativespeaker.api.auth.extract_bearer import extract_bearer
 from nativespeaker.api.auth.identity import Identity, resolve_identity
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
@@ -28,15 +28,21 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession]:
             raise
 
 
+# `auto_error=False`: our own code raises, so the rejection keeps its class, code and log event.
+_bearer = HTTPBearer(auto_error=False)
+
+
 # Declared in `APIRouter(dependencies=[...])` on every non-public router, so auth is default-on.
-async def get_identity(request: Request) -> Identity:
+async def get_identity(request: Request,
+                       credential: HTTPAuthorizationCredentials | None = Depends(_bearer),
+                       ) -> Identity:
     """Accept the token and resolve the identity it names -- once per request."""
-    token, reason = extract_bearer(request.headers.raw)
-    if token is None:
-        raise InvalidExternalJwt(bounded_reason=reason)
+    if credential is None:
+        raise InvalidExternalJwt(bounded_reason=None)
 
     # `verify` is synchronous and can block on a JWKS fetch, so it never runs on the event loop.
-    claims, reason = await run_in_threadpool(request.app.state.jwt_verifier.verify, token)
+    claims, reason = await run_in_threadpool(request.app.state.jwt_verifier.verify,
+                                             credential.credentials)
     if claims is None:
         raise InvalidExternalJwt(bounded_reason=reason)
 

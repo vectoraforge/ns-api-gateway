@@ -12,7 +12,7 @@ import pytest
 
 from nativespeaker.api import errors as errors_module
 from nativespeaker.api.app.error_handlers import camel_to_snake
-from nativespeaker.api.auth.extract_bearer import BoundedReason
+from nativespeaker.api.auth.jwt_verifier import BoundedReason
 from nativespeaker.api.errors import (
     AppError,
     ChallengeConsumed,

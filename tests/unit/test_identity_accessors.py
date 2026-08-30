@@ -190,7 +190,8 @@ class TestTheWireArmsRaiseAndTheHandlerRecordsThemOnce:
         return entries
 
     @pytest.mark.parametrize("headers,expected_reason", [
-        ({}, "missing_token"),
+        # No member describes this any more: the extractor owned the three the framework replaced.
+        ({}, None),
         # Well-formed on the wire -- one Bearer credential -- so this is the verifier's own reason.
         ({"Authorization": "Bearer not.a.jwt"}, "bad_signature"),
     ], ids=["absent-token", "failed-verify"])
@@ -209,7 +210,7 @@ class TestTheWireArmsRaiseAndTheHandlerRecordsThemOnce:
 
     def test_the_bounded_reason_is_logged_as_a_plain_string(self, warnings):
         """`BoundedReason` is a StrEnum; the field's type in the log pipeline does not change."""
-        _client().get("/linked")
+        _client().get("/linked", headers={"Authorization": "Bearer not.a.jwt"})
         _event, fields = warnings[0]
         assert type(fields["bounded_reason"]) is str
 
@@ -253,7 +254,7 @@ class TestAccessorsCannotProvision:
 
     def test_only_the_resolving_accessor_takes_the_request(self):
         """The narrowing accessor takes the resolved identity, which is what puts it on the cache."""
-        assert list(inspect.signature(get_identity).parameters) == ["request"]
+        assert list(inspect.signature(get_identity).parameters) == ["request", "credential"]
         params = list(inspect.signature(get_linked_identity).parameters)
         assert params == ["identity"], f"get_linked_identity takes {params}, not the identity"
 
