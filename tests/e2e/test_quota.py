@@ -317,7 +317,7 @@ class TestAMalformedRequestIsNotCharged:
 
     async def test_a_malformed_chat_id_in_the_path_is_not_charged(
             self, async_client, quota_grant, _db_transaction):
-        """The quota dependency must declare chat_id as well as body, or it commits before the path is rejected."""
+        """Request validation runs before the handler, so a malformed path id never reaches the charge."""
         grant, _ = quota_grant
         before = [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)]
 
@@ -328,8 +328,8 @@ class TestAMalformedRequestIsNotCharged:
 
 
 @pytest.mark.asyncio(loop_scope="module")
-class TestNoPreProviderRejectionIsCharged:
-    """A request refused before any provider call costs nothing: five rejections across both gated routes."""
+class TestNoServiceRejectionIsCharged:
+    """A request the service refuses on its own terms costs nothing: four rejections across both gated routes."""
 
     async def test_an_unsupported_language_is_not_charged(
             self, async_client, quota_grant, _db_transaction):
@@ -394,21 +394,27 @@ class TestNoPreProviderRejectionIsCharged:
         finally:
             _app_lifespan.state.config.messages_limit = original
 
-    async def test_an_open_circuit_is_not_charged(
-            self, async_client, quota_grant, _db_transaction, _app_lifespan):
-        """The breaker is opened directly, since the subject is what an open circuit costs, not the threshold."""
-        grant, _ = quota_grant
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestAnOpenCircuitStillAnswers503:
+    """The answer is unchanged by D-07; only who pays for it is, and that is billable now.
+
+    The counter is deliberately not read here. `_db_transaction` nests every session as a savepoint on
+    one connection, so `get_db`'s rollback discards the charge's committed savepoint -- an artifact of
+    this harness, not of production, where the charge holds its own connection. The credit itself is
+    asserted in `tests/unit/test_quota_seam.py::TestTheAcceptedRegression`.
+    """
+
+    async def test_an_open_circuit_answers_service_unavailable(
+            self, async_client, quota_grant, _app_lifespan):
+        """The breaker is opened directly, since the subject is what an open circuit answers, not the threshold."""
         breaker = _app_lifespan.state.llm_service.policy._circuit_breaker
         breaker._opened_at = time.monotonic()
         try:
-            before = [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)]
-
             response = await async_client.post("/chats", json=PHRASE)
 
             assert response.status_code == 503
             assert response.json()["code"] == "service_unavailable"
-            assert [row.monthly_used
-                    for row in await usage_rows(_db_transaction, grant.id)] == before
         finally:
             breaker._opened_at = None
             breaker._failure_count = 0
@@ -463,7 +469,7 @@ class _StubResult:
 
 
 class _StubSession:
-    """Stands in for the short session `require_quota` opens, and keeps what it was asked to run."""
+    """Stands in for the short session `charge_quota` opens, and keeps what it was asked to run."""
 
     def __init__(self):
         self.statements = []
