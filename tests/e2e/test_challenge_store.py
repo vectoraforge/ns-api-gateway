@@ -1,7 +1,6 @@
 """The challenge store against the real core.auth_challenges table: claim, expiry and lifecycle."""
 import asyncio
 from datetime import UTC, datetime, timedelta
-from uuid import UUID, uuid7
 
 import pytest
 import pytest_asyncio
@@ -27,13 +26,8 @@ CONTENDERS = 8
 
 @pytest.fixture
 def store(_app_lifespan):
-    """The store the real lifespan constructed, so the wiring and the lifespan's keyring are exercised."""
+    """The store the real lifespan constructed, so the wiring is exercised."""
     return _app_lifespan.state.challenge_store
-
-
-@pytest.fixture
-def keyring(_app_lifespan):
-    return _app_lifespan.state.hmac_keyring
 
 
 def preauth(subject: str = SUBJECT, *, issuer: str = ISSUER) -> Identity:
@@ -75,23 +69,22 @@ async def _contended_challenge(_app_lifespan, store):
     factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
     now = datetime.now(UTC)
     handle, _ = await issue(factory, store, now=now)
-    attempts = [uuid7() for _ in range(CONTENDERS)]
 
     # Each contender checks a connection out and then waits, so the barrier releases eight live transactions.
     barrier = asyncio.Barrier(CONTENDERS)
 
-    async def contend(attempt_id: UUID) -> bool:
+    async def contend() -> bool:
         async with factory() as session:
             await session.connection()
             await barrier.wait()
-            won = await store.claim(session, challenge_id=handle, claim_attempt_id=attempt_id,
-                                    now=now)
+            won = await store.claim(session, challenge_id=handle, now=now)
             await session.commit()
             return won
 
-    results = await asyncio.gather(*(contend(a) for a in attempts), return_exceptions=True)
+    results = await asyncio.gather(*(contend() for _ in range(CONTENDERS)),
+                                   return_exceptions=True)
     try:
-        yield handle, attempts, results, factory
+        yield handle, results, factory
     finally:
         # These rows are committed, so they outlive the per-test transaction and must be removed here.
         async with factory() as session:
@@ -107,28 +100,21 @@ class TestTheClaimSerializesConcurrentAttempts:
 
     async def test_no_contender_raised(self, _contended_challenge):
         """Asserted first: an exception is neither a win nor a loss, so the counts below would pass anyway."""
-        _, _, results, _ = _contended_challenge
+        _, results, _ = _contended_challenge
         assert [r for r in results if isinstance(r, BaseException)] == []
 
     async def test_exactly_one_of_eight_concurrent_claims_wins(self, _contended_challenge):
-        _, _, results, _ = _contended_challenge
+        _, results, _ = _contended_challenge
         assert results.count(True) == 1
         assert results.count(False) == CONTENDERS - 1
 
-    async def test_the_stored_claim_attempt_id_is_the_winners(self, _contended_challenge):
-        """The count alone would pass for a claim that stamped whichever attempt id wrote last."""
-        handle, attempts, results, factory = _contended_challenge
-        winner = attempts[results.index(True)]
-        row = await read(factory, handle)
-        assert row.claim_attempt_id == winner
-
     async def test_the_losers_mutated_nothing(self, _contended_challenge):
         """Seven transactions committed after matching zero rows: one row, claimed once, consumed by nobody."""
-        handle, _, _, factory = _contended_challenge
+        handle, _, factory = _contended_challenge
         row = await read(factory, handle)
         assert row.claimed_at is not None
         assert row.consumed_at is None
-        assert row.preauth_subject_hash is not None
+        assert row.preauth_subject is not None
         async with factory() as session:
             same = await session.scalar(select(func.count()).select_from(AuthChallenge)
                                         .where(col(AuthChallenge.challenge_id) == handle))
@@ -145,7 +131,7 @@ class TestTheClaimIsTheOnlyPlaceExpiryIsEvaluated:
         assert expires_at < datetime.now(UTC), "the fixture must actually be expired"
 
         async with _db_transaction() as session:
-            assert await store.claim(session, challenge_id=handle, claim_attempt_id=uuid7(),
+            assert await store.claim(session, challenge_id=handle,
                                      now=datetime.now(UTC)) is False
             await session.commit()
 
@@ -153,13 +139,11 @@ class TestTheClaimIsTheOnlyPlaceExpiryIsEvaluated:
         long_ago = datetime.now(UTC) - timedelta(hours=1)
         handle, _ = await issue(_db_transaction, store, now=long_ago)
         async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle, claim_attempt_id=uuid7(),
-                              now=datetime.now(UTC))
+            await store.claim(session, challenge_id=handle, now=datetime.now(UTC))
             await session.commit()
 
         row = await read(_db_transaction, handle)
         assert row.claimed_at is None
-        assert row.claim_attempt_id is None
 
     async def test_locate_still_returns_an_expired_row(self, store, _db_transaction):
         """A lookup filtering on expires_at would make an expired handle indistinguishable from an unknown one."""
@@ -175,7 +159,7 @@ class TestTheClaimIsTheOnlyPlaceExpiryIsEvaluated:
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
         async with _db_transaction() as session:
-            claimed = await store.claim(session, challenge_id=handle, claim_attempt_id=uuid7(),
+            claimed = await store.claim(session, challenge_id=handle,
                                         now=now + timedelta(seconds=299))
             await session.commit()
         assert claimed is True
@@ -189,125 +173,90 @@ class TestTheLifecycleRunsOneDirectionOnly:
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
         async with _db_transaction() as session:
-            assert await store.claim(session, challenge_id=handle, claim_attempt_id=uuid7(),
-                                     now=now) is True
-            assert await store.claim(session, challenge_id=handle, claim_attempt_id=uuid7(),
-                                     now=now) is False
+            assert await store.claim(session, challenge_id=handle, now=now) is True
+            assert await store.claim(session, challenge_id=handle, now=now) is False
             await session.commit()
 
-    async def test_a_second_claim_does_not_change_the_stored_attempt_id(self, store,
+    async def test_a_second_claim_does_not_change_the_stored_claim_time(self, store,
                                                                         _db_transaction):
+        """The loser matched no row, so the winner's claimed_at is what a later read still sees."""
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
-        winner, loser = uuid7(), uuid7()
         async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle, claim_attempt_id=winner, now=now)
-            await store.claim(session, challenge_id=handle, claim_attempt_id=loser, now=now)
+            await store.claim(session, challenge_id=handle, now=now)
+            await store.claim(session, challenge_id=handle, now=now + timedelta(seconds=60))
             await session.commit()
 
         row = await read(_db_transaction, handle)
-        assert row.claim_attempt_id == winner
+        assert row.claimed_at == now
 
     async def test_consume_before_any_claim_returns_false(self, store, _db_transaction):
         """Consumption requires a claim. Skipping the claim would skip the serialization point."""
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
         async with _db_transaction() as session:
-            assert await store.consume(session, challenge_id=handle, claim_attempt_id=uuid7(),
-                                       now=now) is False
+            assert await store.consume(session, challenge_id=handle, now=now) is False
             await session.commit()
 
         assert (await read(_db_transaction, handle)).consumed_at is None
 
-    async def test_an_unclaimed_row_is_not_consumable_by_a_null_attempt_id(self, store,
-                                                                           _db_transaction):
-        """A None attempt id renders as IS NULL and would match every issued row but for claimed_at IS NOT NULL."""
+    async def test_a_consume_without_a_claim_changes_nothing(self, store, _db_transaction):
+        """A rejected consume must not half-apply: neither column moves."""
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
         async with _db_transaction() as session:
-            assert await store.consume(session, challenge_id=handle, claim_attempt_id=None,
-                                       now=now) is False
+            await store.consume(session, challenge_id=handle, now=now)
             await session.commit()
 
         row = await read(_db_transaction, handle)
         assert row.consumed_at is None
-        assert row.preauth_subject_hash is not None
+        assert row.preauth_subject is not None
 
     async def test_consume_under_the_winning_attempt_sets_consumed_at(self, store,
                                                                       _db_transaction):
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
-        attempt = uuid7()
         async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle, claim_attempt_id=attempt, now=now)
-            assert await store.consume(session, challenge_id=handle, claim_attempt_id=attempt,
-                                       now=now) is True
+            await store.claim(session, challenge_id=handle, now=now)
+            assert await store.consume(session, challenge_id=handle, now=now) is True
             await session.commit()
 
         assert (await read(_db_transaction, handle)).consumed_at is not None
 
-    async def test_consume_clears_the_preauth_hash_on_a_preauth_bound_row(self, store,
-                                                                          _db_transaction):
+    async def test_consume_clears_the_preauth_subject_on_a_preauth_bound_row(self, store,
+                                                                             _db_transaction):
         """Both column changes land in one UPDATE; the binding CHECK would reject a two-statement consume."""
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
-        assert (await read(_db_transaction, handle)).preauth_subject_hash is not None
+        assert (await read(_db_transaction, handle)).preauth_subject is not None
 
-        attempt = uuid7()
         async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle, claim_attempt_id=attempt, now=now)
-            await store.consume(session, challenge_id=handle, claim_attempt_id=attempt, now=now)
+            await store.claim(session, challenge_id=handle, now=now)
+            await store.consume(session, challenge_id=handle, now=now)
             await session.commit()
 
         row = await read(_db_transaction, handle)
-        assert row.preauth_subject_hash is None
+        assert row.preauth_subject is None
         assert row.preauth_issuer == ISSUER, "the plaintext issuer is not cleared (ruling 9.3)"
 
-    async def test_consume_under_a_losing_attempt_id_returns_false(self, store, _db_transaction):
+    async def test_a_second_consume_of_a_consumed_row_returns_false(self, store, _db_transaction):
+        """The WHERE keys on consumed_at IS NULL alone now, so a replay still matches no row."""
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
         async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle, claim_attempt_id=uuid7(), now=now)
-            assert await store.consume(session, challenge_id=handle, claim_attempt_id=uuid7(),
-                                       now=now) is False
-            await session.commit()
-
-    async def test_a_losing_consume_changes_nothing(self, store, _db_transaction):
-        """A rejected consume must not half-apply: neither column moves."""
-        now = datetime.now(UTC)
-        handle, _ = await issue(_db_transaction, store, now=now)
-        async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle, claim_attempt_id=uuid7(), now=now)
-            await store.consume(session, challenge_id=handle, claim_attempt_id=uuid7(), now=now)
-            await session.commit()
-
-        row = await read(_db_transaction, handle)
-        assert row.consumed_at is None
-        assert row.preauth_subject_hash is not None
-
-    async def test_a_second_consume_under_the_winning_attempt_id_returns_false(self, store,
-                                                                               _db_transaction):
-        now = datetime.now(UTC)
-        handle, _ = await issue(_db_transaction, store, now=now)
-        attempt = uuid7()
-        async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle, claim_attempt_id=attempt, now=now)
-            assert await store.consume(session, challenge_id=handle, claim_attempt_id=attempt,
-                                       now=now) is True
-            assert await store.consume(session, challenge_id=handle, claim_attempt_id=attempt,
-                                       now=now) is False
+            await store.claim(session, challenge_id=handle, now=now)
+            assert await store.consume(session, challenge_id=handle, now=now) is True
+            assert await store.consume(session, challenge_id=handle, now=now) is False
             await session.commit()
 
     async def test_a_consumed_row_is_never_returned_to_issued(self, store, _db_transaction):
         """No reclaim, no reissue, no reuse: the claim's claimed_at IS NULL makes that structural."""
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
-        attempt = uuid7()
         async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle, claim_attempt_id=attempt, now=now)
-            await store.consume(session, challenge_id=handle, claim_attempt_id=attempt, now=now)
-            assert await store.claim(session, challenge_id=handle, claim_attempt_id=uuid7(),
-                                     now=now) is False
+            await store.claim(session, challenge_id=handle, now=now)
+            await store.consume(session, challenge_id=handle, now=now)
+            assert await store.claim(session, challenge_id=handle, now=now) is False
             await session.commit()
 
 
@@ -361,24 +310,22 @@ class TestTheBindingAgainstRealRows:
         assert row.claimed_at is None
         assert row.consumed_at is None
 
-    async def test_a_preauth_row_read_back_matches_the_shared_derivation(self, store, keyring,
-                                                                         _db_transaction):
-        """The stored bytes survive the BYTEA round trip and still satisfy the shared keyring."""
+    async def test_a_preauth_row_read_back_carries_the_subject_it_was_issued_for(self, store,
+                                                                                   _db_transaction):
+        """The subject survives the TEXT round trip unaltered, which is what the comparison depends on."""
         handle, _ = await issue(_db_transaction, store)
         row = await read(_db_transaction, handle)
-        assert row.preauth_subject_hash == keyring.actor_subject_hash(ISSUER, SUBJECT)
-        assert keyring.actor_subject_matches(row.preauth_subject_hash, ISSUER, SUBJECT)
+        assert row.preauth_subject == SUBJECT
         assert store.verify_binding(row, preauth()) is row
 
     async def test_a_consumed_preauth_row_takes_the_already_used_rejection(self, store,
                                                                            _db_transaction):
-        """Consume clears the hash, so the row read back rejects challenge_consumed, not an identity mismatch."""
+        """Consume clears the subject, so the row read back rejects challenge_consumed, not a mismatch."""
         now = datetime.now(UTC)
         handle, _ = await issue(_db_transaction, store, now=now)
-        attempt = uuid7()
         async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle, claim_attempt_id=attempt, now=now)
-            await store.consume(session, challenge_id=handle, claim_attempt_id=attempt, now=now)
+            await store.claim(session, challenge_id=handle, now=now)
+            await store.consume(session, challenge_id=handle, now=now)
             await session.commit()
 
         row = await read(_db_transaction, handle)
@@ -398,7 +345,7 @@ class TestLocateIsByteForByteAgainstPostgres:
             session.add(AuthChallenge(challenge_id=self.PLANTED,
                                       operation=AuthOperation.claim_anonymous_grant,
                                       preauth_issuer=ISSUER,
-                                      preauth_subject_hash=bytes(range(32)),
+                                      preauth_subject=SUBJECT,
                                       expires_at=now + timedelta(seconds=300),
                                       created_at=now))
             await session.commit()

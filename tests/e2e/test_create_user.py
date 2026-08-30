@@ -143,7 +143,7 @@ class TestTheAnonymousHappyPath:
                 select(AuthChallenge)
                 .where(col(AuthChallenge.challenge_id) == handle))).one()
         assert challenge.consumed_at is not None
-        assert challenge.preauth_subject_hash is None
+        assert challenge.preauth_subject is None
 
         await _assert_step_10s_global_invariants(_db_transaction)
 
@@ -348,7 +348,7 @@ class TestCompletionRejectionsOnTheWire:
                 .where(col(AuthChallenge.challenge_id) == handle))).one()
         # Every rejection at or after the Admin lookup consumes the challenge.
         assert challenge.consumed_at is not None
-        assert challenge.preauth_subject_hash is None
+        assert challenge.preauth_subject is None
 
         await _assert_step_10s_global_invariants(_db_transaction)
 
@@ -484,7 +484,7 @@ class TestTheRegisteredFlow:
 
         challenge = await _challenge_for(_db_transaction, handle)
         assert challenge.consumed_at is not None
-        assert challenge.preauth_subject_hash is None
+        assert challenge.preauth_subject is None
 
         await _assert_step_10s_global_invariants(_db_transaction)
 
@@ -567,7 +567,7 @@ class TestTheProviderAccountReservation:
         challenge = await _challenge_for(_db_transaction, handle)
         # A rejection at or after the provider read consumes, so a retry needs a freshly issued challenge.
         assert challenge.consumed_at is not None
-        assert challenge.preauth_subject_hash is None
+        assert challenge.preauth_subject is None
 
         await _assert_step_10s_global_invariants(_db_transaction)
 
@@ -624,7 +624,7 @@ class TestTheRealAnonymousCompletion:
 
         challenge = await _challenge_for(_db_transaction, handle)
         assert challenge.consumed_at is not None
-        assert challenge.preauth_subject_hash is None
+        assert challenge.preauth_subject is None
 
         await _assert_step_10s_global_invariants(_db_transaction)
 
