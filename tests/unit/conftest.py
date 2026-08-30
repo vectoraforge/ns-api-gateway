@@ -1,6 +1,7 @@
 import time
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid7
+from uuid import UUID, uuid7
 
 import jwt as pyjwt
 import pytest
@@ -21,6 +22,7 @@ from nativespeaker.api.auth.jwt_verifier import VerificationResult, bounded_reas
 from nativespeaker.api.crud import ChatsDB
 from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router
 from nativespeaker.api.services import ChatService
+from nativespeaker.api.services import chats as chats_service
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.users import User
 
@@ -123,18 +125,33 @@ def mock_chats_db():
     return db
 
 
+EVALUATED_AT = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+
+
 @pytest.fixture
-def service(mock_chats_db):
+def charge_calls(monkeypatch) -> list[UUID]:
+    """Records the user each charge would bill, in place of resolving one: the resolver has its own suite."""
+    calls: list[UUID] = []
+
+    async def recording_charge(session_factory, *, user_id: UUID, evaluated_at: datetime) -> None:
+        calls.append(user_id)
+
+    monkeypatch.setattr(chats_service, "charge_quota", recording_charge)
+    return calls
+
+
+@pytest.fixture
+def service(mock_chats_db, charge_calls):
     llm_service = AsyncMock()
-    # An explicit stub gate, not an omitted argument: ChatService requires one, so a wiring slip cannot serve free.
-    quota_gate = AsyncMock()
+    # Explicit arguments, not omitted ones: ChatService requires both, so a wiring slip cannot serve free.
     svc = ChatService(db=MagicMock(),
                       llm_service=llm_service,
                       examples={"en": ["Example 1", "Example 2"],
                                 "es": ["Ejemplo 1"]},
                       messages_limit=50,
                       chats_limit=50,
-                      quota_gate=quota_gate)
+                      session_factory=MagicMock(),
+                      evaluated_at=EVALUATED_AT)
     svc.chats_db = mock_chats_db
     return svc
 
@@ -152,7 +169,7 @@ def client(mock_chats_db, service):
     app.dependency_overrides[get_db] = lambda: MagicMock()
     app.dependency_overrides[get_chat_service] = lambda: service
     app.dependency_overrides[get_linked_identity] = lambda: TEST_IDENTITY
-    # No quota override is needed: the charge travels inside the ChatService replaced above, whose gate is a stub.
+    # No quota override is needed: the charge is called by the ChatService replaced above, and `charge_calls` stubs it.
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client
