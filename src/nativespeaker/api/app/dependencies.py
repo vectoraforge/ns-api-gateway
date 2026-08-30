@@ -2,6 +2,7 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 
 from fastapi import Depends, Request
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -9,8 +10,7 @@ from nativespeaker.api.auth.extract_bearer import extract_bearer
 from nativespeaker.api.auth.identity import Identity, resolve_identity
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
-from nativespeaker.api.errors import AuthenticationError, InvalidExternalJwt, PreAuthIdentityNotAllowed
-from nativespeaker.api.quota import QuotaGate
+from nativespeaker.api.errors import InvalidExternalJwt, PreAuthIdentityNotAllowed
 from nativespeaker.api.services import ChatService
 
 
@@ -56,18 +56,25 @@ async def get_linked_identity(identity: Identity = Depends(get_identity)) -> Ide
     return identity
 
 
-# Defined below the accessors because its `Depends()` default is evaluated at definition time.
+def get_session_factory(request: Request) -> async_sessionmaker:
+    """The one factory the lifespan built. Taken by a caller that needs its own short session, not `get_db`'s."""
+    return request.app.state.session_factory
+
+
+# Defined below the dependencies it declares, because its `Depends()` defaults are evaluated at definition time.
 def get_chat_service(request: Request,
                      db: AsyncSession = Depends(get_db),
                      config: AppConfig = Depends(get_config),
-                     identity: Identity = Depends(get_identity)) -> ChatService:
-    # Declared, not fetched, so it shares the one identity this request already resolved.
+                     session_factory: async_sessionmaker = Depends(get_session_factory)) -> ChatService:
     return ChatService(db=db,
                        llm_service=request.app.state.llm_service,
                        examples=config.examples,
                        chats_limit=config.chats_limit,
                        messages_limit=config.messages_limit,
-                       quota_gate=get_quota_gate(request, identity))
+                       # The factory, not `db`: the charge commits in its own session while `db` stays open.
+                       session_factory=session_factory,
+                       # One instant for this request; nothing downstream reads the clock again.
+                       evaluated_at=datetime.now(UTC))
 
 
 # These two accessors exist so a challenge-bearing route can stay Depends()-only and never take Request itself.
@@ -80,17 +87,3 @@ def get_firebase_adapter(request: Request):
     """The provider seam the lifespan built, deliberately unannotated."""
     # The concrete class implements the Protocol's one reachable method asynchronously, not synchronously.
     return request.app.state.firebase_adapter
-
-
-# Consumption travels as QuotaGate, which ChatService calls at the resilience layer's admission callback.
-def get_quota_gate(request: Request, identity: Identity) -> QuotaGate:
-    """Build the charge seam; QuotaGate takes the session factory, so no transaction spans the provider call."""
-    # A route-level charge would bill callers for requests the service then refuses.
-    if identity.user is None:
-        # Unreachable: these routes declare get_linked_identity at router level. Fails closed anyway.
-        raise AuthenticationError("Identity is unlinked on a quota-checked route")
-    return QuotaGate(request.app.state.session_factory,
-                     # One instant for this request; nothing downstream reads the clock again.
-                     evaluated_at=datetime.now(UTC),
-                     # Both arguments die with `QuotaGate` in plan 37.4-04; D-03 keeps no route field.
-                     route=request.scope["route"].path)

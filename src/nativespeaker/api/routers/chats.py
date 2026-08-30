@@ -13,7 +13,7 @@ from nativespeaker.api.services import ChatService
 # Authentication is default-on for every route on this router.
 router = APIRouter(tags=["chats"], dependencies=[Depends(get_linked_identity)])
 
-# Quota travels inside `ChatService`, not a route dependency: a pre-handler charge bills callers for refused requests.
+# `ChatService` charges quota itself, after its own validations: a route-level charge would bill refused requests.
 
 
 @router.get("/chats",
