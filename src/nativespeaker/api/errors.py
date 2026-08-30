@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from nativespeaker.api.auth.extract_bearer import BoundedReason
+from nativespeaker.api.auth.jwt_verifier import BoundedReason
 
 # The codes the body may carry. A typo is a ValidationError at construction, not a runtime 500.
 ErrorCode = Literal["auth_required",
@@ -422,12 +422,6 @@ class IdentityAlreadyLinked(AppError):
     """The pair already has an active identity backed by an active user: reconcile, do not create."""
     status = 409
     code = "identity_already_linked"
-
-
-class ProviderAccountAlreadyLinked(AppError):
-    """The provider account is already reserved, so this attempt may not claim it for a second user."""
-    status = 403
-    code = "operation_not_allowed"
 
 
 # --- Lookup arms: the providerData read in `auth/firebase.py` ---

@@ -22,10 +22,10 @@ from nativespeaker.api.errors import (
     IdentityAlreadyLinked,
     InvalidChatError,
     InvalidCursorError,
+    NotLinked,
     OutOfScopeError,
     PageSizeLimitError,
     PermanentLLMError,
-    ProviderAccountAlreadyLinked,
     QueueFullError,
     TransientLLMError,
     UnsupportedLanguageError,
@@ -60,14 +60,13 @@ CASES = [
 # re-derived with `camel_to_snake`.
 REJECTION_CASES = [
     ("identity_already_linked", IdentityAlreadyLinked(), 409, "identity_already_linked"),
-    ("provider_account_already_linked", ProviderAccountAlreadyLinked(), 403,
-     "operation_not_allowed"),
 ]
 
 # The merged tree's arms, answered by `app_error_handler`. Each route name is the event name again.
 APP_ERROR_CASES = [
     ("historical_identity", HistoricalIdentity(), 403, "account_unavailable"),
     ("blocked_user", BlockedUser(), 403, "account_unavailable"),
+    ("not_linked", NotLinked(stage="provider_classification"), 403, "operation_not_allowed"),
 ]
 
 
@@ -187,7 +186,7 @@ class TestARaisedRejectionBecomesItsClientResponse:
 
     def test_the_two_forbidden_arms_answer_the_same_status_and_body(self, handler_client):
         """`operation_not_allowed` and `account_unavailable` are both 403 and must stay distinct codes."""
-        forbidden = handler_client.get("/reject/provider_account_already_linked")
+        forbidden = handler_client.get("/fail/not_linked")
         unavailable = handler_client.get("/fail/blocked_user")
 
         assert forbidden.status_code == unavailable.status_code == 403

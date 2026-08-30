@@ -1,4 +1,4 @@
-"""Control flow only: a failed insert stops inserting and rolls back; durability is a schema-test claim."""
+"""Control flow only: a failed insert stops inserting and raises; durability is a schema-test claim."""
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -8,7 +8,6 @@ from sqlalchemy.exc import IntegrityError
 from nativespeaker.api.auth.create_user import create_user
 from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.errors import IdentityAlreadyLinked
-from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.purchases import StorePurchaseToken
 from nativespeaker.api.tables.users import User
@@ -21,37 +20,14 @@ NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
 SECOND_FLUSH = 2
 
 
-class _DriverViolation(Exception):
-    def __init__(self, constraint_name: str) -> None:
-        super().__init__("synthetic uniqueness violation")
-        self.constraint_name = constraint_name
-
-
-def integrity_error(constraint_name: str) -> IntegrityError:
-    wrapper = Exception("dialect-level wrapper")
-    wrapper.__cause__ = _DriverViolation(constraint_name)
-    return IntegrityError("INSERT INTO core.external_identities ...", {}, wrapper)
+def integrity_error() -> IntegrityError:
+    return IntegrityError("INSERT INTO core.external_identities ...", {},
+                          Exception("synthetic uniqueness violation"))
 
 
 class _EmptyResult:
     def first(self):
         return None
-
-
-class _RecordingSavepoint:
-    """A savepoint that records which way it was closed, and refuses to be closed both ways."""
-
-    def __init__(self) -> None:
-        self.rolled_back = False
-        self.committed = False
-
-    async def rollback(self) -> None:
-        assert not self.committed, "a released savepoint cannot then be rolled back"
-        self.rolled_back = True
-
-    async def commit(self) -> None:
-        assert not self.rolled_back, "a rolled-back savepoint cannot then be released"
-        self.committed = True
 
 
 class _FlushFailingSession:
@@ -65,14 +41,10 @@ class _FlushFailingSession:
         self.flushes = 0
         self.commits = 0
         self.rollbacks = 0
-        self.savepoint = _RecordingSavepoint()
 
     async def exec(self, statement):
         # The in-transaction re-resolution: no row, so the creation arm runs.
         return _EmptyResult()
-
-    async def begin_nested(self):
-        return self.savepoint
 
     def add(self, instance) -> None:
         self.added.append(instance)
@@ -90,133 +62,93 @@ class _FlushFailingSession:
         self.rollbacks += 1
 
 
-class _ConsumingStore:
-    def __init__(self) -> None:
-        self.consumed: list[str] = []
-
-    async def consume(self, session, *, challenge_id, now) -> bool:
-        self.consumed.append(challenge_id)
-        return True
-
-
 def _identity() -> Identity:
     return Identity(issuer=ISSUER, subject=SUBJECT)
 
 
-async def _create(session, store) -> UUID:
-    challenge = AuthChallenge(challenge_id="rollback-handle",
-                              operation=AuthOperation.create_user,
-                              preauth_issuer=ISSUER,
-                              preauth_subject=SUBJECT,
-                              expires_at=NOW,
-                              created_at=NOW)
+async def _create(session) -> UUID:
     return await create_user(session,
                              identity=_identity(),
                              evaluated_at=NOW,
-                             challenge=challenge,
                              provider=IdentityProvider.anonymous,
                              provider_uid=None,
-                             email=None,
-                             challenge_store=store)
+                             email=None)
 
 
 def _harness(error: BaseException, **kwargs):
-    return _FlushFailingSession(error=error, **kwargs), _ConsumingStore()
+    return _FlushFailingSession(error=error, **kwargs)
 
 
-async def _rejected(session, store, expect=IdentityAlreadyLinked):
+async def _rejected(session, expect=IdentityAlreadyLinked):
     """Drive the conflict arm to the rejection it raises, and hand the rejection back."""
     with pytest.raises(expect) as raised:
-        await _create(session, store)
+        await _create(session)
     return raised.value
 
 
-class TestAllThreeInsertsShareOneSavepoint:
+class TestAllFourRowsAreAddedInOneTransaction:
     """A user row with no identity row is the partial account this forbids."""
 
-    async def test_the_savepoint_opens_before_the_first_insert(self):
-        """Not around the last two, and not per-insert -- an insert outside it could not be undone."""
-        session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
-        await _rejected(session, store)
-
-        assert session.savepoint.rolled_back is True
-        assert session.savepoint.committed is False
-
-    async def test_all_three_row_kinds_were_inside_the_savepoint_that_rolled_back(self):
-        """One savepoint over all four rows: a narrower one would leave tokens for a user that no longer exists."""
-        session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
-        await _rejected(session, store)
+    async def test_all_three_row_kinds_were_pending_when_the_conflict_arrived(self):
+        """One transaction over all four rows: a narrower one would leave tokens for a user that no longer exists."""
+        session = _harness(integrity_error())
+        await _rejected(session)
 
         kinds = [type(instance) for instance in session.added_at_failure]
         assert kinds.count(User) == 1
         assert kinds.count(ExternalIdentity) == 1
         assert kinds.count(StorePurchaseToken) == 2
 
+    async def test_the_conflicting_transaction_is_neither_committed_nor_rolled_back_here(self):
+        """Both boundaries belong to the route, which spends the handle in the same transaction."""
+        session = _harness(integrity_error())
+        await _rejected(session)
+
+        assert (session.commits, session.rollbacks) == (0, 0)
+
 
 class TestAFailedInsertStopsInserting:
     """The function must not carry on after the conflict, and must not report success."""
 
     async def test_no_further_row_is_added_after_the_failure(self):
-        session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
-        await _rejected(session, store)
+        session = _harness(integrity_error())
+        await _rejected(session)
 
         assert session.added == session.added_at_failure
 
     async def test_no_second_attempt_at_the_business_inserts(self):
         """A retry loop here would be a second race entrant under the same claim."""
-        session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
-        await _rejected(session, store)
+        session = _harness(integrity_error())
+        await _rejected(session)
 
         assert session.flushes == SECOND_FLUSH
 
     async def test_the_failure_is_never_swallowed_into_the_success_path(self):
         """There is no success arm left to fall into: the conflict raises, so nothing can return an id."""
-        session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
-        rejection = await _rejected(session, store)
+        session = _harness(integrity_error())
+        rejection = await _rejected(session)
 
         assert isinstance(rejection, IdentityAlreadyLinked)
         assert rejection.status == 409
 
-    async def test_the_rejection_leaves_the_consume_to_the_route(self):
-        """D-04 put the post-claim consume in `_complete`'s except arm; doing it here too spends the handle twice."""
-        session, store = _harness(integrity_error("external_identities_issuer_subject_key"))
-        await _rejected(session, store)
+    async def test_a_failure_on_the_very_first_insert_raises_the_same_rejection(self):
+        """The user row goes in on the first flush; a conflict there earns the same answer as any other."""
+        session = _harness(integrity_error(), fail_on_flush=1)
+        rejection = await _rejected(session)
 
-        assert store.consumed == []
-        assert session.commits == 0
+        assert isinstance(rejection, IdentityAlreadyLinked)
+        assert [type(instance) for instance in session.added_at_failure] == [User]
 
 
-class TestAnUnclassifiableFailureIsNotAbsorbed:
+class TestANonIntegrityFailureIsNotAbsorbed:
     """Fail loudly rather than answering the client something plausible and wrong."""
-
-    async def test_an_unmapped_constraint_propagates_after_the_savepoint_is_rolled_back(self):
-        """The rollback still happens, but no business outcome is invented for a conflict nobody mapped."""
-        error = integrity_error("store_purchase_tokens_provider_identity_value_key")
-        session, store = _harness(error)
-
-        with pytest.raises(IntegrityError) as raised:
-            await _create(session, store)
-
-        assert raised.value is error
-        assert session.savepoint.rolled_back is True
-        assert session.commits == 0
 
     async def test_a_non_integrity_failure_is_not_caught_at_all(self):
         """A connection drop must not be reshaped into a uniqueness conflict."""
         error = RuntimeError("the connection went away mid-flush")
-        session, store = _harness(error)
+        session = _harness(error)
 
         with pytest.raises(RuntimeError):
-            await _create(session, store)
+            await _create(session)
 
         assert session.commits == 0
-
-    async def test_a_failure_on_the_very_first_insert_is_also_inside_the_savepoint(self):
-        """The user row goes in on the first flush; a conflict there must undo just as cleanly."""
-        session, store = _harness(integrity_error("external_identities_user_id_key"),
-                                  fail_on_flush=1)
-        rejection = await _rejected(session, store)
-
-        assert isinstance(rejection, IdentityAlreadyLinked)
-        assert session.savepoint.rolled_back is True
-        assert [type(instance) for instance in session.added_at_failure] == [User]

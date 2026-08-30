@@ -1,14 +1,11 @@
 """No partial account, ever: a failed business insert leaves nothing, while the challenge consumption commits."""
-import ast
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
@@ -25,42 +22,6 @@ _ASYNCPG_PREFIX = "postgres://"
 _SQLALCHEMY_PREFIX = "postgresql+asyncpg://"
 
 NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
-
-# The names the production arm now writes as literals inline. Declared here so the cases below read
-# plainly, and checked against the source itself below, so neither side can be renamed alone.
-RACE_CONSTRAINT_NAMES = ("external_identities_issuer_subject_key",
-                         "external_identities_user_id_key")
-PROVIDER_ACCOUNT_INDEX_NAME = "ix_external_identities_provider_account"
-
-
-def constraint_names_in_the_source() -> set[str]:
-    """Every constraint name the transaction names, read off the code rather than re-declared here."""
-    tree = ast.parse(Path(creation.__file__).read_text())
-    return {node.value for node in ast.walk(tree)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)
-            and "external_identities" in node.value}
-
-# Every UNIQUE *constraint* on the table, with its columns, read from the live catalog.
-_UNIQUE_CONSTRAINTS = """
-SELECT c.conname,
-       (SELECT array_agg(a.attname::text ORDER BY a.attname)
-          FROM unnest(c.conkey) AS k(attnum)
-          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum) AS cols
-  FROM pg_constraint c
- WHERE c.conrelid = 'core.external_identities'::regclass AND c.contype = 'u'
-"""
-
-# The partial unique index, which pg_constraint does not know about at all; asyncpg still reports its name.
-_PARTIAL_UNIQUE_INDEXES = """
-SELECT i.relname,
-       (SELECT array_agg(a.attname::text ORDER BY a.attname)
-          FROM unnest(x.indkey) AS k(attnum)
-          JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = k.attnum) AS cols
-  FROM pg_index x
-  JOIN pg_class i ON i.oid = x.indexrelid
- WHERE x.indrelid = 'core.external_identities'::regclass
-   AND x.indisunique AND x.indpred IS NOT NULL
-"""
 
 
 @dataclass
@@ -102,7 +63,6 @@ async def harness(_schema_db_uri):
                                        {"id": user_id})
         finally:
             await engine.dispose()
-
 
 
 def identity_for(harness: _Harness, subject: str) -> Identity:
@@ -194,12 +154,6 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
     row_id, challenge_id_value = challenge or await commit_claimed_challenge(
         harness, subject=subject)
 
-    class _Challenge:
-        """The two fields the transaction reads, built rather than re-read so the read counter stays meaningful."""
-
-        id = row_id
-        challenge_id = challenge_id_value
-
     store = ChallengesDB()
     async with harness.factory() as real_session:
         session = _RacingSession(real_session, after_first_read)
@@ -207,48 +161,19 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
             result = await create_user(session,
                                        identity=identity,
                                        evaluated_at=NOW,
-                                       challenge=_Challenge(),
                                        provider=provider,
                                        provider_uid=provider_uid,
-                                       email=None,
-                                       challenge_store=store)
+                                       email=None)
         except AppError as rejection:
             # The route's own except arm (`routers/auth.py::_complete`): a rejection after the claim
-            # consumes and commits before the client is answered. That commit surviving the
-            # savepoint rollback is the property this file exists to measure, so the driver has to
-            # perform it here rather than leaving half the choreography out.
-            await store.consume(session,
-                                challenge_id=challenge_id_value,
-                                now=NOW)
-            await session.commit()
+            # rolls the business inserts back, then consumes and commits before the client is
+            # answered. That the consume survives the rollback is the property this file measures,
+            # so the driver has to perform it here rather than leaving half the choreography out.
+            await session.rollback()
             result = rejection
+        await store.consume(session, challenge_id=challenge_id_value, now=NOW)
+        await session.commit()
     return result, row_id, challenge_id_value
-
-
-class TestTheConstraintNamesInTheCodeAreTheOnesPostgresReports:
-    """The discrimination keys are literals in the source and the names are generated, so a rename breaks here."""
-
-    def test_the_source_names_exactly_the_three_constraints_this_file_declares(self):
-        """The helper and its two constants were deleted, so the literals in the arm are the declaration."""
-        assert constraint_names_in_the_source() == {*RACE_CONSTRAINT_NAMES,
-                                                    PROVIDER_ACCOUNT_INDEX_NAME}
-
-    async def test_the_two_race_constraints_are_named_as_the_module_declares(self, harness):
-        async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
-            rows = (await conn.execute(text(_UNIQUE_CONSTRAINTS))).all()
-        by_columns = {frozenset(cols): name for name, cols in rows}
-
-        assert by_columns[frozenset({"issuer", "subject"})] == \
-            "external_identities_issuer_subject_key"
-        assert by_columns[frozenset({"user_id"})] == "external_identities_user_id_key"
-        assert set(by_columns.values()) == set(RACE_CONSTRAINT_NAMES)
-
-    async def test_the_provider_account_reservation_is_the_index_the_module_declares(self, harness):
-        async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
-            rows = (await conn.execute(text(_PARTIAL_UNIQUE_INDEXES))).all()
-
-        assert [(name, sorted(cols)) for name, cols in rows] == \
-            [(PROVIDER_ACCOUNT_INDEX_NAME, ["issuer", "provider", "provider_uid"])]
 
 
 class TestAConflictOnTheIdentityInsertLeavesNoPartialAccount:
@@ -346,16 +271,15 @@ class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
         identities_before = await scalar(harness, "SELECT count(*) FROM core.external_identities")
         monkeypatch.setattr(creation, "uuid4", lambda: minted)
 
-        with pytest.raises(IntegrityError) as raised:
-            await run_creation(harness, subject=subject, provider=IdentityProvider.anonymous,
-                               provider_uid=None)
-        return {"error": raised.value, "users_before": users_before,
+        result, _, _ = await run_creation(harness, subject=subject,
+                                          provider=IdentityProvider.anonymous, provider_uid=None)
+        return {"error": result, "users_before": users_before,
                 "identities_before": identities_before, "subject": subject}
 
-    async def test_an_unmapped_conflict_is_not_dressed_up_as_a_business_outcome(self,
-                                                                               token_collision):
-        """No member of the rejection family describes an attribution collision, so raising one would lie."""
-        assert isinstance(token_collision["error"], IntegrityError)
+    async def test_a_conflict_on_a_rule_nobody_anticipated_reads_as_already_linked(
+            self, token_collision):
+        """D-06 gives up the 500 tripwire knowingly: an attribution collision now answers a benign 409."""
+        assert isinstance(token_collision["error"], IdentityAlreadyLinked)
 
     async def test_no_users_row_survives_a_third_insert_failure(self, harness, token_collision):
         assert await scalar(harness, "SELECT count(*) FROM core.users") == \

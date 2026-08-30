@@ -179,14 +179,11 @@ async def test_the_harness_detects_a_starved_loop(verifier, transport):
     assert ticks <= 2, f"the harness cannot register a starved loop: it counted {ticks} ticks"
 
 
-async def test_a_duplicate_authorization_never_reaches_the_jwks_transport(probe_app, transport):
-    """The wire contract still precedes verification under the offload."""
-    token = make_token("u", headers={"kid": "unrecognised-2"})
+async def test_a_credential_less_request_never_reaches_the_jwks_transport(probe_app, transport):
+    """The wire arm still precedes verification under the offload."""
     before = len(transport)
 
-    status, body, _started, _finished = await _get_probe(
-        probe_app,
-        [("Authorization", f"Bearer {token}"), ("Authorization", f"Bearer {token}")])
+    status, body, _started, _finished = await _get_probe(probe_app, [])
 
     assert status == 401
     assert body == {"code": "auth_required"}

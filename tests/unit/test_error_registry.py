@@ -323,7 +323,7 @@ class TestPhase37Classes:
         assert (cls.status, cls.code) == (409, "identity_already_linked")
 
     def test_operation_not_allowed_is_declared_at_403(self):
-        cls = nativespeaker.api.errors.ProviderAccountAlreadyLinked
+        cls = nativespeaker.api.errors.NotLinked
         assert (cls.status, cls.code) == (403, "operation_not_allowed")
 
     def test_both_codes_are_declared_in_the_error_code_literal(self):
