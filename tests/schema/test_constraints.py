@@ -24,7 +24,7 @@ FK_GRANT_SUBSCRIPTION_ENTITLED = "access_grants_active_subscription_grant_subscr
 FK_GRANT_SUBSCRIPTION_OWNER = "access_grants_active_subscription_grant_subscription_id_ac_fkey"
 
 ISSUER = "https://securetoken.google.com/native-speaker-test"
-_ACTOR_SUBJECT_HASH = bytes(range(32))
+_PREAUTH_SUBJECT = "Xy7Q1s0K2mNb3fV4"
 _IDP_ACCOUNT_HASH = bytes(range(32, 64))
 
 # A deferred constraint is checked only at COMMIT, and its failure aborts the transaction behind asyncpg's back.
@@ -66,8 +66,8 @@ _INSERT_STORE_PURCHASE = (
 _INSERT_CHALLENGE = (
     "INSERT INTO core.auth_challenges "
     "(id, challenge_id, operation, bound_external_identity_id, preauth_issuer, "
-    "preauth_subject_hash, expires_at, claimed_at, claim_attempt_id, consumed_at, created_at) "
-    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)"
+    "preauth_subject, expires_at, claimed_at, consumed_at, created_at) "
+    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)"
 )
 
 
@@ -162,9 +162,8 @@ async def _insert_challenge(
     operation: str = "create_user",
     bound_external_identity_id: uuid.UUID | None = None,
     preauth_issuer: str | None = ISSUER,
-    preauth_subject_hash: bytes | None = _ACTOR_SUBJECT_HASH,
+    preauth_subject: str | None = _PREAUTH_SUBJECT,
     claimed_at: datetime | None = None,
-    claim_attempt_id: uuid.UUID | None = None,
     consumed_at: datetime | None = None,
 ) -> uuid.UUID:
     """Insert one core.auth_challenges row and return its id."""
@@ -176,10 +175,9 @@ async def _insert_challenge(
         operation,
         bound_external_identity_id,
         preauth_issuer,
-        preauth_subject_hash,
+        preauth_subject,
         datetime.now(UTC) + timedelta(seconds=300),
         claimed_at,
-        claim_attempt_id,
         consumed_at,
     )
     return challenge_row_id
@@ -596,11 +594,19 @@ class TestAuthChallengeConstraints:
             "SELECT count(*) FROM core.auth_challenges WHERE id = $1", challenge_row_id
         ) == 1
 
-    async def test_challenge_claimed_without_attempt_id_rejected(self, conn):
-        """The lifecycle CHECK -- a claimed row must carry its server-generated claim_attempt_id."""
+    async def test_challenge_consumed_without_a_claim_rejected(self, conn):
+        """The lifecycle CHECK -- a consumed row must have been claimed first."""
         async with _rejects(conn, asyncpg.CheckViolationError):
-            # Setting claimed_at while leaving claim_attempt_id NULL is the point of this test.
-            await _insert_challenge(conn, claimed_at=datetime.now(UTC), claim_attempt_id=None)
+            # Setting consumed_at while leaving claimed_at NULL is the point of this test.
+            await _insert_challenge(conn, claimed_at=None, consumed_at=datetime.now(UTC))
+
+    async def test_challenge_claimed_but_not_yet_consumed_accepted(self, conn):
+        """The other half of the lifecycle CHECK: the claimed-and-unconsumed state is the normal one."""
+        challenge_row_id = await _insert_challenge(conn, claimed_at=datetime.now(UTC),
+                                                   consumed_at=None)
+        assert await conn.fetchval(
+            "SELECT count(*) FROM core.auth_challenges WHERE id = $1", challenge_row_id
+        ) == 1
 
     async def test_challenge_with_both_binding_forms_rejected(self, conn):
         """The binding CHECK -- exactly one of the identity binding or the preauth pair, never both."""
@@ -622,7 +628,6 @@ class TestAuthChallengeConstraints:
             conn,
             operation="upgrade_anonymous_to_registered",
             claimed_at=now,
-            claim_attempt_id=uuid.uuid4(),
             consumed_at=now,
         )
         assert await conn.fetchval(

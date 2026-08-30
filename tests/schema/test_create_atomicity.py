@@ -14,7 +14,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth import create_user as creation
 from nativespeaker.api.auth.create_user import create_user
-from nativespeaker.api.auth.hmac_keyring import HmacConfig, HmacKeyring
 from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError, IdentityAlreadyLinked
@@ -26,7 +25,6 @@ _ASYNCPG_PREFIX = "postgres://"
 _SQLALCHEMY_PREFIX = "postgresql+asyncpg://"
 
 NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
-KEY_MATERIAL = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="  # 32 bytes, base64 -- test-only
 
 # The names the production arm now writes as literals inline. Declared here so the cases below read
 # plainly, and checked against the source itself below, so neither side can be renamed alone.
@@ -106,10 +104,6 @@ async def harness(_schema_db_uri):
             await engine.dispose()
 
 
-def keyring() -> HmacKeyring:
-    return HmacKeyring(HmacConfig(active_version=1, keys={1: KEY_MATERIAL}))
-
-
 
 def identity_for(harness: _Harness, subject: str) -> Identity:
     """The unlinked identity the create-user route resolves for this subject."""
@@ -142,21 +136,21 @@ async def commit_identity(harness: _Harness, *, user_id: uuid.UUID, subject: str
              "provider": provider, "provider_uid": provider_uid, "now": NOW})
 
 
-async def commit_claimed_challenge(harness: _Harness, *, subject: str,
-                                   attempt_id: uuid.UUID) -> tuple[uuid.UUID, str]:
-    """Commit one challenge already claimed under attempt_id, which is the state the consuming transaction sees."""
+async def commit_claimed_challenge(harness: _Harness, *,
+                                   subject: str) -> tuple[uuid.UUID, str]:
+    """Commit one already-claimed challenge, which is the state the consuming transaction sees."""
     row_id = uuid.uuid4()
     challenge_id = f"handle-{uuid.uuid4().hex[:16]}"
     async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
         await conn.execute(
             text("INSERT INTO core.auth_challenges "
-                 "(id, challenge_id, operation, preauth_issuer, preauth_subject_hash, "
-                 " expires_at, claimed_at, claim_attempt_id, created_at) "
-                 "VALUES (:id, :challenge_id, 'create_user', :issuer, :hash, "
-                 "        :expires_at, :now, :attempt_id, :now)"),
+                 "(id, challenge_id, operation, preauth_issuer, preauth_subject, "
+                 " expires_at, claimed_at, created_at) "
+                 "VALUES (:id, :challenge_id, 'create_user', :issuer, :subject, "
+                 "        :expires_at, :now, :now)"),
             {"id": row_id, "challenge_id": challenge_id, "issuer": harness.issuer,
-             "hash": keyring().actor_subject_hash(harness.issuer, subject),
-             "expires_at": NOW + timedelta(seconds=300), "now": NOW, "attempt_id": attempt_id})
+             "subject": subject,
+             "expires_at": NOW + timedelta(seconds=300), "now": NOW})
     return row_id, challenge_id
 
 
@@ -194,13 +188,11 @@ class _RacingSession:
 async def run_creation(harness: _Harness, *, subject: str, provider: IdentityProvider,
                        provider_uid: str | None, after_first_read=None,
                        identity: Identity | None = None,
-                       attempt_id: uuid.UUID | None = None,
                        challenge: tuple[uuid.UUID, str] | None = None):
     """Drive the production consuming transaction once, on its own real session."""
     identity = identity or identity_for(harness, subject)
-    attempt_id = attempt_id or uuid.uuid4()
     row_id, challenge_id_value = challenge or await commit_claimed_challenge(
-        harness, subject=subject, attempt_id=attempt_id)
+        harness, subject=subject)
 
     class _Challenge:
         """The two fields the transaction reads, built rather than re-read so the read counter stays meaningful."""
@@ -208,14 +200,13 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
         id = row_id
         challenge_id = challenge_id_value
 
-    store = ChallengesDB(keyring())
+    store = ChallengesDB()
     async with harness.factory() as real_session:
         session = _RacingSession(real_session, after_first_read)
         try:
             result = await create_user(session,
                                        identity=identity,
                                        evaluated_at=NOW,
-                                       attempt_id=attempt_id,
                                        challenge=_Challenge(),
                                        provider=provider,
                                        provider_uid=provider_uid,
@@ -228,7 +219,6 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
             # perform it here rather than leaving half the choreography out.
             await store.consume(session,
                                 challenge_id=challenge_id_value,
-                                claim_attempt_id=attempt_id,
                                 now=NOW)
             await session.commit()
             result = rejection
@@ -331,7 +321,7 @@ class TestAConflictOnTheIdentityInsertLeavesNoPartialAccount:
         """The savepoint's reason for existing: without it this row would still be claimed, and replayable."""
         found = await row(
             harness,
-            "SELECT consumed_at, preauth_subject_hash FROM core.auth_challenges WHERE id = :id",
+            "SELECT consumed_at, preauth_subject FROM core.auth_challenges WHERE id = :id",
             {"id": collided["challenge_row_id"]})
         assert found[0] is not None
         assert found[1] is None, "consumption clears the verifier in the same state transition"
