@@ -78,7 +78,6 @@ EVENT_NAMES = frozenset({
     "blocked_user",
     # The creation arms.
     "identity_already_linked",
-    "provider_account_already_linked",
     # The lookup arms. The group base is listed too: it is a member of the tree the walk finds,
     # even though nothing raises it -- an intermediate base is not a place to hide from this file.
     "provider_lookup_error",

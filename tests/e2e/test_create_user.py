@@ -552,9 +552,9 @@ class TestTheProviderAccountReservation:
 
         handle, completion = await _issue_and_complete(create_user_client, subject)
 
-        # 403 with this code rather than account_unavailable: same status, different remediation.
-        assert completion.status_code == 403, completion.text
-        assert completion.json() == {"code": "operation_not_allowed"}
+        # D-06 collapsed the race path's provider-account distinction onto the already-linked answer.
+        assert completion.status_code == 409, completion.text
+        assert completion.json() == {"code": "identity_already_linked"}
 
         # Nothing partial survived the conflict: no user row, no identity row for the claimant.
         assert await _count(_db_transaction, _USERS) == users_before

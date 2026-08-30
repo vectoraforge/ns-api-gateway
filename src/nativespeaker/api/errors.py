@@ -424,12 +424,6 @@ class IdentityAlreadyLinked(AppError):
     code = "identity_already_linked"
 
 
-class ProviderAccountAlreadyLinked(AppError):
-    """The provider account is already reserved, so this attempt may not claim it for a second user."""
-    status = 403
-    code = "operation_not_allowed"
-
-
 # --- Lookup arms: the providerData read in `auth/firebase.py` ---
 
 

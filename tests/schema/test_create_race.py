@@ -143,8 +143,6 @@ async def prepare_attempt(harness: _Harness, *, subject: str, provider: Identity
 
 async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=None) -> _Attempt:
     """Drive the production consuming transaction once, on its own session and connection."""
-    stored = type("_Challenge", (), {"id": attempt.challenge_row_id,
-                                     "challenge_id": attempt.challenge_id})()
     store = ChallengesDB()
     async with harness.factory() as real_session:
         session = _HookedSession(real_session, after_first_read)
@@ -152,20 +150,17 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=Non
             attempt.result = await create_user(session,
                                                identity=attempt.identity,
                                                evaluated_at=NOW,
-                                               challenge=stored,
                                                provider=attempt.provider,
                                                provider_uid=attempt.provider_uid,
-                                               email=None,
-                                               challenge_store=store)
+                                               email=None)
         except AppError as rejection:
-            # The route's own except arm (`routers/auth.py::_complete`): a rejection after the claim
-            # consumes and commits before the client is answered. Driving the transaction without it
-            # would measure half the choreography and read the missing half as a leaked challenge.
-            await store.consume(session,
-                                challenge_id=attempt.challenge_id,
-                                now=NOW)
-            await session.commit()
+            # The route's own except arm (`routers/auth.py::_complete`): the conflicting inserts are
+            # rolled back, then the handle is spent and committed before the client is answered.
+            # Driving the transaction without it would read the missing half as a leaked challenge.
+            await session.rollback()
             attempt.result = rejection
+        await store.consume(session, challenge_id=attempt.challenge_id, now=NOW)
+        await session.commit()
     return attempt
 
 

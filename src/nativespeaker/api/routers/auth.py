@@ -25,7 +25,6 @@ from nativespeaker.api.errors import (
     InvalidRequest,
 )
 from nativespeaker.api.tables.auth import (
-    AuthChallenge,
     AuthOperation,
     ChallengeRequest,
     CompletionResponse,
@@ -121,46 +120,52 @@ async def _complete(session: AsyncSession, *,
     # Deliberate commit: an uncommitted claim across the provider call would let a second attempt win the challenge.
     await session.commit()
 
+    # Read off a just-committed instance, which the lifespan's `expire_on_commit=False` keeps loaded.
+    challenge_row_id = str(challenge.id)
+
     try:
-        # One arm covers the whole post-claim region -- the lookup, the classification now inside it,
-        # and the transaction -- because the lookup's rejections are members of the same family. No
-        # arm is missing here; that shared base is the payoff of consolidating them in `exceptions.py`.
-        #
         # Per-minute traffic limits live in the gateway, not here; only the retry budget is in-process.
         facts = await lookup_with_retry(adapter, identity.issuer, identity.subject)
         await create_account(session,
                              identity=identity,
                              evaluated_at=evaluated_at,
-                             challenge=challenge,
                              provider=facts.provider,
                              provider_uid=facts.provider_uid,
                              # The copy rule was evaluated once, inside the read; nothing re-derives it.
-                             email=facts.email,
-                             challenge_store=challenge_store)
+                             email=facts.email)
     except AppError:
-        # D-04/D-11: every raising arm past the claim leaves the consume here, so the paths spend the
-        # handle exactly once between them. The bare re-raise is safe because after the commit the
-        # session holds no transaction, so `get_db`'s rollback-on-exception cannot un-consume it --
-        # the client spent this handle and must not get it back.
-        await _consume_and_commit(session, challenge=challenge,
-                                  challenge_store=challenge_store,
-                                  evaluated_at=evaluated_at)
+        # A conflicting insert leaves the transaction unusable, and the spend below needs it back.
+        await session.rollback()
+        try:
+            await _consume_and_commit(session, challenge_id=challenge_id,
+                                      challenge_row_id=challenge_row_id,
+                                      challenge_store=challenge_store,
+                                      evaluated_at=evaluated_at)
+        except Exception as failure:
+            # The handle stays claimed and so stays unusable; the client keeps the status it earned.
+            logger.error("challenge_consume_failed", challenge_row_id=challenge_row_id,
+                         failure=type(failure).__name__)
         raise
 
+    await _consume_and_commit(session, challenge_id=challenge_id,
+                              challenge_row_id=challenge_row_id,
+                              challenge_store=challenge_store,
+                              evaluated_at=evaluated_at)
     return JSONResponse(content=CompletionResponse(identity_provider=facts.provider)
                         .model_dump(mode="json"))
 
 
 async def _consume_and_commit(session: AsyncSession, *,
-                              challenge: AuthChallenge,
+                              challenge_id: str,
+                              challenge_row_id: str,
                               challenge_store: ChallengesDB,
                               evaluated_at: datetime) -> None:
-    """Spend the handle and commit, so a rejection after the claim cannot be re-presented."""
+    """Spend the handle and commit, so neither path can leave a claimed handle re-presentable."""
     consumed = await challenge_store.consume(session,
-                                             challenge_id=challenge.challenge_id,
+                                             challenge_id=challenge_id,
                                              now=evaluated_at)
     if not consumed:
         # Not recoverable: this attempt holds the claim, so a `False` means stored state diverged.
-        logger.error("challenge_consume_did_not_match", challenge_row_id=str(challenge.id))
+        logger.error("challenge_consume_did_not_match", challenge_row_id=challenge_row_id)
 
     await session.commit()
