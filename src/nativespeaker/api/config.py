@@ -6,8 +6,6 @@ import yaml
 from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from nativespeaker.api.auth.hmac_keyring import HmacConfig
-
 LogLevel = StrEnum("LogLevel", {k: k for k in logging.getLevelNamesMapping()})
 
 
@@ -71,9 +69,6 @@ class AppConfig(BaseConfig):
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
     jwt: JWTConfig = Field(default_factory=JWTConfig)
-    # Required with no default: there is no safe key to default to, so a deployment without one never starts.
-    hmac: HmacConfig
-
     chats_limit: int = Field(default=50, ge=1)
     messages_limit: int = Field(default=50, ge=1)
 

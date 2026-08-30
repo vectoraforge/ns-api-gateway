@@ -1,4 +1,3 @@
-import base64
 import os
 import shutil
 import tempfile
@@ -8,7 +7,6 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from nativespeaker.api.auth.hmac_keyring import HmacKeyring
 from nativespeaker.api.config import (
     AppConfig,
     EnvironmentConfig,
@@ -28,10 +26,6 @@ _ENV_SECRETS = {
     "DB_PASSWORD": "p", "DB_NAME": "d",
     "JWT_PROJECT_ID": "test-project", "JWT_API_KEY": "test-api-key",
 }
-
-# A locally-generated key, not the committed one, so nothing here breaks when that one is rotated.
-_TEST_HMAC_KEY = base64.b64encode(bytes(range(32))).decode()
-_HMAC_YAML = f'hmac:\n  active_version: 1\n  keys:\n    1: "{_TEST_HMAC_KEY}"\n'
 
 
 def test_model_config_defaults():
@@ -67,7 +61,7 @@ db:
 jwt:
   project_id: test-project
   api_key: test-api-key
-""" + _HMAC_YAML
+"""
     prompt_content = "Analyze {lang} phrase: {phrase}"
     examples_content = """
 en:
@@ -134,49 +128,8 @@ class TestSubscriptionConfigSurfaceIsGone:
         """`extra='forbid'` makes the removal real: an ignored block would read as allowance nothing enforces."""
         with pytest.raises(ValidationError, match="quotas"):
             AppConfig(quotas={"free": 10},  # ty: ignore[unknown-argument]
-                      hmac={"active_version": 1, "keys": {1: _TEST_HMAC_KEY}},
                       prompt="p",
                       examples={"en": ["Example 1"]})
-
-
-class TestHmacConfigSurface:
-    """The `hmac:` block is declared on the model and required at load."""
-
-    def test_app_config_declares_hmac(self):
-        assert "hmac" in AppConfig.model_fields
-
-    def test_a_config_file_with_no_hmac_block_fails_to_load(self):
-        """The process never starts without the key it needs to write, and the abort precedes the lifespan."""
-        tmp_dir = tempfile.mkdtemp()
-        try:
-            Path(tmp_dir, "config.yaml").write_text("log_level: INFO\nchats_limit: 50\n")
-            Path(tmp_dir, "prompt.txt").write_text("Analyze {lang} phrase: {phrase}")
-            Path(tmp_dir, "examples.yaml").write_text('en:\n  - "Example 1"\n')
-
-            with patch.dict(os.environ, _ENV_SECRETS, clear=True):
-                with pytest.raises(ValidationError, match="hmac"):
-                    EnvironmentConfig(config_dir=Path(tmp_dir),
-                                      _env_file=None)  # ty: ignore[unknown-argument]
-        finally:
-            shutil.rmtree(tmp_dir)
-
-    def test_the_tracked_config_yaml_carries_a_usable_active_key(self):
-        """The committed development key is real material, not a placeholder: it decodes and derives 32 bytes."""
-        tmp_dir = tempfile.mkdtemp()
-        try:
-            Path(tmp_dir, "config.yaml").write_text(TRACKED_CONFIG.read_text())
-            Path(tmp_dir, "prompt.txt").write_text("Analyze {lang} phrase: {phrase}")
-            Path(tmp_dir, "examples.yaml").write_text('en:\n  - "Example 1"\n')
-
-            with patch.dict(os.environ, _ENV_SECRETS, clear=True):
-                config = EnvironmentConfig(config_dir=Path(tmp_dir),
-                                           _env_file=None)  # ty: ignore[unknown-argument]
-                assert config.app_config is not None
-                ring = HmacKeyring(config.app_config.hmac)
-                assert ring.active_version == config.app_config.hmac.active_version
-                assert len(ring.actor_subject_hash("https://issuer.example", "subject")) == 32
-        finally:
-            shutil.rmtree(tmp_dir)
 
 
 class TestFirebaseCredentialSurfaceIsGone:

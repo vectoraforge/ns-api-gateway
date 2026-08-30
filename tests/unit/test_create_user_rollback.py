@@ -1,6 +1,6 @@
 """Control flow only: a failed insert stops inserting and rolls back; durability is a schema-test claim."""
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -94,7 +94,7 @@ class _ConsumingStore:
     def __init__(self) -> None:
         self.consumed: list[str] = []
 
-    async def consume(self, session, *, challenge_id, claim_attempt_id, now) -> bool:
+    async def consume(self, session, *, challenge_id, now) -> bool:
         self.consumed.append(challenge_id)
         return True
 
@@ -107,13 +107,12 @@ async def _create(session, store) -> UUID:
     challenge = AuthChallenge(challenge_id="rollback-handle",
                               operation=AuthOperation.create_user,
                               preauth_issuer=ISSUER,
-                              preauth_subject_hash=b"\x01" * 32,
+                              preauth_subject=SUBJECT,
                               expires_at=NOW,
                               created_at=NOW)
     return await create_user(session,
                              identity=_identity(),
                              evaluated_at=NOW,
-                             attempt_id=uuid4(),
                              challenge=challenge,
                              provider=IdentityProvider.anonymous,
                              provider_uid=None,

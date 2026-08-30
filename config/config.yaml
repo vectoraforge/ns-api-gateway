@@ -29,13 +29,5 @@ jwt:
 # can override a key declared here. The Secret Manager follow-up must REMOVE these entries, not
 # shadow them.
 #
-# `keys` derives actor_subject_hash and preauth_subject_hash (one shared key, D-21).
-# `idp_account_keys` is phase 41's parallel family -- its own key, never derived from the above.
-hmac:
-  active_version: 1
-  keys:
-    1: "ZwLuseuBthHAE080rBUumVdnULM+UbIAB6GANvlX5wo="
-  idp_account_keys:
-    1: "VwxrCAqJ2MO2IhbrmvYOr4SoO8IY0nIzbEMxG+DZafQ="
 chats_limit: 50
 messages_limit: 50

@@ -12,7 +12,6 @@ from uuid import UUID, uuid7
 
 import pytest
 
-from nativespeaker.api.auth.hmac_keyring import HmacConfig, HmacKeyring
 from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.crud.challenges import (
     CHALLENGE_ID_BYTES,
@@ -40,17 +39,8 @@ CHALLENGE_BEARING = (
 )
 
 
-def material(seed: int) -> str:
-    """A distinct, valid 32-byte key as base64 text -- the on-disk encoding this phase pinned."""
-    return base64.b64encode(bytes((seed * 37 + i) % 256 for i in range(32))).decode()
-
-
-def keyring(active: int = 1) -> HmacKeyring:
-    return HmacKeyring(HmacConfig(active_version=active, keys={active: material(active)}))
-
-
-def store(ring: HmacKeyring | None = None) -> ChallengesDB:
-    return ChallengesDB(ring if ring is not None else keyring())
+def store() -> ChallengesDB:
+    return ChallengesDB()
 
 
 class _StubResult:
@@ -88,18 +78,6 @@ class _RecordingSession:
         return _StubResult(self._rows)
 
 
-class _ExplodingKeyring:
-    """A keyring that fails if consulted, which is the only way to assert that no comparison happened."""
-
-    active_version = 1
-
-    def actor_subject_hash(self, issuer: str, subject: str, *, version: int | None = None) -> bytes:
-        raise AssertionError("the keyring was consulted for a cleared preauth_subject_hash")
-
-    def actor_subject_matches(self, stored: bytes, issuer: str, subject: str) -> bool:
-        raise AssertionError("the keyring was consulted for a cleared preauth_subject_hash")
-
-
 def linked_identity(subject: str = SUBJECT, *, issuer: str = ISSUER,
                     identity_id: UUID | None = None) -> Identity:
     user = User()
@@ -116,12 +94,12 @@ def preauth_identity(subject: str = SUBJECT, *, issuer: str = ISSUER) -> Identit
     return Identity(issuer=issuer, subject=subject)
 
 
-async def issue_row(identity, *, ring: HmacKeyring | None = None,
+async def issue_row(identity, *,
                     operation: AuthOperation = AuthOperation.create_user,
                     now: datetime = FIXED_NOW):
     """Run `issue` against a stub session and return `(handle, expires_at, row, session)`."""
     session = _RecordingSession()
-    subject_store = store(ring)
+    subject_store = store()
     handle, expires_at = await subject_store.issue(session,
                                                    operation=operation,
                                                    identity=identity,
@@ -245,7 +223,7 @@ class TestTheBindingWrittenAtIssuance:
         """The table's CHECK requires exactly one arm; asserting it here is what makes the failure readable."""
         _, _, row, _ = await issue_row(linked_identity())
         assert row.preauth_issuer is None
-        assert row.preauth_subject_hash is None
+        assert row.preauth_subject is None
 
     async def test_a_preauth_identity_leaves_the_linked_column_null(self):
         _, _, row, _ = await issue_row(preauth_identity())
@@ -256,32 +234,10 @@ class TestTheBindingWrittenAtIssuance:
         _, _, row, _ = await issue_row(preauth_identity())
         assert row.preauth_issuer == ISSUER
 
-    async def test_the_preauth_hash_is_the_shared_keyrings_derivation(self):
-        """A local reimplementation would produce a plausible digest that silently never matches at completion."""
-        ring = keyring()
-        _, _, row, _ = await issue_row(preauth_identity(), ring=ring)
-        assert row.preauth_subject_hash == ring.actor_subject_hash(ISSUER, SUBJECT)
-        assert ring.actor_subject_matches(row.preauth_subject_hash, ISSUER, SUBJECT)
-
-    async def test_the_preauth_hash_moves_with_the_key(self):
-        """Identical inputs under a different key must differ, or the case above would pass ignoring the key."""
-        _, _, one, _ = await issue_row(preauth_identity(), ring=keyring(1))
-        _, _, two, _ = await issue_row(preauth_identity(), ring=keyring(2))
-        assert one.preauth_subject_hash != two.preauth_subject_hash
-
-    async def test_the_derivation_uses_the_active_key_with_no_version_argument(self):
-        """The active key only: the row has nowhere to record which key produced the hash."""
-        source = inspect.getsource(ChallengesDB.issue)
-        assert "actor_subject_hash" in source
-        assert "version=" not in source
-
-    async def test_the_raw_subject_appears_nowhere_on_the_row(self):
+    async def test_the_preauth_subject_is_stored_in_plaintext(self):
+        """The value the completion comparison reads back, written as given rather than derived."""
         _, _, row, _ = await issue_row(preauth_identity())
-        assert SUBJECT not in str(row.model_dump())
-
-    def test_the_row_records_no_hmac_key_version(self):
-        """Verification uses the active key alone, so a challenge outstanding across a rotation simply fails."""
-        assert not [name for name in AuthChallenge.model_fields if "key_version" in name]
+        assert row.preauth_subject == SUBJECT
 
 
 class TestTheCompletionComparison:
@@ -313,92 +269,61 @@ class TestTheCompletionComparison:
             store().verify_binding(row, preauth_identity())
 
     def test_a_preauth_row_matches_the_subject_it_was_issued_for(self):
-        ring = keyring()
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.create_user,
                             preauth_issuer=ISSUER,
-                            preauth_subject_hash=ring.actor_subject_hash(ISSUER, SUBJECT),
+                            preauth_subject=SUBJECT,
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
-        assert store(ring).verify_binding(row, preauth_identity()) is row
+        assert store().verify_binding(row, preauth_identity()) is row
 
     def test_a_preauth_row_rejects_a_different_subject(self):
-        ring = keyring()
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.create_user,
                             preauth_issuer=ISSUER,
-                            preauth_subject_hash=ring.actor_subject_hash(ISSUER, SUBJECT),
+                            preauth_subject=SUBJECT,
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
         with pytest.raises(ChallengeIdentityMismatch):
-            store(ring).verify_binding(row, preauth_identity("someone-else"))
+            store().verify_binding(row, preauth_identity("someone-else"))
 
     def test_a_preauth_row_rejects_a_different_issuer(self):
-        """A subject is unique only within its issuer, so the hash alone would admit another provider's subject."""
-        ring = keyring()
+        """A subject is unique only within its issuer, so it alone would admit another provider's subject."""
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.create_user,
                             preauth_issuer="https://securetoken.google.com/other-project",
-                            preauth_subject_hash=ring.actor_subject_hash(ISSUER, SUBJECT),
+                            preauth_subject=SUBJECT,
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
         with pytest.raises(ChallengeIdentityMismatch):
-            store(ring).verify_binding(row, preauth_identity())
+            store().verify_binding(row, preauth_identity())
 
     def test_a_preauth_row_still_matches_a_subject_that_has_since_become_linked(self):
-        """What fails a pre-auth binding is a differing hash, not the subject having since become linked."""
-        ring = keyring()
+        """What fails a pre-auth binding is a differing subject, not the subject having since become linked."""
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.create_user,
                             preauth_issuer=ISSUER,
-                            preauth_subject_hash=ring.actor_subject_hash(ISSUER, SUBJECT),
+                            preauth_subject=SUBJECT,
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
-        assert store(ring).verify_binding(row, linked_identity(SUBJECT)) is row
+        assert store().verify_binding(row, linked_identity(SUBJECT)) is row
 
-    def test_a_preauth_row_under_a_rotated_key_rejects(self):
-        """The row stores no key version, so a rotation invalidates every outstanding pre-auth-bound challenge."""
+    def test_a_cleared_preauth_subject_takes_the_already_used_rejection(self):
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.create_user,
                             preauth_issuer=ISSUER,
-                            preauth_subject_hash=keyring(1).actor_subject_hash(ISSUER, SUBJECT),
-                            expires_at=FIXED_NOW, created_at=FIXED_NOW)
-        with pytest.raises(ChallengeIdentityMismatch):
-            store(keyring(2)).verify_binding(row, preauth_identity())
-
-    def test_a_cleared_preauth_hash_takes_the_already_used_rejection(self):
-        row = AuthChallenge(challenge_id=new_challenge_id(),
-                            operation=AuthOperation.create_user,
-                            preauth_issuer=ISSUER,
-                            preauth_subject_hash=None,
+                            preauth_subject=None,
                             consumed_at=FIXED_NOW,
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
         with pytest.raises(ChallengeConsumed):
             store().verify_binding(row, preauth_identity())
 
-    def test_a_cleared_preauth_hash_is_not_compared_at_all(self):
-        """Not-compared is a property of the code path, not of the answer, so the keyring is one that explodes."""
+    def test_a_cleared_preauth_subject_is_answered_before_the_issuer_is_compared(self):
+        """Ordering, not the answer: a mismatched issuer on a cleared row still earns the already-used rejection."""
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.create_user,
-                            preauth_issuer=ISSUER,
-                            preauth_subject_hash=None,
+                            preauth_issuer="https://securetoken.google.com/other-project",
+                            preauth_subject=None,
                             consumed_at=FIXED_NOW,
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
-        exploding = ChallengesDB(_ExplodingKeyring())  # ty: ignore[invalid-argument-type]
         with pytest.raises(ChallengeConsumed):
-            exploding.verify_binding(row, preauth_identity())
-
-    def test_the_hash_comparison_goes_through_the_shared_constant_time_seam(self):
-        """Asserted on the AST, because `compare_digest` and `==` return identical answers for every input."""
-        tree = method_ast(ChallengesDB.verify_binding)
-        calls = {node.func.attr for node in ast.walk(tree)
-                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
-        assert "actor_subject_matches" in calls
-
-        equality_on_the_hash = [
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.Compare)
-            and any(isinstance(op, ast.Eq | ast.NotEq) for op in node.ops)
-            and any(isinstance(side, ast.Attribute) and side.attr == "preauth_subject_hash"
-                    for side in [node.left, *node.comparators])
-        ]
-        assert equality_on_the_hash == [], "the stored hash must never be compared with == or !="
+            store().verify_binding(row, preauth_identity())
 
 
 class TestLocateIsByteForByte:
@@ -407,7 +332,7 @@ class TestLocateIsByteForByte:
     async def test_locate_returns_the_row_for_an_exact_handle(self):
         row = AuthChallenge(challenge_id="a" * 22, operation=AuthOperation.create_user,
                             preauth_issuer=ISSUER,
-                            preauth_subject_hash=b"x" * 32,
+                            preauth_subject=SUBJECT,
                             expires_at=FIXED_NOW, created_at=FIXED_NOW)
         assert await store().locate(_RecordingSession([row]), "a" * 22) is row
 

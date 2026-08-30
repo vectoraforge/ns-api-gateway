@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth.firebase import FirebaseAdminLookup, build_admin_apps
-from nativespeaker.api.auth.hmac_keyring import HmacKeyring
 from nativespeaker.api.auth.jwt_verifier import JWTVerifier
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
@@ -30,12 +29,7 @@ async def lifespan(app: FastAPI):
     # The error tree fails closed here, before any traffic is served.
     assert_tree_total()
 
-    # One keyring for the process; a missing active key already raised out of EnvironmentConfig().
-    app.state.hmac_keyring = HmacKeyring(config.hmac)
-    app.state.hmac_keyring.warn_missing_older(logger)
-
-    # The challenge store shares that keyring rather than deriving a key of its own.
-    app.state.challenge_store = ChallengesDB(app.state.hmac_keyring)
+    app.state.challenge_store = ChallengesDB()
 
     # One named Firebase app per configured issuer; an absent credential returns {} and boot proceeds.
     firebase_apps = build_admin_apps(config)
