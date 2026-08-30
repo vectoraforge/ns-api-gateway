@@ -379,20 +379,15 @@ CREATE TABLE core.auth_challenges (
     bound_external_identity_id UUID REFERENCES core.external_identities (id),
     -- Plaintext: a deployment-known provider string shared by every user of that provider.
     preauth_issuer TEXT,
-    -- A keyed hash of the verified subject, with no key version: a challenge outstanding across a rotation fails.
-    preauth_subject_hash BYTEA,
+    -- The verified subject in plaintext, cleared when the row is consumed.
+    preauth_subject TEXT,
     -- The TTL is applied by the application; there is no database default and no per-operation override.
     expires_at TIMESTAMPTZ NOT NULL,
     claimed_at TIMESTAMPTZ,
-    claim_attempt_id UUID,
     consumed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL,
-    -- Lifecycle: issued, then claimed once claimed_at and claim_attempt_id are set, then consumed.
-    CHECK (
-        (claimed_at IS NULL AND claim_attempt_id IS NULL AND consumed_at IS NULL)
-        OR
-        (claimed_at IS NOT NULL AND claim_attempt_id IS NOT NULL)
-    ),
+    -- Lifecycle: issued, then claimed once claimed_at is set, then consumed; consuming requires a claim.
+    CHECK (consumed_at IS NULL OR claimed_at IS NOT NULL),
     -- Exactly the four challenge-bearing operations; restore, sign-out-all and sync have no challenge row.
     CHECK (
         operation IN (
@@ -402,15 +397,15 @@ CREATE TABLE core.auth_challenges (
             'claim_registered_grant'
         )
     ),
-    -- Exactly one of the bound identity or the preauth pair, with the hash clearable only once consumed.
+    -- Exactly one of the bound identity or the preauth pair, with the subject clearable only once consumed.
     CHECK (
         (bound_external_identity_id IS NOT NULL
             AND preauth_issuer IS NULL
-            AND preauth_subject_hash IS NULL)
+            AND preauth_subject IS NULL)
         OR
         (bound_external_identity_id IS NULL
             AND preauth_issuer IS NOT NULL
-            AND (preauth_subject_hash IS NOT NULL OR consumed_at IS NOT NULL))
+            AND (preauth_subject IS NOT NULL OR consumed_at IS NOT NULL))
     )
 );
 

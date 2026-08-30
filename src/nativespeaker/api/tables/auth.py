@@ -7,7 +7,7 @@ from uuid import UUID, uuid7
 # `Field` is aliased because the unqualified name is sqlmodel's, which the `AuthChallenge` table below needs.
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
-from sqlalchemy import DateTime, Enum, LargeBinary
+from sqlalchemy import DateTime, Enum
 from sqlmodel import Field, SQLModel
 
 from nativespeaker.api.tables.identities import IdentityProvider
@@ -49,7 +49,6 @@ class CompletionResponse(BaseModel):
 
 AuthOperationType = cast(Any, Enum(AuthOperation, name='auth_operation', schema='core'))
 DateTimeType = cast(Any, DateTime(timezone=True))
-ByteaType = cast(Any, LargeBinary)
 
 
 class AuthChallenge(SQLModel, table=True):
@@ -68,11 +67,10 @@ class AuthChallenge(SQLModel, table=True):
                                                     foreign_key="core.external_identities.id")
     # Plaintext on purpose: a deployment-known provider string shared by every user of that provider.
     preauth_issuer: str | None = Field(default=None)
-    # Keyed hash of the verified subject, cleared by consumption. No key-version column: a rotation fails it.
-    preauth_subject_hash: bytes | None = Field(sa_type=ByteaType, default=None)
+    # The verified subject in plaintext, cleared by consumption.
+    preauth_subject: str | None = Field(default=None)
     # Written by the application as now + 300s, and evaluated in exactly one place: the claim's WHERE.
     expires_at: datetime = Field(sa_type=DateTimeType)
     claimed_at: datetime | None = Field(sa_type=DateTimeType, default=None)
-    claim_attempt_id: UUID | None = Field(default=None)
     consumed_at: datetime | None = Field(sa_type=DateTimeType, default=None)
     created_at: datetime = Field(sa_type=DateTimeType)

@@ -27,7 +27,6 @@ logger = structlog.get_logger()
 async def create_user(session: AsyncSession, *,
                       identity: Identity,
                       evaluated_at: datetime,
-                      attempt_id: UUID,
                       challenge: AuthChallenge,
                       provider: IdentityProvider,
                       provider_uid: str | None,
@@ -56,7 +55,6 @@ async def create_user(session: AsyncSession, *,
     # the two paths spend the handle exactly once between them.
     consumed = await challenge_store.consume(session,
                                              challenge_id=challenge.challenge_id,
-                                             claim_attempt_id=attempt_id,
                                              now=evaluated_at)
     if not consumed:
         # This attempt holds the claim, so `False` means state diverged; the handle is never logged.

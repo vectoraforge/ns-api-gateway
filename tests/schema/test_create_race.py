@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth.create_user import create_user
-from nativespeaker.api.auth.hmac_keyring import HmacConfig, HmacKeyring
 from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError
@@ -23,7 +22,6 @@ _ASYNCPG_PREFIX = "postgres://"
 _SQLALCHEMY_PREFIX = "postgresql+asyncpg://"
 
 NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
-KEY_MATERIAL = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="  # 32 bytes, base64 -- test-only
 
 # Bounded so a partner that fails before its re-resolution shows up as a failure rather than a hung suite.
 BARRIER_TIMEOUT_SECONDS = 20
@@ -64,10 +62,6 @@ async def harness(_schema_db_uri):
             await engine.dispose()
 
 
-def keyring() -> HmacKeyring:
-    return HmacKeyring(HmacConfig(active_version=1, keys={1: KEY_MATERIAL}))
-
-
 
 async def read(harness: _Harness, sql: str, params: dict | None = None):
     """One read on a connection of its own -- never the one an attempt under test used."""
@@ -80,21 +74,21 @@ async def scalar(harness: _Harness, sql: str, params: dict | None = None):
     return rows[0][0] if rows else None
 
 
-async def commit_claimed_challenge(harness: _Harness, *, subject: str,
-                                   attempt_id: uuid.UUID) -> tuple[uuid.UUID, str]:
-    """One challenge already claimed under attempt_id; each attempt gets its own and must consume it."""
+async def commit_claimed_challenge(harness: _Harness, *,
+                                   subject: str) -> tuple[uuid.UUID, str]:
+    """One already-claimed challenge; each attempt gets its own and must consume it."""
     row_id = uuid.uuid4()
     challenge_id = f"handle-{uuid.uuid4().hex[:16]}"
     async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
         await conn.execute(
             text("INSERT INTO core.auth_challenges "
-                 "(id, challenge_id, operation, preauth_issuer, preauth_subject_hash, "
-                 " expires_at, claimed_at, claim_attempt_id, created_at) "
-                 "VALUES (:id, :challenge_id, 'create_user', :issuer, :hash, "
-                 "        :expires_at, :now, :attempt_id, :now)"),
+                 "(id, challenge_id, operation, preauth_issuer, preauth_subject, "
+                 " expires_at, claimed_at, created_at) "
+                 "VALUES (:id, :challenge_id, 'create_user', :issuer, :subject, "
+                 "        :expires_at, :now, :now)"),
             {"id": row_id, "challenge_id": challenge_id, "issuer": harness.issuer,
-             "hash": keyring().actor_subject_hash(harness.issuer, subject),
-             "expires_at": NOW + timedelta(seconds=300), "now": NOW, "attempt_id": attempt_id})
+             "subject": subject,
+             "expires_at": NOW + timedelta(seconds=300), "now": NOW})
     return row_id, challenge_id
 
 
@@ -126,7 +120,6 @@ class _Attempt:
     provider: IdentityProvider
     provider_uid: str | None
     identity: Identity
-    attempt_id: uuid.UUID
     challenge_row_id: uuid.UUID
     challenge_id: str
     # What the call produced: the new user's id on success, the rejection it raised otherwise.
@@ -142,11 +135,9 @@ def outcome_name(attempt: _Attempt) -> str:
 async def prepare_attempt(harness: _Harness, *, subject: str, provider: IdentityProvider,
                           provider_uid: str | None) -> _Attempt:
     identity = Identity(issuer=harness.issuer, subject=subject)
-    attempt_id = uuid.uuid4()
-    row_id, challenge_id = await commit_claimed_challenge(harness, subject=subject,
-                                                          attempt_id=attempt_id)
+    row_id, challenge_id = await commit_claimed_challenge(harness, subject=subject)
     return _Attempt(subject=subject, provider=provider, provider_uid=provider_uid,
-                    identity=identity, attempt_id=attempt_id,
+                    identity=identity,
                     challenge_row_id=row_id, challenge_id=challenge_id)
 
 
@@ -154,14 +145,13 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=Non
     """Drive the production consuming transaction once, on its own session and connection."""
     stored = type("_Challenge", (), {"id": attempt.challenge_row_id,
                                      "challenge_id": attempt.challenge_id})()
-    store = ChallengesDB(keyring())
+    store = ChallengesDB()
     async with harness.factory() as real_session:
         session = _HookedSession(real_session, after_first_read)
         try:
             attempt.result = await create_user(session,
                                                identity=attempt.identity,
                                                evaluated_at=NOW,
-                                               attempt_id=attempt.attempt_id,
                                                challenge=stored,
                                                provider=attempt.provider,
                                                provider_uid=attempt.provider_uid,
@@ -173,7 +163,6 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=Non
             # would measure half the choreography and read the missing half as a leaked challenge.
             await store.consume(session,
                                 challenge_id=attempt.challenge_id,
-                                claim_attempt_id=attempt.attempt_id,
                                 now=NOW)
             await session.commit()
             attempt.result = rejection
@@ -281,7 +270,7 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
         for attempt in raced["attempts"]:
             rows = await read(
                 harness,
-                "SELECT consumed_at, preauth_subject_hash FROM core.auth_challenges WHERE id = :id",
+                "SELECT consumed_at, preauth_subject FROM core.auth_challenges WHERE id = :id",
                 {"id": attempt.challenge_row_id})
             assert rows[0][0] is not None, f"{outcome_name(attempt)} left its challenge unconsumed"
             assert rows[0][1] is None

@@ -1,6 +1,5 @@
 """The two auth routes: `/auth/challenge` issues a challenge, and `/auth/create-user` spends one."""
 from datetime import UTC, datetime
-from uuid import UUID, uuid7
 
 import structlog
 from fastapi import APIRouter, Depends
@@ -79,8 +78,6 @@ async def create_user(body: CreateUserRequest,
     return await _complete(session, identity=identity,
                            # One instant for this request; nothing below it reads the clock again.
                            evaluated_at=datetime.now(UTC),
-                           # Plan 37.4-05 owns this: it drops the column, the CHECK conjunct and this value.
-                           attempt_id=uuid7(),
                            challenge_id=body.challenge_id,
                            challenge_store=challenge_store,
                            adapter=adapter)
@@ -89,7 +86,6 @@ async def create_user(body: CreateUserRequest,
 async def _complete(session: AsyncSession, *,
                     identity: Identity,
                     evaluated_at: datetime,
-                    attempt_id: UUID,
                     challenge_id: str,
                     challenge_store: ChallengesDB,
                     adapter) -> Response:
@@ -114,7 +110,6 @@ async def _complete(session: AsyncSession, *,
 
     if not await challenge_store.claim(session,
                                        challenge_id=challenge_id,
-                                       claim_attempt_id=attempt_id,
                                        now=evaluated_at):
         # `claimed_at` distinguishes the two losses; the claim's WHERE is the only expiry evaluation anywhere.
         await session.refresh(challenge)
@@ -136,7 +131,6 @@ async def _complete(session: AsyncSession, *,
         await create_account(session,
                              identity=identity,
                              evaluated_at=evaluated_at,
-                             attempt_id=attempt_id,
                              challenge=challenge,
                              provider=facts.provider,
                              provider_uid=facts.provider_uid,
@@ -150,7 +144,7 @@ async def _complete(session: AsyncSession, *,
         # the client spent this handle and must not get it back.
         await _consume_and_commit(session, challenge=challenge,
                                   challenge_store=challenge_store,
-                                  evaluated_at=evaluated_at, attempt_id=attempt_id)
+                                  evaluated_at=evaluated_at)
         raise
 
     return JSONResponse(content=CompletionResponse(identity_provider=facts.provider)
@@ -160,12 +154,10 @@ async def _complete(session: AsyncSession, *,
 async def _consume_and_commit(session: AsyncSession, *,
                               challenge: AuthChallenge,
                               challenge_store: ChallengesDB,
-                              evaluated_at: datetime,
-                              attempt_id: UUID) -> None:
+                              evaluated_at: datetime) -> None:
     """Spend the handle and commit, so a rejection after the claim cannot be re-presented."""
     consumed = await challenge_store.consume(session,
                                              challenge_id=challenge.challenge_id,
-                                             claim_attempt_id=attempt_id,
                                              now=evaluated_at)
     if not consumed:
         # Not recoverable: this attempt holds the claim, so a `False` means stored state diverged.
