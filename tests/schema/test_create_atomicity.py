@@ -26,7 +26,7 @@ NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
 
 @dataclass
 class _Harness:
-    """A committing session factory over the scratch crud, plus this test's private issuer."""
+    """A committing session factory over the scratch database, plus this test's private issuer."""
 
     engine: object
     factory: async_sessionmaker
@@ -165,10 +165,7 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
                                                provider_uid=provider_uid,
                                                email=None)
         except AppError as rejection:
-            # The route's own except arm (`routers/auth.py::_complete`): a rejection after the claim
-            # rolls the business inserts back, then consumes and commits before the client is
-            # answered. That the consume survives the rollback is the property this file measures,
-            # so the driver has to perform it here rather than leaving half the choreography out.
+            # The route's own except arm: roll the inserts back, then consume and commit.
             await session.rollback()
             result = rejection
         await store.consume(session, challenge_id=challenge_id_value, now=NOW)
