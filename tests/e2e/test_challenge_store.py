@@ -335,7 +335,7 @@ class TestTheBindingAgainstRealRows:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestLocateIsByteForByteAgainstPostgres:
-    """Asserted against the crud's own comparison, with a fixed handle so the manglings are deterministic."""
+    """Asserted against the database's own comparison, with a fixed handle so the manglings are deterministic."""
 
     PLANTED = "AbCdEfGhIjKlMnOpQrStUv"
 
