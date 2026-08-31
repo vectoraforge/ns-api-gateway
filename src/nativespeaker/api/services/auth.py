@@ -41,9 +41,7 @@ class AuthService:
 
     async def complete(self, *, identity: Identity, challenge_id: str) -> IdentityProvider:
         """Create the account and return the provider the read reported.
-
-        The order of the rejections below is the precedence, and none of them carries a field.
-        """
+        The order of the rejections below is the precedence, and none of them carries a field."""
         # No rejection before the claim consumes anything, so a wrong presenter cannot burn a live challenge.
         located = await self.challenge_store.locate(self.session, challenge_id)
         if located is None:
@@ -53,7 +51,6 @@ class AuthService:
         # Every line below reads `challenge`, which only the binding check produces: deleting it is a NameError.
         challenge = self.challenge_store.verify_binding(located, identity)
         if challenge.operation is not AuthOperation.create_user:
-            # A challenge issued for another operation is a pre-claim rejection, like the binding mismatch above.
             raise ChallengeOperationMismatch()
 
         if not await self.challenge_store.claim(self.session,
@@ -73,7 +70,6 @@ class AuthService:
         challenge_row_id = str(challenge.id)
 
         try:
-            # Per-minute traffic limits live in the gateway, not here; only the retry budget is in-process.
             facts = await lookup_with_retry(self.adapter, identity.issuer, identity.subject)
             await self.create_user(identity=identity,
                                    provider=facts.provider,

@@ -25,11 +25,8 @@ class LLMService:
         prompt_template = ChatPromptTemplate.from_messages([("system", prompt),
                                                             MessagesPlaceholder("history"),
                                                             ("human", "{content}")])
-        # The schema rides on the call, so the provider cannot omit a declared key -- the previous
-        # parse-then-validate chain let it, and an already-correct phrase came back as a 500.
+        # The schema rides on the call, so the provider cannot omit a declared key.
         constrained = self.llm.with_structured_output(ChatModelResponse, method="json_schema", strict=True)
-        # Back to a plain dict on the way out: `ChatService.ask_llm` dispatches on `resolved_mode`
-        # off a mapping and re-validates into the mode-specific model, and both still hold.
         return prompt_template | constrained | RunnableLambda(lambda answer: answer.model_dump())
 
     def admission(self):

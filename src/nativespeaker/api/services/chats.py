@@ -89,7 +89,6 @@ class ChatService:
         input_model = AnalyzeInput(phrase=phrase, context=context)
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
                                 content=input_model.model_dump(exclude_none=True))
-        # After every rejection this method makes on its own terms, and inside the admission that was granted.
         async with self.llm_service.admission() as admitted:
             await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
             ai_message = await self.ask_llm(chat, human_message, admitted)
@@ -114,7 +113,6 @@ class ChatService:
         input_model = FollowUpInput(message=message)
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
                                 content=input_model.model_dump(exclude_none=True))
-        # After every rejection this method makes on its own terms, and inside the admission that was granted.
         async with self.llm_service.admission() as admitted:
             await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
             ai_message = await self.ask_llm(chat=chat, message=human_message, admitted=admitted)

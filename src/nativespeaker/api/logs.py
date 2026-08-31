@@ -49,7 +49,6 @@ def setup_logging(log_level: str,
     root.addHandler(console_handler)
     root.setLevel(log_level.upper())
 
-    # Suppress noisy third-party loggers
     for name in ("httpx", "httpcore", "sqlalchemy.engine"):
         logging.getLogger(name).setLevel(logging.WARNING)
 

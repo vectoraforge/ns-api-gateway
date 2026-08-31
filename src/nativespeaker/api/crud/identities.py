@@ -35,7 +35,7 @@ class IdentitiesDB:
 
         if row is None:
             # Identity rows are never deleted, so no row can only mean this pair was never linked.
-            if allow_preauth:  # only POST /auth/create-user passes True
+            if allow_preauth:
                 return Identity(issuer=issuer, subject=subject)
             raise PreAuthIdentityNotAllowed
 
