@@ -80,13 +80,11 @@ class TestCreateChat:
 @pytest.mark.asyncio(loop_scope="module")
 class TestFollowup:
     async def test_followup_message(self, async_client, linked_firebase_identity, quota_grant):
-        # First create a chat to get chat_id
         create_resp = await async_client.post("/chats",
                                               json={"phrase": "I am going to home.", "lang": "en"})
         assert create_resp.status_code == 200
         chat_id = create_resp.json()["chat_id"]
 
-        # Send followup
         followup_resp = await async_client.post(f"/chats/{chat_id}",
                                                 json={"message": "Can you explain more?"})
         assert followup_resp.status_code == 200

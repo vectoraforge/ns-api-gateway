@@ -1,18 +1,6 @@
-"""Proof that the provider honoured the strict schema -- not merely that we parsed what came back.
+"""The provider honoured `strict=True`, read from its own JSON before Pydantic filled any default.
 
-`strict=True` rides in provider-specific keyword arguments. Every provider wrapper accepts it and
-only some enforce it, so the emitted schema being strict (asserted provider-free in
-`tests/unit/test_llm_chain_schema.py`) does not by itself mean the model was constrained. Only a
-real call can tell you that, which is why there is no mocked version of this file: a fake provider
-would return whatever the fake was told to return and would prove exactly nothing.
-
-The phrase used here is the defect case. A grammatically correct phrase gives the model nothing to
-report, and it used to answer with `resolved_mode` and `response` alone -- which made `POST /chats`
-return 500 because `issues` and `suggestions` were required. The first case reads the provider's own
-JSON, before Pydantic could fill a list default over the very omission this gate exists to catch.
-
-With no provider key configured these cases skip. Skipping is the only honest fallback; passing on
-mocked evidence would be worse than not running at all.
+The phrase is the defect case, and these cases skip without a real provider key.
 """
 import json
 import os
@@ -42,18 +30,14 @@ def provider_key() -> str:
 
 @pytest.fixture(scope="module")
 def llm_service(_app_config, provider_key) -> LLMService:
-    """The shipped service on the configured model -- strict support varies by model, not just provider."""
+    """The shipped service on the configured model."""
     return LLMService(model_config=_app_config.model,
                       resilence_config=_app_config.resilience,
                       system_prompt=_app_config.prompt)
 
 
 def provider_payload(raw) -> dict:
-    """The provider's own JSON object, taken from the raw message before any parsing.
-
-    `method="json_schema"` returns it as the message content; `function_calling` returns it as the
-    tool call's arguments. Reading both keeps the assertion truthful if the transport ever moves.
-    """
+    """The provider's own JSON object, read from the tool call's arguments or the message content."""
     if getattr(raw, "tool_calls", None):
         return dict(raw.tool_calls[0]["args"])
 
@@ -85,11 +69,7 @@ class TestProviderHonoursStrictSchema:
         assert DECLARED_KEYS <= set(payload), f"provider omitted {DECLARED_KEYS - set(payload)}: {payload}"
 
     async def test_real_chain_still_yields_a_dict(self, llm_service):
-        """The contract ChatService depends on, exercised against the real provider rather than a mock.
-
-        This one reads the parsed output, so it says nothing about omissions -- that is the case
-        above. What it proves is that the binding did not change what the chain hands back.
-        """
+        """The contract ChatService depends on, exercised against the real provider."""
         async with llm_service.admission() as admitted:
             result = await llm_service.ainvoke(history=[], content=CORRECT_PHRASE, lang="English",
                                                admitted=admitted)

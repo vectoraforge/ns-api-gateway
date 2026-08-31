@@ -43,7 +43,7 @@ class TestGetChatMessages:
         assert response.status_code == 200
         data = response.json()
         assert isinstance(data, list)
-        assert len(data) >= 2  # human + AI message
+        assert len(data) >= 2
         msg = data[0]
         assert "chat_id" in msg
         assert "role" in msg
