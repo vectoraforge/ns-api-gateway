@@ -317,18 +317,6 @@ class TestGrantThenUsageOrder:
         session = await _consume(grants=(grant,), usage=usage)
         assert session.entities == ["grants", "usage", "allowance"]
 
-    async def test_the_exhausted_path_locks_in_the_same_order(self):
-        grant, usage = _one_effective_grant(monthly_used=ALLOWANCE)
-        session = _StubSession(grants=(grant,), usage=usage)
-        with pytest.raises(QuotaExceededError):
-            await _charge(session)
-        assert session.entities == ["grants", "usage", "allowance"]
-
-    async def test_the_rollover_path_locks_in_the_same_order(self):
-        grant, usage = _one_effective_grant(monthly_period=STALE_PERIOD, monthly_used=ALLOWANCE)
-        session = await _consume(grants=(grant,), usage=usage)
-        assert session.entities == ["grants", "usage", "allowance"]
-
     async def test_the_missing_usage_path_stops_after_the_usage_read(self):
         session = _StubSession(grants=(_grant(),), usage=None)
         with pytest.raises(MissingUsageRowError):

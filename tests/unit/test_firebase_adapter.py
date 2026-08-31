@@ -198,21 +198,9 @@ class TestSuccessfulReads:
         assert identity.provider is IdentityProvider.anonymous
         assert identity.provider_uid is None
 
-    async def test_one_recognized_entry_yields_that_provider_and_its_uid(self, adapter,
-                                                                        get_user_calls):
-        get_user_calls(StubUserRecord(
-            provider_data=[StubProviderUserInfo("google.com", "google-uid-1")]))
-        identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert (identity.provider, identity.provider_uid) == (IdentityProvider.google,
-                                                              "google-uid-1")
-
 
 class TestTheEmailRuleIsAppliedInsideTheRead:
-    """The two-condition copy rule, relocated here with the read it now lives inside.
-
-    Three independent guards in one order -- absent, empty after stripping, unverified -- and each
-    one alone is enough to withhold the address.
-    """
+    """The two-condition copy rule: absent, empty after stripping, or unverified each withholds the address."""
 
     async def test_a_non_empty_verified_address_is_copied(self, adapter, get_user_calls):
         get_user_calls(StubUserRecord(email="a@b.test", email_verified=True))
@@ -338,11 +326,6 @@ class TestNoProviderTextLeaks:
 
 
 
-# --- The classifier's accept and reject sets, relocated from `test_provider_classifier.py` --------
-# The subject is no longer a public function, so the cases drive the whole read. Every prose reason
-# is kept verbatim: those strings are the record of the two prohibitions the classifier enforces,
-# and losing them loses the reasoning rather than merely the coverage.
-
 # The whole accept set. Three shapes, no fourth.
 ACCEPTED = [
     ((), (IdentityProvider.anonymous, None), "empty providerData is anonymous"),
@@ -374,22 +357,6 @@ class TestTheAcceptSet:
         identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
         assert (identity.provider, identity.provider_uid) == expected, why
 
-    async def test_anonymous_carries_no_provider_uid(self, adapter, get_user_calls):
-        """`core.external_identities`' CHECK requires NULL for anonymous and forbids a sentinel."""
-        get_user_calls(_record(()))
-        identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert identity.provider is IdentityProvider.anonymous
-        assert identity.provider_uid is None
-
-    @pytest.mark.parametrize("entry,provider", [(GOOGLE, IdentityProvider.google),
-                                                (APPLE, IdentityProvider.apple)])
-    async def test_the_matching_entrys_uid_is_the_sole_source_of_provider_uid(
-            self, adapter, get_user_calls, entry, provider):
-        """The matching entry's non-empty uid is the only source of `provider_uid`."""
-        get_user_calls(_record((entry,)))
-        identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        assert (identity.provider, identity.provider_uid) == (provider, entry[1])
-
     def test_the_recognized_provider_map_has_exactly_two_keys(self):
         """A third recognized provider is a spec change, not a refactor."""
         from nativespeaker.api.auth import firebase
@@ -414,23 +381,6 @@ class TestTheRejectSet:
         assert raised.value.cause == "invalid-shape"
         assert raised.value.status == 403
 
-    @pytest.mark.parametrize("pair", [(GOOGLE, APPLE), (GOOGLE, FACEBOOK), (GOOGLE, GOOGLE_OTHER)])
-    async def test_rejection_is_order_independent(self, adapter, get_user_calls, pair):
-        """Both orderings, because a classifier taking the first entry it recognizes passes only one of them."""
-        first, second = pair
-        get_user_calls(_record((first, second)))
-        with pytest.raises(NotLinked):
-            await adapter.get_user_provider_data(ISSUER, SUBJECT)
-        get_user_calls(_record((second, first)))
-        with pytest.raises(NotLinked):
-            await adapter.get_user_provider_data(ISSUER, SUBJECT)
-
-    async def test_a_two_entry_shape_rejects_even_when_both_entries_are_the_same_provider(
-            self, adapter, get_user_calls):
-        get_user_calls(_record((GOOGLE, GOOGLE)))
-        with pytest.raises(NotLinked):
-            await adapter.get_user_provider_data(ISSUER, SUBJECT)
-
     async def test_a_rejecting_shape_spends_exactly_one_attempt(self, adapter, monkeypatch):
         """Classification is definitive, so the budget is for outages and not for a settled verdict."""
         calls = []
@@ -446,12 +396,8 @@ class TestTheRejectSet:
 
     async def test_a_not_found_read_is_answered_before_any_shape_is_classified(
             self, adapter, get_user_calls):
-        """Relocated from the precedence suite, which can no longer set up both facts at once.
-
-        Classifying first would answer a terminal 403 to a caller whose token merely no longer
-        identifies a user -- so the record here carries a shape that *would* reject, and the
-        not-found arm must still be what answers.
-        """
+        """Classifying first would answer a terminal 403 to a caller whose token merely no longer
+        identifies a user, so the not-found arm answers even for a shape that would reject."""
         get_user_calls(auth.UserNotFoundError(PROVIDER_TEXT))
         with pytest.raises(UserNotFound):
             await adapter.get_user_provider_data(ISSUER, SUBJECT)

@@ -21,7 +21,7 @@ def _retryable() -> RetryableLookupError:
     return RetryableLookupError("the provider's own text, for the log only")
 
 
-# Every answer the policy must not retry: two terminal rejections and a completed read.
+# Every answer the policy must not retry: three terminal rejections and a completed read.
 DEFINITIVE = [
     (ANONYMOUS, "a completed read"),
     (UserNotFound(stage="provider_lookup"), "the provider stated the account does not exist"),
@@ -132,13 +132,8 @@ class TestTheExhaustionConversion:
         assert raised.value.stage == "provider_lookup"
 
     async def test_neither_the_retry_error_nor_the_internal_marker_escapes(self):
-        """The two ways the 503 gets lost, both named rather than left to "something raised".
-
-        `RetryError` is tenacity's default on an exhausted budget and matches no handler.
-        `RetryableLookupError` is what `reraise=True` would surface instead, and it declares no
-        status or code. Either one answers a hard 500 where the caller is owed a retryable
-        503, and neither is visible to a test that only asserts that the call raised.
-        """
+        """The two ways the 503 gets lost: `RetryError`, tenacity's default on an exhausted budget,
+        and `RetryableLookupError`, which `reraise=True` would surface. Either answers a hard 500."""
         adapter = CountingAdapter(*[_retryable() for _ in range(FIREBASE_LOOKUP_ATTEMPTS)])
 
         with pytest.raises(BaseException) as raised:  # noqa: B017 -- the class is the assertion
