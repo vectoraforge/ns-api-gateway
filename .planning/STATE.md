@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 37.4
 current_phase_name: machine-generated-code-refactoring-part-3
 status: executing
-stopped_at: Phase 37.4 context gathered
-last_updated: "2026-08-29T10:01:12.001Z"
+stopped_at: Completed 37.4-07-PLAN.md
+last_updated: "2026-08-31T00:24:36.882Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 37.4 execution started
 progress:
   total_phases: 17
-  completed_phases: 7
+  completed_phases: 8
   total_plans: 57
-  completed_plans: 50
-  percent: 41
+  completed_plans: 57
+  percent: 47
 state_head: 3727793a3b57611f7329caf578de7532e2541a8a
 ---
 
@@ -97,13 +97,17 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 - **Run `/gsd:docs-update` for `README.md`** — queued by Phase 37.4 (A-10), which deliberately did
   **not** edit it (zero changed lines across the phase branch) rather than widen the phase. Three
   specific stalenesses, each verified at 2026-08-30:
+
   - **Endpoints that no longer exist** — `README.md:91` documents `POST /prompts/analyze`. The v2.0
     surface is the `/auth/*`, `/chats/*`, `/users/me` and `/health/ready` set.
+
   - **A package layout that no longer exists** — `README.md:194-199` shows an `app/` tree with
     `models.py`. The tree is `src/nativespeaker/api/` and `models/` was split into `tables/` and
     `schemas/` with `database/` renamed `crud/` by `d466a4b`.
+
   - **A Python version that no longer applies** — `README.md:14` says "Python 3.12+";
     `pyproject.toml:4` requires `>=3.14`.
+
 - **Refresh `.planning/codebase/*.md`** — the seven files there were captured 2026-02-24, are three
   milestones behind and predate the `d466a4b` renames entirely. `37.4-CONTEXT.md` marks them
   **stale, do not trust — read the source**, and its deferred list says the refresh is best done
@@ -132,11 +136,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-08-29T08:53:15.790Z
+**Last session:** 2026-08-31T00:24:23.649Z
 
 Last activity: 2026-03-26
-Stopped at: Phase 37.4 context gathered
-Resume file: .planning/phases/37.4-machine-generated-code-refactoring-part-3/37.4-CONTEXT.md
+Stopped at: Completed 37.4-07-PLAN.md
+Resume file: None
 
 ## Performance Metrics
 
@@ -160,6 +164,7 @@ Resume file: .planning/phases/37.4-machine-generated-code-refactoring-part-3/37.
 | Phase 37.3 P02 | 34min | 3 tasks | 9 files |
 | Phase 37.3 P03 | 31min | 4 tasks | 13 files |
 | Phase 37.3 P04 | 38min | 4 tasks | 13 files |
+| Phase 37.4 P07 | ~50min | 3 tasks | 5 files |
 
 ## Decisions
 
@@ -214,3 +219,6 @@ Resume file: .planning/phases/37.4-machine-generated-code-refactoring-part-3/37.
 - [Phase 37.3]: 37.3-04: pre-claim rejections escape to the handler with no local catch — get_db is the single rollback boundary, and the test doubles are now faithful async generators
 - [Phase 37.3]: 37.3-04: AuthEventResult deleted entirely — 44 members, not D-12's 43. AuthOperation survives for core.auth_challenges.operation
 - [Phase 37.3]: 37.3-04: FOUND-08 carries a dated Phase 37.3 amendment naming VerifiedProviderIdentity and the raised ProviderLookupError hierarchy; SHARED-INVARIANTS re-check found no new conflict
+- [Phase ?]: 37.4-07: three flagged conflicts, not five — the developer deleted the exactly-one-Authorization wire contract from SHARED-INVARIANTS.md and deleted FOUND-02, so D-10 and A-09 have no surviving binding text to diverge from; both are recorded under FOUND-01 as properties given up
+- [Phase ?]: 37.4-07: the deleted wire rule survives verbatim in 01-foundation.md:40-46, 02-create-user.md:81/:69, 06-claim-anonymous-grant.md:86 and 11-sign-out-all.md:42 — reported under FOUND-01, not resolved; whether the phase briefs follow SHARED-INVARIANTS.md is a spec decision this phase had no direction on
+- [Phase ?]: 37.4-07: the orphan idp-account-hash columns are on core.access_grants_anti_abuse, NOT core.provider_accounts as plan 37.4-05 reported — a later phase acting on the misattributed name would edit the wrong table
