@@ -426,6 +426,52 @@ Plans:
 
 - [x] 37.4-07-PLAN.md — The ROADMAP goal, the five flagged conflicts, and the phase's records
 
+#### Phase 37.5: Machine-generated code refactoring, part 4 (INSERTED)
+
+**Goal:** Restore the layered architecture and write it down — business logic in `services/`, database access in `crud/`, bodies in `schemas/`, tables in `tables/`, handlers in `routers/`, external-SDK seams in `auth/` — then apply the docstring and comment rules to every file in `src/` and `tests/`, inline the functions that are only a step, move the error-tree self-check out of production code, and move the quota charge so a request that never reached the provider is never billed.
+**Requirements:** D-01 … D-15 and A-01 … A-17 (`37.5-CONTEXT.md`) — this phase has no REQ-ID prefix; its decisions and post-research addenda are its requirement set
+**Depends on:** Phase 37.4
+**Plans:** 10 plans
+
+Plans:
+
+**Wave 1**
+
+- [ ] 37.5-01-PLAN.md — `AGENTS.md`'s layering, function-shape and resilience rules, and the docstring gate with its measured pre-sweep baseline
+
+**Wave 2** *(the tracer — blocked on Wave 1)*
+
+- [ ] 37.5-02-PLAN.md — The auth vertical: `schemas/auth.py`, `crud/identities.py`, `services/auth.py`, two thin handlers, `auth/` down to its three seam files
+
+**Wave 3** *(two parallel plans, no shared file)*
+
+- [ ] 37.5-03-PLAN.md — `services/quota.py::QuotaService`, the two quota halves merged, the top-level module deleted
+- [ ] 37.5-04-PLAN.md — The `errors.py` trim: the tree checker rehosted into `tests/`, four dead classes deleted, `ChallengeRequired` kept
+
+**Wave 4**
+
+- [ ] 37.5-05-PLAN.md — The admission seam: `admission()` and the `Admitted` token, the charge moved inside admission and outside the retry
+
+**Wave 5**
+
+- [ ] 37.5-06-PLAN.md — The `src/` docstring and comment sweep, and the adapter test cut that must precede it
+
+**Wave 6**
+
+- [ ] 37.5-07-PLAN.md — `tests/unit/` sweep and cuts: the error, challenge and JWT clusters
+
+**Wave 7**
+
+- [ ] 37.5-08-PLAN.md — `tests/unit/` sweep and cuts: the create-user, identity, quota and firebase clusters
+
+**Wave 8**
+
+- [ ] 37.5-09-PLAN.md — `tests/e2e/` and `tests/schema/` sweep, one file renamed, every gate baseline at zero
+
+**Wave 9**
+
+- [ ] 37.5-10-PLAN.md — The roadmap goal, the dated requirements amendment, D-08's classification record and the unactioned findings
+
 #### Phase 38: POST /auth/sync
 
 **Goal:** Ship the read-only auth-state reconciliation surface clients call after sign-in or a lost response.
