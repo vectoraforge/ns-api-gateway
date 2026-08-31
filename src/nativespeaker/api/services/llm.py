@@ -6,7 +6,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnableSerializable
 
 from nativespeaker.api.config import ModelConfig, ResilienceConfig
-from nativespeaker.api.resilience import ResiliencePolicy
+from nativespeaker.api.resilience import Admitted, ResiliencePolicy
 from nativespeaker.api.schemas.llm import ChatModelResponse
 
 
@@ -32,7 +32,12 @@ class LLMService:
         # off a mapping and re-validates into the mode-specific model, and both still hold.
         return prompt_template | constrained | RunnableLambda(lambda answer: answer.model_dump())
 
-    async def ainvoke(self, history: list[HumanMessage | AIMessage], content: str, lang: str) -> dict:
+    def admission(self):
+        """Admit one request through the resilience policy."""
+        return self.policy.admission()
+
+    async def ainvoke(self, history: list[HumanMessage | AIMessage], content: str, lang: str,
+                      admitted: Admitted) -> dict:
         """Invoke the chain under the resilience policy."""
         return await self.policy.ainvoke(
-            lambda: self.chain.ainvoke({"history": history, "content": content, "lang": lang}))
+            lambda: self.chain.ainvoke({"history": history, "content": content, "lang": lang}), admitted)

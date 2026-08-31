@@ -13,6 +13,7 @@ from nativespeaker.api.errors import (
     OutOfScopeError,
     UnsupportedLanguageError,
 )
+from nativespeaker.api.resilience import Admitted
 from nativespeaker.api.schemas.api import ExamplesResponse
 from nativespeaker.api.schemas.llm import AnalyzeInput, AnalyzeResponse, FollowUpInput, FollowUpResponse
 from nativespeaker.api.services.llm import LLMService
@@ -43,7 +44,7 @@ class ChatService:
     def supported_languages(self) -> list[str]:
         return list(self.examples.keys())
 
-    async def ask_llm(self, chat: Chat, message: Message) -> Message:
+    async def ask_llm(self, chat: Chat, message: Message, admitted: Admitted) -> Message:
         lang_directive = chat.lang or "various languages (autodetect)"
         history = []
         for history_msg in chat.messages:
@@ -55,7 +56,8 @@ class ChatService:
         llm_response = await self.llm_service.ainvoke(
             history=history,
             content=orjson.dumps(message.content).decode(),
-            lang=lang_directive)
+            lang=lang_directive,
+            admitted=admitted)
 
         resolved_mode = llm_response.get("resolved_mode")
         if resolved_mode == "reject":
@@ -87,9 +89,10 @@ class ChatService:
         input_model = AnalyzeInput(phrase=phrase, context=context)
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
                                 content=input_model.model_dump(exclude_none=True))
-        # After every rejection this method makes on its own terms, and before the provider call inside `ask_llm`.
-        await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
-        ai_message = await self.ask_llm(chat, human_message)
+        # After every rejection this method makes on its own terms, and inside the admission that was granted.
+        async with self.llm_service.admission() as admitted:
+            await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
+            ai_message = await self.ask_llm(chat, human_message, admitted)
 
         chat.messages.append(human_message)
         chat.messages.append(ai_message)
@@ -111,9 +114,10 @@ class ChatService:
         input_model = FollowUpInput(message=message)
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
                                 content=input_model.model_dump(exclude_none=True))
-        # After every rejection this method makes on its own terms, and before the provider call inside `ask_llm`.
-        await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
-        ai_message = await self.ask_llm(chat=chat, message=human_message)
+        # After every rejection this method makes on its own terms, and inside the admission that was granted.
+        async with self.llm_service.admission() as admitted:
+            await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
+            ai_message = await self.ask_llm(chat=chat, message=human_message, admitted=admitted)
 
         chat.messages.append(human_message)
         chat.messages.append(ai_message)

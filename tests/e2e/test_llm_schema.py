@@ -90,7 +90,9 @@ class TestProviderHonoursStrictSchema:
         This one reads the parsed output, so it says nothing about omissions -- that is the case
         above. What it proves is that the binding did not change what the chain hands back.
         """
-        result = await llm_service.ainvoke(history=[], content=CORRECT_PHRASE, lang="English")
+        async with llm_service.admission() as admitted:
+            result = await llm_service.ainvoke(history=[], content=CORRECT_PHRASE, lang="English",
+                                               admitted=admitted)
 
         assert isinstance(result, dict)
         assert result["resolved_mode"] in {"analyze", "follow_up", "reject"}

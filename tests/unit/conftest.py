@@ -1,4 +1,5 @@
 import time
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid7
@@ -19,6 +20,7 @@ from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.jwt_verifier import VerificationResult, bounded_reason_for, claims_from_payload
 from nativespeaker.api.crud import ChatsDB
+from nativespeaker.api.resilience import Admitted
 from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router
 from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.services import ChatService, QuotaService
@@ -139,9 +141,16 @@ def charge_calls(monkeypatch) -> list[UUID]:
     return calls
 
 
+@asynccontextmanager
+async def _granted_admission():
+    """A real async context manager, because `ChatService` enters one; an `AsyncMock` attribute is not."""
+    yield Admitted()
+
+
 @pytest.fixture
 def service(mock_chats_db, charge_calls):
     llm_service = AsyncMock()
+    llm_service.admission = _granted_admission
     # Explicit arguments, not omitted ones: ChatService requires both, so a wiring slip cannot serve free.
     svc = ChatService(db=MagicMock(),
                       llm_service=llm_service,
