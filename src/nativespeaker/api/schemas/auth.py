@@ -27,7 +27,7 @@ class CreateUserRequest(BaseModel):
 
 
 class CompletionResponse(BaseModel):
-    """The completion body: the registration state. There is no backend session tier, so nothing is minted."""
+    """The completion body: the registration state, and nothing else."""
     identity_provider: IdentityProvider
 
 

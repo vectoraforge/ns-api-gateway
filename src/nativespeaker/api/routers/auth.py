@@ -63,7 +63,7 @@ async def issue_challenge(body: ChallengeRequest,
 async def create_user(body: CreateUserRequest,
                       identity: Identity = Depends(get_identity),
                       service: AuthService = Depends(get_auth_service)) -> CompletionResponse:
-    """Complete the operation the body's handle stands for. The framework owns every malformed-body rejection."""
-    # Forwarded untouched and never logged. Byte-for-byte comparison makes a padded handle a not-found.
+    """Complete the operation the body's handle stands for."""
+    # Forwarded untouched and never logged: the handle is a secret.
     provider = await service.complete(identity=identity, challenge_id=body.challenge_id)
     return CompletionResponse(identity_provider=provider)

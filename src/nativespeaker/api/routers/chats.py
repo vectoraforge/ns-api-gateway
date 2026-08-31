@@ -13,8 +13,6 @@ from nativespeaker.api.services import ChatService
 # Authentication is default-on for every route on this router.
 router = APIRouter(tags=["chats"], dependencies=[Depends(get_linked_identity)])
 
-# `ChatService` charges quota itself, after its own validations: a route-level charge would bill refused requests.
-
 
 @router.get("/chats",
             response_model=list[ChatResponse],

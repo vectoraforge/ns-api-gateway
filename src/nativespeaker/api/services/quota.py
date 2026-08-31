@@ -38,8 +38,7 @@ class QuotaService:
                     raise QuotaExceededError("No effective grant for this user")
 
                 if len(grants) > 1:
-                    # A tripwire, not a recovery branch: a partial unique index makes this unreachable,
-                    # and there is no tie-break.
+                    # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
                     logger.error("quota_integrity_failure", branch="multiple_effective_grants")
                     raise MultipleEffectiveGrantsError(len(grants), user_id)
 
@@ -56,8 +55,7 @@ class QuotaService:
                 period = evaluated_at.strftime("%Y-%m")
 
                 if usage.monthly_period != period:
-                    # The rollover runs before the comparison and in the same transaction, so a reset
-                    # never commits uncharged.
+                    # Rollover runs before the comparison and in the same transaction: no reset commits uncharged.
                     usage.monthly_used = 0
                     usage.monthly_period = period
 

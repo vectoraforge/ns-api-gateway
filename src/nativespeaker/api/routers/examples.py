@@ -5,7 +5,7 @@ from nativespeaker.api.schemas.api import ExamplesResponse
 from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.services import ChatService
 
-# Authentication is default-on for this router; see `root.py` for why both levels declare it.
+# Authentication is default-on for every route on this router.
 router = APIRouter(tags=["examples"], dependencies=[Depends(get_linked_identity)])
 
 

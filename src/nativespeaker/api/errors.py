@@ -69,8 +69,7 @@ def class_answering_status(status: int) -> type[AppError] | None:
     return None
 
 
-# --- The generic answer for each bare framework status. Each is silent, so a framework rejection
-# leaves the log line to whoever raised it, and each carries that status's own headers. ---
+# --- The generic answer for each bare framework status: silent, and carrying that status's headers ---
 
 
 class InvalidRequest(AppError):
@@ -265,7 +264,7 @@ class CircuitOpenError(ServiceUnavailable):
         return {"Retry-After": str(self.retry_after_seconds)}
 
 
-# --- Admission arms: `auth/identity.py` and the barrier in `app/dependencies.py` ---
+# --- Admission arms ---
 
 
 class InvalidExternalJwt(AppError):
@@ -317,7 +316,7 @@ class BlockedUser(AccountUnavailable):
     """The identity row is active, but the user it resolves to is not."""
 
 
-# --- Creation arms: the consuming transaction in `auth/create_user.py` ---
+# --- Creation arms ---
 
 
 class IdentityAlreadyLinked(AppError):
@@ -326,7 +325,7 @@ class IdentityAlreadyLinked(AppError):
     code = "identity_already_linked"
 
 
-# --- Lookup arms: the providerData read in `auth/firebase.py` ---
+# --- Lookup arms ---
 
 
 class ProviderLookupError(AppError):
@@ -367,8 +366,7 @@ class NotLinked(ProviderLookupError):
     code = "operation_not_allowed"
 
 
-# --- Challenge arms: the binding comparison in `crud/challenges.py`, and the precedence block in
-# `routers/auth.py::_complete` that surrounds it ---
+# --- Challenge arms ---
 
 
 class ChallengeRejected(AppError):

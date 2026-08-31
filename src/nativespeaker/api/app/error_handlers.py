@@ -25,10 +25,8 @@ _REST = re.compile(r"([a-z0-9])([A-Z])")
 
 def camel_to_snake(name: str) -> str:
     r"""An exception class name as the log event name it stands for.
-
     Two substitutions, because a single `\B([A-Z])` rule splits an acronym:
-    `InvalidExternalJwt` -> `invalid_external_jwt`, not `invalid_external_j_w_t`.
-    """
+    `InvalidExternalJwt` -> `invalid_external_jwt`, not `invalid_external_j_w_t`."""
     return _REST.sub(r"\1_\2", _FIRST.sub(r"\1_\2", name)).lower()
 
 

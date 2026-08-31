@@ -42,7 +42,6 @@ class ExternalIdentity(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid7, primary_key=True)
     # ON DELETE RESTRICT in the migration: a user row cannot be deleted out from under its identity row.
     user_id: UUID = Field(foreign_key="core.users.id", unique=True)
-    # The only plaintext external subject in the schema; `core.auth_challenges` stores a keyed hash instead.
     issuer: str = Field()
     subject: str = Field()
     # The sole per-request classifier for every identity, authorization and entitlement decision.

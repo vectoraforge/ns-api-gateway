@@ -24,7 +24,7 @@ def new_challenge_id() -> str:
 
 
 class ChallengesDB:
-    """The four operations. No method commits, and the session is a parameter so tests can swap it."""
+    """The four operations. No method commits, and the session is a parameter on every one of them."""
 
     def __repr__(self) -> str:
         return f"ChallengesDB(ttl_seconds={CHALLENGE_TTL_SECONDS})"
