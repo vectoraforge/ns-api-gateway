@@ -1,10 +1,8 @@
-from collections.abc import Callable
 from datetime import datetime
 from uuid import UUID, uuid4
 
 import orjson
 from langchain_core.messages import AIMessage, HumanMessage
-from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.crud import ChatsDB
@@ -15,10 +13,10 @@ from nativespeaker.api.errors import (
     OutOfScopeError,
     UnsupportedLanguageError,
 )
-from nativespeaker.api.quota import charge_quota
 from nativespeaker.api.schemas.api import ExamplesResponse
 from nativespeaker.api.schemas.llm import AnalyzeInput, AnalyzeResponse, FollowUpInput, FollowUpResponse
 from nativespeaker.api.services.llm import LLMService
+from nativespeaker.api.services.quota import QuotaService
 from nativespeaker.api.tables import Chat, ChatRole, Message
 
 
@@ -30,7 +28,7 @@ class ChatService:
                  examples: dict[str, list[str]],
                  messages_limit: int,
                  chats_limit: int,
-                 session_factory: async_sessionmaker | Callable[[], AsyncSession],
+                 quota_service: QuotaService,
                  evaluated_at: datetime) -> None:
         self.llm_service = llm_service
         self.chats_db = ChatsDB(db)
@@ -38,7 +36,7 @@ class ChatService:
         self.messages_limit = messages_limit
         self.chats_limit = chats_limit
         # Required with no default: a `None` here would serve both quota-checked POSTs for free and fail nothing.
-        self.session_factory = session_factory
+        self.quota_service = quota_service
         self.evaluated_at = evaluated_at
 
     @property
@@ -90,7 +88,7 @@ class ChatService:
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
                                 content=input_model.model_dump(exclude_none=True))
         # After every rejection this method makes on its own terms, and before the provider call inside `ask_llm`.
-        await charge_quota(self.session_factory, user_id=user_id, evaluated_at=self.evaluated_at)
+        await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
         ai_message = await self.ask_llm(chat, human_message)
 
         chat.messages.append(human_message)
@@ -114,7 +112,7 @@ class ChatService:
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
                                 content=input_model.model_dump(exclude_none=True))
         # After every rejection this method makes on its own terms, and before the provider call inside `ask_llm`.
-        await charge_quota(self.session_factory, user_id=user_id, evaluated_at=self.evaluated_at)
+        await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
         ai_message = await self.ask_llm(chat=chat, message=human_message)
 
         chat.messages.append(human_message)

@@ -21,8 +21,7 @@ from nativespeaker.api.auth.jwt_verifier import VerificationResult, bounded_reas
 from nativespeaker.api.crud import ChatsDB
 from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router
 from nativespeaker.api.schemas.auth import Identity
-from nativespeaker.api.services import ChatService
-from nativespeaker.api.services import chats as chats_service
+from nativespeaker.api.services import ChatService, QuotaService
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.users import User
 
@@ -133,10 +132,10 @@ def charge_calls(monkeypatch) -> list[UUID]:
     """Records the user each charge would bill, in place of resolving one: the resolver has its own suite."""
     calls: list[UUID] = []
 
-    async def recording_charge(session_factory, *, user_id: UUID, evaluated_at: datetime) -> None:
+    async def recording_charge(self, *, user_id: UUID, evaluated_at: datetime) -> None:
         calls.append(user_id)
 
-    monkeypatch.setattr(chats_service, "charge_quota", recording_charge)
+    monkeypatch.setattr(QuotaService, "charge", recording_charge)
     return calls
 
 
@@ -150,7 +149,7 @@ def service(mock_chats_db, charge_calls):
                                 "es": ["Ejemplo 1"]},
                       messages_limit=50,
                       chats_limit=50,
-                      session_factory=MagicMock(),
+                      quota_service=QuotaService(MagicMock()),
                       evaluated_at=EVALUATED_AT)
     svc.chats_db = mock_chats_db
     return svc
