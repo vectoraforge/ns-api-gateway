@@ -20,8 +20,7 @@ from nativespeaker.api.errors import (
     UnsupportedLanguageError,
 )
 from nativespeaker.api.resilience import ResiliencePolicy
-from nativespeaker.api.services import ChatService
-from nativespeaker.api.services import chats as chats_service
+from nativespeaker.api.services import ChatService, QuotaService
 from nativespeaker.api.tables import (
     AccessGrant,
     AccessGrantSource,
@@ -150,7 +149,8 @@ def _service(mock_chats_db, *, llm=None, session_factory=None) -> ChatService:
                       examples={"en": ["Example 1"], "es": ["Ejemplo 1"]},
                       messages_limit=MESSAGES_LIMIT,
                       chats_limit=CHATS_LIMIT,
-                      session_factory=session_factory if session_factory is not None else MagicMock(),
+                      quota_service=QuotaService(
+                          session_factory if session_factory is not None else MagicMock()),
                       evaluated_at=EVALUATED_AT)
     svc.chats_db = mock_chats_db
     return svc
@@ -159,10 +159,10 @@ def _service(mock_chats_db, *, llm=None, session_factory=None) -> ChatService:
 def _raising_charge(monkeypatch, error: BaseException) -> None:
     """Replace the charge with one that refuses, leaving every other line of the service untouched."""
 
-    async def refusing_charge(session_factory, *, user_id, evaluated_at) -> None:
+    async def refusing_charge(self, *, user_id, evaluated_at) -> None:
         raise error
 
-    monkeypatch.setattr(chats_service, "charge_quota", refusing_charge)
+    monkeypatch.setattr(QuotaService, "charge", refusing_charge)
 
 
 def _chat_with_ai_messages(count: int) -> Chat:

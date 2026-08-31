@@ -11,7 +11,7 @@ from nativespeaker.api.errors import (
     QuotaExceededError,
     UnknownTierError,
 )
-from nativespeaker.api.quota import consume_quota
+from nativespeaker.api.services.quota import QuotaService
 from nativespeaker.api.tables import (
     AccessGrant,
     AccessGrantSource,
@@ -42,7 +42,7 @@ class _StubResult:
 
 
 class _StubSession:
-    """Stands in for the short session `charge_quota` opens, keeping every statement it was asked to run."""
+    """Stands in for the short session the charge opens, keeping every statement it was asked to run."""
 
     _ENTITY_KEY = {AccessGrant: "grants", UserMonthlyUsage: "usage", AccessTier: "allowance"}
 
@@ -52,6 +52,20 @@ class _StubSession:
                       "allowance": [] if allowance is None else [allowance]}
         self.statements = []
         self.added = []
+        self.committed = False
+        self.rolled_back = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info) -> bool:
+        return False
+
+    async def commit(self) -> None:
+        self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
 
     def add(self, instance):
         self.added.append(instance)
@@ -85,10 +99,15 @@ def _usage(grant: AccessGrant, *, monthly_period=..., monthly_used=0) -> UserMon
                             monthly_used=monthly_used)
 
 
+async def _charge(session: _StubSession, *, evaluated_at=EVALUATED_AT) -> None:
+    """Run the merged charge, handing the service a factory that yields the stub as its short session."""
+    await QuotaService(lambda: session).charge(user_id=USER_ID, evaluated_at=evaluated_at)
+
+
 async def _consume(*, grants=(), usage=None, allowance=ALLOWANCE) -> _StubSession:
     """Run the resolver against a stubbed session and return the session for inspection."""
     session = _StubSession(grants=grants, usage=usage, allowance=allowance)
-    await consume_quota(session, user_id=USER_ID, evaluated_at=EVALUATED_AT)
+    await _charge(session)
     return session
 
 
@@ -114,7 +133,7 @@ class TestNoEffectiveGrant:
         """One statement, not two: there is no grant to look a usage row up for."""
         session = _StubSession()
         with pytest.raises(QuotaExceededError):
-            await consume_quota(session, user_id=USER_ID, evaluated_at=EVALUATED_AT)
+            await _charge(session)
         assert session.entities == ["grants"]
 
 
@@ -129,7 +148,7 @@ class TestMultipleEffectiveGrants:
         """No tie-break means no usage read: the resolver stops before choosing."""
         session = _StubSession(grants=(_grant(), _grant()))
         with pytest.raises(MultipleEffectiveGrantsError):
-            await consume_quota(session, user_id=USER_ID, evaluated_at=EVALUATED_AT)
+            await _charge(session)
         assert session.entities == ["grants"]
 
     async def test_it_is_an_internal_error_not_an_entitlement_answer(self):
@@ -151,7 +170,7 @@ class TestMissingUsageRow:
         """The whole point of the branch: no row is added, so no free allowance is invented."""
         session = _StubSession(grants=(_grant(),), usage=None)
         with pytest.raises(MissingUsageRowError):
-            await consume_quota(session, user_id=USER_ID, evaluated_at=EVALUATED_AT)
+            await _charge(session)
         assert session.added == []
         assert session.entities == ["grants", "usage"]
 
@@ -302,7 +321,7 @@ class TestGrantThenUsageOrder:
         grant, usage = _one_effective_grant(monthly_used=ALLOWANCE)
         session = _StubSession(grants=(grant,), usage=usage)
         with pytest.raises(QuotaExceededError):
-            await consume_quota(session, user_id=USER_ID, evaluated_at=EVALUATED_AT)
+            await _charge(session)
         assert session.entities == ["grants", "usage", "allowance"]
 
     async def test_the_rollover_path_locks_in_the_same_order(self):
@@ -313,7 +332,7 @@ class TestGrantThenUsageOrder:
     async def test_the_missing_usage_path_stops_after_the_usage_read(self):
         session = _StubSession(grants=(_grant(),), usage=None)
         with pytest.raises(MissingUsageRowError):
-            await consume_quota(session, user_id=USER_ID, evaluated_at=EVALUATED_AT)
+            await _charge(session)
         assert session.entities == ["grants", "usage"]
 
     async def test_no_user_row_is_locked_ahead_of_either(self):
@@ -337,7 +356,7 @@ class TestTheResolverReadsNoClock:
         usage = _usage(grant, monthly_period=STALE_PERIOD)
         session = _StubSession(grants=(grant,), usage=usage)
         earlier = EVALUATED_AT - timedelta(days=60)
-        await consume_quota(session, user_id=USER_ID, evaluated_at=earlier)
+        await _charge(session, evaluated_at=earlier)
         assert usage.monthly_period == earlier.strftime("%Y-%m") == "2026-06"
 
     async def test_the_updated_at_stamp_is_the_captured_instant(self):
