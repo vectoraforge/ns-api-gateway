@@ -5,7 +5,6 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from nativespeaker.api.services.auth import AuthService
 from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.crud import identities as identities_crud
@@ -19,6 +18,7 @@ from nativespeaker.api.errors import (
 )
 from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.services import auth as auth_service
+from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.users import User
 

@@ -3,12 +3,12 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
-from nativespeaker.api.services.auth import AuthService
 from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import IdentityAlreadyLinked
 from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.purchases import StorePurchaseToken
 from nativespeaker.api.tables.users import User

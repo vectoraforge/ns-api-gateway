@@ -5,7 +5,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
-from nativespeaker.api.services.auth import AuthService
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
@@ -14,6 +13,7 @@ from nativespeaker.api.crud import identities as identities_crud
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError, IdentityAlreadyLinked
 from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import IdentityProvider
 
 pytestmark = pytest.mark.schema

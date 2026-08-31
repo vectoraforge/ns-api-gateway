@@ -5,7 +5,6 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from nativespeaker.api.services.auth import AuthService
 
 from nativespeaker.api.app.dependencies import (
     get_challenge_store,
@@ -26,6 +25,7 @@ from nativespeaker.api.errors import (
 )
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import IdentityProvider
 
