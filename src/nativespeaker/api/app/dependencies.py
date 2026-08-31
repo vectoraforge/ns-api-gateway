@@ -12,7 +12,7 @@ from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.errors import InvalidExternalJwt, PreAuthIdentityNotAllowed
 from nativespeaker.api.schemas.auth import Identity
-from nativespeaker.api.services import AuthService, ChatService
+from nativespeaker.api.services import AuthService, ChatService, QuotaService
 
 
 def get_config(request: Request) -> AppConfig:
@@ -68,18 +68,22 @@ def get_session_factory(request: Request) -> async_sessionmaker:
     return request.app.state.session_factory
 
 
+def get_quota_service(session_factory: async_sessionmaker = Depends(get_session_factory)) -> QuotaService:
+    # The factory, not `get_db`: the charge commits in its own session while the request session stays open.
+    return QuotaService(session_factory=session_factory)
+
+
 # Defined below the dependencies it declares, because its `Depends()` defaults are evaluated at definition time.
 def get_chat_service(request: Request,
                      db: AsyncSession = Depends(get_db),
                      config: AppConfig = Depends(get_config),
-                     session_factory: async_sessionmaker = Depends(get_session_factory)) -> ChatService:
+                     quota_service: QuotaService = Depends(get_quota_service)) -> ChatService:
     return ChatService(db=db,
                        llm_service=request.app.state.llm_service,
                        examples=config.examples,
                        chats_limit=config.chats_limit,
                        messages_limit=config.messages_limit,
-                       # The factory, not `db`: the charge commits in its own session while `db` stays open.
-                       session_factory=session_factory,
+                       quota_service=quota_service,
                        # One instant for this request; nothing downstream reads the clock again.
                        evaluated_at=datetime.now(UTC))
 
