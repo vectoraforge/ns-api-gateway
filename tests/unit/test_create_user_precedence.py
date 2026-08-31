@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from nativespeaker.api.services.auth import AuthService
 
 from nativespeaker.api.app.dependencies import (
     get_challenge_store,
@@ -119,7 +120,7 @@ class _StubSession:
 
 
 class _RecordingCreator:
-    """Stands in for `auth/create_user.py::create_account` and records the facts handed to it."""
+    """Stands in for `AuthService.create_user` and records the facts handed to it."""
 
     def __init__(self) -> None:
         self.calls: list[dict] = []
@@ -127,7 +128,7 @@ class _RecordingCreator:
         self.result = uuid4()
         self.rejection: AppError | None = None
 
-    async def __call__(self, session, **kwargs) -> UUID:
+    async def __call__(self, **kwargs) -> UUID:
         self.calls.append(kwargs)
         if self.rejection is not None:
             raise self.rejection
@@ -144,6 +145,7 @@ def rejections(monkeypatch) -> _RejectionLog:
     """Spy on both loggers a rejection can come from, so one logged at the wrong site is still seen."""
     log = _RejectionLog()
     monkeypatch.setattr("nativespeaker.api.routers.auth.logger.warning", log.record)
+    monkeypatch.setattr("nativespeaker.api.services.auth.logger.warning", log.record)
     monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.warning", log.record)
     return log
 
@@ -156,7 +158,7 @@ def session() -> _StubSession:
 @pytest.fixture
 def creator(monkeypatch) -> _RecordingCreator:
     recorder = _RecordingCreator()
-    monkeypatch.setattr("nativespeaker.api.routers.auth.create_account", recorder)
+    monkeypatch.setattr(AuthService, "create_user", recorder)
     return recorder
 
 
@@ -504,7 +506,7 @@ class TestThePrecedenceItself:
 
 
 class TestTheTransactionRejectionIsObservedAtTheHandler:
-    """The arm this plan migrated: `create_account` raises, and the record is written at the handler."""
+    """The arm this plan migrated: `create_user` raises, and the record is written at the handler."""
 
     @staticmethod
     def _reaching_the_transaction(store, creator, adapter) -> None:
@@ -526,7 +528,7 @@ class TestTheTransactionRejectionIsObservedAtTheHandler:
 
     def test_it_consumes_the_challenge_exactly_once_before_the_client_is_answered(
             self, client, store, rejections, creator, fake_firebase_adapter):
-        """D-04: the route's except arm spends the handle, and `create_account` no longer also does."""
+        """D-04: the service's except arm spends the handle, and `create_user` no longer also does."""
         self._reaching_the_transaction(store, creator, fake_firebase_adapter)
 
         _complete(client)

@@ -5,10 +5,11 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from nativespeaker.api.services.auth import AuthService
 from sqlalchemy.exc import IntegrityError
 
-from nativespeaker.api.auth import create_user as creation
-from nativespeaker.api.auth.create_user import create_user
+from nativespeaker.api.crud import identities as identities_crud
+from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import (
     AccountUnavailable,
     AppError,
@@ -17,6 +18,7 @@ from nativespeaker.api.errors import (
     IdentityAlreadyLinked,
 )
 from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.services import auth as auth_service
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.users import User
 
@@ -112,13 +114,13 @@ def _identity_row(*, state: IdentityState, user_id=None) -> ExternalIdentity:
 
 
 async def _create(session):
-    """Drive `create_user` over whichever session the case scripted."""
-    return await create_user(session,
-                             identity=_identity(),
-                             evaluated_at=NOW,
-                             provider=IdentityProvider.anonymous,
-                             provider_uid=None,
-                             email=None)
+    """Drive `AuthService.create_user` over whichever session the case scripted."""
+    service = AuthService(db=session, challenge_store=ChallengesDB(), adapter=None,
+                          evaluated_at=NOW)
+    return await service.create_user(identity=_identity(),
+                                     provider=IdentityProvider.anonymous,
+                                     provider_uid=None,
+                                     email=None)
 
 
 async def _run(rows: list[object | None]) -> _NoMutationSession:
@@ -246,7 +248,9 @@ class TestTheReResolutionsThreeNoMutationArms:
 
 # Structural guards read the code with prose stripped, since a text search would also match the prose.
 
-_CREATION_SOURCE = Path(creation.__file__).read_text()
+# Both halves of the creation path: the service holds the rule, the store holds the inserts.
+_CREATION_SOURCE = "\n".join(Path(module.__file__).read_text()
+                             for module in (auth_service, identities_crud))
 
 
 class _StripDocstrings(ast.NodeTransformer):
