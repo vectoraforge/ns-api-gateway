@@ -1,13 +1,6 @@
 """What the provider is actually asked for, checked without calling a provider.
 
-The chain used to parse whatever JSON came back and validate it afterwards, which let the model
-omit a declared key and turn an already-correct phrase into a 500. The fix binds the schema to the
-call. These cases prove the schema we emit really is strict -- every declared key required, no
-undeclared key accepted -- and that the chain still hands `ChatService.ask_llm` a plain dict.
-
-The schema conversion is the same one the provider wrapper performs, so asserting on it here costs
-no API call and still describes the real request. What it cannot tell you is whether the provider
-honoured the constraint; `tests/e2e/test_llm_schema.py` is the gate for that.
+Every declared key required, no undeclared key accepted, and a plain dict handed back.
 """
 
 from langchain_core.runnables import RunnableLambda
@@ -39,11 +32,8 @@ class TestEmittedSchemaIsStrict:
         assert set(issue["required"]) == {"text_part", "explanation"}
 
     def test_root_is_flat_rather_than_a_union(self):
-        """A discriminated-union root is left un-rewritten by the strict conversion.
-
-        It would ship looking strict while every branch stayed unconstrained, so the flat shape is
-        load-bearing and this case is what stops someone restoring the union.
-        """
+        """A discriminated-union root is left un-rewritten by the strict conversion, so it would
+        ship looking strict while every branch stayed unconstrained."""
         schema = strict_schema()
 
         assert schema["type"] == "object"
@@ -54,8 +44,7 @@ class TestEmittedSchemaIsStrict:
 class RecordingModel:
     """A chat model stand-in that records how the schema was bound and returns a fixed model.
 
-    Deliberately not a mock of the whole chain: the point is to exercise the real `create_chain`
-    wiring, so only the provider call itself is replaced.
+    Only the provider call is replaced, so the real `create_chain` wiring is exercised.
     """
 
     def __init__(self, produces: ChatModelResponse) -> None:
