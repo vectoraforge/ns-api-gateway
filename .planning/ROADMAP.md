@@ -431,7 +431,7 @@ Plans:
 **Goal:** Restore the layered architecture and write it down — business logic in `services/`, database access in `crud/`, bodies in `schemas/`, tables in `tables/`, handlers in `routers/`, external-SDK seams in `auth/` — then apply the docstring and comment rules to every file in `src/` and `tests/`, inline the functions that are only a step, move the error-tree self-check out of production code, and move the quota charge so a request that never reached the provider is never billed.
 **Requirements:** D-01 … D-15 and A-01 … A-17 (`37.5-CONTEXT.md`) — this phase has no REQ-ID prefix; its decisions and post-research addenda are its requirement set
 **Depends on:** Phase 37.4
-**Plans:** 4/10 plans executed
+**Plans:** 5/10 plans executed
 
 Plans:
 
@@ -450,7 +450,7 @@ Plans:
 
 **Wave 4**
 
-- [ ] 37.5-05-PLAN.md — The admission seam: `admission()` and the `Admitted` token, the charge moved inside admission and outside the retry
+- [x] 37.5-05-PLAN.md — The admission seam: `admission()` and the `Admitted` token, the charge moved inside admission and outside the retry
 
 **Wave 5**
 
