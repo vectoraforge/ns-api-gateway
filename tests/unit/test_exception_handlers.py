@@ -1,5 +1,7 @@
+import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import cast
 from uuid import uuid7
 
@@ -419,9 +421,17 @@ class TestAnAccountUnavailableArmTravelsTheWholeErrorPath:
             assert set(fields) == {"exc_info"}
 
 
+_TESTS_ROOT = Path(__file__).resolve().parent.parent
+
+# `subprocess.run` inherits `os.environ` but not pytest's own `sys.path` insertions.
+_SUBPROCESS_PATH = os.pathsep.join(
+    entry for entry in (str(_TESTS_ROOT), os.environ.get("PYTHONPATH")) if entry)
+
+
 def _fresh_interpreter(snippet: str) -> subprocess.CompletedProcess:
     """Run the check in its own process, so a synthetic subclass cannot outlive it."""
-    return subprocess.run([sys.executable, "-c", snippet], capture_output=True, text=True)
+    return subprocess.run([sys.executable, "-c", snippet], capture_output=True, text=True,
+                          env={**os.environ, "PYTHONPATH": _SUBPROCESS_PATH})
 
 
 class TestStartupFailsClosedOnATreeDefect:

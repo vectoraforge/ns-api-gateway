@@ -1,4 +1,5 @@
 """The error tree is total, and the handlers read it rather than a remap table."""
+import os
 import re
 import subprocess
 import sys
@@ -35,9 +36,17 @@ def _declaring(code: str) -> list[type[AppError]]:
     return [cls for cls in _family(AppError) if vars(cls).get("code") == code]
 
 
+_TESTS_ROOT = Path(__file__).resolve().parent.parent
+
+# `subprocess.run` inherits `os.environ` but not pytest's own `sys.path` insertions.
+_SUBPROCESS_PATH = os.pathsep.join(
+    entry for entry in (str(_TESTS_ROOT), os.environ.get("PYTHONPATH")) if entry)
+
+
 def _fresh_interpreter(snippet: str) -> subprocess.CompletedProcess:
     """Run a check in its own process, so a synthetic subclass cannot outlive it."""
-    return subprocess.run([sys.executable, "-c", snippet], capture_output=True, text=True)
+    return subprocess.run([sys.executable, "-c", snippet], capture_output=True, text=True,
+                          env={**os.environ, "PYTHONPATH": _SUBPROCESS_PATH})
 
 
 class _RecordingLogger:
