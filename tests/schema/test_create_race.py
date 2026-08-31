@@ -10,10 +10,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth.create_user import create_user
-from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError
+from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import IdentityProvider
 
 pytestmark = pytest.mark.schema
@@ -147,12 +147,12 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=Non
     async with harness.factory() as real_session:
         session = _HookedSession(real_session, after_first_read)
         try:
-            attempt.result = await create_user(session,
-                                               identity=attempt.identity,
-                                               evaluated_at=NOW,
-                                               provider=attempt.provider,
-                                               provider_uid=attempt.provider_uid,
-                                               email=None)
+            service = AuthService(db=session, challenge_store=store, adapter=None,
+                                  evaluated_at=NOW)
+            attempt.result = await service.create_user(identity=attempt.identity,
+                                                       provider=attempt.provider,
+                                                       provider_uid=attempt.provider_uid,
+                                                       email=None)
         except AppError as rejection:
             # The route's own except arm (`routers/auth.py::_complete`): the conflicting inserts are
             # rolled back, then the handle is spent and committed before the client is answered.

@@ -1,16 +1,11 @@
-"""The auth-domain enums, the auth request and response bodies, and the `core.auth_challenges` table."""
+"""The auth-domain enums and the `core.auth_challenges` table."""
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, cast
 from uuid import UUID, uuid7
 
-# `Field` is aliased because the unqualified name is sqlmodel's, which the `AuthChallenge` table below needs.
-from pydantic import BaseModel
-from pydantic import Field as PydanticField
 from sqlalchemy import DateTime, Enum
 from sqlmodel import Field, SQLModel
-
-from nativespeaker.api.tables.identities import IdentityProvider
 
 
 class AuthOperation(StrEnum):
@@ -22,29 +17,6 @@ class AuthOperation(StrEnum):
     restore_subscription = "restore_subscription"
     sign_out_all = "sign_out_all"
     sync = "sync"
-
-
-class ChallengeRequest(BaseModel):
-    """The issuance body. `operation` is a plain `str`, never a Literal: an unissuable value is the handler's 400."""
-    operation: str
-
-
-class PrepareResponse(BaseModel):
-    """The prepare body: the handle and its expiry, and nothing else about the challenge is disclosed."""
-    challenge_id: str
-    expires_at: datetime
-
-
-class CreateUserRequest(BaseModel):
-    """The completion body: the handle obtained from `/auth/challenge`, and nothing else."""
-    # Required and non-empty, so an unusable handle is the framework's 422 rather than a not-found 409.
-    # The length counts characters, so a padded handle stays a distinct value and reaches the store untrimmed.
-    challenge_id: str = PydanticField(..., min_length=1)
-
-
-class CompletionResponse(BaseModel):
-    """The completion body: the registration state. There is no backend session tier, so nothing is minted."""
-    identity_provider: IdentityProvider
 
 
 AuthOperationType = cast(Any, Enum(AuthOperation, name='auth_operation', schema='core'))

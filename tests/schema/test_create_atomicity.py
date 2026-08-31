@@ -9,11 +9,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth import create_user as creation
-from nativespeaker.api.auth.create_user import create_user
-from nativespeaker.api.auth.identity import Identity
+from nativespeaker.api.crud import identities as identities_crud
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError, IdentityAlreadyLinked
+from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import IdentityProvider
 
 pytestmark = pytest.mark.schema
@@ -158,12 +158,12 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
     async with harness.factory() as real_session:
         session = _RacingSession(real_session, after_first_read)
         try:
-            result = await create_user(session,
-                                       identity=identity,
-                                       evaluated_at=NOW,
-                                       provider=provider,
-                                       provider_uid=provider_uid,
-                                       email=None)
+            service = AuthService(db=session, challenge_store=store, adapter=None,
+                                  evaluated_at=NOW)
+            result = await service.create_user(identity=identity,
+                                               provider=provider,
+                                               provider_uid=provider_uid,
+                                               email=None)
         except AppError as rejection:
             # The route's own except arm (`routers/auth.py::_complete`): a rejection after the claim
             # rolls the business inserts back, then consumes and commits before the client is
@@ -269,7 +269,7 @@ class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
 
         users_before = await scalar(harness, "SELECT count(*) FROM core.users")
         identities_before = await scalar(harness, "SELECT count(*) FROM core.external_identities")
-        monkeypatch.setattr(creation, "uuid4", lambda: minted)
+        monkeypatch.setattr(identities_crud, "uuid4", lambda: minted)
 
         result, _, _ = await run_creation(harness, subject=subject,
                                           provider=IdentityProvider.anonymous, provider_uid=None)

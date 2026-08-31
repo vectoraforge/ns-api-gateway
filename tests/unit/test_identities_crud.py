@@ -5,7 +5,7 @@ from uuid import uuid7
 import pytest
 
 from nativespeaker.api.app.error_handlers import camel_to_snake
-from nativespeaker.api.auth.identity import resolve_identity
+from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.errors import (
     AccountUnavailable,
     AppError,
@@ -59,8 +59,8 @@ def _row(*, identity_state=IdentityState.active, user_active: bool = True, user=
 async def _resolve(row, *, preauth_callable: bool = False):
     """The admitting half: resolution returns the `Identity` it resolved."""
     session = _StubSession(row)
-    identity = await resolve_identity(session, issuer=ISSUER, subject=SUBJECT,
-                                      allow_preauth=preauth_callable)
+    identity = await IdentitiesDB(session).resolve(issuer=ISSUER, subject=SUBJECT,
+                                                   allow_preauth=preauth_callable)
     return identity, session
 
 
@@ -68,8 +68,8 @@ async def _rejected(row, expected: type[BaseException], *, preauth_callable: boo
     """The rejecting half: resolution raises, and the raised instance is what the cases read."""
     session = _StubSession(row)
     with pytest.raises(expected) as caught:
-        await resolve_identity(session, issuer=ISSUER, subject=SUBJECT,
-                               allow_preauth=preauth_callable)
+        await IdentitiesDB(session).resolve(issuer=ISSUER, subject=SUBJECT,
+                                            allow_preauth=preauth_callable)
     return caught.value, session
 
 
@@ -77,8 +77,8 @@ async def _drive(row, *, preauth_callable: bool = False) -> _StubSession:
     """Run resolution for its effect on the session, whichever way the outcome goes."""
     session = _StubSession(row)
     with contextlib.suppress(AppError):
-        await resolve_identity(session, issuer=ISSUER, subject=SUBJECT,
-                               allow_preauth=preauth_callable)
+        await IdentitiesDB(session).resolve(issuer=ISSUER, subject=SUBJECT,
+                                            allow_preauth=preauth_callable)
     return session
 
 
@@ -211,8 +211,8 @@ class TestOneQueryOneCodePath:
         """Padding and constant-time delays are deliberately absent for this product."""
         import inspect
 
-        from nativespeaker.api.auth import identity as identity_module
-        source = inspect.getsource(identity_module)
+        from nativespeaker.api.crud import identities as identities_module
+        source = inspect.getsource(identities_module)
         assert "sleep" not in source
         assert "perf_counter" not in source
 

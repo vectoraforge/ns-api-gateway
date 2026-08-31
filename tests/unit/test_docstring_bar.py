@@ -40,7 +40,7 @@ def over_long(root: Path, *, recurse: bool = True) -> list[tuple[str, str, int]]
 
 
 BASELINE: dict[str, int] = {
-    "src": 7,
+    "src": 6,
     "tests": 0,
     "tests/e2e": 5,
     "tests/schema": 0,

@@ -11,8 +11,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.auth.identity import resolve_identity
 from nativespeaker.api.auth.jwt_verifier import BoundedReason
+from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.errors import (
     BlockedUser,
     ChatHistoryLimitError,
@@ -360,8 +360,8 @@ def admission_client():
     def _resolving(row):
         async def _dependency():
             session = cast(AsyncSession, _StubSession(row))
-            return await resolve_identity(session, issuer=ISSUER, subject=SUBJECT,
-                                          allow_preauth=False)
+            return await IdentitiesDB(session).resolve(issuer=ISSUER, subject=SUBJECT,
+                                                       allow_preauth=False)
 
         return _dependency
 

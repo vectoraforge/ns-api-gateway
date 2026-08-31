@@ -5,9 +5,10 @@ from uuid import UUID
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from nativespeaker.api.auth.create_user import create_user
-from nativespeaker.api.auth.identity import Identity
+from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import IdentityAlreadyLinked
+from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.purchases import StorePurchaseToken
 from nativespeaker.api.tables.users import User
@@ -67,12 +68,12 @@ def _identity() -> Identity:
 
 
 async def _create(session) -> UUID:
-    return await create_user(session,
-                             identity=_identity(),
-                             evaluated_at=NOW,
-                             provider=IdentityProvider.anonymous,
-                             provider_uid=None,
-                             email=None)
+    service = AuthService(db=session, challenge_store=ChallengesDB(), adapter=None,
+                          evaluated_at=NOW)
+    return await service.create_user(identity=_identity(),
+                                     provider=IdentityProvider.anonymous,
+                                     provider_uid=None,
+                                     email=None)
 
 
 def _harness(error: BaseException, **kwargs):

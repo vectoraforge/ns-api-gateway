@@ -7,11 +7,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from nativespeaker.api.auth.identity import Identity, resolve_identity
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
+from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.errors import InvalidExternalJwt, PreAuthIdentityNotAllowed
-from nativespeaker.api.services import ChatService
+from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.services import AuthService, ChatService
 
 
 def get_config(request: Request) -> AppConfig:
@@ -50,8 +51,8 @@ async def get_identity(request: Request,
     async with request.app.state.session_factory() as session:
         # allow_preauth=True here; get_linked_identity narrows, so create-user can answer 409 not 403.
         # Rejections raise through untouched: the handler is the one site that records them.
-        return await resolve_identity(session, issuer=claims.issuer,
-                                      subject=claims.subject, allow_preauth=True)
+        return await IdentitiesDB(session).resolve(issuer=claims.issuer,
+                                                   subject=claims.subject, allow_preauth=True)
 
 
 # Declared, never called directly: FastAPI's cache only sees solver-resolved deps, so a direct call re-verifies.
@@ -93,3 +94,13 @@ def get_firebase_adapter(request: Request):
     """The provider seam the lifespan built, deliberately unannotated."""
     # The concrete class implements the Protocol's one reachable method asynchronously, not synchronously.
     return request.app.state.firebase_adapter
+
+
+def get_auth_service(db: AsyncSession = Depends(get_db),
+                     challenge_store: ChallengesDB = Depends(get_challenge_store),
+                     adapter=Depends(get_firebase_adapter)) -> AuthService:
+    return AuthService(db=db,
+                       challenge_store=challenge_store,
+                       adapter=adapter,
+                       # One instant for this request; nothing downstream reads the clock again.
+                       evaluated_at=datetime.now(UTC))
