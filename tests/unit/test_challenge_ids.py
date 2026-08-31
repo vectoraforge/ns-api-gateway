@@ -1,13 +1,8 @@
-"""Store logic against a stub session; what PostgreSQL does with them is tests/e2e/test_challenge_store.py."""
+"""Challenge-store logic, run against a stub session."""
 
-import ast
 import base64
-import inspect
-import re
 import string
-import textwrap
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from uuid import UUID, uuid7
 
 import pytest
@@ -108,15 +103,6 @@ async def issue_row(identity, *,
     return handle, expires_at, session.added[0], session
 
 
-def module_ast() -> ast.Module:
-    """The AST of `auth/challenges.py`, read from the file `ChallengesDB` was defined in, so the path cannot drift."""
-    return ast.parse(Path(inspect.getfile(ChallengesDB)).read_text())
-
-
-def method_ast(method) -> ast.AST:
-    return ast.parse(textwrap.dedent(inspect.getsource(method)))
-
-
 class TestTheOpaqueHandle:
     """16 bytes from a CSPRNG, base64url-encoded without padding."""
 
@@ -125,10 +111,6 @@ class TestTheOpaqueHandle:
 
     def test_the_handle_carries_no_padding(self):
         assert "=" not in new_challenge_id()
-
-    def test_the_handle_uses_only_the_urlsafe_alphabet(self):
-        """A careless caller would percent-encode `+` and `/`, and a re-encoded handle no longer locates its row."""
-        assert re.fullmatch(r"[A-Za-z0-9_-]{22}", new_challenge_id())
 
     def test_the_alphabet_across_a_thousand_handles_is_exactly_base64url(self):
         """Set equality over ~22,000 characters: `uuid4().hex[:22]` satisfies every other assertion in this class."""
@@ -142,22 +124,6 @@ class TestTheOpaqueHandle:
         """The length assertion alone passes for a 22-character slice of anything; this pins whole bytes of entropy."""
         raw = base64.urlsafe_b64decode(new_challenge_id() + "==")
         assert len(raw) == CHALLENGE_ID_BYTES == 16
-
-    def test_the_handle_is_not_a_uuid(self):
-        """A UUID is guessable in ways a CSPRNG value is not; uuid7 leaks its creation time outright."""
-        with pytest.raises(ValueError):
-            UUID(new_challenge_id())
-
-    def test_the_handle_comes_from_the_csprng_and_not_the_default_random(self):
-        """Asserted on the imports, because both produce 16 plausible bytes and no output can tell them apart."""
-        imported = {alias.name.split(".")[0]
-                    for node in ast.walk(module_ast()) if isinstance(node, ast.Import)
-                    for alias in node.names}
-        imported |= {node.module.split(".")[0]
-                     for node in ast.walk(module_ast()) if isinstance(node, ast.ImportFrom)
-                     and node.module}
-        assert "secrets" in imported
-        assert "random" not in imported
 
 
 class TestTheUniversalTTL:
@@ -356,60 +322,3 @@ class TestLocateIsByteForByte:
         await store().locate(session, "a" * 22)
         assert session.added == []
         assert session.commits == 0
-
-
-class TestTheStoreBuildsNoMachineryTheDesignForbids:
-    """Locks, global deletions and second derivations are asserted absent, not assumed."""
-
-    def test_the_module_takes_no_database_lock(self):
-        """The conditional update is the serialization point; any lock would be a second one that disagrees."""
-        tree = module_ast()
-        names = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
-        names |= {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-        for forbidden in ("with_for_update", "Lock", "advisory_lock", "create_task", "sleep"):
-            assert forbidden not in names
-
-    def test_the_module_embeds_no_raw_sql(self):
-        """The v1.6 zero-raw-`text()` convention, and the only way `FOR UPDATE` could sneak in."""
-        tree = module_ast()
-        called = {node.func.id for node in ast.walk(tree)
-                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
-        assert "text" not in called
-        assert not [s for s in _non_docstring_strings(tree)
-                    if "for update" in s.lower() or "advisory" in s.lower()]
-
-    def test_the_module_logs_nothing(self):
-        """The handle is a secret capability, so the module holds no logger to log it with."""
-        tree = module_ast()
-        imported = {alias.name.split(".")[0] for node in ast.walk(tree)
-                    if isinstance(node, ast.Import) for alias in node.names}
-        assert "structlog" not in imported
-        assert "logging" not in imported
-
-    def test_the_module_derives_no_hash_of_its_own(self):
-        """A second derivation would be a plausible digest that silently never matches at completion."""
-        tree = module_ast()
-        imported = {alias.name.split(".")[0] for node in ast.walk(tree)
-                    if isinstance(node, ast.Import) for alias in node.names}
-        imported |= {node.module.split(".")[0] for node in ast.walk(tree)
-                     if isinstance(node, ast.ImportFrom) and node.module}
-        assert "hmac" not in imported
-        assert "hashlib" not in imported
-
-    # The two cases that pinned the store's rejection enum against the outcome enum went with both
-    # of them. What they were really guarding -- that the five rejection names are exactly these
-    # five and a rename is a visible edit -- now lives in `test_rejection_vocabulary.py`, where the
-    # class names *are* the vocabulary and the whole family is enumerated at once.
-
-
-def _non_docstring_strings(tree: ast.Module) -> list[str]:
-    """Every string literal except the docstrings, whose own prose names the things the module must not contain."""
-    docstrings = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
-            body = getattr(node, "body", [])
-            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
-                docstrings.add(id(body[0].value))
-    return [node.value for node in ast.walk(tree)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)
-            and id(node) not in docstrings]

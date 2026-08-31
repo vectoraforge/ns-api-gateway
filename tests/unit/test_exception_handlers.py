@@ -53,8 +53,7 @@ CASES = [
 ]
 
 
-# Each route name is the event name the handler must derive from the class, written out rather than
-# re-derived with `camel_to_snake`.
+# Each route name is the event name the handler must derive from the class, written out not derived.
 REJECTION_CASES = [
     ("identity_already_linked", IdentityAlreadyLinked(), 409, "identity_already_linked"),
 ]
@@ -138,9 +137,6 @@ def test_validation_error_handler(handler_client):
     assert response.status_code == 422
     body = response.json()
     assert body["code"] == "validation_error"
-
-
-# The token-verification and missing-header cases live in test_jwt_security.py and test_auth_security.py.
 
 
 class TestRetryAfterHeaders:
@@ -278,8 +274,7 @@ def generator_session_client():
     session = _RollbackRecordingSession()
 
     async def _get_db():
-        # Mirrors `app/dependencies.py::get_db`. A plain callable has no `except` arm and so would
-        # not exercise the property this case exists for.
+        # A generator, as `get_db` is: a plain callable has no `except` arm to exercise.
         try:
             yield session
             await session.commit()

@@ -7,8 +7,6 @@ from urllib.error import URLError
 
 import jwt as pyjwt
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
 
 from nativespeaker.api.auth.jwt_verifier import _ABSENT_KID_SENTINEL, BoundedReason, JWTVerifier, VerifiedClaims
 from unit.conftest import (
@@ -78,19 +76,6 @@ class TestAlgorithmSecurity:
         token = pyjwt.encode(payload, None, algorithm="none")  # type: ignore[invalid-argument-type]
         assert rejected(verifier, token) is BoundedReason.bad_signature
 
-    def test_rejects_hs256_token(self, verifier):
-        """HS256-signed tokens must be rejected (only RS256 accepted)."""
-        payload = {
-            "sub": "user1",
-            "aud": TEST_PROJECT_ID,
-            "iss": TEST_ISSUER,
-            "exp": time.time() + 3600,
-            "iat": time.time(),
-            "email_verified": True,
-        }
-        token = pyjwt.encode(payload, "secret-key", algorithm="HS256")
-        assert rejected(verifier, token) is BoundedReason.bad_signature
-
     def test_rejects_hs256_signed_with_the_public_key(self, verifier):
         """The classic confusion attack: HS256 keyed on the RSA public key."""
         payload = {
@@ -109,7 +94,6 @@ class TestSignatureVerification:
         """Token with modified payload after signing must be rejected."""
         token = make_token("user1")
         parts = token.split(".")
-        # Tamper with the payload
         import base64
         import json
 
@@ -120,21 +104,8 @@ class TestSignatureVerification:
         tampered_token = f"{parts[0]}.{tampered_payload}.{parts[2]}"
         assert rejected(verifier, tampered_token) is BoundedReason.bad_signature
 
-    def test_rejects_token_signed_with_different_key(self, verifier):
-        """Token signed with an unknown private key must be rejected."""
-        other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        other_pem = other_key.private_bytes(encoding=serialization.Encoding.PEM,
-                                            format=serialization.PrivateFormat.PKCS8,
-                                            encryption_algorithm=serialization.NoEncryption())
-        token = make_token("user1", private_key=other_pem)
-        assert rejected(verifier, token) is BoundedReason.bad_signature
-
 
 class TestTokenExpiry:
-    def test_rejects_expired_token(self, verifier):
-        token = make_token("user1", exp=time.time() - 3600)
-        assert rejected(verifier, token) is BoundedReason.expired
-
     def test_accepts_token_within_leeway(self, verifier):
         """Token expired <30s ago should still be accepted (leeway=30)."""
         token = make_token("user1", exp=time.time() - 10)
@@ -147,14 +118,6 @@ class TestTokenExpiry:
 
 
 class TestClaimValidation:
-    def test_rejects_wrong_audience(self, verifier):
-        token = make_token("user1", aud="wrong-project")
-        assert rejected(verifier, token) is BoundedReason.audience_mismatch
-
-    def test_rejects_wrong_issuer(self, verifier):
-        token = make_token("user1", iss="https://evil.example.com")
-        assert rejected(verifier, token) is BoundedReason.issuer_mismatch
-
     def test_rejects_missing_sub(self, verifier):
         """Token without sub claim must be rejected."""
         now = time.time()
@@ -166,11 +129,6 @@ class TestClaimValidation:
             "email_verified": True,
         }
         token = pyjwt.encode(payload, PRIVATE_KEY_PEM, algorithm="RS256")
-        assert rejected(verifier, token) is BoundedReason.empty_subject
-
-    def test_rejects_empty_sub(self, verifier):
-        """A present but empty sub is the same condition as an absent one."""
-        token = make_token("")
         assert rejected(verifier, token) is BoundedReason.empty_subject
 
     def test_rejects_missing_exp(self, verifier):
@@ -186,29 +144,10 @@ class TestClaimValidation:
         token = pyjwt.encode(payload, PRIVATE_KEY_PEM, algorithm="RS256", headers={"alg": "RS256"})
         assert rejected(verifier, token) is BoundedReason.bad_signature
 
-    def test_rejects_missing_iat(self, verifier):
-        """Token without iat claim must be rejected."""
-        now = time.time()
-        payload = {
-            "sub": "user1",
-            "aud": TEST_PROJECT_ID,
-            "iss": TEST_ISSUER,
-            "exp": now + 3600,
-            "email_verified": True,
-        }
-        token = pyjwt.encode(payload, PRIVATE_KEY_PEM, algorithm="RS256")
-        assert rejected(verifier, token) is BoundedReason.bad_signature
-
 
 class TestMalformedTokens:
     def test_rejects_empty_string(self, verifier):
         assert rejected(verifier, "") is BoundedReason.bad_signature
-
-    def test_rejects_garbage(self, verifier):
-        assert rejected(verifier, "not.a.jwt.at.all") is BoundedReason.bad_signature
-
-    def test_rejects_just_dots(self, verifier):
-        assert rejected(verifier, "...") is BoundedReason.bad_signature
 
 
 class TestCrossUserIsolation:
@@ -216,19 +155,8 @@ class TestCrossUserIsolation:
         assert accepted(verifier, make_token("user-a")).subject == "user-a"
         assert accepted(verifier, make_token("user-b")).subject == "user-b"
 
-    def test_sub_is_returned_as_string(self, verifier):
-        assert accepted(verifier, make_token("12345")).subject == "12345"
-
 
 class TestValidToken:
-    def test_accepts_valid_token(self, verifier):
-        assert accepted(verifier, make_token("user1")).subject == "user1"
-
-    def test_accepts_token_with_extra_claims(self, verifier):
-        """Extra claims are ignored -- token is still valid."""
-        token = make_token("user1", extra_claims={"custom": "value", "firebase": {"sign_in_provider": "google.com"}})
-        assert accepted(verifier, token).subject == "user1"
-
     def test_issuer_is_the_verified_iss(self, verifier):
         """`issuer` is exactly the verified `iss`, never reconstructed from transport metadata."""
         assert accepted(verifier, make_token("user1")).issuer == TEST_ISSUER

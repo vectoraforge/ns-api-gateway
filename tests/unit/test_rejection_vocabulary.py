@@ -1,10 +1,6 @@
-"""The tree's log vocabulary, written down rather than derived from whatever the classes spell.
+"""The tree's log vocabulary, written down as a literal rather than derived from the classes.
 
-Both sides are literals. Deriving the expected set from the classes would make the file measure
-itself and agree with any rename -- and a rename here is not a refactor: the class name *is* the
-structured log event name (D-02), so renaming one silently re-keys every grep and every dashboard
-that reads it. Extending the tree is meant to be an edit someone makes on purpose and a reviewer
-sees in the diff.
+A class name *is* its structured log event name (D-02), so a rename re-keys every grep that reads it.
 """
 from uuid import uuid7
 
@@ -28,14 +24,13 @@ from nativespeaker.api.errors import (
 )
 from unit.error_tree import undeclared
 
-# The five leaves under one 409 base, listed here rather than derived, for the same reason the event
-# names below are: this file is where a change to the tree is meant to become a visible edit.
+# The five leaves under one 409 base, listed rather than derived, so a change here is a visible edit.
 CHALLENGE_ARMS = (ChallengeNotFound, ChallengeExpired, ChallengeConsumed,
                   ChallengeIdentityMismatch, ChallengeOperationMismatch)
 
 FAMILY_MODULE = errors_module.__name__
 
-# One entry per class in the tree. Plans 03 through 07 each append their own arms here.
+# One entry per class in the tree.
 EVENT_NAMES = frozenset({
     # The generic answer for each bare framework status.
     "invalid_request",
@@ -63,8 +58,7 @@ EVENT_NAMES = frozenset({
     "circuit_open_error",
     # The admission arms.
     "invalid_external_jwt",
-    # Deliberately `pre_auth_...`, while the client-visible code stays `preauth_...`: the event is
-    # derived from the class name `PreAuthIdentityNotAllowed`, whatever that spells.
+    # `pre_auth_...` here and `preauth_...` on the wire: the event is whatever the class name spells.
     "pre_auth_identity_not_allowed",
     "identity_unresolvable",
     # D-05's shared base and its two leaves, told apart in the log and nowhere else.
@@ -73,8 +67,7 @@ EVENT_NAMES = frozenset({
     "blocked_user",
     # The creation arms.
     "identity_already_linked",
-    # The lookup arms. The group base is listed too: it is a member of the tree the walk finds,
-    # even though nothing raises it -- an intermediate base is not a place to hide from this file.
+    # The lookup arms, group base included: the walk finds it, even though nothing raises it.
     "provider_lookup_error",
     "user_not_found",
     "unavailable",
@@ -107,8 +100,7 @@ class TestTheEventVocabularyIsWrittenDown:
         assert _production_family(), "the walk found no subclasses at all"
 
 
-# The arguments each class's own `__init__` insists on. Written down so a class that grows one and
-# is not added here fails the coverage control below rather than being silently skipped.
+# The arguments each class's own `__init__` insists on.
 CONSTRUCTOR_ARGUMENTS: dict[type, tuple[tuple, dict]] = {
     errors_module.UnsupportedLanguageError: (("fr", ["en"]), {}),
     errors_module.ChatHistoryLimitError: ((), {"max_messages": 50}),
@@ -136,7 +128,7 @@ class TestEveryLeafKeepsItsLogFieldsToPlainScalars:
     """An ORM row here is the expired-attribute 500 the scalars-only rule exists to prevent."""
 
     def test_the_coverage_is_the_whole_tree_and_not_a_subset(self):
-        """37.3-REVIEW WR-05: the file this replaces asserted the rule for 8 of 13 classes."""
+        """The coverage is the whole tree, not the subset an earlier file settled for."""
         assert len(_production_family()) > 8
 
     def test_the_constructor_table_names_only_classes_that_are_in_the_tree(self):
@@ -161,7 +153,7 @@ class TestTheLookupArmsCarryStageAndOnlyABoundedCause:
         assert rejection.status == status
 
     def test_an_arm_with_no_cause_emits_no_cause_key_at_all(self):
-        """Not `{"cause": None}`: the absent key is what the deleted `bounded = {} if ...` produced."""
+        """Not `{"cause": None}`: with no cause the key is absent, not present and empty."""
         assert UserNotFound(stage="provider_lookup").log_fields() == {"stage": "provider_lookup"}
         assert Unavailable(stage="issuer_selection").log_fields() == {"stage": "issuer_selection"}
 
@@ -172,11 +164,9 @@ class TestTheLookupArmsCarryStageAndOnlyABoundedCause:
 
 
 class TestTheChallengeArmsAnswerOneThingAndDeclareNothing:
-    """D-14's anti-oracle property, asserted as structure rather than as five equal answers.
+    """D-14's anti-oracle property, held as structure rather than as five equal answers.
 
-    Five equal answers is what a client sees; what makes it stay true is that there is only one
-    answer to change. The 409 is declared once on `ChallengeRejected` and each of the five inherits
-    it, so making one of them answer differently takes a deliberate override that a reviewer sees.
+    The 409 is declared once on `ChallengeRejected`, so making one arm differ takes a visible override.
     """
 
     def test_the_five_are_exactly_the_leaves_under_the_shared_base(self):

@@ -1,8 +1,6 @@
 """The challenge route's answer for every `operation` value: one refusal bucket, and the framework's own arm.
 
-Every operation string the route will not issue for gets the same 400, so the route cannot be asked which
-operations exist. A value that is not a string at all never reaches the handler -- the framework refuses it
-first -- and that arm is pinned here rather than worked around.
+Every string the route will not issue for gets the same 400, so it cannot be asked which operations exist.
 """
 from datetime import UTC, datetime
 
@@ -112,7 +110,6 @@ class TestTheIssuableOperation:
         # The key set, not two known keys: a third field would pass the weaker check.
         assert set(response.json()) == {"challenge_id", "expires_at"}
         assert response.json()["challenge_id"] == ISSUED_HANDLE
-        # Asked for exactly once, and for the operation the caller named.
         assert store.issued == ["create_user"]
 
     def test_the_issued_handle_is_not_cacheable(self, client):

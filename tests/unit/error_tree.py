@@ -1,4 +1,4 @@
-"""The error tree's totality check, kept here because verifying the shape of code is a test's job."""
+"""The error tree's totality check."""
 from collections.abc import Sequence
 from typing import get_args
 

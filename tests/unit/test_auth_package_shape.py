@@ -1,16 +1,6 @@
 """How big the auth package is, as a number rather than a claim.
 
-The shape is written as a literal: deriving it from the package would make the file measure itself
-and agree with anything. Growing the package is meant to be an edit someone makes on purpose and a
-reviewer sees in the diff -- a later phase that adds to `auth/` has to come here and write the new
-number down.
-
-This file also carried a one-way ratchet: a `BASELINE` the package had to measure strictly below on
-every axis. Phase 37.3 removed it by deliberate decision, not by widening it. That phase replaced a
-44-member outcome enum, three mapping tables and five classifier functions with seventeen
-declarative one-line exception classes, which is a large simplification that the class count
-reports as growth. The proxy had stopped pointing at complexity for this package, so the ceiling
-went rather than being quietly relaxed to whatever the next number happened to be.
+The shape is a literal: derived from the package, it would measure itself and agree with anything.
 """
 import ast
 from pathlib import Path
