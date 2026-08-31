@@ -9,8 +9,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth import create_user as creation
 from nativespeaker.api.auth.create_user import create_user
+from nativespeaker.api.crud import identities as identities_crud
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError, IdentityAlreadyLinked
 from nativespeaker.api.schemas.auth import Identity
@@ -269,7 +269,7 @@ class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
 
         users_before = await scalar(harness, "SELECT count(*) FROM core.users")
         identities_before = await scalar(harness, "SELECT count(*) FROM core.external_identities")
-        monkeypatch.setattr(creation, "uuid4", lambda: minted)
+        monkeypatch.setattr(identities_crud, "uuid4", lambda: minted)
 
         result, _, _ = await run_creation(harness, subject=subject,
                                           provider=IdentityProvider.anonymous, provider_uid=None)
