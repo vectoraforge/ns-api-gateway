@@ -266,14 +266,6 @@ class OutOfScopeError(InvalidRequest):
         super().__init__("The request is outside the scope of linguistic analysis")
 
 
-class AuthenticationError(AuthRequired):
-    """A credential was presented and did not authenticate."""
-    log_level = logging.WARNING
-
-    def extra_headers(self) -> dict[str, str]:
-        return {"WWW-Authenticate": "Bearer"}
-
-
 class InvalidChatError(NotFound):
     """Raised when a chat id addresses no chat."""
 

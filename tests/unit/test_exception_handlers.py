@@ -12,8 +12,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.identity import resolve_identity
+from nativespeaker.api.auth.jwt_verifier import BoundedReason
 from nativespeaker.api.errors import (
-    AuthenticationError,
     BlockedUser,
     ChatHistoryLimitError,
     CircuitOpenError,
@@ -22,6 +22,7 @@ from nativespeaker.api.errors import (
     IdentityAlreadyLinked,
     InvalidChatError,
     InvalidCursorError,
+    InvalidExternalJwt,
     NotLinked,
     OutOfScopeError,
     PageSizeLimitError,
@@ -37,9 +38,9 @@ ISSUER = "https://securetoken.google.com/test-project"
 SUBJECT = "subject-under-test"
 
 CASES = [
-    ("missing_token", AuthenticationError("Missing Bearer token"), 401),
-    ("invalid_token", AuthenticationError("Invalid token"), 401),
-    ("expired_token", AuthenticationError("Expired token"), 401),
+    ("missing_token", InvalidExternalJwt(bounded_reason=None), 401),
+    ("invalid_token", InvalidExternalJwt(bounded_reason=BoundedReason.bad_signature), 401),
+    ("expired_token", InvalidExternalJwt(bounded_reason=BoundedReason.expired), 401),
     ("db_not_init", DatabaseNotInitializedError(), 500),
     ("unsupported_lang", UnsupportedLanguageError("fr", ["en"]), 400),
     ("invalid_chat", InvalidChatError("xyz"), 404),

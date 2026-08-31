@@ -54,7 +54,6 @@ EVENT_NAMES = frozenset({
     "chat_history_limit_error",
     "webhook_verification_error",
     "out_of_scope_error",
-    "authentication_error",
     "invalid_chat_error",
     "quota_exceeded_error",
     "analysis_error",
