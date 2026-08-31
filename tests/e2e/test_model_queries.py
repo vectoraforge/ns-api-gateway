@@ -42,7 +42,7 @@ class TestModelsMatchTheAppliedSchema:
 
     @pytest.mark.parametrize("table_name", MAPPED_TABLES)
     async def test_every_mapped_table_selects_all_of_its_columns(self, _db_transaction, table_name):
-        """Selecting every declared column of every mapped table catches a column or table the crud lacks."""
+        """Selecting every declared column of every mapped table catches a column or table the database lacks."""
         table = SQLModel.metadata.tables[table_name]
         async with _db_transaction() as session:
             await session.exec(sa_select(table).limit(1))  # ty: ignore[invalid-argument-type]

@@ -60,13 +60,11 @@ class TestTheAnonymousHappyPath:
 
     async def test_an_unlinked_caller_creates_an_anonymous_account(
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
-        # The read answers anonymous to an EMPTY providerData and to nothing else.
         scripted_firebase_adapter.script(
             VerifiedProviderIdentity(provider=IdentityProvider.anonymous, provider_uid=None))
 
         users_before = await _count(_db_transaction, select(func.count()).select_from(User))
 
-        # --- Issuance ------------------------------------------------------------------------
         issued = await create_user_client.post("/auth/challenge",
                                                json={"operation": "create_user"},
                                                headers=_auth())
@@ -77,22 +75,17 @@ class TestTheAnonymousHappyPath:
         assert issued.headers["cache-control"] == "no-store"
         handle = issued.json()["challenge_id"]
 
-        # Issuance mutates no business state.
         assert await _count(_db_transaction, select(func.count()).select_from(User)) == users_before
-        # It has not called the provider either: there is exactly one read, and it is at completion.
         assert scripted_firebase_adapter.calls == []
 
-        # --- Completion ----------------------------------------------------------------------
         completion = await create_user_client.post("/auth/create-user",
                                                    json={"challenge_id": handle},
                                                    headers=_auth())
 
         assert completion.status_code == 200
-        # Registration state only: no backend token, no session, no cookie, no counter, no attribution token.
         assert completion.json() == {"identity_provider": "anonymous"}
         assert scripted_firebase_adapter.calls == [(TEST_ISSUER, SUBJECT)]
 
-        # --- Exactly one account -------------------------------------------------------------
         assert await _count(_db_transaction,
                             select(func.count()).select_from(User)) == users_before + 1
 
@@ -109,14 +102,12 @@ class TestTheAnonymousHappyPath:
 
             user = (await session.exec(
                 select(User).where(col(User.id) == identity.user_id))).one()
-            # Never populated, on any branch.
             assert user.display_name is None
             # NULL for anonymous, non-NULL for google/apple -- no third state.
             assert user.registered_at is None
             # The scripted result carried no address, so step 10's copy rule yields NULL.
             assert user.email is None
 
-        # --- Both attribution tokens, minted eagerly, distinct --------------------------------
         async with _db_transaction() as session:
             tokens = (await session.exec(
                 select(StorePurchaseToken)
@@ -124,7 +115,6 @@ class TestTheAnonymousHappyPath:
         assert {token.provider for token in tokens} == set(PurchaseProvider)
         assert len({token.identity_value for token in tokens}) == 2
 
-        # A brand-new account has no entitlement, so it correctly answers quota_exceeded on its first chat.
         async with _db_transaction() as session:
             grants = (await session.exec(
                 select(AccessGrant)
@@ -137,7 +127,6 @@ class TestTheAnonymousHappyPath:
                     .where(col(AccessGrant.user_id) == identity.user_id))))).one()
             assert usage == 0
 
-        # --- The challenge is consumed and its binding cleared --------------------------------
         async with _db_transaction() as session:
             challenge = (await session.exec(
                 select(AuthChallenge)
@@ -155,7 +144,6 @@ class TestTheChallengeEndpoint:
     async def test_a_handle_from_the_challenge_route_completes_an_account(
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
         subject = "challenge-endpoint-anonymous"
-        # The read answers anonymous to an EMPTY providerData and to nothing else.
         scripted_firebase_adapter.script(
             VerifiedProviderIdentity(provider=IdentityProvider.anonymous, provider_uid=None))
         users_before = await _count(_db_transaction, select(func.count()).select_from(User))
@@ -170,7 +158,6 @@ class TestTheChallengeEndpoint:
         assert issued.headers["cache-control"] == "no-store"
         handle = issued.json()["challenge_id"]
 
-        # Issuance mutates no business state, and it reads no provider: the one read is at completion.
         assert await _count(_db_transaction, select(func.count()).select_from(User)) == users_before
         assert scripted_firebase_adapter.calls == []
 
@@ -201,11 +188,9 @@ class TestTheChallengeEndpoint:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestCompletionRejectsAnAlreadyLinkedCaller:
-    """A caller who already has an account is told so at completion, which is why this route admits both contexts.
+    """A caller who already has an account is refused at completion.
 
-    Issuance no longer pre-checks the linkage, so such a caller now spends a challenge row and one provider
-    lookup before hearing 409. That is a real, accepted cost: it fails closed, and it buys correctness --
-    the unique constraints inside the consuming transaction decide, where the old pre-check merely guessed.
+    Issuance does not pre-check the linkage, so the refusal costs a challenge row and one provider lookup.
     """
 
     async def test_an_active_linked_identity_is_rejected_at_completion(
@@ -221,7 +206,6 @@ class TestCompletionRejectsAnAlreadyLinkedCaller:
                                                json={"operation": "create_user"},
                                                headers=_auth(subject))
 
-        # The challenge IS issued now -- the rejection has moved past this point.
         assert issued.status_code == 200, issued.text
         assert set(issued.json()) == {"challenge_id", "expires_at"}
 
@@ -230,12 +214,11 @@ class TestCompletionRejectsAnAlreadyLinkedCaller:
                                                    headers=_auth(subject))
 
         assert completion.status_code == 409, completion.text
-        # The shared one-field body, with the key set asserted exactly.
         assert completion.json() == {"code": "identity_already_linked"}
 
     async def test_the_rejection_mints_no_second_account_and_spends_the_challenge(
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
-        """What matters is no longer that nothing was issued -- it is that nothing was created and nothing survives."""
+        """Nothing is created, and nothing of the attempt survives but the spent challenge."""
         subject = "already-linked-mints-nothing"
         await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject)
         scripted_firebase_adapter.script(
@@ -253,7 +236,6 @@ class TestCompletionRejectsAnAlreadyLinkedCaller:
 
         assert completion.status_code == 409
 
-        # No second account, and still exactly one identity row for the pair.
         assert await _count(_db_transaction, _USERS) == users_before
         async with _db_transaction() as session:
             rows = (await session.exec(
@@ -261,7 +243,6 @@ class TestCompletionRejectsAnAlreadyLinkedCaller:
                                                col(ExternalIdentity.subject) == subject))).all()
         assert len(rows) == 1
 
-        # The challenge is spent, so the handle cannot be re-presented: a retry needs a fresh one.
         challenge = await _challenge_for(_db_transaction, handle)
         assert challenge.consumed_at is not None
 
@@ -295,8 +276,6 @@ class TestIssuanceStillServesAnUnlinkedCaller:
         assert first.json()["challenge_id"] != second.json()["challenge_id"]
 
 
-# The rejection arms, over real HTTP and a real crud, where a rejection really moves the lifecycle.
-
 _USERS = select(func.count()).select_from(User)
 
 
@@ -321,8 +300,7 @@ class TestCompletionRejectionsOnTheWire:
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
         """One unrecognized entry is an unclassifiable account: terminal operation_not_allowed, persisting nothing."""
         subject = "e2e-password-shape"
-        # The `password` shape the e2e credential produces; which shapes reject is settled
-        # behind the seam now, and asserted against the real read in test_firebase_adapter.py.
+        # The rejection a password-provider account takes at classification.
         scripted_firebase_adapter.script(NotLinked(stage="provider_classification",
                                                    cause="invalid-shape"))
         users_before = await _count(_db_transaction, _USERS)
@@ -338,7 +316,6 @@ class TestCompletionRejectionsOnTheWire:
 
         assert completion.status_code == 403
         assert completion.json() == {"code": "operation_not_allowed"}
-        # No flow is named: the shared one-field body is the whole response.
         assert set(completion.json()) == {"code"}
         assert await _count(_db_transaction, _USERS) == users_before
 
@@ -356,8 +333,7 @@ class TestCompletionRejectionsOnTheWire:
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
         """No idempotent replay: the second attempt is told to obtain a fresh challenge, not the first's outcome."""
         subject = "e2e-replayed-handle"
-        # The `password` shape the e2e credential produces; which shapes reject is settled
-        # behind the seam now, and asserted against the real read in test_firebase_adapter.py.
+        # The rejection a password-provider account takes at classification.
         scripted_firebase_adapter.script(NotLinked(stage="provider_classification",
                                                    cause="invalid-shape"))
         users_before = await _count(_db_transaction, _USERS)
@@ -398,9 +374,6 @@ class TestCreate01AdmittedHereAndRefusedEverywhereElse:
         # 403 and this class, not auth_required: the token is fine, the identity is not admissible here.
         assert refused.status_code == 403
         assert refused.json() == {"code": "preauth_identity_not_allowed"}
-
-
-# The registered flow is scripted because no REST call links a Google or Apple provider without consent.
 
 
 async def _issue_and_complete(client, subject: str | None = None):
@@ -458,7 +431,6 @@ class TestTheRegisteredFlow:
         handle, completion = await _issue_and_complete(create_user_client, subject)
 
         assert completion.status_code == 200, completion.text
-        # One field, the classified provider, and nothing else.
         assert completion.json() == {"identity_provider": expected.value}
         # Exactly one provider read per completion; a second would be invisible without this assertion.
         assert scripted_firebase_adapter.calls == [(TEST_ISSUER, subject)]
@@ -508,8 +480,6 @@ class TestStep10sEmailCopyRule:
             self, create_user_client, _db_transaction, scripted_firebase_adapter,
             email, email_verified, persisted):
         subject = f"email-rule-{email!r}-{email_verified}"
-        # The rule itself runs, in production code: what the read establishes is what this asserts
-        # reaches the column, verbatim. The five rows still pin the rule; the wire still pins the copy.
         scripted_firebase_adapter.script(
             VerifiedProviderIdentity(provider=IdentityProvider.google,
                                      provider_uid="g-email-case",
@@ -552,11 +522,9 @@ class TestTheProviderAccountReservation:
 
         handle, completion = await _issue_and_complete(create_user_client, subject)
 
-        # D-06 collapsed the race path's provider-account distinction onto the already-linked answer.
         assert completion.status_code == 409, completion.text
         assert completion.json() == {"code": "identity_already_linked"}
 
-        # Nothing partial survived the conflict: no user row, no identity row for the claimant.
         assert await _count(_db_transaction, _USERS) == users_before
         async with _db_transaction() as session:
             claimant_rows = (await session.exec(
@@ -570,9 +538,6 @@ class TestTheProviderAccountReservation:
         assert challenge.preauth_subject is None
 
         await _assert_step_10s_global_invariants(_db_transaction)
-
-
-# The cases below substitute nothing: a real anonymous user, real verifier, real getUser, real PostgreSQL.
 
 
 @pytest_asyncio.fixture(loop_scope="module")
@@ -639,5 +604,4 @@ class TestTheRealAnonymousCompletion:
 
         assert identity.provider is IdentityProvider.anonymous
         assert identity.provider_uid is None
-        # The same response's address field, from real values rather than scripted ones.
         assert identity.email is None

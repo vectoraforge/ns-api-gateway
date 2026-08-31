@@ -27,8 +27,6 @@ ISSUER = "https://securetoken.google.com/native-speaker-test"
 _PREAUTH_SUBJECT = "Xy7Q1s0K2mNb3fV4"
 _IDP_ACCOUNT_HASH = bytes(range(32, 64))
 
-# A deferred constraint is checked only at COMMIT, and its failure aborts the transaction behind asyncpg's back.
-
 # Two literal statements rather than one assembled string: the identity_state default is proven by omission.
 _INSERT_IDENTITY = (
     "INSERT INTO core.external_identities "
@@ -193,7 +191,6 @@ class TestExternalIdentityConstraints:
         subject = f"sub_{uuid.uuid4().hex[:16]}"
         await _insert_identity(conn, user_id=first_user, subject=subject)
         async with _rejects(conn, asyncpg.UniqueViolationError) as exc_info:
-            # Reusing the existing row's (issuer, subject) is the point of this test.
             await _insert_identity(conn, user_id=second_user, subject=subject)
         assert UQ_IDENTITY_ISSUER_SUBJECT in str(exc_info.value)
         assert await conn.fetchval(
@@ -220,7 +217,6 @@ class TestExternalIdentityConstraints:
         """An anonymous identity carrying a provider_uid violates the provider agreement CHECK."""
         user_id = await insert_user(conn)
         async with _rejects(conn, asyncpg.CheckViolationError):
-            # Giving an anonymous row a provider_uid is the point of this test; no sentinel value is allowed.
             await _insert_identity(conn, user_id=user_id, provider="anonymous", provider_uid="uid_not_allowed")
         assert await conn.fetchval("SELECT count(*) FROM core.external_identities") == 0
 
@@ -228,7 +224,6 @@ class TestExternalIdentityConstraints:
         """A google/apple identity with an empty provider_uid violates the provider agreement CHECK."""
         user_id = await insert_user(conn)
         async with _rejects(conn, asyncpg.CheckViolationError):
-            # The empty string, not NULL, is the point of this test: the CHECK spells out both.
             await _insert_identity(conn, user_id=user_id, provider="google", provider_uid="")
         assert await conn.fetchval("SELECT count(*) FROM core.external_identities") == 0
 
@@ -245,7 +240,6 @@ class TestExternalIdentityConstraints:
         user_id = await insert_user(conn)
         await _insert_identity(conn, user_id=user_id)
         async with _rejects(conn, asyncpg.ForeignKeyViolationError) as exc_info:
-            # Deleting a user that still has an identity row is the point of this test.
             await conn.execute("DELETE FROM core.users WHERE id = $1", user_id)
         assert FK_IDENTITY_USER in str(exc_info.value)
         assert await conn.fetchval("SELECT count(*) FROM core.users WHERE id = $1", user_id) == 1
@@ -311,7 +305,6 @@ class TestAccessGrantConstraints:
         """Case LB -- the deferred FK rejects a free grant that never got its anti-abuse row."""
         user_id = await insert_user(conn)
         await conn.execute("BEGIN")
-        # Omitting the core.access_grants_anti_abuse row is the point of this test.
         await insert_grant(conn, user_id=user_id, tier_id=tier, source="anonymous_device_grant")
         with pytest.raises(asyncpg.ForeignKeyViolationError) as exc_info:
             await conn.execute("COMMIT")  # the deferred FK fires HERE, not on the INSERT above
@@ -391,7 +384,6 @@ class TestAntiAbuseEvidenceConstraints:
         """Case R1 -- an anonymous row with neither a native claim nor an account hash carries no evidence."""
         grant_id = await self._free_grant(conn, tier)
         async with _rejects(conn, asyncpg.CheckViolationError):
-            # Leaving every evidence column NULL is the point of this test.
             await _insert_anti_abuse(conn, grant_id=grant_id, grant_source="anonymous_device_grant")
         assert await conn.fetchval("SELECT count(*) FROM core.access_grants_anti_abuse") == 0
 
@@ -399,7 +391,6 @@ class TestAntiAbuseEvidenceConstraints:
         """Case R2 -- the native arm requires both hash fields NULL; a native row may not also carry one."""
         grant_id = await self._free_grant(conn, tier)
         async with _rejects(conn, asyncpg.CheckViolationError):
-            # Mixing the native and web arms is the point of this test.
             await _insert_anti_abuse(
                 conn,
                 grant_id=grant_id,
@@ -427,7 +418,6 @@ class TestAntiAbuseEvidenceConstraints:
         """Case R4 -- the registered arm forbids a native_claim_provider outright."""
         grant_id = await self._free_grant(conn, tier, source="registered_account_grant")
         async with _rejects(conn, asyncpg.CheckViolationError):
-            # A registered account never carries a native device claim; asserting one is the point.
             await _insert_anti_abuse(
                 conn,
                 grant_id=grant_id,
@@ -461,7 +451,6 @@ class TestAntiAbuseEvidenceConstraints:
         user_id = await insert_user(conn)
         grant_id = await insert_grant(conn, user_id=user_id, tier_id=tier, source="manual")
         async with _rejects(conn, asyncpg.CheckViolationError):
-            # A manual grant is a real grant with no anti-abuse evidence; attaching one is the point.
             await _insert_anti_abuse(
                 conn,
                 grant_id=grant_id,
@@ -493,7 +482,7 @@ class TestSubscriptionConstraints:
         user_id = await insert_user(conn)
         subscription_id = uuid.uuid4()
         async with _rejects(conn, asyncpg.exceptions.GeneratedAlwaysError):
-            # Naming the generated column in the INSERT is the point: forging entitlement means writing it.
+            # Forging entitlement means writing this column directly.
             await conn.execute(
                 _INSERT_SUBSCRIPTION_WITH_GENERATED_COLUMN,
                 subscription_id,
@@ -514,7 +503,6 @@ class TestSubscriptionConstraints:
             "SELECT product_entitled_subscription_id FROM core.subscriptions WHERE id = $1", subscription_id
         ) is None
         await conn.execute("BEGIN")
-        # An entitlement-bearing grant on a subscription nobody is paying for is the point of this test.
         await insert_grant(
             conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
         )
@@ -579,7 +567,6 @@ class TestAuthChallengeConstraints:
     async def test_challenge_for_a_challenge_free_operation_rejected(self, conn, operation):
         """All three challenge-free operations are asserted, because a too-loose CHECK would admit all three."""
         async with _rejects(conn, asyncpg.CheckViolationError):
-            # These operations have no challenge row, no claim and no consumption; writing one is the point.
             await _insert_challenge(conn, operation=operation)
         assert await conn.fetchval("SELECT count(*) FROM core.auth_challenges") == 0
 
@@ -597,7 +584,6 @@ class TestAuthChallengeConstraints:
     async def test_challenge_consumed_without_a_claim_rejected(self, conn):
         """The lifecycle CHECK -- a consumed row must have been claimed first."""
         async with _rejects(conn, asyncpg.CheckViolationError):
-            # Setting consumed_at while leaving claimed_at NULL is the point of this test.
             await _insert_challenge(conn, claimed_at=None, consumed_at=datetime.now(UTC))
 
     async def test_challenge_claimed_but_not_yet_consumed_accepted(self, conn):
@@ -613,7 +599,6 @@ class TestAuthChallengeConstraints:
         user_id = await insert_user(conn)
         identity_id = await _insert_identity(conn, user_id=user_id)
         async with _rejects(conn, asyncpg.CheckViolationError):
-            # Carrying both binding forms at once is the point of this test.
             await _insert_challenge(
                 conn,
                 operation="claim_anonymous_grant",

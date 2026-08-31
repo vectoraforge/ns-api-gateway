@@ -1,4 +1,4 @@
-"""Fixtures for the schema-conformance suite -- a scratch crud, a fresh apply, per-test rollback."""
+"""Fixtures for the schema-conformance suite -- a scratch database, a fresh apply, per-test rollback."""
 import asyncio
 import os
 import pathlib
@@ -17,7 +17,7 @@ MIGRATIONS = pathlib.Path(__file__).parents[2] / "migrations"
 POGO_SCHEMA = "api"  # matches [tool.pogo] schema
 SCHEMA_TEST_DB = "ns_schema_test"
 
-# Defaults so the suite runs with DB_* unset; DB_NAME falls back to the maintenance crud, which exists.
+# Defaults so the suite runs with DB_* unset; DB_NAME falls back to the maintenance database, which exists.
 _DB_DEFAULTS = {
     "DB_HOST": "localhost",
     "DB_PORT": "5432",
@@ -26,7 +26,7 @@ _DB_DEFAULTS = {
     "DB_NAME": "postgres",
 }
 
-# A crud name cannot be bound as a parameter, so CREATE/DROP DATABASE interpolate it behind this guard.
+# A database name cannot be bound as a parameter, so CREATE/DROP DATABASE interpolate it behind this guard.
 _SAFE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -37,7 +37,7 @@ def _env(name: str) -> str:
 
 # postgres:// and not postgresql+asyncpg://: asyncpg rejects the SQLAlchemy prefix, and no app module is imported.
 def dsn_for(database: str) -> str:
-    """Build an asyncpg DSN for one crud."""
+    """Build an asyncpg DSN for one database."""
     return (
         f"postgres://{_env('DB_USER')}:{_env('DB_PASSWORD')}"
         f"@{_env('DB_HOST')}:{_env('DB_PORT')}/{database}"
@@ -45,12 +45,12 @@ def dsn_for(database: str) -> str:
 
 
 def admin_dsn() -> str:
-    """DSN for the configured DB_NAME crud -- used only to CREATE and DROP scratch databases."""
+    """DSN for the configured DB_NAME database -- used only to CREATE and DROP scratch databases."""
     return dsn_for(_env("DB_NAME"))
 
 
 def _check_identifier(name: str) -> str:
-    """Reject any crud name that is not a plain lowercase identifier."""
+    """Reject any database name that is not a plain lowercase identifier."""
     if not _SAFE_IDENTIFIER.fullmatch(name):
         msg = f"refusing to interpolate {name!r} as a crud identifier"
         raise ValueError(msg)
@@ -58,7 +58,7 @@ def _check_identifier(name: str) -> str:
 
 
 async def create_database(name: str) -> str:
-    """Drop and recreate a scratch crud, returning its DSN."""
+    """Drop and recreate a scratch database, returning its DSN."""
     _check_identifier(name)
     admin = await asyncpg.connect(admin_dsn())
     try:
@@ -70,7 +70,7 @@ async def create_database(name: str) -> str:
 
 
 async def drop_database(name: str) -> None:
-    """Drop a scratch crud if it exists."""
+    """Drop a scratch database if it exists."""
     _check_identifier(name)
     admin = await asyncpg.connect(admin_dsn())
     try:
@@ -96,7 +96,7 @@ async def _create_and_apply(name: str) -> str:
 
 @pytest.fixture(scope="session")
 def _schema_db_uri():
-    """Create a scratch crud, apply the migration, drop it; synchronous so no loop is shared with a test."""
+    """Create a scratch database, apply the migration, drop it; synchronous so no loop is shared with a test."""
     uri = asyncio.run(_create_and_apply(SCHEMA_TEST_DB))
     yield uri
     asyncio.run(drop_database(SCHEMA_TEST_DB))
@@ -104,7 +104,7 @@ def _schema_db_uri():
 
 @pytest_asyncio.fixture
 async def conn(_schema_db_uri):
-    """Connection to the migrated scratch crud, inside a transaction that always rolls back."""
+    """Connection to the migrated scratch database, inside a transaction that always rolls back."""
     connection = await asyncpg.connect(_schema_db_uri)
     tx = connection.transaction()
     await tx.start()

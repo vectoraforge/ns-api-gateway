@@ -55,7 +55,6 @@ def firebase_token(_app_config):
     resp.raise_for_status()
     data = resp.json()
     token = data["idToken"]
-    # Store the test user's UID (from Firebase 'localId') for seeding assertions
     os.environ.setdefault("FIREBASE_TEST_USER_ID", data["localId"])
     return token
 

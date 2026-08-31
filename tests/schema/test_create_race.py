@@ -154,9 +154,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=Non
                                                        provider_uid=attempt.provider_uid,
                                                        email=None)
         except AppError as rejection:
-            # The route's own except arm (`routers/auth.py::_complete`): the conflicting inserts are
-            # rolled back, then the handle is spent and committed before the client is answered.
-            # Driving the transaction without it would read the missing half as a leaked challenge.
+            # The route's own except arm: roll the conflicting inserts back, then spend the handle.
             await session.rollback()
             attempt.result = rejection
         await store.consume(session, challenge_id=attempt.challenge_id, now=NOW)
@@ -179,7 +177,7 @@ def barrier_for(harness: _Harness, attempt: _Attempt, mine: asyncio.Event, their
 
 
 class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
-    """Criterion 4. The crud arbitrates; nothing in the application does."""
+    """Criterion 4. The database arbitrates; nothing in the application does."""
 
     @pytest_asyncio.fixture
     async def raced(self, harness):
