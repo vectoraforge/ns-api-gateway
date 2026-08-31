@@ -1,0 +1,3 @@
+No external API integration: this phase moves existing code between packages, applies docstring and comment rules, inlines step-functions, deletes a startup self-check and four dead exception classes, and relocates one quota charge. The only external-SDK seams in scope — `auth/firebase.py`, `auth/jwt_verifier.py` and `auth/adapters.py` — stay exactly where they are under D-02 and are touched only by D-12's prose sweep; no provider capability is added, removed, or newly wrapped.
+
+The detector fired on one phrase in `37.5-CONTEXT.md` describing that existing seam ("they wrap someone else's API, hold no business rule"), not on new integration work.
