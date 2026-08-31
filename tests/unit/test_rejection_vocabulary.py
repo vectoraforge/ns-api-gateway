@@ -25,8 +25,8 @@ from nativespeaker.api.errors import (
     Unavailable,
     UserNotFound,
     _family,
-    _undeclared,
 )
+from unit.error_tree import undeclared
 
 # The five leaves under one 409 base, listed here rather than derived, for the same reason the event
 # names below are: this file is where a change to the tree is meant to become a visible edit.
@@ -49,17 +49,13 @@ EVENT_NAMES = frozenset({
     "service_unavailable",
     # The service arms.
     "unsupported_language_error",
-    "invalid_cursor_error",
-    "page_size_limit_error",
     "chat_history_limit_error",
-    "webhook_verification_error",
     "out_of_scope_error",
     "invalid_chat_error",
     "quota_exceeded_error",
     "analysis_error",
     "transient_llm_error",
     "permanent_llm_error",
-    "database_not_initialized_error",
     "missing_usage_row_error",
     "multiple_effective_grants_error",
     "unknown_tier_error",
@@ -115,7 +111,6 @@ class TestTheEventVocabularyIsWrittenDown:
 # is not added here fails the coverage control below rather than being silently skipped.
 CONSTRUCTOR_ARGUMENTS: dict[type, tuple[tuple, dict]] = {
     errors_module.UnsupportedLanguageError: (("fr", ["en"]), {}),
-    errors_module.PageSizeLimitError: ((100,), {}),
     errors_module.ChatHistoryLimitError: ((), {"max_messages": 50}),
     errors_module.InvalidChatError: (("chat-id",), {}),
     errors_module.MissingUsageRowError: ((uuid7(),), {}),
@@ -231,7 +226,7 @@ class TestNoLeafSilentlyAnswersTheFailClosedDefault:
     """The base's 500 is a tripwire, not a default anybody is allowed to rely on."""
 
     def test_every_leaf_declares_its_answer_or_inherits_one_below_the_base(self):
-        problems = _undeclared(_production_family(), root=AppError)
+        problems = undeclared(_production_family(), root=AppError)
         if problems:
             raise AssertionError("the error tree has undeclared leaves:\n  " + "\n  ".join(problems))
 
@@ -252,7 +247,7 @@ class TestTheMeasurementFires:
         class _DeclaringLeaf(_SyntheticBase):
             code = "identity_already_linked"
 
-        problems = _undeclared(_family(_SyntheticBase), root=_SyntheticBase)
+        problems = undeclared(_family(_SyntheticBase), root=_SyntheticBase)
 
         assert len(problems) == 1
         assert problems[0].startswith("_SilentLeaf ")
@@ -271,7 +266,7 @@ class TestTheMeasurementFires:
         class _Leaf(_DeclaringIntermediate):
             pass
 
-        assert _undeclared(_family(_SyntheticBase), root=_SyntheticBase) == []
+        assert undeclared(_family(_SyntheticBase), root=_SyntheticBase) == []
 
     def test_every_defect_is_reported_in_one_message(self):
         class _SyntheticBase(Exception):
@@ -283,6 +278,6 @@ class TestTheMeasurementFires:
         class _SecondSilent(_SyntheticBase):
             pass
 
-        problems = _undeclared(_family(_SyntheticBase), root=_SyntheticBase)
+        problems = undeclared(_family(_SyntheticBase), root=_SyntheticBase)
         assert sorted(problem.split()[0] for problem in problems) == ["_FirstSilent",
                                                                      "_SecondSilent"]

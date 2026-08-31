@@ -1,4 +1,5 @@
 """The error tree is total, and the handlers read it rather than a remap table."""
+import os
 import re
 import subprocess
 import sys
@@ -13,16 +14,16 @@ from nativespeaker.api.app.error_handlers import app_error_handler, http_excepti
 from nativespeaker.api.app.main import app as real_app
 from nativespeaker.api.errors import (
     AppError,
+    ChallengeRequired,
+    ChatHistoryLimitError,
     ErrorCode,
     ErrorResponse,
-    InvalidCursorError,
-    PageSizeLimitError,
     QueueFullError,
+    UnsupportedLanguageError,
     _family,
-    _tree_problems,
-    assert_tree_total,
     class_answering_status,
 )
+from unit.error_tree import assert_tree_total, tree_problems
 
 # The 401 code an earlier contract used alongside auth_required, since retired.
 RETIRED_401_CODE = "unauthorized"
@@ -36,9 +37,17 @@ def _declaring(code: str) -> list[type[AppError]]:
     return [cls for cls in _family(AppError) if vars(cls).get("code") == code]
 
 
+_TESTS_ROOT = Path(__file__).resolve().parent.parent
+
+# `subprocess.run` inherits `os.environ` but not pytest's own `sys.path` insertions.
+_SUBPROCESS_PATH = os.pathsep.join(
+    entry for entry in (str(_TESTS_ROOT), os.environ.get("PYTHONPATH")) if entry)
+
+
 def _fresh_interpreter(snippet: str) -> subprocess.CompletedProcess:
     """Run a check in its own process, so a synthetic subclass cannot outlive it."""
-    return subprocess.run([sys.executable, "-c", snippet], capture_output=True, text=True)
+    return subprocess.run([sys.executable, "-c", snippet], capture_output=True, text=True,
+                          env={**os.environ, "PYTHONPATH": _SUBPROCESS_PATH})
 
 
 class _RecordingLogger:
@@ -99,7 +108,8 @@ class TestTreeTotalityCatchesDefects:
 
     def test_a_code_claimed_at_a_second_status_is_reported_and_names_both_classes(self):
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import AppError, assert_tree_total\n"
+            "from nativespeaker.api.errors import AppError\n"
+            "from unit.error_tree import assert_tree_total\n"
             "class _Duplicate(AppError):\n"
             "    status = 451\n"
             "    code = 'not_found'\n"
@@ -111,7 +121,8 @@ class TestTreeTotalityCatchesDefects:
 
     def test_a_class_declaring_only_a_status_is_reported(self):
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import AppError, assert_tree_total\n"
+            "from nativespeaker.api.errors import AppError\n"
+            "from unit.error_tree import assert_tree_total\n"
             "class _HalfDeclared(AppError):\n"
             "    status = 418\n"
             "assert_tree_total()\n")
@@ -121,7 +132,8 @@ class TestTreeTotalityCatchesDefects:
 
     def test_a_class_declaring_only_a_code_is_reported(self):
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import AppError, assert_tree_total\n"
+            "from nativespeaker.api.errors import AppError\n"
+            "from unit.error_tree import assert_tree_total\n"
             "class _HalfDeclared(AppError):\n"
             "    code = 'not_found'\n"
             "assert_tree_total()\n")
@@ -131,7 +143,8 @@ class TestTreeTotalityCatchesDefects:
 
     def test_a_leaf_declaring_nothing_is_reported(self):
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import AppError, assert_tree_total\n"
+            "from nativespeaker.api.errors import AppError\n"
+            "from unit.error_tree import assert_tree_total\n"
             "class _SilentLeaf(AppError):\n"
             "    pass\n"
             "assert_tree_total()\n")
@@ -141,7 +154,8 @@ class TestTreeTotalityCatchesDefects:
 
     def test_a_second_class_claiming_one_framework_status_is_reported(self):
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import AppError, assert_tree_total\n"
+            "from nativespeaker.api.errors import AppError\n"
+            "from unit.error_tree import assert_tree_total\n"
             "class _SecondNotFound(AppError):\n"
             "    status = 404\n"
             "    code = 'not_found'\n"
@@ -153,14 +167,14 @@ class TestTreeTotalityCatchesDefects:
 
     def test_a_code_absent_from_the_tree_is_reported(self):
         """The other direction of the vocabulary equality, reported as its own problem."""
-        problems = _tree_problems(AppError,
-                                  declared_codes=frozenset(get_args(ErrorCode)) | {"invented"})
+        problems = tree_problems(AppError,
+                                 declared_codes=frozenset(get_args(ErrorCode)) | {"invented"})
         assert problems == ["ErrorCode declares codes the tree never carries: ['invented']"]
 
     def test_the_same_checks_report_nothing_when_no_synthetic_class_exists(self):
         """The control: without it, every case above would pass on any raised message at all."""
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import assert_tree_total\n"
+            "from unit.error_tree import assert_tree_total\n"
             "assert_tree_total()\n")
 
         assert result.returncode == 0
@@ -210,6 +224,10 @@ class TestTheFrameworkStatusMap:
         answering = class_answering_status(409)
         assert answering is not None
         assert (answering.status, answering.code) == (409, "challenge_required")
+
+    def test_the_409_answering_class_is_challenge_required_by_name(self):
+        """Its only other reference is its own definition, which is what reads as dead to a grep."""
+        assert class_answering_status(409) is ChallengeRequired
 
     def test_no_status_is_folded_onto_another(self):
         for status in FRAMEWORK_STATUSES:
@@ -298,15 +316,20 @@ class TestAppErrorHandler:
     """Within a code, status and body are identical across every branch that carries it."""
 
     async def test_two_subclasses_sharing_a_code_produce_byte_identical_bodies(self):
-        first = await app_error_handler(None, InvalidCursorError())
-        second = await app_error_handler(None, PageSizeLimitError(100))
+        unsupported = UnsupportedLanguageError("fr", ["en"])
+        history_full = ChatHistoryLimitError(max_messages=50)
+        assert str(unsupported) != str(history_full)
+        first = await app_error_handler(None, unsupported)
+        second = await app_error_handler(None, history_full)
         assert first.status_code == second.status_code == 400
         assert first.body == second.body == b'{"code":"invalid_request"}'
 
     async def test_the_exception_message_never_reaches_the_body(self):
-        """`str(exc)` names the limit; the client body must not distinguish the branch."""
-        response = await app_error_handler(None, PageSizeLimitError(100))
-        assert b"100" not in response.body
+        """`str(exc)` names the language asked for; the client body must not distinguish the branch."""
+        rejection = UnsupportedLanguageError("klingon", ["en"])
+        assert "klingon" in str(rejection)
+        response = await app_error_handler(None, rejection)
+        assert b"klingon" not in response.body
         assert response.body == b'{"code":"invalid_request"}'
 
     async def test_extra_headers_survive(self):

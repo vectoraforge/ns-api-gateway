@@ -10,7 +10,6 @@ from nativespeaker.api.auth.firebase import FirebaseAdminLookup, build_admin_app
 from nativespeaker.api.auth.jwt_verifier import JWTVerifier
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
-from nativespeaker.api.errors import assert_tree_total
 from nativespeaker.api.logs import setup_logging
 from nativespeaker.api.services import LLMService
 
@@ -25,9 +24,6 @@ async def lifespan(app: FastAPI):
     app.state.config = config
 
     setup_logging(log_level=config.log_level)
-
-    # The error tree fails closed here, before any traffic is served.
-    assert_tree_total()
 
     app.state.challenge_store = ChallengesDB()
 

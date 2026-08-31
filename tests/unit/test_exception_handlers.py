@@ -1,5 +1,7 @@
+import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import cast
 from uuid import uuid7
 
@@ -17,15 +19,12 @@ from nativespeaker.api.errors import (
     BlockedUser,
     ChatHistoryLimitError,
     CircuitOpenError,
-    DatabaseNotInitializedError,
     HistoricalIdentity,
     IdentityAlreadyLinked,
     InvalidChatError,
-    InvalidCursorError,
     InvalidExternalJwt,
     NotLinked,
     OutOfScopeError,
-    PageSizeLimitError,
     PermanentLLMError,
     QueueFullError,
     TransientLLMError,
@@ -41,11 +40,8 @@ CASES = [
     ("missing_token", InvalidExternalJwt(bounded_reason=None), 401),
     ("invalid_token", InvalidExternalJwt(bounded_reason=BoundedReason.bad_signature), 401),
     ("expired_token", InvalidExternalJwt(bounded_reason=BoundedReason.expired), 401),
-    ("db_not_init", DatabaseNotInitializedError(), 500),
     ("unsupported_lang", UnsupportedLanguageError("fr", ["en"]), 400),
     ("invalid_chat", InvalidChatError("xyz"), 404),
-    ("invalid_cursor", InvalidCursorError(), 400),
-    ("page_size_limit", PageSizeLimitError(100), 400),
     ("queue_full", QueueFullError(30), 503),
     ("circuit_open", CircuitOpenError(60), 503),
     ("history_limit", ChatHistoryLimitError(max_messages=50), 400),
@@ -419,9 +415,17 @@ class TestAnAccountUnavailableArmTravelsTheWholeErrorPath:
             assert set(fields) == {"exc_info"}
 
 
+_TESTS_ROOT = Path(__file__).resolve().parent.parent
+
+# `subprocess.run` inherits `os.environ` but not pytest's own `sys.path` insertions.
+_SUBPROCESS_PATH = os.pathsep.join(
+    entry for entry in (str(_TESTS_ROOT), os.environ.get("PYTHONPATH")) if entry)
+
+
 def _fresh_interpreter(snippet: str) -> subprocess.CompletedProcess:
     """Run the check in its own process, so a synthetic subclass cannot outlive it."""
-    return subprocess.run([sys.executable, "-c", snippet], capture_output=True, text=True)
+    return subprocess.run([sys.executable, "-c", snippet], capture_output=True, text=True,
+                          env={**os.environ, "PYTHONPATH": _SUBPROCESS_PATH})
 
 
 class TestStartupFailsClosedOnATreeDefect:
@@ -429,7 +433,8 @@ class TestStartupFailsClosedOnATreeDefect:
 
     def test_a_duplicate_code_at_another_status_is_reported_and_names_both_classes(self):
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import AppError, assert_tree_total\n"
+            "from nativespeaker.api.errors import AppError\n"
+            "from unit.error_tree import assert_tree_total\n"
             "class _Duplicate(AppError):\n"
             "    status = 409\n"
             "    code = 'account_unavailable'\n"
@@ -441,7 +446,8 @@ class TestStartupFailsClosedOnATreeDefect:
 
     def test_a_class_declaring_only_status_is_reported(self):
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import AppError, assert_tree_total\n"
+            "from nativespeaker.api.errors import AppError\n"
+            "from unit.error_tree import assert_tree_total\n"
             "class _HalfDeclared(AppError):\n"
             "    status = 418\n"
             "assert_tree_total()\n")
@@ -452,7 +458,7 @@ class TestStartupFailsClosedOnATreeDefect:
     def test_the_same_check_reports_neither_when_neither_class_exists(self):
         """The control: without it the two cases above would pass on any raised message at all."""
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import assert_tree_total\n"
+            "from unit.error_tree import assert_tree_total\n"
             "try:\n"
             "    assert_tree_total()\n"
             "except RuntimeError as problem:\n"
