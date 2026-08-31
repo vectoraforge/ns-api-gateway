@@ -1,11 +1,6 @@
-"""The Firebase Admin integration: one named app per issuer, and one adapter method, never a [DEFAULT] app.
-
-It also holds the two things that exist only to serve that lookup: the closed providerData classifier
-with its email-copy rule, both applied inside the read itself, and the one retry policy -- three
-attempts, then the unavailable rejection.
-
-Never take the first recognized entry, never classify non-empty providerData as anonymous,
-never read `firebase.sign_in_provider`. There is no declaration match here and no `required_flow` anywhere."""
+"""The Firebase Admin integration: one named app per issuer, one adapter method, never a [DEFAULT] app.
+Never take the first recognized entry, and never classify non-empty providerData as anonymous.
+Never read `firebase.sign_in_provider`: no declaration match here, and no `required_flow` anywhere."""
 from typing import NoReturn
 
 import firebase_admin
@@ -35,7 +30,6 @@ class RetryableLookupError(Exception):
 
 def build_admin_apps(config) -> dict[str, firebase_admin.App]:
     """One named Admin app per configured issuer, built once at boot. Never a `[DEFAULT]` one."""
-    # ADC if the environment supplies it, else no app at all -- a supported state that boots
     credential = _application_default_credential()
     if credential is None:
         logger.warning("firebase_admin_credential_absent",
@@ -53,7 +47,6 @@ def build_admin_apps(config) -> dict[str, firebase_admin.App]:
 
 def _application_default_credential() -> credentials.ApplicationDefault | None:
     """ADC if the environment supplies it, `None` if it does not -- never a raise."""
-    # Nothing configured is the ordinary case, not an error, and probing at boot avoids a late 503.
     try:
         google.auth.default()
     except google.auth.exceptions.DefaultCredentialsError:
@@ -63,7 +56,7 @@ def _application_default_credential() -> credentials.ApplicationDefault | None:
 
 
 class FirebaseAdminLookup:
-    """The `getUser` providerData read, and nothing else: token verification and revocation live elsewhere."""
+    """The `getUser` providerData read, through the Admin app the issuer selects."""
 
     def __init__(self, apps: dict[str, firebase_admin.App]) -> None:
         self._apps = apps
@@ -91,11 +84,10 @@ class FirebaseAdminLookup:
             logger.info("firebase_get_user_not_found")
             raise UserNotFound(stage="provider_lookup") from None
         except ValueError as error:
-            # A malformed or indeterminate response, which is retryable rather than definitive.
             logger.warning("firebase_provider_data_malformed", detail=str(error))
             raise RetryableLookupError(str(error)) from error
         except google.auth.exceptions.GoogleAuthError as error:
-            # Not a FirebaseError and raised before the request is sent; unhandled it means 500, not 503.
+            # Not a FirebaseError and raised before the request is sent, so it needs its own arm.
             logger.warning("firebase_credential_unavailable", detail=str(error))
             raise RetryableLookupError(str(error)) from error
         except exceptions.FirebaseError as error:
@@ -131,10 +123,7 @@ def _resolve_provider(entries: tuple[tuple[str, str], ...]) -> tuple[IdentityPro
 
 
 def _verified_email(email: str | None, email_verified: bool) -> str | None:
-    """Copy the address only when it is both non-empty and verified. Never normalized.
-
-    Evaluated in exactly one place, and `create_account` re-derives nothing from it.
-    """
+    """Copy the address only when it is both non-empty and verified. Never normalized."""
     if email is None or not email.strip():
         return None
     if not email_verified:
@@ -143,12 +132,7 @@ def _verified_email(email: str | None, email_verified: bool) -> str | None:
 
 
 def _exhausted(retry_state) -> NoReturn:
-    """Convert an exhausted budget into the rejection the client is owed.
-
-    Without this, tenacity's default raises `RetryError`, which matches no handler and so answers a
-    hard 500 where the caller is owed a retryable 503. `reraise=True` would not do either: it would
-    surface `RetryableLookupError`, which is internal and declares no status or code.
-    """
+    """Convert an exhausted retry budget into the `Unavailable` rejection the client is owed."""
     raise Unavailable(stage="provider_lookup") from retry_state.outcome.exception()
 
 
@@ -156,8 +140,7 @@ async def lookup_with_retry(adapter, issuer: str, subject: str) -> VerifiedProvi
     """Call the adapter up to `FIREBASE_LOOKUP_ATTEMPTS` times; return the identity or raise."""
     retrying = AsyncRetrying(
         stop=stop_after_attempt(FIREBASE_LOOKUP_ATTEMPTS),
-        # Only the internal marker is retryable, so `UserNotFound` and `NotLinked` propagate after
-        # one attempt rather than spending a budget on a fact the provider already stated.
+        # Only the internal marker retries, so `UserNotFound` and `NotLinked` propagate after one attempt.
         retry=retry_if_exception_type(RetryableLookupError),
         retry_error_callback=_exhausted,
     )

@@ -33,7 +33,6 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession]:
 _bearer = HTTPBearer(auto_error=False)
 
 
-# Declared in `APIRouter(dependencies=[...])` on every non-public router, so auth is default-on.
 async def get_identity(request: Request,
                        credential: HTTPAuthorizationCredentials | None = Depends(_bearer),
                        ) -> Identity:
@@ -49,8 +48,7 @@ async def get_identity(request: Request,
 
     # Its own short session, closed before the handler: Depends(get_db) would hold it across the provider call.
     async with request.app.state.session_factory() as session:
-        # allow_preauth=True here; get_linked_identity narrows, so create-user can answer 409 not 403.
-        # Rejections raise through untouched: the handler is the one site that records them.
+        # allow_preauth=True here; `get_linked_identity` is the dependency that narrows to linked callers.
         return await IdentitiesDB(session).resolve(issuer=claims.issuer,
                                                    subject=claims.subject, allow_preauth=True)
 
@@ -64,7 +62,7 @@ async def get_linked_identity(identity: Identity = Depends(get_identity)) -> Ide
 
 
 def get_session_factory(request: Request) -> async_sessionmaker:
-    """The one factory the lifespan built. Taken by a caller that needs its own short session, not `get_db`'s."""
+    """The one factory the lifespan built."""
     return request.app.state.session_factory
 
 
