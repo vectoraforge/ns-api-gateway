@@ -49,17 +49,13 @@ EVENT_NAMES = frozenset({
     "service_unavailable",
     # The service arms.
     "unsupported_language_error",
-    "invalid_cursor_error",
-    "page_size_limit_error",
     "chat_history_limit_error",
-    "webhook_verification_error",
     "out_of_scope_error",
     "invalid_chat_error",
     "quota_exceeded_error",
     "analysis_error",
     "transient_llm_error",
     "permanent_llm_error",
-    "database_not_initialized_error",
     "missing_usage_row_error",
     "multiple_effective_grants_error",
     "unknown_tier_error",
@@ -115,7 +111,6 @@ class TestTheEventVocabularyIsWrittenDown:
 # is not added here fails the coverage control below rather than being silently skipped.
 CONSTRUCTOR_ARGUMENTS: dict[type, tuple[tuple, dict]] = {
     errors_module.UnsupportedLanguageError: (("fr", ["en"]), {}),
-    errors_module.PageSizeLimitError: ((100,), {}),
     errors_module.ChatHistoryLimitError: ((), {"max_messages": 50}),
     errors_module.InvalidChatError: (("chat-id",), {}),
     errors_module.MissingUsageRowError: ((uuid7(),), {}),

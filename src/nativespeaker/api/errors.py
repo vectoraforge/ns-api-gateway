@@ -161,31 +161,12 @@ class UnsupportedLanguageError(InvalidRequest):
         super().__init__(f"Language '{lang}' not supported. Supported: {', '.join(supported)}")
 
 
-class InvalidCursorError(InvalidRequest):
-    """Raised when a pagination cursor cannot be read."""
-
-    def __init__(self):
-        super().__init__("Invalid cursor")
-
-
-class PageSizeLimitError(InvalidRequest):
-    """Raised when a requested page exceeds the maximum size."""
-
-    def __init__(self, limit: int):
-        self.limit = limit
-        super().__init__(f"Limit exceeds maximum page size of {limit}")
-
-
 class ChatHistoryLimitError(InvalidRequest):
     """Raised when a chat already holds as many messages as it may."""
 
     def __init__(self, max_messages: int):
         self.max_messages = max_messages
         super().__init__("Chat history limit reached")
-
-
-class WebhookVerificationError(InvalidRequest):
-    """JWS signature verification failed on an incoming webhook."""
 
 
 class OutOfScopeError(InvalidRequest):
@@ -228,14 +209,6 @@ class PermanentLLMError(AnalysisError):
     status = 503
     code = "service_unavailable"
     log_level = None
-
-
-class DatabaseNotInitializedError(InternalError):
-    """The DB session factory is not initialized."""
-    log_level = logging.ERROR
-
-    def __init__(self):
-        super().__init__("Database session factory is not initialized")
 
 
 class MissingUsageRowError(InternalError):

@@ -14,11 +14,12 @@ from nativespeaker.api.app.error_handlers import app_error_handler, http_excepti
 from nativespeaker.api.app.main import app as real_app
 from nativespeaker.api.errors import (
     AppError,
+    ChallengeRequired,
+    ChatHistoryLimitError,
     ErrorCode,
     ErrorResponse,
-    InvalidCursorError,
-    PageSizeLimitError,
     QueueFullError,
+    UnsupportedLanguageError,
     _family,
     class_answering_status,
 )
@@ -224,6 +225,10 @@ class TestTheFrameworkStatusMap:
         assert answering is not None
         assert (answering.status, answering.code) == (409, "challenge_required")
 
+    def test_the_409_answering_class_is_challenge_required_by_name(self):
+        """Its only other reference is its own definition, which is what reads as dead to a grep."""
+        assert class_answering_status(409) is ChallengeRequired
+
     def test_no_status_is_folded_onto_another(self):
         for status in FRAMEWORK_STATUSES:
             answering = class_answering_status(status)
@@ -311,15 +316,20 @@ class TestAppErrorHandler:
     """Within a code, status and body are identical across every branch that carries it."""
 
     async def test_two_subclasses_sharing_a_code_produce_byte_identical_bodies(self):
-        first = await app_error_handler(None, InvalidCursorError())
-        second = await app_error_handler(None, PageSizeLimitError(100))
+        unsupported = UnsupportedLanguageError("fr", ["en"])
+        history_full = ChatHistoryLimitError(max_messages=50)
+        assert str(unsupported) != str(history_full)
+        first = await app_error_handler(None, unsupported)
+        second = await app_error_handler(None, history_full)
         assert first.status_code == second.status_code == 400
         assert first.body == second.body == b'{"code":"invalid_request"}'
 
     async def test_the_exception_message_never_reaches_the_body(self):
-        """`str(exc)` names the limit; the client body must not distinguish the branch."""
-        response = await app_error_handler(None, PageSizeLimitError(100))
-        assert b"100" not in response.body
+        """`str(exc)` names the language asked for; the client body must not distinguish the branch."""
+        rejection = UnsupportedLanguageError("klingon", ["en"])
+        assert "klingon" in str(rejection)
+        response = await app_error_handler(None, rejection)
+        assert b"klingon" not in response.body
         assert response.body == b'{"code":"invalid_request"}'
 
     async def test_extra_headers_survive(self):
