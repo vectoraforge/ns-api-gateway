@@ -2,12 +2,64 @@
 
 This is the ratchet whose recorded baselines plans 06 through 09 drive to zero.
 """
+import ast
 from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[2]
+
+_Definition = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+
+
+def _named(node: ast.AST, prefix: str = "") -> list[tuple[_Definition, str]]:
+    """Every class, function and method below `node`, each with its qualified name."""
+    found: list[tuple[_Definition, str]] = []
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            found.append((child, prefix + child.name))
+            found.extend(_named(child, prefix + child.name + "."))
+        else:
+            found.extend(_named(child, prefix))
+    return found
 
 
 def over_long(root: Path, *, recurse: bool = True) -> list[tuple[str, str, int]]:
     """Every docstring under `root` whose stripped body runs past three lines."""
-    raise NotImplementedError
+    found = []
+    for path in sorted(root.rglob("*.py") if recurse else root.glob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        tree = ast.parse(path.read_text())
+        nodes: list[tuple[ast.Module | _Definition, str]] = [(tree, "<module>"), *_named(tree)]
+        for node, name in nodes:
+            doc = ast.get_docstring(node, clean=True)
+            if doc and len(doc.strip().splitlines()) > 3:
+                found.append((str(path.relative_to(root)), name, len(doc.strip().splitlines())))
+    return sorted(found)
+
+
+BASELINE: dict[str, int] = {
+    "src": 7,
+    "tests": 0,
+    "tests/e2e": 5,
+    "tests/schema": 0,
+    "tests/unit": 17,
+}
+
+
+def _measure(root: str) -> int:
+    """The root `tests` is its own top level alone; every other root is walked whole."""
+    return len(over_long(REPO / root, recurse=root != "tests"))
+
+
+class TestTheBarHolds:
+    """The recorded counts, checked instead of described."""
+
+    @pytest.mark.parametrize("root", sorted(BASELINE))
+    def test_each_root_matches_its_recorded_baseline(self, root):
+        """Equality, not `<=`: a sweep that forgot to lower a number fails as loudly as a new violation."""
+        assert _measure(root) == BASELINE[root]
 
 
 class TestTheMeasurementFires:
