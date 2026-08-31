@@ -397,10 +397,7 @@ class TestNoServiceRejectionIsCharged:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestAnOpenCircuitStillAnswers503:
-    """The wire answer an open circuit gives. The counter is not readable here -- `_db_transaction`
-    nests every session as a savepoint that `get_db`'s rollback discards -- so the credit is asserted
-    in `tests/unit/test_quota_seam.py::TestNoRequestThatNeverReachedTheProviderIsBilled`.
-    """
+    """The wire answer an open circuit gives; the credit is not readable through the rollback harness."""
 
     async def test_an_open_circuit_answers_service_unavailable(
             self, async_client, quota_grant, _app_lifespan):
