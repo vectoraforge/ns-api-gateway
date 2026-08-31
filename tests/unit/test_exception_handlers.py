@@ -429,7 +429,8 @@ class TestStartupFailsClosedOnATreeDefect:
 
     def test_a_duplicate_code_at_another_status_is_reported_and_names_both_classes(self):
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import AppError, assert_tree_total\n"
+            "from nativespeaker.api.errors import AppError\n"
+            "from unit.error_tree import assert_tree_total\n"
             "class _Duplicate(AppError):\n"
             "    status = 409\n"
             "    code = 'account_unavailable'\n"
@@ -441,7 +442,8 @@ class TestStartupFailsClosedOnATreeDefect:
 
     def test_a_class_declaring_only_status_is_reported(self):
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import AppError, assert_tree_total\n"
+            "from nativespeaker.api.errors import AppError\n"
+            "from unit.error_tree import assert_tree_total\n"
             "class _HalfDeclared(AppError):\n"
             "    status = 418\n"
             "assert_tree_total()\n")
@@ -452,7 +454,7 @@ class TestStartupFailsClosedOnATreeDefect:
     def test_the_same_check_reports_neither_when_neither_class_exists(self):
         """The control: without it the two cases above would pass on any raised message at all."""
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import assert_tree_total\n"
+            "from unit.error_tree import assert_tree_total\n"
             "try:\n"
             "    assert_tree_total()\n"
             "except RuntimeError as problem:\n"

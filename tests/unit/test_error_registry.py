@@ -19,10 +19,9 @@ from nativespeaker.api.errors import (
     PageSizeLimitError,
     QueueFullError,
     _family,
-    _tree_problems,
-    assert_tree_total,
     class_answering_status,
 )
+from unit.error_tree import assert_tree_total, tree_problems
 
 # The 401 code an earlier contract used alongside auth_required, since retired.
 RETIRED_401_CODE = "unauthorized"
@@ -99,7 +98,8 @@ class TestTreeTotalityCatchesDefects:
 
     def test_a_code_claimed_at_a_second_status_is_reported_and_names_both_classes(self):
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import AppError, assert_tree_total\n"
+            "from nativespeaker.api.errors import AppError\n"
+            "from unit.error_tree import assert_tree_total\n"
             "class _Duplicate(AppError):\n"
             "    status = 451\n"
             "    code = 'not_found'\n"
@@ -111,7 +111,8 @@ class TestTreeTotalityCatchesDefects:
 
     def test_a_class_declaring_only_a_status_is_reported(self):
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import AppError, assert_tree_total\n"
+            "from nativespeaker.api.errors import AppError\n"
+            "from unit.error_tree import assert_tree_total\n"
             "class _HalfDeclared(AppError):\n"
             "    status = 418\n"
             "assert_tree_total()\n")
@@ -121,7 +122,8 @@ class TestTreeTotalityCatchesDefects:
 
     def test_a_class_declaring_only_a_code_is_reported(self):
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import AppError, assert_tree_total\n"
+            "from nativespeaker.api.errors import AppError\n"
+            "from unit.error_tree import assert_tree_total\n"
             "class _HalfDeclared(AppError):\n"
             "    code = 'not_found'\n"
             "assert_tree_total()\n")
@@ -131,7 +133,8 @@ class TestTreeTotalityCatchesDefects:
 
     def test_a_leaf_declaring_nothing_is_reported(self):
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import AppError, assert_tree_total\n"
+            "from nativespeaker.api.errors import AppError\n"
+            "from unit.error_tree import assert_tree_total\n"
             "class _SilentLeaf(AppError):\n"
             "    pass\n"
             "assert_tree_total()\n")
@@ -141,7 +144,8 @@ class TestTreeTotalityCatchesDefects:
 
     def test_a_second_class_claiming_one_framework_status_is_reported(self):
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import AppError, assert_tree_total\n"
+            "from nativespeaker.api.errors import AppError\n"
+            "from unit.error_tree import assert_tree_total\n"
             "class _SecondNotFound(AppError):\n"
             "    status = 404\n"
             "    code = 'not_found'\n"
@@ -153,14 +157,14 @@ class TestTreeTotalityCatchesDefects:
 
     def test_a_code_absent_from_the_tree_is_reported(self):
         """The other direction of the vocabulary equality, reported as its own problem."""
-        problems = _tree_problems(AppError,
-                                  declared_codes=frozenset(get_args(ErrorCode)) | {"invented"})
+        problems = tree_problems(AppError,
+                                 declared_codes=frozenset(get_args(ErrorCode)) | {"invented"})
         assert problems == ["ErrorCode declares codes the tree never carries: ['invented']"]
 
     def test_the_same_checks_report_nothing_when_no_synthetic_class_exists(self):
         """The control: without it, every case above would pass on any raised message at all."""
         result = _fresh_interpreter(
-            "from nativespeaker.api.errors import assert_tree_total\n"
+            "from unit.error_tree import assert_tree_total\n"
             "assert_tree_total()\n")
 
         assert result.returncode == 0
