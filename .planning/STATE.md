@@ -94,7 +94,20 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ### Pending Todos
 
-None.
+- **Run `/gsd:docs-update` for `README.md`** — queued by Phase 37.4 (A-10), which deliberately did
+  **not** edit it (zero changed lines across the phase branch) rather than widen the phase. Three
+  specific stalenesses, each verified at 2026-08-30:
+  - **Endpoints that no longer exist** — `README.md:91` documents `POST /prompts/analyze`. The v2.0
+    surface is the `/auth/*`, `/chats/*`, `/users/me` and `/health/ready` set.
+  - **A package layout that no longer exists** — `README.md:194-199` shows an `app/` tree with
+    `models.py`. The tree is `src/nativespeaker/api/` and `models/` was split into `tables/` and
+    `schemas/` with `database/` renamed `crud/` by `d466a4b`.
+  - **A Python version that no longer applies** — `README.md:14` says "Python 3.12+";
+    `pyproject.toml:4` requires `>=3.14`.
+- **Refresh `.planning/codebase/*.md`** — the seven files there were captured 2026-02-24, are three
+  milestones behind and predate the `d466a4b` renames entirely. `37.4-CONTEXT.md` marks them
+  **stale, do not trust — read the source**, and its deferred list says the refresh is best done
+  after this phase lands. It has landed.
 
 ### Roadmap Evolution
 
