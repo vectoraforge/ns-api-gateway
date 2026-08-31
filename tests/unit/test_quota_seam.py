@@ -1,5 +1,6 @@
 """D-07's two halves at the seam A-03 settled: nobody is billed for a request the service refuses,
 and an exhausted allowance answers 429 with the provider untouched."""
+import asyncio
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -14,6 +15,7 @@ from nativespeaker.api.errors import (
     CircuitOpenError,
     InvalidChatError,
     PermanentLLMError,
+    QueueFullError,
     QuotaExceededError,
     ServiceUnavailable,
     TransientLLMError,
@@ -60,9 +62,10 @@ def _resilience_config() -> ResilienceConfig:
 class RecordingLLM:
     """Counts provider calls and runs them through the real `ResiliencePolicy`, so the breaker is production's."""
 
-    def __init__(self, events: list[str] | None = None):
+    def __init__(self, events: list[str] | None = None, *, transient_failures: int = 0):
         self.events = [] if events is None else events
         self.calls = 0
+        self.transient_failures = transient_failures
         self.policy = ResiliencePolicy(_resilience_config())
 
     @property
@@ -71,13 +74,24 @@ class RecordingLLM:
         return self.policy._circuit_breaker._failure_count
 
     async def ainvoke(self, history, content: str, lang: str) -> dict:
-        # Counted on entry, so "the provider was never reached" and "the policy never ran" are the same assertion.
-        self.calls += 1
-        self.events.append("provider_called")
         return await self.policy.ainvoke(self._answer)
 
     async def _answer(self) -> dict:
+        # Counted in the operation rather than on entry: a marker on entry fires before admission is held.
+        self.calls += 1
+        self.events.append("provider_called")
+        if self.calls <= self.transient_failures:
+            raise TimeoutError(f"scripted transient failure {self.calls}")
         return LLM_ANSWER
+
+
+def _drain_the_gate(policy: ResiliencePolicy) -> None:
+    """Take every in-flight slot, so the next admission is refused deterministically."""
+    while True:
+        try:
+            policy._gate._slots.get_nowait()
+        except asyncio.QueueEmpty:
+            return
 
 
 class _StubResult:
@@ -240,7 +254,7 @@ class TestAnExhaustedAllowanceAnswers429AndNeverReachesTheProvider:
         assert (caught.value.status, caught.value.code) == (429, "quota_exceeded")
 
     async def test_the_429_never_degrades_into_a_503(self, monkeypatch, mock_chats_db):
-        """Structural: the charge is raised outside the resilience policy, so the classifier never sees it."""
+        """Structural: the charge is raised inside admission and outside `ainvoke`'s classifier."""
         _raising_charge(monkeypatch, QuotaExceededError("used up"))
         service = _service(mock_chats_db)
 
@@ -299,7 +313,7 @@ class TestNoSessionIsHeldAcrossTheProviderCall:
 
         await service.create_chat(phrase=PHRASE, user_id=TEST_USER_ID, lang="en")
 
-        # The real `charge_quota` runs here: opened, committed and closed, all before the provider is reached.
+        # The real `QuotaService.charge` runs here: opened, committed and closed, all before the provider.
         assert events == ["session_opened", "session_committed", "session_closed", "provider_called"]
 
     async def test_the_charge_really_spent_a_unit_in_that_session(self, mock_chats_db):
@@ -330,15 +344,45 @@ class TestNoSessionIsHeldAcrossTheProviderCall:
         assert usage.monthly_used == ALLOWANCE
 
 
-class TestTheAcceptedRegression:
-    """D-07 sanctions this explicitly: with the charge ahead of the gate, an open circuit is billable.
+class TestARetriedRequestIsChargedExactlyOnce:
+    """The charge sits outside the retry loop, so tenacity's three attempts cannot become three credits."""
 
-    It is asserted here rather than in `tests/e2e/test_quota.py` because that suite nests every session
-    as a savepoint on one connection, so `get_db`'s rollback discards the charge's committed savepoint --
-    an artifact of the harness, since production gives the charge its own connection.
-    """
+    async def test_two_transient_failures_then_success_spends_one_unit(self, mock_chats_db):
+        events: list[str] = []
+        grant, usage = _effective_grant_rows()
+        llm = RecordingLLM(events, transient_failures=2)
+        service = _service(mock_chats_db, llm=llm,
+                           session_factory=_recording_factory(events, grant, usage))
 
-    async def test_an_open_circuit_answers_503_after_the_charge_has_committed(self, mock_chats_db):
+        await service.create_chat(phrase=PHRASE, user_id=TEST_USER_ID, lang="en")
+
+        # Three provider attempts against one credit: a charge inside the retried body would read three.
+        assert llm.calls == 3
+        assert usage.monthly_used == 1
+        assert events.count("session_committed") == 1
+
+
+class TestNoRequestThatNeverReachedTheProviderIsBilled:
+    """D-07 inverts 37.4's accepted regression: both admission rejections cost nothing, and neither is a 429."""
+
+    async def test_a_full_queue_answers_503_and_spends_nothing(self, mock_chats_db):
+        events: list[str] = []
+        grant, usage = _effective_grant_rows()
+        llm = RecordingLLM(events)
+        _drain_the_gate(llm.policy)
+        service = _service(mock_chats_db, llm=llm,
+                           session_factory=_recording_factory(events, grant, usage))
+
+        with pytest.raises(QueueFullError) as caught:
+            await service.create_chat(phrase=PHRASE, user_id=TEST_USER_ID, lang="en")
+
+        assert (caught.value.status, caught.value.code) == (503, "service_unavailable")
+        # No session was ever opened, so the refusal happened before the charge rather than after it.
+        assert events == []
+        assert usage.monthly_used == 0
+        assert llm.calls == 0
+
+    async def test_an_open_circuit_answers_503_and_spends_nothing(self, mock_chats_db):
         events: list[str] = []
         grant, usage = _effective_grant_rows()
         llm = RecordingLLM(events)
@@ -346,24 +390,26 @@ class TestTheAcceptedRegression:
         service = _service(mock_chats_db, llm=llm,
                            session_factory=_recording_factory(events, grant, usage))
 
-        with pytest.raises(CircuitOpenError):
+        with pytest.raises(CircuitOpenError) as caught:
             await service.create_chat(phrase=PHRASE, user_id=TEST_USER_ID, lang="en")
 
-        # The credit is spent and committed before the breaker is ever consulted. This is the regression.
-        assert events == ["session_opened", "session_committed", "session_closed", "provider_called"]
-        assert usage.monthly_used == 1
+        assert (caught.value.status, caught.value.code) == (503, "service_unavailable")
+        assert events == []
+        assert usage.monthly_used == 0
+        assert llm.calls == 0
 
     async def test_the_charge_is_not_refunded_when_the_provider_call_fails(self, mock_chats_db):
-        """`quota.py`'s docstring states this; the charge commits in its own session and nothing reverses it."""
+        """`services/quota.py`'s docstring states it: the charge commits in its own session and nothing reverses it."""
         events: list[str] = []
         grant, usage = _effective_grant_rows()
-        llm = RecordingLLM(events)
-        llm.policy._circuit_breaker._opened_at = time.monotonic()
+        llm = RecordingLLM(events, transient_failures=99)
         service = _service(mock_chats_db, llm=llm,
                            session_factory=_recording_factory(events, grant, usage))
 
-        with pytest.raises(CircuitOpenError):
+        with pytest.raises(TransientLLMError):
             await service.create_chat(phrase=PHRASE, user_id=TEST_USER_ID, lang="en")
 
+        # The provider was reached and failed, which is the case that is deliberately still charged.
+        assert llm.calls == 3
         assert "session_rolled_back" not in events
         assert usage.monthly_used == 1
