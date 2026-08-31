@@ -21,7 +21,7 @@ from nativespeaker.api.errors import (
     TransientLLMError,
     UnsupportedLanguageError,
 )
-from nativespeaker.api.resilience import ResiliencePolicy
+from nativespeaker.api.resilience import Admitted, ResiliencePolicy
 from nativespeaker.api.services import ChatService, QuotaService
 from nativespeaker.api.tables import (
     AccessGrant,
@@ -86,6 +86,11 @@ class RecordingLLM:
         if self.calls <= self.transient_failures:
             raise TimeoutError(f"scripted transient failure {self.calls}")
         return LLM_ANSWER
+
+
+def _erased(value: object) -> Any:
+    """Drop a declared type, so a deliberately tokenless call is a runtime fact and not a CI diagnostic."""
+    return value
 
 
 def _drain_the_gate(policy: ResiliencePolicy) -> None:
@@ -345,6 +350,31 @@ class TestNoSessionIsHeldAcrossTheProviderCall:
         assert events == ["session_opened", "session_rolled_back", "session_closed"]
         assert llm.calls == 0
         assert usage.monthly_used == ALLOWANCE
+
+
+class TestAdmissionCannotBeBypassed:
+    """The token is a required parameter, so reaching the provider without holding admission is not spellable."""
+
+    async def test_invoking_the_policy_without_a_token_raises(self):
+        async def operation() -> dict:
+            return LLM_ANSWER
+
+        # Erased, because spelled directly this call is a `ty` error -- which is the other half of the guarantee.
+        invoke = _erased(ResiliencePolicy(_resilience_config()).ainvoke)
+
+        with pytest.raises(TypeError, match="admitted"):
+            await invoke(operation)
+
+    async def test_admission_mints_the_only_token_the_gate_accounts_for(self):
+        """A minted token means a slot was actually taken, which is what a bypass would skip."""
+        policy = ResiliencePolicy(_resilience_config())
+        free_slots = policy._gate._slots.qsize()
+
+        async with policy.admission() as admitted:
+            assert isinstance(admitted, Admitted)
+            assert policy._gate._slots.qsize() == free_slots - 1
+
+        assert policy._gate._slots.qsize() == free_slots
 
 
 class TestARetriedRequestIsChargedExactlyOnce:
