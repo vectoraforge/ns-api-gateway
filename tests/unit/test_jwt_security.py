@@ -7,6 +7,8 @@ from urllib.error import URLError
 
 import jwt as pyjwt
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from nativespeaker.api.auth.jwt_verifier import _ABSENT_KID_SENTINEL, BoundedReason, JWTVerifier, VerifiedClaims
 from unit.conftest import (
@@ -103,6 +105,16 @@ class TestSignatureVerification:
         tampered_payload = base64.urlsafe_b64encode(json.dumps(payload_data).encode()).rstrip(b"=").decode()
         tampered_token = f"{parts[0]}.{tampered_payload}.{parts[2]}"
         assert rejected(verifier, tampered_token) is BoundedReason.bad_signature
+
+    def test_rejects_token_signed_with_different_key(self, verifier):
+        """A cleanly signed token from an untrusted key is not a tampered one: it verifies, just not against ours."""
+        other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        other_pem = other_key.private_bytes(encoding=serialization.Encoding.PEM,
+                                            format=serialization.PrivateFormat.PKCS8,
+                                            encryption_algorithm=serialization.NoEncryption())
+        token = make_token("user1", private_key=other_pem)
+        assert rejected(verifier, token) is BoundedReason.bad_signature
+
 
 
 class TestTokenExpiry:

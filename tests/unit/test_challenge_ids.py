@@ -1,6 +1,8 @@
 """Challenge-store logic, run against a stub session."""
 
+import ast
 import base64
+import inspect
 import string
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid7
@@ -322,3 +324,18 @@ class TestLocateIsByteForByte:
         await store().locate(session, "a" * 22)
         assert session.added == []
         assert session.commits == 0
+
+
+class TestTheStoreHoldsNoLogger:
+    """The handle is a secret capability, so the module that mints it holds no logger to log it with."""
+
+    def test_the_module_logs_nothing(self):
+        from nativespeaker.api.crud import challenges
+
+        tree = ast.parse(inspect.getsource(challenges))
+        imported = {alias.name.split(".")[0] for node in ast.walk(tree)
+                    if isinstance(node, ast.Import) for alias in node.names}
+        imported |= {node.module.split(".")[0] for node in ast.walk(tree)
+                     if isinstance(node, ast.ImportFrom) and node.module}
+        assert "structlog" not in imported
+        assert "logging" not in imported
