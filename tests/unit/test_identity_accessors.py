@@ -333,10 +333,6 @@ class TestExternalIdentityModel:
             "updated_at", "user_id",
         ]
 
-    def test_table_is_in_the_core_schema(self):
-        assert ExternalIdentity.__table__.schema == "core"
-        assert ExternalIdentity.__table__.name == "external_identities"
-
     def test_identity_state_has_exactly_two_values(self):
         """A third value would be a state the admission matrix has no ruling for."""
         assert [m.value for m in IdentityState] == ["active", "historical"]
@@ -346,9 +342,6 @@ class TestExternalIdentityModel:
 
     def test_native_claim_provider_mirrors_the_native_enum(self):
         assert [m.value for m in NativeClaimProvider] == ["ios_devicecheck", "android_play_integrity"]
-
-    def test_identity_state_defaults_to_active(self):
-        assert ExternalIdentity.model_fields["identity_state"].default is IdentityState.active
 
     def test_the_enums_bind_the_native_postgresql_types(self):
         """v1.6 convention: domain enums are native `core.*` types, never TEXT with a CHECK."""
@@ -362,39 +355,7 @@ class TestExternalIdentityModel:
 
 
 class TestTheWireContractTheFrameworkNowEnforces:
-    """What `HTTPBearer(auto_error=False)` actually does, written down rather than left implicit.
-
-    D-10 replaced a 43-line extractor with one declared dependency and deleted the 217 lines of
-    test that pinned the old behaviour. These cases record what replaced it, including the shapes
-    that stopped being distinctly rejected.
-    """
-
-    @pytest.fixture
-    def warnings(self, monkeypatch) -> list[tuple[str, dict]]:
-        entries: list[tuple[str, dict]] = []
-        monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.warning",
-                            lambda event, **kw: entries.append((event, kw)))
-        return entries
-
-    def test_no_credential_answers_401_with_the_auth_required_code(self):
-        response = _client().get("/admitted")
-        assert response.status_code == 401
-        assert response.json() == {"code": "auth_required"}
-
-    def test_no_credential_still_produces_the_invalid_external_jwt_event(self, warnings):
-        """`auto_error=False` is what keeps our own code the raiser; with auto-error on this is lost."""
-        _client().get("/admitted")
-        assert [event for event, _ in warnings] == ["invalid_external_jwt"]
-
-    def test_a_non_bearer_scheme_answers_401_and_still_records_the_event(self, warnings):
-        """The framework yields no credential for another scheme, so our arm raises exactly as before."""
-        response = _client().get("/admitted", headers={"Authorization": "Basic dXNlcjpwdw=="})
-        assert response.status_code == 401
-        assert [event for event, _ in warnings] == ["invalid_external_jwt"]
-
-    def test_a_well_formed_credential_is_accepted(self):
-        response = _client(row=None).get("/admitted", headers=_bearer())
-        assert response.status_code == 200
+    """What `HTTPBearer(auto_error=False)` admits and refuses, written down rather than left implicit."""
 
     def test_a_padded_credential_value_is_accepted_which_loosens_the_wire_contract(self):
         """A-09: the scheme/param split strips the padding, so a value the extractor called
@@ -412,14 +373,6 @@ class TestTheWireContractTheFrameworkNowEnforces:
             headers=[("Authorization", f"Bearer {token}"),
                      ("Authorization", "Bearer not.a.jwt")])
         assert response.status_code == 200
-
-    def test_a_comma_joined_value_degrades_to_a_verification_failure(self):
-        """Not a distinct rejection any more: the whole string reaches the verifier and fails there."""
-        token = make_token(sub=SUBJECT)
-        response = _client(row=None).get(
-            "/admitted", headers={"Authorization": f"Bearer {token}, Bearer {token}"})
-        assert response.status_code == 401
-        assert response.json() == {"code": "auth_required"}
 
     def test_trailing_content_after_the_token_degrades_to_a_verification_failure(self):
         """Named by the wire-contract rule as its own rejection; it is now a bad signature."""

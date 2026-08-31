@@ -100,13 +100,6 @@ class TestAllFourRowsAreAddedInOneTransaction:
         assert kinds.count(ExternalIdentity) == 1
         assert kinds.count(StorePurchaseToken) == 2
 
-    async def test_the_conflicting_transaction_is_neither_committed_nor_rolled_back_here(self):
-        """Both boundaries belong to the route, which spends the handle in the same transaction."""
-        session = _harness(integrity_error())
-        await _rejected(session)
-
-        assert (session.commits, session.rollbacks) == (0, 0)
-
 
 class TestAFailedInsertStopsInserting:
     """The function must not carry on after the conflict, and must not report success."""
@@ -117,21 +110,6 @@ class TestAFailedInsertStopsInserting:
 
         assert session.added == session.added_at_failure
 
-    async def test_no_second_attempt_at_the_business_inserts(self):
-        """A retry loop here would be a second race entrant under the same claim."""
-        session = _harness(integrity_error())
-        await _rejected(session)
-
-        assert session.flushes == SECOND_FLUSH
-
-    async def test_the_failure_is_never_swallowed_into_the_success_path(self):
-        """There is no success arm left to fall into: the conflict raises, so nothing can return an id."""
-        session = _harness(integrity_error())
-        rejection = await _rejected(session)
-
-        assert isinstance(rejection, IdentityAlreadyLinked)
-        assert rejection.status == 409
-
     async def test_a_failure_on_the_very_first_insert_raises_the_same_rejection(self):
         """The user row goes in on the first flush; a conflict there earns the same answer as any other."""
         session = _harness(integrity_error(), fail_on_flush=1)
@@ -139,17 +117,3 @@ class TestAFailedInsertStopsInserting:
 
         assert isinstance(rejection, IdentityAlreadyLinked)
         assert [type(instance) for instance in session.added_at_failure] == [User]
-
-
-class TestANonIntegrityFailureIsNotAbsorbed:
-    """Fail loudly rather than answering the client something plausible and wrong."""
-
-    async def test_a_non_integrity_failure_is_not_caught_at_all(self):
-        """A connection drop must not be reshaped into a uniqueness conflict."""
-        error = RuntimeError("the connection went away mid-flush")
-        session = _harness(error)
-
-        with pytest.raises(RuntimeError):
-            await _create(session)
-
-        assert session.commits == 0

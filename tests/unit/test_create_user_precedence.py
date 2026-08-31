@@ -78,11 +78,7 @@ class _FakeChallengeStore:
 class _RejectionLog:
     """The rejections this request logged, in order, from a spy on each logger one can come from.
 
-    The migration this recorder was built to span is finished: every rejection below is now recorded
-    by the exception handler, and the router records none. Both loggers stay spied anyway, and both
-    feed one list -- that is what makes "only the handler records a rejection" a tested property
-    rather than an assumption, since a rejection re-logged at the router would appear here as a
-    second entry and fail the exactly-once cases.
+    Both loggers feed one list, so a rejection re-logged anywhere appears here as a second entry.
     """
 
     def __init__(self) -> None:

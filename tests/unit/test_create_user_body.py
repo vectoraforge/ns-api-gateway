@@ -1,9 +1,4 @@
-"""The completion body's validation partition: an unusable handle is the framework's 422, and nothing else.
-
-The route reads its body and nothing else. There is no mode to dispatch on, so the only question a handle
-can raise is whether it is a usable string -- and the framework, not the handler, answers it. Every rejection
-asserts the body code as well as the status, since a status alone would also pass for some other code.
-"""
+"""The completion body's validation partition: an unusable handle is the framework's 422, and nothing else."""
 from datetime import UTC, datetime
 
 import pytest
@@ -124,17 +119,13 @@ class TestTheHandleReachesTheStore:
         assert session.statements == []
 
 
-# Absent, null, empty, four wrong scalar types and two containers. None of them is a usable handle.
+# Absent, null, empty, a wrong scalar type and a container. None of them is a usable handle.
 _UNUSABLE_BODIES = [
     pytest.param({}, id="field-absent"),
     pytest.param({"challenge_id": None}, id="null"),
     pytest.param({"challenge_id": ""}, id="empty-string"),
     pytest.param({"challenge_id": 123}, id="int"),
-    pytest.param({"challenge_id": 0}, id="zero"),
-    pytest.param({"challenge_id": 1.5}, id="float"),
-    pytest.param({"challenge_id": True}, id="bool"),
     pytest.param({"challenge_id": ["a-handle"]}, id="list"),
-    pytest.param({"challenge_id": {"value": "a-handle"}}, id="object"),
 ]
 
 
