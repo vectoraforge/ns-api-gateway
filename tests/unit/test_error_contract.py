@@ -41,7 +41,7 @@ class TestStatusCodeRemapping:
     """Every framework status carries its own honest class rather than being folded onto one."""
 
     def test_wrong_method_returns_405(self, contract_client):
-        """POST to a GET-only route returns 405 -- the deleted remap table folded it to 400."""
+        """POST to a GET-only route returns 405."""
         response = contract_client.post("/only-get")
         assert response.status_code == 405
         assert response.json()["code"] == "method_not_allowed"
@@ -51,17 +51,6 @@ class TestStatusCodeRemapping:
         response = contract_client.get("/no-such-route")
         assert response.status_code == 404
         assert response.json()["code"] == "not_found"
-
-    def test_response_body_has_only_code_field(self, contract_client):
-        """Error responses contain exactly one field: code."""
-        response = contract_client.get("/no-such-route")
-        body = response.json()
-        assert list(body.keys()) == ["code"]
-
-    def test_error_code_is_from_contract_set(self, contract_client):
-        """Error code value is one the tree declares."""
-        response = contract_client.post("/only-get")
-        assert response.json()["code"] in CONTRACT_CODES
 
 
 # The merged handler reads nothing off the request, which is what lets these cases skip building one.
@@ -105,7 +94,7 @@ class TestTheBodyStaysOneFieldAndCarriesNoIdentifier:
 
 
 class TestOpenAPISchema:
-    """ERR-04: ErrorResponse in OpenAPI, no 422."""
+    """The emitted schema documents 422 and enumerates exactly the registered codes."""
 
     def test_openapi_schema_has_422(self):
         """Every route with a request body should have a 422 response."""
@@ -115,18 +104,6 @@ class TestOpenAPISchema:
                 if isinstance(op, dict) and "requestBody" in op:
                     responses = op.get("responses", {})
                     assert "422" in responses, (f"422 missing in {method.upper()} {path}")
-
-    def test_openapi_schema_contains_error_response(self):
-        """ErrorResponse model must appear in the schema components."""
-        schema = real_app.openapi()
-        schemas = schema.get("components", {}).get("schemas", {})
-        assert "ErrorResponse" in schemas
-
-    def test_openapi_error_response_has_code_field(self):
-        """ErrorResponse schema must have a 'code' property."""
-        schema = real_app.openapi()
-        error_schema = schema["components"]["schemas"]["ErrorResponse"]
-        assert "code" in error_schema.get("properties", {})
 
     def test_openapi_error_response_code_is_enum(self):
         """ErrorResponse.code must enumerate exactly the registered codes."""

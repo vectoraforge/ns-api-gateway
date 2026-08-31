@@ -1,4 +1,4 @@
-"""The error tree is total, and the handlers read it rather than a remap table."""
+"""The error tree is total, and the handlers read it."""
 import os
 import re
 import subprocess
@@ -9,9 +9,9 @@ from typing import get_args
 import pytest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+import nativespeaker.api.app.main  # noqa: F401 -- imported so the runtime-subclass case sees every module
 import nativespeaker.api.errors
 from nativespeaker.api.app.error_handlers import app_error_handler, http_exception_handler
-from nativespeaker.api.app.main import app as real_app
 from nativespeaker.api.errors import (
     AppError,
     ChallengeRequired,
@@ -24,9 +24,6 @@ from nativespeaker.api.errors import (
     class_answering_status,
 )
 from unit.error_tree import assert_tree_total, tree_problems
-
-# The 401 code an earlier contract used alongside auth_required, since retired.
-RETIRED_401_CODE = "unauthorized"
 
 # The statuses a bare framework rejection can arrive with, each answered by exactly one class.
 FRAMEWORK_STATUSES = (400, 401, 404, 405, 409, 422, 429, 500, 503)
@@ -101,9 +98,7 @@ class TestTreeTotality:
 class TestTreeTotalityCatchesDefects:
     """Each invariant fails loudly when a later phase appends a class carelessly.
 
-    The defect cases run in a fresh interpreter rather than in-process: a synthetic subclass of
-    `AppError` joins the real tree for as long as it is alive, and one that outlived its case would
-    fail every later call to `assert_tree_total`.
+    In a fresh interpreter each time: a synthetic subclass joins the real tree while it is alive.
     """
 
     def test_a_code_claimed_at_a_second_status_is_reported_and_names_both_classes(self):
@@ -181,32 +176,8 @@ class TestTreeTotalityCatchesDefects:
         assert result.stderr == ""
 
 
-class TestRetired401Code:
-    """`auth_required` is the only 401 the service emits."""
-
-    def test_absent_from_the_tree(self):
-        assert RETIRED_401_CODE not in {cls.code for cls in _family(AppError)}
-
-    def test_absent_from_the_error_code_literal(self):
-        assert RETIRED_401_CODE not in get_args(ErrorCode)
-
-    def test_absent_from_the_error_response_model(self):
-        code_field = ErrorResponse.model_fields["code"]
-        assert RETIRED_401_CODE not in get_args(code_field.annotation)
-
-    def test_absent_from_the_apps_openapi_responses_block(self):
-        """Introspects the mapping the app was constructed with -- no schema generation needed."""
-        responses = real_app.router.responses
-        assert RETIRED_401_CODE not in str(responses).lower()
-
-    def test_the_one_401_the_responses_block_documents_is_the_answering_class(self):
-        assert real_app.router.responses[401]["model"] is ErrorResponse
-        answering = class_answering_status(401)
-        assert answering is not None and answering.code == "auth_required"
-
-
 class TestTheFrameworkStatusMap:
-    """The walk-built mapping that replaced the folding table, and then `STATUS_TO_CLASS`."""
+    """The mapping from a framework-raised status to the one class that answers it."""
 
     @pytest.mark.parametrize("status,expected_code", [
         (404, "not_found"),
@@ -220,7 +191,7 @@ class TestTheFrameworkStatusMap:
         assert answering.code == expected_code
 
     def test_409_is_challenge_required_not_identity_already_linked(self):
-        """The live collision the deleted remap table caused: its 409 -> 400 entry."""
+        """409 is answered by the challenge class, not by the other class declared there."""
         answering = class_answering_status(409)
         assert answering is not None
         assert (answering.status, answering.code) == (409, "challenge_required")
@@ -385,7 +356,7 @@ class TestDeliberatelyAbsentCodes:
 
 
 class TestErrorResponseStaysOneField:
-    """The one place a wider body was once demanded is gone, and the contract is not reopened."""
+    """`ErrorResponse` carries one field, and nothing subclasses it anywhere."""
 
     def test_exactly_one_model_field(self):
         assert list(ErrorResponse.model_fields) == ["code"]
@@ -403,6 +374,6 @@ class TestErrorResponseStaysOneField:
         assert ErrorResponse.__subclasses__() == []
 
     def test_the_errors_module_declares_no_per_class_payload_slot(self):
-        """The field the 409 body once wanted no longer has a reason to exist."""
+        """No per-class payload slot is declared in the module."""
         source = Path(nativespeaker.api.errors.__file__).read_text()
         assert "required" + "_flow" not in source
