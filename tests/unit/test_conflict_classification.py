@@ -148,11 +148,6 @@ class TestEveryConflictCollapsesToOneAlreadyLinkedAnswer:
         rejection, _, _ = await _insert(expect=IdentityAlreadyLinked)
         assert (rejection.status, rejection.code) == (409, "identity_already_linked")
 
-    async def test_a_conflict_on_a_rule_nobody_anticipated_earns_the_same_answer(self):
-        """The unmapped-constraint 500 tripwire is knowingly given up: a new rule reads as a benign 409."""
-        rejection, _, _ = await _insert(expect=IdentityAlreadyLinked)
-        assert isinstance(rejection, IdentityAlreadyLinked)
-
     async def test_the_violation_survives_as_the_rejections_cause(self):
         """The rejection is the client's answer; the violation is the reason, and the traceback keeps it."""
         rejection, conflict, _ = await _insert()

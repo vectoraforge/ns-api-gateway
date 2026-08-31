@@ -183,7 +183,6 @@ def client(mock_chats_db, service):
         yield test_client
 
 
-# The provider-seam fake lives here because the create-user suites and tests/e2e both need it.
 
 
 ANONYMOUS_IDENTITY = VerifiedProviderIdentity(provider=IdentityProvider.anonymous,
@@ -193,9 +192,7 @@ ANONYMOUS_IDENTITY = VerifiedProviderIdentity(provider=IdentityProvider.anonymou
 class FakeFirebaseAdapter:
     """A scriptable stand-in for the provider seam; async because a synchronous fake would fail against real wiring.
 
-    It scripts the seam's answer and nothing behind it. Classification and the email rule live inside
-    the read now, so a fake that re-applied them would be a second copy of rules that are tested
-    against the real `_read` in `test_firebase_adapter.py` -- and a copy is what drifts.
+    It scripts the seam's answer and nothing behind it: no classification and no email rule.
     """
 
     def __init__(self) -> None:

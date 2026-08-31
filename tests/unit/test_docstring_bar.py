@@ -44,7 +44,7 @@ BASELINE: dict[str, int] = {
     "tests": 0,
     "tests/e2e": 4,
     "tests/schema": 0,
-    "tests/unit": 10,
+    "tests/unit": 0,
 }
 
 
