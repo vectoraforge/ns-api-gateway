@@ -12,7 +12,6 @@ from uuid import UUID, uuid7
 
 import pytest
 
-from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.crud.challenges import (
     CHALLENGE_ID_BYTES,
     CHALLENGE_TTL_SECONDS,
@@ -20,6 +19,7 @@ from nativespeaker.api.crud.challenges import (
     new_challenge_id,
 )
 from nativespeaker.api.errors import ChallengeConsumed, ChallengeIdentityMismatch
+from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.users import User

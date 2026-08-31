@@ -11,8 +11,8 @@ from jwt.algorithms import RSAAlgorithm
 
 from nativespeaker.api.app.dependencies import get_linked_identity
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.auth.jwt_verifier import JWTVerifier
+from nativespeaker.api.schemas.auth import Identity
 from unit.conftest import PUBLIC_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_token
 
 JWKS_URL = "https://jwks.invalid/keys"

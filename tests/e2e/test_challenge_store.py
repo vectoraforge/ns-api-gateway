@@ -10,8 +10,8 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from e2e.conftest import seed_identity
-from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.errors import ChallengeConsumed, ChallengeIdentityMismatch
+from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import IdentityProvider
 

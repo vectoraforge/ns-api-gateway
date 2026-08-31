@@ -6,8 +6,8 @@ from nativespeaker.api.app.dependencies import (
     get_chat_service,
     get_linked_identity,
 )
-from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.schemas.api import ChatRequest, ChatResponse, MessageRequest, MessageResponse
+from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.services import ChatService
 
 # Authentication is default-on for every route on this router.

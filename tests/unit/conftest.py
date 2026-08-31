@@ -17,10 +17,10 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
-from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.auth.jwt_verifier import VerificationResult, bounded_reason_for, claims_from_payload
 from nativespeaker.api.crud import ChatsDB
 from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router
+from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.services import ChatService
 from nativespeaker.api.services import chats as chats_service
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState

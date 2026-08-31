@@ -9,7 +9,6 @@ from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.auth import create_user as creation
 from nativespeaker.api.auth.create_user import create_user
-from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.errors import (
     AccountUnavailable,
     AppError,
@@ -17,6 +16,7 @@ from nativespeaker.api.errors import (
     HistoricalIdentity,
     IdentityAlreadyLinked,
 )
+from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.users import User
 

@@ -7,10 +7,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from nativespeaker.api.auth.identity import Identity, resolve_identity
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
+from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.errors import InvalidExternalJwt, PreAuthIdentityNotAllowed
+from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.services import ChatService
 
 
@@ -50,8 +51,8 @@ async def get_identity(request: Request,
     async with request.app.state.session_factory() as session:
         # allow_preauth=True here; get_linked_identity narrows, so create-user can answer 409 not 403.
         # Rejections raise through untouched: the handler is the one site that records them.
-        return await resolve_identity(session, issuer=claims.issuer,
-                                      subject=claims.subject, allow_preauth=True)
+        return await IdentitiesDB(session).resolve(issuer=claims.issuer,
+                                                   subject=claims.subject, allow_preauth=True)
 
 
 # Declared, never called directly: FastAPI's cache only sees solver-resolved deps, so a direct call re-verifies.

@@ -7,8 +7,8 @@ from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.errors import ChallengeConsumed, ChallengeIdentityMismatch
+from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 
 # One universal TTL for every operation: no per-operation override, no grace period, no renewal.

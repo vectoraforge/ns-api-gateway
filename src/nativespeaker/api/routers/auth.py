@@ -14,7 +14,6 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.auth.create_user import create_user as create_account
 from nativespeaker.api.auth.firebase import lookup_with_retry
-from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import (
     AppError,
@@ -24,13 +23,14 @@ from nativespeaker.api.errors import (
     ChallengeOperationMismatch,
     InvalidRequest,
 )
-from nativespeaker.api.tables.auth import (
-    AuthOperation,
+from nativespeaker.api.schemas.auth import (
     ChallengeRequest,
     CompletionResponse,
     CreateUserRequest,
+    Identity,
     PrepareResponse,
 )
+from nativespeaker.api.tables.auth import AuthOperation
 
 logger = structlog.get_logger()
 

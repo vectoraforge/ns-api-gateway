@@ -6,8 +6,8 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.auth.create_user import create_user
-from nativespeaker.api.auth.identity import Identity
 from nativespeaker.api.errors import IdentityAlreadyLinked
+from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.purchases import StorePurchaseToken
 from nativespeaker.api.tables.users import User
