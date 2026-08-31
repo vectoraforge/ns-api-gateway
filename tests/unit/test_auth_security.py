@@ -104,6 +104,33 @@ class TestBearerTokenEdgeCases:
         assert response.json()["code"] == "auth_required"
 
 
+class TestEveryRealUnauthorizedCarriesTheChallenge:
+    """RFC 9110 requires WWW-Authenticate on a 401. Asserted against real requests, never a raised class."""
+
+    def test_no_credential_gets_the_bare_challenge(self, probe_client):
+        """RFC 6750 3.1: a request carrying no credential gets no error code."""
+        response = probe_client.get("/probe")
+        assert response.status_code == 401
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+
+    @pytest.mark.parametrize("header", ["Bearer    ",
+                                        "Basic dXNlcjpwYXNz",
+                                        "Bearertoken123",
+                                        ""])
+    def test_no_extractable_bearer_credential_gets_the_bare_challenge(self, probe_client, header):
+        """HTTPBearer extracts nothing from any of these, so no credential was presented to reject."""
+        response = probe_client.get("/probe", headers={"Authorization": header})
+        assert response.status_code == 401
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+
+    def test_a_credential_that_fails_verification_names_the_error(self, probe_client):
+        """The one path where a credential WAS extracted and did not verify: RFC 6750 invalid_token."""
+        response = probe_client.get("/probe",
+                                    headers={"Authorization": "Bearer not.a.jwt"})
+        assert response.status_code == 401
+        assert response.headers["WWW-Authenticate"] == 'Bearer error="invalid_token"'
+
+
 class TestWellFormedCredentialPassesTheWireContract:
     """The positive control: the answer changes class when the wire contract passes, so the 401s are refusals."""
 

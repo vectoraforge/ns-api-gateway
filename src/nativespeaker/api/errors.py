@@ -381,6 +381,12 @@ class InvalidExternalJwt(AppError):
         self.bounded_reason = bounded_reason
         super().__init__(f"invalid external jwt: {bounded_reason}")
 
+    def extra_headers(self) -> dict[str, str]:
+        # RFC 6750 §3.1: a request carrying no credential gets the bare challenge, no error code.
+        if self.bounded_reason is None:
+            return {"WWW-Authenticate": "Bearer"}
+        return {"WWW-Authenticate": 'Bearer error="invalid_token"'}
+
     def log_fields(self) -> dict[str, str | None]:
         # A `StrEnum` member, stringified so the field's type in the log pipeline stays a plain str.
         return {"bounded_reason": None if self.bounded_reason is None else str(self.bounded_reason)}
@@ -447,6 +453,10 @@ class UserNotFound(ProviderLookupError):
     """The provider stated the account does not exist: definitive, and it spends no retry budget."""
     status = 401
     code = "auth_required"
+
+    def extra_headers(self) -> dict[str, str]:
+        # The signature verified but names no live principal, so the credential is invalid in substance.
+        return {"WWW-Authenticate": 'Bearer error="invalid_token"'}
 
 
 class Unavailable(ProviderLookupError):
