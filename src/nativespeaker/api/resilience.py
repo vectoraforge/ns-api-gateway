@@ -2,6 +2,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, InternalServerError, RateLimitError
@@ -93,11 +94,17 @@ class LLMExecutionGate:
             except asyncio.QueueFull:
                 pass
 
-    async def run(self, operation: Callable[[], Awaitable]):
-        """Run `operation` holding both an in-flight slot and the concurrency semaphore."""
+    @asynccontextmanager
+    async def hold(self):
+        """Hold an in-flight slot and the concurrency semaphore, or raise `QueueFullError`."""
         async with self._inflight_slot():
             async with self._semaphore:
-                return await operation()
+                yield
+
+
+@dataclass(frozen=True, slots=True)
+class Admitted:
+    """Proof that the breaker was closed and a slot is held. Only `ResiliencePolicy.admission` mints one."""
 
 
 def _should_retry(exc: BaseException) -> bool:
@@ -123,18 +130,20 @@ class ResiliencePolicy:
         self._retry_backoff_base = config.retry_backoff_base_seconds
         self._retry_backoff_max = config.retry_backoff_max_seconds
 
-    async def ainvoke(self, operation: Callable[[], Awaitable]) -> Any:
-        """Run `operation` under the breaker, the gate and the retry policy."""
+    @asynccontextmanager
+    async def admission(self):
+        """Admit one request: the breaker is consulted and a slot is held for the caller's whole body."""
+        await self._circuit_breaker.before_call()
+        async with self._gate.hold():
+            yield Admitted()
+
+    async def ainvoke(self, operation: Callable[[], Awaitable], admitted: Admitted) -> Any:
+        """Run `operation` under the timeout and the retry policy, on admission the caller already holds."""
 
         async def attempt() -> Any:
             """One attempt, already triaged: everything `_should_retry` reads is decided here."""
-            await self._circuit_breaker.before_call()
             try:
-
-                async def timed_op():
-                    return await asyncio.wait_for(operation(), timeout=self._timeout_seconds)
-
-                result = await self._gate.run(timed_op)
+                result = await asyncio.wait_for(operation(), timeout=self._timeout_seconds)
             except (QueueFullError, CircuitOpenError):
                 raise
             except Exception as e:

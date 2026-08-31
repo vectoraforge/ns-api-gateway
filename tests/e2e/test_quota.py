@@ -397,12 +397,9 @@ class TestNoServiceRejectionIsCharged:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestAnOpenCircuitStillAnswers503:
-    """The answer is unchanged by D-07; only who pays for it is, and that is billable now.
-
-    The counter is deliberately not read here. `_db_transaction` nests every session as a savepoint on
-    one connection, so `get_db`'s rollback discards the charge's committed savepoint -- an artifact of
-    this harness, not of production, where the charge holds its own connection. The credit itself is
-    asserted in `tests/unit/test_quota_seam.py::TestTheAcceptedRegression`.
+    """The wire answer an open circuit gives. The counter is not readable here -- `_db_transaction`
+    nests every session as a savepoint that `get_db`'s rollback discards -- so the credit is asserted
+    in `tests/unit/test_quota_seam.py::TestNoRequestThatNeverReachedTheProviderIsBilled`.
     """
 
     async def test_an_open_circuit_answers_service_unavailable(
@@ -469,7 +466,7 @@ class _StubResult:
 
 
 class _StubSession:
-    """Stands in for the short session `charge_quota` opens, and keeps what it was asked to run."""
+    """Stands in for the short session the charge opens, and keeps what it was asked to run."""
 
     def __init__(self):
         self.statements = []

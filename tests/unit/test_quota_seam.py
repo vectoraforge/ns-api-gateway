@@ -73,8 +73,11 @@ class RecordingLLM:
         """The real breaker's own count, read rather than wrapped: `record_failure` is the only thing that moves it."""
         return self.policy._circuit_breaker._failure_count
 
-    async def ainvoke(self, history, content: str, lang: str) -> dict:
-        return await self.policy.ainvoke(self._answer)
+    def admission(self):
+        return self.policy.admission()
+
+    async def ainvoke(self, history, content: str, lang: str, admitted) -> dict:
+        return await self.policy.ainvoke(self._answer, admitted)
 
     async def _answer(self) -> dict:
         # Counted in the operation rather than on entry: a marker on entry fires before admission is held.
@@ -363,7 +366,7 @@ class TestARetriedRequestIsChargedExactlyOnce:
 
 
 class TestNoRequestThatNeverReachedTheProviderIsBilled:
-    """D-07 inverts 37.4's accepted regression: both admission rejections cost nothing, and neither is a 429."""
+    """D-07: both admission rejections answer 503 and cost nothing, because the charge sits inside admission."""
 
     async def test_a_full_queue_answers_503_and_spends_nothing(self, mock_chats_db):
         events: list[str] = []
