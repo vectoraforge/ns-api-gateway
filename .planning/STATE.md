@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
-current_phase: 38
-current_phase_name: POST /auth/sync
+current_phase: 37.5
+current_phase_name: Machine-generated code refactoring, part 4
 status: planning
-stopped_at: Completed 37.4-07-PLAN.md
-last_updated: "2026-08-31T01:25:40.112Z"
+stopped_at: Phase 37.5 context gathered
+last_updated: "2026-08-31T07:19:42.166Z"
 last_activity: 2026-08-30
-last_activity_desc: Phase 37.4 complete, transitioned to Phase 38
+last_activity_desc: Phase 37.4 complete; Phase 37.5 inserted after it
 progress:
-  total_phases: 17
+  total_phases: 18
   completed_phases: 8
   total_plans: 57
   completed_plans: 57
-  percent: 47
+  percent: 44
 state_head: 3727793a3b57611f7329caf578de7532e2541a8a
 ---
 
@@ -25,11 +25,11 @@ state_head: 3727793a3b57611f7329caf578de7532e2541a8a
 See: .planning/PROJECT.md (updated 2026-08-19)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 37.4 — machine-generated-code-refactoring-part-3
+**Current focus:** Phase 37.5 — machine-generated-code-refactoring-part-4
 
 ## Current Position
 
-Phase: 38 — POST /auth/sync
+Phase: 37.5 — Machine-generated code refactoring, part 4
 Plan: Not started
 Status: Ready to plan
 Last activity: 2026-08-30 — Phase 37.4 complete, transitioned to Phase 38
@@ -119,6 +119,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 - Phase 37.2 inserted after Phase 37: Simplify auth module: ADC-only Firebase, models out of routers, POST /auth/challenge replaces ?challenge=true, delete single-caller indirections, shrink auth/ from 14/28/57 (URGENT)
 - Phase 37.3 inserted after Phase 37: Machine-generated code refactoring, part 2 (URGENT)
 - Phase 37.4 inserted after Phase 37.3: Machine-generated code refactoring, part 3 (URGENT)
+- Phase 37.5 inserted after Phase 37.4: Machine-generated code refactoring, part 4 (URGENT)
 
 ### Blockers/Concerns
 
@@ -136,11 +137,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-08-31T00:24:23.649Z
+**Last session:** 2026-08-31T07:19:42.141Z
 
 Last activity: 2026-03-26
-Stopped at: Completed 37.4-07-PLAN.md
-Resume file: None
+Stopped at: Phase 37.5 context gathered
+Resume file: .planning/phases/37.5-machine-generated-code-refactoring-part-4/37.5-CONTEXT.md
 
 ## Performance Metrics
 
