@@ -431,13 +431,13 @@ Plans:
 **Goal:** Restore the layered architecture and write it down — business logic in `services/`, database access in `crud/`, bodies in `schemas/`, tables in `tables/`, handlers in `routers/`, external-SDK seams in `auth/` — then apply the docstring and comment rules to every file in `src/` and `tests/`, inline the functions that are only a step, move the error-tree self-check out of production code, and move the quota charge so a request that never reached the provider is never billed.
 **Requirements:** D-01 … D-15 and A-01 … A-17 (`37.5-CONTEXT.md`) — this phase has no REQ-ID prefix; its decisions and post-research addenda are its requirement set
 **Depends on:** Phase 37.4
-**Plans:** 10 plans
+**Plans:** 1/10 plans executed
 
 Plans:
 
 **Wave 1**
 
-- [ ] 37.5-01-PLAN.md — `AGENTS.md`'s layering, function-shape and resilience rules, and the docstring gate with its measured pre-sweep baseline
+- [x] 37.5-01-PLAN.md — `AGENTS.md`'s layering, function-shape and resilience rules, and the docstring gate with its measured pre-sweep baseline
 
 **Wave 2** *(the tracer — blocked on Wave 1)*
 
