@@ -253,6 +253,63 @@ Shared machinery only. Rebinding the pre-existing routes is Phase 36.
   >
   > **Phase 46 owns the audit decision and must make it explicitly** — the same choice Phase 38 faces under SYNC-03 — but it must weigh it on this operation's own terms, because they are not the same case. This is a **state-changing** operation that fails closed on an indeterminate outcome: drop the durable-row obligation outright and a revocation that neither confirmed nor demonstrably failed leaves *nothing* behind recording that it was attempted, on the one endpoint whose whole purpose is revoking access. A read-only sync losing its attempt telemetry is a smaller loss than that. Rebuilding a record here does not require rebuilding the whole subsystem D-01 removed. See the flagged `SHARED-INVARIANTS.md` conflict under FOUND-05.
 
+## Phase 37.5 records (2026-08-31)
+
+The reasoning, not the rules. The rules D-01, D-08 and D-11 state now live in `AGENTS.md`, written there by plan `37.5-01` and applied at write time by every plan after it. Nothing below restates one. What is here is the *grounds* — the part that stops a settled question being re-opened a fifth time, which is the failure this phase exists to end. Three sweeps preceded it (37.2 D-10, 37.3, 37.4 D-12) and each left the next one no record of what it had already examined.
+
+### D-08 — the exhaustive single-caller classification
+
+**Method, so the count can be re-derived rather than trusted:** an AST pass over all 40 files in `src/`, collecting every `FunctionDef`/`AsyncFunctionDef` at any nesting depth, then counting every `ast.Name`/`ast.Attribute`/`ast.alias` reference to each name across `src/` only. It counts *code* references and ignores docstrings and comments — a plain `grep` over-counts by four on `_should_retry` alone.
+
+**Result: 21 module-private definitions, every one with exactly one call site.** Not a single dead private helper and not a single multi-caller one, which is itself worth recording. **Three are deletions and eighteen are keeps — 3 + 18 = 21.**
+
+| # | Function | Verdict | Ground |
+|---|---|---|---|
+| 1 | `routers/auth.py::_complete` | **DELETE** | Step. The caller forwarded every argument and added one timestamp. Dissolved into D-03's move to `AuthService`. |
+| 2 | `auth/create_user.py::_insert_account` | **DELETE** | Step. All that remained of `create_user` after one check. |
+| 3 | `quota.py::consume_quota` + `charge_quota` | **DELETE (merge)** | The same subject split in two — one opened a session and called the other. Merged under D-06 into `QuotaService`'s one charge. Public, but single-caller and the same defect. |
+| 4 | `resilience.py::_sleep_if_positive` | **KEEP** ⚠️ | **Corrects D-08's own deletion list.** See below. |
+| 5 | `auth/create_user.py::_reject_existing_identity` | KEEP | Rule: which rejection an existing row earned. Moved with D-03; it did not dissolve. |
+| 6 | `auth/firebase.py::_resolve_provider` | KEEP | Rule: the provider classification, four rejection branches. |
+| 7 | `auth/firebase.py::_verified_email` | KEEP | Rule: copy the address only when non-empty and verified — the rule 37.3 put behind the seam so no consumer re-derives it. |
+| 8 | `auth/firebase.py::_exhausted` | KEEP | Boundary: tenacity's `retry_error_callback` must be a separate callable. |
+| 9 | `auth/jwt_verifier.py::_is_known_unknown` | KEEP | Boundary: takes `self._cache_lock`; the name marks where the critical section starts. |
+| 10 | `auth/jwt_verifier.py::_record_unknown` | KEEP | Boundary: takes `self._cache_lock`. |
+| 11 | `errors.py::_undeclared` | **DELETE from `src/`** | D-09, not D-08 — **rehosted** to `tests/unit/error_tree.py`, not dropped. Four test cases call it directly. |
+| 12 | `errors.py::_tree_problems` | **DELETE from `src/`** | D-09; same rehost. |
+| 13 | `errors.py::_family` | KEEP | Live dispatch, and it had **two** call sites — not single-caller at all when classified. It has one now, after the rehost, and **it is still not a step: it is recursive, so it cannot be inlined and attempting it produces a wrong walk.** That is now a line in `AGENTS.md`. |
+| 14 | `auth/firebase.py::_application_default_credential` | KEEP | **Never classified by the context file.** Rule — its name *is* the contract: ADC if the environment supplies it, `None` if it does not, never a raise. Inlining puts a bare `try/except DefaultCredentialsError` in `build_admin_apps` and the never-raises property stops being stated. Also imported by `tests/e2e/conftest.py`. |
+| 15 | `auth/firebase.py::FirebaseAdminLookup._read` | KEEP | **Never classified.** Boundary — the callable `starlette.concurrency.run_in_threadpool` requires, and the try/except boundary: everything that can raise happens there. |
+| 16 | `auth/jwt_verifier.py::JWTVerifier._cache_key_for` | KEEP | **Never classified.** Rule — an absent or non-string `kid` shares one sentinel, the shared-sentinel behaviour stated once. |
+| 17 | `resilience.py::_is_transient_error` | KEEP | **Never classified.** Rule — the OpenAI transient classifier, 13 lines over seven status codes. D-11 names it as one of the three surviving hand-rolled pieces and keeps it. |
+| 18 | `resilience.py::_should_retry` | KEEP | **Never classified.** Boundary — tenacity's `retry_if_exception(...)` predicate. Same ground as `_exhausted`. |
+| 19 | `resilience.py::LLMExecutionGate::_inflight_slot` | KEEP | **Never classified.** Boundary — an acquire/release critical section, and the **sole raise site of the queue-full rejection**. A-01 renamed the pair to `hold()`; it was not dissolved. |
+| 20 | `resilience.py::attempt` (closure) | KEEP | Boundary — tenacity's retried callable. |
+| 21 | `resilience.py::timed_op` (closure) | DELETE (incidental) | Step: two lines wrapping `wait_for`. A-01's seam dissolved it anyway when `gate.run` left `attempt()`. |
+
+**`_sleep_if_positive` is a KEEP, and this corrects D-08's own deletion list (A-04, developer ruling).** D-08 listed it for deletion as *"three lines and an `if`"*, which contradicts D-08's own carve-out: it is **the callable tenacity's `sleep=` requires** — a boundary by the rule's own words — and it carries real behaviour, that a zero-length backoff issues no sleep at all, which `tests/unit/test_resilience_retry.py::TestBackoffSchedule::test_zero_backoff_records_no_sleep_at_all` pins. **D-08's deletions are three, not four.** The case survives and gained the `Admitted` token like every other call site; it was not weakened.
+
+**The six the phase's own text never classified (#14–#19) are all keeps, and reporting them matters more than the verdicts (A-05).** Every one is a rule or a boundary and none was deletable. **Leaving no record of what was examined is precisely what 37.2 D-10's sweep failed to do, which is why D-08 was a second pass** — and a planner reading D-08 as exhaustive would either have left these six silently unexamined, guaranteeing a third sweep, or deleted them by extending the rule.
+
+**Why the first sweep missed nine of the twenty-one.** Plan `37.2-06` landed as two refactors and one test: `f4cc09b` merged the classifier and the retry policy into the Firebase module, `d904050` inlined the rejection log into the function that raises it. **Both are cohesion merges — moving code between *modules* — not a general single-caller inline.** Its actual subject was module boundaries. Four of the six unreached functions live in `resilience.py` and `firebase.py`, which that sweep touched for a different reason; two were never in scope at all. **The implication, and the reason D-08's durable form is a rule in `AGENTS.md` rather than a list: a rule an agent applies at write time is what stops a fourth pass. A fifth sweep re-deriving the same eighteen keeps is the failure mode.**
+
+**Public single-caller functions D-08 does not reach**, listed so a later sweep does not widen by accident: `get_config`, `get_session_factory`, `camel_to_snake`, `validation_error_handler` / `http_exception_handler` / `generic_error_handler` (all registered framework handlers, boundaries), `claims_from_payload`, `new_challenge_id`, `LLMService.create_chain`, `readiness`, and every `ChallengesDB` / `ChatsDB` / `GrantsDB` method — each called once from its one service, **which is the layering working, not a smell**.
+
+### D-11 — the circuit breaker stays, with the corrected reasoning
+
+`CircuitBreaker`, `LLMExecutionGate` and the OpenAI transient classifier stay hand-rolled. `resilience.py` was not a refactor target this phase beyond D-08 and D-12.
+
+**The surviving arguments, which are the whole of the case:**
+
+1. **The retry loop was already replaced by a library that is in the tree** — commit `2afa7fd`, *"run ainvoke's retry on tenacity, retiring the last hand-rolled loop"*. That is the library, and it is already in.
+2. **That library bounds one request and nothing across requests.** At the configured values (`attempts: 3`, `timeout: 30`, `pool_size: 5`, `queue_size: 25`, `threshold: 5`, `reset: 60`), tenacity bounds a single request at roughly **91.5s**. It bounds nothing across requests, so **every** request during a provider outage pays that from scratch. The breaker is the cross-request control, and `CircuitOpenError` is re-raised unclassified so tenacity does not retry it. The two bound different things.
+3. **Nothing installed replaces a circuit breaker.** All 110 distributions in `.venv` were enumerated: the only resilience-relevant ones are `tenacity` (in use) and `anyio` (transitive; it has `CapacityLimiter` and no circuit breaker). **Finishing the idea means adding a new dependency, not adopting a present one.**
+4. **Without the breaker the client is told to retry in two seconds when the provider is down.** With 30 slots each held ~91.5s instead of released instantly, the gate saturates and the answer a caller gets is `Retry-After: 2` — wrong advice, on the one occasion the advice matters.
+
+**The status-flip argument is WITHDRAWN as factually wrong (A-02/P-01).** D-07 and D-11 both said that removing the breaker would flip the client-visible answer from a 503 to a **429**. It would not. `QueueFullError` subclasses `ServiceUnavailable` and **declares no status of its own**, so the queue-full rejection has **always** been a 503. Both admission rejections have always been service-unavailable answers. What remains of that argument is argument 4 above — the `Retry-After`, not the status. **This withdrawal is stated rather than quietly dropped for one reason: a record carrying a wrong fact loses its authority on the first re-examination, and not being re-examined is the only job this record has.**
+
+**The developer's opening expectation was correct as a reading of the specification, and that is why the question keeps coming back.** The discussion opened on the belief that a hand-rolled rate limiter in `resilience.py` was still awaiting replacement by a library already in the tree. `SHARED-INVARIANTS.md` § Rate limits does mandate the `limits` library — so the specification really does call for a library this project does not have, and never had: `git log -S'limits' -- pyproject.toml` is empty, because Phase 35 D-05 deleted the whole backend rate-limit engine before `limits` was ever added. **The expectation was not a misremembering; it was the spec.** What was hand-rolled turned out not to be rate limiting at all. See the `limits` bookkeeping item in the Phase 37.5 amendment above and the Phase 35 override at the FOUND scope note.
+
 ## Future Requirements
 
 Tracked but deferred beyond v2.0.
