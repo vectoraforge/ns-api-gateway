@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 37.5
 current_phase_name: machine-generated-code-refactoring-part-4
 status: executing
-stopped_at: Phase 37.5 context gathered
-last_updated: "2026-08-31T08:38:50.217Z"
+stopped_at: Phase 37.5 plan 10 complete — all 10 plans landed, phase verification pending
+last_updated: "2026-08-31T22:10:00.000Z"
 last_activity: 2026-08-31
-last_activity_desc: Phase 37.5 execution started
+last_activity_desc: Phase 37.5 plan 10 — roadmap, requirements amendment and phase records written
 state_head: f0dc03b094080997d11cdd7f83b51a60a54db282
 progress:
   total_phases: 18
   completed_phases: 8
   total_plans: 67
-  completed_plans: 57
+  completed_plans: 67
   percent: 44
 ---
 
@@ -29,10 +29,26 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 37.5 (machine-generated-code-refactoring-part-4) — EXECUTING
-Plan: 1 of 10
-Status: Executing Phase 37.5
-Last activity: 2026-08-31 — Phase 37.5 execution started
+Phase: 37.5 (machine-generated-code-refactoring-part-4) — ALL PLANS LANDED, VERIFICATION PENDING
+Plan: 10 of 10
+Status: Phase 37.5 plans complete; the phase itself is not marked complete until the verifier runs
+Last activity: 2026-08-31 — Phase 37.5 plan 10 wrote the roadmap entry, the dated requirements amendment and the phase records
+
+<!-- The same counter hazard recurred in 37.5 and is corrected here the same way. Waves 2 through 8
+     ran as parallel worktree agents which deliberately do not write STATE.md, so the counter sat at
+     1 while nine plans landed. Ten is disk truth: ten SUMMARY files exist (37.5-01..37.5-10). The
+     frontmatter's completed_plans went 57 -> 67 for the same reason; completed_phases stays at 8
+     because the phase is not verified yet. -->
+
+**Phase 37.5 outcome.** The layered architecture is restored and written into `AGENTS.md`: `Identity`
+in `schemas/auth.py`, the identity queries in `crud/identities.py`, the completion in
+`services/auth.py::AuthService`, the quota in `services/quota.py::QuotaService` as one merged charge.
+`auth/identity.py`, `auth/create_user.py` and the top-level `quota.py` are deleted. The docstring and
+comment bar is at **0 on every root** against a measured pre-sweep 29. `assert_tree_total` moved to
+`tests/unit/error_tree.py`. `ResiliencePolicy.admission()` hands out an `Admitted` token with the
+charge inside admission and outside the retry, so **a request that never reached the provider is no
+longer billed**. Suite **1016 passing** with markers cleared and 0 deselected; `ruff check` clean.
+Six items are recorded as **open**, not done — see `REQUIREMENTS.md` § Phase 37.5 records.
 
 <!-- The plan counter was corrected from 3 to 8 on 2026-08-23, and from 9 to 10 on 2026-08-24, for
      the same reason both times. Waves 1, 2 and 4 ran as parallel worktree agents which deliberately
@@ -111,7 +127,31 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 - **Refresh `.planning/codebase/*.md`** — the seven files there were captured 2026-02-24, are three
   milestones behind and predate the `d466a4b` renames entirely. `37.4-CONTEXT.md` marks them
   **stale, do not trust — read the source**, and its deferred list says the refresh is best done
-  after this phase lands. It has landed.
+  after this phase lands. It has landed. **Now also behind Phase 37.5's layering moves** —
+  `auth/identity.py`, `auth/create_user.py` and `quota.py` are gone and `crud/identities.py`,
+  `schemas/auth.py`, `services/auth.py` and `services/quota.py` are new.
+
+- **Queued by Phase 37.5, each recorded in `REQUIREMENTS.md` § Phase 37.5 records and none done:**
+
+  - **`tables/__init__.py` still re-exports the `schemas/` names** — eleven of them. `37.5-PATTERNS.md`
+    lists this as the phase's layering work; no plan claimed it. It is layering, not prose, so no
+    sweep would have reached it.
+
+  - **`tests/unit/test_app_wiring.py::TestEveryRouteIsAuthenticated` has no negative control against
+    an injected undeclared route**, contrary to what FOUND-03's note claimed — corrected in
+    `REQUIREMENTS.md`. With it, three vacuous cases stand in `test_quota_resolver.py`
+    (`test_two_effective_grants_raise`, `test_a_grant_with_no_usage_row_raises`,
+    `test_a_missing_tier_row_raises`), left because widening a deletion past its named targets is
+    the costlier deviation.
+
+  - **`tests/schema/conftest.py:56` still calls the database "a crud"** —
+    `"refusing to interpolate {name!r} as a crud identifier"`. The last `d466a4b` artefact. Left by
+    plan `37.5-09` because it is a string literal, not prose: changing it would have changed the AST
+    under that plan's no-logic-change proof. One-line fix: `crud identifier` → `database identifier`.
+
+  - **`config/config.yaml:18-31`'s orphaned HMAC key-material comment block** (`37.4-REVIEW.md` WR-04)
+    still describes keys that no longer exist, above `chats_limit: 50`. D-12's sweep is scoped to
+    `.py` files and could not reach a YAML comment.
 
 ### Roadmap Evolution
 
@@ -126,6 +166,8 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 - RESOLVED (34-01): the PostgreSQL 17 blocker is cleared — developer started a postgres:17 container; server_version 17.11 (Debian 17.11-1.pgdg13+2) reachable on localhost:5432, database `nativespeaker` created and empty.
 - OPEN: RESEARCH.md assumption A1 — introspection constants were captured on PostgreSQL 16.2 but the target is 17.11; plan 34-03 must re-capture them rather than copying RESEARCH.md Code Example 4.
 - Deferred (37-10): the ~48s worst-case provider latency on the completion path is a policy decision on a shared budget — resolve with phases 40/41/42, which share the adapter seam.
+- OPEN (37.5-10, A-15): the database pool exhausts at three concurrent chat posts **today**. `db.pool_size` defaults to 5 (`config.py:25`) with `max_overflow=0` (`app/lifespan.py:34`) and a `POST /chats` holds two connections. Phase 37.5 did not create this but moved the stall inside the LLM permit, so a pool wait now also holds a provider permit. **Recorded, not fixed — the developer owns the choice.** One-line change: raise `db.pool_size` to at least `resilience.pool_size × 2 + 2` (12 at the configured values), or accept the ceiling.
+- OPEN (37.5-06): a real coverage loss. `test_foundation_calls_no_adapter_method_anywhere_in_src` was the only enforcement that `get_user_provider_data` is named nowhere in `src/` outside `auth/adapters.py` and `auth/firebase.py`. The property holds today by grep, but nothing fails if a third file starts calling the adapter. ~25 lines to restore, with its allow-list and two controls. Not restored — unlike the two security cases the developer restored in `658895e`.
 
 ### Quick Tasks Completed
 
@@ -137,11 +179,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-08-31T07:19:42.141Z
+**Last session:** 2026-08-31T22:10:00.000Z
 
-Last activity: 2026-03-26
-Stopped at: Phase 37.5 context gathered
-Resume file: .planning/phases/37.5-machine-generated-code-refactoring-part-4/37.5-CONTEXT.md
+Last activity: 2026-08-31
+Stopped at: Completed 37.5-10-PLAN.md — all ten Phase 37.5 plans landed; phase verification pending
+Resume file: None
 
 ## Performance Metrics
 
@@ -166,6 +208,11 @@ Resume file: .planning/phases/37.5-machine-generated-code-refactoring-part-4/37.
 | Phase 37.3 P03 | 31min | 4 tasks | 13 files |
 | Phase 37.3 P04 | 38min | 4 tasks | 13 files |
 | Phase 37.4 P07 | ~50min | 3 tasks | 5 files |
+| Phase 37.5 P06 | ~55min | 3 tasks | 20 files |
+| Phase 37.5 P07 | ~50min | 3 tasks | 10 files |
+| Phase 37.5 P08 | ~65min | 3 tasks | 11 files |
+| Phase 37.5 P09 | ~55min | 3 tasks | 18 files |
+| Phase 37.5 P10 | ~40min | 3 tasks | 3 files |
 
 ## Decisions
 
@@ -223,3 +270,14 @@ Resume file: .planning/phases/37.5-machine-generated-code-refactoring-part-4/37.
 - [Phase ?]: 37.4-07: three flagged conflicts, not five — the developer deleted the exactly-one-Authorization wire contract from SHARED-INVARIANTS.md and deleted FOUND-02, so D-10 and A-09 have no surviving binding text to diverge from; both are recorded under FOUND-01 as properties given up
 - [Phase ?]: 37.4-07: the deleted wire rule survives verbatim in 01-foundation.md:40-46, 02-create-user.md:81/:69, 06-claim-anonymous-grant.md:86 and 11-sign-out-all.md:42 — reported under FOUND-01, not resolved; whether the phase briefs follow SHARED-INVARIANTS.md is a spec decision this phase had no direction on
 - [Phase ?]: 37.4-07: the orphan idp-account-hash columns are on core.access_grants_anti_abuse, NOT core.provider_accounts as plan 37.4-05 reported — a later phase acting on the misattributed name would edit the wrong table
+- [Phase 37.5]: The layering rule is in AGENTS.md and applies at write time: business logic in services/, database access in crud/, bodies in schemas/, tables in tables/, handlers in routers/, external-SDK seams in auth/ — with a one-line carve-out for errors.py, because SHARED-INVARIANTS.md requires the one shared error module to own the client-visible response shape (A-07/P-08)
+- [Phase 37.5]: resolve_identity's four rejections stay with the query in crud/identities.py, and the admission rule stays in one place, app/dependencies.py::get_identity — splitting them would let a caller read a broken link as an unlinked pair (A-06)
+- [Phase 37.5]: D-08's rule — delete a function that is only a step, keep one that states a rule or marks a boundary (a lock, a transaction, or a callable a library requires). A recursive function is NEVER a step: it cannot be inlined. 21 private single-caller definitions classified, 3 deleted and 18 kept, each with a written ground
+- [Phase 37.5]: _sleep_if_positive is kept, correcting D-08's own deletion list — it is the callable tenacity's sleep= requires. The deletions are three, not four (A-04)
+- [Phase 37.5]: QueueFullError has ALWAYS answered 503, not 429 — it subclasses ServiceUnavailable and declares no status. D-07's and D-11's status-flip argument is withdrawn as factually wrong (A-02/P-01); D-11's decision stands on the surviving arguments
+- [Phase 37.5]: The circuit breaker and the execution gate stay hand-rolled. tenacity bounds one request (~91.5s) and nothing across requests; no installed package replaces a breaker, so finishing the idea means a NEW dependency. SHARED-INVARIANTS.md mandating `limits` is why the question keeps returning — the developer was reading the spec, not misremembering
+- [Phase 37.5]: The quota charge sits inside ResiliencePolicy.admission() and outside tenacity's attempt(). Charging inside attempt() fails three ways at once — triple charge, 429 wrapped into a 503, and the quota rejection counted as a breaker failure. 37.4-REVIEW WR-01's diagnosis was adopted and its proposed on_admitted callback never was (A-01/P-03/P-04)
+- [Phase 37.5]: assert_tree_total left src/ for tests/unit/error_tree.py — a module, not a conftest, because five cases invoke it from a bare `python -c` subprocess needing an explicit PYTHONPATH. Accepted consequence: a defective error tree no longer refuses to boot (D-09)
+- [Phase 37.5]: ChallengeRequired had zero name references and is load-bearing — it is the only class answering a bare framework 409. A name-level assertion now stops a reference-grep reading it as dead. D-10's mandated-code ground is withdrawn; the dispatch ground carries the keep alone (A-12/P-05)
+- [Phase 37.5]: A `pytest -k` gate that collects zero cases still passes. Three plans hit this — `-k` matches node-id substrings case-sensitively and the subjects were CamelCase class names. Verify by node id, and audit each `-k` term separately rather than the disjunction
+- [Phase 37.5]: Deleted coverage leaves visibly: every plan names each deleted case and flags the ones whose survivor is an argument rather than a case. Two security cases cut without a survivor were restored by the developer in 658895e; one architectural guarantee was not, and is recorded as an open loss
