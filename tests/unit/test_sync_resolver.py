@@ -2,9 +2,16 @@
 from datetime import UTC, datetime
 from uuid import uuid7
 
+import pytest
 from sqlalchemy.dialects import postgresql
 
 from nativespeaker.api.crud import GrantsDB
+from nativespeaker.api.errors import (
+    MissingUsageRowError,
+    MultipleEffectiveGrantsError,
+    UnknownTierError,
+)
+from nativespeaker.api.schemas.auth import Entitlement, EntitlementStatus, EntitlementType
 from nativespeaker.api.services.sync import SyncService
 from nativespeaker.api.tables import (
     AccessGrant,
@@ -107,11 +114,16 @@ def _without_the_lock(sql: str) -> str:
     return sql[:-len(LOCK_CLAUSE)]
 
 
+async def _read(session: _StubSession) -> Entitlement:
+    """The entitlement the service reports over `session` at the fixed instant."""
+    return await SyncService(db=session, evaluated_at=EVALUATED_AT).read_entitlement(USER_ID)
+
+
 async def _happy_path() -> _StubSession:
     """Read one effective grant with its usage row, and return the session the service used."""
     grant = _grant()
     session = _StubSession(grants=(grant,), usage=_usage(grant))
-    await SyncService(db=session, evaluated_at=EVALUATED_AT).read_entitlement(USER_ID)
+    await _read(session)
     return session
 
 
@@ -195,3 +207,146 @@ class TestThePredicateBoundaries:
         """SHARED-INVARIANTS:33 forbids a user-row tier above the grants on any path, not just a swap."""
         session = await _happy_path()
         assert all("core.users" not in _compiled(s) for s in session.statements)
+
+
+class TestTheZeroGrantAnswer:
+    """A caller holding no grant is answered with the no-grant defaults, not refused and not invented."""
+
+    async def test_it_reports_all_six_no_grant_fields(self):
+        entitlement = await _read(_StubSession(grants=()))
+        assert (entitlement.type, entitlement.status) == (EntitlementType.none, EntitlementStatus.none)
+        assert (entitlement.tier_id, entitlement.monthly_credits) == (None, None)
+        assert (entitlement.current_period, entitlement.monthly_used) == (PERIOD, 0)
+
+    async def test_the_period_is_the_captured_instant_and_is_never_null(self):
+        """`current_period` is not nullable even with nothing to report, so it cannot come from a grant."""
+        entitlement = await _read(_StubSession(grants=()))
+        assert entitlement.current_period == EVALUATED_AT.strftime("%Y-%m") == PERIOD
+
+    async def test_it_stops_at_the_grant_read(self):
+        """No grant means there is no usage row and no tier to look up."""
+        session = _StubSession(grants=())
+        await _read(session)
+        assert session.entities == ["grants"]
+
+    async def test_it_writes_nothing_on_the_way_out(self):
+        session = _StubSession(grants=())
+        await _read(session)
+        assert session.added == []
+        assert (session.committed, session.rolled_back) == (False, False)
+
+
+class TestTheRolloverIsComputedNeverWritten:
+    """The mirror of `test_quota_resolver.py::TestLazyRollover`: the same rule, with no effect on the row."""
+
+    @staticmethod
+    def _seeded(*, monthly_period, monthly_used) -> tuple[UserMonthlyUsage, _StubSession]:
+        grant = _grant()
+        usage = _usage(grant, monthly_period=monthly_period, monthly_used=monthly_used)
+        return usage, _StubSession(grants=(grant,), usage=usage)
+
+    async def test_a_stale_period_reports_zero_for_the_current_period(self):
+        _, session = self._seeded(monthly_period=STALE_PERIOD, monthly_used=17)
+        entitlement = await _read(session)
+        assert (entitlement.current_period, entitlement.monthly_used) == (PERIOD, 0)
+
+    async def test_a_stale_row_is_left_exactly_as_it_was_found(self):
+        """`get_db` commits on exit, so an assignment here would persist a rollover from a read."""
+        usage, session = self._seeded(monthly_period=STALE_PERIOD, monthly_used=17)
+        await _read(session)
+        assert (usage.monthly_period, usage.monthly_used) == (STALE_PERIOD, 17)
+        assert session.added == []
+        assert (session.committed, session.rolled_back) == (False, False)
+
+    async def test_a_matching_period_reports_the_stored_count(self):
+        _, session = self._seeded(monthly_period=PERIOD, monthly_used=7)
+        entitlement = await _read(session)
+        assert (entitlement.current_period, entitlement.monthly_used) == (PERIOD, 7)
+
+    async def test_a_matching_period_row_is_left_untouched_too(self):
+        usage, session = self._seeded(monthly_period=PERIOD, monthly_used=7)
+        await _read(session)
+        assert (usage.monthly_period, usage.monthly_used) == (PERIOD, 7)
+        assert session.added == []
+        assert (session.committed, session.rolled_back) == (False, False)
+
+
+class TestMultipleEffectiveGrants:
+    """The tripwire quota raises on, raised here so sync never reports one of two contradictory grants."""
+
+    @staticmethod
+    def _two_grants() -> _StubSession:
+        return _StubSession(grants=(_grant(), _grant()))
+
+    async def test_two_effective_grants_raise_with_the_count_and_the_user(self):
+        with pytest.raises(MultipleEffectiveGrantsError) as caught:
+            await _read(self._two_grants())
+        assert (caught.value.count, caught.value.user_id) == (2, USER_ID)
+
+    async def test_it_does_not_pick_either_one(self):
+        """No tie-break means no usage read: the resolver stops before choosing."""
+        session = self._two_grants()
+        with pytest.raises(MultipleEffectiveGrantsError):
+            await _read(session)
+        assert session.entities == ["grants"]
+
+    async def test_it_answers_the_generic_internal_error(self):
+        with pytest.raises(MultipleEffectiveGrantsError) as caught:
+            await _read(self._two_grants())
+        assert (caught.value.status, caught.value.code) == (500, "internal_error")
+
+
+class TestTheUsageRowIsMissing:
+    """D-07: a grant with no usage row fails closed rather than reporting an allowance quota would refuse."""
+
+    @staticmethod
+    def _no_usage_row() -> tuple[AccessGrant, _StubSession]:
+        grant = _grant()
+        return grant, _StubSession(grants=(grant,), usage=None)
+
+    async def test_a_grant_with_no_usage_row_raises_with_the_grant_id(self):
+        grant, session = self._no_usage_row()
+        with pytest.raises(MissingUsageRowError) as caught:
+            await _read(session)
+        assert caught.value.grant_id == grant.id
+
+    async def test_it_stops_after_the_usage_read_and_mints_nothing(self):
+        _, session = self._no_usage_row()
+        with pytest.raises(MissingUsageRowError):
+            await _read(session)
+        assert session.entities == ["grants", "usage"]
+        assert session.added == []
+
+    async def test_it_answers_the_generic_internal_error(self):
+        """500 and nothing more, so a caller cannot tell this branch from the other two."""
+        _, session = self._no_usage_row()
+        with pytest.raises(MissingUsageRowError) as caught:
+            await _read(session)
+        assert (caught.value.status, caught.value.code) == (500, "internal_error")
+
+
+class TestTheTierHasNoRow:
+    """D-07: a grant naming a tier with no row fails closed, never as `monthly_credits: null`."""
+
+    @staticmethod
+    def _no_tier_row() -> tuple[AccessGrant, _StubSession]:
+        grant = _grant()
+        return grant, _StubSession(grants=(grant,), usage=_usage(grant), allowance=None)
+
+    async def test_a_missing_tier_row_raises_with_the_tier_and_the_grant(self):
+        grant, session = self._no_tier_row()
+        with pytest.raises(UnknownTierError) as caught:
+            await _read(session)
+        assert (caught.value.tier_id, caught.value.grant_id) == (TIER_ID, grant.id)
+
+    async def test_it_raises_only_after_all_three_reads(self):
+        _, session = self._no_tier_row()
+        with pytest.raises(UnknownTierError):
+            await _read(session)
+        assert session.entities == ["grants", "usage", "allowance"]
+
+    async def test_it_answers_the_generic_internal_error(self):
+        _, session = self._no_tier_row()
+        with pytest.raises(UnknownTierError) as caught:
+            await _read(session)
+        assert (caught.value.status, caught.value.code) == (500, "internal_error")
