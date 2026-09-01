@@ -55,8 +55,7 @@ creation, flip, repair or rollover; schema changes of any kind.
   value and passes that exact string into StoreKit at purchase time; `GET /users/me` and
   `/auth/sync` must also keep reporting the same `identity_provider` value (Phase 38 D-06).
 
-- **D-02: Every store's token ships on every request, with no platform condition. Not open —
-  recorded here so a planner does not reopen it.** This is PROF-01 and roadmap success criterion 1,
+- **D-02: Every store's token ships on every request, with no platform condition. Not open — recorded here so a planner does not reopen it.** This is PROF-01 and roadmap success criterion 1,
   and the brief states it three separate times. **The developer asked directly whether this is the
   industry standard; the honest answer is no** — most implementations return only the calling
   platform's token, and the unconditional shape is the less common choice. It is kept anyway
@@ -90,8 +89,7 @@ creation, flip, repair or rollover; schema changes of any kind.
   `IdentitiesDB`, whose stated job is identity resolution (it mints the rows in `insert_account`;
   read and mint live apart).
 
-- **D-05: No service layer for this endpoint — the router calls `crud/` directly — and `AGENTS.md`
-  is amended to state the general rule.** With profile coming from the barrier's row (D-03) and the
+- **D-05: No service layer for this endpoint — the router calls `crud/` directly — and `AGENTS.md` is amended to state the general rule.** With profile coming from the barrier's row (D-03) and the
   fail-closed rejection staying with the query per `AGENTS.md` § Package layout exception 4, a
   `ProfileService` would contain one awaited read and nothing else, which is precisely the shape
   `AGENTS.md` § "Function shape" says to inline.
@@ -117,8 +115,7 @@ creation, flip, repair or rollover; schema changes of any kind.
   is untouched: `identity_value` must never enter the exception message or any log field.**
   Per `AGENTS.md` § Package layout exception 4, the raise stays with the query in `crud/purchases.py`.
 
-- **D-07: Completeness is checked against the `PurchaseProvider` enum — one row required per
-  member.** Not "zero rows returned". This matches the brief's "an entry for EVERY store provider"
+- **D-07: Completeness is checked against the `PurchaseProvider` enum — one row required per member.** Not "zero rows returned". This matches the brief's "an entry for EVERY store provider"
   and refuses a partial result rather than emitting a body missing a key the contract guarantees.
   **Known consequence, accepted:** adding a third store to `PurchaseProvider` later makes every
   pre-existing account fail closed on this endpoint until its rows are backfilled. That is the
@@ -135,7 +132,7 @@ creation, flip, repair or rollover; schema changes of any kind.
   create-user can answer an already-linked caller with 409. Requires an export in
   `routers/__init__.py` and an `include_router` call in `app/main.py`.
 
-- **D-09: The response carries `Cache-Control: no-store`.** Following `/auth/challenge`, which sets
+- **D-09: The response sets the `Cache-Control` header to `no-store`.** Following `/auth/challenge`, which sets
   it for its secret handle. This body is not secret but is private account metadata under invariant
   10. A shared cache already must not store an `Authorization`-bearing response, but a private
   client cache may — a mobile `URLSession` will by default. Set through an injected `Response` so
