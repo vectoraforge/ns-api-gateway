@@ -477,12 +477,34 @@ Plans:
 **Goal:** Ship the read-only auth-state reconciliation surface clients call after sign-in or a lost response.
 **Requirements:** SYNC-01 … SYNC-03
 **Depends on:** 34, 35 (soft: 37)
+**Plans:** 6 plans in 4 waves
 **Success criteria:**
 
 1. Grant, `current_period`, and `monthly_used` all derive from one evaluation time and match what quota enforcement would independently act on at the same instant
 2. Zero effective grants and a lapsed grant return byte-identical responses
 3. Table state is unchanged across a request — verified by comparing `core.*` before and after
 4. **BLOCKED: requires a mechanism Phase 37.1 deleted. Phase 38 must decide.** As written: every attempt writes exactly one `audit.auth_events` row with `operation='sync'`, admission rejections included. The table, the writer and every call site were deleted by Phase 37.1 (D-01), 2026-08-24, before this phase was built. **Phase 38 owns the decision and must make it explicitly, choosing one:** (a) rebuild a durable record for `operation='sync'`, accepting that it reintroduces the subsystem D-01 removed; or (b) drop the durable-row obligation and satisfy the intent with the structured log — the rejection log in `app/dependencies.py::_reject` already covers the rejection arm, so only a success event would be new. Phase 37.1 deliberately does not choose. Matching requirement: SYNC-03, and see the flagged `SHARED-INVARIANTS.md` conflict under FOUND-05 — the binding specification still mandates the row.
+
+Plans:
+
+**Wave 1** *(two parallel plans, no shared file)*
+
+- [ ] 38-01-PLAN.md — The tracer: `POST /auth/sync` end to end for one linked caller with one effective grant, the non-locking effective-grant read, the four response types, `SyncService`, the route
+- [ ] 38-04-PLAN.md — Strike the audit invariants from `SHARED-INVARIANTS.md` *(has a blocking decision checkpoint — one-way door)*
+
+**Wave 2** *(two parallel plans, blocked on Wave 1, no shared file)*
+
+- [ ] 38-02-PLAN.md — The service branches: the zero-grant answer, the stale period computed and never written, the three fail-closed tripwires reusing the existing classes
+- [ ] 38-05-PLAN.md — The dated SYNC-03 amendment, the three sibling entries, the conflicts count, and ROADMAP criterion 4
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 38-03-PLAN.md — End-to-end proof of the three success criteria: the byte-identical equivalence, the unchanged table state, the stored provider column and the barrier's rejections
+
+**Wave 4** *(blocked on Wave 3)*
+
+- [ ] 38-06-PLAN.md — The executable guards that nothing was rebuilt, and the phase close against green suites
+
 
 #### Phase 39: GET /users/me
 
