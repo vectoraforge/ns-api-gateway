@@ -2,9 +2,15 @@
 from datetime import UTC, datetime
 from uuid import uuid7
 
+import pytest
 from sqlalchemy.dialects import postgresql
 
 from nativespeaker.api.crud import GrantsDB
+from nativespeaker.api.errors import (
+    MissingUsageRowError,
+    MultipleEffectiveGrantsError,
+    UnknownTierError,
+)
 from nativespeaker.api.schemas.auth import Entitlement, EntitlementStatus, EntitlementType
 from nativespeaker.api.services.sync import SyncService
 from nativespeaker.api.tables import (
@@ -263,3 +269,84 @@ class TestTheRolloverIsComputedNeverWritten:
         assert (usage.monthly_period, usage.monthly_used) == (PERIOD, 7)
         assert session.added == []
         assert (session.committed, session.rolled_back) == (False, False)
+
+
+class TestMultipleEffectiveGrants:
+    """The tripwire quota raises on, raised here so sync never reports one of two contradictory grants."""
+
+    @staticmethod
+    def _two_grants() -> _StubSession:
+        return _StubSession(grants=(_grant(), _grant()))
+
+    async def test_two_effective_grants_raise_with_the_count_and_the_user(self):
+        with pytest.raises(MultipleEffectiveGrantsError) as caught:
+            await _read(self._two_grants())
+        assert (caught.value.count, caught.value.user_id) == (2, USER_ID)
+
+    async def test_it_does_not_pick_either_one(self):
+        """No tie-break means no usage read: the resolver stops before choosing."""
+        session = self._two_grants()
+        with pytest.raises(MultipleEffectiveGrantsError):
+            await _read(session)
+        assert session.entities == ["grants"]
+
+    async def test_it_answers_the_generic_internal_error(self):
+        with pytest.raises(MultipleEffectiveGrantsError) as caught:
+            await _read(self._two_grants())
+        assert (caught.value.status, caught.value.code) == (500, "internal_error")
+
+
+class TestTheUsageRowIsMissing:
+    """D-07: a grant with no usage row fails closed rather than reporting an allowance quota would refuse."""
+
+    @staticmethod
+    def _no_usage_row() -> tuple[AccessGrant, _StubSession]:
+        grant = _grant()
+        return grant, _StubSession(grants=(grant,), usage=None)
+
+    async def test_a_grant_with_no_usage_row_raises_with_the_grant_id(self):
+        grant, session = self._no_usage_row()
+        with pytest.raises(MissingUsageRowError) as caught:
+            await _read(session)
+        assert caught.value.grant_id == grant.id
+
+    async def test_it_stops_after_the_usage_read_and_mints_nothing(self):
+        _, session = self._no_usage_row()
+        with pytest.raises(MissingUsageRowError):
+            await _read(session)
+        assert session.entities == ["grants", "usage"]
+        assert session.added == []
+
+    async def test_it_answers_the_generic_internal_error(self):
+        """500 and nothing more, so a caller cannot tell this branch from the other two."""
+        _, session = self._no_usage_row()
+        with pytest.raises(MissingUsageRowError) as caught:
+            await _read(session)
+        assert (caught.value.status, caught.value.code) == (500, "internal_error")
+
+
+class TestTheTierHasNoRow:
+    """D-07: a grant naming a tier with no row fails closed, never as `monthly_credits: null`."""
+
+    @staticmethod
+    def _no_tier_row() -> tuple[AccessGrant, _StubSession]:
+        grant = _grant()
+        return grant, _StubSession(grants=(grant,), usage=_usage(grant), allowance=None)
+
+    async def test_a_missing_tier_row_raises_with_the_tier_and_the_grant(self):
+        grant, session = self._no_tier_row()
+        with pytest.raises(UnknownTierError) as caught:
+            await _read(session)
+        assert (caught.value.tier_id, caught.value.grant_id) == (TIER_ID, grant.id)
+
+    async def test_it_raises_only_after_all_three_reads(self):
+        _, session = self._no_tier_row()
+        with pytest.raises(UnknownTierError):
+            await _read(session)
+        assert session.entities == ["grants", "usage", "allowance"]
+
+    async def test_it_answers_the_generic_internal_error(self):
+        _, session = self._no_tier_row()
+        with pytest.raises(UnknownTierError) as caught:
+            await _read(session)
+        assert (caught.value.status, caught.value.code) == (500, "internal_error")
