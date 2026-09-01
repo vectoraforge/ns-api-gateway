@@ -5,6 +5,7 @@ from uuid import uuid7
 from sqlalchemy.dialects import postgresql
 
 from nativespeaker.api.crud import GrantsDB
+from nativespeaker.api.schemas.auth import Entitlement, EntitlementStatus, EntitlementType
 from nativespeaker.api.services.sync import SyncService
 from nativespeaker.api.tables import (
     AccessGrant,
@@ -107,11 +108,16 @@ def _without_the_lock(sql: str) -> str:
     return sql[:-len(LOCK_CLAUSE)]
 
 
+async def _read(session: _StubSession) -> Entitlement:
+    """The entitlement the service reports over `session` at the fixed instant."""
+    return await SyncService(db=session, evaluated_at=EVALUATED_AT).read_entitlement(USER_ID)
+
+
 async def _happy_path() -> _StubSession:
     """Read one effective grant with its usage row, and return the session the service used."""
     grant = _grant()
     session = _StubSession(grants=(grant,), usage=_usage(grant))
-    await SyncService(db=session, evaluated_at=EVALUATED_AT).read_entitlement(USER_ID)
+    await _read(session)
     return session
 
 
@@ -195,3 +201,30 @@ class TestThePredicateBoundaries:
         """SHARED-INVARIANTS:33 forbids a user-row tier above the grants on any path, not just a swap."""
         session = await _happy_path()
         assert all("core.users" not in _compiled(s) for s in session.statements)
+
+
+class TestTheZeroGrantAnswer:
+    """A caller holding no grant is answered with the no-grant defaults, not refused and not invented."""
+
+    async def test_it_reports_all_six_no_grant_fields(self):
+        entitlement = await _read(_StubSession(grants=()))
+        assert (entitlement.type, entitlement.status) == (EntitlementType.none, EntitlementStatus.none)
+        assert (entitlement.tier_id, entitlement.monthly_credits) == (None, None)
+        assert (entitlement.current_period, entitlement.monthly_used) == (PERIOD, 0)
+
+    async def test_the_period_is_the_captured_instant_and_is_never_null(self):
+        """`current_period` is not nullable even with nothing to report, so it cannot come from a grant."""
+        entitlement = await _read(_StubSession(grants=()))
+        assert entitlement.current_period == EVALUATED_AT.strftime("%Y-%m") == PERIOD
+
+    async def test_it_stops_at_the_grant_read(self):
+        """No grant means there is no usage row and no tier to look up."""
+        session = _StubSession(grants=())
+        await _read(session)
+        assert session.entities == ["grants"]
+
+    async def test_it_writes_nothing_on_the_way_out(self):
+        session = _StubSession(grants=())
+        await _read(session)
+        assert session.added == []
+        assert (session.committed, session.rolled_back) == (False, False)
