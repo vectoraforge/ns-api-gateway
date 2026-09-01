@@ -510,12 +510,25 @@ Plans:
 **Goal:** Rewrite the profile endpoint to return profile fields, stored registration state, and per-store purchase-attribution tokens.
 **Requirements:** PROF-01, PROF-02
 **Depends on:** 34, 35 (soft: 37)
+**Plans:** 0/4 plans complete
 **Success criteria:**
 
 1. The response carries an entry for every store provider regardless of client platform, User-Agent, or any client-supplied signal
 2. `identity_provider` comes from the stored column and matches what `/auth/sync` reports
 3. No `audit.auth_events` row is ever written by this route, including on admission rejection — **CONFIRMED by Phase 37.1, 2026-08-24: trivially true**, since no route anywhere writes one and the table is gone. Kept rather than deleted, because it still binds. Matching requirement: PROF-02, whose counter clause was reworded to the structured log — Phase 36 D-15 had already removed the counter, so **Phase 39 inherits no obligation to build either subsystem**.
 4. A missing purchase-token row fails closed as an internal error rather than returning a null entry
+
+Plans:
+
+**Wave 1** *(two parallel plans, no shared file)*
+
+- [ ] 39-01-PLAN.md — The tracer: `GET /users/me` end to end for one linked caller with a complete token set — the new error class and its vocabulary ratchet, `crud/purchases.py`, the `Depends()` accessor, the two response models, the route and its wiring, plus the two ratchets the new route and class make claims about
+- [ ] 39-02-PLAN.md — The `AGENTS.md` § "Package layout" amendment (D-05, router-to-crud) and the dated `REQUIREMENTS.md` amendments for the rate-limit omission and the divergence from the brief's handler step 1
+
+**Wave 2** *(two parallel plans, blocked on Wave 1, no shared file)*
+
+- [ ] 39-03-PLAN.md — The unit proofs: the closed unconditional body, the enum key set, `Cache-Control: no-store`, the single unlocked query, client-signal invariance, and the completeness rule's zero-row and one-row refusals
+- [ ] 39-04-PLAN.md — The end-to-end proofs: the stored provider read back and agreeing with `/auth/sync`, the fail-closed 500 on a missing and on a partial token set, the barrier's 401/403, and unchanged table state across a request
 
 #### Phase 40: POST /auth/upgrade-anonymous
 

@@ -8,6 +8,7 @@ nyquist_compliant: false
 wave_0_complete: false
 created: 2026-09-01
 seeded_from: 39-RESEARCH.md § Validation Architecture
+task_map_filled: 2026-09-01 by plan-phase (task ids bound to 39-01..39-04)
 ---
 
 # Phase 39 — Validation Strategy
@@ -48,23 +49,23 @@ schema command MUST pass `-m` explicitly, or the cases silently deselect.
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| _pending_ | — | — | PROF-01 | — | Body is exactly `{profile:{email,display_name}, identity_provider, purchase_tokens}` — whole-body equality, a fourth key fails | unit | `uv run pytest -q tests/unit/test_users_me.py` | ❌ W0 | ⬜ pending |
-| _pending_ | — | — | PROF-01 | — | Key set equals `set(PurchaseProvider)` for every caller | unit | `uv run pytest -q tests/unit/test_users_me.py` | ❌ W0 | ⬜ pending |
-| _pending_ | — | — | PROF-01 (crit. 1) | — | Body byte-identical across differing `User-Agent`, `X-Platform` header, `?platform=` query | unit | `uv run pytest -q tests/unit/test_users_me.py` | ❌ W0 | ⬜ pending |
-| _pending_ | — | — | PROF-01 (crit. 2) | — | `identity_provider` equals stored `core.external_identities.provider`, read back from the row | e2e | `uv run pytest -q -m e2e tests/e2e/test_users_me.py` | ❌ W0 | ⬜ pending |
-| _pending_ | — | — | PROF-01 (crit. 2) | — | `/users/me` and `/auth/sync` report the same `identity_provider` in one run | e2e | `uv run pytest -q -m e2e tests/e2e/test_users_me.py` | ❌ W0 | ⬜ pending |
-| _pending_ | — | — | PROF-01 (D-03) | — | Request issues exactly one query — no second `core.users` read | unit | `uv run pytest -q tests/unit/test_users_me.py` | ❌ W0 | ⬜ pending |
-| _pending_ | — | — | crit. 4 (D-06) | T-39-01 | Zero token rows → 500 `{"code":"internal_error"}`, one ERROR log, no null entry | unit + e2e | `uv run pytest -q tests/unit/test_purchases_crud.py` · `-m e2e tests/e2e/test_users_me.py` | ❌ W0 | ⬜ pending |
-| _pending_ | — | — | crit. 4 (D-07) | T-39-01 | One row present, one missing → same 500 (the case an emptiness check would pass) | unit | `uv run pytest -q tests/unit/test_purchases_crud.py` | ❌ W0 | ⬜ pending |
-| _pending_ | — | — | D-06 | T-39-02 | `user_id` and missing providers never reach response body or headers | unit | `uv run pytest -q tests/unit/test_error_contract.py` | ✅ extend | ⬜ pending |
-| _pending_ | — | — | D-06 | — | New error class joins recorded log vocabulary and constructor table | unit | `uv run pytest -q tests/unit/test_rejection_vocabulary.py` | ✅ extend | ⬜ pending |
-| _pending_ | — | — | D-06 | — | Error tree stays total (new class declares neither status nor code) | unit | `uv run pytest -q tests/unit/test_error_registry.py` | ✅ unchanged | ⬜ pending |
-| _pending_ | — | — | D-08 | T-39-03 | `/users/me` declares `get_linked_identity`, sits in neither exemption set | unit | `uv run pytest -q tests/unit/test_app_wiring.py` | ✅ extend | ⬜ pending |
-| _pending_ | — | — | D-08 | T-39-03 | Unauthenticated → 401 `auth_required`; unlinked → 403 `preauth_identity_not_allowed` | e2e | `uv run pytest -q -m e2e tests/e2e/test_users_me.py` | ❌ W0 | ⬜ pending |
-| _pending_ | — | — | D-09 | — | 200 carries `Cache-Control: no-store` | unit | `uv run pytest -q tests/unit/test_users_me.py` | ❌ W0 | ⬜ pending |
-| _pending_ | — | — | PROF-02 | — | No audit table, writer or call site reintroduced | unit | `uv run pytest -q tests/unit/test_sync_audit_removal.py` | ✅ unchanged | ⬜ pending |
-| _pending_ | — | — | PROF-02 | — | Route writes nothing: table state identical before and after | e2e | `uv run pytest -q -m e2e tests/e2e/test_users_me.py` | ❌ W0 | ⬜ pending |
-| _pending_ | — | — | repo rule | — | Every new docstring ≤ 3 lines on every root (baselines are 0, must stay 0) | unit | `uv run pytest -q tests/unit/test_docstring_bar.py` | ✅ unchanged | ⬜ pending |
+| 39-03-T1 | 39-03 | 2 | PROF-01 | T-39-05 | Body is exactly `{profile:{email,display_name}, identity_provider, purchase_tokens}` — whole-body equality, a fourth key fails | unit | `uv run pytest -q tests/unit/test_users_me.py` | ❌ W0 | ⬜ pending |
+| 39-03-T1 | 39-03 | 2 | PROF-01 | — | Key set equals `set(PurchaseProvider)` for every caller | unit | `uv run pytest -q tests/unit/test_users_me.py` | ❌ W0 | ⬜ pending |
+| 39-03-T1 | 39-03 | 2 | PROF-01 (crit. 1) | T-39-05 | Body byte-identical across differing `User-Agent`, `X-Platform` header, `?platform=` query | unit | `uv run pytest -q tests/unit/test_users_me.py` | ❌ W0 | ⬜ pending |
+| 39-04-T1 | 39-04 | 2 | PROF-01 (crit. 2) | T-39-04 | `identity_provider` equals stored `core.external_identities.provider`, read back from the row | e2e | `uv run pytest -q -m e2e tests/e2e/test_users_me.py` | ❌ W0 | ⬜ pending |
+| 39-04-T1 | 39-04 | 2 | PROF-01 (crit. 2) | — | `/users/me` and `/auth/sync` report the same `identity_provider` in one run | e2e | `uv run pytest -q -m e2e tests/e2e/test_users_me.py` | ❌ W0 | ⬜ pending |
+| 39-03-T1 | 39-03 | 2 | PROF-01 (D-03) | — | Request issues exactly one query — no second `core.users` read | unit | `uv run pytest -q tests/unit/test_users_me.py` | ❌ W0 | ⬜ pending |
+| 39-03-T2 · 39-04-T2 | 39-03 · 39-04 | 2 | crit. 4 (D-06) | T-39-01 | Zero token rows → 500 `{"code":"internal_error"}`, one ERROR log, no null entry | unit + e2e | `uv run pytest -q tests/unit/test_purchases_crud.py` · `-m e2e tests/e2e/test_users_me.py` | ❌ W0 | ⬜ pending |
+| 39-03-T2 | 39-03 | 2 | crit. 4 (D-07) | T-39-01 | One row present, one missing → same 500 (the case an emptiness check would pass) | unit | `uv run pytest -q tests/unit/test_purchases_crud.py` | ❌ W0 | ⬜ pending |
+| 39-01-T3 | 39-01 | 1 | D-06 | T-39-02 | `user_id` and missing providers never reach response body or headers | unit | `uv run pytest -q tests/unit/test_error_contract.py` | ✅ extend | ⬜ pending |
+| 39-01-T1 | 39-01 | 1 | D-06 | — | New error class joins recorded log vocabulary and constructor table | unit | `uv run pytest -q tests/unit/test_rejection_vocabulary.py` | ✅ extend | ⬜ pending |
+| 39-01-T3 | 39-01 | 1 | D-06 | — | Error tree stays total (new class declares neither status nor code) | unit | `uv run pytest -q tests/unit/test_error_registry.py` | ✅ unchanged | ⬜ pending |
+| 39-01-T2 | 39-01 | 1 | D-08 | T-39-03 | `/users/me` declares `get_linked_identity`, sits in neither exemption set | unit | `uv run pytest -q tests/unit/test_app_wiring.py` | ✅ extend | ⬜ pending |
+| 39-04-T2 | 39-04 | 2 | D-08 | T-39-03 | Unauthenticated → 401 `auth_required`; unlinked → 403 `preauth_identity_not_allowed` | e2e | `uv run pytest -q -m e2e tests/e2e/test_users_me.py` | ❌ W0 | ⬜ pending |
+| 39-03-T1 | 39-03 | 2 | D-09 | T-39-06 | 200 carries `Cache-Control: no-store` | unit | `uv run pytest -q tests/unit/test_users_me.py` | ❌ W0 | ⬜ pending |
+| 39-04-T2 | 39-04 | 2 | PROF-02 | — | No audit table, writer or call site reintroduced | unit | `uv run pytest -q tests/unit/test_sync_audit_removal.py` | ✅ unchanged | ⬜ pending |
+| 39-04-T3 | 39-04 | 2 | PROF-02 | T-39-12 | Route writes nothing: table state identical before and after | e2e | `uv run pytest -q -m e2e tests/e2e/test_users_me.py` | ❌ W0 | ⬜ pending |
+| 39-01-T1 · 39-03 · 39-04 | all | 1-2 | repo rule | — | Every new docstring ≤ 3 lines on every root (baselines are 0, must stay 0) | unit | `uv run pytest -q tests/unit/test_docstring_bar.py` | ✅ unchanged | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
