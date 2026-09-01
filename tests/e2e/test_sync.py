@@ -2,6 +2,7 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import text
 from sqlmodel import col, select
 
 from nativespeaker.api.schemas.auth import EntitlementStatus, EntitlementType
@@ -14,6 +15,11 @@ pytestmark = pytest.mark.e2e
 # A grant seeded to have started well before the request and, where the case needs it, to have already closed.
 _LONG_AGO = timedelta(days=60)
 _A_DAY = timedelta(days=1)
+
+# A period that is never the current one, carrying a non-zero count: a rollover written here would be visible.
+_STALE_PERIOD = "2020-01"
+_STALE_USED = 17
+_CURRENT_USED = 5
 
 
 async def _monthly_credits(factory, tier_id: str) -> int:
@@ -32,6 +38,27 @@ def _absent_entitlement_body(identity, at: datetime) -> dict:
                             "current_period": at.strftime("%Y-%m"),
                             "monthly_used": 0},
             "identity_provider": identity.provider.value}
+
+
+# `SELECT *`, not the mapped columns: access_grants carries four GENERATED ALWAYS columns the ORM leaves unmapped.
+_GRANT_ROWS = text("SELECT * FROM core.access_grants WHERE user_id = :user_id ORDER BY id")
+_USAGE_ROWS = text("SELECT u.* FROM core.user_monthly_usage u"
+                   " JOIN core.access_grants g ON g.id = u.grant_id"
+                   " WHERE g.user_id = :user_id ORDER BY u.grant_id")
+_USER_ROW = text("SELECT * FROM core.users WHERE id = :user_id")
+_TABLE_COUNTS = text("SELECT (SELECT count(*) FROM core.access_grants),"
+                     " (SELECT count(*) FROM core.user_monthly_usage),"
+                     " (SELECT count(*) FROM core.users)")
+
+
+async def _entitlement_snapshot(factory, user_id) -> dict:
+    """Every column of the caller's grant, usage and user rows, plus the three whole-table counts."""
+    async with factory() as session:
+        params = {"user_id": user_id}
+        return {"grants": [tuple(r) for r in (await session.execute(_GRANT_ROWS, params)).all()],
+                "usage": [tuple(r) for r in (await session.execute(_USAGE_ROWS, params)).all()],
+                "user": [tuple(r) for r in (await session.execute(_USER_ROW, params)).all()],
+                "counts": tuple((await session.execute(_TABLE_COUNTS)).one())}
 
 
 async def _seed_lapsed_grant(factory, user_id, *, closed_for: timedelta = _A_DAY):
@@ -142,3 +169,59 @@ class TestTheWindowIsWhyTheGrantIsAbsent:
                             "monthly_used": usage.monthly_used},
             "identity_provider": identity.provider.value,
         }
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheRequestChangesNothing:
+    """ROADMAP criterion 3: the caller's rows and the three table counts are identical before and after a sync."""
+
+    async def test_a_current_period_grant_is_left_untouched(
+            self, async_client, _db_transaction, linked_firebase_identity):
+        user, _ = linked_firebase_identity
+        await seed_grant(_db_transaction, user_id=user.id, monthly_used=_CURRENT_USED)
+        before = await _entitlement_snapshot(_db_transaction, user.id)
+
+        response = await async_client.post("/auth/sync")
+
+        assert response.status_code == 200, response.text
+        assert await _entitlement_snapshot(_db_transaction, user.id) == before
+
+    async def test_a_stale_period_grant_is_left_untouched(
+            self, async_client, _db_transaction, linked_firebase_identity):
+        user, _ = linked_firebase_identity
+        # The branch quota resolves by writing: an assignment here would ride `get_db`'s commit-on-exit to disk.
+        await seed_grant(_db_transaction, user_id=user.id,
+                         monthly_period=_STALE_PERIOD, monthly_used=_STALE_USED)
+        before = await _entitlement_snapshot(_db_transaction, user.id)
+
+        response = await async_client.post("/auth/sync")
+
+        assert response.status_code == 200, response.text
+        # Reported as zero for the current period, while the row still says exactly what it said.
+        assert response.json()["entitlement"]["monthly_used"] == 0
+        assert await _entitlement_snapshot(_db_transaction, user.id) == before
+
+    async def test_no_grant_at_all_leaves_the_tables_untouched(
+            self, async_client, _db_transaction, linked_firebase_identity):
+        user, _ = linked_firebase_identity
+        before = await _entitlement_snapshot(_db_transaction, user.id)
+
+        response = await async_client.post("/auth/sync")
+
+        assert response.status_code == 200, response.text
+        assert await _entitlement_snapshot(_db_transaction, user.id) == before
+
+    async def test_a_repeated_request_answers_the_same_body_over_the_same_rows(
+            self, async_client, _db_transaction, linked_firebase_identity):
+        user, _ = linked_firebase_identity
+        await seed_grant(_db_transaction, user_id=user.id,
+                         monthly_period=_STALE_PERIOD, monthly_used=_STALE_USED)
+        before = await _entitlement_snapshot(_db_transaction, user.id)
+
+        # What a client reconciling after a lost response actually does; the stale row makes it the sharp case.
+        first = await async_client.post("/auth/sync")
+        second = await async_client.post("/auth/sync")
+
+        assert (first.status_code, second.status_code) == (200, 200), second.text
+        assert first.json() == second.json()
+        assert await _entitlement_snapshot(_db_transaction, user.id) == before
