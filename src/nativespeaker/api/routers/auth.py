@@ -1,4 +1,5 @@
-"""The two auth routes: `/auth/challenge` issues a challenge, and `/auth/create-user` spends one."""
+"""The three auth routes: `/auth/challenge` issues a challenge, `/auth/create-user` spends one,
+and `/auth/sync` reports what the caller's account entitles it to."""
 from datetime import UTC, datetime
 
 import structlog
@@ -11,6 +12,8 @@ from nativespeaker.api.app.dependencies import (
     get_challenge_store,
     get_db,
     get_identity,
+    get_linked_identity,
+    get_sync_service,
 )
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import InvalidRequest
@@ -20,8 +23,9 @@ from nativespeaker.api.schemas.auth import (
     CreateUserRequest,
     Identity,
     PrepareResponse,
+    SyncResponse,
 )
-from nativespeaker.api.services import AuthService
+from nativespeaker.api.services import AuthService, SyncService
 from nativespeaker.api.tables.auth import AuthOperation
 
 logger = structlog.get_logger()
@@ -67,3 +71,16 @@ async def create_user(body: CreateUserRequest,
     # Forwarded untouched and never logged: the handle is a secret.
     provider = await service.complete(identity=identity, challenge_id=body.challenge_id)
     return CompletionResponse(identity_provider=provider)
+
+
+# The route-level dependency narrows this one route to linked callers; the router-level one cannot.
+@router.post("/auth/sync",
+             response_model=SyncResponse,
+             summary="Report the caller's entitlement and registration state",
+             description="Reads the caller's effective grant, the current period's usage and the "
+                         "stored registration state. Nothing is written.")
+async def sync(identity: Identity = Depends(get_linked_identity),
+               service: SyncService = Depends(get_sync_service)) -> SyncResponse:
+    """Report what the caller's account entitles it to at this request's instant."""
+    entitlement = await service.read_entitlement(identity.user.id)
+    return SyncResponse(entitlement=entitlement, identity_provider=identity.identity.provider)

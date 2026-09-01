@@ -12,7 +12,7 @@ from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.errors import InvalidExternalJwt, PreAuthIdentityNotAllowed
 from nativespeaker.api.schemas.auth import Identity
-from nativespeaker.api.services import AuthService, ChatService, QuotaService
+from nativespeaker.api.services import AuthService, ChatService, QuotaService, SyncService
 
 
 def get_config(request: Request) -> AppConfig:
@@ -104,5 +104,11 @@ def get_auth_service(db: AsyncSession = Depends(get_db),
     return AuthService(db=db,
                        challenge_store=challenge_store,
                        adapter=adapter,
+                       # One instant for this request; nothing downstream reads the clock again.
+                       evaluated_at=datetime.now(UTC))
+
+
+def get_sync_service(db: AsyncSession = Depends(get_db)) -> SyncService:
+    return SyncService(db=db,
                        # One instant for this request; nothing downstream reads the clock again.
                        evaluated_at=datetime.now(UTC))

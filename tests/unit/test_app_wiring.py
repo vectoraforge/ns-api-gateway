@@ -36,6 +36,17 @@ class TestEveryRouteIsAuthenticated:
             if route.path in PREAUTH_CALLABLE_PATHS:
                 assert get_identity in _declared(route), route.path
 
+    def test_the_sync_route_declares_the_linked_identity_narrowing(self):
+        """Named rather than left to the generic case, which would also pass if sync were exempted."""
+        declared = [_declared(route) for route in _api_routes() if route.path == "/auth/sync"]
+        assert declared, "/auth/sync is not a registered route"
+        assert all(get_linked_identity in calls for calls in declared)
+
+    def test_the_sync_route_is_in_neither_exemption_set(self):
+        """Sync is authenticated and narrowed, so widening either literal above would fail here."""
+        assert "/auth/sync" in {route.path for route in _api_routes()}
+        assert "/auth/sync" not in PUBLIC_PATHS | PREAUTH_CALLABLE_PATHS
+
     def test_the_public_allowlist_is_exactly_the_readiness_probe(self):
         """A second public route would have to be added to `PUBLIC_PATHS` above to pass."""
         unauthenticated = {route.path for route in _api_routes()

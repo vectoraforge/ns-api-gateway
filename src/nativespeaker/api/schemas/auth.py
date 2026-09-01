@@ -1,6 +1,7 @@
 """The auth request and response bodies, and the identity a verified credential resolves to."""
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
@@ -28,6 +29,37 @@ class CreateUserRequest(BaseModel):
 
 class CompletionResponse(BaseModel):
     """The completion body: the registration state, and nothing else."""
+    identity_provider: IdentityProvider
+
+
+class EntitlementType(StrEnum):
+    """The entitlement kind on the wire: the four grant sources, and `none` for a caller holding no grant."""
+    none = "none"
+    subscription = "subscription"
+    anonymous_device_grant = "anonymous_device_grant"
+    registered_account_grant = "registered_account_grant"
+    manual = "manual"
+
+
+class EntitlementStatus(StrEnum):
+    """The entitlement status on the wire: exactly `none` or `active`."""
+    none = "none"
+    active = "active"
+
+
+class Entitlement(BaseModel):
+    """The entitlement block: the grant, its tier allowance, and the current period's usage."""
+    type: EntitlementType
+    status: EntitlementStatus
+    tier_id: str | None
+    monthly_credits: int | None
+    current_period: str
+    monthly_used: int
+
+
+class SyncResponse(BaseModel):
+    """The sync body: the entitlement and the registration state, and nothing else."""
+    entitlement: Entitlement
     identity_provider: IdentityProvider
 
 
