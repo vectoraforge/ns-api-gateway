@@ -1,21 +1,21 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Authentication & Entitlements (Phases 34-46)
-current_phase: 37.5
-current_phase_name: machine-generated-code-refactoring-part-4
+milestone_name: Authentication & Entitlements
+current_phase: 38
+current_phase_name: post-auth-sync
 status: executing
 stopped_at: Phase 38 context gathered
-last_updated: "2026-09-01T07:45:20.483Z"
-last_activity: 2026-08-31
-last_activity_desc: Phase 37.5 plan 10 — roadmap, requirements amendment and phase records written
-state_head: 24ac1c4b62d7bda66d901c3986db753f4b18fb3c
+last_updated: "2026-09-01T07:50:26.830Z"
+last_activity: 2026-09-01
+last_activity_desc: Phase 38 execution started
 progress:
   total_phases: 18
   completed_phases: 9
   total_plans: 73
   completed_plans: 67
-  percent: 44
+  percent: 50
+state_head: 24ac1c4b62d7bda66d901c3986db753f4b18fb3c
 ---
 
 # Project State
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-19)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 37.5 — machine-generated-code-refactoring-part-4
+**Current focus:** Phase 38 — post-auth-sync
 
 ## Current Position
 
-Phase: 37.5 (machine-generated-code-refactoring-part-4) — ALL PLANS LANDED, VERIFICATION PENDING
-Plan: 10 of 10
-Status: Phase 37.5 plans complete; the phase itself is not marked complete until the verifier runs
-Last activity: 2026-08-31 — Phase 37.5 plan 10 wrote the roadmap entry, the dated requirements amendment and the phase records
+Phase: 38 (post-auth-sync) — EXECUTING
+Plan: 1 of 6
+Status: Executing Phase 38
+Last activity: 2026-09-01 — Phase 38 execution started
 
 <!-- The same counter hazard recurred in 37.5 and is corrected here the same way. Waves 2 through 8
      ran as parallel worktree agents which deliberately do not write STATE.md, so the counter sat at
