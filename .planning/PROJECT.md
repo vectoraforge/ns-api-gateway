@@ -137,9 +137,11 @@ Added in v2.0 (from `SHARED-INVARIANTS.md` "Global deletions" — build none of 
 
 ## Current State
 
-Shipped v1.6. All milestones through v1.6 complete. v2.0 (Authentication & Entitlements) in progress — Phases 34 (schema), 35 (foundation), 36 (rebind pre-existing routes) and 37 (`POST /auth/create-user`) complete, followed by three refactoring phases: 37.1 (machine-generated code, part 1), 37.2 (simplify auth module) and 37.3 (machine-generated code, part 2). Chat and quota routes were rewired by Phase 36 and no longer fail at runtime.
+Shipped v1.6. All milestones through v1.6 complete. v2.0 (Authentication & Entitlements) in progress — Phases 34 (schema), 35 (foundation), 36 (rebind pre-existing routes), 37 (`POST /auth/create-user`) and 38 (`POST /auth/sync`) complete, followed by five refactoring phases: 37.1 through 37.5. Chat and quota routes were rewired by Phase 36 and no longer fail at runtime.
 
-Phase 37.3 completed the auth module's move away from machine-generated shape: functions that *returned* a rejection vocabulary (enums, result dataclasses, mapping dicts) for callers to translate now raise a DRF-style exception family, answered by one FastAPI handler. Client-visible behaviour is unchanged — every status code, error class, body, header, consumption semantic and admission decision is preserved; only the structured-log event vocabulary changed. Next: Phase 38 (`POST /auth/sync`), which must decide SYNC-03, blocked since Phase 37.1 deleted the mechanism it assumed.
+Phase 37.3 completed the auth module's move away from machine-generated shape: functions that *returned* a rejection vocabulary (enums, result dataclasses, mapping dicts) for callers to translate now raise a DRF-style exception family, answered by one FastAPI handler. Client-visible behaviour is unchanged — every status code, error class, body, header, consumption semantic and admission decision is preserved; only the structured-log event vocabulary changed.
+
+Phase 38 shipped `POST /auth/sync` and closed SYNC-01, SYNC-02 and SYNC-03 — the last of which had been blocked since Phase 37.1 deleted the mechanism it assumed. Sync reads the effective grant, the period's usage and the stored registration state, takes no lock and writes nothing. That no-lock claim is now observed live rather than inferred from compiled SQL: `tests/schema/test_sync_lock_freedom.py` races sync against a real `QuotaService.charge` on two independent connections against a committed database, which closed WINDOWS entry 9. One known limit is carried forward, not fixed — 38-REVIEW.md WR-06: the response is assembled from up to four separate READ COMMITTED snapshots, so `evaluated_at` pins the predicate rather than the snapshot, and a concurrent revoke-and-reissue can yield a tier/usage pairing that never coexisted. Bounded: the charge path is authoritative and locks, and the client self-corrects on the next sync. Next: Phase 39 (`GET /users/me`).
 
 ## Context
 
@@ -236,4 +238,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-08-27 after completing Phase 37.3*
+*Last updated: 2026-09-01 after completing Phase 38*

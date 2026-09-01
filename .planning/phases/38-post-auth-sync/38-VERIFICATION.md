@@ -1,11 +1,12 @@
 ---
 phase: 38-post-auth-sync
 verified: 2026-09-01T00:00:00Z
-status: human_needed
+status: passed
 score: 4/4 must-haves verified
 behavior_unverified: 1
 overrides_applied: 0
 human_verification:
+
   - test: "Run two genuinely concurrent requests against a committed (non-transactional) test database — one POST /auth/sync and one concurrent QuotaService.charge or grant-flip on the same user/grant, using two real, independent connections (not the e2e harness's single-connection uncommitted-transaction fixture)."
     expected: "Sync's statements (no FOR UPDATE) neither block on nor are blocked by the concurrent charge's locks, and sync's response and the post-charge table state are each internally consistent (no partial read straddling the charge's commit in a way that produces an impossible tier/usage pairing worse than the already-accepted READ COMMITTED skew noted in 38-REVIEW.md WR-06)."
     why_human: "This is a state/ordering invariant (no-lock behavior under real concurrency) that grep/static analysis and the existing e2e harness cannot exercise — `tests/e2e/conftest.py`'s `_db_transaction` binds every session to one connection inside an uncommitted transaction, so a second connection cannot see the seeded rows. This is already tracked as WINDOWS.md entry 9 (open, unwaived) and 38-06's own coverage block (D10, human_judgment: true). Reported here as directed, not as a new finding."
@@ -85,8 +86,10 @@ No orphaned requirements: REQUIREMENTS.md maps exactly SYNC-01/02/03 to Phase 38
 ### Anti-Patterns Found
 
 None blocking. `38-REVIEW.md` (0 Critical, 6 Warning, 4 Info) was read and spot-checked against the current code:
+
 - **WR-01** (guard checks `identity.user` but route also dereferences `identity.identity`) — confirmed present in `app/dependencies.py:57-61` and `routers/auth.py:86` exactly as described. Real but currently unreachable (single construction site sets both fields together); correctly scored Warning, not Blocker.
 - **WR-02** through **WR-06**, **IN-01** through **IN-04** — read, not independently re-derived line-by-line; nothing among them describes a missing artifact, broken wiring, or a failed success criterion. These are legitimate code-quality/robustness observations for a future pass, not phase-goal blockers.
+
 No unresolved `TODO`/`FIXME`/`XXX` found in the phase's touched files (`tests/unit/test_sync_audit_removal.py` confirms no such marker via its own summary; spot-checked `services/sync.py` and `routers/auth.py` — none present).
 
 ### Independent judgment requested by the task: 38-06's SYNC-01/SYNC-02 checkbox decision
