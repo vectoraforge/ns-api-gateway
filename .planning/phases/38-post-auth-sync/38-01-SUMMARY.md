@@ -278,6 +278,10 @@ None — no external service configuration required. Note for anyone re-running 
 - The five Known Stubs above are live in `main` once this merges. `/auth/sync` answers correctly for a caller with exactly one well-formed effective grant and returns a 500 for every other shape. That is safe but incomplete, and 38-02 is not optional.
 - SYNC-03, D-03, D-04 and D-05 — the audit-removal decision, the `SHARED-INVARIANTS.md` edit and the REQUIREMENTS/ROADMAP amendments — are untouched by this plan and belong to plan 38-06 and the phase's documentation work.
 
+## Self-Check: PASSED
+
+All four created files exist on disk (`services/sync.py`, `tests/e2e/test_sync.py`, `tests/unit/test_sync_resolver.py`, this summary) and all four commits are present on `worktree-agent-afb10fc0f1935f4c4`: `cfbc968`, `46098c3`, `d346975`, `482af82`.
+
 ---
 *Phase: 38-post-auth-sync*
 *Completed: 2026-09-01*
