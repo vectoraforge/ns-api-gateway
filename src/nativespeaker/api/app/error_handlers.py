@@ -45,7 +45,14 @@ async def app_error_handler(_: Request, exc: Exception) -> JSONResponse:
 
 
 async def validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.error("Validation error", exc_info=exc)
+    """Record where the body failed, never what it carried.
+    A rejected value can be a live secret -- a challenge handle in a malformed body reaches
+    this handler intact -- so only `loc` and `type` are logged, and `input` never is."""
+    assert isinstance(exc, RequestValidationError)
+    logger.error("validation_error",
+                 failures=[{"loc": ".".join(str(part) for part in error.get("loc", ())),
+                            "type": error.get("type", "unknown")}
+                           for error in exc.errors()])
     return await app_error_handler(request, ValidationError())
 
 

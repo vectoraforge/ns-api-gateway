@@ -550,3 +550,28 @@ class TestTheHeadersEachClassComputesStillReachTheClient:
         assert response.status_code == 503
         assert "retry-after" not in response.headers
         assert "www-authenticate" not in response.headers
+
+
+class TestARejectedBodyValueNeverReachesTheLog:
+    """A rejected value can be a live secret: a challenge handle in a malformed body arrives here intact."""
+
+    HANDLE = "AbCdEfGhIjKlMnOpQrStUv"
+
+    @pytest.fixture
+    def errors(self, monkeypatch) -> _WarningSpy:
+        """A spy, not `capture_logs`: the module-level logger caches its binding, so capture sees nothing here."""
+        spy = _WarningSpy()
+        monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.error", spy.record)
+        return spy
+
+    def _post(self, client):
+        return client.post("/validate-body", json={"required_field": [self.HANDLE]})
+
+    def test_the_rejected_value_is_absent_from_every_recorded_field(self, handler_client, errors):
+        assert self._post(handler_client).status_code == 422
+        assert errors.entries, "the spy must observe the call, or the absence below proves nothing"
+        assert self.HANDLE not in repr(errors.entries)
+
+    def test_the_failing_field_is_still_recorded(self, handler_client, errors):
+        self._post(handler_client)
+        assert "required_field" in repr(errors.entries), "the field that failed must stay diagnosable"
