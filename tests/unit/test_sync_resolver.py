@@ -228,3 +228,38 @@ class TestTheZeroGrantAnswer:
         await _read(session)
         assert session.added == []
         assert (session.committed, session.rolled_back) == (False, False)
+
+
+class TestTheRolloverIsComputedNeverWritten:
+    """The mirror of `test_quota_resolver.py::TestLazyRollover`: the same rule, with no effect on the row."""
+
+    @staticmethod
+    def _seeded(*, monthly_period, monthly_used) -> tuple[UserMonthlyUsage, _StubSession]:
+        grant = _grant()
+        usage = _usage(grant, monthly_period=monthly_period, monthly_used=monthly_used)
+        return usage, _StubSession(grants=(grant,), usage=usage)
+
+    async def test_a_stale_period_reports_zero_for_the_current_period(self):
+        _, session = self._seeded(monthly_period=STALE_PERIOD, monthly_used=17)
+        entitlement = await _read(session)
+        assert (entitlement.current_period, entitlement.monthly_used) == (PERIOD, 0)
+
+    async def test_a_stale_row_is_left_exactly_as_it_was_found(self):
+        """`get_db` commits on exit, so an assignment here would persist a rollover from a read."""
+        usage, session = self._seeded(monthly_period=STALE_PERIOD, monthly_used=17)
+        await _read(session)
+        assert (usage.monthly_period, usage.monthly_used) == (STALE_PERIOD, 17)
+        assert session.added == []
+        assert (session.committed, session.rolled_back) == (False, False)
+
+    async def test_a_matching_period_reports_the_stored_count(self):
+        _, session = self._seeded(monthly_period=PERIOD, monthly_used=7)
+        entitlement = await _read(session)
+        assert (entitlement.current_period, entitlement.monthly_used) == (PERIOD, 7)
+
+    async def test_a_matching_period_row_is_left_untouched_too(self):
+        usage, session = self._seeded(monthly_period=PERIOD, monthly_used=7)
+        await _read(session)
+        assert (usage.monthly_period, usage.monthly_used) == (PERIOD, 7)
+        assert session.added == []
+        assert (session.committed, session.rolled_back) == (False, False)
