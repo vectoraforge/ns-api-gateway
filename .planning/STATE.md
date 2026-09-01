@@ -1,21 +1,21 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Authentication & Entitlements
+milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 37.5
 current_phase_name: machine-generated-code-refactoring-part-4
 status: executing
 stopped_at: Phase 38 context gathered
-last_updated: "2026-09-01T07:10:12.882Z"
+last_updated: "2026-09-01T07:45:20.483Z"
 last_activity: 2026-08-31
 last_activity_desc: Phase 37.5 plan 10 — roadmap, requirements amendment and phase records written
+state_head: 24ac1c4b62d7bda66d901c3986db753f4b18fb3c
 progress:
   total_phases: 18
   completed_phases: 9
-  total_plans: 67
+  total_plans: 73
   completed_plans: 67
-  percent: 50
-state_head: f0dc03b094080997d11cdd7f83b51a60a54db282
+  percent: 44
 ---
 
 # Project State
