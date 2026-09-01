@@ -2,13 +2,17 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlmodel import col, select
+from unit.conftest import make_token
 
+from nativespeaker.api.errors import PreAuthIdentityNotAllowed
 from nativespeaker.api.schemas.auth import EntitlementStatus, EntitlementType
-from nativespeaker.api.tables import AccessTier
+from nativespeaker.api.tables import AccessTier, ExternalIdentity, IdentityProvider
 
-from .conftest import seed_grant
+from .conftest import seed_grant, seed_identity
 
 pytestmark = pytest.mark.e2e
 
@@ -20,6 +24,9 @@ _A_DAY = timedelta(days=1)
 _STALE_PERIOD = "2020-01"
 _STALE_USED = 17
 _CURRENT_USED = 5
+
+# Never seeded anywhere, so a token naming it verifies and still resolves to no identity row.
+_UNLINKED_SUBJECT = "sync-unlinked-subject"
 
 
 async def _monthly_credits(factory, tier_id: str) -> int:
@@ -59,6 +66,14 @@ async def _entitlement_snapshot(factory, user_id) -> dict:
                 "usage": [tuple(r) for r in (await session.execute(_USAGE_ROWS, params)).all()],
                 "user": [tuple(r) for r in (await session.execute(_USER_ROW, params)).all()],
                 "counts": tuple((await session.execute(_TABLE_COUNTS)).one())}
+
+
+async def _stored_provider(factory, issuer: str, subject: str):
+    """The provider value actually on the row, read back rather than taken from the fixture's argument."""
+    async with factory() as session:
+        statement = select(ExternalIdentity.provider).where(col(ExternalIdentity.issuer) == issuer,
+                                                            col(ExternalIdentity.subject) == subject)
+        return (await session.exec(statement)).one()
 
 
 async def _seed_lapsed_grant(factory, user_id, *, closed_for: timedelta = _A_DAY):
@@ -225,3 +240,68 @@ class TestTheRequestChangesNothing:
         assert (first.status_code, second.status_code) == (200, 200), second.text
         assert first.json() == second.json()
         assert await _entitlement_snapshot(_db_transaction, user.id) == before
+
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def apple_linked_identity(_db_transaction, _app_config, test_user_id):
+    """The real credential's identity pair, stored with a provider the happy-path fixture never seeds."""
+    return await seed_identity(_db_transaction,
+                               issuer=_app_config.jwt.issuer,
+                               subject=test_user_id,
+                               provider=IdentityProvider.apple)
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheProviderComesFromTheStoredColumn:
+    """`identity_provider` is the value in `core.external_identities.provider`, not a default or a token claim."""
+
+    async def test_a_non_google_caller_reports_its_stored_provider(
+            self, async_client, _db_transaction, _app_config, test_user_id, apple_linked_identity):
+        stored = await _stored_provider(_db_transaction, _app_config.jwt.issuer, test_user_id)
+        # The happy-path fixture seeds google; a row equal to it would leave the case proving nothing.
+        assert stored != IdentityProvider.google
+
+        response = await async_client.post("/auth/sync")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["identity_provider"] == stored
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheRouteInheritsTheBarriersRejections:
+    """Both rejections come from the existing dependencies; the route adds no handling and no exemption."""
+
+    async def test_a_caller_with_no_credential_is_rejected(self, _app_lifespan):
+        transport = ASGITransport(app=_app_lifespan)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post("/auth/sync")
+
+        assert response.status_code == 401
+        assert response.json() == {"code": "auth_required"}
+
+    async def test_a_verified_but_unlinked_caller_is_rejected(self, _app_lifespan, stub_verifier):
+        transport = ASGITransport(app=_app_lifespan)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/auth/sync", headers={"Authorization": f"Bearer {make_token(sub=_UNLINKED_SUBJECT)}"})
+
+        # Status and code read off the error class rather than guessed, so a renamed code fails here first.
+        assert response.status_code == PreAuthIdentityNotAllowed.status
+        assert response.json() == {"code": PreAuthIdentityNotAllowed.code}
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheFailClosedFiveHundred:
+    """An effective grant whose usage row is missing answers an opaque 500, never the zero a brief would report."""
+
+    async def test_a_grant_with_no_usage_row_is_an_opaque_500(
+            self, async_client, _db_transaction, linked_firebase_identity):
+        user, _ = linked_firebase_identity
+        # with_usage=False is the case the fixture's own comment says the parameter exists for.
+        await seed_grant(_db_transaction, user_id=user.id, with_usage=False)
+
+        response = await async_client.post("/auth/sync")
+
+        assert response.status_code == 500
+        # The whole body as a literal: an added detail field would name which condition tripped.
+        assert response.json() == {"code": "internal_error"}
