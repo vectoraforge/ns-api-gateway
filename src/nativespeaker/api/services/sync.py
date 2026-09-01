@@ -18,14 +18,23 @@ class SyncService:
 
     async def read_entitlement(self, user_id: UUID) -> Entitlement:
         """Report the entitlement `user_id` holds at the captured instant, taking no lock and writing nothing."""
+        # The only place the period is derived, and always from the request's captured instant.
+        period = self.evaluated_at.strftime("%Y-%m")
+
         grants = await self.grants_db.read_effective_grants(user_id, self.evaluated_at)
+        if not grants:
+            # Not an error: this is the ordinary answer for a caller who has never claimed a grant.
+            return Entitlement(type=EntitlementType.none,
+                               status=EntitlementStatus.none,
+                               tier_id=None,
+                               monthly_credits=None,
+                               current_period=period,
+                               monthly_used=0)
+
         grant = grants[0]
 
         usage = await self.grants_db.read_usage(grant.id)
         allowance = await self.grants_db.monthly_credits(grant.tier_id)
-
-        # The only place the period is derived, and always from the request's captured instant.
-        period = self.evaluated_at.strftime("%Y-%m")
 
         return Entitlement(type=EntitlementType(grant.source.value),
                            status=EntitlementStatus.active,
