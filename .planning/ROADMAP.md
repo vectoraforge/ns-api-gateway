@@ -477,7 +477,7 @@ Plans:
 **Goal:** Ship the read-only auth-state reconciliation surface clients call after sign-in or a lost response.
 **Requirements:** SYNC-01 … SYNC-03
 **Depends on:** 34, 35 (soft: 37)
-**Plans:** 5/6 plans executed in 4 waves
+**Plans:** 6/6 plans executed in 4 waves
 **Success criteria:**
 
 1. Grant, `current_period`, and `monthly_used` all derive from one evaluation time and match what quota enforcement would independently act on at the same instant
@@ -503,7 +503,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3)*
 
-- [ ] 38-06-PLAN.md — The executable guards that nothing was rebuilt, and the phase close against green suites
+- [x] 38-06-PLAN.md — The executable guards that nothing was rebuilt, and the phase close against green suites
 
 #### Phase 39: GET /users/me
 
@@ -642,7 +642,7 @@ Plans:
 | 35. Foundation | v2.0 | 12/12 | Complete    | 2026-08-21 |
 | 36. Rebind Pre-existing Routes | v2.0 | 5/5 | Complete    | 2026-08-21 |
 | 37. POST /auth/create-user | v2.0 | 10/10 | Complete    | 2026-08-23 |
-| 38. POST /auth/sync | v2.0 | 5/6 | In Progress|  |
+| 38. POST /auth/sync | v2.0 | 6/6 | In Progress|  |
 | 39. GET /users/me | v2.0 | 0/? | Pending | — |
 | 40. POST /auth/upgrade-anonymous | v2.0 | 0/? | Pending | — |
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 0/? | Pending | — |
