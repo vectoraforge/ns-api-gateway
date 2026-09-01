@@ -477,7 +477,7 @@ Plans:
 **Goal:** Ship the read-only auth-state reconciliation surface clients call after sign-in or a lost response.
 **Requirements:** SYNC-01 … SYNC-03
 **Depends on:** 34, 35 (soft: 37)
-**Plans:** 2/6 plans executed in 4 waves
+**Plans:** 3/6 plans executed in 4 waves
 **Success criteria:**
 
 1. Grant, `current_period`, and `monthly_used` all derive from one evaluation time and match what quota enforcement would independently act on at the same instant
@@ -495,7 +495,7 @@ Plans:
 **Wave 2** *(two parallel plans, blocked on Wave 1, no shared file)*
 
 - [ ] 38-02-PLAN.md — The service branches: the zero-grant answer, the stale period computed and never written, the three fail-closed tripwires reusing the existing classes
-- [ ] 38-05-PLAN.md — The dated SYNC-03 amendment, the three sibling entries, the conflicts count, and ROADMAP criterion 4
+- [x] 38-05-PLAN.md — The dated SYNC-03 amendment, the three sibling entries, the conflicts count, and ROADMAP criterion 4
 
 **Wave 3** *(blocked on Wave 2)*
 
@@ -642,7 +642,7 @@ Plans:
 | 35. Foundation | v2.0 | 12/12 | Complete    | 2026-08-21 |
 | 36. Rebind Pre-existing Routes | v2.0 | 5/5 | Complete    | 2026-08-21 |
 | 37. POST /auth/create-user | v2.0 | 10/10 | Complete    | 2026-08-23 |
-| 38. POST /auth/sync | v2.0 | 2/6 | In Progress|  |
+| 38. POST /auth/sync | v2.0 | 3/6 | In Progress|  |
 | 39. GET /users/me | v2.0 | 0/? | Pending | — |
 | 40. POST /auth/upgrade-anonymous | v2.0 | 0/? | Pending | — |
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 0/? | Pending | — |
