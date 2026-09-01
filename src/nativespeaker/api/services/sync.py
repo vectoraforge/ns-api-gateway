@@ -36,9 +36,12 @@ class SyncService:
         usage = await self.grants_db.read_usage(grant.id)
         allowance = await self.grants_db.monthly_credits(grant.tier_id)
 
+        # A count from an earlier period is selected past, never assigned away: this read must not roll over.
+        used = 0 if usage.monthly_period != period else usage.monthly_used
+
         return Entitlement(type=EntitlementType(grant.source.value),
                            status=EntitlementStatus.active,
                            tier_id=grant.tier_id,
                            monthly_credits=allowance,
                            current_period=period,
-                           monthly_used=usage.monthly_used)
+                           monthly_used=used)
