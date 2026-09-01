@@ -483,7 +483,7 @@ Plans:
 1. Grant, `current_period`, and `monthly_used` all derive from one evaluation time and match what quota enforcement would independently act on at the same instant
 2. Zero effective grants and a lapsed grant return byte-identical responses
 3. Table state is unchanged across a request — verified by comparing `core.*` before and after
-4. **BLOCKED: requires a mechanism Phase 37.1 deleted. Phase 38 must decide.** As written: every attempt writes exactly one `audit.auth_events` row with `operation='sync'`, admission rejections included. The table, the writer and every call site were deleted by Phase 37.1 (D-01), 2026-08-24, before this phase was built. **Phase 38 owns the decision and must make it explicitly, choosing one:** (a) rebuild a durable record for `operation='sync'`, accepting that it reintroduces the subsystem D-01 removed; or (b) drop the durable-row obligation and satisfy the intent with the structured log — the rejection log in `app/dependencies.py::_reject` already covers the rejection arm, so only a success event would be new. Phase 37.1 deliberately does not choose. Matching requirement: SYNC-03, and see the flagged `SHARED-INVARIANTS.md` conflict under FOUND-05 — the binding specification still mandates the row.
+4. No durable audit row is written on any path and no per-attempt telemetry is added beyond what already exists — one `request` line per attempt from the request middleware and one WARNING per rejection from the shared error handler — with the decision to drop the durable-row obligation recorded in `REQUIREMENTS.md` under SYNC-03 and the matching removal made in `SHARED-INVARIANTS.md`
 
 Plans:
 
