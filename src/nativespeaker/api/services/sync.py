@@ -5,6 +5,11 @@ from uuid import UUID
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.crud import GrantsDB
+from nativespeaker.api.errors import (
+    MissingUsageRowError,
+    MultipleEffectiveGrantsError,
+    UnknownTierError,
+)
 from nativespeaker.api.schemas.auth import Entitlement, EntitlementStatus, EntitlementType
 
 
@@ -31,10 +36,21 @@ class SyncService:
                                current_period=period,
                                monthly_used=0)
 
+        if len(grants) > 1:
+            # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
+            raise MultipleEffectiveGrantsError(len(grants), user_id)
+
         grant = grants[0]
 
         usage = await self.grants_db.read_usage(grant.id)
+        if usage is None:
+            # Fail closed: reporting zero used would promise an allowance the charge refuses at this same instant.
+            raise MissingUsageRowError(grant.id)
+
         allowance = await self.grants_db.monthly_credits(grant.tier_id)
+        if allowance is None:
+            # Fail closed: a missing tier row is neither a zero allowance nor an unbounded one.
+            raise UnknownTierError(grant.tier_id, grant.id)
 
         # A count from an earlier period is selected past, never assigned away: this read must not roll over.
         used = 0 if usage.monthly_period != period else usage.monthly_used
