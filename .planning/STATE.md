@@ -1,7 +1,7 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Authentication & Entitlements (Phases 34-46)
+milestone_name: Authentication & Entitlements
 current_phase: 40
 current_phase_name: post-auth-upgrade-anonymous
 status: executing
