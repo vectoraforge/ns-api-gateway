@@ -510,7 +510,7 @@ Plans:
 **Goal:** Rewrite the profile endpoint to return profile fields, stored registration state, and per-store purchase-attribution tokens.
 **Requirements:** PROF-01, PROF-02
 **Depends on:** 34, 35 (soft: 37)
-**Plans:** 2/4 plans executed
+**Plans:** 4/4 plans executed
 **Success criteria:**
 
 1. The response carries an entry for every store provider regardless of client platform, User-Agent, or any client-supplied signal
@@ -527,8 +527,8 @@ Plans:
 
 **Wave 2** *(two parallel plans, blocked on Wave 1, no shared file)*
 
-- [ ] 39-03-PLAN.md — The unit proofs: the closed unconditional body, the enum key set, `Cache-Control: no-store`, the single unlocked query, client-signal invariance, and the completeness rule's zero-row and one-row refusals
-- [ ] 39-04-PLAN.md — The end-to-end proofs: the stored provider read back and agreeing with `/auth/sync`, the fail-closed 500 on a missing and on a partial token set, the barrier's 401/403, and unchanged table state across a request
+- [x] 39-03-PLAN.md — The unit proofs: the closed unconditional body, the enum key set, `Cache-Control: no-store`, the single unlocked query, client-signal invariance, and the completeness rule's zero-row and one-row refusals
+- [x] 39-04-PLAN.md — The end-to-end proofs: the stored provider read back and agreeing with `/auth/sync`, the fail-closed 500 on a missing and on a partial token set, the barrier's 401/403, and unchanged table state across a request
 
 #### Phase 40: POST /auth/upgrade-anonymous
 
@@ -656,7 +656,7 @@ Plans:
 | 36. Rebind Pre-existing Routes | v2.0 | 5/5 | Complete    | 2026-08-21 |
 | 37. POST /auth/create-user | v2.0 | 10/10 | Complete    | 2026-08-23 |
 | 38. POST /auth/sync | v2.0 | 6/6 | Complete    | 2026-09-01 |
-| 39. GET /users/me | v2.0 | 2/4 | In Progress|  |
+| 39. GET /users/me | v2.0 | 4/4 | In Progress|  |
 | 40. POST /auth/upgrade-anonymous | v2.0 | 0/? | Pending | — |
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 0/? | Pending | — |
 | 42. POST /auth/claim-registered-grant | v2.0 | 0/? | Pending | — |
