@@ -236,3 +236,10 @@ None — no external service configuration required beyond the `.env` the enviro
 ---
 *Phase: 40-post-auth-upgrade-anonymous*
 *Completed: 2026-09-02*
+
+## Self-Check: PASSED
+
+- `.planning/phases/40-post-auth-upgrade-anonymous/40-04-SUMMARY.md` — FOUND
+- All seven modified source and test files — FOUND
+- Commits `1f7a426`, `3cab83f`, `f63ecd7`, `ceec8dd` — all FOUND in `git log`
+- `.env` present in the worktree, gitignored, and absent from every commit; working tree clean
