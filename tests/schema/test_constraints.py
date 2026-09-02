@@ -564,9 +564,11 @@ class TestAuthChallengeConstraints:
     """The challenge operation partition, and the lifecycle and binding CHECKs."""
 
     @pytest.mark.parametrize("operation", ["restore_subscription", "sign_out_all", "sync"])
-    async def test_challenge_for_a_challenge_free_operation_rejected(self, conn, operation):
-        """All three challenge-free operations are asserted, because a too-loose CHECK would admit all three."""
-        async with _rejects(conn, asyncpg.CheckViolationError):
+    async def test_challenge_for_a_string_outside_the_operation_type_rejected(self, conn, operation):
+        """All three are asserted individually: none is a member of core.auth_operation, so none can be written."""
+        # The exact class the driver raises, read off a live insert rather than guessed; a base class
+        # or Exception would also pass for a connection failure and prove nothing about the type.
+        async with _rejects(conn, asyncpg.exceptions.InvalidTextRepresentationError):
             await _insert_challenge(conn, operation=operation)
         assert await conn.fetchval("SELECT count(*) FROM core.auth_challenges") == 0
 

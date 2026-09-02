@@ -19,10 +19,7 @@ CREATE TYPE core.auth_operation AS ENUM (
     'create_user',
     'upgrade_anonymous_to_registered',
     'claim_anonymous_grant',
-    'claim_registered_grant',
-    'restore_subscription',
-    'sign_out_all',
-    'sync'
+    'claim_registered_grant'
 );
 
 CREATE TYPE core.access_grant_source AS ENUM (
@@ -388,15 +385,6 @@ CREATE TABLE core.auth_challenges (
     created_at TIMESTAMPTZ NOT NULL,
     -- Lifecycle: issued, then claimed once claimed_at is set, then consumed; consuming requires a claim.
     CHECK (consumed_at IS NULL OR claimed_at IS NOT NULL),
-    -- Exactly the four challenge-bearing operations; restore, sign-out-all and sync have no challenge row.
-    CHECK (
-        operation IN (
-            'create_user',
-            'upgrade_anonymous_to_registered',
-            'claim_anonymous_grant',
-            'claim_registered_grant'
-        )
-    ),
     -- Exactly one of the bound identity or the preauth pair, with the subject clearable only once consumed.
     CHECK (
         (bound_external_identity_id IS NOT NULL
