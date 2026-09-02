@@ -2,9 +2,12 @@ import os
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+import firebase_admin
 import httpx
+import jwt as pyjwt
 import pytest
 import pytest_asyncio
+from firebase_admin import auth
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel import select
@@ -88,6 +91,61 @@ def anonymous_firebase_credential(_app_config):
     data = resp.json()
     # Subscripting rather than .get(): if returnSecureToken were ever ignored, this fails loudly.
     return data["idToken"], data["localId"]
+
+
+def _google_id_token() -> str:
+    """Redeem the stored refresh token for a fresh Google ID token; a missing variable raises."""
+    resp = httpx.post("https://oauth2.googleapis.com/token",
+                      data={"client_id": os.environ["FIREBASE_TEST_GOOGLE_CLIENT_ID"],
+                            "client_secret": os.environ["FIREBASE_TEST_GOOGLE_CLIENT_SECRET"],
+                            "refresh_token": os.environ["FIREBASE_TEST_GOOGLE_REFRESH_TOKEN"],
+                            "grant_type": "refresh_token"})
+    resp.raise_for_status()
+    # Absent when the one-off consent omitted the `openid` scope; .env.example says to include it.
+    return resp.json()["id_token"]
+
+
+def _release_google_account(admin_app, google_subject: str) -> None:
+    """Delete any user a previous run left holding the Google account, or this run's link fails."""
+    found = auth.get_users([auth.ProviderIdentifier("google.com", google_subject)], app=admin_app)
+    for user in found.users:
+        auth.delete_user(user.uid, app=admin_app)
+
+
+# No skip and no guard: the three variables are supplied before the run, so an absent one is a broken environment.
+@pytest.fixture(scope="module")
+def google_linked_firebase_credential(_app_lifespan, _app_config):
+    """A fresh anonymous Firebase user with the test Google account linked onto it.
+    Yields (id_token, local_id), the same pair shape anonymous_firebase_credential yields."""
+    api_key = _app_config.jwt.api_key
+    # The app the lifespan already built, reached by its documented name -- never a second one.
+    admin_app = firebase_admin.get_app(name=f"issuer:{_app_config.jwt.issuer}")
+    google_id_token = _google_id_token()
+    # Unverified on purpose: the claim only finds a leftover user, and Firebase verifies the token itself.
+    google_subject = pyjwt.decode(google_id_token, options={"verify_signature": False})["sub"]
+    _release_google_account(admin_app, google_subject)
+
+    signup = httpx.post(f"https://identitytoolkit.googleapis.com/v1/accounts:signUp"
+                        f"?key={api_key}",
+                        json={"returnSecureToken": True})
+    signup.raise_for_status()
+    anonymous = signup.json()
+    local_id = anonymous["localId"]
+
+    link = httpx.post(f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp"
+                      f"?key={api_key}",
+                      json={"postBody": f"id_token={google_id_token}&providerId=google.com",
+                            "requestUri": "http://localhost",
+                            "returnSecureToken": True,
+                            "idToken": anonymous["idToken"]})
+    link.raise_for_status()
+    linked = link.json()
+    # Linking rather than signing in is the whole point: no second Firebase user may appear.
+    assert linked["localId"] == local_id
+    try:
+        yield linked["idToken"], local_id
+    finally:
+        auth.delete_user(local_id, app=admin_app)
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
