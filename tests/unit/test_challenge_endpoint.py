@@ -156,7 +156,7 @@ _OUTSIDE_THE_VOCABULARY = ["sync", "sign_out_all", "restore_subscription",
 
 
 class TestTheStringsOutsideTheVocabulary:
-    """One 400 for every one of them, so the route cannot be asked which operation names are real."""
+    """One 400 for every one of them, so no string outside the four is distinguishable from another."""
 
     @pytest.mark.parametrize("operation", _OUTSIDE_THE_VOCABULARY)
     def test_every_string_outside_the_vocabulary_is_the_same_refusal(self, client, operation):
