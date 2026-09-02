@@ -182,6 +182,15 @@ None - no external service configuration required.
 - **Later phases inherit the rule.** Phases 40-42 write routers under it; a handler that grows past one or two reads is expected to earn a service rather than default to one.
 - **No blockers.** The two files this plan owns are complete and committed; nothing else in the phase depends on them being read first.
 
+## Self-Check: PASSED
+
+- `AGENTS.md` — FOUND, modified, +15/-2
+- `.planning/REQUIREMENTS.md` — FOUND, modified, +5/-0
+- `.planning/phases/39-get-users-me/39-02-SUMMARY.md` — FOUND
+- Commit `32b018b` — FOUND
+- Commit `0058ee8` — FOUND
+- Working tree clean; no file deleted by any commit in this plan
+
 ---
 *Phase: 39-get-users-me*
 *Completed: 2026-09-01*
