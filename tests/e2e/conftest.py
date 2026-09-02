@@ -24,6 +24,8 @@ from nativespeaker.api.tables import (
     IdentityProvider,
     IdentityState,
     Message,
+    PurchaseProvider,
+    StorePurchaseToken,
     User,
     UserMonthlyUsage,
 )
@@ -247,6 +249,24 @@ async def seed_grant(factory, *,
             session.add(usage)
         await session.commit()
     return grant, usage
+
+
+async def seed_purchase_tokens(factory, *,
+                               user_id: UUID,
+                               providers=PurchaseProvider):
+    """Insert one core.store_purchase_tokens row per member of `providers`; return them."""
+    # A narrowed `providers` is only for the missing-row case: a partial set is a 500, never a partial body.
+    now = datetime.now(UTC)
+    async with factory() as session:
+        tokens = [StorePurchaseToken(user_id=user_id,
+                                     provider=provider,
+                                     identity_value=str(uuid4()),
+                                     created_at=now)
+                  for provider in providers]
+        for token in tokens:
+            session.add(token)
+        await session.commit()
+    return tokens
 
 
 async def create_chat(factory, issuer: str, subject: str):
