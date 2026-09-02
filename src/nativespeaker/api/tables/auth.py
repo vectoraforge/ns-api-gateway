@@ -14,9 +14,6 @@ class AuthOperation(StrEnum):
     upgrade_anonymous_to_registered = "upgrade_anonymous_to_registered"
     claim_anonymous_grant = "claim_anonymous_grant"
     claim_registered_grant = "claim_registered_grant"
-    restore_subscription = "restore_subscription"
-    sign_out_all = "sign_out_all"
-    sync = "sync"
 
 
 AuthOperationType = cast(Any, Enum(AuthOperation, name='auth_operation', schema='core'))
