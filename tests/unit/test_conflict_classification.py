@@ -272,14 +272,18 @@ def _code_only(source: str) -> str:
 
 class TestTheModuleUsesNoSecondRaceArbiter:
     """The UNIQUE constraints are the sole arbiters, and nothing else may be added.
-    The upgrade path's row lock is revalidation, not arbitration: the challenge claim stays the
-    only serialization point on both completion paths, so no second arbiter exists to disagree."""
+    One row lock is allowed and counted below: the upgrade path's revalidation, which decides
+    nothing, leaving the challenge claim the only serialization point on both completion paths."""
 
     @pytest.mark.parametrize("forbidden", ["serializable", "advisory_lock", "pg_advisory",
-                                           "isolation_level", "for update", "select_for_update"])
+                                           "isolation_level"])
     def test_no_second_serialization_mechanism_appears_in_the_code(self, forbidden):
-        """An advisory lock, a stricter isolation level or a row lock would each be an arbiter that can disagree."""
+        """An advisory lock or a stricter isolation level would each be an arbiter that can disagree."""
         assert forbidden not in _code_only(_CREATION_SOURCE).lower()
+
+    def test_exactly_the_one_known_row_lock_appears_in_the_code(self):
+        """`with_for_update` is what ast.unparse emits, so the retired "for update" spellings never matched."""
+        assert _code_only(_CREATION_SOURCE).lower().count("with_for_update") == 1
 
     def test_conflicts_are_never_discriminated_by_message_text(self):
         """Message text depends on the server's locale and would accept either rule naming the same table."""
