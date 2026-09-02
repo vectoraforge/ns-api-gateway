@@ -539,11 +539,9 @@ Plans:
 **Success criteria:**
 
 1. The existing `core.external_identities` row's provider flips in place — no new identity row, no user merge, no row deletion
-2. Prepare and completion modes both work; only an authenticated linked identity may call it
+2. Preparation and completion are partitioned by route — `POST /auth/challenge` issues the challenge, `POST /auth/upgrade-anonymous` completes against it — and only an authenticated linked identity may call the completion — **reworded by Phase 40 (D-24), 2026-09-02; the partition and the admission rule are both delivered.** As written, this criterion described preparation as a **mode** on this endpoint, and it was true of the design it described until **Phase 37.2** (D-01/D-03/D-05) replaced the mode-signal partition with a dedicated issuance route; `classify_mode_signal` does not exist in this codebase, so prepare is a separate route here rather than a mode. The full amendment, including why the mode-signal partition is not rebuilt here and what replaced it, is under UPGRADE-02 in `REQUIREMENTS.md`. Reworded rather than withdrawn: both phases still exist, their order is still enforced because completion requires a handle prepare issued, and `get_linked_identity` still narrows the completion route to an authenticated, linked, active caller. Matching requirement: UPGRADE-02, amended on the same date.
 3. `GET /users/me` and `/auth/sync` report the new provider afterward
 4. Purchase-attribution tokens are unchanged across the upgrade
-
-> Criterion 2's wording is corrected by plan 40-08 (D-24): prepare is a separate route here, not a mode on this endpoint — Phase 37.2 replaced the mode-signal partition with `POST /auth/challenge`. The criterion's substance is unchanged and is delivered.
 
 Plans:
 
