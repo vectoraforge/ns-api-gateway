@@ -69,8 +69,7 @@ EXPECTED_ENUM_LABELS = {
         "active", "revoked", "expired"
     ],
     "auth_operation": [
-        "create_user", "upgrade_anonymous_to_registered", "claim_anonymous_grant", "claim_registered_grant",
-        "restore_subscription", "sign_out_all", "sync"
+        "create_user", "upgrade_anonymous_to_registered", "claim_anonymous_grant", "claim_registered_grant"
     ],
     "chat_role": [
         "human", "ai"
