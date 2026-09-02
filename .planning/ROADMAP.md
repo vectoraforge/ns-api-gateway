@@ -535,12 +535,40 @@ Plans:
 **Goal:** Record the client-side same-Firebase-UID anonymous→registered upgrade by flipping the existing identity row's provider in place.
 **Requirements:** UPGRADE-01, UPGRADE-02
 **Depends on:** 34, 35, 37
+**Plans:** 8 plans
 **Success criteria:**
 
 1. The existing `core.external_identities` row's provider flips in place — no new identity row, no user merge, no row deletion
 2. Prepare and completion modes both work; only an authenticated linked identity may call it
 3. `GET /users/me` and `/auth/sync` report the new provider afterward
 4. Purchase-attribution tokens are unchanged across the upgrade
+
+> Criterion 2's wording is corrected by plan 40-08 (D-24): prepare is a separate route here, not a mode on this endpoint — Phase 37.2 replaced the mode-signal partition with `POST /auth/challenge`. The criterion's substance is unchanged and is delivered.
+
+Plans:
+
+**Wave 1** *(prerequisites — the schema, the vocabulary, and the credential mechanism)*
+
+- [ ] 40-01-PLAN.md — Shrink `core.auth_operation` to its four challenge-bearing values, drop the redundant CHECK, re-apply both databases *(has a blocking decision checkpoint — one-way door)*
+- [ ] 40-02-PLAN.md — The two upgrade refusals under one shared 403 base, and one completion request model for both routes
+- [ ] 40-03-PLAN.md — The per-run Google-linked Firebase session: exchange, link, teardown — no signing credential anywhere
+
+**Wave 2** *(the tracer — blocked on Wave 1)*
+
+- [ ] 40-04-PLAN.md — TRACER: end-to-end anonymous→registered upgrade, one path, flipped in place through the real router
+
+**Wave 3** *(two parallel plans, blocked on Wave 2, no shared file)*
+
+- [ ] 40-05-PLAN.md — The rest of the case matrix: the idempotent repeat, the three refusals, and the precedence and consumption proofs
+- [ ] 40-06-PLAN.md — The issuance rules: the account-less condition, and the challenge-endpoint file restated against the four-value vocabulary
+
+**Wave 4** *(blocked on Wave 3)*
+
+- [ ] 40-07-PLAN.md — The real Google-linked account, the cross-endpoint flow proof, and the third-state schema scan
+
+**Wave 5** *(blocked on Wave 4)*
+
+- [ ] 40-08-PLAN.md — The dated UPGRADE amendment, the SCHEMA-01 note, and criterion 2's reword
 
 #### Phase 41: POST /auth/claim-anonymous-grant
 
@@ -657,7 +685,7 @@ Plans:
 | 37. POST /auth/create-user | v2.0 | 10/10 | Complete    | 2026-08-23 |
 | 38. POST /auth/sync | v2.0 | 6/6 | Complete    | 2026-09-01 |
 | 39. GET /users/me | v2.0 | 4/4 | Complete    | 2026-09-01 |
-| 40. POST /auth/upgrade-anonymous | v2.0 | 0/? | Pending | — |
+| 40. POST /auth/upgrade-anonymous | v2.0 | 0/8 | Planned | — |
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 0/? | Pending | — |
 | 42. POST /auth/claim-registered-grant | v2.0 | 0/? | Pending | — |
 | 43. POST /webhooks/app-store | v2.0 | 0/? | Pending | — |
