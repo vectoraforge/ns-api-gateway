@@ -1,21 +1,21 @@
 ---
 gsd_state_version: 1.0
 milestone: v2.0
-milestone_name: Authentication & Entitlements
+milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 40
 current_phase_name: POST /auth/upgrade-anonymous
-status: planning
+status: executing
 stopped_at: Phase 40 context gathered
-last_updated: "2026-09-02T08:38:48.601Z"
+last_updated: "2026-09-02T10:31:23.565Z"
 last_activity: 2026-09-01
 last_activity_desc: Phase 38 complete — UAT passed, WINDOWS entry 9 closed
+state_head: f1de07fd7929b8eab404511e50fe6577b97acabb
 progress:
   total_phases: 18
   completed_phases: 11
-  total_plans: 77
+  total_plans: 85
   completed_plans: 77
-  percent: 61
-state_head: 1e6d57c5bdda9024dd75e7059fe23a0def6ba0b2
+  percent: 56
 ---
 
 # Project State
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 Phase: 40 — POST /auth/upgrade-anonymous
 Plan: Not started
-Status: Ready to plan
+Status: Ready to execute
 Last activity: 2026-09-01 — Phase 39 complete, transitioned to Phase 40
 
 <!-- The same counter hazard recurred in 37.5 and is corrected here the same way. Waves 2 through 8
