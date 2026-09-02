@@ -10,6 +10,7 @@ from starlette.concurrency import run_in_threadpool
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.identities import IdentitiesDB
+from nativespeaker.api.crud.purchases import PurchasesDB
 from nativespeaker.api.errors import InvalidExternalJwt, PreAuthIdentityNotAllowed
 from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.services import AuthService, ChatService, QuotaService, SyncService
@@ -112,3 +113,8 @@ def get_sync_service(db: AsyncSession = Depends(get_db)) -> SyncService:
     return SyncService(db=db,
                        # One instant for this request; nothing downstream reads the clock again.
                        evaluated_at=datetime.now(UTC))
+
+
+# This accessor exists so the profile route can stay Depends()-only and never construct a database class itself.
+def get_purchases_db(db: AsyncSession = Depends(get_db)) -> PurchasesDB:
+    return PurchasesDB(db)

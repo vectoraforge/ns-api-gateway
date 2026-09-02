@@ -6,6 +6,7 @@ from enum import StrEnum
 from pydantic import BaseModel, Field
 
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
+from nativespeaker.api.tables.purchases import PurchaseProvider
 from nativespeaker.api.tables.users import User
 
 
@@ -61,6 +62,19 @@ class SyncResponse(BaseModel):
     """The sync body: the entitlement and the registration state, and nothing else."""
     entitlement: Entitlement
     identity_provider: IdentityProvider
+
+
+class Profile(BaseModel):
+    """The profile block: the account's contact fields, both left NULL until a provider record fills them."""
+    email: str | None
+    display_name: str | None
+
+
+class MeResponse(BaseModel):
+    """The profile body: the profile block, the registration state and the store tokens, and nothing else."""
+    profile: Profile
+    identity_provider: IdentityProvider
+    purchase_tokens: dict[PurchaseProvider, str]
 
 
 @dataclass(frozen=True, slots=True)

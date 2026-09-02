@@ -1,6 +1,7 @@
-__all__ = ["ChallengesDB", "ChatsDB", "GrantsDB", "IdentitiesDB"]
+__all__ = ["ChallengesDB", "ChatsDB", "GrantsDB", "IdentitiesDB", "PurchasesDB"]
 
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.chats import ChatsDB
 from nativespeaker.api.crud.grants import GrantsDB
 from nativespeaker.api.crud.identities import IdentitiesDB
+from nativespeaker.api.crud.purchases import PurchasesDB

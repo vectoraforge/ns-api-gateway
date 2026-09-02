@@ -1,4 +1,5 @@
 """App-construction invariants admission depends on, asserted over the real app because runtime hides them."""
+import pytest
 from fastapi import Depends
 from fastapi.routing import APIRoute
 
@@ -36,16 +37,18 @@ class TestEveryRouteIsAuthenticated:
             if route.path in PREAUTH_CALLABLE_PATHS:
                 assert get_identity in _declared(route), route.path
 
-    def test_the_sync_route_declares_the_linked_identity_narrowing(self):
-        """Named rather than left to the generic case, which would also pass if sync were exempted."""
-        declared = [_declared(route) for route in _api_routes() if route.path == "/auth/sync"]
-        assert declared, "/auth/sync is not a registered route"
+    @pytest.mark.parametrize("path", ("/auth/sync", "/users/me"))
+    def test_a_narrowed_route_declares_the_linked_identity_narrowing(self, path):
+        """Named rather than left to the generic case, which would also pass if the route were exempted."""
+        declared = [_declared(route) for route in _api_routes() if route.path == path]
+        assert declared, f"{path} is not a registered route"
         assert all(get_linked_identity in calls for calls in declared)
 
-    def test_the_sync_route_is_in_neither_exemption_set(self):
-        """Sync is authenticated and narrowed, so widening either literal above would fail here."""
-        assert "/auth/sync" in {route.path for route in _api_routes()}
-        assert "/auth/sync" not in PUBLIC_PATHS | PREAUTH_CALLABLE_PATHS
+    @pytest.mark.parametrize("path", ("/auth/sync", "/users/me"))
+    def test_a_narrowed_route_is_in_neither_exemption_set(self, path):
+        """The route is authenticated and narrowed, so widening either literal above would fail here."""
+        assert path in {route.path for route in _api_routes()}
+        assert path not in PUBLIC_PATHS | PREAUTH_CALLABLE_PATHS
 
     def test_the_public_allowlist_is_exactly_the_readiness_probe(self):
         """A second public route would have to be added to `PUBLIC_PATHS` above to pass."""
