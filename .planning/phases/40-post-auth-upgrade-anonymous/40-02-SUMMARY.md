@@ -181,3 +181,9 @@ Phases 41 and 42 inherit `CompletionRequest` unchanged; neither should add a sec
 ---
 *Phase: 40-post-auth-upgrade-anonymous*
 *Completed: 2026-09-02*
+
+## Self-Check: PASSED
+
+- `.planning/phases/40-post-auth-upgrade-anonymous/40-02-SUMMARY.md` — FOUND
+- `0e27638`, `32727c3`, `e76965a` — all FOUND in `git log`
+- Working tree clean; no untracked files left behind
