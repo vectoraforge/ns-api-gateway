@@ -123,6 +123,8 @@ class IdentitiesDB:
                             email: str | None) -> IdentityProvider:
         """Write both halves of the flip in the caller's transaction, and return the provider written."""
         stored_provider = identity_row.provider
+        # Read before the flush too: a failed flush expires the row, and reading it after re-queries a dead transaction.
+        identity_row_id = identity_row.id
         identity_row.provider = provider
         identity_row.provider_uid = provider_uid
         identity_row.updated_at = evaluated_at
@@ -136,7 +138,7 @@ class IdentitiesDB:
         try:
             await self.session.flush()
         except IntegrityError as conflict:
-            raise ProviderAccountAlreadyLinked(identity_row_id=identity_row.id,
+            raise ProviderAccountAlreadyLinked(identity_row_id=identity_row_id,
                                                stored_provider=stored_provider,
                                                live_provider=provider) from conflict
         return provider

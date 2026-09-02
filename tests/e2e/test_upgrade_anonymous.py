@@ -9,6 +9,7 @@ from unit.conftest import TEST_ISSUER, make_token
 
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.firebase import FirebaseAdminLookup
+from nativespeaker.api.tables.auth import AuthChallenge
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.users import User
 
@@ -21,6 +22,9 @@ SUBJECT = "tracer-anonymous-subject"
 # What the scripted read reports back; neither value is derived from anything the caller sent.
 GOOGLE_UID = "google-uid-tracer-anonymous-subject"
 VERIFIED_EMAIL = "tracer-anonymous@example.test"
+
+# The one body all three refusals answer with, compared by equality so a more helpful field fails.
+REFUSED = {"code": "operation_not_allowed"}
 
 
 @pytest_asyncio.fixture(loop_scope="module")
@@ -129,3 +133,127 @@ class TestTheAnonymousToRegisteredHappyPath:
             # Copied because the stored value was still NULL; nothing else on the user row moved.
             assert user.email == VERIFIED_EMAIL
             assert user.display_name is None
+
+
+async def _issue(client, subject: str) -> str:
+    """Obtain an upgrade handle for `subject`, which every case below spends exactly once."""
+    issued = await client.post("/auth/challenge",
+                               json={"operation": "upgrade_anonymous_to_registered"},
+                               headers=_auth(subject))
+    assert issued.status_code == 200, issued.text
+    return issued.json()["challenge_id"]
+
+
+async def _upgrade(client, subject: str, handle: str):
+    return await client.post("/auth/upgrade-anonymous",
+                             json={"challenge_id": handle},
+                             headers=_auth(subject))
+
+
+async def _binding(factory, subject: str) -> tuple[IdentityProvider, str | None]:
+    """The stored provider and provider_uid, read back through the test transaction."""
+    async with factory() as session:
+        row = (await session.exec(
+            select(ExternalIdentity).where(col(ExternalIdentity.issuer) == TEST_ISSUER,
+                                           col(ExternalIdentity.subject) == subject))).one()
+        return row.provider, row.provider_uid
+
+
+async def _challenge_for(factory, handle: str) -> AuthChallenge:
+    async with factory() as session:
+        return (await session.exec(
+            select(AuthChallenge).where(col(AuthChallenge.challenge_id) == handle))).one()
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheRefusalsAndTheRepeat:
+    """The four cases the real Google account cannot produce on demand, each through the real router."""
+
+    async def test_a_live_anonymous_read_refuses_and_leaves_the_row_untouched(
+            self, upgrade_client, _db_transaction, scripted_firebase_adapter):
+        """The client called before its own linking finished: refused, and nothing is recorded."""
+        subject = "e2e-upgrade-not-yet-linked"
+        await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                            provider=IdentityProvider.anonymous)
+        before = await _binding(_db_transaction, subject)
+        scripted_firebase_adapter.script(
+            VerifiedProviderIdentity(provider=IdentityProvider.anonymous, provider_uid=None))
+
+        handle = await _issue(upgrade_client, subject)
+        completion = await _upgrade(upgrade_client, subject, handle)
+
+        assert completion.status_code == 403, completion.text
+        assert completion.json() == REFUSED
+        assert await _binding(_db_transaction, subject) == before
+
+    async def test_a_diverged_binding_is_refused_rather_than_rewritten(
+            self, upgrade_client, _db_transaction, scripted_firebase_adapter):
+        """The stored row is registered and the live read disagrees: no column moves."""
+        subject = "e2e-upgrade-drifted"
+        await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                            provider=IdentityProvider.google)
+        before = await _binding(_db_transaction, subject)
+        scripted_firebase_adapter.script(
+            VerifiedProviderIdentity(provider=IdentityProvider.google,
+                                     provider_uid="google-uid-somebody-else-entirely"))
+
+        handle = await _issue(upgrade_client, subject)
+        completion = await _upgrade(upgrade_client, subject, handle)
+
+        assert completion.status_code == 403, completion.text
+        assert completion.json() == REFUSED
+        assert await _binding(_db_transaction, subject) == before
+
+    async def test_a_provider_account_another_row_holds_is_refused_and_spends_the_handle(
+            self, upgrade_client, _db_transaction, scripted_firebase_adapter):
+        """Refused by the write's conflict arm, so the handle is spent: this failure is after the read."""
+        subject = "e2e-upgrade-claimant"
+        await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                            provider=IdentityProvider.anonymous)
+        _, owner = await seed_identity(_db_transaction, issuer=TEST_ISSUER,
+                                       subject="e2e-upgrade-account-owner",
+                                       provider=IdentityProvider.google)
+        # Read back rather than rederived: a second derivation stops colliding the day the helper changes.
+        assert owner.provider_uid is not None
+        claimant_before = await _binding(_db_transaction, subject)
+        owner_before = await _binding(_db_transaction, owner.subject)
+        scripted_firebase_adapter.script(
+            VerifiedProviderIdentity(provider=IdentityProvider.google,
+                                     provider_uid=owner.provider_uid))
+
+        handle = await _issue(upgrade_client, subject)
+        completion = await _upgrade(upgrade_client, subject, handle)
+
+        assert completion.status_code == 403, completion.text
+        assert completion.json() == REFUSED
+        assert await _binding(_db_transaction, subject) == claimant_before
+        assert await _binding(_db_transaction, owner.subject) == owner_before
+        assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
+
+    async def test_the_repeat_that_changes_nothing_answers_as_the_flip_did(
+            self, upgrade_client, _db_transaction, scripted_firebase_adapter):
+        """D-04: same status, same one-field body, no write, and one provider read per completion."""
+        subject = "e2e-upgrade-repeated"
+        _, seeded = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                                        provider=IdentityProvider.anonymous)
+        row_id = seeded.id
+        scripted_firebase_adapter.script(
+            VerifiedProviderIdentity(provider=IdentityProvider.google,
+                                     provider_uid=f"google-uid-{subject}",
+                                     email=VERIFIED_EMAIL))
+
+        first = await _upgrade(upgrade_client, subject, await _issue(upgrade_client, subject))
+        after_flip = await _binding(_db_transaction, subject)
+        second = await _upgrade(upgrade_client, subject, await _issue(upgrade_client, subject))
+
+        assert (first.status_code, second.status_code) == (200, 200), second.text
+        assert first.json() == second.json() == {"identity_provider": "google"}
+        assert await _binding(_db_transaction, subject) == after_flip
+        # One read per completion, not one in total: an already-registered row is never read past.
+        assert scripted_firebase_adapter.calls == [(TEST_ISSUER, subject)] * 2
+
+        async with _db_transaction() as session:
+            identity = (await session.exec(
+                select(ExternalIdentity).where(col(ExternalIdentity.issuer) == TEST_ISSUER,
+                                               col(ExternalIdentity.subject) == subject))).one()
+            assert identity.id == row_id
