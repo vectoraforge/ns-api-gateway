@@ -1,4 +1,5 @@
-"""The identity store: the resolving query, the in-transaction re-resolution, and the account insert."""
+"""The identity store: the resolving query, the re-resolution, the account insert and the provider flip.
+Lock order: the identity row and then its user row, taken together by the one joined statement below."""
 from datetime import datetime
 from uuid import UUID, uuid4
 
@@ -12,6 +13,7 @@ from nativespeaker.api.errors import (
     IdentityAlreadyLinked,
     IdentityUnresolvable,
     PreAuthIdentityNotAllowed,
+    ProviderAccountAlreadyLinked,
 )
 from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
@@ -56,6 +58,21 @@ class IdentitiesDB:
                                                    col(ExternalIdentity.subject) == subject)
         return (await self.session.exec(statement)).first()
 
+    async def lock_identity_and_user(self, *, issuer: str,
+                                     subject: str) -> tuple[ExternalIdentity, User] | None:
+        """Lock and return the identity row and its user, or `None`. Revalidation, never a race arbiter."""
+        # Inner join: Postgres refuses a row lock on the nullable side of the outer join `resolve` uses.
+        statement = (select(ExternalIdentity, User)
+                     .join(User, col(ExternalIdentity.user_id) == col(User.id))
+                     .where(col(ExternalIdentity.issuer) == issuer,
+                            col(ExternalIdentity.subject) == subject)
+                     .with_for_update())
+        row = (await self.session.exec(statement)).first()
+        if row is None:
+            return None
+        identity, user = row
+        return identity, user
+
     async def user_by_id(self, user_id: UUID | None) -> User | None:
         """The user an identity row points at, or `None`."""
         return (await self.session.exec(select(User).where(col(User.id) == user_id))).first()
@@ -96,3 +113,30 @@ class IdentitiesDB:
             return user.id
         except IntegrityError as conflict:
             raise IdentityAlreadyLinked() from conflict
+
+    async def flip_provider(self, *,
+                            evaluated_at: datetime,
+                            identity_row: ExternalIdentity,
+                            user: User,
+                            provider: IdentityProvider,
+                            provider_uid: str | None,
+                            email: str | None) -> IdentityProvider:
+        """Write both halves of the flip in the caller's transaction, and return the provider written."""
+        stored_provider = identity_row.provider
+        identity_row.provider = provider
+        identity_row.provider_uid = provider_uid
+        identity_row.updated_at = evaluated_at
+        user.registered_at = evaluated_at
+        user.updated_at = evaluated_at
+        if user.email is None:
+            # A stored address is never overwritten, and a divergent live one is simply not copied.
+            user.email = email
+
+        # Only the flush is inside: an ORM assignment sends nothing to the database.
+        try:
+            await self.session.flush()
+        except IntegrityError as conflict:
+            raise ProviderAccountAlreadyLinked(identity_row_id=identity_row.id,
+                                               stored_provider=stored_provider,
+                                               live_provider=provider) from conflict
+        return provider

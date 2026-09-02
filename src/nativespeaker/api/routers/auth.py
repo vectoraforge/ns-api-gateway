@@ -1,5 +1,5 @@
-"""The three auth routes: `/auth/challenge` issues a challenge, `/auth/create-user` spends one,
-and `/auth/sync` reports what the caller's account entitles it to."""
+"""The four auth routes: `/auth/challenge` issues a challenge, `/auth/create-user` and
+`/auth/upgrade-anonymous` spend one, and `/auth/sync` reports what the caller's account entitles it to."""
 from datetime import UTC, datetime
 
 import structlog
@@ -44,13 +44,13 @@ async def issue_challenge(body: ChallengeRequest,
     # One instant for this request, so `created_at` and `expires_at` cannot straddle a boundary.
     evaluated_at = datetime.now(UTC)
 
-    if body.operation != AuthOperation.create_user.value:
+    if body.operation not in AuthOperation:
         # The rejected string is caller-supplied and bounded, so logging it is safe; a handle never is.
         logger.warning("auth_challenge_operation_not_issuable", operation=body.operation)
         raise InvalidRequest
 
     challenge_id, expires_at = await challenge_store.issue(session,
-                                                           operation=AuthOperation.create_user,
+                                                           operation=AuthOperation(body.operation),
                                                            identity=identity,
                                                            now=evaluated_at)
     # `no-store` rather than `no-cache`: the handle is a secret, and a revalidatable copy is a copy.
@@ -70,6 +70,22 @@ async def create_user(body: CompletionRequest,
     """Complete the operation the body's handle stands for."""
     # Forwarded untouched and never logged: the handle is a secret.
     provider = await service.complete(identity=identity, challenge_id=body.challenge_id)
+    return CompletionResponse(identity_provider=provider)
+
+
+# The route-level dependency narrows this one route to linked callers; the router-level one cannot.
+@router.post("/auth/upgrade-anonymous",
+             response_model=CompletionResponse,
+             summary="Record the caller's identity row as registered with its real provider",
+             description="Spends a single-use challenge obtained from `POST /auth/challenge`, "
+                         "supplied as `challenge_id` in the body, and records the provider the "
+                         "Firebase read reports onto the caller's existing identity row.")
+async def upgrade_anonymous(body: CompletionRequest,
+                            identity: Identity = Depends(get_linked_identity),
+                            service: AuthService = Depends(get_auth_service)) -> CompletionResponse:
+    """Complete the operation the body's handle stands for."""
+    # Forwarded untouched and never logged: the handle is a secret.
+    provider = await service.complete_upgrade(identity=identity, challenge_id=body.challenge_id)
     return CompletionResponse(identity_provider=provider)
 
 
