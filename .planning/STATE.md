@@ -3,16 +3,16 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements (Phases 34-46)
 current_phase: 40
-current_phase_name: POST /auth/upgrade-anonymous
+current_phase_name: post-auth-upgrade-anonymous
 status: executing
 stopped_at: Phase 40 context gathered
-last_updated: "2026-09-02T10:31:23.565Z"
-last_activity: 2026-09-01
-last_activity_desc: Phase 38 complete — UAT passed, WINDOWS entry 9 closed
-state_head: f1de07fd7929b8eab404511e50fe6577b97acabb
+last_updated: "2026-09-02T10:34:23.586Z"
+last_activity: 2026-09-02
+last_activity_desc: Phase 40 execution started
+state_head: c8b4733630d48b8fe218c055491f865a9fc24c88
 progress:
   total_phases: 18
-  completed_phases: 11
+  completed_phases: 10
   total_plans: 85
   completed_plans: 77
   percent: 56
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-19)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 39 — get-users-me
+**Current focus:** Phase 40 — post-auth-upgrade-anonymous
 
 ## Current Position
 
-Phase: 40 — POST /auth/upgrade-anonymous
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-09-01 — Phase 39 complete, transitioned to Phase 40
+Phase: 40 (post-auth-upgrade-anonymous) — EXECUTING
+Plan: 1 of 8
+Status: Executing Phase 40
+Last activity: 2026-09-02 — Phase 40 execution started
 
 <!-- The same counter hazard recurred in 37.5 and is corrected here the same way. Waves 2 through 8
      ran as parallel worktree agents which deliberately do not write STATE.md, so the counter sat at
