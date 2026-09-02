@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from nativespeaker.api.auth.jwt_verifier import BoundedReason
+from nativespeaker.api.tables.identities import IdentityProvider
 from nativespeaker.api.tables.purchases import PurchaseProvider
 
 # The codes the body may carry. A typo is a ValidationError at construction, not a runtime 500.
@@ -378,6 +379,38 @@ class NotLinked(ProviderLookupError):
     """A providerData shape outside the accept set, so no provider account may be claimed for it."""
     status = 403
     code = "operation_not_allowed"
+
+
+# --- Upgrade arms ---
+
+
+class UpgradeRefused(AppError):
+    """The upgrade's two drift rejections share this shape; only its leaves are raised."""
+
+    # The 403 is declared here and nowhere below, so the refusal cannot become an enumeration oracle.
+    status = 403
+    code = "operation_not_allowed"
+
+    def __init__(self, *, identity_row_id: UUID, stored_provider: IdentityProvider,
+                 live_provider: IdentityProvider) -> None:
+        self.identity_row_id = identity_row_id
+        self.stored_provider = stored_provider
+        self.live_provider = live_provider
+        super().__init__(type(self).__name__.lower())
+
+    def log_fields(self) -> dict[str, str | None]:
+        # Enough to find the row and name the disagreement; the provider account uid is not admissible.
+        return {"identity_row_id": str(self.identity_row_id),
+                "stored_provider": str(self.stored_provider),
+                "live_provider": str(self.live_provider)}
+
+
+class ProviderTransitionNotAllowed(UpgradeRefused):
+    """The stored row is registered and the live read disagrees: the two have drifted apart."""
+
+
+class ProviderAccountAlreadyLinked(UpgradeRefused):
+    """The target provider account is already held by another identity row."""
 
 
 # --- Challenge arms ---
