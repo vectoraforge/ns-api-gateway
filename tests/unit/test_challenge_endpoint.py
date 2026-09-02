@@ -1,6 +1,6 @@
-"""The challenge route's answer for every `operation` value: one refusal bucket, and the framework's own arm.
+"""The challenge route's answer for every `operation` value, and for each of the two callers that may ask.
 
-Every string the route will not issue for gets the same 400, so it cannot be asked which operations exist.
+Everything outside the four-value vocabulary is one 400; an account-less caller is refused beyond create-user.
 """
 import ast
 from datetime import UTC, datetime
@@ -150,16 +150,16 @@ class TestTheIssuableOperations:
         assert response.headers["cache-control"] == "no-store"
 
 
-# Members of the operation vocabulary whose phases are unbuilt, and strings outside it entirely.
-_NOT_ISSUABLE = ["sync", "sign_out_all", "restore_subscription",
-                 "nope", "", "create-user", "CREATE_USER"]
+# Former operation names, a plausible invention, a case variation and the empty string.
+_OUTSIDE_THE_VOCABULARY = ["sync", "sign_out_all", "restore_subscription",
+                           "nope", "", "create-user", "CREATE_USER"]
 
 
-class TestTheOperationsThisRouteWillNotIssueFor:
-    """One bucket for all of them, so an unbuilt operation and an invented one are indistinguishable."""
+class TestTheStringsOutsideTheVocabulary:
+    """One 400 for every one of them, so the route cannot be asked which operation names are real."""
 
-    @pytest.mark.parametrize("operation", _NOT_ISSUABLE)
-    def test_every_unissuable_string_is_the_same_refusal(self, client, operation):
+    @pytest.mark.parametrize("operation", _OUTSIDE_THE_VOCABULARY)
+    def test_every_string_outside_the_vocabulary_is_the_same_refusal(self, client, operation):
         _assert_invalid_request(client.post("/auth/challenge", json={"operation": operation}))
 
 
@@ -187,6 +187,7 @@ class TestEveryRefusalLeavesNothingBehind:
     @pytest.mark.parametrize(("body", "expected"), [
         ({"operation": "sync"}, {"code": "invalid_request"}),
         ({"operation": "nope"}, {"code": "invalid_request"}),
+        ({"operation": _BEYOND_CREATE_USER[0]}, {"code": "preauth_identity_not_allowed"}),
         ({"operation": 123}, {"code": "validation_error"}),
         ({"operation": None}, {"code": "validation_error"}),
         ({}, {"code": "validation_error"}),
@@ -208,7 +209,7 @@ class TestEveryRefusalLeavesNothingBehind:
         response = client.post("/auth/challenge", json={"operation": "create_user"})
 
         assert response.status_code == 200
-        assert store.issued == ["create_user"]
+        assert store.issued == [AuthOperation.create_user]
 
 
 class TestTheAccountLessCallerPreparesCreateUserAndNothingElse:
@@ -239,7 +240,7 @@ class TestTheAccountLessCallerPreparesCreateUserAndNothingElse:
 class TestTheRefusalOrderDisclosesNothing:
     """A string outside the vocabulary earns the same 400 whether or not the caller holds an account."""
 
-    @pytest.mark.parametrize("operation", _NOT_ISSUABLE)
+    @pytest.mark.parametrize("operation", _OUTSIDE_THE_VOCABULARY)
     def test_an_unknown_string_is_the_same_refusal_for_both_callers(self, client, linked_client,
                                                                     store, operation):
         _assert_invalid_request(client.post("/auth/challenge", json={"operation": operation}))
