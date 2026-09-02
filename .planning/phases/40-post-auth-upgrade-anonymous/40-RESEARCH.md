@@ -1040,8 +1040,11 @@ the choice is a **Wave 0 gate**, not a test-wave discovery.
 - [ ] `tests/e2e/test_upgrade_anonymous.py` — the endpoint's own e2e file (D-18 real case + D-19 fake cases)
 - [ ] `tests/unit/test_upgrade_precedence.py` — the rejection-precedence and consumption-disposition cases
 - [ ] `tests/schema/test_registration_pairing.py` — D-12's third-state scan (asyncpg, outside the e2e rollback)
-- [ ] **Answer § P-01 before the test wave.** Route (a), (b) or (c) — the choice changes what gets written.
-- [ ] Reserve and document the D-18 account UID env var in `.env.example` (D-18's obligation 1)
+- [x] **Answer § P-01 before the test wave.** Answered 2026-09-02: none of (a), (b) or (c) — see
+      § Open Questions Q1. The mechanism is exchange-and-link with a stored Google refresh token (plan 40-03).
+- [ ] Reserve and document the D-18 credential variables in `.env.example` — three
+      `FIREBASE_TEST_GOOGLE_*` values under the adopted mechanism, not an account UID (D-18's obligation 1,
+      plan 40-03 Task 2)
 - [ ] Edits to existing files: `tests/schema/test_inventory.py` (enum literal),
       `tests/schema/test_constraints.py` (three cases, P-02), `tests/unit/test_challenge_endpoint.py`
       (`_NOT_ISSUABLE` + `store.issued`, P-02), `tests/unit/test_rejection_vocabulary.py`
@@ -1092,7 +1095,10 @@ conflict [VERIFIED: .planning/REQUIREMENTS.md:22 and :34]. This phase must not "
 | A4 | Editing the single migration in place and re-applying will succeed without an `ALTER TYPE … DROP VALUE` (which PostgreSQL does not support) because the dev/test database is disposable. This is what Phase 37 D-13 did and SCHEMA-01 requires; not re-executed this session. | § Runtime State Inventory | If a developer's local database holds data they care about, the re-apply destroys it — the plan should say "drop and re-apply" explicitly rather than "migrate" |
 | A5 | The new upgrade route needs no change to `crud/challenges.py`, per D-09. Verified by reading all four methods and `verify_binding`; `issue` already binds a linked caller to `bound_external_identity_id` [crud/challenges.py:43-47]. Marked assumed only because it is a negative claim about a module this phase does not touch. | D-09 | A missing binding surfaces as a failing precedence test, cheaply |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All four were answered during planning on 2026-09-02. Each resolution below names the plan that carries it;
+the plans, not this file, are the executable record.
 
 1. **Which § P-01 route does D-18 take?**
    - What we know: the mint fails today, for a reason verified by execution; three routes exist, each costed.
@@ -1100,6 +1106,19 @@ conflict [VERIFIED: .planning/REQUIREMENTS.md:22 and :34]. This phase must not "
    - Recommendation: **ask before planning the test wave.** Default to route (b) if no answer arrives — it
      preserves the real `getUser` read (D-18's actual purpose) at zero credential cost, and route (a) can be
      added later without rewriting the test's assertions.
+   - **RESOLVED (2026-09-02, plan 40-03): none of the three — the question's premise was dropped.** The
+     developer reversed route (a): no IAM grant is made, and with the org policy
+     `iam.disableServiceAccountKeyCreation` in force and the machine's ADC an `authorized_user` with no
+     signer, this project mints and signs nothing at all. The adopted mechanism is **exchange-and-link with a
+     stored Google refresh token**: one browser consent by hand yields a long-lived refresh token held in
+     `.env` as `FIREBASE_TEST_GOOGLE_REFRESH_TOKEN`; each run redeems it for a fresh Google ID token, creates
+     a fresh anonymous Firebase user over Identity Toolkit REST with the existing `JWT_API_KEY`, links the
+     Google credential to it, and deletes the user afterwards. **This supersedes all three routes this
+     section proposed** — (a)'s IAM grant, (b)'s locally minted ID token, and (c)'s skip — and it also
+     supersedes D-18's own stated mechanism, which described custom-token minting and said explicitly "no
+     per-run OAuth consent flow and no stored refresh token." It keeps what D-18 was actually for: the real
+     `getUser` read against a genuine `google.com` `providerData` entry. Recorded as a divergence in the
+     Phase 40 amendment to `.planning/REQUIREMENTS.md` (plan 40-08, Task 1).
 
 2. **What `stage` value does the new `NotLinked(cause="empty")` carry?**
    - What we know: every existing `stage` is `"provider_lookup"`, `"issuer_selection"` or
@@ -1109,6 +1128,9 @@ conflict [VERIFIED: .planning/REQUIREMENTS.md:22 and :34]. This phase must not "
      *anonymous*. Reusing `"provider_classification"` would be misleading in the log.
    - Recommendation: a new bounded value naming the upgrade decision (the planner's call), added in the same
      commit as the raise so the vocabulary and its producer land together.
+   - **RESOLVED (2026-09-02, plan 40-05): a fourth bounded value, `"upgrade_confirmation"`.** The planner
+     took the call the recommendation reserved. It names the decision that failed rather than the classifier
+     that succeeded, and it lands in the same commit as its raiser.
 
 3. **Does the shared completion sequence keep or discharge the nested `try` (D-17)?**
    - What we know: D-17 binds new code; the nested block is at `services/auth.py:82-88`; cleaning up
@@ -1116,11 +1138,17 @@ conflict [VERIFIED: .planning/REQUIREMENTS.md:22 and :34]. This phase must not "
    - What's unclear: sharing the sequence means the new completion *runs through* that block.
    - Recommendation: extract the swallow into a small named function per D-17's own prescription. That is the
      minimum change that satisfies the rule for the new path, and it is not the deferred rewrite.
+   - **RESOLVED (2026-09-02, plan 40-04): discharged by extraction, as recommended.** The swallow becomes a
+     small named function, `_consume_quietly`, whose whole job is not raising; the shared sequence therefore
+     contains no nested `try`. This is the minimum change satisfying D-17 for the new path and is not the
+     deferred rewrite of create-user.
 
 4. **Does `tests/unit/test_conflict_classification.py` get a note about the upgrade lock?**
    - What we know: the lock passes the literal check; the class docstring says nothing else may be added.
    - Recommendation: one line recording that the upgrade path's lock is revalidation, not arbitration. Cheaper
      than a reviewer re-deriving D-15.
+   - **RESOLVED (2026-09-02, plan 40-04, Task 2): yes — one docstring line, as recommended.** It records that
+     the upgrade path's lock is revalidation rather than arbitration, so a reader does not re-derive D-15.
 
 ## Sources
 

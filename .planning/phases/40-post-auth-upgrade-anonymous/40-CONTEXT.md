@@ -261,6 +261,12 @@ Three distinct internal results, one identical client answer (403 `operation_not
   shape mismatch would surface in production); one real refusal-path test only (offered as the
   cheaper option and declined in favour of real success-path coverage).
 
+  > *2026-09-02, added at planning: D-18's **mechanism** above was reversed — nothing is minted or
+  > signed; the session is built by exchanging a stored Google refresh token. Its purpose is
+  > unchanged. See `40-RESEARCH.md` § Open Questions Q1, plan `40-03`, and the Phase 40 amendment in
+  > `.planning/REQUIREMENTS.md`. The decision text is left as decided and is not the record of what
+  > shipped.*
+
 - **D-19: The scripted fake covers everything the real account cannot produce on demand** — the
   not-yet-linked refusal, the drift conflict, the already-taken conflict, and the idempotent repeat.
   `tests/e2e/conftest.py::scripted_firebase_adapter` already exists for exactly this, added by
