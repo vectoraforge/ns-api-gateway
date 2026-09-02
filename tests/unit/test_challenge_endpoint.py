@@ -17,6 +17,7 @@ from nativespeaker.api.app.dependencies import (
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.tables.auth import AuthOperation
 
 from .conftest import TEST_ISSUER
 
@@ -100,17 +101,19 @@ def _assert_validation_error(response) -> None:
     assert response.json() == {"code": "validation_error"}
 
 
-class TestTheIssuableOperation:
-    """The one value this route issues for today."""
+class TestTheIssuableOperations:
+    """The values this route issues for, read off the enum rather than restated here."""
 
-    def test_create_user_is_issued_with_the_two_field_body(self, client, store):
-        response = client.post("/auth/challenge", json={"operation": "create_user"})
+    @pytest.mark.parametrize("operation", [member.value for member in AuthOperation])
+    def test_a_member_of_the_vocabulary_is_issued_with_the_two_field_body(self, client, store,
+                                                                         operation):
+        response = client.post("/auth/challenge", json={"operation": operation})
 
         assert response.status_code == 200
         # The key set, not two known keys: a third field would pass the weaker check.
         assert set(response.json()) == {"challenge_id", "expires_at"}
         assert response.json()["challenge_id"] == ISSUED_HANDLE
-        assert store.issued == ["create_user"]
+        assert store.issued == [operation]
 
     def test_the_issued_handle_is_not_cacheable(self, client):
         """`no-store` and not `no-cache`: a revalidatable copy of a secret handle is still a copy."""
@@ -120,7 +123,7 @@ class TestTheIssuableOperation:
 
 
 # Members of the operation vocabulary whose phases are unbuilt, and strings outside it entirely.
-_NOT_ISSUABLE = ["sync", "sign_out_all", "restore_subscription", "claim_anonymous_grant",
+_NOT_ISSUABLE = ["sync", "sign_out_all", "restore_subscription",
                  "nope", "", "create-user", "CREATE_USER"]
 
 

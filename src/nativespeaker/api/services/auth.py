@@ -1,4 +1,5 @@
-"""The create-user completion: the rejection precedence, the claim, the provider read, and the spend."""
+"""The two completions: the rejection precedence, the claim, the provider read, the write and the spend."""
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import NoReturn
 from uuid import UUID
@@ -6,6 +7,7 @@ from uuid import UUID
 import structlog
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.firebase import lookup_with_retry
 from nativespeaker.api.crud import ChallengesDB, IdentitiesDB
 from nativespeaker.api.errors import (
@@ -17,12 +19,17 @@ from nativespeaker.api.errors import (
     ChallengeOperationMismatch,
     HistoricalIdentity,
     IdentityAlreadyLinked,
+    IdentityUnresolvable,
+    ProviderTransitionNotAllowed,
 )
 from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.tables.auth import AuthOperation
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 
 logger = structlog.get_logger()
+
+# The write seam of the shared sequence: it returns the provider the transaction settled on.
+Write = Callable[[Identity, VerifiedProviderIdentity], Awaitable[IdentityProvider]]
 
 
 class AuthService:
@@ -40,7 +47,25 @@ class AuthService:
         self.evaluated_at = evaluated_at
 
     async def complete(self, *, identity: Identity, challenge_id: str) -> IdentityProvider:
-        """Create the account and return the provider the read reported.
+        """Create the account the handle stands for, and return the provider it was created with."""
+        return await self._complete(identity=identity,
+                                    challenge_id=challenge_id,
+                                    operation=AuthOperation.create_user,
+                                    write=self._apply_create_user)
+
+    async def complete_upgrade(self, *, identity: Identity, challenge_id: str) -> IdentityProvider:
+        """Record the caller's identity row as registered, and return the provider it now carries."""
+        return await self._complete(identity=identity,
+                                    challenge_id=challenge_id,
+                                    operation=AuthOperation.upgrade_anonymous_to_registered,
+                                    write=self._apply_upgrade)
+
+    async def _complete(self, *,
+                        identity: Identity,
+                        challenge_id: str,
+                        operation: AuthOperation,
+                        write: Write) -> IdentityProvider:
+        """The one completion sequence both routes run: locate, claim, read, write, spend.
         The order of the rejections below is the precedence, and none of them carries a field."""
         # No rejection before the claim consumes anything, so a wrong presenter cannot burn a live challenge.
         located = await self.challenge_store.locate(self.session, challenge_id)
@@ -50,7 +75,7 @@ class AuthService:
 
         # Every line below reads `challenge`, which only the binding check produces: deleting it is a NameError.
         challenge = self.challenge_store.verify_binding(located, identity)
-        if challenge.operation is not AuthOperation.create_user:
+        if challenge.operation is not operation:
             raise ChallengeOperationMismatch()
 
         if not await self.challenge_store.claim(self.session,
@@ -71,26 +96,52 @@ class AuthService:
 
         try:
             facts = await lookup_with_retry(self.adapter, identity.issuer, identity.subject)
-            await self.create_user(identity=identity,
-                                   provider=facts.provider,
-                                   provider_uid=facts.provider_uid,
-                                   # The copy rule was evaluated once, inside the read; nothing re-derives it.
-                                   email=facts.email)
+            # The provider the transaction settled on, which a divergence makes different from the read's.
+            settled = await write(identity, facts)
         except AppError:
-            # A conflicting insert leaves the transaction unusable, and the spend below needs it back.
+            # A conflicting write leaves the transaction unusable, and the spend below needs it back.
             await self.session.rollback()
-            try:
-                await self._consume_and_commit(challenge_id=challenge_id,
-                                               challenge_row_id=challenge_row_id)
-            except Exception as failure:
-                # The handle stays claimed and so stays unusable; the client keeps the status it earned.
-                logger.error("challenge_consume_failed", challenge_row_id=challenge_row_id,
-                             failure=type(failure).__name__)
+            await self._consume_quietly(challenge_id=challenge_id,
+                                        challenge_row_id=challenge_row_id)
             raise
 
         await self._consume_and_commit(challenge_id=challenge_id,
                                        challenge_row_id=challenge_row_id)
+        return settled
+
+    async def _apply_create_user(self, identity: Identity,
+                                 facts: VerifiedProviderIdentity) -> IdentityProvider:
+        """Create the account, and return the provider its new identity row carries."""
+        await self.create_user(identity=identity,
+                               provider=facts.provider,
+                               provider_uid=facts.provider_uid,
+                               # The copy rule was evaluated once, inside the read; nothing re-derives it.
+                               email=facts.email)
         return facts.provider
+
+    async def _apply_upgrade(self, identity: Identity,
+                             facts: VerifiedProviderIdentity) -> IdentityProvider:
+        """Revalidate the caller's locked rows, and return the provider the flip settled on."""
+        located = await self.identities_db.lock_identity_and_user(issuer=identity.issuer,
+                                                                   subject=identity.subject)
+        if located is None:
+            # The barrier resolved both rows and neither is ever deleted, so no row is broken state.
+            raise IdentityUnresolvable
+        identity_row, user = located
+
+        if (identity_row.provider is not IdentityProvider.anonymous
+                or facts.provider is IdentityProvider.anonymous):
+            # The placeholder: plan 40-05 gives each of these combinations the class it earned.
+            raise ProviderTransitionNotAllowed(identity_row_id=identity_row.id,
+                                               stored_provider=identity_row.provider,
+                                               live_provider=facts.provider)
+
+        return await self.identities_db.flip_provider(evaluated_at=self.evaluated_at,
+                                                      identity_row=identity_row,
+                                                      user=user,
+                                                      provider=facts.provider,
+                                                      provider_uid=facts.provider_uid,
+                                                      email=facts.email)
 
     async def create_user(self, *,
                           identity: Identity,
@@ -120,6 +171,18 @@ class AuthService:
         if user is None or user.active is not True:
             raise BlockedUser
         raise IdentityAlreadyLinked()
+
+    async def _consume_quietly(self, *,
+                               challenge_id: str,
+                               challenge_row_id: str) -> None:
+        """Spend the handle without raising, so the rejection already in flight stays the client's answer."""
+        try:
+            await self._consume_and_commit(challenge_id=challenge_id,
+                                           challenge_row_id=challenge_row_id)
+        except Exception as failure:
+            # The handle stays claimed and so stays unusable; the client keeps the status it earned.
+            logger.error("challenge_consume_failed", challenge_row_id=challenge_row_id,
+                         failure=type(failure).__name__)
 
     async def _consume_and_commit(self, *,
                                   challenge_id: str,
