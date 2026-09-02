@@ -16,7 +16,7 @@ from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.identities import IdentitiesDB
-from nativespeaker.api.errors import AppError, ProviderAccountAlreadyLinked
+from nativespeaker.api.errors import AppError, ProviderAccountAlreadyLinked, UserNotFound
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
@@ -257,6 +257,12 @@ def _assert_operation_not_allowed(response) -> None:
     assert response.json() == {"code": "operation_not_allowed"}
 
 
+def _assert_challenge_required(response) -> None:
+    """Byte-identical across every rejection that spends nothing, and asserted the same way."""
+    assert response.status_code == 409
+    assert response.json() == {"code": "challenge_required"}
+
+
 class TestTheUpgradeCaseMatrix:
     """Every combination of the stored row and the live read reaches a named outcome, and none falls through."""
 
@@ -397,3 +403,171 @@ def _already_linked_case(store, upgrade, account, adapter) -> None:
                                                     stored_provider=IdentityProvider.anonymous,
                                                     live_provider=IdentityProvider.google)
     adapter.script(_live())
+
+
+class TestTheRejectionsThatSpendNothing:
+    """One client class, five internal results, and not one of them claims, consumes or reads the provider."""
+
+    def test_an_unknown_handle_is_challenge_not_found(self, client, store, rejections,
+                                                      fake_firebase_adapter):
+        store.row = None
+
+        _assert_challenge_required(_complete(client))
+
+        assert rejections.results == ["challenge_not_found"]
+        assert store.consume_calls == 0
+        assert fake_firebase_adapter.calls == []
+
+    def test_a_handle_bound_to_another_identity_row_is_an_identity_mismatch(
+            self, client, store, rejections, fake_firebase_adapter):
+        """A linked caller's handle binds to a row id, so a mismatch is a comparison against that id."""
+        store.row = _issued_row(bound_to=uuid4())
+
+        _assert_challenge_required(_complete(client))
+
+        assert rejections.results == ["challenge_identity_mismatch"]
+        # Rejected BEFORE the claim: the rightful owner's row is untouched.
+        assert store.row.claimed_at is None
+        assert store.row.consumed_at is None
+        assert store.consume_calls == 0
+        assert fake_firebase_adapter.calls == []
+
+    def test_a_handle_issued_for_another_operation_is_an_operation_mismatch(
+            self, client, store, rejections, account, fake_firebase_adapter):
+        identity_row, _ = account
+        store.row = _issued_row(bound_to=identity_row.id, operation=AuthOperation.create_user)
+
+        _assert_challenge_required(_complete(client))
+
+        assert rejections.results == ["challenge_operation_mismatch"]
+        assert store.row.claimed_at is None
+        assert store.row.consumed_at is None
+        assert store.consume_calls == 0
+        assert fake_firebase_adapter.calls == []
+
+    def test_an_expired_handle_is_challenge_expired(self, client, store, rejections, account,
+                                                    fake_firebase_adapter):
+        """Reached by losing the claim and re-reading the row, never by comparing `expires_at` in the router."""
+        identity_row, _ = account
+        store.row = _issued_row(bound_to=identity_row.id, ttl_seconds=-1)
+
+        _assert_challenge_required(_complete(client))
+
+        assert rejections.results == ["challenge_expired"]
+        assert store.row.claimed_at is None
+        assert store.consume_calls == 0
+        assert fake_firebase_adapter.calls == []
+
+    def test_an_already_consumed_handle_is_challenge_consumed(self, client, store, rejections,
+                                                              account, fake_firebase_adapter):
+        """The claim loser does no work: there is no idempotent replay of a spent handle."""
+        identity_row, _ = account
+        store.row = _issued_row(bound_to=identity_row.id, claimed=True, consumed=True)
+        holder = store.row.claimed_at
+
+        _assert_challenge_required(_complete(client))
+
+        assert rejections.results == ["challenge_consumed"]
+        assert store.row.claimed_at == holder
+        assert store.consume_calls == 0
+        assert fake_firebase_adapter.calls == []
+
+    def test_all_five_answer_one_body_and_never_name_the_handle(self, client, store, rejections,
+                                                                account):
+        """The control: a more helpful field on any one of them fails here, and the handle is never logged."""
+        identity_row, _ = account
+        bodies = []
+        for row in (None,
+                    _issued_row(bound_to=uuid4()),
+                    _issued_row(bound_to=identity_row.id, operation=AuthOperation.create_user),
+                    _issued_row(bound_to=identity_row.id, ttl_seconds=-1),
+                    _issued_row(bound_to=identity_row.id, claimed=True, consumed=True)):
+            store.row = row
+            bodies.append(_complete(client).json())
+
+        assert bodies == [{"code": "challenge_required"}] * 5
+        assert len(rejections.results) == 5
+        assert HANDLE not in repr(rejections.entries)
+
+
+class TestEveryOutcomeAtOrAfterTheProviderCallSpends:
+    """D-14: once the provider was called the handle is spent, with no branch on which outcome fired."""
+
+    def test_a_deleted_provider_user_is_auth_required_and_still_consumes(
+            self, client, store, rejections, upgrade, account, fake_firebase_adapter):
+        identity_row, _ = account
+        store.row = _issued_row(bound_to=identity_row.id)
+        fake_firebase_adapter.script(UserNotFound(stage="provider_lookup"))
+
+        response = _complete(client)
+
+        assert response.status_code == 401
+        assert response.json() == {"code": "auth_required"}
+        assert rejections.results == ["user_not_found"]
+        assert store.row.consumed_at is not None
+        assert store.consume_calls == 1
+        assert upgrade.flips == []
+
+    def test_the_not_linked_refusal_still_consumes(self, client, store, rejections, upgrade,
+                                                   account, fake_firebase_adapter):
+        """The case D-14 names explicitly: recoverable, and still spent, so it cannot probe provider state."""
+        identity_row, _ = account
+        store.row = _issued_row(bound_to=identity_row.id)
+        fake_firebase_adapter.script(_live(provider=IdentityProvider.anonymous, provider_uid=None))
+
+        _assert_operation_not_allowed(_complete(client))
+
+        assert rejections.results == ["not_linked"]
+        assert store.row.consumed_at is not None
+        assert store.consume_calls == 1
+        assert upgrade.flips == []
+
+    def test_the_successful_flip_consumes_exactly_once(self, client, store, rejections, upgrade,
+                                                       account, fake_firebase_adapter):
+        identity_row, _ = account
+        store.row = _issued_row(bound_to=identity_row.id)
+        fake_firebase_adapter.script(_live())
+
+        response = _complete(client)
+
+        assert response.status_code == 200
+        assert response.json() == {"identity_provider": "google"}
+        assert rejections.results == []
+        assert store.row.consumed_at is not None
+        assert store.consume_calls == 1
+        assert len(upgrade.flips) == 1
+
+
+class TestOneProviderReadPerCompletion:
+    """D-22: the read is never skipped as an optimisation, because it is what detects a diverged binding."""
+
+    def test_the_repeat_that_changes_nothing_still_reads(self, client, store, upgrade, account,
+                                                         fake_firebase_adapter):
+        identity_row, _ = account
+        _register(identity_row)
+        store.row = _issued_row(bound_to=identity_row.id)
+        fake_firebase_adapter.script(_live(provider_uid=STORED_UID))
+
+        response = _complete(client)
+
+        assert response.status_code == 200
+        # One entry for a completion that wrote nothing: the already-registered row was read anyway.
+        assert fake_firebase_adapter.calls == [(TEST_ISSUER, SUBJECT)]
+        assert upgrade.flips == []
+
+    def test_two_completions_read_twice(self, client, store, upgrade, account,
+                                        fake_firebase_adapter):
+        """The flip then its repeat: one read per completion rather than one read in total."""
+        identity_row, _ = account
+        fake_firebase_adapter.script(_live())
+
+        store.row = _issued_row(bound_to=identity_row.id)
+        first = _complete(client)
+        store.row = _issued_row(bound_to=identity_row.id)
+        second = _complete(client)
+
+        assert (first.status_code, second.status_code) == (200, 200)
+        assert first.json() == second.json() == {"identity_provider": "google"}
+        assert fake_firebase_adapter.calls == [(TEST_ISSUER, SUBJECT)] * 2
+        # The second completion wrote nothing: the first flip is what left the row registered.
+        assert len(upgrade.flips) == 1
