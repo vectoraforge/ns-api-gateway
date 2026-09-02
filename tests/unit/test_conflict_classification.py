@@ -271,7 +271,9 @@ def _code_only(source: str) -> str:
 
 
 class TestTheModuleUsesNoSecondRaceArbiter:
-    """The UNIQUE constraints are the sole arbiters, and nothing else may be added."""
+    """The UNIQUE constraints are the sole arbiters, and nothing else may be added.
+    The upgrade path's row lock is revalidation, not arbitration: the challenge claim stays the
+    only serialization point on both completion paths, so no second arbiter exists to disagree."""
 
     @pytest.mark.parametrize("forbidden", ["serializable", "advisory_lock", "pg_advisory",
                                            "isolation_level", "for update", "select_for_update"])
