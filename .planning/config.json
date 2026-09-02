@@ -15,7 +15,7 @@
     "use_worktrees": true
   },
   "git": {
-    "branching_strategy": "phase"
+    "branching_strategy": "milestone"
   },
   "hooks": {
     "context_warnings": true,
