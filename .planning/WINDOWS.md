@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 7
+open_count: 6
 waived_count: 0
-fixed_count: 4
+fixed_count: 5
 total_count: 11
-last_updated: 2026-09-02T20:14:50.902Z
+last_updated: 2026-09-02T20:30:29.466Z
 ---
 
 # Broken Windows Ledger
@@ -25,7 +25,7 @@ last_updated: 2026-09-02T20:14:50.902Z
 | 8 | 37 | stub | src/nativespeaker/api/routers/auth.py |  | _completion_response maps every non-succeeded result other than identity_already_linked to ACCOUNT_UNAVAILABLE, so provider_account_already_linked (now reachable via 37-09) returns code account_unavailable where §02 step 11 earns operation_not_allowed. Fix: return error_response(CLIENT_CLASS_FOR_RESULT[result]) from auth/creation.py. Not fixable by 37-09 — routers/auth.py is 37-08's file this wave. | open |  | 2026-08-23T23:39:50.861Z |  |
 | 9 | 38 | unmet-truth | tests/e2e/test_sync.py |  | Sync's no-lock claim under a genuinely concurrent quota charge is inferred from compiled SQL carrying no FOR UPDATE, never observed live: the e2e harness binds every session to one connection inside an uncommitted transaction, so a second connection cannot see the seeded rows | fixed |  | 2026-09-01T08:38:02.614Z | 2026-09-01T21:16:12.688Z |
 | 10 | 40 | deviation | migrations/20260818_01_initial-release.sql |  | Dev database nativespeaker was not re-applied from the edited single migration (40-01 Task 3): every route to a DROP/rollback was refused by the harness permission classifier. The database still holds the pre-shrink seven-label core.auth_operation and the deleted auth_challenges membership CHECK. Fix: run 'uv run pogo rollback --count 1 && uv run pogo apply' from the repo root. | fixed |  | 2026-09-02T10:54:14.489Z | 2026-09-02T10:57:07.747Z |
-| 11 | 40 | stub | src/nativespeaker/api/services/auth.py |  | 40-04 tracer: AuthService._apply_upgrade answers three stored-versus-live combinations with the placeholder ProviderTransitionNotAllowed raise instead of their final outcome — (anonymous, anonymous) must become NotLinked(cause=empty), and (google, google) / (apple, apple) with a matching provider_uid must become D-04's idempotent 200. The branch does no uid comparison at all. Plan 40-05 owns the split. | open |  | 2026-09-02T20:14:50.902Z |  |
+| 11 | 40 | stub | src/nativespeaker/api/services/auth.py |  | 40-04 tracer: AuthService._apply_upgrade answers three stored-versus-live combinations with the placeholder ProviderTransitionNotAllowed raise instead of their final outcome — (anonymous, anonymous) must become NotLinked(cause=empty), and (google, google) / (apple, apple) with a matching provider_uid must become D-04's idempotent 200. The branch does no uid comparison at all. Plan 40-05 owns the split. | fixed |  | 2026-09-02T20:14:50.902Z | 2026-09-02T20:30:29.466Z |
 
 ````json
 [
@@ -156,10 +156,10 @@ last_updated: 2026-09-02T20:14:50.902Z
     "file": "src/nativespeaker/api/services/auth.py",
     "line": null,
     "description": "40-04 tracer: AuthService._apply_upgrade answers three stored-versus-live combinations with the placeholder ProviderTransitionNotAllowed raise instead of their final outcome — (anonymous, anonymous) must become NotLinked(cause=empty), and (google, google) / (apple, apple) with a matching provider_uid must become D-04's idempotent 200. The branch does no uid comparison at all. Plan 40-05 owns the split.",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-09-02T20:14:50.902Z",
-    "resolved_at": null
+    "resolved_at": "2026-09-02T20:30:29.466Z"
   }
 ]
 ````

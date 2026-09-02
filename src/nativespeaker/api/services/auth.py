@@ -20,6 +20,7 @@ from nativespeaker.api.errors import (
     HistoricalIdentity,
     IdentityAlreadyLinked,
     IdentityUnresolvable,
+    NotLinked,
     ProviderTransitionNotAllowed,
 )
 from nativespeaker.api.schemas.auth import Identity
@@ -128,12 +129,20 @@ class AuthService:
             # The barrier resolved both rows and neither is ever deleted, so no row is broken state.
             raise IdentityUnresolvable
         identity_row, user = located
+        stored = identity_row.provider
 
-        if (identity_row.provider is not IdentityProvider.anonymous
-                or facts.provider is IdentityProvider.anonymous):
-            # The placeholder: plan 40-05 gives each of these combinations the class it earned.
+        # First, because a stored-anonymous row and a live anonymous read agree on both values below.
+        if stored is IdentityProvider.anonymous and facts.provider is IdentityProvider.anonymous:
+            raise NotLinked(stage="upgrade_confirmation", cause="empty")
+
+        if stored is facts.provider and identity_row.provider_uid == facts.provider_uid:
+            # D-04: the repeat that changed nothing answers as the flip did, and writes nothing at all.
+            return stored
+
+        if stored is not IdentityProvider.anonymous:
+            # A registered row whose live read disagrees is drift: refused here, never rewritten.
             raise ProviderTransitionNotAllowed(identity_row_id=identity_row.id,
-                                               stored_provider=identity_row.provider,
+                                               stored_provider=stored,
                                                live_provider=facts.provider)
 
         return await self.identities_db.flip_provider(evaluated_at=self.evaluated_at,
