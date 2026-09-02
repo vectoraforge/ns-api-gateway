@@ -208,3 +208,11 @@ None.
 ---
 *Phase: 40-post-auth-upgrade-anonymous*
 *Completed: 2026-09-02*
+
+## Self-Check: PASSED
+
+- `.planning/phases/40-post-auth-upgrade-anonymous/40-06-SUMMARY.md` — FOUND
+- `src/nativespeaker/api/routers/auth.py`, `tests/unit/test_challenge_endpoint.py` — FOUND
+- Commits `5836908`, `1d1d68a`, `0e4f7d5`, `20e5311` — all FOUND in `git log`
+- `.env` present in the worktree, absent from `git log --all -- .env`, and `git status --short` empty at every commit
+- `src/nativespeaker/api/services/auth.py` NOT in `git diff --name-only feabd72..HEAD`
