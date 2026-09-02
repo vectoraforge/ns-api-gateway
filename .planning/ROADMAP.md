@@ -510,7 +510,7 @@ Plans:
 **Goal:** Rewrite the profile endpoint to return profile fields, stored registration state, and per-store purchase-attribution tokens.
 **Requirements:** PROF-01, PROF-02
 **Depends on:** 34, 35 (soft: 37)
-**Plans:** 0/4 plans complete
+**Plans:** 2/4 plans executed
 **Success criteria:**
 
 1. The response carries an entry for every store provider regardless of client platform, User-Agent, or any client-supplied signal
@@ -522,8 +522,8 @@ Plans:
 
 **Wave 1** *(two parallel plans, no shared file)*
 
-- [ ] 39-01-PLAN.md — The tracer: `GET /users/me` end to end for one linked caller with a complete token set — the new error class and its vocabulary ratchet, `crud/purchases.py`, the `Depends()` accessor, the two response models, the route and its wiring, plus the two ratchets the new route and class make claims about
-- [ ] 39-02-PLAN.md — The `AGENTS.md` § "Package layout" amendment (D-05, router-to-crud) and the dated `REQUIREMENTS.md` amendments for the rate-limit omission and the divergence from the brief's handler step 1
+- [x] 39-01-PLAN.md — The tracer: `GET /users/me` end to end for one linked caller with a complete token set — the new error class and its vocabulary ratchet, `crud/purchases.py`, the `Depends()` accessor, the two response models, the route and its wiring, plus the two ratchets the new route and class make claims about
+- [x] 39-02-PLAN.md — The `AGENTS.md` § "Package layout" amendment (D-05, router-to-crud) and the dated `REQUIREMENTS.md` amendments for the rate-limit omission and the divergence from the brief's handler step 1
 
 **Wave 2** *(two parallel plans, blocked on Wave 1, no shared file)*
 
@@ -656,7 +656,7 @@ Plans:
 | 36. Rebind Pre-existing Routes | v2.0 | 5/5 | Complete    | 2026-08-21 |
 | 37. POST /auth/create-user | v2.0 | 10/10 | Complete    | 2026-08-23 |
 | 38. POST /auth/sync | v2.0 | 6/6 | Complete    | 2026-09-01 |
-| 39. GET /users/me | v2.0 | 0/? | Pending | — |
+| 39. GET /users/me | v2.0 | 2/4 | In Progress|  |
 | 40. POST /auth/upgrade-anonymous | v2.0 | 0/? | Pending | — |
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 0/? | Pending | — |
 | 42. POST /auth/claim-registered-grant | v2.0 | 0/? | Pending | — |
