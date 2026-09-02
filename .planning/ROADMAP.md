@@ -535,7 +535,7 @@ Plans:
 **Goal:** Record the client-side same-Firebase-UID anonymous→registered upgrade by flipping the existing identity row's provider in place.
 **Requirements:** UPGRADE-01, UPGRADE-02
 **Depends on:** 34, 35, 37
-**Plans:** 6/8 plans executed
+**Plans:** 7/8 plans executed
 **Success criteria:**
 
 1. The existing `core.external_identities` row's provider flips in place — no new identity row, no user merge, no row deletion
@@ -564,7 +564,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3)*
 
-- [ ] 40-07-PLAN.md — The real Google-linked account, the cross-endpoint flow proof, and the third-state schema scan
+- [x] 40-07-PLAN.md — The real Google-linked account, the cross-endpoint flow proof, and the third-state schema scan
 
 **Wave 5** *(blocked on Wave 4)*
 
@@ -685,7 +685,7 @@ Plans:
 | 37. POST /auth/create-user | v2.0 | 10/10 | Complete    | 2026-08-23 |
 | 38. POST /auth/sync | v2.0 | 6/6 | Complete    | 2026-09-01 |
 | 39. GET /users/me | v2.0 | 4/4 | Complete    | 2026-09-01 |
-| 40. POST /auth/upgrade-anonymous | v2.0 | 6/8 | In Progress|  |
+| 40. POST /auth/upgrade-anonymous | v2.0 | 7/8 | In Progress|  |
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 0/? | Pending | — |
 | 42. POST /auth/claim-registered-grant | v2.0 | 0/? | Pending | — |
 | 43. POST /webhooks/app-store | v2.0 | 0/? | Pending | — |
