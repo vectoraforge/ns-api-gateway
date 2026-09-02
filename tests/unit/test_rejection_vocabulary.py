@@ -2,6 +2,8 @@
 
 A class name *is* its structured log event name (D-02), so a rename re-keys every grep that reads it.
 """
+import inspect
+import logging
 from uuid import uuid7
 
 import pytest
@@ -18,16 +20,28 @@ from nativespeaker.api.errors import (
     ChallengeOperationMismatch,
     ChallengeRejected,
     NotLinked,
+    ProviderAccountAlreadyLinked,
+    ProviderTransitionNotAllowed,
     Unavailable,
+    UpgradeRefused,
     UserNotFound,
     _family,
 )
+from nativespeaker.api.tables.identities import IdentityProvider
 from nativespeaker.api.tables.purchases import PurchaseProvider
 from unit.error_tree import undeclared
 
 # The five leaves under one 409 base, listed rather than derived, so a change here is a visible edit.
 CHALLENGE_ARMS = (ChallengeNotFound, ChallengeExpired, ChallengeConsumed,
                   ChallengeIdentityMismatch, ChallengeOperationMismatch)
+
+# The two leaves under one 403 base, listed rather than derived, so a change here is a visible edit.
+UPGRADE_ARMS = (ProviderTransitionNotAllowed, ProviderAccountAlreadyLinked)
+
+# One drifted pair, reused wherever a live instance of an upgrade refusal is needed.
+UPGRADE_SAMPLE = {"identity_row_id": uuid7(),
+                  "stored_provider": IdentityProvider.google,
+                  "live_provider": IdentityProvider.anonymous}
 
 FAMILY_MODULE = errors_module.__name__
 
@@ -81,6 +95,10 @@ EVENT_NAMES = frozenset({
     "challenge_consumed",
     "challenge_identity_mismatch",
     "challenge_operation_mismatch",
+    # The upgrade arms, group base included, on the same terms.
+    "upgrade_refused",
+    "provider_transition_not_allowed",
+    "provider_account_already_linked",
 })
 
 
@@ -118,6 +136,9 @@ CONSTRUCTOR_ARGUMENTS: dict[type, tuple[tuple, dict]] = {
     errors_module.UserNotFound: ((), {"stage": "provider_lookup"}),
     errors_module.Unavailable: ((), {"stage": "issuer_selection"}),
     errors_module.NotLinked: ((), {"stage": "provider_classification", "cause": "invalid-shape"}),
+    errors_module.UpgradeRefused: ((), UPGRADE_SAMPLE),
+    errors_module.ProviderTransitionNotAllowed: ((), UPGRADE_SAMPLE),
+    errors_module.ProviderAccountAlreadyLinked: ((), UPGRADE_SAMPLE),
 }
 
 
@@ -213,6 +234,53 @@ class TestTheTwoAccountArmsDeclareNothingEither:
     def test_the_two_are_exactly_the_leaves_under_the_shared_base(self):
         assert set(_family(errors_module.AccountUnavailable)) == {errors_module.HistoricalIdentity,
                                                                   errors_module.BlockedUser}
+
+
+class TestTheTwoUpgradeArmsAnswerOneThingAndLogThree:
+    """D-05 copies the same shape once more: one 403 on the base, two leaves told apart in the log."""
+
+    def test_the_two_are_exactly_the_leaves_under_the_shared_base(self):
+        """A third arm added without coming here would be a rejection nobody checked the answer of."""
+        assert set(_family(UpgradeRefused)) == set(UPGRADE_ARMS)
+
+    @pytest.mark.parametrize("arm", UPGRADE_ARMS, ids=lambda c: c.__name__)
+    def test_no_arm_declares_a_status_or_a_code_of_its_own(self, arm):
+        assert "status" not in vars(arm)
+        assert "code" not in vars(arm)
+        assert (arm.status, arm.code) == (403, "operation_not_allowed")
+
+    @pytest.mark.parametrize("arm", UPGRADE_ARMS, ids=lambda c: c.__name__)
+    def test_no_arm_overrides_the_warning_default(self, arm):
+        """One convention for every refusal in the codebase, so an override here would be a second."""
+        assert "log_level" not in vars(arm)
+        assert "log_level" not in vars(UpgradeRefused)
+        assert arm.log_level == logging.WARNING
+
+    @pytest.mark.parametrize("arm", UPGRADE_ARMS, ids=lambda c: c.__name__)
+    def test_each_arm_logs_exactly_the_row_id_and_the_two_provider_names(self, arm):
+        """The exact dict, not a superset: a fourth field is what this case exists to catch."""
+        assert arm(**UPGRADE_SAMPLE).log_fields() == {
+            "identity_row_id": str(UPGRADE_SAMPLE["identity_row_id"]),
+            "stored_provider": "google",
+            "live_provider": "anonymous",
+        }
+
+    def test_the_constructor_admits_no_provider_account_identifier(self):
+        """Read off the signature: hoping no caller passes the provider uid is not a property."""
+        parameters = [name for name in inspect.signature(UpgradeRefused.__init__).parameters
+                      if name != "self"]
+        assert sorted(parameters) == ["identity_row_id", "live_provider", "stored_provider"]
+
+    def test_each_arm_spells_the_internal_result_name_the_brief_names(self):
+        assert camel_to_snake(ProviderTransitionNotAllowed.__name__) == "provider_transition_not_allowed"
+        assert camel_to_snake(ProviderAccountAlreadyLinked.__name__) == "provider_account_already_linked"
+
+    def test_the_three_refusals_are_three_records_and_one_answer(self):
+        """The control: `not_linked` included, so the three really are three events and one body."""
+        refusals = (*UPGRADE_ARMS, NotLinked)
+        events = [camel_to_snake(cls.__name__) for cls in refusals]
+        assert sorted(events) == sorted(set(events))
+        assert {(cls.status, cls.code) for cls in refusals} == {(403, "operation_not_allowed")}
 
 
 class TestNoLeafSilentlyAnswersTheFailClosedDefault:

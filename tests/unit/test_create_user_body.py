@@ -13,7 +13,7 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.routers import auth_router
-from nativespeaker.api.schemas.auth import CreateUserRequest, Identity
+from nativespeaker.api.schemas.auth import CompletionRequest, Identity
 
 from .conftest import TEST_ISSUER
 
@@ -155,11 +155,11 @@ class TestTheModelArmsDirectly:
     @pytest.mark.parametrize("kwargs", [{}, {"challenge_id": ""}])
     def test_an_absent_or_empty_handle_raises(self, kwargs):
         with pytest.raises(ValueError):
-            CreateUserRequest(**kwargs)
+            CompletionRequest(**kwargs)
 
     def test_a_whitespace_only_handle_is_accepted_verbatim(self):
         """The constraint counts characters, not non-whitespace ones -- deliberately, see the asymmetry below."""
-        assert CreateUserRequest(challenge_id="   ").challenge_id == "   "
+        assert CompletionRequest(challenge_id="   ").challenge_id == "   "
 
 
 class TestTheWhitespaceAsymmetry:
