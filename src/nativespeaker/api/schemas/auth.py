@@ -21,7 +21,7 @@ class PrepareResponse(BaseModel):
     expires_at: datetime
 
 
-class CreateUserRequest(BaseModel):
+class CompletionRequest(BaseModel):
     """The completion body: the handle obtained from `/auth/challenge`, and nothing else."""
     # Required and non-empty, so an unusable handle is the framework's 422 rather than a not-found 409.
     # The length counts characters, so a padded handle stays a distinct value and reaches the store untrimmed.

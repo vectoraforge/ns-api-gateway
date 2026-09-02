@@ -19,8 +19,8 @@ from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import InvalidRequest
 from nativespeaker.api.schemas.auth import (
     ChallengeRequest,
+    CompletionRequest,
     CompletionResponse,
-    CreateUserRequest,
     Identity,
     PrepareResponse,
     SyncResponse,
@@ -64,7 +64,7 @@ async def issue_challenge(body: ChallengeRequest,
              summary="Create the account for a verified but unlinked identity",
              description="Spends a single-use challenge obtained from `POST /auth/challenge`, "
                          "supplied as `challenge_id` in the body, and creates the account.")
-async def create_user(body: CreateUserRequest,
+async def create_user(body: CompletionRequest,
                       identity: Identity = Depends(get_identity),
                       service: AuthService = Depends(get_auth_service)) -> CompletionResponse:
     """Complete the operation the body's handle stands for."""
