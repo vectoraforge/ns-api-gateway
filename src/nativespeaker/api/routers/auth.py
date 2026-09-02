@@ -16,7 +16,7 @@ from nativespeaker.api.app.dependencies import (
     get_sync_service,
 )
 from nativespeaker.api.crud.challenges import ChallengesDB
-from nativespeaker.api.errors import InvalidRequest
+from nativespeaker.api.errors import InvalidRequest, PreAuthIdentityNotAllowed
 from nativespeaker.api.schemas.auth import (
     ChallengeRequest,
     CompletionRequest,
@@ -48,6 +48,10 @@ async def issue_challenge(body: ChallengeRequest,
         # The rejected string is caller-supplied and bounded, so logging it is safe; a handle never is.
         logger.warning("auth_challenge_operation_not_issuable", operation=body.operation)
         raise InvalidRequest
+
+    # Create-user is the only operation an account-less caller may prepare, because it is the only route it reaches.
+    if body.operation != AuthOperation.create_user and identity.identity is None:
+        raise PreAuthIdentityNotAllowed
 
     challenge_id, expires_at = await challenge_store.issue(session,
                                                            operation=AuthOperation(body.operation),
