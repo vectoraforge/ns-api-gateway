@@ -122,7 +122,9 @@ class AuthService:
 
     async def _apply_upgrade(self, identity: Identity,
                              facts: VerifiedProviderIdentity) -> IdentityProvider:
-        """Revalidate the caller's locked rows, and return the provider the flip settled on."""
+        """Re-check the locked rows' provider, and return the provider the flip settled on."""
+        # Provider only: `identity_state` and `user.active` are read at admission and not again,
+        # so a retire or block inside the challenge-commit window still upgrades (window 12).
         located = await self.identities_db.lock_identity_and_user(issuer=identity.issuer,
                                                                    subject=identity.subject)
         if located is None:
