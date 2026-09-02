@@ -28,6 +28,26 @@ async def _stored_tokens(factory, user_id) -> dict[str, str]:
         return {provider: value for provider, value in rows}
 
 
+# `SELECT *`, not the mapped columns: a change to a column the ORM leaves unmapped would go unseen.
+_TOKEN_ROWS = text("SELECT * FROM core.store_purchase_tokens WHERE user_id = :user_id ORDER BY provider")
+_USER_ROW = text("SELECT * FROM core.users WHERE id = :user_id")
+_IDENTITY_ROWS = text("SELECT * FROM core.external_identities WHERE user_id = :user_id ORDER BY id")
+# The whole-table counts, so an insert against some other user is visible too.
+_TABLE_COUNTS = text("SELECT (SELECT count(*) FROM core.store_purchase_tokens),"
+                     " (SELECT count(*) FROM core.external_identities),"
+                     " (SELECT count(*) FROM core.users)")
+
+
+async def _account_snapshot(factory, user_id) -> dict:
+    """Every column of the caller's token, user and identity rows, plus the three whole-table counts."""
+    async with factory() as session:
+        params = {"user_id": user_id}
+        return {"tokens": [tuple(r) for r in (await session.execute(_TOKEN_ROWS, params)).all()],
+                "user": [tuple(r) for r in (await session.execute(_USER_ROW, params)).all()],
+                "identities": [tuple(r) for r in (await session.execute(_IDENTITY_ROWS, params)).all()],
+                "counts": tuple((await session.execute(_TABLE_COUNTS)).one())}
+
+
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheProfileHappyPath:
     """One linked caller holding a token per store, and the whole body the route answers with."""
@@ -172,3 +192,34 @@ class TestTheRouteInheritsTheBarriersRejections:
         # Status and code read off the error class rather than guessed, so a renamed code fails here first.
         assert response.status_code == PreAuthIdentityNotAllowed.status
         assert response.json() == {"code": PreAuthIdentityNotAllowed.code}
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheRequestChangesNothing:
+    """PROF-02: the caller's rows and the three table counts are identical before and after a read."""
+
+    async def test_a_successful_read_leaves_every_row_untouched(
+            self, async_client, _db_transaction, linked_firebase_identity):
+        user, _ = linked_firebase_identity
+        await seed_purchase_tokens(_db_transaction, user_id=user.id)
+        before = await _account_snapshot(_db_transaction, user.id)
+
+        response = await async_client.get("/users/me")
+
+        assert response.status_code == 200, response.text
+        # Table state, never the absence of a COMMIT: get_db commits every request, and a read's commit writes nothing.
+        assert await _account_snapshot(_db_transaction, user.id) == before
+
+    async def test_a_repeated_request_answers_the_same_bytes_over_the_same_rows(
+            self, async_client, _db_transaction, linked_firebase_identity):
+        user, _ = linked_firebase_identity
+        await seed_purchase_tokens(_db_transaction, user_id=user.id)
+        before = await _account_snapshot(_db_transaction, user.id)
+
+        # What a client reconciling after a lost response actually does, twice over the same rows.
+        first = await async_client.get("/users/me")
+        second = await async_client.get("/users/me")
+
+        assert (first.status_code, second.status_code) == (200, 200), second.text
+        assert first.content == second.content
+        assert await _account_snapshot(_db_transaction, user.id) == before
