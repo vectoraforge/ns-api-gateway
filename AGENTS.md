@@ -26,13 +26,26 @@ module, or a decision that was made elsewhere.
 Every file has exactly one home, decided by what the file is and not by which
 feature it serves.
 
-- `services/` — business logic: orchestration, rules, transaction boundaries.
+- `services/` — business logic a router body has outgrown: orchestration,
+  rules, transaction boundaries.
 - `crud/` — database access.
 - `schemas/` — Pydantic request and response bodies, and domain value types.
 - `tables/` — SQLModel tables and the enums mirroring database types.
-- `routers/` — HTTP handlers, `Depends()` only.
+- `routers/` — HTTP handlers, `Depends()` only, calling `crud/` or a service.
 - `auth/` — external-SDK seams only: `adapters.py`, `firebase.py` and
   `jwt_verifier.py`.
+
+A router may call `crud/` directly. Introduce a `services/` class when the
+router body would otherwise become too big or complicated: a service is earned
+by complexity, not assumed by category. One awaited read is neither, so it
+stays in the handler — § "Function shape" says to inline a function that is
+only a step.
+
+`Depends()` only still binds the handler, whichever it calls: take the session
+and the barrier from a dependency, never construct a database class in the
+body.
+
+The rule binds new code; leave the existing services as they are.
 
 Four exceptions, each a rule and not a story:
 
