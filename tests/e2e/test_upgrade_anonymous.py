@@ -257,3 +257,52 @@ class TestTheRefusalsAndTheRepeat:
                 select(ExternalIdentity).where(col(ExternalIdentity.issuer) == TEST_ISSUER,
                                                col(ExternalIdentity.subject) == subject))).one()
             assert identity.id == row_id
+
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def google_linked_client(_app_lifespan, google_linked_firebase_credential):
+    """A client bearing the real linked ID token, so it must not take stub_verifier, which would reject it."""
+    id_token, _ = google_linked_firebase_credential
+    transport = ASGITransport(app=_app_lifespan)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        client.headers["Authorization"] = f"Bearer {id_token}"
+        yield client
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheRealGoogleLinkedUpgrade:
+    """Nothing substituted, end to end against the live project: the flip runs on Google's own answer."""
+
+    async def test_a_genuinely_google_linked_user_completes_through_the_real_admin_sdk(
+            self, google_linked_client, _db_transaction, _app_lifespan, _app_config,
+            google_linked_firebase_credential):
+        _, local_id = google_linked_firebase_credential
+        adapter = _app_lifespan.state.firebase_adapter
+        # scripted_firebase_adapter is deliberately not requested, and this is what makes that visible.
+        assert isinstance(adapter, FirebaseAdminLookup)
+        issuer = _app_config.jwt.issuer
+        _, seeded = await seed_identity(_db_transaction, issuer=issuer, subject=local_id,
+                                        provider=IdentityProvider.anonymous)
+        row_id_before = seeded.id
+        # Read through the same seam the endpoint uses, so the uid asserted below is Google's, not the test's.
+        reported = await adapter.get_user_provider_data(issuer, local_id)
+
+        issued = await google_linked_client.post(
+            "/auth/challenge", json={"operation": "upgrade_anonymous_to_registered"})
+
+        assert issued.status_code == 200, issued.text
+        completion = await google_linked_client.post(
+            "/auth/upgrade-anonymous", json={"challenge_id": issued.json()["challenge_id"]})
+
+        assert completion.status_code == 200, completion.text
+        assert completion.json() == {"identity_provider": "google"}
+
+        async with _db_transaction() as session:
+            identities = (await session.exec(
+                select(ExternalIdentity).where(col(ExternalIdentity.issuer) == issuer,
+                                               col(ExternalIdentity.subject) == local_id))).all()
+        # Exactly one row, and the same one: a flip in place, never a second row or a merge.
+        assert len(identities) == 1
+        assert identities[0].id == row_id_before
+        assert identities[0].provider is IdentityProvider.google
+        assert identities[0].provider_uid == reported.provider_uid
