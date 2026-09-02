@@ -535,7 +535,7 @@ Plans:
 **Goal:** Record the client-side same-Firebase-UID anonymous→registered upgrade by flipping the existing identity row's provider in place.
 **Requirements:** UPGRADE-01, UPGRADE-02
 **Depends on:** 34, 35, 37
-**Plans:** 8 plans
+**Plans:** 2/8 plans executed
 **Success criteria:**
 
 1. The existing `core.external_identities` row's provider flips in place — no new identity row, no user merge, no row deletion
@@ -549,8 +549,8 @@ Plans:
 
 **Wave 1** *(prerequisites — the schema, the vocabulary, and the credential mechanism)*
 
-- [ ] 40-01-PLAN.md — Shrink `core.auth_operation` to its four challenge-bearing values, drop the redundant CHECK, re-apply both databases *(has a blocking decision checkpoint — one-way door)*
-- [ ] 40-02-PLAN.md — The two upgrade refusals under one shared 403 base, and one completion request model for both routes
+- [x] 40-01-PLAN.md — Shrink `core.auth_operation` to its four challenge-bearing values, drop the redundant CHECK, re-apply both databases *(has a blocking decision checkpoint — one-way door)*
+- [x] 40-02-PLAN.md — The two upgrade refusals under one shared 403 base, and one completion request model for both routes
 - [ ] 40-03-PLAN.md — The per-run Google-linked Firebase session: exchange, link, teardown — no signing credential anywhere
 
 **Wave 2** *(the tracer — blocked on Wave 1)*
@@ -685,7 +685,7 @@ Plans:
 | 37. POST /auth/create-user | v2.0 | 10/10 | Complete    | 2026-08-23 |
 | 38. POST /auth/sync | v2.0 | 6/6 | Complete    | 2026-09-01 |
 | 39. GET /users/me | v2.0 | 4/4 | Complete    | 2026-09-01 |
-| 40. POST /auth/upgrade-anonymous | v2.0 | 0/8 | Planned | — |
+| 40. POST /auth/upgrade-anonymous | v2.0 | 2/8 | In Progress|  |
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 0/? | Pending | — |
 | 42. POST /auth/claim-registered-grant | v2.0 | 0/? | Pending | — |
 | 43. POST /webhooks/app-store | v2.0 | 0/? | Pending | — |
