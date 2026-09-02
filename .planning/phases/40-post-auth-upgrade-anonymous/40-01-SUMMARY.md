@@ -210,3 +210,10 @@ None.
 ## Threat Flags
 
 None. This plan narrows a value domain and removes a redundant constraint; it adds no endpoint, no auth path, no file access and no new trust boundary. `T-40-01-01` is mitigated as the register describes — the type is now the sole value domain, the inventory suite compares the applied labels against a written-down literal in declared order, and the constraints suite proves each dropped label is still individually refused at insert time.
+
+## Self-Check: PASSED
+
+- `.planning/phases/40-post-auth-upgrade-anonymous/40-01-SUMMARY.md` — FOUND
+- `migrations/20260818_01_initial-release.sql`, `src/nativespeaker/api/tables/auth.py`, `tests/schema/test_inventory.py`, `tests/schema/test_constraints.py` — all FOUND and all modified
+- Commits `826e16b`, `cac6536`, `968b642`, `67e70c1` — all FOUND in `git log`
+- `.env` present in the worktree, confirmed gitignored (`.gitignore:9`), and absent from every commit; working tree clean
