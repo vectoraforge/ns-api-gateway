@@ -1,11 +1,13 @@
 """The one client-visible error tree: one base, one response model, one totality check."""
 import logging
+from collections.abc import Sequence
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel
 
 from nativespeaker.api.auth.jwt_verifier import BoundedReason
+from nativespeaker.api.tables.purchases import PurchaseProvider
 
 # The codes the body may carry. A typo is a ValidationError at construction, not a runtime 500.
 ErrorCode = Literal["auth_required",
@@ -240,6 +242,18 @@ class UnknownTierError(InternalError):
         self.tier_id = tier_id
         self.grant_id = grant_id
         super().__init__(f"Grant {grant_id} references tier {tier_id!r}, which has no row")
+
+
+class MissingPurchaseTokenError(InternalError):
+    """A user with no `core.store_purchase_tokens` row for one or more stores."""
+    # Never minted here: that would turn a detectable broken invariant into a silently repaired one.
+    log_level = logging.ERROR
+
+    def __init__(self, user_id: UUID, missing: Sequence[PurchaseProvider]):
+        self.user_id = user_id
+        self.missing = missing
+        super().__init__(f"User {user_id} has no core.store_purchase_tokens row for "
+                         f"{', '.join(store.value for store in missing)}")
 
 
 class QueueFullError(ServiceUnavailable):

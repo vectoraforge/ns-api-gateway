@@ -13,6 +13,7 @@ from nativespeaker.api.routers import (
               examples_router,
               health_router,
               root_router,
+              users_router,
 )
 
 logger = structlog.get_logger()
@@ -44,6 +45,7 @@ app.include_router(root_router)
 app.include_router(auth_router)
 app.include_router(chats_router)
 app.include_router(examples_router)
+app.include_router(users_router)
 app.include_router(health_router)
 register_exception_handlers(app)
 # ty cannot match a BaseHTTPMiddleware subclass against Starlette's _MiddlewareFactory protocol.

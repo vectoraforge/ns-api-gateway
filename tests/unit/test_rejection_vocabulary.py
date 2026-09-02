@@ -22,6 +22,7 @@ from nativespeaker.api.errors import (
     UserNotFound,
     _family,
 )
+from nativespeaker.api.tables.purchases import PurchaseProvider
 from unit.error_tree import undeclared
 
 # The five leaves under one 409 base, listed rather than derived, so a change here is a visible edit.
@@ -54,6 +55,7 @@ EVENT_NAMES = frozenset({
     "missing_usage_row_error",
     "multiple_effective_grants_error",
     "unknown_tier_error",
+    "missing_purchase_token_error",
     "queue_full_error",
     "circuit_open_error",
     # The admission arms.
@@ -108,6 +110,7 @@ CONSTRUCTOR_ARGUMENTS: dict[type, tuple[tuple, dict]] = {
     errors_module.MissingUsageRowError: ((uuid7(),), {}),
     errors_module.MultipleEffectiveGrantsError: ((2, uuid7()), {}),
     errors_module.UnknownTierError: (("registered", uuid7()), {}),
+    errors_module.MissingPurchaseTokenError: ((uuid7(), [PurchaseProvider.apple]), {}),
     errors_module.QueueFullError: ((30,), {}),
     errors_module.CircuitOpenError: ((60,), {}),
     errors_module.InvalidExternalJwt: ((), {"bounded_reason": BoundedReason.expired}),
