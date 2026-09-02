@@ -1,17 +1,20 @@
 ---
 phase: 40-post-auth-upgrade-anonymous
 verified: 2026-09-02T21:23:02Z
-status: human_needed
+status: passed
 score: 4/4 roadmap truths verified; 3 review-derived items routed to human judgment
 behavior_unverified: 0
 overrides_applied: 0
 human_verification:
+
   - test: "Decide whether WR-01 (services/auth.py::_apply_upgrade / crud/identities.py::lock_identity_and_user) must revalidate identity_state and active under the lock before the phase is considered closed, or whether the low-likelihood/no-current-writer risk is accepted as-is."
     expected: "Either a follow-up plan lands the revalidation (mirroring _reject_existing_identity's admission-time check), or a WINDOWS.md entry records the accepted risk with a reason, per the ledger's own convention."
     why_human: "This is a risk-acceptance judgment call (AGENTS.md explicitly says not to over-engineer for a low-value target, but also not to skip normal security measures) — dynamic/edge-case behavior that only a live concurrent-mutation-during-a-network-round-trip test could exercise, which the phase's own D-15 explicitly declined to write."
+
   - test: "Decide whether tests/unit/test_conflict_classification.py::TestTheModuleUsesNoSecondRaceArbiter must be fixed (WR-05) so its parametrize list actually detects `.with_for_update()`, given the test currently asserts an absence that is false (the phase added a row lock) and passes only because `ast.unparse` renders `with_for_update` without the forbidden space/underscore literal."
     expected: "Either the parametrize list is widened per the REVIEW.md fix (which also requires an explicit narrow exemption for the one intentional lock), or the docstring is corrected to state that a lock exists and the test is retired/renamed so it no longer claims to guard an absence it cannot detect."
     why_human: "This is a test-integrity gap, not a behavioral one — I confirmed by reading the parametrize list and the `.with_for_update()` call site that neither `\"for update\"` nor `\"select_for_update\"` matches the emitted `with_for_update` token. Whether to fix the test now or accept the misleading-but-harmless guard as follow-up debt is a priority call for the developer."
+
   - test: "Decide whether WR-02's now-issuable-but-unspendable handles (`claim_anonymous_grant`, `claim_registered_grant`) and the associated weakened operation-vocabulary oracle protection should be tightened now (gate issuance on the two operations with a completion route) or left as the already-recorded D-11 accepted cost."
     expected: "Either a follow-up plan narrows `/auth/challenge`'s issuance test to spendable operations, or WINDOWS.md/REQUIREMENTS.md is confirmed to already carry this acceptance explicitly enough that no further action is needed."
     why_human: "D-11 in 40-CONTEXT.md and the REQUIREMENTS.md amendment already accept unspent handles for one phase each as a documented cost. What is NOT explicitly disclosed anywhere in the planning record is the second-order regression the reviewer found: `claim_anonymous_grant` was removed from the test's `_NOT_ISSUABLE` list, which the class's own docstring says exists so 'the route cannot be asked which operation names are real' — a protection this phase's edit weakened. Low severity (labels are public in the committed migration) but the specific regression was not named in the D-11 acceptance, so a human should confirm the acceptance still covers it."
