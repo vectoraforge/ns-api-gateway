@@ -9,10 +9,12 @@ from fastapi.testclient import TestClient
 from nativespeaker.api.app.error_handlers import app_error_handler, register_exception_handlers
 from nativespeaker.api.app.main import app as real_app
 from nativespeaker.api.errors import (
+    MissingPurchaseTokenError,
     MissingUsageRowError,
     MultipleEffectiveGrantsError,
     UnknownTierError,
 )
+from nativespeaker.api.tables.purchases import PurchaseProvider
 
 # Written out rather than derived from the tree: the mirror that catches an undecided code shipping.
 CONTRACT_CODES = {"auth_required", "preauth_identity_not_allowed", "account_unavailable",
@@ -58,12 +60,14 @@ NO_REQUEST = cast(Request, None)
 
 
 def _id_carrying_cases():
-    """The three classes that format server-side identifiers into their own message."""
-    grant_id, user_id = uuid7(), uuid7()
+    """The four classes that format server-side identifiers into their own message."""
+    grant_id, user_id, token_user_id = uuid7(), uuid7(), uuid7()
     return [
         (MissingUsageRowError(grant_id), [str(grant_id)]),
         (MultipleEffectiveGrantsError(3, user_id), [str(user_id), "3"]),
         (UnknownTierError("a-private-tier-id", grant_id), ["a-private-tier-id", str(grant_id)]),
+        (MissingPurchaseTokenError(token_user_id, [PurchaseProvider.apple]),
+         [str(token_user_id), PurchaseProvider.apple.value]),
     ]
 
 
@@ -71,14 +75,16 @@ class TestTheBodyStaysOneFieldAndCarriesNoIdentifier:
     """The message reaches the log and the traceback; the body is built from `code` alone."""
 
     @pytest.mark.parametrize("exc,secrets", _id_carrying_cases(),
-                             ids=["missing_usage_row", "multiple_grants", "unknown_tier"])
+                             ids=["missing_usage_row", "multiple_grants", "unknown_tier",
+                                  "missing_purchase_token"])
     async def test_the_body_is_exactly_the_code_key(self, exc, secrets):
         response = await app_error_handler(NO_REQUEST, exc)
         assert response.status_code == 500
         assert response.body == b'{"code":"internal_error"}'
 
     @pytest.mark.parametrize("exc,secrets", _id_carrying_cases(),
-                             ids=["missing_usage_row", "multiple_grants", "unknown_tier"])
+                             ids=["missing_usage_row", "multiple_grants", "unknown_tier",
+                                  "missing_purchase_token"])
     async def test_no_identifier_the_exception_stored_appears_in_the_bytes(self, exc, secrets):
         response = await app_error_handler(NO_REQUEST, exc)
         for secret in secrets:
@@ -86,7 +92,8 @@ class TestTheBodyStaysOneFieldAndCarriesNoIdentifier:
             assert secret.encode() not in str(response.headers).encode()
 
     @pytest.mark.parametrize("exc,secrets", _id_carrying_cases(),
-                             ids=["missing_usage_row", "multiple_grants", "unknown_tier"])
+                             ids=["missing_usage_row", "multiple_grants", "unknown_tier",
+                                  "missing_purchase_token"])
     def test_the_premise_holds_and_each_message_really_names_its_identifiers(self, exc, secrets):
         """The control: without it the case above would pass on a class that stored nothing."""
         for secret in secrets:
