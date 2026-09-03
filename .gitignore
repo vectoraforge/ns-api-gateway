@@ -1,5 +1,6 @@
 /CLAUDE.md
 /.claude
+/.gsd
 
 __pycache__/
 .pytest_cache/
@@ -10,3 +11,4 @@ __pycache__/
 
 .idea/
 .vscode/
+/.planning/research/.cache/
