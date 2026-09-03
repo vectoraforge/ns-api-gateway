@@ -727,7 +727,7 @@ database at all.
 | A4 | The e2e suite's Firebase and Google credentials in `.env` are live | Environment Availability | Not probed this session. If stale, e2e cases skip or fail for environmental reasons rather than code reasons. |
 | A5 | `07-claim-registered-grant.md` and `06-schema-reference.md` say what 42-CONTEXT.md reports they say | User Constraints | Those files live outside this submodule and were not read this session. The CONTEXT file is the authority the planner works from, and D-15 forbids editing them regardless. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **One writer with a branch, or two writers?**
    - What we know: D-09 requires the destination to be re-decided inside the lock, after the same
@@ -739,6 +739,9 @@ database at all.
      requirement, and two writers would have to duplicate the prologue or share a private helper —
      which AGENTS.md § "Function shape" would then ask to inline. One writer keeps exactly one
      `AccessGrant(source=AccessGrantSource.registered_account_grant)` construction site.
+   - RESOLVED: one writer with an internal branch, carried by plan 42-02 as
+     `GrantsDB.activate_registered_account_grant` — the single writer holding both destination
+     branches.
 
 2. **Does the D-07 deletion land as its own wave?**
    - What we know: it edits Phase 41's writer and six test files, and D-07 says it lands before or
@@ -746,6 +749,8 @@ database at all.
    - Recommendation: **its own first wave.** It is a large, mechanical, independently verifiable
      diff (`-m schema` green with no new feature), and merging it with the writer would make a
      failure ambiguous between "the deletion broke something" and "the new writer is wrong."
+   - RESOLVED: the deletion is plan 42-01, planned as wave 1 with no dependencies; every other plan
+     in the phase runs at wave 2 or later.
 
 3. **Is `identity.identity` re-read inside the transaction enough for D-05?**
    - What we know: `resolve_existing` is a plain read with no lock [VERIFIED: crud/identities.py:55-59],
@@ -754,6 +759,8 @@ database at all.
    - Recommendation: accept it. Locking the identity row would violate the fixed lock order, and
      `ix_external_identities_provider_account` guards uniqueness regardless (D-06). Worth one
      sentence in the phase's threat notes rather than a design change.
+   - RESOLVED: accepted as recommended, and recorded as threat `T-42-02-11` in plan 42-02's STRIDE
+     register rather than changed in the design.
 
 ## Sources
 
