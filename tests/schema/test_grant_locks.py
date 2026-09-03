@@ -1,13 +1,21 @@
-"""The grant-then-usage lock order under real contention: the only module where two transactions contend."""
+"""The grant-then-usage lock order under real contention, the activation path's tiers, and the free-grant set."""
 import asyncio
 import contextlib
+import re
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import asyncpg
 import pytest
 import pytest_asyncio
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
+from nativespeaker.api.crud.grants import GrantsDB
+from nativespeaker.api.crud.identities import IdentitiesDB
+from nativespeaker.api.tables.grants import FREE_GRANT_SOURCES
 from schema.helpers import insert_grant, insert_tier, insert_usage, insert_user
 
 pytestmark = pytest.mark.schema
@@ -182,3 +190,142 @@ class TestTheLockOrderIsLoadBearing:
         finally:
             await _rollback(tx_b)
             await _rollback(tx_a)
+
+
+# The activation path, and the two claims that keep a future writer inside the fixed order.
+
+_ASYNCPG_PREFIX = "postgres://"
+_SQLALCHEMY_PREFIX = "postgresql+asyncpg://"
+
+NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
+
+# The lifetime index's membership, read from the live catalogue rather than transcribed from the migration.
+_LIFETIME_INDEX = "ix_access_grants_one_free_grant_per_user_source"
+_INDEX_PREDICATE = (
+    "SELECT pg_get_expr(ix.indpred, ix.indrelid) AS predicate "
+    "FROM pg_index ix JOIN pg_class i ON i.oid = ix.indexrelid WHERE i.relname = $1"
+)
+
+# pg_get_expr renders enum casts relative to search_path, so it is pinned and the expected strings stay literal.
+PINNED_SEARCH_PATH = '"$user", public'
+
+_SOURCE_LITERAL = re.compile(r"'([a-z_]+)'::core\.access_grant_source")
+
+# The relation a locking statement takes its rows from; the two tiers are the only two this path may name.
+_LOCKED_RELATION = re.compile(r"FROM (core\.[a-z_]+)")
+
+
+def locking(statements: list[str]) -> list[str]:
+    """Only the statements that take a row lock, in the order the writer issued them."""
+    return [statement for statement in statements if "FOR UPDATE" in statement]
+
+
+def relation_of(statement: str) -> str:
+    """The core relation a statement reads, which for a locking statement is the tier it takes."""
+    found = _LOCKED_RELATION.search(statement)
+    return found.group(1) if found else statement
+
+
+@pytest_asyncio.fixture
+async def activation_statements(_schema_db_uri):
+    """Every statement GrantsDB.activate_anonymous_device_grant issued, in order, against a real database."""
+    subject = f"lock-order-{uuid.uuid4().hex[:10]}"
+    issuer = f"ns-lock-order-{uuid.uuid4().hex[:10]}"
+
+    setup = await asyncpg.connect(_schema_db_uri)
+    try:
+        user_id = await insert_user(setup)
+        tier_id = await insert_tier(setup)
+        # A held `manual` grant with its usage row, so both tiers have a real row to lock and to order.
+        grant_id = await insert_grant(setup, user_id=user_id, tier_id=tier_id, source="manual")
+        await insert_usage(setup, grant_id=grant_id)
+        await setup.execute(
+            "INSERT INTO core.external_identities "
+            "(id, user_id, issuer, subject, provider, identity_state, created_at, updated_at) "
+            "VALUES ($1, $2, $3, $4, 'anonymous', 'active', $5, $5)",
+            uuid.uuid4(), user_id, issuer, subject, NOW)
+    finally:
+        await setup.close()
+
+    engine = create_async_engine(_schema_db_uri.replace(_ASYNCPG_PREFIX, _SQLALCHEMY_PREFIX, 1))
+    recorded: list[str] = []
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def record(conn, cursor, statement, parameters, context, executemany):  # noqa: ARG001
+        recorded.append(" ".join(statement.split()))
+
+    # After the seed, never the module's fixed instant: the held grant's starts_at is CURRENT_TIMESTAMP,
+    # and an earlier instant makes it ineffective, so the writer would take one tier instead of two.
+    evaluated_at = datetime.now(UTC)
+
+    factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            identity_row = await IdentitiesDB(session).resolve_existing(issuer=issuer,
+                                                                       subject=subject)
+            # Everything above is setup; only what the writer itself issues is the subject of this fixture.
+            recorded.clear()
+            activated = await GrantsDB(session).activate_anonymous_device_grant(
+                user_id=user_id, identity_row=identity_row,
+                tier_id=tier_id, evaluated_at=evaluated_at)
+            await session.rollback()
+        yield {"statements": list(recorded), "activated": activated}
+    finally:
+        await engine.dispose()
+        cleanup = await asyncpg.connect(_schema_db_uri)
+        try:
+            await cleanup.execute("DELETE FROM core.user_monthly_usage WHERE grant_id = $1", grant_id)
+            await cleanup.execute("DELETE FROM core.access_grants WHERE user_id = $1", user_id)
+            await cleanup.execute("DELETE FROM core.external_identities WHERE issuer = $1", issuer)
+            await cleanup.execute("DELETE FROM core.users WHERE id = $1", user_id)
+            await cleanup.execute("DELETE FROM core.access_tiers WHERE id = $1", tier_id)
+        finally:
+            await cleanup.close()
+
+
+@pytest.mark.asyncio
+class TestTheActivationAddsNoThirdLockTier:
+    """ANONGRANT-02. An identity or user row may never be locked ahead of the grant rows: SHARED-INVARIANTS:33.
+    The brief this phase implements says the opposite, and the invariants win by precedence (D-13)."""
+
+    async def test_the_writer_locks_the_grant_rows_then_their_usage_rows(self, activation_statements):
+        """The ORDER BY is the lock order itself, not presentation, so it is asserted with the tier."""
+        taken = locking(activation_statements["statements"])
+        assert [relation_of(statement) for statement in taken] == ["core.access_grants",
+                                                                   "core.user_monthly_usage"]
+        assert "ORDER BY core.access_grants.id ASC" in taken[0]
+
+    async def test_exactly_two_distinct_lock_tiers_are_taken_on_the_claim_path(self,
+                                                                               activation_statements):
+        """Two, and never a third: a writer that locks the identity or user row first fails here, not in production."""
+        taken = [relation_of(statement) for statement in locking(activation_statements["statements"])]
+        assert len(set(taken)) == 2
+        assert "core.external_identities" not in taken
+        assert "core.users" not in taken
+
+    async def test_the_identity_row_is_revalidated_by_a_plain_re_read(self, activation_statements):
+        """The control: the writer issues more statements than it locks, so the count above is not vacuously small."""
+        statements = activation_statements["statements"]
+        re_reads = [statement for statement in statements
+                    if "core.external_identities" in statement and "FOR UPDATE" not in statement]
+        assert len(re_reads) == 1, f"expected one plain identity re-read, got {statements}"
+        assert activation_statements["activated"] is False
+        # The control that matters: `False` must come from the held-grant check, not from a rejected insert,
+        # or the two tiers above would be one lock and one write and the count would read as two by accident.
+        assert not [statement for statement in statements if statement.startswith("INSERT")], \
+            f"the writer must stop at the held grant and write nothing, got {statements}"
+
+
+@pytest.mark.asyncio
+class TestTheFreeGrantSourceSetMatchesTheIndex:
+    """ANONGRANT-03. Narrowing FREE_GRANT_SOURCES back to one member reopens a spent lifetime slot for every
+    account that already used one, so it goes red here rather than silently."""
+
+    async def test_the_named_set_equals_the_live_index_predicate(self, conn):
+        """Pinned to the asyncpg default search path, which is how this suite keeps expected strings literal."""
+        await conn.execute(f"SET search_path TO {PINNED_SEARCH_PATH}")
+        predicate = await conn.fetchval(_INDEX_PREDICATE, _LIFETIME_INDEX)
+
+        carried = set(_SOURCE_LITERAL.findall(predicate or ""))
+        assert carried, f"no source literal parsed out of {predicate!r}"
+        assert carried == {source.value for source in FREE_GRANT_SOURCES}
