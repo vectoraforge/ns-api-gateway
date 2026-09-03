@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 41
 current_phase_name: POST /auth/claim-anonymous-grant
 status: executing
-stopped_at: Phase 41 context gathered
-last_updated: "2026-09-03T04:50:38.523Z"
+stopped_at: Completed 41-01-PLAN.md
+last_updated: "2026-09-03T05:23:15.026Z"
 last_activity: 2026-09-02
-last_activity_desc: Phase 40 execution started
-state_head: 879d20017ef396a73c310b1515ec05ea0ab2e6eb
+last_activity_desc: Phase 41 execution started
+state_head: 9179ad3475101c84cdeb9cd1cc54dbeaee6b0dd2
 progress:
   total_phases: 18
-  completed_phases: 12
+  completed_phases: 11
   total_plans: 90
-  completed_plans: 85
+  completed_plans: 86
   percent: 61
 ---
 
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-19)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 40 — post-auth-upgrade-anonymous
+**Current focus:** Phase 41 — POST /auth/claim-anonymous-grant
 
 ## Current Position
 
-Phase: 41 (POST /auth/claim-anonymous-grant) — READY TO EXECUTE
-Plan: 1 of 8
+Phase: 41 (POST /auth/claim-anonymous-grant) — EXECUTING
+Plan: 2 of 5
 Status: Ready to execute
-Last activity: 2026-09-02 — Phase 40 execution started
+Last activity: 2026-09-02 — Phase 41 execution started
 
 <!-- The same counter hazard recurred in 37.5 and is corrected here the same way. Waves 2 through 8
      ran as parallel worktree agents which deliberately do not write STATE.md, so the counter sat at
@@ -179,11 +179,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-02T23:14:27.551Z
+**Last session:** 2026-09-03T05:23:14.446Z
 
 Last activity: 2026-08-31
-Stopped at: Phase 41 context gathered
-Resume file: .planning/phases/41-post-auth-claim-anonymous-grant/41-CONTEXT.md
+Stopped at: Completed 41-01-PLAN.md
+Resume file: None
 
 ## Performance Metrics
 
@@ -213,6 +213,7 @@ Resume file: .planning/phases/41-post-auth-claim-anonymous-grant/41-CONTEXT.md
 | Phase 37.5 P08 | ~65min | 3 tasks | 11 files |
 | Phase 37.5 P09 | ~55min | 3 tasks | 18 files |
 | Phase 37.5 P10 | ~40min | 3 tasks | 3 files |
+| Phase 41 P01 | 20 min | 2 tasks | 27 files |
 
 ## Decisions
 
