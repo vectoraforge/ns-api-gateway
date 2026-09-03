@@ -74,9 +74,6 @@ EXPECTED_ENUM_LABELS = {
     "chat_role": [
         "human", "ai"
     ],
-    "gate_consumption_kind": [
-        "web_anonymous_gate", "registered_account_grant"
-    ],
     "identity_provider": [
         "anonymous", "google", "apple"
     ],
@@ -95,8 +92,8 @@ EXPECTED_ENUM_LABELS = {
 }
 
 EXPECTED_CORE_TABLES = {
-    "access_grants", "access_grants_anti_abuse", "access_tiers", "auth_challenges", "chats", "external_identities",
-    "manual_grant_issuances", "messages", "provider_account_gate_consumptions", "provider_accounts",
+    "access_grants", "access_tiers", "auth_challenges", "chats", "external_identities",
+    "manual_grant_issuances", "messages",
     "store_purchase_tokens", "store_purchases", "subscriptions", "user_monthly_usage", "users"
 }
 
@@ -105,20 +102,18 @@ EXPECTED_AUDIT_TABLES = {
 }
 
 EXPECTED_CORE_INDEXES = {
-    "access_grants_anti_abuse_pkey", "access_grants_anti_abuse_registered_account_grant_id_key",
-    "access_grants_id_source_key", "access_grants_pkey", "access_tiers_pkey", "auth_challenges_challenge_id_key",
+    "access_grants_pkey", "access_tiers_pkey", "auth_challenges_challenge_id_key",
     "auth_challenges_pkey", "chats_pkey", "external_identities_issuer_subject_key", "external_identities_pkey",
-    "external_identities_user_id_key", "ix_access_grants_anti_abuse_idp_account_hash",
+    "external_identities_user_id_key",
     "ix_access_grants_one_active_per_user", "ix_access_grants_one_free_grant_per_user_source",
     "ix_access_grants_one_per_subscription", "ix_access_grants_subscription", "ix_access_grants_user_active",
     "ix_auth_challenges_expires_at", "ix_chats_user_id", "ix_external_identities_provider",
     "ix_external_identities_provider_account", "ix_external_identities_user_active",
-    "ix_external_identities_user_id", "ix_gate_consumptions_grant_id", "ix_messages_chat_id",
+    "ix_external_identities_user_id", "ix_messages_chat_id",
     "ix_store_purchase_tokens_user_id", "ix_store_purchases_provider_identity_value",
     "ix_store_purchases_purchase_user_id", "ix_subscriptions_provider_external_id", "ix_subscriptions_user_id",
     "ix_users_registered_at", "manual_grant_issuances_grant_id_key", "manual_grant_issuances_pkey", "messages_pkey",
-    "provider_account_gate_consumptions_pkey", "provider_accounts_pkey",
-    "provider_accounts_provider_provider_uid_key", "store_purchase_tokens_provider_identity_value_key",
+    "store_purchase_tokens_provider_identity_value_key",
     "store_purchase_tokens_user_id_provider_key", "store_purchases_pkey",
     "store_purchases_provider_external_id_key", "subscriptions_id_user_id_key", "subscriptions_pkey",
     "subscriptions_product_entitled_subscription_id_key", "user_monthly_usage_pkey", "users_pkey"
@@ -131,7 +126,6 @@ EXPECTED_AUDIT_INDEXES = {
 
 # pg_get_expr output as rendered under PINNED_SEARCH_PATH; without the pin none of these strings match.
 EXPECTED_INDEX_PREDICATES = {
-    "ix_access_grants_anti_abuse_idp_account_hash": "(idp_account_hash IS NOT NULL)",
     "ix_access_grants_one_active_per_user": "(status = 'active'::core.access_grant_status)",
     "ix_access_grants_one_free_grant_per_user_source": (
         "(source = ANY (ARRAY['anonymous_device_grant'::core.access_grant_source, "
@@ -178,7 +172,7 @@ async def fetch_enum_labels(conn, type_name: str) -> list[str]:
 
 
 class TestEnumTypes:
-    """Exactly the 11 declared core enum types, each with its exact labels in order."""
+    """Exactly the 9 declared core enum types, each with its exact labels in order."""
 
     async def test_enum_type_name_set_is_exact(self, conn):
         actual = {row["typname"] for row in await conn.fetch(ENUMS)}
@@ -195,7 +189,7 @@ class TestEnumTypes:
 
 
 class TestTables:
-    """Exactly 15 tables in core and 1 in audit, with nothing beyond the declared set."""
+    """Exactly 12 tables in core and 1 in audit, with nothing beyond the declared set."""
 
     async def test_core_table_set_is_exact(self, conn):
         actual = {row["tablename"] for row in await conn.fetch(TABLES, "core")}
@@ -207,7 +201,7 @@ class TestTables:
 
 
 class TestIndexes:
-    """Exactly the 54 captured indexes: a renamed or stray index fails this suite."""
+    """Exactly the 41 captured indexes: a renamed or stray index fails this suite."""
 
     async def test_core_index_set_is_exact(self, conn):
         rows = await conn.fetch(INDEXES)
@@ -221,7 +215,7 @@ class TestIndexes:
 
 
 class TestIndexPredicates:
-    """The seven named indexes carry exactly their captured predicates, read under a pinned search_path."""
+    """The six named indexes carry exactly their captured predicates, read under a pinned search_path."""
 
     @pytest.mark.parametrize("index_name,expected_predicate", PREDICATE_CASES)
     async def test_predicate_matches_capture(self, conn, index_name, expected_predicate):

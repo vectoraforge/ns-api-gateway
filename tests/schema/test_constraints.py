@@ -16,16 +16,13 @@ IX_ONE_FREE_GRANT_PER_USER_SOURCE = "ix_access_grants_one_free_grant_per_user_so
 IX_ONE_PER_SUBSCRIPTION = "ix_access_grants_one_per_subscription"
 UQ_IDENTITY_ISSUER_SUBJECT = "external_identities_issuer_subject_key"
 FK_IDENTITY_USER = "external_identities_user_id_fkey"
-FK_ANTI_ABUSE_REQUIRED = "access_grants_anti_abuse_required_grant_id_fkey"
 PK_USER_MONTHLY_USAGE = "user_monthly_usage_pkey"
-CK_ANTI_ABUSE_GRANT_SOURCE = "access_grants_anti_abuse_grant_source_check"
 FK_GRANT_SUBSCRIPTION_ENTITLED = "access_grants_active_subscription_grant_subscription_id_fkey"
 # Truncated at 63 characters, so "_ac" is all that survives of the second column; still column-derived.
 FK_GRANT_SUBSCRIPTION_OWNER = "access_grants_active_subscription_grant_subscription_id_ac_fkey"
 
 ISSUER = "https://securetoken.google.com/native-speaker-test"
 _PREAUTH_SUBJECT = "Xy7Q1s0K2mNb3fV4"
-_IDP_ACCOUNT_HASH = bytes(range(32, 64))
 
 # Two literal statements rather than one assembled string: the identity_state default is proven by omission.
 _INSERT_IDENTITY = (
@@ -43,12 +40,6 @@ _INSERT_SUBSCRIPTION = (
     "INSERT INTO core.subscriptions "
     "(id, user_id, provider, external_id, tier_id, status, created_at, updated_at) "
     "VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-)
-_INSERT_ANTI_ABUSE = (
-    "INSERT INTO core.access_grants_anti_abuse "
-    "(grant_id, grant_source, native_claim_provider, idp_account_hash, "
-    "idp_account_hash_key_version, created_at) "
-    "VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)"
 )
 _INSERT_SUBSCRIPTION_WITH_GENERATED_COLUMN = (
     "INSERT INTO core.subscriptions "
@@ -132,26 +123,6 @@ async def _insert_subscription(
         _INSERT_SUBSCRIPTION, subscription_id, user_id, provider, external_id, tier_id, status
     )
     return subscription_id
-
-
-async def _insert_anti_abuse(
-    conn: asyncpg.Connection,
-    *,
-    grant_id: uuid.UUID,
-    grant_source: str,
-    native_claim_provider: str | None = None,
-    idp_account_hash: bytes | None = None,
-    idp_account_hash_key_version: int | None = None,
-) -> None:
-    """Insert one core.access_grants_anti_abuse row."""
-    await conn.execute(
-        _INSERT_ANTI_ABUSE,
-        grant_id,
-        grant_source,
-        native_claim_provider,
-        idp_account_hash,
-        idp_account_hash_key_version,
-    )
 
 
 async def _insert_challenge(
@@ -300,178 +271,6 @@ class TestAccessGrantConstraints:
         assert await conn.fetchval(
             "SELECT count(*) FROM core.user_monthly_usage WHERE grant_id = $1", grant_id
         ) == 1
-
-    async def test_grant_free_source_without_anti_abuse_row_rejected_at_commit(self, conn, tier):
-        """Case LB -- the deferred FK rejects a free grant that never got its anti-abuse row."""
-        user_id = await insert_user(conn)
-        await conn.execute("BEGIN")
-        await insert_grant(conn, user_id=user_id, tier_id=tier, source="anonymous_device_grant")
-        with pytest.raises(asyncpg.ForeignKeyViolationError) as exc_info:
-            await conn.execute("COMMIT")  # the deferred FK fires HERE, not on the INSERT above
-        assert FK_ANTI_ABUSE_REQUIRED in str(exc_info.value)
-        # No ROLLBACK: the server aborted this transaction already, so rolling back would mask the exception.
-
-    async def test_grant_free_source_with_anti_abuse_row_passes_the_deferred_check(self, conn, tier):
-        """The lower bound accepts the valid pair -- so case LB above rejects for absence, not always."""
-        user_id = await insert_user(conn)
-        grant_id = await insert_grant(conn, user_id=user_id, tier_id=tier, source="anonymous_device_grant")
-        await _insert_anti_abuse(
-            conn, grant_id=grant_id, grant_source="anonymous_device_grant", native_claim_provider="ios_devicecheck"
-        )
-        # Checks every deferred constraint now, so the valid pair is proven without committing it.
-        await conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
-
-
-class TestAntiAbuseEvidenceConstraints:
-    """The four-arm anti-abuse CHECK and the "free sources only" partition."""
-
-    async def _free_grant(self, conn, tier, source="anonymous_device_grant") -> uuid.UUID:
-        user_id = await insert_user(conn)
-        return await insert_grant(conn, user_id=user_id, tier_id=tier, source=source)
-
-    async def test_grant_anti_abuse_native_ios_tuple_accepted(self, conn, tier):
-        """Case V1 -- native iOS: a native_claim_provider and no hash fields at all."""
-        grant_id = await self._free_grant(conn, tier)
-        await _insert_anti_abuse(
-            conn, grant_id=grant_id, grant_source="anonymous_device_grant", native_claim_provider="ios_devicecheck"
-        )
-        assert await conn.fetchval(
-            "SELECT native_claim_provider::text FROM core.access_grants_anti_abuse WHERE grant_id = $1", grant_id
-        ) == "ios_devicecheck"
-
-    async def test_grant_anti_abuse_native_android_tuple_accepted(self, conn, tier):
-        """Case V2, native Android: that arm is shape-only, so no value list is asserted."""
-        grant_id = await self._free_grant(conn, tier)
-        await _insert_anti_abuse(
-            conn,
-            grant_id=grant_id,
-            grant_source="anonymous_device_grant",
-            native_claim_provider="android_play_integrity",
-        )
-        assert await conn.fetchval(
-            "SELECT count(*) FROM core.access_grants_anti_abuse WHERE grant_id = $1", grant_id
-        ) == 1
-
-    async def test_grant_anti_abuse_web_anonymous_tuple_accepted(self, conn, tier):
-        """Case V3 -- web anonymous: no native_claim_provider, both hash fields populated."""
-        grant_id = await self._free_grant(conn, tier)
-        await _insert_anti_abuse(
-            conn,
-            grant_id=grant_id,
-            grant_source="anonymous_device_grant",
-            idp_account_hash=_IDP_ACCOUNT_HASH,
-            idp_account_hash_key_version=1,
-        )
-        assert await conn.fetchval(
-            "SELECT idp_account_hash FROM core.access_grants_anti_abuse WHERE grant_id = $1", grant_id
-        ) == _IDP_ACCOUNT_HASH
-
-    async def test_grant_anti_abuse_registered_tuple_accepted(self, conn, tier):
-        """Case V4 -- registered: same shape as web anonymous, on a registered_account_grant."""
-        grant_id = await self._free_grant(conn, tier, source="registered_account_grant")
-        await _insert_anti_abuse(
-            conn,
-            grant_id=grant_id,
-            grant_source="registered_account_grant",
-            idp_account_hash=_IDP_ACCOUNT_HASH,
-            idp_account_hash_key_version=1,
-        )
-        assert await conn.fetchval(
-            "SELECT count(*) FROM core.access_grants_anti_abuse WHERE grant_id = $1", grant_id
-        ) == 1
-
-    async def test_grant_anti_abuse_anonymous_row_without_any_evidence_rejected(self, conn, tier):
-        """Case R1 -- an anonymous row with neither a native claim nor an account hash carries no evidence."""
-        grant_id = await self._free_grant(conn, tier)
-        async with _rejects(conn, asyncpg.CheckViolationError):
-            await _insert_anti_abuse(conn, grant_id=grant_id, grant_source="anonymous_device_grant")
-        assert await conn.fetchval("SELECT count(*) FROM core.access_grants_anti_abuse") == 0
-
-    async def test_grant_anti_abuse_native_row_carrying_idp_hash_rejected(self, conn, tier):
-        """Case R2 -- the native arm requires both hash fields NULL; a native row may not also carry one."""
-        grant_id = await self._free_grant(conn, tier)
-        async with _rejects(conn, asyncpg.CheckViolationError):
-            await _insert_anti_abuse(
-                conn,
-                grant_id=grant_id,
-                grant_source="anonymous_device_grant",
-                native_claim_provider="ios_devicecheck",
-                idp_account_hash=_IDP_ACCOUNT_HASH,
-                idp_account_hash_key_version=1,
-            )
-
-    async def test_grant_anti_abuse_web_anonymous_row_carrying_native_provider_rejected(self, conn, tier):
-        """Case R3 -- a web-anonymous row may not also claim a native provider."""
-        grant_id = await self._free_grant(conn, tier)
-        async with _rejects(conn, asyncpg.CheckViolationError):
-            # Same mix as R2 read from the other side; the CHECK admits neither.
-            await _insert_anti_abuse(
-                conn,
-                grant_id=grant_id,
-                grant_source="anonymous_device_grant",
-                native_claim_provider="android_play_integrity",
-                idp_account_hash=_IDP_ACCOUNT_HASH,
-                idp_account_hash_key_version=1,
-            )
-
-    async def test_grant_anti_abuse_registered_row_carrying_native_provider_rejected(self, conn, tier):
-        """Case R4 -- the registered arm forbids a native_claim_provider outright."""
-        grant_id = await self._free_grant(conn, tier, source="registered_account_grant")
-        async with _rejects(conn, asyncpg.CheckViolationError):
-            await _insert_anti_abuse(
-                conn,
-                grant_id=grant_id,
-                grant_source="registered_account_grant",
-                native_claim_provider="ios_devicecheck",
-                idp_account_hash=_IDP_ACCOUNT_HASH,
-                idp_account_hash_key_version=1,
-            )
-
-    async def test_grant_anti_abuse_row_for_subscription_backed_grant_rejected(self, conn, tier):
-        """Case R5 -- a real subscription-backed grant cannot get an anti-abuse row at all."""
-        user_id = await insert_user(conn)
-        subscription_id = await _insert_subscription(conn, user_id=user_id, tier_id=tier, status="active")
-        grant_id = await insert_grant(
-            conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
-        )
-        # A real subscription-backed grant is needed: a NULL subscription_id never reaches the anti-abuse table.
-        async with _rejects(conn, asyncpg.CheckViolationError):
-            await _insert_anti_abuse(
-                conn,
-                grant_id=grant_id,
-                grant_source="subscription",
-                idp_account_hash=_IDP_ACCOUNT_HASH,
-                idp_account_hash_key_version=1,
-            )
-        # The class only, not the name: which of the two CHECKs reports first varies by server version.
-        assert await conn.fetchval("SELECT count(*) FROM core.access_grants_anti_abuse") == 0
-
-    async def test_grant_anti_abuse_row_for_manual_grant_rejected(self, conn, tier):
-        """Case R6 -- a manual grant cannot get an anti-abuse row either."""
-        user_id = await insert_user(conn)
-        grant_id = await insert_grant(conn, user_id=user_id, tier_id=tier, source="manual")
-        async with _rejects(conn, asyncpg.CheckViolationError):
-            await _insert_anti_abuse(
-                conn,
-                grant_id=grant_id,
-                grant_source="manual",
-                idp_account_hash=_IDP_ACCOUNT_HASH,
-                idp_account_hash_key_version=1,
-            )
-        assert await conn.fetchval("SELECT count(*) FROM core.access_grants_anti_abuse") == 0
-
-    async def test_grant_anti_abuse_grant_source_check_is_subsumed(self, conn):
-        """The grant_source CHECK is subsumed by the shape CHECK, so it can never be the reported one."""
-        definition = await conn.fetchval(
-            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
-            "WHERE conrelid = 'core.access_grants_anti_abuse'::regclass AND conname = $1",
-            CK_ANTI_ABUSE_GRANT_SOURCE,
-        )
-        assert definition is not None
-        assert "anonymous_device_grant" in definition
-        assert "registered_account_grant" in definition
-        assert "subscription" not in definition
-        assert "manual" not in definition
 
 
 class TestSubscriptionConstraints:

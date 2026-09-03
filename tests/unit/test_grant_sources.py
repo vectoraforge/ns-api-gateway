@@ -77,7 +77,7 @@ class TestTheAnonymousDeviceGrantHasExactlyOneWriter:
     def test_the_one_site_is_inside_the_crud_activation_writer(self):
         """Not merely in the right module: in the one function that takes both lock tiers."""
         writer = _function(CRUD_GRANTS.read_text(), WRITER)
-        assert sum(_names_the_member(node) for node in ast.walk(writer)) == 2
+        assert sum(_names_the_member(node) for node in ast.walk(writer)) == 1
 
     def test_only_the_recorded_modules_name_the_member_at_all(self):
         naming = {path.relative_to(SRC).as_posix() for path in _modules()
@@ -117,8 +117,8 @@ class TestTheWalkFires:
     @pytest.mark.parametrize("source", [
         "g = AccessGrant(source=AccessGrantSource.manual)",
         "g = AccessGrant(source=other.anonymous_device_grant)",
-        "g = AccessGrantAntiAbuse(grant_source=AccessGrantSource.anonymous_device_grant)",
-    ], ids=["another_source", "another_enum", "another_table"])
+        "g = UserMonthlyUsage(source=AccessGrantSource.anonymous_device_grant)",
+    ], ids=["another_source", "another_enum", "another_table_same_member"])
     def test_a_near_miss_is_not_counted(self, source):
         """The walk matches the construction it claims to, not anything that merely spells the word."""
         assert _construction_sites(source) == []

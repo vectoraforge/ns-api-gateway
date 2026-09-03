@@ -55,7 +55,7 @@ async def harness(_schema_db_uri):
 
 
 async def clean_up(harness: _Harness) -> None:
-    """Child-first: anti-abuse, usage, grants, then the identity rows, then the users they pointed at."""
+    """Child-first: usage, grants, then the identity rows, then the users they pointed at."""
     async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
         owned = (await conn.execute(
             text("SELECT user_id FROM core.external_identities WHERE issuer = :issuer"),
@@ -64,8 +64,6 @@ async def clean_up(harness: _Harness) -> None:
 
         for user_id in user_ids:
             for statement in (
-                    "DELETE FROM core.access_grants_anti_abuse WHERE grant_id IN "
-                    "(SELECT id FROM core.access_grants WHERE user_id = :id)",
                     "DELETE FROM core.user_monthly_usage WHERE grant_id IN "
                     "(SELECT id FROM core.access_grants WHERE user_id = :id)",
                     "DELETE FROM core.access_grants WHERE user_id = :id"):
@@ -289,17 +287,6 @@ class TestTwoSimultaneousFirstClaimsAllocateOnce:
             {"id": raced["user_id"]})
         assert rows == [("anonymous_device_grant", "active", "anonymous")]
 
-    async def test_exactly_one_anti_abuse_row_carries_the_ios_provider(self, harness, raced):
-        """Both hash columns unset is the iOS arm of the table's exclusive-or CHECK, and the loser adds none."""
-        rows = await read(
-            harness,
-            "SELECT a.grant_source::text, a.native_claim_provider::text, a.idp_account_hash, "
-            "       a.idp_account_hash_key_version "
-            "FROM core.access_grants_anti_abuse a "
-            "JOIN core.access_grants g ON g.id = a.grant_id WHERE g.user_id = :id",
-            {"id": raced["user_id"]})
-        assert rows == [("anonymous_device_grant", "ios_devicecheck", None, None)]
-
     async def test_exactly_one_usage_row_exists_at_zero_used(self, harness, raced):
         rows = await read(
             harness,
@@ -338,7 +325,7 @@ class TestTwoSimultaneousFirstClaimsAllocateOnce:
         assert loser.result.status is EntitlementStatus.active
 
     async def test_the_losers_violation_arrived_at_the_flush_and_not_at_the_commit(self, raced):
-        """The two unique indexes fire per statement; the deferred anti-abuse FKs are never reached."""
+        """The two unique indexes fire per statement, so the violation arrives at the flush."""
         winner, loser = raced["by_role"]["won"], raced["by_role"]["lost_at_flush"]
         assert (loser.integrity_at_flush, loser.integrity_at_commit) == (True, False)
         assert (winner.integrity_at_flush, winner.integrity_at_commit) == (False, False)

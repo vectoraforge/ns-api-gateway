@@ -17,7 +17,6 @@ from nativespeaker.api.errors import ProofRejected
 from nativespeaker.api.tables.auth import AuthChallenge
 from nativespeaker.api.tables.grants import (
     AccessGrant,
-    AccessGrantAntiAbuse,
     AccessGrantSource,
     AccessGrantStatus,
     UserMonthlyUsage,
@@ -93,15 +92,6 @@ class TestTheAnonymousDeviceGrantHappyPath:
             assert grant.tier_id == "anonymous"
             assert grant.subscription_id is None
 
-            anti_abuse = (await session.exec(
-                select(AccessGrantAntiAbuse)
-                .where(col(AccessGrantAntiAbuse.grant_id) == grant.id))).all()
-            assert len(anti_abuse) == 1
-            assert anti_abuse[0].native_claim_provider is NativeClaimProvider.ios_devicecheck
-            # Both hash columns NULL: the iOS arm of the table's exclusive-or CHECK.
-            assert anti_abuse[0].idp_account_hash is None
-            assert anti_abuse[0].idp_account_hash_key_version is None
-
             usage = (await session.exec(
                 select(UserMonthlyUsage)
                 .where(col(UserMonthlyUsage.grant_id) == grant.id))).all()
@@ -148,19 +138,16 @@ async def _challenge_for(factory, handle: str) -> AuthChallenge:
             select(AuthChallenge).where(col(AuthChallenge.challenge_id) == handle))).one()
 
 
-async def _row_counts(factory, user_id) -> tuple[int, int, int]:
-    """The grant, anti-abuse and usage row counts for `user_id`: the three kinds a claim writes."""
+async def _row_counts(factory, user_id) -> tuple[int, int]:
+    """The grant and usage row counts for `user_id`: the two kinds a claim writes."""
     async with factory() as session:
         grants = (await session.exec(
             select(AccessGrant).where(col(AccessGrant.user_id) == user_id))).all()
         ids = [grant.id for grant in grants]
-        anti_abuse = (await session.exec(
-            select(AccessGrantAntiAbuse)
-            .where(col(AccessGrantAntiAbuse.grant_id).in_(ids or [uuid4()])))).all()
         usage = (await session.exec(
             select(UserMonthlyUsage)
             .where(col(UserMonthlyUsage.grant_id).in_(ids or [uuid4()])))).all()
-        return len(grants), len(anti_abuse), len(usage)
+        return len(grants), len(usage)
 
 
 async def _mark_free_grant_consumed(factory, subject: str) -> None:
@@ -187,7 +174,7 @@ class TestTheRepeatIsIdempotent:
         first = await _claim(claim_client, subject, await _issue(claim_client, subject))
         assert first.status_code == 200, first.text
         after_first = await _row_counts(_db_transaction, user.id)
-        assert after_first == (1, 1, 1)
+        assert after_first == (1, 1)
 
         # Cleared rather than re-created: the repeat's own call count is what the next assertion reads.
         scripted_devicecheck_adapter.read_calls.clear()
@@ -226,7 +213,7 @@ class TestTheFourRefusals:
         assert refusal.json() == REFUSED
         assert scripted_devicecheck_adapter.read_calls == []
         assert scripted_devicecheck_adapter.write_calls == []
-        assert await _row_counts(_db_transaction, user.id) == (0, 0, 0)
+        assert await _row_counts(_db_transaction, user.id) == (0, 0)
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
     async def test_a_revoked_free_grant_is_refused_because_the_read_carries_no_status_predicate(
@@ -237,7 +224,7 @@ class TestTheFourRefusals:
                                       provider=IdentityProvider.anonymous)
         await seed_grant(_db_transaction, user_id=user.id, tier_id="anonymous",
                          source=AccessGrantSource.anonymous_device_grant,
-                         status=AccessGrantStatus.revoked, with_anti_abuse=True)
+                         status=AccessGrantStatus.revoked)
 
         handle = await _issue(claim_client, subject)
         refusal = await _claim(claim_client, subject, handle)
@@ -247,7 +234,7 @@ class TestTheFourRefusals:
         assert scripted_devicecheck_adapter.read_calls == []
         assert scripted_devicecheck_adapter.write_calls == []
         # The revoked row and its anti-abuse row are still the only ones: nothing was written.
-        assert await _row_counts(_db_transaction, user.id) == (1, 1, 1)
+        assert await _row_counts(_db_transaction, user.id) == (1, 1)
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
     async def test_an_active_grant_of_another_source_is_refused(
@@ -266,7 +253,7 @@ class TestTheFourRefusals:
         assert refusal.json() == REFUSED
         assert scripted_devicecheck_adapter.read_calls == []
         assert scripted_devicecheck_adapter.write_calls == []
-        assert await _row_counts(_db_transaction, user.id) == (1, 0, 1)
+        assert await _row_counts(_db_transaction, user.id) == (1, 1)
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
     async def test_a_registered_caller_is_refused_and_waits_for_phase_42(
@@ -283,7 +270,7 @@ class TestTheFourRefusals:
         assert refusal.json() == REFUSED
         assert scripted_devicecheck_adapter.read_calls == []
         assert scripted_devicecheck_adapter.write_calls == []
-        assert await _row_counts(_db_transaction, user.id) == (0, 0, 0)
+        assert await _row_counts(_db_transaction, user.id) == (0, 0)
         # Decided after the claim, because the claimant check is the first thing the post-claim work does.
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
@@ -308,7 +295,7 @@ class TestTheThreeAppleFailureArms:
         assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
         # The slot is spent, so the write that would spend it again is never attempted.
         assert scripted_devicecheck_adapter.write_calls == []
-        assert await _row_counts(_db_transaction, user.id) == (0, 0, 0)
+        assert await _row_counts(_db_transaction, user.id) == (0, 0)
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
     async def test_a_token_apple_refuses_is_a_proof_rejection(
@@ -326,7 +313,7 @@ class TestTheThreeAppleFailureArms:
         # Definitive, so it spends one attempt of the budget rather than all three.
         assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
         assert scripted_devicecheck_adapter.write_calls == []
-        assert await _row_counts(_db_transaction, user.id) == (0, 0, 0)
+        assert await _row_counts(_db_transaction, user.id) == (0, 0)
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
     async def test_an_exhausted_apple_budget_is_temporarily_unavailable_and_writes_nothing(
@@ -344,5 +331,5 @@ class TestTheThreeAppleFailureArms:
         assert refusal.json() == {"code": "verification_temporarily_unavailable"}
         assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN] * DEVICECHECK_ATTEMPTS
         assert scripted_devicecheck_adapter.write_calls == []
-        assert await _row_counts(_db_transaction, user.id) == (0, 0, 0)
+        assert await _row_counts(_db_transaction, user.id) == (0, 0)
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
