@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 42 (POST /auth/claim-registered-grant) — EXECUTING
+Phase: 42 (POST /auth/claim-registered-grant) — EXECUTED, not yet verified
 Plan: 6 of 6
-Status: Ready to execute
-Last activity: 2026-09-03 — Phase 42 execution started
+Status: All six plans complete; the phase is closed in the ledger and awaits verification
+Last activity: 2026-09-03 — Phase 42 execution complete
 
 <!-- Counts read against disk rather than incremented (41-05). At Task 3 time: 90 PLAN files and 89
      SUMMARY files across .planning/phases/, which is exactly what the frontmatter already carried,
@@ -40,6 +40,27 @@ Last activity: 2026-09-03 — Phase 42 execution started
      which point `state advance-plan` reported `last_plan` and `completed_plans` went 89 -> 90.
      Phase 41 itself: 5 plans, 5 summaries. The phase is executed, not yet verified, so
      `completed_phases` stays at 11. -->
+
+<!-- Counts read against disk rather than incremented, as 41-05 did. At Task 3 time: 96 PLAN files and
+     95 SUMMARY files across .planning/phases/, and the frontmatter carried 96 and 95. This plan's own
+     summary is the ninety-sixth and lands after Task 3, at which point completed_plans goes 95 -> 96.
+     Phase 42 itself: 6 plans, 6 summaries. The phase is executed, not yet verified, so
+     completed_phases stays at 12. -->
+
+**Phase 42 outcome.** `POST /auth/claim-registered-grant` ships. A linked **registered** caller — stored
+provider `google` or `apple` — spends a challenge and reaches one of two destinations, chosen inside one
+locked transaction. A clean account gets a new grant on the `registered` tier behind Apple's bit1. An
+account holding an active `anonymous_device_grant` is **converted**: the anonymous row is expired, the
+registered row is inserted after it, and the usage counters carry across unchanged. The conversion calls
+Apple not at all. Three tables left the one migration with everything only they needed — the anti-abuse
+receipt and the two provider-account tables — so an anonymous claim now writes three rows, not four.
+Every outcome is an executed case: ten post-claim outcomes each consuming exactly once, four refusals
+sharing one byte-identical 403, three Apple failure arms, and two live two-connection races, one per
+destination. Six divergences from `07-claim-registered-grant.md` and `06-schema-reference.md` are
+recorded as **flagged conflicts** under REGGRANT-01…03 rather than resolved by editing either file.
+Suite **1001 unit / 237 e2e / 147 schema**, `ruff check src tests` clean. **Recorded as accepted rather
+than fixed:** the unbounded Apple round trips on the new-grant path (D-16), on the Phase 41 D-20
+precedent.
 
 **Phase 41 outcome.** `POST /auth/claim-anonymous-grant` ships: a linked **anonymous** caller spends a
 challenge, Apple's bit0 is read and set through the new ES256-signed `auth/devicecheck.py` seam, and
@@ -194,6 +215,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 - RESOLVED (41-02, A-15): the database pool no longer exhausts at three concurrent chat posts. `config/config.yaml` declares `db.pool_size: 12` (`resilience.pool_size × 2 + 2`), and the pool wait no longer holds a provider permit — the permit moved off the admission path and around the retry loop (D-15). Original finding: the database pool exhausts at three concurrent chat posts. `db.pool_size` defaults to 5 (`config.py:25`) with `max_overflow=0` (`app/lifespan.py:34`) and a `POST /chats` holds two connections. Phase 37.5 did not create this but moved the stall inside the LLM permit, so a pool wait now also holds a provider permit. **Recorded, not fixed — the developer owns the choice.** One-line change: raise `db.pool_size` to at least `resilience.pool_size × 2 + 2` (12 at the configured values), or accept the ceiling.
 - ACCEPTED (41-05, D-20): every eligible claim makes an unbounded pair of Apple DeviceCheck round trips. `06-claim-anonymous-grant.md:79` forbids any cached or coalesced substitute for the bit read or the bit write — every claim performs its own — and that rule is right, because a cached bit is a bit that can be stale in the direction that hands out a second grant. With the backend rate-limit engine deleted from the product (Phase 35 D-05) and the Envoy gateway contract deferred to v2.1 (Phase 35 D-08), a caller holding a valid ID token for an **eligible** anonymous account can make the backend call Apple as often as it can prepare challenges. **Mitigating:** it is one account looping on itself, not a fan-out — the caller must already hold a valid token for an existing linked anonymous account; the eligibility preflight (D-03) refuses an ineligible account before Apple is reached, so the loop is only open to an account that has not yet claimed; and each turn additionally costs a fresh challenge from `POST /auth/challenge`. **Closes with:** the v2.1 gateway contract. Recorded as **accepted, not as an open defect** — it is a consequence of a decision this project made three phases ago, and filing it as a new problem would misrepresent it. Same treatment Phase 40 D-22 gave the unbounded Firebase read; recorded under ANONGRANT-01 in `REQUIREMENTS.md`.
 - ACCEPTED FACT ABOUT THE WORLD, not a gap the phase left (41-05, D-04): **no real round trip to Apple has ever been made.** No iOS app exists, so nothing can produce a real DeviceCheck device token. The wire shapes `auth/devicecheck.py` implements — the host, the query and update paths, the request bodies and the five ordered response-parse arms — come from secondary sources and are marked `[ASSUMED]`; no official Apple page was fetchable during research. `tests/unit/test_devicecheck_adapter.py` carries that provenance in its module docstring. **The first real 400 or 401 from Apple is authoritative over anything in this repository**, and reads as evidence about those literals rather than as a regression. Written down so a later reader does not treat the 21 green adapter unit cases as evidence the integration works — they pin the seam's behaviour, not the wire.
+- ACCEPTED (42-06, D-16): every eligible **new-grant** claim on `POST /auth/claim-registered-grant` makes an unbounded pair of Apple DeviceCheck round trips, for the same reason the anonymous route does. **Mitigating:** the caller must already hold a valid token for a linked `google` or `apple` account; the preflight refuses an ineligible account before Apple is reached; each turn costs a fresh challenge. **Narrower than the anonymous route:** the conversion destination reaches Apple not at all (D-02), so an account holding an active anonymous grant cannot use this route to reach Apple even once. **Closes with:** the v2.1 gateway contract. Recorded as accepted, not as an open defect, and recorded under REGGRANT-01 in `REQUIREMENTS.md`.
 - OPEN (37.5-06): a real coverage loss. `test_foundation_calls_no_adapter_method_anywhere_in_src` was the only enforcement that `get_user_provider_data` is named nowhere in `src/` outside `auth/adapters.py` and `auth/firebase.py`. The property holds today by grep, but nothing fails if a third file starts calling the adapter. ~25 lines to restore, with its allow-list and two controls. Not restored — unlike the two security cases the developer restored in `658895e`.
 
 ### Quick Tasks Completed
@@ -349,3 +371,8 @@ Resume file: None
 - [Phase 42]: 42-04: two walk classes rather than one parametrized pair, so the anonymous cases stay byte-identical; the helpers took a defaulted member argument
 - [Phase 42]: 42-05: the conversion race holds at the challenge commit, not the first flush — a conversion takes the grant row lock before it flushes, so a flush barrier deadlocks by construction
 - [Phase 42]: 42-05: the conversion loser raises no IntegrityError — it is refused by the writer's in-lock re-decision having written nothing; the unique indexes arbitrate the new-grant destination only
+- [Phase 42]: 42-06: a divergence is recorded under the requirement it belongs to, and the specification is never edited to remove it — this now covers a copy of the specification too. `.planning/auth-refactor-endpoint-changes.md` is verbatim brief text; it got a dated header note pointing at REQUIREMENTS.md, and not one edited step.
+- [Phase 42]: 42-06: `requirements.mark-complete` applied nothing for the three REGGRANT ids and returned `table_unmatched` for all three — the traceability row is a range the tool does not expand, and the checkboxes were already ticked, so both surfaces were finished by hand. Measured, not predicted; the same result 41-05 recorded, one step worse.
+- [Phase 42]: 42-06: ROADMAP criterion 4 is reworded, not withdrawn — an account holding an ACTIVE anonymous grant is converted rather than refused, so the criterion's single implied answer is two answers; the property it protects, that no account ends with two free entitlements, holds on both paths.
+- [Phase 42]: 42-06: the flagged-conflict count is sixteen and the set of known divergences twenty-three, re-derived against six named SHARED-INVARIANTS sections rather than inherited; the gap of seven is enumerated. Not one invariant section produced a divergence, and the invariants name no anti-abuse row at all — the phase's largest deletion diverges from the schema reference and the brief, and from no invariant text.
+- [Phase 42]: 42-06: two counts in the traceability table had been stale since Phase 41 updated the header alone; a count is re-derived against the sections it summarises, and a table that disagrees with its own header is corrected rather than left as evidence.
