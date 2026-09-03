@@ -603,7 +603,7 @@ Plans:
 **Goal:** Ship the sole creator of `registered_account_grant` grants, including supersession of an active anonymous device grant.
 **Requirements:** REGGRANT-01 … REGGRANT-03
 **Depends on:** 34, 35, 40, 41
-**Plans:** 7/7 plans executed
+**Plans:** 7/7 plans complete
 **Success criteria:**
 
 1. This is the only code path that writes a grant row with `source='registered_account_grant'` — **met as written, 2026-09-03.** Proven by an AST walk over every module under `src/`, not by a grep: one construction site, inside `crud/grants.py::activate_registered_account_grant`, and the walk was mutation-tested twice. *Verified against the text rather than the prediction: plan 42-06 expected this criterion to carry a "prepare and completion modes" clause needing a reword. It does not — that clause is in REGGRANT-01, which carries the reword.* Matching requirement: REGGRANT-01.
@@ -726,7 +726,7 @@ Plans:
 | 39. GET /users/me | v2.0 | 4/4 | Complete    | 2026-09-01 |
 | 40. POST /auth/upgrade-anonymous | v2.0 | 8/8 | In Progress|  |
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 5/5 | Complete    | 2026-09-03 |
-| 42. POST /auth/claim-registered-grant | v2.0 | 7/7 | In Progress|  |
+| 42. POST /auth/claim-registered-grant | v2.0 | 7/7 | Complete    | 2026-09-03 |
 | 43. POST /webhooks/app-store | v2.0 | 0/? | Pending | — |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 0/? | Pending | — |
 | 45. POST /auth/restore-subscription | v2.0 | 0/? | Pending | — |

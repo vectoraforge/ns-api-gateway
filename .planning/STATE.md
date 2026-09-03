@@ -2,20 +2,20 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
-current_phase: 42
-current_phase_name: POST /auth/claim-registered-grant
-status: ready_for_verification
-stopped_at: Completed 42-07-PLAN.md
-last_updated: "2026-09-03T22:55:08.125Z"
+current_phase: 43
+current_phase_name: POST /webhooks/app-store
+status: planning
+stopped_at: Phase 42 complete, ready to plan Phase 43
+last_updated: "2026-09-03T23:06:46.017Z"
 last_activity: 2026-09-03
-last_activity_desc: Phase 42 execution complete — all six plans landed
-state_head: 4961331248c29716a8e9e455f2cf87df203ae6e0
+last_activity_desc: Phase 42 complete, transitioned to Phase 43
+state_head: bf95d4e744985d8b9ad89fe6b0fab928202d9a6f
 progress:
   total_phases: 18
-  completed_phases: 12
+  completed_phases: 13
   total_plans: 97
   completed_plans: 97
-  percent: 67
+  percent: 72
 ---
 
 # Project State
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 42 (POST /auth/claim-registered-grant) — EXECUTED, not yet verified
-Plan: 6 of 6
-Status: All six plans complete; the phase is closed in the ledger and awaits verification
-Last activity: 2026-09-03 — Phase 42 execution complete
+Phase: 43 — POST /webhooks/app-store
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-09-03 — Phase 42 complete, transitioned to Phase 43
 
 <!-- Counts read against disk rather than incremented (41-05). At Task 3 time: 90 PLAN files and 89
      SUMMARY files across .planning/phases/, which is exactly what the frontmatter already carried,
@@ -231,7 +231,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 **Last session:** 2026-09-03T22:55:07.391Z
 
 Last activity: 2026-08-31
-Stopped at: Completed 42-07-PLAN.md
+Stopped at: Phase 42 complete, ready to plan Phase 43
 Resume file: None
 
 ## Performance Metrics
