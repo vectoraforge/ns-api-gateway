@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 41
 current_phase_name: POST /auth/claim-anonymous-grant
 status: executing
-stopped_at: Completed 41-03-PLAN.md
-last_updated: "2026-09-03T05:59:00.992Z"
+stopped_at: Completed 41-04-PLAN.md
+last_updated: "2026-09-03T06:16:29.676Z"
 last_activity: 2026-09-02
 last_activity_desc: Phase 41 execution started
-state_head: 42edd209273fbbda181d6a6b4ca275d7c19c1986
+state_head: 278a8aa7de57c428320754842d171645c2d9cfd8
 progress:
   total_phases: 18
   completed_phases: 11
   total_plans: 90
-  completed_plans: 88
+  completed_plans: 89
   percent: 61
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 41 (POST /auth/claim-anonymous-grant) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
 Last activity: 2026-09-02 — Phase 41 execution started
 
@@ -179,10 +179,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-03T05:58:49.090Z
+**Last session:** 2026-09-03T06:16:15.577Z
 
 Last activity: 2026-08-31
-Stopped at: Completed 41-03-PLAN.md
+Stopped at: Completed 41-04-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -216,6 +216,7 @@ Resume file: None
 | Phase 41 P01 | 20 min | 2 tasks | 27 files |
 | Phase 41 P02 | 38 min | 3 tasks | 8 files |
 | Phase 41 P03 | 20 min | 3 tasks | 8 files |
+| Phase 41 P04 | 20 min | 2 tasks | 3 files |
 
 ## Decisions
 
@@ -290,3 +291,6 @@ Resume file: None
 - [Phase 41]: Free-grant lifetime arms evaluated before the other-source arm: an account both ineligible and holding another grant logs free_grant_already_consumed; the client answer is identical either way
 - [Phase 41]: ClaimRefused is a pure group base raised from nowhere, exactly as ChallengeRejected and UpgradeRefused are
 - [Phase 41]: Structural ast tests ship with a control, and the single-writer walk was additionally mutation-checked against the real tree
+- [Phase 41]: 41-04: the race loser's rollback expired the two rows the router still reads, so a genuine claim race answered 500; the loser arm now reloads identity.user and identity.identity before returning — A SQLAlchemy rollback expires every instance in the session; the router's identity.user.id then lazy-loads with no greenlet. Found by the live two-connection race, invisible to the stub-session unit case.
+- [Phase 41]: 41-04: lock tiers are asserted over the SQL the production writer actually emits (captured at before_cursor_execute), not over a literal that mirrors the crud — A mirrored literal can pin what the two known tiers look like but cannot detect a third tier a future writer adds, which is the threat the assertion exists for.
+- [Phase 41]: 41-04: FREE_GRANT_SOURCES is tied to the live lifetime index predicate's membership, proven to fire by a mutation that was applied, observed to fail and reverted — Phase 42 narrowing the constant back to one member would silently reopen a spent lifetime slot for every account that already used one.

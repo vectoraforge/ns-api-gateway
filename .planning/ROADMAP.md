@@ -580,7 +580,7 @@ Plans:
 3. A second claim on an account that already holds a free grant does not allocate a second one
 4. Prepare and completion modes partition on the mode signal with a server-determined branch
 
-**Plans:** 3/5 plans executed
+**Plans:** 4/5 plans executed
 
 Plans:
 
@@ -592,7 +592,7 @@ Plans:
 **Wave 2** *(two parallel plans, blocked on 41-01, no shared file)*
 
 - [x] 41-03-PLAN.md — The case matrix: the repeat, the four refusals, the three Apple arms, the precedence and the two structural proofs
-- [ ] 41-04-PLAN.md — The two-connection race, and the lock-order proof extended to the new writer
+- [x] 41-04-PLAN.md — The two-connection race, and the lock-order proof extended to the new writer
 
 **Wave 3** *(blocked on Wave 2)*
 
@@ -702,7 +702,7 @@ Plans:
 | 38. POST /auth/sync | v2.0 | 6/6 | Complete    | 2026-09-01 |
 | 39. GET /users/me | v2.0 | 4/4 | Complete    | 2026-09-01 |
 | 40. POST /auth/upgrade-anonymous | v2.0 | 8/8 | In Progress|  |
-| 41. POST /auth/claim-anonymous-grant | v2.0 | 3/5 | In Progress|  |
+| 41. POST /auth/claim-anonymous-grant | v2.0 | 4/5 | In Progress|  |
 | 42. POST /auth/claim-registered-grant | v2.0 | 0/? | Pending | — |
 | 43. POST /webhooks/app-store | v2.0 | 0/? | Pending | — |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 0/? | Pending | — |
