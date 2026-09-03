@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 41
 current_phase_name: POST /auth/claim-anonymous-grant
 status: executing
-stopped_at: Completed 41-02-PLAN.md
-last_updated: "2026-09-03T05:34:40.015Z"
+stopped_at: Completed 41-03-PLAN.md
+last_updated: "2026-09-03T05:59:00.992Z"
 last_activity: 2026-09-02
 last_activity_desc: Phase 41 execution started
-state_head: b0f8e450e4cac7d200c9b7fc234973868adf32e6
+state_head: 42edd209273fbbda181d6a6b4ca275d7c19c1986
 progress:
   total_phases: 18
   completed_phases: 11
   total_plans: 90
-  completed_plans: 86
+  completed_plans: 88
   percent: 61
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 41 (POST /auth/claim-anonymous-grant) — EXECUTING
-Plan: 3 of 5
+Plan: 4 of 5
 Status: Ready to execute
 Last activity: 2026-09-02 — Phase 41 execution started
 
@@ -179,10 +179,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-03T05:34:28.000Z
+**Last session:** 2026-09-03T05:58:49.090Z
 
 Last activity: 2026-08-31
-Stopped at: Completed 41-02-PLAN.md
+Stopped at: Completed 41-03-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -215,6 +215,7 @@ Resume file: None
 | Phase 37.5 P10 | ~40min | 3 tasks | 3 files |
 | Phase 41 P01 | 20 min | 2 tasks | 27 files |
 | Phase 41 P02 | 38 min | 3 tasks | 8 files |
+| Phase 41 P03 | 20 min | 3 tasks | 8 files |
 
 ## Decisions
 
@@ -286,3 +287,6 @@ Resume file: None
 - [Phase 41]: D-14: the circuit breaker is consulted before every attempt, not only at admission — The per-attempt check sits inside the try with the (QueueFullError, CircuitOpenError) pass-through arm above the generic one, so the breaker refusal reaches the caller as its own 503 with Retry-After and is never recorded as a provider failure.
 - [Phase 41]: D-15: admission takes the in-flight slot alone; the provider permit is taken around the retry loop — LLMExecutionGate.hold split into inflight_slot and concurrency, and hold was deleted (no caller outside the module). The quota charge commits and releases its connection before the request waits for a permit, and an open breaker or full queue still answers 503 having spent nothing.
 - [Phase 41]: D-16: db.pool_size is 12, declared in the tracked config.yaml rather than as a Python default — The partial db: block deep-merges with the DB_* env nesting exactly as the jwt: precedent predicted, now proved by a case rather than assumed. Trade-off: the tracked YAML forecloses DB_POOL_SIZE from .env, which nothing sets and .env.example does not document.
+- [Phase 41]: Free-grant lifetime arms evaluated before the other-source arm: an account both ineligible and holding another grant logs free_grant_already_consumed; the client answer is identical either way
+- [Phase 41]: ClaimRefused is a pure group base raised from nowhere, exactly as ChallengeRejected and UpgradeRefused are
+- [Phase 41]: Structural ast tests ship with a control, and the single-writer walk was additionally mutation-checked against the real tree
