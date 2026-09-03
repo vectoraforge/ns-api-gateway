@@ -580,6 +580,24 @@ Plans:
 3. A second claim on an account that already holds a free grant does not allocate a second one
 4. Prepare and completion modes partition on the mode signal with a server-determined branch
 
+**Plans:** 5 plans
+
+Plans:
+
+**Wave 1** *(two parallel plans, no shared file)*
+
+- [ ] 41-01-PLAN.md — TRACER: end-to-end anonymous device-grant claim, one path, through every layer against a real database
+- [ ] 41-02-PLAN.md — The two folded todos and the pool: the breaker per attempt, the permit off the charge, `db.pool_size` at 12
+
+**Wave 2** *(two parallel plans, blocked on 41-01, no shared file)*
+
+- [ ] 41-03-PLAN.md — The case matrix: the repeat, the four refusals, the three Apple arms, the precedence and the two structural proofs
+- [ ] 41-04-PLAN.md — The two-connection race, and the lock-order proof extended to the new writer
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 41-05-PLAN.md — The dated ANONGRANT amendments, criterion 4's reword, and A-15 closed
+
 #### Phase 42: POST /auth/claim-registered-grant
 
 **Goal:** Ship the sole creator of `registered_account_grant` grants, including supersession of an active anonymous device grant.
