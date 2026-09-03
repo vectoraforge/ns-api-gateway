@@ -9,13 +9,14 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 import pytest_asyncio
-from sqlalchemy import event
+from sqlalchemy import event, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.crud.grants import ActivationOutcome, GrantsDB
+from nativespeaker.api.crud.grants import UNIQUE_VIOLATION, ActivationOutcome, GrantsDB
 from nativespeaker.api.crud.identities import IdentitiesDB
-from nativespeaker.api.tables.grants import FREE_GRANT_SOURCES
+from nativespeaker.api.tables.grants import FREE_GRANT_SOURCES, AccessGrant, AccessGrantSource
 from schema.helpers import insert_grant, insert_tier, insert_usage, insert_user
 
 pytestmark = pytest.mark.schema
@@ -483,6 +484,190 @@ class TestTheConversionExpiresBeforeItInserts:
         statements = conversion_statements["statements"]
         assert first_index(statements, "INSERT INTO core.access_grants") < \
             first_index(statements, "INSERT INTO core.user_monthly_usage")
+
+
+# The registered writer's three outcomes, measured from the writer itself and not from the route.
+
+
+@dataclass(frozen=True)
+class _Row:
+    """One grant to seed: its source, its status, and where its term sits around the writer's instant."""
+    source: str
+    status: str = "active"
+    starts_before: timedelta = timedelta(hours=1)
+    ends_before: timedelta | None = None
+
+
+@dataclass(frozen=True)
+class _Account:
+    """A seeded google account, an open session, and the instant the writer is driven at."""
+    session: SQLModelAsyncSession
+    user_id: uuid.UUID
+    identity_row: object
+    tier_id: str
+    evaluated_at: datetime
+
+    async def activate(self):
+        return await GrantsDB(self.session).activate_registered_account_grant(
+            user_id=self.user_id, identity_row=self.identity_row,
+            tier_id=self.tier_id, evaluated_at=self.evaluated_at)
+
+    async def grants(self) -> list[tuple[str, str]]:
+        """Every grant row of this account as a sorted (source, status) pair list."""
+        # Sorted, not in insertion order: the ids are uuid4 and their ascending order is not seeded order.
+        rows = await self.session.exec(text(
+            "SELECT source::text, status::text FROM core.access_grants "
+            "WHERE user_id = :user_id").bindparams(user_id=self.user_id))
+        return sorted(tuple(row) for row in rows.all())
+
+
+@contextlib.asynccontextmanager
+async def _account_holding(schema_db_uri: str, rows: tuple[_Row, ...],
+                           *, evaluated_before: timedelta = timedelta(0)):
+    """Seed a google account holding `rows`, and yield an open session the writer runs on."""
+    subject = f"outcome-{uuid.uuid4().hex[:10]}"
+    issuer = f"ns-outcome-{uuid.uuid4().hex[:10]}"
+    instant = datetime.now(UTC)
+
+    setup = await asyncpg.connect(schema_db_uri)
+    try:
+        user_id = await insert_user(setup)
+        tier_id = await insert_tier(setup)
+        await setup.execute(
+            "INSERT INTO core.external_identities "
+            "(id, user_id, issuer, subject, provider, provider_uid, identity_state, created_at, updated_at) "
+            "VALUES ($1, $2, $3, $4, 'google', $5, 'active', $6, $6)",
+            uuid.uuid4(), user_id, issuer, subject, f"google-uid-{subject}", NOW)
+        for row in rows:
+            grant_id = uuid.uuid4()
+            await setup.execute(
+                "INSERT INTO core.access_grants "
+                "(id, user_id, tier_id, source, status, starts_at, ends_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                grant_id, user_id, tier_id, row.source, row.status,
+                instant - row.starts_before,
+                None if row.ends_before is None else instant - row.ends_before)
+            await insert_usage(setup, grant_id=grant_id)
+    finally:
+        await setup.close()
+
+    engine = create_async_engine(schema_db_uri.replace(_ASYNCPG_PREFIX, _SQLALCHEMY_PREFIX, 1))
+    factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            identity_row = await IdentitiesDB(session).resolve_existing(issuer=issuer,
+                                                                       subject=subject)
+            yield _Account(session=session, user_id=user_id, identity_row=identity_row,
+                           tier_id=tier_id, evaluated_at=instant - evaluated_before)
+            await session.rollback()
+    finally:
+        await engine.dispose()
+        cleanup = await asyncpg.connect(schema_db_uri)
+        try:
+            await cleanup.execute("DELETE FROM core.user_monthly_usage WHERE grant_id IN "
+                                  "(SELECT id FROM core.access_grants WHERE user_id = $1)", user_id)
+            await cleanup.execute("DELETE FROM core.access_grants WHERE user_id = $1", user_id)
+            await cleanup.execute("DELETE FROM core.external_identities WHERE issuer = $1", issuer)
+            await cleanup.execute("DELETE FROM core.users WHERE id = $1", user_id)
+            await cleanup.execute("DELETE FROM core.access_tiers WHERE id = $1", tier_id)
+        finally:
+            await cleanup.close()
+
+
+class _CommitsBeforeTheFlush:
+    """A session that lets a second connection commit a winning row just before the writer flushes."""
+
+    def __init__(self, session, interfere) -> None:
+        self.session = session
+        self.interfere = interfere
+        self.interfered = False
+
+    async def flush(self, *args, **kwargs):
+        if not self.interfered:
+            self.interfered = True
+            await self.interfere()
+        return await self.session.flush(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.session, name)
+
+
+@pytest.mark.asyncio
+class TestTheRegisteredWriterNamesWhyItRefused:
+    """CR-01, WR-02 and WR-03 at the writer: a refusal and a lost race are two answers, not one."""
+
+    async def test_a_clean_account_is_activated(self, _schema_db_uri):
+        """The control: without it a writer that refused everything would satisfy every case below."""
+        async with _account_holding(_schema_db_uri, ()) as account:
+            assert await account.activate() is ActivationOutcome.activated
+            assert await account.grants() == [("registered_account_grant", "active")]
+
+    async def test_a_term_lapsed_active_row_is_refused_and_not_lost(self, _schema_db_uri):
+        """CR-01 at the writer: the row sits inside the one-active index and outside the effective read."""
+        held = (_Row("manual", ends_before=timedelta(minutes=1)),)
+        async with _account_holding(_schema_db_uri, held) as account:
+            assert await account.activate() is ActivationOutcome.refused
+            assert await account.grants() == [("manual", "active")]
+
+    async def test_a_spent_registered_slot_is_refused_and_not_lost(self, _schema_db_uri):
+        """WR-02 at the writer: the lifetime index carries no status, so one revoked row is the slot."""
+        held = (_Row("registered_account_grant", status="revoked"),
+                _Row("anonymous_device_grant"))
+        async with _account_holding(_schema_db_uri, held) as account:
+            assert await account.activate() is ActivationOutcome.refused
+            assert await account.grants() == sorted([("registered_account_grant", "revoked"),
+                                                      ("anonymous_device_grant", "active")])
+
+    async def test_the_repeat_is_a_lost_race_and_not_a_refusal(self, _schema_db_uri):
+        """The one in-lock branch WR-03 agrees is a 200: the winner's row is there to be read back."""
+        async with _account_holding(_schema_db_uri,
+                                    (_Row("registered_account_grant"),)) as account:
+            assert await account.activate() is ActivationOutcome.lost_race
+
+    async def test_a_unique_violation_at_the_flush_is_a_lost_race(self, _schema_db_uri):
+        """A second connection commits the winning row after the writer's reads and before its flush."""
+        async with _account_holding(_schema_db_uri, ()) as account:
+            winner = await asyncpg.connect(_schema_db_uri)
+
+            async def commit_the_winner() -> None:
+                await winner.execute(
+                    "INSERT INTO core.access_grants (id, user_id, tier_id, source, status) "
+                    "VALUES ($1, $2, $3, 'registered_account_grant', 'active')",
+                    uuid.uuid4(), account.user_id, account.tier_id)
+
+            racing = _Account(session=_CommitsBeforeTheFlush(account.session, commit_the_winner),
+                              user_id=account.user_id, identity_row=account.identity_row,
+                              tier_id=account.tier_id, evaluated_at=account.evaluated_at)
+            try:
+                assert await racing.activate() is ActivationOutcome.lost_race
+            finally:
+                await winner.close()
+
+    async def test_a_check_violation_is_raised_and_never_read_as_a_lost_race(self, _schema_db_uri):
+        """WR-01 made executable: the expiry UPDATE breaks `ends_at > starts_at`, which is no race."""
+        held = (_Row("anonymous_device_grant", starts_before=timedelta(0)),)
+        async with _account_holding(_schema_db_uri, held) as account:
+            with pytest.raises(IntegrityError) as refused:
+                await account.activate()
+            # Not 23505, which is the whole reason the narrowed catch re-raises this one.
+            assert getattr(refused.value.orig.__cause__, "sqlstate", None) != UNIQUE_VIOLATION
+
+
+@pytest.mark.asyncio
+class TestTheDriverCarriesTheSqlstateTheNarrowingReads:
+    """The narrowing fails closed on an absent attribute, so its presence on this driver is measured."""
+
+    async def test_a_duplicate_active_grant_carries_sqlstate_23505(self, _schema_db_uri):
+        async with _account_holding(_schema_db_uri,
+                                    (_Row("manual"),)) as account:
+            account.session.add(AccessGrant(user_id=account.user_id, tier_id=account.tier_id,
+                                            source=AccessGrantSource.manual,
+                                            starts_at=account.evaluated_at))
+            with pytest.raises(IntegrityError) as violation:
+                await account.session.flush()
+
+        assert getattr(violation.value.orig.__cause__, "sqlstate", None) == UNIQUE_VIOLATION
+        assert type(violation.value.orig.__cause__).__name__ == "UniqueViolationError"
 
 
 @pytest.mark.asyncio
