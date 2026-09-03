@@ -143,8 +143,11 @@ class ResiliencePolicy:
         async def attempt() -> Any:
             """One attempt, already triaged: everything `_should_retry` reads is decided here."""
             try:
+                # Per attempt, not once at admission: a provider declared dead mid-flight costs one attempt.
+                await self._circuit_breaker.before_call()
                 result = await asyncio.wait_for(operation(), timeout=self._timeout_seconds)
             except (QueueFullError, CircuitOpenError):
+                # First, and it must stay first: the breaker's own refusal is not the provider's failure.
                 raise
             except Exception as e:
                 # Everything reaching here came out of `operation` itself, so every classification is the provider's.
