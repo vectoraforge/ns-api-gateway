@@ -5,11 +5,11 @@ milestone_name: Authentication & Entitlements
 current_phase: 41
 current_phase_name: POST /auth/claim-anonymous-grant
 status: executing
-stopped_at: Completed 41-01-PLAN.md
-last_updated: "2026-09-03T05:23:15.026Z"
+stopped_at: Completed 41-02-PLAN.md
+last_updated: "2026-09-03T05:34:40.015Z"
 last_activity: 2026-09-02
 last_activity_desc: Phase 41 execution started
-state_head: 9179ad3475101c84cdeb9cd1cc54dbeaee6b0dd2
+state_head: b0f8e450e4cac7d200c9b7fc234973868adf32e6
 progress:
   total_phases: 18
   completed_phases: 11
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 41 (POST /auth/claim-anonymous-grant) — EXECUTING
-Plan: 2 of 5
+Plan: 3 of 5
 Status: Ready to execute
 Last activity: 2026-09-02 — Phase 41 execution started
 
@@ -166,7 +166,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 - RESOLVED (34-01): the PostgreSQL 17 blocker is cleared — developer started a postgres:17 container; server_version 17.11 (Debian 17.11-1.pgdg13+2) reachable on localhost:5432, database `nativespeaker` created and empty.
 - OPEN: RESEARCH.md assumption A1 — introspection constants were captured on PostgreSQL 16.2 but the target is 17.11; plan 34-03 must re-capture them rather than copying RESEARCH.md Code Example 4.
 - Deferred (37-10): the ~48s worst-case provider latency on the completion path is a policy decision on a shared budget — resolve with phases 40/41/42, which share the adapter seam.
-- OPEN (37.5-10, A-15): the database pool exhausts at three concurrent chat posts **today**. `db.pool_size` defaults to 5 (`config.py:25`) with `max_overflow=0` (`app/lifespan.py:34`) and a `POST /chats` holds two connections. Phase 37.5 did not create this but moved the stall inside the LLM permit, so a pool wait now also holds a provider permit. **Recorded, not fixed — the developer owns the choice.** One-line change: raise `db.pool_size` to at least `resilience.pool_size × 2 + 2` (12 at the configured values), or accept the ceiling.
+- RESOLVED (41-02, A-15): the database pool no longer exhausts at three concurrent chat posts. `config/config.yaml` declares `db.pool_size: 12` (`resilience.pool_size × 2 + 2`), and the pool wait no longer holds a provider permit — the permit moved off the admission path and around the retry loop (D-15). Original finding: the database pool exhausts at three concurrent chat posts. `db.pool_size` defaults to 5 (`config.py:25`) with `max_overflow=0` (`app/lifespan.py:34`) and a `POST /chats` holds two connections. Phase 37.5 did not create this but moved the stall inside the LLM permit, so a pool wait now also holds a provider permit. **Recorded, not fixed — the developer owns the choice.** One-line change: raise `db.pool_size` to at least `resilience.pool_size × 2 + 2` (12 at the configured values), or accept the ceiling.
 - OPEN (37.5-06): a real coverage loss. `test_foundation_calls_no_adapter_method_anywhere_in_src` was the only enforcement that `get_user_provider_data` is named nowhere in `src/` outside `auth/adapters.py` and `auth/firebase.py`. The property holds today by grep, but nothing fails if a third file starts calling the adapter. ~25 lines to restore, with its allow-list and two controls. Not restored — unlike the two security cases the developer restored in `658895e`.
 
 ### Quick Tasks Completed
@@ -179,10 +179,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-03T05:23:14.446Z
+**Last session:** 2026-09-03T05:34:28.000Z
 
 Last activity: 2026-08-31
-Stopped at: Completed 41-01-PLAN.md
+Stopped at: Completed 41-02-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -214,6 +214,7 @@ Resume file: None
 | Phase 37.5 P09 | ~55min | 3 tasks | 18 files |
 | Phase 37.5 P10 | ~40min | 3 tasks | 3 files |
 | Phase 41 P01 | 20 min | 2 tasks | 27 files |
+| Phase 41 P02 | 38 min | 3 tasks | 8 files |
 
 ## Decisions
 
@@ -282,3 +283,6 @@ Resume file: None
 - [Phase 37.5]: ChallengeRequired had zero name references and is load-bearing — it is the only class answering a bare framework 409. A name-level assertion now stops a reference-grep reading it as dead. D-10's mandated-code ground is withdrawn; the dispatch ground carries the keep alone (A-12/P-05)
 - [Phase 37.5]: A `pytest -k` gate that collects zero cases still passes. Three plans hit this — `-k` matches node-id substrings case-sensitively and the subjects were CamelCase class names. Verify by node id, and audit each `-k` term separately rather than the disjunction
 - [Phase 37.5]: Deleted coverage leaves visibly: every plan names each deleted case and flags the ones whose survivor is an argument rather than a case. Two security cases cut without a survivor were restored by the developer in 658895e; one architectural guarantee was not, and is recorded as an open loss
+- [Phase 41]: D-14: the circuit breaker is consulted before every attempt, not only at admission — The per-attempt check sits inside the try with the (QueueFullError, CircuitOpenError) pass-through arm above the generic one, so the breaker refusal reaches the caller as its own 503 with Retry-After and is never recorded as a provider failure.
+- [Phase 41]: D-15: admission takes the in-flight slot alone; the provider permit is taken around the retry loop — LLMExecutionGate.hold split into inflight_slot and concurrency, and hold was deleted (no caller outside the module). The quota charge commits and releases its connection before the request waits for a permit, and an open breaker or full queue still answers 503 having spent nothing.
+- [Phase 41]: D-16: db.pool_size is 12, declared in the tracked config.yaml rather than as a Python default — The partial db: block deep-merges with the DB_* env nesting exactly as the jwt: precedent predicted, now proved by a case rather than assumed. Trade-off: the tracked YAML forecloses DB_POOL_SIZE from .env, which nothing sets and .env.example does not document.
