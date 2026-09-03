@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 42
 current_phase_name: POST /auth/claim-registered-grant
 status: executing
-stopped_at: Completed 42-02-PLAN.md
-last_updated: "2026-09-03T19:46:26.219Z"
+stopped_at: Completed 42-03-PLAN.md
+last_updated: "2026-09-03T20:02:12.216Z"
 last_activity: 2026-09-03
 last_activity_desc: Phase 42 execution started
-state_head: f0bb29f1c2e2f127c92a17d58281f76f3a74144d
+state_head: d199801cd7cc750f38bc9fe6086f5883498b50d6
 progress:
   total_phases: 18
   completed_phases: 12
   total_plans: 96
-  completed_plans: 92
+  completed_plans: 93
   percent: 67
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 42 (POST /auth/claim-registered-grant) — EXECUTING
-Plan: 3 of 6
+Plan: 4 of 6
 Status: Ready to execute
 Last activity: 2026-09-03 — Phase 42 execution started
 
@@ -198,10 +198,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-03T19:46:25.545Z
+**Last session:** 2026-09-03T20:02:11.548Z
 
 Last activity: 2026-08-31
-Stopped at: Completed 42-02-PLAN.md
+Stopped at: Completed 42-03-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -239,6 +239,7 @@ Resume file: None
 | Phase 41 P05 | 12 min | 3 tasks | 3 files |
 | Phase 42 P01 | 30m | 3 tasks | 10 files |
 | Phase 42 P02 | ~45 min | 2 tasks | 9 files |
+| Phase 42 P03 | ~10 min | 2 tasks | 2 files |
 
 ## Decisions
 
@@ -331,3 +332,5 @@ Resume file: None
 - [Phase 42]: 42-02: research assumption A1 is false — SQLAlchemy 2.0.46 emits the conversion's UPDATE before its INSERT even in one flush; the explicit flush boundary is kept as the guard against an ORM upgrade inverting it
 - [Phase 42]: 42-02: D-09's guard is the grant history read by source and status at both layers; neither free_grant_consumed_at nor has_prior_free_grant may be a blanket eligibility test, because both are true on the conversion path
 - [Phase 42]: 42-02: AnonymousGrantClaimRequest is renamed GrantClaimRequest and shared by both claim routes; ClaimantNotRegistered is the fourth ClaimRefused leaf and adds no ErrorCode member
+- [Phase 42]: 42-03: reuse by import, not by copy — the registered precedence module imports the anonymous module's stubs, which stays byte-identical
+- [Phase 42]: 42-03: the four claim refusals are asserted byte-identical on the wire at both depths, so the route is no account-state oracle
