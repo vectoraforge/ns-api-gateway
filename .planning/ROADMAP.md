@@ -603,7 +603,7 @@ Plans:
 **Goal:** Ship the sole creator of `registered_account_grant` grants, including supersession of an active anonymous device grant.
 **Requirements:** REGGRANT-01 … REGGRANT-03
 **Depends on:** 34, 35, 40, 41
-**Plans:** 4/6 plans executed
+**Plans:** 5/6 plans executed
 **Success criteria:**
 
 1. This is the only code path that writes a grant row with `source='registered_account_grant'`
@@ -624,7 +624,7 @@ Plans:
 
 - [x] 42-03-PLAN.md — The case matrix: the precedence and consumption table, the repeat, the four refusals and the three Apple arms (wave 3)
 - [x] 42-04-PLAN.md — The structural proofs: the registered single-writer walk and the ordering and import-fence cases, each mutation-tested (wave 3)
-- [ ] 42-05-PLAN.md — The two-connection races, one per destination, against real PostgreSQL (wave 3)
+- [x] 42-05-PLAN.md — The two-connection races, one per destination, against real PostgreSQL (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -723,7 +723,7 @@ Plans:
 | 39. GET /users/me | v2.0 | 4/4 | Complete    | 2026-09-01 |
 | 40. POST /auth/upgrade-anonymous | v2.0 | 8/8 | In Progress|  |
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 5/5 | Complete    | 2026-09-03 |
-| 42. POST /auth/claim-registered-grant | v2.0 | 4/6 | In Progress|  |
+| 42. POST /auth/claim-registered-grant | v2.0 | 5/6 | In Progress|  |
 | 43. POST /webhooks/app-store | v2.0 | 0/? | Pending | — |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 0/? | Pending | — |
 | 45. POST /auth/restore-subscription | v2.0 | 0/? | Pending | — |

@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 42
 current_phase_name: POST /auth/claim-registered-grant
 status: executing
-stopped_at: Completed 42-04-PLAN.md
-last_updated: "2026-09-03T20:11:54.310Z"
+stopped_at: Completed 42-05-PLAN.md
+last_updated: "2026-09-03T20:26:09.629Z"
 last_activity: 2026-09-03
 last_activity_desc: Phase 42 execution started
-state_head: 5ae1fc58ec1bf8fb04d7041a8bf184a134a72c15
+state_head: 6fda3668a0c93a03c1db3da30bf8047091505801
 progress:
   total_phases: 18
   completed_phases: 12
   total_plans: 96
-  completed_plans: 94
+  completed_plans: 95
   percent: 67
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 42 (POST /auth/claim-registered-grant) — EXECUTING
-Plan: 5 of 6
+Plan: 6 of 6
 Status: Ready to execute
 Last activity: 2026-09-03 — Phase 42 execution started
 
@@ -198,10 +198,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-03T20:11:53.638Z
+**Last session:** 2026-09-03T20:26:08.951Z
 
 Last activity: 2026-08-31
-Stopped at: Completed 42-04-PLAN.md
+Stopped at: Completed 42-05-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -241,6 +241,7 @@ Resume file: None
 | Phase 42 P02 | ~45 min | 2 tasks | 9 files |
 | Phase 42 P03 | ~10 min | 2 tasks | 2 files |
 | Phase 42 P04 | ~20 min | 2 tasks | 2 files |
+| Phase 42 P05 | ~40 min | 2 tasks | 1 files |
 
 ## Decisions
 
@@ -336,3 +337,5 @@ Resume file: None
 - [Phase 42]: 42-03: reuse by import, not by copy — the registered precedence module imports the anonymous module's stubs, which stays byte-identical
 - [Phase 42]: 42-03: the four claim refusals are asserted byte-identical on the wire at both depths, so the route is no account-state oracle
 - [Phase 42]: 42-04: two walk classes rather than one parametrized pair, so the anonymous cases stay byte-identical; the helpers took a defaulted member argument
+- [Phase 42]: 42-05: the conversion race holds at the challenge commit, not the first flush — a conversion takes the grant row lock before it flushes, so a flush barrier deadlocks by construction
+- [Phase 42]: 42-05: the conversion loser raises no IntegrityError — it is refused by the writer's in-lock re-decision having written nothing; the unique indexes arbitrate the new-grant destination only
