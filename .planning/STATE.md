@@ -7,8 +7,8 @@ current_phase_name: POST /auth/claim-anonymous-grant
 status: executing
 stopped_at: Completed 41-04-PLAN.md
 last_updated: "2026-09-03T06:16:29.676Z"
-last_activity: 2026-09-02
-last_activity_desc: Phase 41 execution started
+last_activity: 2026-09-03
+last_activity_desc: Phase 41 close-out — the ANONGRANT amendments and the ledger
 state_head: 278a8aa7de57c428320754842d171645c2d9cfd8
 progress:
   total_phases: 18
@@ -31,8 +31,24 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 Phase: 41 (POST /auth/claim-anonymous-grant) — EXECUTING
 Plan: 5 of 5
-Status: Ready to execute
-Last activity: 2026-09-02 — Phase 41 execution started
+Status: Executing 41-05, the documentation close-out — the endpoint itself is complete
+Last activity: 2026-09-03 — 41-05 amending the ledger
+
+<!-- Counts read against disk rather than incremented (41-05): 90 PLAN files and 89 SUMMARY files
+     exist across .planning/phases/, which is exactly what the frontmatter already carried, so
+     nothing was corrected here. The ninetieth summary is 41-05's own and does not exist while this
+     line is written; `state advance-plan` and `state update-progress` recalculate from disk after
+     it lands. Phase 41 itself: 5 plans, 4 summaries at this moment. -->
+
+**Phase 41 outcome.** `POST /auth/claim-anonymous-grant` ships: a linked **anonymous** caller spends a
+challenge, Apple's bit0 is read and set through the new ES256-signed `auth/devicecheck.py` seam, and
+four rows go in one flush under the fixed two-tier lock order — the grant on the `anonymous` tier, its
+anti-abuse row, its usage row and `free_grant_consumed_at`. Every non-happy outcome is an executed
+case: the idempotent repeat, four refusals sharing one byte-identical 403 across three log events, and
+three Apple failure arms. A live two-connection race against real PostgreSQL proves one allocation and
+found a genuine 500 on the loser's path, now fixed. Four divergences from `06-claim-anonymous-grant.md`
+are recorded as **flagged conflicts** under ANONGRANT-01…03 rather than resolved by editing the brief.
+Suite **950 unit / 226 e2e / 134 schema**, `ruff check src tests` clean.
 
 <!-- The same counter hazard recurred in 37.5 and is corrected here the same way. Waves 2 through 8
      ran as parallel worktree agents which deliberately do not write STATE.md, so the counter sat at
@@ -167,6 +183,8 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 - OPEN: RESEARCH.md assumption A1 — introspection constants were captured on PostgreSQL 16.2 but the target is 17.11; plan 34-03 must re-capture them rather than copying RESEARCH.md Code Example 4.
 - Deferred (37-10): the ~48s worst-case provider latency on the completion path is a policy decision on a shared budget — resolve with phases 40/41/42, which share the adapter seam.
 - RESOLVED (41-02, A-15): the database pool no longer exhausts at three concurrent chat posts. `config/config.yaml` declares `db.pool_size: 12` (`resilience.pool_size × 2 + 2`), and the pool wait no longer holds a provider permit — the permit moved off the admission path and around the retry loop (D-15). Original finding: the database pool exhausts at three concurrent chat posts. `db.pool_size` defaults to 5 (`config.py:25`) with `max_overflow=0` (`app/lifespan.py:34`) and a `POST /chats` holds two connections. Phase 37.5 did not create this but moved the stall inside the LLM permit, so a pool wait now also holds a provider permit. **Recorded, not fixed — the developer owns the choice.** One-line change: raise `db.pool_size` to at least `resilience.pool_size × 2 + 2` (12 at the configured values), or accept the ceiling.
+- ACCEPTED (41-05, D-20): every eligible claim makes an unbounded pair of Apple DeviceCheck round trips. `06-claim-anonymous-grant.md:79` forbids any cached or coalesced substitute for the bit read or the bit write — every claim performs its own — and that rule is right, because a cached bit is a bit that can be stale in the direction that hands out a second grant. With the backend rate-limit engine deleted from the product (Phase 35 D-05) and the Envoy gateway contract deferred to v2.1 (Phase 35 D-08), a caller holding a valid ID token for an **eligible** anonymous account can make the backend call Apple as often as it can prepare challenges. **Mitigating:** it is one account looping on itself, not a fan-out — the caller must already hold a valid token for an existing linked anonymous account; the eligibility preflight (D-03) refuses an ineligible account before Apple is reached, so the loop is only open to an account that has not yet claimed; and each turn additionally costs a fresh challenge from `POST /auth/challenge`. **Closes with:** the v2.1 gateway contract. Recorded as **accepted, not as an open defect** — it is a consequence of a decision this project made three phases ago, and filing it as a new problem would misrepresent it. Same treatment Phase 40 D-22 gave the unbounded Firebase read; recorded under ANONGRANT-01 in `REQUIREMENTS.md`.
+- ACCEPTED FACT ABOUT THE WORLD, not a gap the phase left (41-05, D-04): **no real round trip to Apple has ever been made.** No iOS app exists, so nothing can produce a real DeviceCheck device token. The wire shapes `auth/devicecheck.py` implements — the host, the query and update paths, the request bodies and the five ordered response-parse arms — come from secondary sources and are marked `[ASSUMED]`; no official Apple page was fetchable during research. `tests/unit/test_devicecheck_adapter.py` carries that provenance in its module docstring. **The first real 400 or 401 from Apple is authoritative over anything in this repository**, and reads as evidence about those literals rather than as a regression. Written down so a later reader does not treat the 21 green adapter unit cases as evidence the integration works — they pin the seam's behaviour, not the wire.
 - OPEN (37.5-06): a real coverage loss. `test_foundation_calls_no_adapter_method_anywhere_in_src` was the only enforcement that `get_user_provider_data` is named nowhere in `src/` outside `auth/adapters.py` and `auth/firebase.py`. The property holds today by grep, but nothing fails if a third file starts calling the adapter. ~25 lines to restore, with its allow-list and two controls. Not restored — unlike the two security cases the developer restored in `658895e`.
 
 ### Quick Tasks Completed
@@ -294,3 +312,10 @@ Resume file: None
 - [Phase 41]: 41-04: the race loser's rollback expired the two rows the router still reads, so a genuine claim race answered 500; the loser arm now reloads identity.user and identity.identity before returning — A SQLAlchemy rollback expires every instance in the session; the router's identity.user.id then lazy-loads with no greenlet. Found by the live two-connection race, invisible to the stub-session unit case.
 - [Phase 41]: 41-04: lock tiers are asserted over the SQL the production writer actually emits (captured at before_cursor_execute), not over a literal that mirrors the crud — A mirrored literal can pin what the two known tiers look like but cannot detect a third tier a future writer adds, which is the threat the assertion exists for.
 - [Phase 41]: 41-04: FREE_GRANT_SOURCES is tied to the live lifetime index predicate's membership, proven to fire by a mutation that was applied, observed to fail and reverted — Phase 42 narrowing the constant back to one member would silently reopen a spent lifetime slot for every account that already used one.
+- [Phase 41]: The DeviceCheck Protocol is declared beside its implementation in `auth/devicecheck.py`, not in `auth/adapters.py` — that module is fenced by an import allowlist that excludes `httpx`, so a Protocol there would fail `test_adapter_interfaces.py`; it is also FOUND-08's forward-flag treatment, an interface defined with its first implementation rather than declared ahead of one.
+- [Phase 41]: The seam holds no logger at all — not a redacting one — so no code path exists that could write a raw device token to a log line.
+- [Phase 41]: The DeviceCheck update call carries both bits, with bit1 carried forward from the read rather than fabricated — writing a bit1 this phase invented would silently destroy state this phase does not own, and Phase 42's registered claim is the feature that owns it.
+- [Phase 41]: The eligibility read carries no status predicate, because `ix_access_grants_one_free_grant_per_user_source` carries none — the lifetime rule and the index that enforces it must agree, or a revoked free grant reads as a fresh slot.
+- [Phase 41]: For two simultaneous first claims the arbiter is the unique index, not the lock — with no grant row to lock, `FOR UPDATE` locks nothing, so the concurrency guarantee rests on `ix_access_grants_one_free_grant_per_user_source` and `ix_access_grants_one_active_per_user` refusing the second insert, and the IntegrityError is caught without naming a constraint or parsing a message.
+- [Phase 41]: The shared completion sequence grew an injected post-claim callable rather than forking — `AuthService._complete` takes a `PostClaim`, and the two Firebase routes pass `partial(self._read_then_write, write=...)`; a second copy of locate-claim-commit-work-spend is the thing Phase 40 D-16 forbids.
+- [Phase 41]: Both services on this route share one captured instant through a FastAPI dependency rather than reading the clock twice — `get_evaluated_at` makes SHARED-INVARIANTS § Grants' one-evaluation-time rule structural instead of a convention two call sites must remember.
