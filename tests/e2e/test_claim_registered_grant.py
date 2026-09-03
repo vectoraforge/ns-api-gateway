@@ -42,6 +42,9 @@ REFUSED_BODY = '{"code":"operation_not_allowed"}'
 # An hour back, because `CHECK (ends_at IS NULL OR ends_at > starts_at)` is strict.
 SEEDED_AGO = timedelta(hours=1)
 
+# A minute back, so a row seeded with it is marked active and its term is already over.
+LAPSED_AGO = timedelta(minutes=1)
+
 
 @pytest_asyncio.fixture(loop_scope="module")
 async def claim_client(_app_lifespan, stub_verifier):
@@ -392,6 +395,96 @@ class TestTheFourRefusals:
         assert scripted_devicecheck_adapter.write_calls == []
         # The revoked row is still the only one: no registered grant was written beside it.
         assert [grant.id for grant in await _grants_of(_db_transaction, user.id)] == [spent.id]
+        assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestARowMarkedActiveOutsideItsTermIsRefusedBeforeApple:
+    """CR-01. `ix_access_grants_one_active_per_user` carries no time window, so a row whose term has
+    passed still holds the one active slot and still refuses every insert the claim could make."""
+
+    async def test_a_term_lapsed_active_grant_is_refused_and_no_bit_is_read_or_written(
+            self, claim_client, _db_transaction, scripted_devicecheck_adapter):
+        subject = "e2e-claim-registered-lapsed-active"
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                                      provider=IdentityProvider.google)
+        now = datetime.now(UTC)
+        await seed_grant(_db_transaction, user_id=user.id, source=AccessGrantSource.manual,
+                         status=AccessGrantStatus.active,
+                         starts_at=now - SEEDED_AGO, ends_at=now - LAPSED_AGO)
+        before = (await _grants_of(_db_transaction, user.id))[0]
+
+        handle = await _issue(claim_client, subject)
+        refusal = await _claim(claim_client, subject, handle)
+
+        assert refusal.status_code == 403, refusal.text
+        assert refusal.text == REFUSED_BODY
+        assert refusal.json() == REFUSED
+        # The one-way bit is the thing protected here: a fix that still spends it fails on these two.
+        assert scripted_devicecheck_adapter.read_calls == []
+        assert scripted_devicecheck_adapter.write_calls == []
+        after = await _grants_of(_db_transaction, user.id)
+        assert [grant.id for grant in after] == [before.id]
+        assert (after[0].status, after[0].ends_at, after[0].updated_at) == (before.status,
+                                                                            before.ends_at,
+                                                                            before.updated_at)
+        assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
+
+    async def test_an_expired_row_is_not_a_term_lapsed_active_row_and_the_claim_succeeds(
+            self, claim_client, _db_transaction, scripted_devicecheck_adapter):
+        """The control: the guard reads `status`, so a row already marked expired must not trip it."""
+        subject = "e2e-claim-registered-expired-not-lapsed"
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                                      provider=IdentityProvider.google)
+        now = datetime.now(UTC)
+        await seed_grant(_db_transaction, user_id=user.id, source=AccessGrantSource.manual,
+                         status=AccessGrantStatus.expired,
+                         starts_at=now - SEEDED_AGO, ends_at=now - LAPSED_AGO)
+
+        handle = await _issue(claim_client, subject)
+        claim = await _claim(claim_client, subject, handle)
+
+        assert claim.status_code == 200, claim.text
+        assert claim.json()["entitlement"]["type"] == "registered_account_grant"
+        assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
+        assert scripted_devicecheck_adapter.write_calls == [(DEVICE_TOKEN, False, True)]
+        assert await _row_counts(_db_transaction, user.id) == (2, 2)
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestASpentRegisteredSlotRefusesTheConversion:
+    """WR-02. `ix_access_grants_one_free_grant_per_user_source` carries no status predicate, so one
+    registered row at any status is the account's whole lifetime slot."""
+
+    async def test_a_revoked_registered_grant_refuses_the_conversion_and_leaves_the_anonymous_row(
+            self, claim_client, _db_transaction, scripted_devicecheck_adapter):
+        subject = "e2e-claim-registered-slot-spent"
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                                      provider=IdentityProvider.google)
+        now = datetime.now(UTC)
+        await seed_grant(_db_transaction, user_id=user.id,
+                         source=AccessGrantSource.registered_account_grant,
+                         status=AccessGrantStatus.revoked, starts_at=now - SEEDED_AGO)
+        anonymous, _ = await seed_grant(_db_transaction, user_id=user.id, tier_id="anonymous",
+                                        source=AccessGrantSource.anonymous_device_grant,
+                                        status=AccessGrantStatus.active,
+                                        starts_at=now - SEEDED_AGO)
+        before = {grant.id: grant for grant in await _grants_of(_db_transaction, user.id)}
+
+        handle = await _issue(claim_client, subject)
+        refusal = await _claim(claim_client, subject, handle)
+
+        assert refusal.status_code == 403, refusal.text
+        assert refusal.text == REFUSED_BODY
+        assert refusal.json() == REFUSED
+        assert scripted_devicecheck_adapter.read_calls == []
+        assert scripted_devicecheck_adapter.write_calls == []
+        after = await _grants_of(_db_transaction, user.id)
+        assert sorted(grant.id for grant in after) == sorted(before)
+        held = next(grant for grant in after if grant.id == anonymous.id)
+        assert (held.status, held.ends_at, held.updated_at) == (before[anonymous.id].status,
+                                                                before[anonymous.id].ends_at,
+                                                                before[anonymous.id].updated_at)
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
 

@@ -121,6 +121,8 @@ class _RecordingGrants:
         self.session = session
         self.timeline = timeline
         self.held: list[AccessGrant] = []
+        self.marked_active: list[AccessGrant] = []
+        self.grant_of_source: set[AccessGrantSource] = set()
         self.prior_free_grant = False
         self.activates = 0
         # `False` is the race loser and the in-window ineligibility, both of which answer as the repeat does.
@@ -129,6 +131,15 @@ class _RecordingGrants:
     async def read_effective(self, user_id: UUID, evaluated_at: datetime) -> list[AccessGrant]:
         self.timeline.append("read_effective_grants")
         return list(self.held)
+
+    async def read_active(self, user_id: UUID) -> list[AccessGrant]:
+        """The status-only read, which by default sees exactly the effective rows and no more."""
+        self.timeline.append("read_active_grants")
+        return list(self.held) + list(self.marked_active)
+
+    async def holds_grant_of_source(self, user_id: UUID, source: AccessGrantSource) -> bool:
+        self.timeline.append("holds_grant_of_source")
+        return source in self.grant_of_source
 
     async def has_prior_free_grant(self, user_id: UUID) -> bool:
         self.timeline.append("has_prior_free_grant")
@@ -222,9 +233,11 @@ def identity(account) -> Identity:
 
 @pytest.fixture
 def grants(session, timeline, monkeypatch) -> _RecordingGrants:
-    """All three crud calls replaced by recorders, so the preflight's own matrix is what a case drives."""
+    """Every crud call replaced by a recorder, so the preflight's own matrix is what a case drives."""
     recorder = _RecordingGrants(session, timeline)
     monkeypatch.setattr(GrantsDB, "read_effective_grants", recorder.read_effective)
+    monkeypatch.setattr(GrantsDB, "read_active_grants", recorder.read_active)
+    monkeypatch.setattr(GrantsDB, "holds_grant_of_source", recorder.holds_grant_of_source)
     monkeypatch.setattr(GrantsDB, "has_prior_free_grant", recorder.has_prior_free_grant)
     monkeypatch.setattr(GrantsDB, "activate_anonymous_device_grant", recorder.activate)
     return recorder

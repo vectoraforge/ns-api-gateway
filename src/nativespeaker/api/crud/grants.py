@@ -40,6 +40,23 @@ def _usage_statement(grant_id: UUID):
     return select(UserMonthlyUsage).where(col(UserMonthlyUsage.grant_id) == grant_id)
 
 
+def _active_grants_statement(user_id: UUID):
+    """Every grant of `user_id` marked active, whatever its term, ascending by id."""
+    # No time window: a partial index predicate must be IMMUTABLE, so `now()` cannot appear in
+    # `ix_access_grants_one_active_per_user`, and its question is therefore asked on the mark alone.
+    return (select(AccessGrant).where(col(AccessGrant.user_id) == user_id,
+                                      col(AccessGrant.status) == AccessGrantStatus.active)
+            .order_by(col(AccessGrant.id).asc()))
+
+
+def _grants_of_source_statement(user_id: UUID, source: AccessGrantSource):
+    """Every grant `user_id` has ever held from one source, in any status."""
+    # One source and no status, which is `ix_access_grants_one_free_grant_per_user_source` exactly;
+    # `_prior_free_grant_statement` below stays the broader account-level rule over both free sources.
+    return select(AccessGrant).where(col(AccessGrant.user_id) == user_id,
+                                     col(AccessGrant.source) == source)
+
+
 def _prior_free_grant_statement(user_id: UUID):
     """Every free-source grant `user_id` has ever held, in any status."""
     # No status predicate: the index this mirrors has none, so expiry never reopens the lifetime slot.
@@ -64,6 +81,21 @@ class GrantsDB:
         """Return every effective grant for `user_id` at `evaluated_at`, ascending by id, taking no lock."""
         statement = _effective_grants_statement(user_id, evaluated_at)
         return list((await self.session.exec(statement)).all())
+
+    async def lock_active_grants(self, user_id: UUID) -> list[AccessGrant]:
+        """Lock and return every grant of `user_id` the one-active index sees, ascending by id."""
+        # No eager-loading option here: Postgres rejects FOR UPDATE combined with the join those emit.
+        statement = _active_grants_statement(user_id).with_for_update()
+        return list((await self.session.exec(statement)).all())
+
+    async def read_active_grants(self, user_id: UUID) -> list[AccessGrant]:
+        """Return every grant of `user_id` the one-active index sees, ascending by id, taking no lock."""
+        return list((await self.session.exec(_active_grants_statement(user_id))).all())
+
+    async def holds_grant_of_source(self, user_id: UUID, source: AccessGrantSource) -> bool:
+        """Whether `user_id` holds a grant of `source` at any status, taking no lock."""
+        statement = _grants_of_source_statement(user_id, source)
+        return (await self.session.exec(statement)).first() is not None
 
     async def lock_usage(self, grant_id: UUID) -> UserMonthlyUsage | None:
         """Lock and return `grant_id`'s usage row, or `None`. Second in the lock order and never first."""

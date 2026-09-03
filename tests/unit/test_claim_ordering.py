@@ -147,7 +147,7 @@ class TestBothVendorCallsPrecedeTheActivation:
     def test_the_claim_takes_no_lock_of_its_own_before_reaching_the_seam(self):
         """Locking is the crud writer's job alone, and it runs last; a lock here would straddle the call."""
         claim = _function(SERVICE_SOURCE, CLAIM)
-        assert {"lock_effective_grants", "lock_usage",
+        assert {"lock_effective_grants", "lock_active_grants", "lock_usage",
                 "lock_identity_and_user"} & set(_called_names(claim)) == set()
 
 
@@ -173,7 +173,7 @@ class TestBothVendorCallsPrecedeTheRegisteredActivation:
     def test_the_claim_takes_no_lock_of_its_own_before_reaching_the_seam(self):
         """Locking is the crud writer's job alone, and it runs last; a lock here would straddle the call."""
         claim = _function(SERVICE_SOURCE, CLAIM_REGISTERED)
-        assert {"lock_effective_grants", "lock_usage",
+        assert {"lock_effective_grants", "lock_active_grants", "lock_usage",
                 "lock_identity_and_user"} & set(_called_names(claim)) == set()
 
 

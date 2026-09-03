@@ -119,9 +119,11 @@ def identity(account) -> Identity:
 
 @pytest.fixture
 def grants(session, timeline, monkeypatch) -> _RecordingGrants:
-    """All three crud calls replaced by recorders, so the preflight's own matrix is what a case drives."""
+    """Every crud call replaced by a recorder, so the preflight's own matrix is what a case drives."""
     recorder = _RecordingGrants(session, timeline)
     monkeypatch.setattr(GrantsDB, "read_effective_grants", recorder.read_effective)
+    monkeypatch.setattr(GrantsDB, "read_active_grants", recorder.read_active)
+    monkeypatch.setattr(GrantsDB, "holds_grant_of_source", recorder.holds_grant_of_source)
     monkeypatch.setattr(GrantsDB, "has_prior_free_grant", recorder.has_prior_free_grant)
     monkeypatch.setattr(GrantsDB, "activate_registered_account_grant", recorder.activate)
     return recorder

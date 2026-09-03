@@ -13,6 +13,7 @@ from nativespeaker.api.auth.devicecheck import read_bits_with_retry, write_bits_
 from nativespeaker.api.auth.firebase import lookup_with_retry
 from nativespeaker.api.crud import ChallengesDB, GrantsDB, IdentitiesDB
 from nativespeaker.api.errors import (
+    ActiveGrantOutsideItsTerm,
     AppError,
     BlockedUser,
     ChallengeConsumed,
@@ -176,6 +177,10 @@ class AuthService:
             raise FreeGrantAlreadyConsumed
         if held:
             raise OtherActiveGrantHeld
+        # The one-active index's own question, asked on the mark alone; no source-keyed read is added
+        # here because `has_prior_free_grant` above already covers both free sources at any status.
+        if await self.grants_db.read_active_grants(identity.user.id):
+            raise ActiveGrantOutsideItsTerm
 
         # One token for both calls: the bit the read decided on is the bit the write then sets.
         state = await read_bits_with_retry(self.devicecheck, device_token)
@@ -207,6 +212,14 @@ class AuthService:
             return
         if any(source is not AccessGrantSource.anonymous_device_grant for source in sources):
             raise OtherActiveGrantHeld
+        # D-09(e) on both destinations: the lifetime index keys on source and carries no status.
+        if await self.grants_db.holds_grant_of_source(
+                identity.user.id, AccessGrantSource.registered_account_grant):
+            raise FreeGrantAlreadyConsumed
+        # A row the one-active index sees and this window cannot; the insert below would be refused.
+        marked = await self.grants_db.read_active_grants(identity.user.id)
+        if [grant for grant in marked if grant.id not in {row.id for row in held}]:
+            raise ActiveGrantOutsideItsTerm
 
         if not held:
             # History by source and status: `free_grant_consumed_at` is already set on the conversion path.

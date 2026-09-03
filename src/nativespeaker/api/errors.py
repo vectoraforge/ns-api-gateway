@@ -457,6 +457,10 @@ class OtherActiveGrantHeld(ClaimRefused):
     """The account already holds an active grant of another source, and one user holds at most one."""
 
 
+class ActiveGrantOutsideItsTerm(ClaimRefused):
+    """The account holds a row marked active whose term has passed, so the index refuses every grant."""
+
+
 # --- Challenge arms ---
 
 

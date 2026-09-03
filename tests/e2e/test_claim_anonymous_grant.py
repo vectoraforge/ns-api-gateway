@@ -1,5 +1,5 @@
 """The anonymous device-grant claim, end to end through the real router against a real database."""
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -116,6 +116,15 @@ class TestTheAnonymousDeviceGrantHappyPath:
 # The one body every refusal answers with, compared by equality so a more helpful field fails here.
 REFUSED = {"code": "operation_not_allowed"}
 
+# The same body as bytes, so a refusal is compared on the wire and not only after parsing.
+REFUSED_BODY = '{"code":"operation_not_allowed"}'
+
+# An hour back, because `CHECK (ends_at IS NULL OR ends_at > starts_at)` is strict.
+SEEDED_AGO = timedelta(hours=1)
+
+# A minute back, so a row seeded with it is marked active and its term is already over.
+LAPSED_AGO = timedelta(minutes=1)
+
 
 async def _issue(client, subject: str) -> str:
     """Obtain a claim handle for `subject`, which every case below spends exactly once."""
@@ -148,6 +157,22 @@ async def _row_counts(factory, user_id) -> tuple[int, int]:
             select(UserMonthlyUsage)
             .where(col(UserMonthlyUsage.grant_id).in_(ids or [uuid4()])))).all()
         return len(grants), len(usage)
+
+
+async def _grants_of(factory, user_id) -> list[AccessGrant]:
+    """Every grant row of `user_id`, in the same ascending order the writer locks them."""
+    async with factory() as session:
+        return list((await session.exec(
+            select(AccessGrant)
+            .where(col(AccessGrant.user_id) == user_id)
+            .order_by(col(AccessGrant.id).asc()))).all())
+
+
+async def _identity_of(factory, subject: str) -> ExternalIdentity:
+    async with factory() as session:
+        return (await session.exec(
+            select(ExternalIdentity).where(col(ExternalIdentity.issuer) == TEST_ISSUER,
+                                           col(ExternalIdentity.subject) == subject))).one()
 
 
 async def _mark_free_grant_consumed(factory, subject: str) -> None:
@@ -272,6 +297,40 @@ class TestTheFourRefusals:
         assert scripted_devicecheck_adapter.write_calls == []
         assert await _row_counts(_db_transaction, user.id) == (0, 0)
         # Decided after the claim, because the claimant check is the first thing the post-claim work does.
+        assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestARowMarkedActiveOutsideItsTermIsRefusedBeforeApple:
+    """CR-01. `ix_access_grants_one_active_per_user` carries no time window, so a row whose term has
+    passed still holds the one active slot and still refuses the insert this claim would make."""
+
+    async def test_a_term_lapsed_active_grant_is_refused_and_no_bit_is_read_or_written(
+            self, claim_client, _db_transaction, scripted_devicecheck_adapter):
+        subject = "e2e-claim-anonymous-lapsed-active"
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                                      provider=IdentityProvider.anonymous)
+        now = datetime.now(UTC)
+        await seed_grant(_db_transaction, user_id=user.id, source=AccessGrantSource.manual,
+                         status=AccessGrantStatus.active,
+                         starts_at=now - SEEDED_AGO, ends_at=now - LAPSED_AGO)
+        before = (await _grants_of(_db_transaction, user.id))[0]
+
+        handle = await _issue(claim_client, subject)
+        refusal = await _claim(claim_client, subject, handle)
+
+        assert refusal.status_code == 403, refusal.text
+        assert refusal.text == REFUSED_BODY
+        assert refusal.json() == REFUSED
+        # The one-way bit is the thing protected here: a fix that still spends it fails on these two.
+        assert scripted_devicecheck_adapter.read_calls == []
+        assert scripted_devicecheck_adapter.write_calls == []
+        after = await _grants_of(_db_transaction, user.id)
+        assert [grant.id for grant in after] == [before.id]
+        assert (after[0].status, after[0].ends_at, after[0].updated_at) == (before.status,
+                                                                            before.ends_at,
+                                                                            before.updated_at)
+        assert (await _identity_of(_db_transaction, subject)).free_grant_consumed_at is None
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
 
