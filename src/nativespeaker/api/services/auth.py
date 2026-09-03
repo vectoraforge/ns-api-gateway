@@ -180,9 +180,6 @@ class AuthService:
         if not activated:
             # The unique indexes are the arbiter, and the loser answers exactly as the repeat does.
             await self.session.rollback()
-            # The rollback expired both rows the caller was handed; reload them here, where an await still can.
-            await self.session.refresh(identity.user)
-            await self.session.refresh(identity.identity)
 
     async def _apply_create_user(self, identity: Identity,
                                  facts: VerifiedProviderIdentity) -> IdentityProvider:

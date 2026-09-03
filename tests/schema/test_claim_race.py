@@ -9,6 +9,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.orm import object_session
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth.devicecheck import BitState
@@ -180,6 +181,7 @@ class _Attempt:
     # What the call produced: the entitlement read after commit, or the rejection it raised.
     result: Entitlement | AppError | None = None
     grants_seen_at_barrier: int | None = None
+    caller_rows_detached: bool | None = None
     integrity_at_flush: bool = False
     integrity_at_commit: bool = False
 
@@ -199,14 +201,22 @@ async def prepare_attempt(harness: _Harness, *, name: str, subject: str) -> _Att
     return _Attempt(name=name, subject=subject, challenge_row_id=row_id, challenge_id=challenge_id)
 
 
+async def resolve_identity(harness: _Harness, subject: str):
+    """Resolve the caller as `get_identity` does: on a session of its own, closed before the service runs."""
+    async with harness.factory() as session:
+        return await IdentitiesDB(session).resolve(issuer=harness.issuer,
+                                                   subject=subject,
+                                                   allow_preauth=False)
+
+
 async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=None) -> _Attempt:
     """Drive the production completion once, on its own session and connection, as the route does."""
     store = ChallengesDB()
+    identity = await resolve_identity(harness, attempt.subject)
     async with harness.factory() as real_session:
         session = _RacingSession(real_session, before_first_flush)
-        identity = await IdentitiesDB(session).resolve(issuer=harness.issuer,
-                                                       subject=attempt.subject,
-                                                       allow_preauth=False)
+        attempt.caller_rows_detached = all(
+            object_session(row) is None for row in (identity.user, identity.identity))
         service = AuthService(db=session, challenge_store=store, adapter=None,
                               evaluated_at=NOW, devicecheck=_NeverSetDevice())
         try:
@@ -263,6 +273,10 @@ class TestTwoSimultaneousFirstClaimsAllocateOnce:
     async def test_both_attempts_observed_an_account_with_no_grant(self, raced):
         """The premise: without this the case could be two sequential claims, and everything below vacuous."""
         assert [attempt.grants_seen_at_barrier for attempt in raced["attempts"]] == [0, 0]
+
+    async def test_neither_attempt_handed_the_service_a_row_of_its_own_session(self, raced):
+        """The second premise: the caller's rows belong to no session, so refreshing either one would raise."""
+        assert [attempt.caller_rows_detached for attempt in raced["attempts"]] == [True, True]
 
     async def test_exactly_one_attempt_lost_the_race(self, raced):
         """Both answer 200, so losing at the flush is the only thing that separates them."""

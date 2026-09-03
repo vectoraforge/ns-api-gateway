@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import InvalidRequestError
 
 from nativespeaker.api.app.dependencies import (
     get_challenge_store,
@@ -87,12 +88,14 @@ class _FakeChallengeStore:
 class _StubSession:
     """Records transaction boundaries and refuses queries: a statement here means a write ran unstubbed."""
 
-    def __init__(self, timeline: list[str]) -> None:
+    def __init__(self, timeline: list[str], detached: tuple = ()) -> None:
         self.timeline = timeline
         self.commits = 0
         self.rollbacks = 0
         # A real session holds one open from its first statement until the next boundary; the writer opens it.
         self.in_transaction = False
+        # The rows `get_identity` resolved on its own closed session, which this session never held.
+        self.detached = detached
 
     async def commit(self) -> None:
         self.commits += 1
@@ -105,7 +108,8 @@ class _StubSession:
         self.timeline.append("rollback")
 
     async def refresh(self, obj) -> None:
-        return None
+        if any(obj is row for row in self.detached):
+            raise InvalidRequestError(f"Instance '{obj}' is not persistent within this Session")
 
     async def exec(self, statement):
         raise AssertionError(f"the completion path issued a query of its own: {statement!r}")
@@ -194,8 +198,8 @@ def store() -> _FakeChallengeStore:
 
 
 @pytest.fixture
-def session(timeline) -> _StubSession:
-    return _StubSession(timeline)
+def session(timeline, account) -> _StubSession:
+    return _StubSession(timeline, detached=account)
 
 
 @pytest.fixture
@@ -482,7 +486,8 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
 
     def test_the_race_loser_answers_two_hundred_and_still_consumes(self, client, store, account,
                                                                     grants, devicecheck):
-        """The unique indexes are the arbiter, and the loser answers exactly as the repeat does."""
+        """The unique indexes are the arbiter, and the loser answers exactly as the repeat does.
+        The caller's rows came from a closed session, so touching either one here is the 500 this pins."""
         identity_row, _ = account
         grants.activation_wins = False
         store.row = _issued_row(bound_to=identity_row.id)
