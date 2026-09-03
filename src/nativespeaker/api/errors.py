@@ -445,6 +445,14 @@ class ClaimantNotAnonymous(ClaimRefused):
     """The stored identity row is registered, so the anonymous claim is not the route that serves it."""
 
 
+class FreeGrantAlreadyConsumed(ClaimRefused):
+    """The account's one lifetime free grant is spent; revocation and expiry never reopen the slot."""
+
+
+class OtherActiveGrantHeld(ClaimRefused):
+    """The account already holds an active grant of another source, and one user holds at most one."""
+
+
 # --- Challenge arms ---
 
 

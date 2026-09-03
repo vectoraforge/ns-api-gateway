@@ -20,12 +20,13 @@ from nativespeaker.api.errors import (
     ChallengeNotFound,
     ChallengeOperationMismatch,
     ClaimantNotAnonymous,
-    ClaimRefused,
     DeviceGrantExhausted,
+    FreeGrantAlreadyConsumed,
     HistoricalIdentity,
     IdentityAlreadyLinked,
     IdentityUnresolvable,
     NotLinked,
+    OtherActiveGrantHeld,
     ProviderTransitionNotAllowed,
 )
 from nativespeaker.api.schemas.auth import Identity
@@ -156,10 +157,13 @@ class AuthService:
         if any(grant.source is AccessGrantSource.anonymous_device_grant for grant in held):
             # The repeat: nothing is written, Apple is never reached, and the entitlement is read after commit.
             return
+        # D-03: an ineligible account never costs an Apple round trip, and both arms decide before Apple.
         consumed = identity.identity.free_grant_consumed_at is not None
-        if held or consumed or await self.grants_db.has_prior_free_grant(identity.user.id):
-            # D-03: an ineligible account never costs an Apple round trip.
-            raise ClaimRefused
+        if consumed or await self.grants_db.has_prior_free_grant(identity.user.id):
+            # Read at any status, as the lifetime index is: revocation and expiry never reopen the slot.
+            raise FreeGrantAlreadyConsumed
+        if held:
+            raise OtherActiveGrantHeld
 
         state = await read_bits_with_retry(self.devicecheck, query_token)
         if state.bit0:

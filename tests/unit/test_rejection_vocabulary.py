@@ -19,7 +19,11 @@ from nativespeaker.api.errors import (
     ChallengeNotFound,
     ChallengeOperationMismatch,
     ChallengeRejected,
+    ClaimantNotAnonymous,
+    ClaimRefused,
+    FreeGrantAlreadyConsumed,
     NotLinked,
+    OtherActiveGrantHeld,
     ProviderAccountAlreadyLinked,
     ProviderTransitionNotAllowed,
     Unavailable,
@@ -37,6 +41,9 @@ CHALLENGE_ARMS = (ChallengeNotFound, ChallengeExpired, ChallengeConsumed,
 
 # The two leaves under one 403 base, listed rather than derived, so a change here is a visible edit.
 UPGRADE_ARMS = (ProviderTransitionNotAllowed, ProviderAccountAlreadyLinked)
+
+# The three leaves under the claim's 403 base, listed on the same terms.
+CLAIM_ARMS = (ClaimantNotAnonymous, FreeGrantAlreadyConsumed, OtherActiveGrantHeld)
 
 # One drifted pair, reused wherever a live instance of an upgrade refusal is needed.
 UPGRADE_SAMPLE = {"identity_row_id": uuid7(),
@@ -91,9 +98,11 @@ EVENT_NAMES = frozenset({
     # The device-gate arms, under the same lookup base.
     "proof_rejected",
     "device_grant_exhausted",
-    # The claim arms, group base included: the walk finds it, and the preflight still raises it.
+    # The claim arms, group base included: the walk finds it, though only its leaves are raised.
     "claim_refused",
     "claimant_not_anonymous",
+    "free_grant_already_consumed",
+    "other_active_grant_held",
     # The challenge arms, on the same terms.
     "challenge_rejected",
     "challenge_not_found",
@@ -350,3 +359,30 @@ class TestTheMeasurementFires:
         problems = undeclared(_family(_SyntheticBase), root=_SyntheticBase)
         assert sorted(problem.split()[0] for problem in problems) == ["_FirstSilent",
                                                                      "_SecondSilent"]
+
+
+class TestTheThreeClaimArmsAnswerOneThingAndLogThree:
+    """T-41-16: distinguishable refusals would make the claim an account-state oracle for a token holder."""
+
+    def test_the_three_are_exactly_the_leaves_under_the_shared_base(self):
+        """A fourth arm added without coming here would be a refusal nobody checked the answer of."""
+        assert set(_family(ClaimRefused)) == set(CLAIM_ARMS)
+
+    @pytest.mark.parametrize("arm", CLAIM_ARMS, ids=lambda c: c.__name__)
+    def test_no_arm_declares_a_status_or_a_code_of_its_own(self, arm):
+        """The base declares both once, which is what makes the identical body structural."""
+        assert "status" not in vars(arm)
+        assert "code" not in vars(arm)
+        assert (arm.status, arm.code) == (403, "operation_not_allowed")
+
+    @pytest.mark.parametrize("arm", CLAIM_ARMS, ids=lambda c: c.__name__)
+    def test_no_arm_can_carry_anything_into_its_log_line(self, arm):
+        """No `__init__` and no fields: the class name is the whole vocabulary these carry."""
+        assert "__init__" not in vars(arm)
+        assert arm().log_fields() == {}
+
+    def test_the_three_are_three_distinct_log_events_and_one_client_answer(self):
+        events = [camel_to_snake(arm.__name__) for arm in CLAIM_ARMS]
+        assert sorted(events) == sorted(set(events))
+        assert set(events) == {"claimant_not_anonymous", "free_grant_already_consumed",
+                               "other_active_grant_held"}

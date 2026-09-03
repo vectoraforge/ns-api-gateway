@@ -20,6 +20,7 @@ from nativespeaker.api.auth.firebase import _application_default_credential
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.tables import (
     AccessGrant,
+    AccessGrantAntiAbuse,
     AccessGrantSource,
     AccessGrantStatus,
     Chat,
@@ -28,6 +29,7 @@ from nativespeaker.api.tables import (
     IdentityProvider,
     IdentityState,
     Message,
+    NativeClaimProvider,
     PurchaseProvider,
     StorePurchaseToken,
     User,
@@ -328,12 +330,13 @@ async def seed_grant(factory, *,
                      monthly_used: int = 0,
                      starts_at: datetime | None = None,
                      ends_at: datetime | None = None,
-                     with_usage: bool = True):
+                     with_usage: bool = True,
+                     with_anti_abuse: bool = False):
     """Insert a core.access_grants row and its core.user_monthly_usage row; return both."""
     # A grant with no usage row is a 500 rather than a 429, so with_usage=False is only for that case.
     now = datetime.now(UTC)
     async with factory() as session:
-        # source defaults to manual: the free sources need an anti-abuse row nothing here can seed.
+        # source still defaults to manual; a free source needs with_anti_abuse, which the deferred FK requires.
         grant = AccessGrant(user_id=user_id,
                             tier_id=tier_id,
                             source=source,
@@ -342,6 +345,12 @@ async def seed_grant(factory, *,
                             ends_at=ends_at)
         session.add(grant)
         await session.flush()
+        if with_anti_abuse:
+            # The iOS arm of the table's exclusive-or CHECK: the provider set, both hash columns unset.
+            session.add(AccessGrantAntiAbuse(grant_id=grant.id,
+                                             grant_source=source,
+                                             native_claim_provider=NativeClaimProvider.ios_devicecheck,
+                                             created_at=now))
         usage = None
         if with_usage:
             usage = UserMonthlyUsage(grant_id=grant.id,
