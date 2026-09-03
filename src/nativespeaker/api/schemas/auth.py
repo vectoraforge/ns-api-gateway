@@ -29,11 +29,10 @@ class CompletionRequest(BaseModel):
 
 
 class AnonymousGrantClaimRequest(BaseModel):
-    """The claim body: the handle, and the two single-use DeviceCheck tokens."""
+    """The claim body: the handle, and the DeviceCheck token naming the device."""
     challenge_id: str = Field(..., min_length=1)
-    # Two separate tokens, each used once: the query token is never reused for the update.
-    query_token: str = Field(..., min_length=1)
-    update_token: str = Field(..., min_length=1)
+    # One token for the read and the write: two would let the bit read name a different device.
+    device_token: str = Field(..., min_length=1)
 
 
 class CompletionResponse(BaseModel):

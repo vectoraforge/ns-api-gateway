@@ -40,9 +40,8 @@ from .conftest import TEST_ISSUER
 SUBJECT = "claim-precedence-subject"
 HANDLE = "a-scripted-claim-handle"
 
-# Two obviously synthetic tokens, each used once; neither resembles a real device token.
-QUERY_TOKEN = "a-synthetic-query-token"
-UPDATE_TOKEN = "a-synthetic-update-token"
+# One obviously synthetic token, naming the one device; it resembles no real device token.
+DEVICE_TOKEN = "a-synthetic-device-token"
 
 REFUSED = {"code": "operation_not_allowed"}
 CHALLENGE_REQUIRED = {"code": "challenge_required"}
@@ -285,9 +284,7 @@ def _issued_row(*,
 
 def _claim(client, handle: str = HANDLE):
     return client.post("/auth/claim-anonymous-grant",
-                       json={"challenge_id": handle,
-                             "query_token": QUERY_TOKEN,
-                             "update_token": UPDATE_TOKEN})
+                       json={"challenge_id": handle, "device_token": DEVICE_TOKEN})
 
 
 def _a_grant(source: AccessGrantSource) -> AccessGrant:
@@ -509,9 +506,39 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert response.json()["entitlement"]["type"] == "anonymous_device_grant"
         assert store.consume_calls == 1
         assert grants.activates == 1
-        assert devicecheck.read_calls == [QUERY_TOKEN]
+        assert devicecheck.read_calls == [DEVICE_TOKEN]
         # bit1 carried forward from the query, never fabricated.
-        assert devicecheck.write_calls == [(UPDATE_TOKEN, True, False)]
+        assert devicecheck.write_calls == [(DEVICE_TOKEN, True, False)]
+
+
+class TestTheDeviceReadAndTheDeviceWriteNameOneDevice:
+    """ANONGRANT-03: two tokens would let bit0 be read off a device that is never written to."""
+
+    def test_the_token_the_gate_reads_is_the_token_it_then_writes(self, client, store, account,
+                                                                   grants, devicecheck):
+        identity_row, _ = account
+        store.row = _issued_row(bound_to=identity_row.id)
+
+        response = _claim(client)
+
+        assert response.status_code == 200
+        assert devicecheck.read_calls == [DEVICE_TOKEN]
+        assert [token for token, _, _ in devicecheck.write_calls] == devicecheck.read_calls
+
+    def test_a_body_offering_a_second_token_is_rejected_before_the_gate(self, client, store,
+                                                                        account, devicecheck):
+        """The split body is gone from the wire, so there is no second token left to substitute."""
+        identity_row, _ = account
+        store.row = _issued_row(bound_to=identity_row.id)
+
+        response = client.post("/auth/claim-anonymous-grant",
+                               json={"challenge_id": HANDLE,
+                                     "query_token": "device-a-never-written-to",
+                                     "update_token": "device-b-already-set"})
+
+        assert response.status_code == 422
+        assert devicecheck.read_calls == []
+        assert store.consume_calls == 0
 
 
 def _registered(identity_row, grants, devicecheck) -> None:

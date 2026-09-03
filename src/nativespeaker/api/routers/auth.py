@@ -108,11 +108,10 @@ async def claim_anonymous_grant(body: AnonymousGrantClaimRequest,
                                 service: AuthService = Depends(get_auth_service),
                                 sync_service: SyncService = Depends(get_sync_service)) -> SyncResponse:
     """Complete the operation the body's handle stands for, and report the entitlement it left."""
-    # Forwarded untouched and never logged: the handle and both device tokens are secrets.
+    # Forwarded untouched and never logged: the handle and the device token are secrets.
     await service.complete_claim_anonymous_grant(identity=identity,
                                                  challenge_id=body.challenge_id,
-                                                 query_token=body.query_token,
-                                                 update_token=body.update_token)
+                                                 device_token=body.device_token)
     # Read after the completion committed, so the claim, the repeat and the race loser share one shape.
     entitlement = await sync_service.read_entitlement(identity.user.id)
     # Set on the injected response rather than returned as a JSONResponse, so the model still validates.

@@ -223,8 +223,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=N
             await service.complete_claim_anonymous_grant(
                 identity=identity,
                 challenge_id=attempt.challenge_id,
-                query_token=f"query-{attempt.name}",
-                update_token=f"update-{attempt.name}")
+                device_token=f"device-{attempt.name}")
         except AppError as rejection:
             attempt.result = rejection
         else:

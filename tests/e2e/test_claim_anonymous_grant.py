@@ -30,9 +30,8 @@ pytestmark = pytest.mark.e2e
 
 SUBJECT = "tracer-claim-anonymous-subject"
 
-# Two distinct tokens, each used once: the query token is never reused for the update.
-QUERY_TOKEN = "query-token-tracer"
-UPDATE_TOKEN = "update-token-tracer"
+# One token, naming the device the read and the write both act on.
+DEVICE_TOKEN = "device-token-tracer"
 
 
 @pytest_asyncio.fixture(loop_scope="module")
@@ -67,8 +66,7 @@ class TestTheAnonymousDeviceGrantHappyPath:
 
         claim = await claim_client.post("/auth/claim-anonymous-grant",
                                         json={"challenge_id": handle,
-                                              "query_token": QUERY_TOKEN,
-                                              "update_token": UPDATE_TOKEN},
+                                              "device_token": DEVICE_TOKEN},
                                         headers=_auth())
 
         assert claim.status_code == 200, claim.text
@@ -82,9 +80,9 @@ class TestTheAnonymousDeviceGrantHappyPath:
         assert body["entitlement"]["monthly_used"] == 0
         assert body["entitlement"]["current_period"]
 
-        assert scripted_devicecheck_adapter.read_calls == [QUERY_TOKEN]
-        # The update carried the query's bit1 forward, and set only bit0.
-        assert scripted_devicecheck_adapter.write_calls == [(UPDATE_TOKEN, True, False)]
+        assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
+        # The update carried the query's bit1 forward, set only bit0, and named the device that was read.
+        assert scripted_devicecheck_adapter.write_calls == [(DEVICE_TOKEN, True, False)]
 
         async with _db_transaction() as session:
             grants = (await session.exec(
@@ -138,13 +136,9 @@ async def _issue(client, subject: str) -> str:
     return issued.json()["challenge_id"]
 
 
-async def _claim(client, subject: str, handle: str, *,
-                 query_token: str = QUERY_TOKEN,
-                 update_token: str = UPDATE_TOKEN):
+async def _claim(client, subject: str, handle: str, *, device_token: str = DEVICE_TOKEN):
     return await client.post("/auth/claim-anonymous-grant",
-                             json={"challenge_id": handle,
-                                   "query_token": query_token,
-                                   "update_token": update_token},
+                             json={"challenge_id": handle, "device_token": device_token},
                              headers=_auth(subject))
 
 
@@ -311,7 +305,7 @@ class TestTheThreeAppleFailureArms:
         assert refusal.status_code == 403, refusal.text
         # No device state in the body: the copy directs to the registered path and discloses nothing.
         assert refusal.json() == {"code": "device_grant_exhausted"}
-        assert scripted_devicecheck_adapter.read_calls == [QUERY_TOKEN]
+        assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
         # The slot is spent, so the write that would spend it again is never attempted.
         assert scripted_devicecheck_adapter.write_calls == []
         assert await _row_counts(_db_transaction, user.id) == (0, 0, 0)
@@ -330,7 +324,7 @@ class TestTheThreeAppleFailureArms:
         assert refusal.status_code == 403, refusal.text
         assert refusal.json() == {"code": "proof_rejected"}
         # Definitive, so it spends one attempt of the budget rather than all three.
-        assert scripted_devicecheck_adapter.read_calls == [QUERY_TOKEN]
+        assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
         assert scripted_devicecheck_adapter.write_calls == []
         assert await _row_counts(_db_transaction, user.id) == (0, 0, 0)
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
@@ -348,7 +342,7 @@ class TestTheThreeAppleFailureArms:
 
         assert refusal.status_code == 503, refusal.text
         assert refusal.json() == {"code": "verification_temporarily_unavailable"}
-        assert scripted_devicecheck_adapter.read_calls == [QUERY_TOKEN] * DEVICECHECK_ATTEMPTS
+        assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN] * DEVICECHECK_ATTEMPTS
         assert scripted_devicecheck_adapter.write_calls == []
         assert await _row_counts(_db_transaction, user.id) == (0, 0, 0)
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None

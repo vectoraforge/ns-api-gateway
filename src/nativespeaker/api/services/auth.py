@@ -83,15 +83,13 @@ class AuthService:
     async def complete_claim_anonymous_grant(self, *,
                                              identity: Identity,
                                              challenge_id: str,
-                                             query_token: str,
-                                             update_token: str) -> None:
+                                             device_token: str) -> None:
         """Claim the caller's one anonymous device grant; the entitlement is read back after commit."""
         await self._complete(identity=identity,
                              challenge_id=challenge_id,
                              operation=AuthOperation.claim_anonymous_grant,
                              post_claim=partial(self._claim_anonymous_grant,
-                                                query_token=query_token,
-                                                update_token=update_token))
+                                                device_token=device_token))
 
     async def _complete[T](self, *,
                            identity: Identity,
@@ -146,8 +144,7 @@ class AuthService:
         # The provider the transaction settled on, which a divergence makes different from the read's.
         return await write(identity, facts)
 
-    async def _claim_anonymous_grant(self, identity: Identity, *,
-                                     query_token: str, update_token: str) -> None:
+    async def _claim_anonymous_grant(self, identity: Identity, *, device_token: str) -> None:
         """Refuse, or verify the device with Apple and activate the grant inside one transaction."""
         # D-08: the stored provider column is the sole classifier, and it is tested positively.
         if identity.identity.provider is not IdentityProvider.anonymous:
@@ -165,12 +162,13 @@ class AuthService:
         if held:
             raise OtherActiveGrantHeld
 
-        state = await read_bits_with_retry(self.devicecheck, query_token)
+        # One token for both calls: the bit the read decided on is the bit the write then sets.
+        state = await read_bits_with_retry(self.devicecheck, device_token)
         if state.bit0:
             raise DeviceGrantExhausted(stage="devicecheck_read", cause="already_set")
 
         # bit1 is carried forward, never fabricated: Apple writes both bits in this one call.
-        await write_bits_with_retry(self.devicecheck, update_token, bit0=True, bit1=state.bit1)
+        await write_bits_with_retry(self.devicecheck, device_token, bit0=True, bit1=state.bit1)
 
         activated = await self.grants_db.activate_anonymous_device_grant(
             user_id=identity.user.id,
