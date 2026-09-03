@@ -317,9 +317,9 @@ Shared machinery only. Rebinding the pre-existing routes is Phase 36.
 
 ### REGGRANT — Phase 42 (`07-claim-registered-grant.md`) — `POST /auth/claim-registered-grant`
 
-- [ ] **REGGRANT-01**: The endpoint is the only creator of `source='registered_account_grant'` rows, across prepare and completion modes
-- [ ] **REGGRANT-02**: Supersession conversion of an active anonymous device grant happens inside one transaction under the same fixed global lock order, never leaving two active grants
-- [ ] **REGGRANT-03**: The one-free-grant-per-account interplay with an existing anonymous device grant resolves without double-allocating entitlement
+- [x] **REGGRANT-01**: The endpoint is the only creator of `source='registered_account_grant'` rows, across prepare and completion modes
+- [x] **REGGRANT-02**: Supersession conversion of an active anonymous device grant happens inside one transaction under the same fixed global lock order, never leaving two active grants
+- [x] **REGGRANT-03**: The one-free-grant-per-account interplay with an existing anonymous device grant resolves without double-allocating entitlement
 
 ### APPLEHOOK — Phase 43 (`08-webhook-app-store.md`) — `POST /webhooks/app-store`
 
