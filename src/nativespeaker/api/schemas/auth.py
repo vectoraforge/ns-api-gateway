@@ -28,8 +28,8 @@ class CompletionRequest(BaseModel):
     challenge_id: str = Field(..., min_length=1)
 
 
-class AnonymousGrantClaimRequest(BaseModel):
-    """The claim body: the handle, and the DeviceCheck token naming the device."""
+class GrantClaimRequest(BaseModel):
+    """The body both grant claims share: the handle, and the DeviceCheck token naming the device."""
     challenge_id: str = Field(..., min_length=1)
     # One token for the read and the write: two would let the bit read name a different device.
     device_token: str = Field(..., min_length=1)

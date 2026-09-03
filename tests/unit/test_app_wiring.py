@@ -38,7 +38,8 @@ class TestEveryRouteIsAuthenticated:
                 assert get_identity in _declared(route), route.path
 
     @pytest.mark.parametrize("path", ("/auth/sync", "/auth/upgrade-anonymous",
-                                      "/auth/claim-anonymous-grant", "/users/me"))
+                                      "/auth/claim-anonymous-grant",
+                                      "/auth/claim-registered-grant", "/users/me"))
     def test_a_narrowed_route_declares_the_linked_identity_narrowing(self, path):
         """Named rather than left to the generic case, which would also pass if the route were exempted."""
         declared = [_declared(route) for route in _api_routes() if route.path == path]
@@ -46,7 +47,8 @@ class TestEveryRouteIsAuthenticated:
         assert all(get_linked_identity in calls for calls in declared)
 
     @pytest.mark.parametrize("path", ("/auth/sync", "/auth/upgrade-anonymous",
-                                      "/auth/claim-anonymous-grant", "/users/me"))
+                                      "/auth/claim-anonymous-grant",
+                                      "/auth/claim-registered-grant", "/users/me"))
     def test_a_narrowed_route_is_in_neither_exemption_set(self, path):
         """The route is authenticated and narrowed, so widening either literal above would fail here."""
         assert path in {route.path for route in _api_routes()}

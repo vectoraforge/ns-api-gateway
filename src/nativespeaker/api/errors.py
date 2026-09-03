@@ -445,6 +445,10 @@ class ClaimantNotAnonymous(ClaimRefused):
     """The stored identity row is registered, so the anonymous claim is not the route that serves it."""
 
 
+class ClaimantNotRegistered(ClaimRefused):
+    """The stored identity row is anonymous, so the registered claim is not the route that serves it."""
+
+
 class FreeGrantAlreadyConsumed(ClaimRefused):
     """The account's one lifetime free grant is spent; revocation and expiry never reopen the slot."""
 

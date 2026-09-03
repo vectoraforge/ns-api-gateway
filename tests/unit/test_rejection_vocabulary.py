@@ -20,6 +20,7 @@ from nativespeaker.api.errors import (
     ChallengeOperationMismatch,
     ChallengeRejected,
     ClaimantNotAnonymous,
+    ClaimantNotRegistered,
     ClaimRefused,
     FreeGrantAlreadyConsumed,
     NotLinked,
@@ -42,8 +43,9 @@ CHALLENGE_ARMS = (ChallengeNotFound, ChallengeExpired, ChallengeConsumed,
 # The two leaves under one 403 base, listed rather than derived, so a change here is a visible edit.
 UPGRADE_ARMS = (ProviderTransitionNotAllowed, ProviderAccountAlreadyLinked)
 
-# The three leaves under the claim's 403 base, listed on the same terms.
-CLAIM_ARMS = (ClaimantNotAnonymous, FreeGrantAlreadyConsumed, OtherActiveGrantHeld)
+# The four leaves under the claim's 403 base, listed on the same terms.
+CLAIM_ARMS = (ClaimantNotAnonymous, ClaimantNotRegistered, FreeGrantAlreadyConsumed,
+              OtherActiveGrantHeld)
 
 # One drifted pair, reused wherever a live instance of an upgrade refusal is needed.
 UPGRADE_SAMPLE = {"identity_row_id": uuid7(),
@@ -101,6 +103,7 @@ EVENT_NAMES = frozenset({
     # The claim arms, group base included: the walk finds it, though only its leaves are raised.
     "claim_refused",
     "claimant_not_anonymous",
+    "claimant_not_registered",
     "free_grant_already_consumed",
     "other_active_grant_held",
     # The challenge arms, on the same terms.
@@ -361,10 +364,10 @@ class TestTheMeasurementFires:
                                                                      "_SecondSilent"]
 
 
-class TestTheThreeClaimArmsAnswerOneThingAndLogThree:
+class TestTheFourClaimArmsAnswerOneThingAndLogFour:
     """T-41-16: distinguishable refusals would make the claim an account-state oracle for a token holder."""
 
-    def test_the_three_are_exactly_the_leaves_under_the_shared_base(self):
+    def test_the_four_are_exactly_the_leaves_under_the_shared_base(self):
         """A fourth arm added without coming here would be a refusal nobody checked the answer of."""
         assert set(_family(ClaimRefused)) == set(CLAIM_ARMS)
 
@@ -381,8 +384,8 @@ class TestTheThreeClaimArmsAnswerOneThingAndLogThree:
         assert "__init__" not in vars(arm)
         assert arm().log_fields() == {}
 
-    def test_the_three_are_three_distinct_log_events_and_one_client_answer(self):
+    def test_the_four_are_four_distinct_log_events_and_one_client_answer(self):
         events = [camel_to_snake(arm.__name__) for arm in CLAIM_ARMS]
         assert sorted(events) == sorted(set(events))
-        assert set(events) == {"claimant_not_anonymous", "free_grant_already_consumed",
-                               "other_active_grant_held"}
+        assert set(events) == {"claimant_not_anonymous", "claimant_not_registered",
+                               "free_grant_already_consumed", "other_active_grant_held"}

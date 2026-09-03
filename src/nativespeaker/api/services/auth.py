@@ -20,6 +20,7 @@ from nativespeaker.api.errors import (
     ChallengeNotFound,
     ChallengeOperationMismatch,
     ClaimantNotAnonymous,
+    ClaimantNotRegistered,
     DeviceGrantExhausted,
     FreeGrantAlreadyConsumed,
     HistoricalIdentity,
@@ -44,6 +45,9 @@ type PostClaim[T] = Callable[[Identity], Awaitable[T]]
 
 # The seeded `core.access_tiers` row an anonymous device grant points at.
 ANONYMOUS_TIER_ID = "anonymous"
+
+# The seeded `core.access_tiers` row a registered account grant points at.
+REGISTERED_TIER_ID = "registered"
 
 
 class AuthService:
@@ -89,6 +93,17 @@ class AuthService:
                              challenge_id=challenge_id,
                              operation=AuthOperation.claim_anonymous_grant,
                              post_claim=partial(self._claim_anonymous_grant,
+                                                device_token=device_token))
+
+    async def complete_claim_registered_grant(self, *,
+                                              identity: Identity,
+                                              challenge_id: str,
+                                              device_token: str) -> None:
+        """Claim the caller's one registered account grant; the entitlement is read back after commit."""
+        await self._complete(identity=identity,
+                             challenge_id=challenge_id,
+                             operation=AuthOperation.claim_registered_grant,
+                             post_claim=partial(self._claim_registered_grant,
                                                 device_token=device_token))
 
     async def _complete[T](self, *,
@@ -174,6 +189,42 @@ class AuthService:
             user_id=identity.user.id,
             identity_row=identity.identity,
             tier_id=ANONYMOUS_TIER_ID,
+            evaluated_at=self.evaluated_at)
+        if not activated:
+            # The unique indexes are the arbiter, and the loser answers exactly as the repeat does.
+            await self.session.rollback()
+
+    async def _claim_registered_grant(self, identity: Identity, *, device_token: str) -> None:
+        """Refuse, or convert the caller's anonymous grant, or verify the device and activate a new one."""
+        # D-05: the stored provider column is the sole classifier, and it is tested positively.
+        if identity.identity.provider not in (IdentityProvider.google, IdentityProvider.apple):
+            raise ClaimantNotRegistered
+
+        held = await self.grants_db.read_effective_grants(identity.user.id, self.evaluated_at)
+        sources = [grant.source for grant in held]
+        if AccessGrantSource.registered_account_grant in sources:
+            # The repeat: nothing is written, Apple is never reached, and the entitlement is read after commit.
+            return
+        if any(source is not AccessGrantSource.anonymous_device_grant for source in sources):
+            raise OtherActiveGrantHeld
+
+        if not held:
+            # History by source and status: `free_grant_consumed_at` is already set on the conversion path.
+            if await self.grants_db.has_prior_free_grant(identity.user.id):
+                raise FreeGrantAlreadyConsumed
+
+            # One token for both calls: the bit the read decided on is the bit the write then sets.
+            state = await read_bits_with_retry(self.devicecheck, device_token)
+            if state.bit1:
+                raise DeviceGrantExhausted(stage="devicecheck_read", cause="already_set")
+
+            # bit0 is carried forward, never fabricated: Apple writes both bits in this one call.
+            await write_bits_with_retry(self.devicecheck, device_token, bit0=state.bit0, bit1=True)
+
+        activated = await self.grants_db.activate_registered_account_grant(
+            user_id=identity.user.id,
+            identity_row=identity.identity,
+            tier_id=REGISTERED_TIER_ID,
             evaluated_at=self.evaluated_at)
         if not activated:
             # The unique indexes are the arbiter, and the loser answers exactly as the repeat does.

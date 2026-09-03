@@ -1,4 +1,4 @@
-"""Entitlement reads over `core.access_grants`, and the one writer of an anonymous device grant.
+"""Entitlement reads over `core.access_grants`, and the one writer of each of the two free grants.
 Global lock order: grant rows ascending by id, then usage rows, and never a third tier."""
 from datetime import datetime
 from uuid import UUID
@@ -116,6 +116,74 @@ class GrantsDB:
                                           updated_at=evaluated_at))
         stored.free_grant_consumed_at = evaluated_at
         stored.native_claim_platform = NativeClaimProvider.ios_devicecheck
+        stored.updated_at = evaluated_at
+
+        # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
+        try:
+            await self.session.flush()
+        except IntegrityError:
+            # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
+            return False
+        return True
+
+    async def activate_registered_account_grant(self, *,
+                                                user_id: UUID,
+                                                identity_row: ExternalIdentity,
+                                                tier_id: str,
+                                                evaluated_at: datetime) -> bool:
+        """Take both lock tiers, re-decide the destination, and write it: a conversion, or a new grant."""
+        grants = await self.lock_effective_grants(user_id, evaluated_at)
+        # The usage row is kept rather than discarded: the conversion carries the old counters across.
+        locked_usage: dict[UUID, UserMonthlyUsage | None] = {}
+        for grant in grants:
+            locked_usage[grant.id] = await self.lock_usage(grant.id)
+
+        # A plain re-read, never `lock_identity_and_user`: a user-row lock ahead of the grant locks is forbidden.
+        stored = await IdentitiesDB(self.session).resolve_existing(issuer=identity_row.issuer,
+                                                                   subject=identity_row.subject)
+        # Tested positively, so a NULL or any future provider member is refused on this same branch.
+        if stored is None or stored.provider not in (IdentityProvider.google, IdentityProvider.apple):
+            return False
+
+        held = [grant.source for grant in grants]
+        if AccessGrantSource.registered_account_grant in held:
+            return False
+        if any(source is not AccessGrantSource.anonymous_device_grant for source in held):
+            return False
+        superseded = grants[0] if grants else None
+        # History by source and status, never `free_grant_consumed_at`, which the conversion already carries.
+        if superseded is None and await self.has_prior_free_grant(user_id):
+            return False
+
+        carried = locked_usage.get(superseded.id) if superseded is not None else None
+        if superseded is not None:
+            superseded.status = AccessGrantStatus.expired
+            superseded.ends_at = evaluated_at
+            superseded.updated_at = evaluated_at
+            # Flushed alone and first: the ORM emits inserts before updates, and the one-active index is per-statement.
+            try:
+                await self.session.flush()
+            except IntegrityError:
+                # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
+                return False
+
+        activated = AccessGrant(user_id=user_id,
+                                tier_id=tier_id,
+                                source=AccessGrantSource.registered_account_grant,
+                                starts_at=evaluated_at,
+                                created_at=evaluated_at,
+                                updated_at=evaluated_at)
+        self.session.add(activated)
+        # The carried period and count are safe because the registered tier's allowance is the larger one.
+        self.session.add(UserMonthlyUsage(
+            grant_id=activated.id,
+            monthly_period=evaluated_at.strftime("%Y-%m") if carried is None else carried.monthly_period,
+            monthly_used=0 if carried is None else carried.monthly_used,
+            created_at=evaluated_at,
+            updated_at=evaluated_at))
+        if stored.free_grant_consumed_at is None:
+            # Set where unset: the conversion path already spent the slot and the instant it spent it is the record.
+            stored.free_grant_consumed_at = evaluated_at
         stored.updated_at = evaluated_at
 
         # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
