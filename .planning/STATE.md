@@ -5,10 +5,10 @@ milestone_name: Authentication & Entitlements
 current_phase: 42
 current_phase_name: POST /auth/claim-registered-grant
 status: planning
-stopped_at: Phase 41 complete, ready to plan Phase 42
-last_updated: "2026-09-03T07:52:05.918Z"
+stopped_at: Phase 42 context gathered
+last_updated: "2026-09-03T17:59:29.322Z"
 last_activity: 2026-09-03
-state_head: 13355fcad341b7d9e5f25bdb91d1d06c7dd574bb
+state_head: 1f35b4376288a384c4f288c885c700fb0ebeedc3
 progress:
   total_phases: 18
   completed_phases: 12
@@ -197,11 +197,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-03T06:34:30.926Z
+**Last session:** 2026-09-03T17:59:28.666Z
 
 Last activity: 2026-08-31
-Stopped at: Phase 41 complete, ready to plan Phase 42
-Resume file: None
+Stopped at: Phase 42 context gathered
+Resume file: .planning/phases/42-post-auth-claim-registered-grant/42-CONTEXT.md
 
 ## Performance Metrics
 
