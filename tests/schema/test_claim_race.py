@@ -1,4 +1,4 @@
-"""Two simultaneous first claims: with no grant row to lock, the unique indexes arbitrate and not FOR UPDATE."""
+"""Simultaneous claims on one account, raced on two connections against real PostgreSQL."""
 import asyncio
 import uuid
 from dataclasses import dataclass
@@ -155,12 +155,14 @@ class _NeverSetDevice:
 
 
 class _RacingSession:
-    """A real session that holds at a barrier before its first flush and records where an IntegrityError arrived."""
+    """A real session that holds at a barrier, and records whether a violation arrived at the flush or the commit."""
 
-    def __init__(self, session, before_first_flush=None) -> None:
+    def __init__(self, session, before_first_flush=None, before_first_commit=None) -> None:
         self._session = session
         self._before_first_flush = before_first_flush
+        self._before_first_commit = before_first_commit
         self.flushes = 0
+        self.commits = 0
         self.integrity_at_flush = False
         self.integrity_at_commit = False
 
@@ -176,6 +178,10 @@ class _RacingSession:
             raise
 
     async def commit(self, *args, **kwargs):
+        self.commits += 1
+        if self.commits == 1 and self._before_first_commit is not None:
+            hook, self._before_first_commit = self._before_first_commit, None
+            await hook()
         # The inner session's own flush runs here, so a violation reaching commit never sets the flag above.
         try:
             return await self._session.commit(*args, **kwargs)
@@ -202,6 +208,8 @@ class _Attempt:
     caller_rows_detached: bool | None = None
     integrity_at_flush: bool = False
     integrity_at_commit: bool = False
+    # Every write the writer emits goes through one of these, so zero means the attempt wrote nothing.
+    flushes: int = 0
 
 
 def role_of(attempt: _Attempt) -> str:
@@ -230,12 +238,13 @@ async def resolve_identity(harness: _Harness, subject: str):
                                                    allow_preauth=False)
 
 
-async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=None) -> _Attempt:
+async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=None,
+                      before_first_commit=None) -> _Attempt:
     """Drive the production completion once, on its own session and connection, as the route does."""
     store = ChallengesDB()
     identity = await resolve_identity(harness, attempt.subject)
     async with harness.factory() as real_session:
-        session = _RacingSession(real_session, before_first_flush)
+        session = _RacingSession(real_session, before_first_flush, before_first_commit)
         attempt.caller_rows_detached = all(
             object_session(row) is None for row in (identity.user, identity.identity))
         service = AuthService(db=session, challenge_store=store, adapter=None,
@@ -256,6 +265,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=N
                                                evaluated_at=NOW).read_entitlement(identity.user.id)
         attempt.integrity_at_flush = session.integrity_at_flush
         attempt.integrity_at_commit = session.integrity_at_commit
+        attempt.flushes = session.flushes
     return attempt
 
 
@@ -442,3 +452,152 @@ class TestTwoSimultaneousRegisteredClaimsAllocateOnce:
         winner, loser = raced["by_role"]["won"], raced["by_role"]["lost_at_flush"]
         assert (loser.integrity_at_flush, loser.integrity_at_commit) == (True, False)
         assert (winner.integrity_at_flush, winner.integrity_at_commit) == (False, False)
+
+
+# Deliberately not the period or the count a freshly minted usage row would carry at `NOW`.
+SEEDED_PERIOD = "2026-07"
+SEEDED_USED = 7
+
+
+async def commit_active_anonymous_grant(harness: _Harness, *, user_id: uuid.UUID) -> uuid.UUID:
+    """One active anonymous grant and its usage row, started strictly before `NOW`."""
+    grant_id = uuid.uuid4()
+    started_at = NOW - timedelta(days=30)
+    async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
+        await conn.execute(
+            text("INSERT INTO core.access_grants "
+                 "(id, user_id, tier_id, source, status, starts_at, created_at, updated_at) "
+                 "VALUES (:id, :user_id, 'anonymous', 'anonymous_device_grant', 'active', "
+                 "        :started_at, :started_at, :started_at)"),
+            {"id": grant_id, "user_id": user_id, "started_at": started_at})
+        await conn.execute(
+            text("INSERT INTO core.user_monthly_usage "
+                 "(grant_id, monthly_period, monthly_used, created_at, updated_at) "
+                 "VALUES (:grant_id, :period, :used, :started_at, :started_at)"),
+            {"grant_id": grant_id, "period": SEEDED_PERIOD, "used": SEEDED_USED,
+             "started_at": started_at})
+    return grant_id
+
+
+def role_by_writes(attempt: _Attempt) -> str:
+    """The bucket a conversion attempt lands in: the row lock serialises the two, so writing is what separates them."""
+    return "won" if attempt.flushes else "lost_before_writing"
+
+
+class TestTwoSimultaneousConversionsSupersedeOnce:
+    """D-10 and D-13. One anonymous row expires, one registered row activates, and the counters cross once."""
+
+    @pytest_asyncio.fixture
+    async def raced(self, harness):
+        """Two conversions on one account holding an active anonymous grant, held until both have claimed."""
+        subject = f"claimant-{uuid.uuid4().hex[:8]}"
+        user_id = await commit_registered_account(harness, subject=subject)
+        anonymous_id = await commit_active_anonymous_grant(harness, user_id=user_id)
+        first = await prepare_attempt(harness, name="first", subject=subject,
+                                      operation="claim_registered_grant")
+        second = await prepare_attempt(harness, name="second", subject=subject,
+                                       operation="claim_registered_grant")
+
+        # Held before the challenge commit, not before the first flush: a conversion takes the grant
+        # row lock before it flushes, so a partner held at that flush can never reach its own.
+        first_ready, second_ready = asyncio.Event(), asyncio.Event()
+        await asyncio.gather(
+            run_attempt(harness, first, before_first_commit=barrier_for(
+                harness, first, user_id, first_ready, second_ready)),
+            run_attempt(harness, second, before_first_commit=barrier_for(
+                harness, second, user_id, second_ready, first_ready)))
+
+        return {"subject": subject, "user_id": user_id, "anonymous_id": anonymous_id,
+                "attempts": (first, second),
+                "by_role": {role_by_writes(attempt): attempt for attempt in (first, second)}}
+
+    async def test_both_attempts_observed_the_account_holding_its_anonymous_grant(self, raced):
+        """The premise: without this the case could be a conversion then a repeat, and everything below vacuous."""
+        assert [attempt.grants_seen_at_barrier for attempt in raced["attempts"]] == [1, 1]
+
+    async def test_the_seeded_grant_started_strictly_before_the_instant_that_expires_it(self,
+                                                                                        harness,
+                                                                                        raced):
+        """The CHECK `ends_at > starts_at` is strict, so a same-instant seed would refuse the expiry."""
+        started_at = await scalar(harness,
+                                  "SELECT starts_at FROM core.access_grants WHERE id = :id",
+                                  {"id": raced["anonymous_id"]})
+        assert started_at < NOW
+
+    async def test_neither_attempt_handed_the_service_a_row_of_its_own_session(self, raced):
+        """The second premise: the caller's rows belong to no session, so refreshing either one would raise."""
+        assert [attempt.caller_rows_detached for attempt in raced["attempts"]] == [True, True]
+
+    async def test_exactly_one_attempt_wrote(self, raced):
+        """Both answer 200, so writing is the only thing that separates them under the row lock."""
+        assert set(raced["by_role"]) == {"won", "lost_before_writing"}
+
+    async def test_exactly_one_active_grant_row_exists_on_the_registered_tier(self, harness, raced):
+        """Two would mean the supersession interleaved; zero would mean the account lost its entitlement."""
+        rows = await read(
+            harness,
+            "SELECT source::text, tier_id FROM core.access_grants "
+            "WHERE user_id = :id AND status = 'active'",
+            {"id": raced["user_id"]})
+        assert rows == [("registered_account_grant", "registered")]
+
+    async def test_exactly_one_row_expired_and_its_source_was_never_rewritten(self, harness, raced):
+        """The anonymous row is expired once, at the request's instant, and stays the row it was."""
+        rows = await read(
+            harness,
+            "SELECT id, source::text, ends_at FROM core.access_grants "
+            "WHERE user_id = :id AND status = 'expired'",
+            {"id": raced["user_id"]})
+        assert rows == [(raced["anonymous_id"], "anonymous_device_grant", NOW)]
+
+    async def test_the_user_holds_exactly_two_grant_rows(self, harness, raced):
+        """The loser minted no third row, which a second insert against a stale read would have left."""
+        assert await scalar(harness,
+                            "SELECT count(*) FROM core.access_grants WHERE user_id = :id",
+                            {"id": raced["user_id"]}) == 2
+
+    async def test_the_counters_crossed_to_the_active_grant_exactly_once(self, harness, raced):
+        """The seeded period and count, not the defaults a freshly minted row would carry."""
+        rows = await read(
+            harness,
+            "SELECT u.monthly_period, u.monthly_used FROM core.user_monthly_usage u "
+            "JOIN core.access_grants g ON g.id = u.grant_id "
+            "WHERE g.user_id = :id AND g.status = 'active'",
+            {"id": raced["user_id"]})
+        assert rows == [(SEEDED_PERIOD, SEEDED_USED)]
+
+    async def test_both_challenges_were_consumed_and_their_verifiers_cleared(self, harness, raced):
+        """The loser consumes too, so a retry needs a fresh prepare rather than a replay of either handle."""
+        for attempt in raced["attempts"]:
+            rows = await read(
+                harness,
+                "SELECT consumed_at, preauth_subject FROM core.auth_challenges WHERE id = :id",
+                {"id": attempt.challenge_row_id})
+            assert rows[0][0] is not None, f"the {attempt.name} attempt left its challenge unconsumed"
+            assert rows[0][1] is None
+
+    async def test_the_loser_answers_two_hundred_with_the_winners_entitlement(self, raced):
+        """D-13, inverting the create race: the loser is answered as a repeat is, not with a rejection."""
+        winner, loser = raced["by_role"]["won"], raced["by_role"]["lost_before_writing"]
+        assert status_of(loser) == 200
+        assert isinstance(loser.result, Entitlement)
+        # Field for field, because both read the same row after the winner committed.
+        assert loser.result.model_dump() == winner.result.model_dump()
+        assert loser.result.type is EntitlementType.registered_account_grant
+        assert loser.result.status is EntitlementStatus.active
+
+    async def test_the_loser_emitted_no_write_and_raised_no_violation(self, raced):
+        """Measured, not predicted: the row lock serialises the two, so the loser is refused before it writes."""
+        winner, loser = raced["by_role"]["won"], raced["by_role"]["lost_before_writing"]
+        assert (loser.integrity_at_flush, loser.integrity_at_commit) == (False, False)
+        assert loser.flushes == 0
+        # The expiry, flushed alone, and then the rest of the conversion.
+        assert winner.flushes == 2
+
+    async def test_the_account_holds_free_entitlement_from_exactly_one_source(self, harness, raced):
+        """The lifetime index permits one row of each free source, so this account-level rule is the application's."""
+        assert await scalar(
+            harness,
+            "SELECT count(*) FROM core.access_grants WHERE user_id = :id AND status = 'active' "
+            "AND source IN ('anonymous_device_grant', 'registered_account_grant')",
+            {"id": raced["user_id"]}) == 1
