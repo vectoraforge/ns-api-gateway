@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 7
+open_count: 9
 waived_count: 1
 fixed_count: 5
-total_count: 13
-last_updated: 2026-09-03T20:26:15.152Z
+total_count: 15
+last_updated: 2026-09-03T20:43:36.670Z
 ---
 
 # Broken Windows Ledger
@@ -28,6 +28,8 @@ last_updated: 2026-09-03T20:26:15.152Z
 | 11 | 40 | stub | src/nativespeaker/api/services/auth.py |  | 40-04 tracer: AuthService._apply_upgrade answers three stored-versus-live combinations with the placeholder ProviderTransitionNotAllowed raise instead of their final outcome — (anonymous, anonymous) must become NotLinked(cause=empty), and (google, google) / (apple, apple) with a matching provider_uid must become D-04's idempotent 200. The branch does no uid comparison at all. Plan 40-05 owns the split. | fixed |  | 2026-09-02T20:14:50.902Z | 2026-09-02T20:30:29.466Z |
 | 12 | 40 | unmet-truth | src/nativespeaker/api/services/auth.py | 126 | _apply_upgrade's docstring claims it revalidates the caller's locked rows, but only provider is re-checked; identity_state and user.active are not, unlike the admission-time path in crud/identities.py:48-52. An identity retired or a user blocked during the challenge-commit + Firebase round-trip window can still complete an upgrade. WR-01 from 40-VERIFICATION.md. | waived | Accepted for v1: no code path writes identity_state or user.active, so the race requires a manual ops block landing inside the few hundred ms of a specific user's upgrade. A user blocked mid-upgrade is rejected at admission on their very next request, so the worst outcome is a blocked account that is briefly marked registered. Revisit if an automated blocking path is ever added. | 2026-09-02T22:05:11.581Z | 2026-09-02T22:05:20.978Z |
 | 13 | 42 | deviation | tests/schema/test_claim_race.py |  | 42-05: the conversion race's loser-separation observable differs from the plan's prediction — no IntegrityError is raised; recorded and asserted as measured | open |  | 2026-09-03T20:26:15.152Z |  |
+| 14 | 42 | deviation | .planning/phases/42-post-auth-claim-registered-grant/42-06-PLAN.md |  | 42-06 Task 1: the acceptance criterion requiring 'git status --porcelain -- specs/' to be empty cannot pass — specs/auth-refactor-phases/ is untracked in the parent repo and reports '??' regardless. No spec file was modified; the tracked specs/auth-refactor/ is clean and both brief mtimes predate this phase. | open |  | 2026-09-03T20:43:36.530Z |  |
+| 15 | 42 | deviation | .planning/phases/42-post-auth-claim-registered-grant/42-06-PLAN.md |  | 42-06 Task 2: the verify block's allow-list names only 41-*, 42-*, milestones/ and the two ledgers, but phases 34, 36, 37.4 and 37.5 all mention the deleted table in their own artifacts. The task action's rule (leave a completed phase's artifacts as written) was applied instead. | open |  | 2026-09-03T20:43:36.670Z |  |
 
 ````json
 [
@@ -185,6 +187,30 @@ last_updated: 2026-09-03T20:26:15.152Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-09-03T20:26:15.152Z",
+    "resolved_at": null
+  },
+  {
+    "id": 14,
+    "kind": "deviation",
+    "phase": "42",
+    "file": ".planning/phases/42-post-auth-claim-registered-grant/42-06-PLAN.md",
+    "line": null,
+    "description": "42-06 Task 1: the acceptance criterion requiring 'git status --porcelain -- specs/' to be empty cannot pass — specs/auth-refactor-phases/ is untracked in the parent repo and reports '??' regardless. No spec file was modified; the tracked specs/auth-refactor/ is clean and both brief mtimes predate this phase.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-03T20:43:36.530Z",
+    "resolved_at": null
+  },
+  {
+    "id": 15,
+    "kind": "deviation",
+    "phase": "42",
+    "file": ".planning/phases/42-post-auth-claim-registered-grant/42-06-PLAN.md",
+    "line": null,
+    "description": "42-06 Task 2: the verify block's allow-list names only 41-*, 42-*, milestones/ and the two ledgers, but phases 34, 36, 37.4 and 37.5 all mention the deleted table in their own artifacts. The task action's rule (leave a completed phase's artifacts as written) was applied instead.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-03T20:43:36.670Z",
     "resolved_at": null
   }
 ]

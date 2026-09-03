@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 42
 current_phase_name: POST /auth/claim-registered-grant
-status: executing
-stopped_at: Completed 42-05-PLAN.md
-last_updated: "2026-09-03T20:26:09.629Z"
+status: ready_for_verification
+stopped_at: Completed 42-06-PLAN.md — Phase 42 complete
+last_updated: "2026-09-03T20:45:35.733Z"
 last_activity: 2026-09-03
-last_activity_desc: Phase 42 execution started
-state_head: 6fda3668a0c93a03c1db3da30bf8047091505801
+last_activity_desc: Phase 42 execution complete — all six plans landed
+state_head: 261473c67628604c2f0d7ef95e71ae4c952823e2
 progress:
   total_phases: 18
   completed_phases: 12
   total_plans: 96
-  completed_plans: 95
+  completed_plans: 96
   percent: 67
 ---
 
@@ -228,10 +228,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-03T20:26:08.951Z
+**Last session:** 2026-09-03T20:45:35.052Z
 
 Last activity: 2026-08-31
-Stopped at: Completed 42-05-PLAN.md
+Stopped at: Completed 42-06-PLAN.md — Phase 42 complete
 Resume file: None
 
 ## Performance Metrics
@@ -272,6 +272,7 @@ Resume file: None
 | Phase 42 P03 | ~10 min | 2 tasks | 2 files |
 | Phase 42 P04 | ~20 min | 2 tasks | 2 files |
 | Phase 42 P05 | ~40 min | 2 tasks | 1 files |
+| Phase 42 P06 | ~35 min | 3 tasks | 5 files |
 
 ## Decisions
 

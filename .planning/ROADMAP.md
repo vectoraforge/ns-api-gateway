@@ -603,7 +603,7 @@ Plans:
 **Goal:** Ship the sole creator of `registered_account_grant` grants, including supersession of an active anonymous device grant.
 **Requirements:** REGGRANT-01 … REGGRANT-03
 **Depends on:** 34, 35, 40, 41
-**Plans:** 6/6 plans complete
+**Plans:** 6/6 plans executed
 **Success criteria:**
 
 1. This is the only code path that writes a grant row with `source='registered_account_grant'` — **met as written, 2026-09-03.** Proven by an AST walk over every module under `src/`, not by a grep: one construction site, inside `crud/grants.py::activate_registered_account_grant`, and the walk was mutation-tested twice. *Verified against the text rather than the prediction: plan 42-06 expected this criterion to carry a "prepare and completion modes" clause needing a reword. It does not — that clause is in REGGRANT-01, which carries the reword.* Matching requirement: REGGRANT-01.
