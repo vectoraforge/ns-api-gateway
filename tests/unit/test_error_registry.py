@@ -332,8 +332,8 @@ class TestPhase37Classes:
 
     def test_operation_not_allowed_joins_the_existing_403_codes(self):
         at_403 = sorted({cls.code for cls in _family(AppError) if cls.status == 403})
-        assert at_403 == ["account_unavailable", "operation_not_allowed",
-                          "preauth_identity_not_allowed"]
+        assert at_403 == ["account_unavailable", "device_grant_exhausted", "operation_not_allowed",
+                          "preauth_identity_not_allowed", "proof_rejected"]
 
 
 class TestDeliberatelyAbsentCodes:

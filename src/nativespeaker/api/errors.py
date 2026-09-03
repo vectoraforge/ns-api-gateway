@@ -26,7 +26,9 @@ ErrorCode = Literal["auth_required",
                     "quota_exceeded",
                     "out_of_scope",
                     "identity_already_linked",
-                    "operation_not_allowed"]
+                    "operation_not_allowed",
+                    "proof_rejected",
+                    "device_grant_exhausted"]
 
 
 class ErrorResponse(BaseModel):
@@ -411,6 +413,36 @@ class ProviderTransitionNotAllowed(UpgradeRefused):
 
 class ProviderAccountAlreadyLinked(UpgradeRefused):
     """The target provider account is already held by another identity row."""
+
+
+# --- Device-gate arms ---
+
+
+class ProofRejected(ProviderLookupError):
+    """Apple refused the device token, or accepted it and refused the bit write."""
+    status = 403
+    code = "proof_rejected"
+
+
+class DeviceGrantExhausted(ProviderLookupError):
+    """The device's anonymous grant bit is already set, so its one slot is spent."""
+    status = 403
+    code = "device_grant_exhausted"
+
+
+# --- Claim arms ---
+
+
+class ClaimRefused(AppError):
+    """The claim's refusals share this shape, and its leaves add only their own name."""
+
+    # The 403 is declared here and nowhere below, so the refusal cannot become an enumeration oracle.
+    status = 403
+    code = "operation_not_allowed"
+
+
+class ClaimantNotAnonymous(ClaimRefused):
+    """The stored identity row is registered, so the anonymous claim is not the route that serves it."""
 
 
 # --- Challenge arms ---

@@ -55,6 +55,13 @@ class JWTConfig(BaseModel):
         return  f"https://securetoken.google.com/{self.project_id}"
 
 
+class DeviceCheckConfig(BaseModel):
+    # All three optional, unlike JWTConfig: an absent credential lets boot proceed and the route fail closed.
+    key_id: str | None = Field(default=None, description="Apple DeviceCheck key ID")
+    team_id: str | None = Field(default=None, description="Apple developer team ID")
+    private_key_path: str | None = Field(default=None, description="Path to the ES256 private key PEM")
+
+
 class ModelConfig(BaseModel):
     name: str = Field(default="gpt-4o-mini")
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
@@ -69,6 +76,7 @@ class AppConfig(BaseConfig):
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
     jwt: JWTConfig = Field(default_factory=JWTConfig)
+    devicecheck: DeviceCheckConfig = Field(default_factory=DeviceCheckConfig)
     chats_limit: int = Field(default=50, ge=1)
     messages_limit: int = Field(default=50, ge=1)
 

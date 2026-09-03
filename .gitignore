@@ -12,3 +12,5 @@ __pycache__/
 .idea/
 .vscode/
 /.planning/research/.cache/
+/.planning/state.json
+/.planning/milestone.lock

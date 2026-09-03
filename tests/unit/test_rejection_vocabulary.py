@@ -88,6 +88,12 @@ EVENT_NAMES = frozenset({
     "user_not_found",
     "unavailable",
     "not_linked",
+    # The device-gate arms, under the same lookup base.
+    "proof_rejected",
+    "device_grant_exhausted",
+    # The claim arms, group base included: the walk finds it, and the preflight still raises it.
+    "claim_refused",
+    "claimant_not_anonymous",
     # The challenge arms, on the same terms.
     "challenge_rejected",
     "challenge_not_found",
@@ -136,6 +142,8 @@ CONSTRUCTOR_ARGUMENTS: dict[type, tuple[tuple, dict]] = {
     errors_module.UserNotFound: ((), {"stage": "provider_lookup"}),
     errors_module.Unavailable: ((), {"stage": "issuer_selection"}),
     errors_module.NotLinked: ((), {"stage": "provider_classification", "cause": "invalid-shape"}),
+    errors_module.ProofRejected: ((), {"stage": "devicecheck_read", "cause": "rejected"}),
+    errors_module.DeviceGrantExhausted: ((), {"stage": "devicecheck_read", "cause": "already_set"}),
     errors_module.UpgradeRefused: ((), UPGRADE_SAMPLE),
     errors_module.ProviderTransitionNotAllowed: ((), UPGRADE_SAMPLE),
     errors_module.ProviderAccountAlreadyLinked: ((), UPGRADE_SAMPLE),

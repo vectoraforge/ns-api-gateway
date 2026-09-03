@@ -1,5 +1,6 @@
-"""The four auth routes: `/auth/challenge` issues a challenge, `/auth/create-user` and
-`/auth/upgrade-anonymous` spend one, and `/auth/sync` reports what the caller's account entitles it to."""
+"""The five auth routes: `/auth/challenge` issues a challenge, `/auth/create-user`,
+`/auth/upgrade-anonymous` and `/auth/claim-anonymous-grant` spend one, and `/auth/sync` reports
+what the caller's account entitles it to."""
 from datetime import UTC, datetime
 
 import structlog
@@ -18,6 +19,7 @@ from nativespeaker.api.app.dependencies import (
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import InvalidRequest, PreAuthIdentityNotAllowed
 from nativespeaker.api.schemas.auth import (
+    AnonymousGrantClaimRequest,
     ChallengeRequest,
     CompletionRequest,
     CompletionResponse,
@@ -91,6 +93,31 @@ async def upgrade_anonymous(body: CompletionRequest,
     # Forwarded untouched and never logged: the handle is a secret.
     provider = await service.complete_upgrade(identity=identity, challenge_id=body.challenge_id)
     return CompletionResponse(identity_provider=provider)
+
+
+# The route-level dependency narrows this one route to linked callers; the router-level one cannot.
+@router.post("/auth/claim-anonymous-grant",
+             response_model=SyncResponse,
+             summary="Claim the caller's one anonymous device grant",
+             description="Spends a single-use challenge obtained from `POST /auth/challenge`, "
+                         "supplied as `challenge_id` in the body, verifies the device through "
+                         "Apple DeviceCheck and activates the grant.")
+async def claim_anonymous_grant(body: AnonymousGrantClaimRequest,
+                                response: Response,
+                                identity: Identity = Depends(get_linked_identity),
+                                service: AuthService = Depends(get_auth_service),
+                                sync_service: SyncService = Depends(get_sync_service)) -> SyncResponse:
+    """Complete the operation the body's handle stands for, and report the entitlement it left."""
+    # Forwarded untouched and never logged: the handle and both device tokens are secrets.
+    await service.complete_claim_anonymous_grant(identity=identity,
+                                                 challenge_id=body.challenge_id,
+                                                 query_token=body.query_token,
+                                                 update_token=body.update_token)
+    # Read after the completion committed, so the claim, the repeat and the race loser share one shape.
+    entitlement = await sync_service.read_entitlement(identity.user.id)
+    # Set on the injected response rather than returned as a JSONResponse, so the model still validates.
+    response.headers["Cache-Control"] = "no-store"
+    return SyncResponse(entitlement=entitlement, identity_provider=identity.identity.provider)
 
 
 # The route-level dependency narrows this one route to linked callers; the router-level one cannot.

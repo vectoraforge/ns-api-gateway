@@ -99,20 +99,31 @@ def get_firebase_adapter(request: Request):
     return request.app.state.firebase_adapter
 
 
+def get_devicecheck_adapter(request: Request):
+    """The device-gate seam the lifespan built, deliberately unannotated."""
+    return request.app.state.devicecheck_adapter
+
+
+def get_evaluated_at() -> datetime:
+    """One instant per request, shared by construction: FastAPI caches this dependency per request."""
+    return datetime.now(UTC)
+
+
 def get_auth_service(db: AsyncSession = Depends(get_db),
                      challenge_store: ChallengesDB = Depends(get_challenge_store),
-                     adapter=Depends(get_firebase_adapter)) -> AuthService:
+                     adapter=Depends(get_firebase_adapter),
+                     devicecheck=Depends(get_devicecheck_adapter),
+                     evaluated_at: datetime = Depends(get_evaluated_at)) -> AuthService:
     return AuthService(db=db,
                        challenge_store=challenge_store,
                        adapter=adapter,
-                       # One instant for this request; nothing downstream reads the clock again.
-                       evaluated_at=datetime.now(UTC))
+                       devicecheck=devicecheck,
+                       evaluated_at=evaluated_at)
 
 
-def get_sync_service(db: AsyncSession = Depends(get_db)) -> SyncService:
-    return SyncService(db=db,
-                       # One instant for this request; nothing downstream reads the clock again.
-                       evaluated_at=datetime.now(UTC))
+def get_sync_service(db: AsyncSession = Depends(get_db),
+                     evaluated_at: datetime = Depends(get_evaluated_at)) -> SyncService:
+    return SyncService(db=db, evaluated_at=evaluated_at)
 
 
 # This accessor exists so the profile route can stay Depends()-only and never construct a database class itself.

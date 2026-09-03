@@ -1,6 +1,7 @@
-"""The two completions: the rejection precedence, the claim, the provider read, the write and the spend."""
+"""The three completions: the rejection precedence, the claim, the post-claim work and the spend."""
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from functools import partial
 from typing import NoReturn
 from uuid import UUID
 
@@ -8,8 +9,9 @@ import structlog
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
+from nativespeaker.api.auth.devicecheck import read_bits_with_retry, write_bits_with_retry
 from nativespeaker.api.auth.firebase import lookup_with_retry
-from nativespeaker.api.crud import ChallengesDB, IdentitiesDB
+from nativespeaker.api.crud import ChallengesDB, GrantsDB, IdentitiesDB
 from nativespeaker.api.errors import (
     AppError,
     BlockedUser,
@@ -17,6 +19,9 @@ from nativespeaker.api.errors import (
     ChallengeExpired,
     ChallengeNotFound,
     ChallengeOperationMismatch,
+    ClaimantNotAnonymous,
+    ClaimRefused,
+    DeviceGrantExhausted,
     HistoricalIdentity,
     IdentityAlreadyLinked,
     IdentityUnresolvable,
@@ -25,12 +30,19 @@ from nativespeaker.api.errors import (
 )
 from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.tables.auth import AuthOperation
+from nativespeaker.api.tables.grants import AccessGrantSource
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 
 logger = structlog.get_logger()
 
 # The write seam of the shared sequence: it returns the provider the transaction settled on.
 Write = Callable[[Identity, VerifiedProviderIdentity], Awaitable[IdentityProvider]]
+
+# The post-claim seam of the shared sequence: whatever it returns is what the completion returns.
+type PostClaim[T] = Callable[[Identity], Awaitable[T]]
+
+# The seeded `core.access_tiers` row an anonymous device grant points at.
+ANONYMOUS_TIER_ID = "anonymous"
 
 
 class AuthService:
@@ -39,11 +51,15 @@ class AuthService:
                  db: AsyncSession,
                  challenge_store: ChallengesDB,
                  adapter,
-                 evaluated_at: datetime) -> None:
+                 evaluated_at: datetime,
+                 devicecheck=None) -> None:
         self.session = db
         self.identities_db = IdentitiesDB(db)
+        self.grants_db = GrantsDB(db)
         self.challenge_store = challenge_store
         self.adapter = adapter
+        # Named for the vendor API, never for the company: two unrelated enums are already called apple.
+        self.devicecheck = devicecheck
         # One instant for this request; nothing below it reads the clock again.
         self.evaluated_at = evaluated_at
 
@@ -52,21 +68,36 @@ class AuthService:
         return await self._complete(identity=identity,
                                     challenge_id=challenge_id,
                                     operation=AuthOperation.create_user,
-                                    write=self._apply_create_user)
+                                    post_claim=partial(self._read_then_write,
+                                                       write=self._apply_create_user))
 
     async def complete_upgrade(self, *, identity: Identity, challenge_id: str) -> IdentityProvider:
         """Record the caller's identity row as registered, and return the provider it now carries."""
         return await self._complete(identity=identity,
                                     challenge_id=challenge_id,
                                     operation=AuthOperation.upgrade_anonymous_to_registered,
-                                    write=self._apply_upgrade)
+                                    post_claim=partial(self._read_then_write,
+                                                       write=self._apply_upgrade))
 
-    async def _complete(self, *,
-                        identity: Identity,
-                        challenge_id: str,
-                        operation: AuthOperation,
-                        write: Write) -> IdentityProvider:
-        """The one completion sequence both routes run: locate, claim, read, write, spend.
+    async def complete_claim_anonymous_grant(self, *,
+                                             identity: Identity,
+                                             challenge_id: str,
+                                             query_token: str,
+                                             update_token: str) -> None:
+        """Claim the caller's one anonymous device grant; the entitlement is read back after commit."""
+        await self._complete(identity=identity,
+                             challenge_id=challenge_id,
+                             operation=AuthOperation.claim_anonymous_grant,
+                             post_claim=partial(self._claim_anonymous_grant,
+                                                query_token=query_token,
+                                                update_token=update_token))
+
+    async def _complete[T](self, *,
+                           identity: Identity,
+                           challenge_id: str,
+                           operation: AuthOperation,
+                           post_claim: PostClaim[T]) -> T:
+        """The one completion sequence every route runs: locate, claim, commit, post-claim work, spend.
         The order of the rejections below is the precedence, and none of them carries a field."""
         # No rejection before the claim consumes anything, so a wrong presenter cannot burn a live challenge.
         located = await self.challenge_store.locate(self.session, challenge_id)
@@ -96,9 +127,7 @@ class AuthService:
         challenge_row_id = str(challenge.id)
 
         try:
-            facts = await lookup_with_retry(self.adapter, identity.issuer, identity.subject)
-            # The provider the transaction settled on, which a divergence makes different from the read's.
-            settled = await write(identity, facts)
+            settled = await post_claim(identity)
         except AppError:
             # A conflicting write leaves the transaction unusable, and the spend below needs it back.
             await self.session.rollback()
@@ -109,6 +138,44 @@ class AuthService:
         await self._consume_and_commit(challenge_id=challenge_id,
                                        challenge_row_id=challenge_row_id)
         return settled
+
+    async def _read_then_write(self, identity: Identity, *, write: Write) -> IdentityProvider:
+        """The Firebase routes' post-claim work: the retry-wrapped read, then the write it settles."""
+        facts = await lookup_with_retry(self.adapter, identity.issuer, identity.subject)
+        # The provider the transaction settled on, which a divergence makes different from the read's.
+        return await write(identity, facts)
+
+    async def _claim_anonymous_grant(self, identity: Identity, *,
+                                     query_token: str, update_token: str) -> None:
+        """Refuse, or verify the device with Apple and activate the grant inside one transaction."""
+        # D-08: the stored provider column is the sole classifier, and it is tested positively.
+        if identity.identity.provider is not IdentityProvider.anonymous:
+            raise ClaimantNotAnonymous
+
+        held = await self.grants_db.read_effective_grants(identity.user.id, self.evaluated_at)
+        if any(grant.source is AccessGrantSource.anonymous_device_grant for grant in held):
+            # The repeat: nothing is written, Apple is never reached, and the entitlement is read after commit.
+            return
+        consumed = identity.identity.free_grant_consumed_at is not None
+        if held or consumed or await self.grants_db.has_prior_free_grant(identity.user.id):
+            # D-03: an ineligible account never costs an Apple round trip.
+            raise ClaimRefused
+
+        state = await read_bits_with_retry(self.devicecheck, query_token)
+        if state.bit0:
+            raise DeviceGrantExhausted(stage="devicecheck_read", cause="already_set")
+
+        # bit1 is carried forward, never fabricated: Apple writes both bits in this one call.
+        await write_bits_with_retry(self.devicecheck, update_token, bit0=True, bit1=state.bit1)
+
+        activated = await self.grants_db.activate_anonymous_device_grant(
+            user_id=identity.user.id,
+            identity_row=identity.identity,
+            tier_id=ANONYMOUS_TIER_ID,
+            evaluated_at=self.evaluated_at)
+        if not activated:
+            # The unique indexes are the arbiter, and the loser answers exactly as the repeat does.
+            await self.session.rollback()
 
     async def _apply_create_user(self, identity: Identity,
                                  facts: VerifiedProviderIdentity) -> IdentityProvider:

@@ -1,6 +1,8 @@
-"""SYNC-01: the sync service reads the clock nowhere; the dependency captures it exactly once."""
+"""SYNC-01: the sync service reads the clock nowhere; one dependency captures it exactly once."""
 import ast
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 SRC = REPO / "src"
@@ -58,16 +60,45 @@ class TestSyncServiceReadsNoClock:
         assert all(id(n) in marked for n in names)
 
 
-class TestGetSyncServiceCapturesTheInstantExactlyOnce:
+def _depends_on(function: ast.AST, parameter: str) -> str | None:
+    """The dependency `parameter`'s default declares, or `None` when it declares none."""
+    args = function.args
+    named = [*args.posonlyargs, *args.args]
+    defaults = dict(zip(named[len(named) - len(args.defaults):], args.defaults, strict=True))
+    default = defaults.get(next((arg for arg in named if arg.arg == parameter), None))
+    if not isinstance(default, ast.Call) or getattr(default.func, "id", None) != "Depends":
+        return None
+    return getattr(default.args[0], "id", None)
+
+
+class TestTheInstantIsCapturedOnceAndSharedByBothServices:
     """`req~sessions-sync-single-evaluation-time~2`: one `datetime.now(UTC)` call, not zero and not two."""
 
-    def test_get_sync_service_calls_the_clock_exactly_once(self):
-        function = _function(ast.parse(DEPENDENCIES.read_text()), "get_sync_service")
+    def test_get_evaluated_at_calls_the_clock_exactly_once(self):
+        function = _function(ast.parse(DEPENDENCIES.read_text()), "get_evaluated_at")
         assert len(_clock_calls(function)) == 1
+
+    @pytest.mark.parametrize("name", ("get_sync_service", "get_auth_service"))
+    def test_neither_service_dependency_reads_the_clock_itself(self, name):
+        """A read here would hand the two services two instants on the one request that uses both."""
+        function = _function(ast.parse(DEPENDENCIES.read_text()), name)
+        assert _clock_calls(function) == []
+
+    @pytest.mark.parametrize("name", ("get_sync_service", "get_auth_service"))
+    def test_both_service_dependencies_take_the_one_captured_instant(self, name):
+        """FastAPI caches a dependency per request, so declaring it is what makes the instant shared."""
+        function = _function(ast.parse(DEPENDENCIES.read_text()), name)
+        assert _depends_on(function, "evaluated_at") == "get_evaluated_at"
 
 
 class TestTheClockWalkIsNotVacuous:
     """A guard that finds no clock call anywhere would pass for the wrong reason, so it must find some."""
 
     def test_the_walk_finds_the_clock_calls_dependencies_genuinely_makes(self):
-        assert len(_clock_calls(ast.parse(DEPENDENCIES.read_text()))) >= 3
+        assert len(_clock_calls(ast.parse(DEPENDENCIES.read_text()))) >= 2
+
+    def test_the_default_walk_reads_a_declared_dependency_and_not_every_call(self):
+        """The control: `_depends_on` must distinguish a `Depends()` default from any other call."""
+        tree = ast.parse("def f(a = Depends(g), b = dict()): pass")
+        function = _function(tree, "f")
+        assert (_depends_on(function, "a"), _depends_on(function, "b")) == ("g", None)

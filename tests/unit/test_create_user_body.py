@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from nativespeaker.api.app.dependencies import (
     get_challenge_store,
     get_db,
+    get_devicecheck_adapter,
     get_firebase_adapter,
     get_identity,
 )
@@ -93,6 +94,8 @@ def client(store, session, fake_firebase_adapter):
     app.dependency_overrides[get_db] = _db
     app.dependency_overrides[get_challenge_store] = lambda: store
     app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
+    # Declared by `get_auth_service` for every auth route; this app has no lifespan to build one.
+    app.dependency_overrides[get_devicecheck_adapter] = lambda: None
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client

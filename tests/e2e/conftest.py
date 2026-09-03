@@ -15,6 +15,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from unit.conftest import FakeFirebaseAdapter, make_test_verifier
 
 from nativespeaker.api.app.main import app
+from nativespeaker.api.auth.devicecheck import BitState
 from nativespeaker.api.auth.firebase import _application_default_credential
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.tables import (
@@ -218,6 +219,48 @@ def scripted_firebase_adapter(_app_lifespan):
         yield adapter
     finally:
         _app_lifespan.state.firebase_adapter = original
+
+
+class FakeDeviceCheckAdapter:
+    """A scriptable stand-in for the device-gate seam, recording each method's calls separately."""
+
+    def __init__(self) -> None:
+        # A never-set device: the eligible first-ever claim, and what most cases want.
+        self.answer: BaseException | BitState = BitState(bit0=False, bit1=False)
+        self.write_answer: BaseException | None = None
+        self.read_calls: list[str] = []
+        self.write_calls: list[tuple[str, bool, bool]] = []
+
+    def script(self, answer: BaseException | BitState) -> None:
+        """Raise-or-return: a scripted exception is raised, a scripted state is returned."""
+        self.answer = answer
+
+    def script_write(self, answer: BaseException | None) -> None:
+        """Raise-or-confirm: a scripted exception is raised, `None` confirms the write."""
+        self.write_answer = answer
+
+    async def read_bits(self, device_token: str) -> BitState:
+        self.read_calls.append(device_token)
+        if isinstance(self.answer, BaseException):
+            raise self.answer
+        return self.answer
+
+    async def write_bits(self, device_token: str, *, bit0: bool, bit1: bool) -> None:
+        self.write_calls.append((device_token, bit0, bit1))
+        if isinstance(self.write_answer, BaseException):
+            raise self.write_answer
+
+
+@pytest.fixture
+def scripted_devicecheck_adapter(_app_lifespan):
+    """Swap app.state.devicecheck_adapter for a scripted fake, defaulting to a never-set device."""
+    original = _app_lifespan.state.devicecheck_adapter
+    adapter = FakeDeviceCheckAdapter()
+    _app_lifespan.state.devicecheck_adapter = adapter
+    try:
+        yield adapter
+    finally:
+        _app_lifespan.state.devicecheck_adapter = original
 
 
 @pytest_asyncio.fixture(loop_scope="module")

@@ -28,6 +28,14 @@ class CompletionRequest(BaseModel):
     challenge_id: str = Field(..., min_length=1)
 
 
+class AnonymousGrantClaimRequest(BaseModel):
+    """The claim body: the handle, and the two single-use DeviceCheck tokens."""
+    challenge_id: str = Field(..., min_length=1)
+    # Two separate tokens, each used once: the query token is never reused for the update.
+    query_token: str = Field(..., min_length=1)
+    update_token: str = Field(..., min_length=1)
+
+
 class CompletionResponse(BaseModel):
     """The completion body: the registration state, and nothing else."""
     identity_provider: IdentityProvider

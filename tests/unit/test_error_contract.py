@@ -21,7 +21,8 @@ CONTRACT_CODES = {"auth_required", "preauth_identity_not_allowed", "account_unav
                   "challenge_required", "invalid_request", "verification_temporarily_unavailable",
                   "rate_limited", "validation_error", "not_found", "method_not_allowed",
                   "internal_error", "service_unavailable", "quota_exceeded", "out_of_scope",
-                  "identity_already_linked", "operation_not_allowed"}
+                  "identity_already_linked", "operation_not_allowed", "proof_rejected",
+                  "device_grant_exhausted"}
 CONTRACT_STATUSES = {400, 401, 403, 404, 405, 409, 422, 429, 500, 503}
 
 
