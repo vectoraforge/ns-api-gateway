@@ -81,7 +81,8 @@ class LLMExecutionGate:
         self._retry_after_seconds = retry_after_seconds
 
     @asynccontextmanager
-    async def _inflight_slot(self):
+    async def inflight_slot(self):
+        """Hold one in-flight slot, or raise `QueueFullError`. It never waits: a full queue refuses at once."""
         try:
             token = self._slots.get_nowait()
         except asyncio.QueueEmpty as exc:
@@ -95,11 +96,10 @@ class LLMExecutionGate:
                 pass
 
     @asynccontextmanager
-    async def hold(self):
-        """Hold an in-flight slot and the concurrency semaphore, or raise `QueueFullError`."""
-        async with self._inflight_slot():
-            async with self._semaphore:
-                yield
+    async def concurrency(self):
+        """Hold one provider permit, waiting for one when the concurrency budget is spent."""
+        async with self._semaphore:
+            yield
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,13 +132,13 @@ class ResiliencePolicy:
 
     @asynccontextmanager
     async def admission(self):
-        """Admit one request: the breaker is consulted and a slot is held for the caller's whole body."""
+        """Admit one request: the breaker is consulted and an in-flight slot is taken. Both are instantaneous."""
         await self._circuit_breaker.before_call()
-        async with self._gate.hold():
+        async with self._gate.inflight_slot():
             yield Admitted()
 
     async def ainvoke(self, operation: Callable[[], Awaitable], admitted: Admitted) -> Any:
-        """Run `operation` under the timeout and the retry policy, on admission the caller already holds."""
+        """Run `operation` under one provider permit, the timeout and the retry policy, on the caller's admission."""
 
         async def attempt() -> Any:
             """One attempt, already triaged: everything `_should_retry` reads is decided here."""
@@ -158,15 +158,18 @@ class ResiliencePolicy:
             await self._circuit_breaker.record_success()
             return result
 
-        retrying = AsyncRetrying(
-            stop=stop_after_attempt(self._retry_max_attempts),
-            # multiplier * 2 ** (attempt - 1), clamped to max.
-            wait=wait_exponential(multiplier=self._retry_backoff_base,
-                                  exp_base=2,
-                                  max=self._retry_backoff_max),
-            retry=retry_if_exception(_should_retry),
-            sleep=_sleep_if_positive,
-            # Exhaustion re-raises the last attempt's `TransientLLMError`, so no `RetryError` reaches a caller.
-            reraise=True,
-        )
-        return await retrying(attempt)
+        # The permit covers all three attempts as one unit, and is taken only once the caller is
+        # ready to talk to the provider -- after its quota charge has committed and released its connection.
+        async with self._gate.concurrency():
+            retrying = AsyncRetrying(
+                stop=stop_after_attempt(self._retry_max_attempts),
+                # multiplier * 2 ** (attempt - 1), clamped to max.
+                wait=wait_exponential(multiplier=self._retry_backoff_base,
+                                      exp_base=2,
+                                      max=self._retry_backoff_max),
+                retry=retry_if_exception(_should_retry),
+                sleep=_sleep_if_positive,
+                # Exhaustion re-raises the last attempt's `TransientLLMError`, so no `RetryError` reaches a caller.
+                reraise=True,
+            )
+            return await retrying(attempt)
