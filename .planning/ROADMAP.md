@@ -578,7 +578,7 @@ Plans:
 1. This is the only code path that writes a grant row with `source='anonymous_device_grant'`
 2. The grant transaction locks grant rows ascending by id, then their usage rows, with no network call while any lock is held
 3. A second claim on an account that already holds a free grant does not allocate a second one
-4. Prepare and completion modes partition on the mode signal with a server-determined branch
+4. The endpoint is challenge-bearing: its prepare step is served by the shared `POST /auth/challenge` route, and completion requires a handle that route issued and bound to the caller's identity row — **reworded by Phase 41 (D-18), 2026-09-03; the property is delivered in full.** As written, this criterion said prepare and completion partition on a mode-signal with a server-determined branch. That described the per-endpoint `?challenge=true` query-flag partition **Phase 37.2** (D-01/D-03/D-05) replaced with a dedicated issuance route — `classify_mode_signal` does not exist in this codebase — and the branch is iOS by construction, because this phase builds one branch (D-01). Reworded rather than withdrawn: what the criterion protected was the ordering guarantee, and it holds — `get_linked_identity` narrows the completion route to an authenticated, linked, active caller, and the handle's binding to `bound_external_identity_id` proves the presenter is the identity row prepare issued to, so completion cannot run without a prepare the server issued to that caller. This is the same treatment Phase 40 gave its own criterion 2; the full amendment is under ANONGRANT-01 in `REQUIREMENTS.md`. Matching requirement: ANONGRANT-01, amended on the same date.
 
 **Plans:** 4/5 plans executed
 
