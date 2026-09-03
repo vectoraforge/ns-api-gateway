@@ -102,6 +102,20 @@ def _drain_the_gate(policy: ResiliencePolicy) -> None:
             return
 
 
+def _take_every_permit(policy: ResiliencePolicy) -> asyncio.Semaphore:
+    """Hold the whole provider concurrency budget, so the next `ainvoke` has to wait for one."""
+    semaphore = policy._gate._semaphore
+    while not semaphore.locked():
+        semaphore._value -= 1
+    return semaphore
+
+
+async def _settle() -> None:
+    """Yield until a pending task has run as far as it can, without waiting on the clock."""
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
 class _StubResult:
     """Both accessor shapes the resolver uses, over one row list."""
 
@@ -375,6 +389,40 @@ class TestAdmissionCannotBeBypassed:
             assert policy._gate._slots.qsize() == free_slots - 1
 
         assert policy._gate._slots.qsize() == free_slots
+
+
+class TestAdmissionHoldsNoProviderPermit:
+    """D-15: admission takes the in-flight slot alone, so the charge's round trip occupies no permit."""
+
+    async def test_entering_admission_leaves_the_semaphore_untouched(self):
+        policy = ResiliencePolicy(_resilience_config())
+        permits = policy._gate._semaphore._value
+
+        async with policy.admission():
+            # The breaker check and the slot are instantaneous; the permit is `ainvoke`'s to take.
+            assert policy._gate._semaphore._value == permits
+
+    async def test_a_charge_commits_while_every_permit_is_taken(self, mock_chats_db):
+        events: list[str] = []
+        grant, usage = _effective_grant_rows()
+        llm = RecordingLLM(events)
+        semaphore = _take_every_permit(llm.policy)
+        service = _service(mock_chats_db, llm=llm,
+                           session_factory=_recording_factory(events, grant, usage))
+
+        request = asyncio.create_task(
+            service.create_chat(phrase=PHRASE, user_id=TEST_USER_ID, lang="en"))
+        await _settle()
+
+        # Charged, committed and closed with no permit available: a slow database occupies none.
+        assert events == ["session_opened", "session_committed", "session_closed"]
+        assert llm.calls == 0
+
+        semaphore.release()
+        await request
+
+        assert llm.calls == 1
+        assert usage.monthly_used == 1
 
 
 class TestARetriedRequestIsChargedExactlyOnce:
