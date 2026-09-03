@@ -5,10 +5,16 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlmodel import col, select
 from unit.conftest import TEST_ISSUER, make_token
 
-from nativespeaker.api.auth.devicecheck import BitState
+from nativespeaker.api.auth.devicecheck import (
+    DEVICECHECK_ATTEMPTS,
+    BitState,
+    RetryableDeviceCheckError,
+)
+from nativespeaker.api.errors import ProofRejected
 from nativespeaker.api.tables.auth import AuthChallenge
 from nativespeaker.api.tables.grants import (
     AccessGrant,
@@ -29,6 +35,12 @@ DEVICE_TOKEN = "device-token-registered-tracer"
 
 # The one body every refusal answers with, compared by equality so a more helpful field fails here.
 REFUSED = {"code": "operation_not_allowed"}
+
+# The same body as bytes, so the four refusals are compared on the wire and not after parsing.
+REFUSED_BODY = '{"code":"operation_not_allowed"}'
+
+# An hour back, because `CHECK (ends_at IS NULL OR ends_at > starts_at)` is strict.
+SEEDED_AGO = timedelta(hours=1)
 
 
 @pytest_asyncio.fixture(loop_scope="module")
@@ -90,6 +102,38 @@ async def _usage_of(factory, grant_id) -> UserMonthlyUsage:
         return (await session.exec(
             select(UserMonthlyUsage)
             .where(col(UserMonthlyUsage.grant_id) == grant_id))).one()
+
+
+async def _identity_of(factory, subject: str) -> ExternalIdentity:
+    async with factory() as session:
+        return (await session.exec(
+            select(ExternalIdentity).where(col(ExternalIdentity.issuer) == TEST_ISSUER,
+                                           col(ExternalIdentity.subject) == subject))).one()
+
+
+async def _seed_subscription_grant(factory, *, user_id) -> AccessGrant:
+    """Insert an active subscription and the grant it entitles; `seed_grant` cannot carry the id."""
+    now = datetime.now(UTC)
+    subscription_id = uuid4()
+    async with factory() as session:
+        await session.exec(text(
+            "INSERT INTO core.subscriptions"
+            " (id, user_id, provider, external_id, tier_id, status, created_at, updated_at)"
+            " VALUES (:id, :user_id, 'apple', :external_id, 'registered', 'active', :now, :now)")
+            .bindparams(id=subscription_id, user_id=user_id,
+                        external_id=f"e2e-subscription-{subscription_id}", now=now))
+        grant = AccessGrant(user_id=user_id,
+                            tier_id="registered",
+                            source=AccessGrantSource.subscription,
+                            status=AccessGrantStatus.active,
+                            subscription_id=subscription_id,
+                            starts_at=now - SEEDED_AGO)
+        session.add(grant)
+        await session.flush()
+        session.add(UserMonthlyUsage(grant_id=grant.id, monthly_period=now.strftime("%Y-%m"),
+                                     monthly_used=0))
+        await session.commit()
+    return grant
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -186,6 +230,10 @@ class TestTheConversionOfAnActiveAnonymousGrant:
         assert registered.source is AccessGrantSource.registered_account_grant
         assert [grant.id for grant in grants
                 if grant.status is AccessGrantStatus.active] == [registered.id]
+        # REGGRANT-03: free entitlement from exactly one source at this instant, never from two.
+        assert [grant.source for grant in grants
+                if grant.status is AccessGrantStatus.active] == [
+                    AccessGrantSource.registered_account_grant]
 
         old_usage = await _usage_of(_db_transaction, anonymous.id)
         new_usage = await _usage_of(_db_transaction, registered.id)
@@ -197,25 +245,7 @@ class TestTheConversionOfAnActiveAnonymousGrant:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheGuardsThatWriteNothing:
-    """The three refusals this route owes before any row is written, each costing at most one Apple read."""
-
-    async def test_an_anonymous_caller_is_refused_through_the_fourth_claim_leaf(
-            self, claim_client, _db_transaction, scripted_devicecheck_adapter):
-        """D-05: the stored provider column is the sole classifier, and it decides before Apple."""
-        subject = "e2e-claim-registered-anonymous-caller"
-        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
-                                      provider=IdentityProvider.anonymous)
-
-        handle = await _issue(claim_client, subject)
-        refusal = await _claim(claim_client, subject, handle)
-
-        assert refusal.status_code == 403, refusal.text
-        assert refusal.json() == REFUSED
-        assert scripted_devicecheck_adapter.read_calls == []
-        assert scripted_devicecheck_adapter.write_calls == []
-        assert await _row_counts(_db_transaction, user.id) == (0, 0)
-        # Decided after the claim, because the claimant check is the first thing the post-claim work does.
-        assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
+    """The body the handler never sees: an unusable device token is refused before the route runs."""
 
     @pytest.mark.parametrize("token", [None, ""], ids=["absent", "empty"])
     async def test_a_body_without_a_usable_device_token_is_the_frameworks_422(
@@ -237,6 +267,138 @@ class TestTheGuardsThatWriteNothing:
         challenge = await _challenge_for(_db_transaction, handle)
         assert (challenge.claimed_at, challenge.consumed_at) == (None, None)
 
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheRepeatIsIdempotent:
+    """D-09: an account already holding an active registered grant claims again and gets the same body."""
+
+    async def test_a_repeat_answers_the_fresh_claim_body_writes_nothing_and_never_reaches_apple(
+            self, claim_client, _db_transaction, scripted_devicecheck_adapter):
+        subject = "e2e-claim-registered-repeat"
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                                      provider=IdentityProvider.google)
+
+        first = await _claim(claim_client, subject, await _issue(claim_client, subject))
+        assert first.status_code == 200, first.text
+        after_first = await _row_counts(_db_transaction, user.id)
+        assert after_first == (1, 1)
+        granted = (await _grants_of(_db_transaction, user.id))[0]
+        usage_before = await _usage_of(_db_transaction, granted.id)
+
+        # Cleared rather than re-created: the repeat's own call count is what the next assertion reads.
+        scripted_devicecheck_adapter.read_calls.clear()
+        scripted_devicecheck_adapter.write_calls.clear()
+
+        handle = await _issue(claim_client, subject)
+        repeat = await _claim(claim_client, subject, handle)
+
+        assert repeat.status_code == 200, repeat.text
+        assert repeat.headers["Cache-Control"] == "no-store"
+        # The same body a fresh claim returns, by equality: the repeat is not a differently-shaped answer.
+        assert repeat.json() == first.json()
+        assert scripted_devicecheck_adapter.read_calls == []
+        assert scripted_devicecheck_adapter.write_calls == []
+        assert await _row_counts(_db_transaction, user.id) == after_first
+
+        unchanged = (await _grants_of(_db_transaction, user.id))[0]
+        assert (unchanged.id, unchanged.updated_at) == (granted.id, granted.updated_at)
+        usage_after = await _usage_of(_db_transaction, granted.id)
+        assert (usage_after.monthly_period, usage_after.monthly_used, usage_after.updated_at) == (
+            usage_before.monthly_period, usage_before.monthly_used, usage_before.updated_at)
+        assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheFourRefusals:
+    """One status and one body for four causes, so the route is no account-state oracle (D-05, D-09)."""
+
+    async def test_an_anonymous_caller_is_refused_through_the_fourth_claim_leaf(
+            self, claim_client, _db_transaction, scripted_devicecheck_adapter):
+        """D-05: the stored provider column is the sole classifier, and it decides before Apple."""
+        subject = "e2e-claim-registered-anonymous-caller"
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                                      provider=IdentityProvider.anonymous)
+
+        handle = await _issue(claim_client, subject)
+        refusal = await _claim(claim_client, subject, handle)
+
+        assert refusal.status_code == 403, refusal.text
+        assert refusal.text == REFUSED_BODY
+        assert refusal.json() == REFUSED
+        assert scripted_devicecheck_adapter.read_calls == []
+        assert scripted_devicecheck_adapter.write_calls == []
+        assert await _row_counts(_db_transaction, user.id) == (0, 0)
+        # Decided after the claim, because the claimant check is the first thing the post-claim work does.
+        assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
+
+    async def test_an_active_manual_grant_is_refused(
+            self, claim_client, _db_transaction, scripted_devicecheck_adapter):
+        """One user holds at most one active grant, so a manual grant refuses the claim."""
+        subject = "e2e-claim-registered-manual-held"
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                                      provider=IdentityProvider.google)
+        await seed_grant(_db_transaction, user_id=user.id, source=AccessGrantSource.manual,
+                         status=AccessGrantStatus.active,
+                         starts_at=datetime.now(UTC) - SEEDED_AGO)
+
+        handle = await _issue(claim_client, subject)
+        refusal = await _claim(claim_client, subject, handle)
+
+        assert refusal.status_code == 403, refusal.text
+        assert refusal.text == REFUSED_BODY
+        assert refusal.json() == REFUSED
+        assert scripted_devicecheck_adapter.read_calls == []
+        assert scripted_devicecheck_adapter.write_calls == []
+        assert await _row_counts(_db_transaction, user.id) == (1, 1)
+        assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
+
+    async def test_an_active_subscription_grant_is_refused_and_is_never_converted(
+            self, claim_client, _db_transaction, scripted_devicecheck_adapter):
+        """A paid source is not a free one: only an anonymous device grant is convertible."""
+        subject = "e2e-claim-registered-subscription-held"
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                                      provider=IdentityProvider.google)
+        held = await _seed_subscription_grant(_db_transaction, user_id=user.id)
+
+        handle = await _issue(claim_client, subject)
+        refusal = await _claim(claim_client, subject, handle)
+
+        assert refusal.status_code == 403, refusal.text
+        assert refusal.text == REFUSED_BODY
+        assert refusal.json() == REFUSED
+        assert scripted_devicecheck_adapter.read_calls == []
+        assert scripted_devicecheck_adapter.write_calls == []
+        assert [grant.id for grant in await _grants_of(_db_transaction, user.id)] == [held.id]
+        assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
+
+    async def test_a_revoked_anonymous_grant_is_refused_by_the_history_read(
+            self, claim_client, _db_transaction, scripted_devicecheck_adapter):
+        """REGGRANT-03: revocation never reopens the slot, and the read is by source and status."""
+        subject = "e2e-claim-registered-revoked-anonymous"
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                                      provider=IdentityProvider.google)
+        spent, _ = await seed_grant(_db_transaction, user_id=user.id, tier_id="anonymous",
+                                    source=AccessGrantSource.anonymous_device_grant,
+                                    status=AccessGrantStatus.revoked,
+                                    starts_at=datetime.now(UTC) - SEEDED_AGO)
+
+        handle = await _issue(claim_client, subject)
+        refusal = await _claim(claim_client, subject, handle)
+
+        assert refusal.status_code == 403, refusal.text
+        assert refusal.text == REFUSED_BODY
+        assert refusal.json() == REFUSED
+        assert scripted_devicecheck_adapter.read_calls == []
+        assert scripted_devicecheck_adapter.write_calls == []
+        # The revoked row is still the only one: no registered grant was written beside it.
+        assert [grant.id for grant in await _grants_of(_db_transaction, user.id)] == [spent.id]
+        assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheThreeAppleFailureArms:
+    """An eligible account reaches Apple, and each of its three refusing answers writes nothing (D-01)."""
+
     async def test_a_device_whose_bit1_is_already_set_is_exhausted_and_is_never_written_to(
             self, claim_client, _db_transaction, scripted_devicecheck_adapter):
         """D-01: bit1 is the registered slot, and a set bit refuses with no device state in the body."""
@@ -254,4 +416,45 @@ class TestTheGuardsThatWriteNothing:
         # The slot is spent, so the write that would spend it again is never attempted.
         assert scripted_devicecheck_adapter.write_calls == []
         assert await _row_counts(_db_transaction, user.id) == (0, 0)
+        assert (await _identity_of(_db_transaction, subject)).free_grant_consumed_at is None
+        assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
+
+    async def test_a_token_apple_refuses_is_a_proof_rejection(
+            self, claim_client, _db_transaction, scripted_devicecheck_adapter):
+        subject = "e2e-claim-registered-token-refused"
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                                      provider=IdentityProvider.google)
+        scripted_devicecheck_adapter.script(ProofRejected(stage="devicecheck_read",
+                                                          cause="rejected"))
+
+        handle = await _issue(claim_client, subject)
+        refusal = await _claim(claim_client, subject, handle)
+
+        assert refusal.status_code == 403, refusal.text
+        assert refusal.json() == {"code": "proof_rejected"}
+        # Definitive, so it spends one attempt of the budget rather than all three.
+        assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
+        assert scripted_devicecheck_adapter.write_calls == []
+        assert await _row_counts(_db_transaction, user.id) == (0, 0)
+        assert (await _identity_of(_db_transaction, subject)).free_grant_consumed_at is None
+        assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
+
+    async def test_an_exhausted_apple_budget_is_temporarily_unavailable_and_writes_nothing(
+            self, claim_client, _db_transaction, scripted_devicecheck_adapter):
+        """Fail-closed: only Apple's explicit confirmation permits activation, so the budget's end is a 503."""
+        subject = "e2e-claim-registered-apple-unavailable"
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                                      provider=IdentityProvider.google)
+        scripted_devicecheck_adapter.script(
+            RetryableDeviceCheckError("scripted transport failure"))
+
+        handle = await _issue(claim_client, subject)
+        refusal = await _claim(claim_client, subject, handle)
+
+        assert refusal.status_code == 503, refusal.text
+        assert refusal.json() == {"code": "verification_temporarily_unavailable"}
+        assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN] * DEVICECHECK_ATTEMPTS
+        assert scripted_devicecheck_adapter.write_calls == []
+        assert await _row_counts(_db_transaction, user.id) == (0, 0)
+        assert (await _identity_of(_db_transaction, subject)).free_grant_consumed_at is None
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
