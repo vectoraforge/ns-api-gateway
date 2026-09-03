@@ -4,7 +4,7 @@ import contextlib
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -314,6 +314,173 @@ class TestTheActivationAddsNoThirdLockTier:
         # or the two tiers above would be one lock and one write and the count would read as two by accident.
         assert not [statement for statement in statements if statement.startswith("INSERT")], \
             f"the writer must stop at the held grant and write nothing, got {statements}"
+
+
+# The registered writer, whose two destinations are captured on the same terms as the anonymous one above.
+
+
+def writes(statements: list[str]) -> list[str]:
+    """Only the statements that change a row, which is the control on every lock-tier count below."""
+    return [statement for statement in statements if statement.startswith(("INSERT", "UPDATE"))]
+
+
+def first_index(statements: list[str], prefix: str) -> int:
+    """Where `prefix` first appears among the recorded statements, or -1 if it never does."""
+    for position, statement in enumerate(statements):
+        if statement.startswith(prefix):
+            return position
+    return -1
+
+
+def assert_one_plain_identity_re_read(captured: dict) -> None:
+    """One non-locking re-read of the identity row, on an arm that provably wrote something."""
+    statements = captured["statements"]
+    # A SELECT, because the writer also marks the identity row and that UPDATE names the same relation.
+    re_reads = [statement for statement in statements
+                if statement.startswith("SELECT") and "core.external_identities" in statement
+                and "FOR UPDATE" not in statement]
+    assert len(re_reads) == 1, f"expected one plain identity re-read, got {statements}"
+    assert captured["activated"] is True
+    assert writes(statements), f"the writer must have written on this arm, got {statements}"
+
+
+@contextlib.asynccontextmanager
+async def _registered_writer_run(schema_db_uri: str, *, holding_anonymous_grant: bool):
+    """Drive GrantsDB.activate_registered_account_grant once, recording every statement it issues."""
+    subject = f"registered-lock-{uuid.uuid4().hex[:10]}"
+    issuer = f"ns-registered-{uuid.uuid4().hex[:10]}"
+
+    setup = await asyncpg.connect(schema_db_uri)
+    try:
+        user_id = await insert_user(setup)
+        tier_id = await insert_tier(setup)
+        # A `google` row must carry a non-empty provider_uid, which is the table's CHECK for this arm.
+        await setup.execute(
+            "INSERT INTO core.external_identities "
+            "(id, user_id, issuer, subject, provider, provider_uid, identity_state, created_at, updated_at) "
+            "VALUES ($1, $2, $3, $4, 'google', $5, 'active', $6, $6)",
+            uuid.uuid4(), user_id, issuer, subject, f"google-uid-{subject}", NOW)
+        if holding_anonymous_grant:
+            grant_id = await insert_grant(setup, user_id=user_id, tier_id=tier_id,
+                                          source="anonymous_device_grant")
+            await insert_usage(setup, grant_id=grant_id)
+            # Strictly earlier than the writer's instant: the table's `ends_at > starts_at` CHECK is strict,
+            # and a same-instant expiry would roll the conversion back and read as a race loss.
+            await setup.execute("UPDATE core.access_grants SET starts_at = $2 WHERE id = $1",
+                                grant_id, datetime.now(UTC) - timedelta(hours=1))
+    finally:
+        await setup.close()
+
+    engine = create_async_engine(schema_db_uri.replace(_ASYNCPG_PREFIX, _SQLALCHEMY_PREFIX, 1))
+    recorded: list[str] = []
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def record(conn, cursor, statement, parameters, context, executemany):  # noqa: ARG001
+        recorded.append(" ".join(statement.split()))
+
+    evaluated_at = datetime.now(UTC)
+    factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            identity_row = await IdentitiesDB(session).resolve_existing(issuer=issuer,
+                                                                       subject=subject)
+            # Everything above is setup; only what the writer itself issues is the subject of this fixture.
+            recorded.clear()
+            activated = await GrantsDB(session).activate_registered_account_grant(
+                user_id=user_id, identity_row=identity_row,
+                tier_id=tier_id, evaluated_at=evaluated_at)
+            await session.rollback()
+        yield {"statements": list(recorded), "activated": activated}
+    finally:
+        await engine.dispose()
+        cleanup = await asyncpg.connect(schema_db_uri)
+        try:
+            await cleanup.execute("DELETE FROM core.user_monthly_usage WHERE grant_id IN "
+                                  "(SELECT id FROM core.access_grants WHERE user_id = $1)", user_id)
+            await cleanup.execute("DELETE FROM core.access_grants WHERE user_id = $1", user_id)
+            await cleanup.execute("DELETE FROM core.external_identities WHERE issuer = $1", issuer)
+            await cleanup.execute("DELETE FROM core.users WHERE id = $1", user_id)
+            await cleanup.execute("DELETE FROM core.access_tiers WHERE id = $1", tier_id)
+        finally:
+            await cleanup.close()
+
+
+@pytest_asyncio.fixture
+async def conversion_statements(_schema_db_uri):
+    """The registered writer driven on a caller holding one active anonymous device grant."""
+    async with _registered_writer_run(_schema_db_uri, holding_anonymous_grant=True) as run:
+        yield run
+
+
+@pytest_asyncio.fixture
+async def new_grant_statements(_schema_db_uri):
+    """The registered writer driven on a clean account, which has no grant row to lock."""
+    async with _registered_writer_run(_schema_db_uri, holding_anonymous_grant=False) as run:
+        yield run
+
+
+@pytest.mark.asyncio
+class TestTheRegisteredWriterAddsNoThirdLockTier:
+    """REGGRANT-02. The conversion runs under the same fixed order the anonymous claim does:
+    SHARED-INVARIANTS:33, proven from the statements the writer emits rather than from its Python."""
+
+    async def test_the_conversion_locks_the_grant_rows_then_their_usage_rows(self,
+                                                                             conversion_statements):
+        """The ORDER BY is the lock order itself, not presentation, so it is asserted with the tier."""
+        taken = locking(conversion_statements["statements"])
+        assert [relation_of(statement) for statement in taken] == ["core.access_grants",
+                                                                   "core.user_monthly_usage"]
+        assert "ORDER BY core.access_grants.id ASC" in taken[0]
+
+    async def test_exactly_two_distinct_lock_tiers_are_taken_on_the_conversion(self,
+                                                                               conversion_statements):
+        """Two, and never a third: a writer that locks the identity or user row fails here, not in production."""
+        taken = [relation_of(statement) for statement in locking(conversion_statements["statements"])]
+        assert len(set(taken)) == 2
+        assert "core.external_identities" not in taken
+        assert "core.users" not in taken
+
+    async def test_the_new_grant_locks_the_grant_tier_alone_because_it_holds_no_row(
+            self, new_grant_statements):
+        """A clean account has nothing in either tier, so `FOR UPDATE` locks nothing and the indexes arbitrate."""
+        taken = [relation_of(statement) for statement in locking(new_grant_statements["statements"])]
+        assert taken == ["core.access_grants"]
+        assert "core.external_identities" not in taken
+        assert "core.users" not in taken
+
+    async def test_the_conversion_revalidates_the_identity_row_by_a_plain_re_read(
+            self, conversion_statements):
+        """The control: the writer wrote on this arm, so the tier count above is not vacuously small."""
+        assert_one_plain_identity_re_read(conversion_statements)
+
+    async def test_the_new_grant_revalidates_the_identity_row_by_a_plain_re_read(
+            self, new_grant_statements):
+        """The same control on the arm that locks one tier: a writer issuing nothing cannot satisfy it."""
+        assert_one_plain_identity_re_read(new_grant_statements)
+
+
+@pytest.mark.asyncio
+class TestTheConversionExpiresBeforeItInserts:
+    """REGGRANT-02. `ix_access_grants_one_active_per_user` is non-deferrable and per-statement, so the
+    order the ORM emits -- not the order of the Python statements -- is what decides the conversion."""
+
+    async def test_the_update_of_the_anonymous_row_precedes_the_insert_of_the_registered_one(
+            self, conversion_statements):
+        """If this inverts, the index refuses the insert, the writer returns false, and every conversion
+        answers a stale 200 as though it had lost a race it never ran."""
+        statements = conversion_statements["statements"]
+        expiry = first_index(statements, "UPDATE core.access_grants")
+        insert = first_index(statements, "INSERT INTO core.access_grants")
+        assert expiry >= 0, f"no expiry statement was emitted at all, got {statements}"
+        assert insert >= 0, f"no grant insert was emitted at all, got {statements}"
+        assert expiry < insert, f"the insert was emitted first, got {statements}"
+
+    async def test_the_usage_row_is_inserted_after_the_grant_it_belongs_to(self,
+                                                                           conversion_statements):
+        """The control on the case above: the recorded order is a real sequence, not one repeated prefix."""
+        statements = conversion_statements["statements"]
+        assert first_index(statements, "INSERT INTO core.access_grants") < \
+            first_index(statements, "INSERT INTO core.user_monthly_usage")
 
 
 @pytest.mark.asyncio
