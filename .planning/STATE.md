@@ -2,20 +2,20 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
-current_phase: 41
-current_phase_name: POST /auth/claim-anonymous-grant
-status: executing
-stopped_at: Completed 41-05-PLAN.md
-last_updated: "2026-09-03T06:34:31.527Z"
+current_phase: 42
+current_phase_name: POST /auth/claim-registered-grant
+status: planning
+stopped_at: Phase 41 complete, ready to plan Phase 42
+last_updated: "2026-09-03T07:32:35.526Z"
 last_activity: 2026-09-03
-last_activity_desc: Phase 41 close-out — the ANONGRANT amendments and the ledger
-state_head: d9fec803e24a667982e88b5bf59770a0b7b46e55
+last_activity_desc: Phase 41 complete, transitioned to Phase 42
+state_head: d817cb353c3fb1e74171d7b618b1dc3c6e6c07ea
 progress:
   total_phases: 18
-  completed_phases: 11
+  completed_phases: 12
   total_plans: 90
   completed_plans: 90
-  percent: 61
+  percent: 67
 ---
 
 # Project State
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 41 (POST /auth/claim-anonymous-grant) — EXECUTING
-Plan: 5 of 5
-Status: All 5 plans executed — ready for verification
-Last activity: 2026-09-03 — 41-05 amended the ledger and closed the phase
+Phase: 42 — POST /auth/claim-registered-grant
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-09-03 — Phase 41 complete, transitioned to Phase 42
 
 <!-- Counts read against disk rather than incremented (41-05). At Task 3 time: 90 PLAN files and 89
      SUMMARY files across .planning/phases/, which is exactly what the frontmatter already carried,
@@ -201,7 +201,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 **Last session:** 2026-09-03T06:34:30.926Z
 
 Last activity: 2026-08-31
-Stopped at: Completed 41-05-PLAN.md
+Stopped at: Phase 41 complete, ready to plan Phase 42
 Resume file: None
 
 ## Performance Metrics

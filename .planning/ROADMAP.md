@@ -580,7 +580,7 @@ Plans:
 3. A second claim on an account that already holds a free grant does not allocate a second one
 4. The endpoint is challenge-bearing: its prepare step is served by the shared `POST /auth/challenge` route, and completion requires a handle that route issued and bound to the caller's identity row — **reworded by Phase 41 (D-18), 2026-09-03; the property is delivered in full.** As written, this criterion said prepare and completion partition on a mode-signal with a server-determined branch. That described the per-endpoint `?challenge=true` query-flag partition **Phase 37.2** (D-01/D-03/D-05) replaced with a dedicated issuance route — `classify_mode_signal` does not exist in this codebase — and the branch is iOS by construction, because this phase builds one branch (D-01). Reworded rather than withdrawn: what the criterion protected was the ordering guarantee, and it holds — `get_linked_identity` narrows the completion route to an authenticated, linked, active caller, and the handle's binding to `bound_external_identity_id` proves the presenter is the identity row prepare issued to, so completion cannot run without a prepare the server issued to that caller. This is the same treatment Phase 40 gave its own criterion 2; the full amendment is under ANONGRANT-01 in `REQUIREMENTS.md`. Matching requirement: ANONGRANT-01, amended on the same date.
 
-**Plans:** 5/5 plans executed
+**Plans:** 5/5 plans complete
 
 Plans:
 
@@ -702,7 +702,7 @@ Plans:
 | 38. POST /auth/sync | v2.0 | 6/6 | Complete    | 2026-09-01 |
 | 39. GET /users/me | v2.0 | 4/4 | Complete    | 2026-09-01 |
 | 40. POST /auth/upgrade-anonymous | v2.0 | 8/8 | In Progress|  |
-| 41. POST /auth/claim-anonymous-grant | v2.0 | 5/5 | In Progress|  |
+| 41. POST /auth/claim-anonymous-grant | v2.0 | 5/5 | Complete    | 2026-09-03 |
 | 42. POST /auth/claim-registered-grant | v2.0 | 0/? | Pending | — |
 | 43. POST /webhooks/app-store | v2.0 | 0/? | Pending | — |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 0/? | Pending | — |
