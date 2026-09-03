@@ -1,5 +1,5 @@
 __all__ = [
-    "AccessGrant", "AccessGrantAntiAbuse", "AccessGrantSource", "AccessGrantStatus", "AccessTier",
+    "AccessGrant", "AccessGrantSource", "AccessGrantStatus", "AccessTier",
     "AnalyzeInput", "FREE_GRANT_SOURCES",
     "AnalyzeResponse", "AuthChallenge", "AuthOperation",
     "Chat", "ChatRequest", "ChatResponse", "ChatRole",
@@ -29,7 +29,6 @@ from nativespeaker.api.tables.chats import Chat, ChatRole, Message
 from nativespeaker.api.tables.grants import (
     FREE_GRANT_SOURCES,
     AccessGrant,
-    AccessGrantAntiAbuse,
     AccessGrantSource,
     AccessGrantStatus,
     AccessTier,

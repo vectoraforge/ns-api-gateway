@@ -37,8 +37,6 @@ CREATE TYPE core.access_grant_status AS ENUM (
 
 CREATE TYPE core.native_claim_provider AS ENUM ('ios_devicecheck', 'android_play_integrity');
 
-CREATE TYPE core.gate_consumption_kind AS ENUM ('web_anonymous_gate', 'registered_account_grant');
-
 -- email is nullable on purpose: it is copied only from a verified provider record, and stays NULL otherwise.
 CREATE TABLE core.users (
     id UUID PRIMARY KEY,
@@ -218,13 +216,6 @@ CREATE TABLE core.access_grants (
     starts_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     -- Open-ended grants are legal, so ends_at is nullable and a finite end is never required.
     ends_at TIMESTAMPTZ,
-    -- The "at least one anti-abuse row per free-source grant" lower bound, via the deferrable FK below.
-    anti_abuse_required_grant_id UUID GENERATED ALWAYS AS (
-        CASE WHEN source IN ('anonymous_device_grant', 'registered_account_grant') THEN id END
-    ) STORED,
-    active_registered_account_grant_id UUID GENERATED ALWAYS AS (
-        CASE WHEN source = 'registered_account_grant' AND status = 'active' THEN id END
-    ) STORED,
     active_subscription_grant_subscription_id UUID GENERATED ALWAYS AS (
         CASE WHEN source = 'subscription' AND status = 'active' THEN subscription_id END
     ) STORED,
@@ -240,8 +231,6 @@ CREATE TABLE core.access_grants (
         OR
         (source <> 'subscription' AND subscription_id IS NULL)
     ),
-    -- A composite FK target for the anti-abuse table only.
-    UNIQUE (id, source),
     -- Deferred so ingestion and restore can write both rows in one transaction, in either order.
     FOREIGN KEY (active_subscription_grant_subscription_id, active_subscription_grant_user_id)
         REFERENCES core.subscriptions (id, user_id)
@@ -268,59 +257,6 @@ CREATE UNIQUE INDEX ix_access_grants_one_active_per_user
     ON core.access_grants (user_id)
     WHERE status = 'active';
 
-CREATE TABLE core.access_grants_anti_abuse (
-    -- The primary key is the "at most one anti-abuse row per grant" upper bound.
-    grant_id UUID PRIMARY KEY,
-    grant_source core.access_grant_source NOT NULL,
-    native_claim_provider core.native_claim_provider,
-    -- A non-authoritative lookup alias only: several key versions may map to one canonical account.
-    idp_account_hash BYTEA,
-    idp_account_hash_key_version SMALLINT,
-    registered_account_grant_id UUID GENERATED ALWAYS AS (
-        CASE WHEN grant_source = 'registered_account_grant' THEN grant_id END
-    ) STORED,
-    created_at TIMESTAMPTZ NOT NULL,
-    -- With the composite FK below, this forbids an anti-abuse row for a subscription or manual grant.
-    CHECK (grant_source IN ('anonymous_device_grant', 'registered_account_grant')),
-    -- The native anonymous arm is shape-only: it constrains NULL population and enumerates no providers.
-    CHECK (
-        (grant_source = 'anonymous_device_grant'
-            AND (
-                (native_claim_provider IS NOT NULL
-                    AND idp_account_hash IS NULL
-                    AND idp_account_hash_key_version IS NULL)
-                OR
-                (native_claim_provider IS NULL
-                    AND idp_account_hash IS NOT NULL
-                    AND idp_account_hash_key_version IS NOT NULL)
-            ))
-        OR
-        (grant_source = 'registered_account_grant'
-            AND native_claim_provider IS NULL
-            AND idp_account_hash IS NOT NULL
-            AND idp_account_hash_key_version IS NOT NULL)
-    ),
-    UNIQUE (registered_account_grant_id),
-    FOREIGN KEY (grant_id, grant_source)
-        REFERENCES core.access_grants (id, source)
-        ON DELETE CASCADE
-        DEFERRABLE INITIALLY DEFERRED
-);
-
--- Never unique: several key versions may map to one canonical provider account.
-CREATE INDEX ix_access_grants_anti_abuse_idp_account_hash
-    ON core.access_grants_anti_abuse (idp_account_hash)
-    WHERE idp_account_hash IS NOT NULL;
-
--- Circular: these point back at the anti-abuse table, so they cannot be declared inline above.
-ALTER TABLE core.access_grants
-    ADD FOREIGN KEY (anti_abuse_required_grant_id)
-        REFERENCES core.access_grants_anti_abuse (grant_id)
-        DEFERRABLE INITIALLY DEFERRED,
-    ADD FOREIGN KEY (active_registered_account_grant_id)
-        REFERENCES core.access_grants_anti_abuse (registered_account_grant_id)
-        DEFERRABLE INITIALLY DEFERRED;
-
 -- No status predicate on purpose: expiry or revocation never reopens the lifetime free-grant slot.
 CREATE UNIQUE INDEX ix_access_grants_one_free_grant_per_user_source
     ON core.access_grants (user_id, source)
@@ -335,27 +271,6 @@ CREATE TABLE core.manual_grant_issuances (
     reason TEXT NOT NULL CHECK (reason <> ''),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
--- Authoritative free-grant gate uniqueness, and it survives erasure so an erased account cannot reclaim.
-CREATE TABLE core.provider_accounts (
-    id UUID PRIMARY KEY,
-    provider core.identity_provider NOT NULL CHECK (provider IN ('google', 'apple')),
-    provider_uid TEXT NOT NULL CHECK (provider_uid <> ''),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (provider, provider_uid)
-);
-
--- Per-key abuse brakes only; the per-account rule lives on external_identities.free_grant_consumed_at.
-CREATE TABLE core.provider_account_gate_consumptions (
-    provider_account_id UUID NOT NULL REFERENCES core.provider_accounts (id),
-    consumption_kind core.gate_consumption_kind NOT NULL,
-    grant_id UUID NOT NULL REFERENCES core.access_grants (id),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (provider_account_id, consumption_kind)
-);
-
-CREATE INDEX ix_gate_consumptions_grant_id
-    ON core.provider_account_gate_consumptions (grant_id);
 
 -- monthly_period is free text in YYYY-MM with no format CHECK, and the allowance is derived, never stored.
 CREATE TABLE core.user_monthly_usage (

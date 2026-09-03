@@ -11,7 +11,6 @@ from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.tables import (
     FREE_GRANT_SOURCES,
     AccessGrant,
-    AccessGrantAntiAbuse,
     AccessGrantSource,
     AccessGrantStatus,
     AccessTier,
@@ -88,7 +87,7 @@ class GrantsDB:
                                               identity_row: ExternalIdentity,
                                               tier_id: str,
                                               evaluated_at: datetime) -> bool:
-        """Take both lock tiers, then write the grant, its anti-abuse row, its usage row and the marker."""
+        """Take both lock tiers, then write the grant, its usage row and the identity marker."""
         grants = await self.lock_effective_grants(user_id, evaluated_at)
         for grant in grants:
             await self.lock_usage(grant.id)
@@ -110,11 +109,6 @@ class GrantsDB:
                                 created_at=evaluated_at,
                                 updated_at=evaluated_at)
         self.session.add(activated)
-        # Both hash columns stay NULL: that exact pattern is the iOS arm of the table's exclusive-or CHECK.
-        self.session.add(AccessGrantAntiAbuse(grant_id=activated.id,
-                                              grant_source=AccessGrantSource.anonymous_device_grant,
-                                              native_claim_provider=NativeClaimProvider.ios_devicecheck,
-                                              created_at=evaluated_at))
         self.session.add(UserMonthlyUsage(grant_id=activated.id,
                                           monthly_period=evaluated_at.strftime("%Y-%m"),
                                           monthly_used=0,
@@ -124,7 +118,7 @@ class GrantsDB:
         stored.native_claim_platform = NativeClaimProvider.ios_devicecheck
         stored.updated_at = evaluated_at
 
-        # Only the flush is inside, and all three rows go in it: the two FKs are deferred to commit.
+        # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
         try:
             await self.session.flush()
         except IntegrityError:

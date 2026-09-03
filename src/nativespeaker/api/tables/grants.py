@@ -7,8 +7,6 @@ from uuid import UUID, uuid7
 from sqlalchemy import DateTime, Enum
 from sqlmodel import Field, SQLModel
 
-from nativespeaker.api.tables.identities import NativeClaimProvider, NativeClaimProviderType
-
 
 class AccessGrantSource(StrEnum):
     """Mirrors `core.access_grant_source`. Only `subscription` carries a `subscription_id`."""
@@ -47,7 +45,7 @@ class AccessTier(SQLModel, table=True):
     updated_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
 
 
-# The table's four GENERATED ALWAYS AS STORED columns are deliberately unmapped: Postgres rejects an explicit value.
+# The table's two GENERATED ALWAYS AS STORED columns are deliberately unmapped: Postgres rejects an explicit value.
 class AccessGrant(SQLModel, table=True):
     """One entitlement held by one user, resolved against a tier for its allowance."""
 
@@ -65,25 +63,6 @@ class AccessGrant(SQLModel, table=True):
     ends_at: datetime | None = Field(sa_type=DateTimeType, default=None)
     created_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
-
-
-# The table's one GENERATED ALWAYS AS STORED column is deliberately unmapped: Postgres rejects an explicit value.
-class AccessGrantAntiAbuse(SQLModel, table=True):
-    """The anti-abuse record one free-source grant carries, keyed by that grant's own id."""
-
-    __tablename__ = "access_grants_anti_abuse"
-    __table_args__ = {"schema": "core"}
-
-    # No default_factory: the value is the grant's id, so it exists before this row is built.
-    grant_id: UUID = Field(primary_key=True)
-    grant_source: AccessGrantSource = Field(sa_type=AccessGrantSourceType)
-    # A CHECK makes this and the two hash columns an exclusive-or; the iOS arm populates only this one.
-    native_claim_provider: NativeClaimProvider | None = Field(sa_type=NativeClaimProviderType,
-                                                              default=None)
-    idp_account_hash: bytes | None = Field(default=None)
-    idp_account_hash_key_version: int | None = Field(default=None)
-    # NOT NULL with no crud DEFAULT, unlike every other table: these factories are the only source of a value.
-    created_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
 
 
 class UserMonthlyUsage(SQLModel, table=True):
