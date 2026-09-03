@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 42
 current_phase_name: POST /auth/claim-registered-grant
 status: executing
-stopped_at: Completed 42-01-PLAN.md
-last_updated: "2026-09-03T19:23:37.082Z"
+stopped_at: Completed 42-02-PLAN.md
+last_updated: "2026-09-03T19:46:26.219Z"
 last_activity: 2026-09-03
 last_activity_desc: Phase 42 execution started
-state_head: 29ecaf3fd37019be2791b3783dccb21a3ca0a415
+state_head: f0bb29f1c2e2f127c92a17d58281f76f3a74144d
 progress:
   total_phases: 18
   completed_phases: 12
   total_plans: 96
-  completed_plans: 91
+  completed_plans: 92
   percent: 67
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 42 (POST /auth/claim-registered-grant) — EXECUTING
-Plan: 2 of 6
+Plan: 3 of 6
 Status: Ready to execute
 Last activity: 2026-09-03 — Phase 42 execution started
 
@@ -198,10 +198,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-03T19:23:11.602Z
+**Last session:** 2026-09-03T19:46:25.545Z
 
 Last activity: 2026-08-31
-Stopped at: Completed 42-01-PLAN.md
+Stopped at: Completed 42-02-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -238,6 +238,7 @@ Resume file: None
 | Phase 41 P04 | 20 min | 2 tasks | 3 files |
 | Phase 41 P05 | 12 min | 3 tasks | 3 files |
 | Phase 42 P01 | 30m | 3 tasks | 10 files |
+| Phase 42 P02 | ~45 min | 2 tasks | 9 files |
 
 ## Decisions
 
@@ -327,3 +328,6 @@ Resume file: None
 - [Phase 41]: 41-05: the header's flagged-conflict count is ten and the set of known divergences sixteen, re-derived against six named SHARED-INVARIANTS sections rather than inherited; the gap of six is enumerated — All four new conflicts are against the brief; not one invariant section produced a new divergence. The gap between the two numbers is the difference between a counted conflict and a recorded override, forward flag or precedence resolution, and has been kept deliberately since Phase 37.5.
 - [Phase 42]: D-07 executed: the anti-abuse receipt table and the two provider-account tables left the one migration with everything only they needed; core.native_claim_provider stays as the record of the device platform
 - [Phase 42]: D-08 held: no hash column, no key and no key-version surface exists anywhere in src/ or migrations/; provider_uid stays raw
+- [Phase 42]: 42-02: research assumption A1 is false — SQLAlchemy 2.0.46 emits the conversion's UPDATE before its INSERT even in one flush; the explicit flush boundary is kept as the guard against an ORM upgrade inverting it
+- [Phase 42]: 42-02: D-09's guard is the grant history read by source and status at both layers; neither free_grant_consumed_at nor has_prior_free_grant may be a blanket eligibility test, because both are true on the conversion path
+- [Phase 42]: 42-02: AnonymousGrantClaimRequest is renamed GrantClaimRequest and shared by both claim routes; ClaimantNotRegistered is the fourth ClaimRefused leaf and adds no ErrorCode member
