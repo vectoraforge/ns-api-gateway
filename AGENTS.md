@@ -83,6 +83,12 @@ that from scratch. Nothing installed replaces a circuit breaker, so finishing
 the idea means a new dependency. And without the breaker a client is told to
 retry in 2 seconds while the provider is down.
 
+The breaker is consulted before every attempt rather than once at admission, so
+a request already in flight when it opens stops on its next attempt instead of
+finishing the 91.5s. Admission holds the in-flight slot alone — the provider
+permit is taken around the retry loop, so no gate hold spans a database round
+trip.
+
 The `limits` library is mandated by `SHARED-INVARIANTS.md` § Rate limits and was
 overridden by Phase 35 D-05: the backend rate-limit engine is deleted from the
 product, not deferred.

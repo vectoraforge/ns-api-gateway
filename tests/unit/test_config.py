@@ -155,6 +155,30 @@ class TestFirebaseCredentialSurfaceIsGone:
             shutil.rmtree(tmp_dir)
 
 
+class TestTheTrackedPoolSizeMergesWithTheEnvironmentCredentials:
+    """D-16: a partial `db:` block sets the pool size without displacing the credentials that live in .env."""
+
+    def test_the_tracked_pool_size_loads_beside_the_environment_credentials(self):
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            Path(tmp_dir, "config.yaml").write_text(TRACKED_CONFIG.read_text())
+            Path(tmp_dir, "prompt.txt").write_text("Analyze {lang} phrase: {phrase}")
+            Path(tmp_dir, "examples.yaml").write_text('en:\n  - "Example 1"\n')
+
+            with patch.dict(os.environ, _ENV_SECRETS, clear=True):
+                config = EnvironmentConfig(config_dir=Path(tmp_dir),
+                                           _env_file=None)  # ty: ignore[unknown-argument]
+                assert config.app_config is not None
+                db = config.app_config.db
+
+                # The YAML key, and the five credentials the block would have replaced had it not merged.
+                assert db.pool_size == 12
+                assert (db.host, db.port, db.user, db.name) == ("localhost", 5432, "u", "d")
+                assert db.password.get_secret_value() == "p"
+        finally:
+            shutil.rmtree(tmp_dir)
+
+
 class TestNoTrackedYamlCarriesKeyMaterial:
     """The tracked configuration is a public file: a credential pasted into it would be committed."""
 

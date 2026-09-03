@@ -13,6 +13,10 @@ resilience:
   retry_backoff_max_seconds: 4
   circuit_breaker_failure_threshold: 5
   circuit_breaker_reset_seconds: 60
+# Two connections per possible in-flight chat plus two spare, at the resilience.pool_size of 5
+# above. The relation is this comment, not code: the two stay independent numbers.
+db:
+  pool_size: 12
 jwt:
   jwks_cache_ttl_seconds: 3600
 # HMAC key material for the §4.3 / §6.4 keyed subject hashes. Base64 text, decoded to bytes once

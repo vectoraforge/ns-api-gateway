@@ -3,7 +3,9 @@ title: The admission gate holds a DB connection across the quota charge
 area: resilience
 created: 2026-08-31
 source: Phase 37.5 code review (CR-01), 37.5-REVIEW.md
-status: open
+completed: 2026-09-02
+completed_in: 41
+status: done
 ---
 
 # The admission gate holds a DB connection across the quota charge

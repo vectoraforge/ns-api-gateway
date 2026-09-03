@@ -3,7 +3,9 @@ title: An admitted request burns all retries against a provider the breaker alre
 area: resilience
 created: 2026-08-31
 source: Phase 37.5 code review (WR-02), 37.5-REVIEW.md
-status: open
+completed: 2026-09-02
+completed_in: 41
+status: done
 ---
 
 # An admitted request burns all retries against a dead provider
