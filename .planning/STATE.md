@@ -2,20 +2,20 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
-current_phase: 40
-current_phase_name: post-auth-upgrade-anonymous
+current_phase: 41
+current_phase_name: POST /auth/claim-anonymous-grant
 status: executing
 stopped_at: Phase 41 context gathered
-last_updated: "2026-09-02T23:14:27.581Z"
+last_updated: "2026-09-03T04:50:38.523Z"
 last_activity: 2026-09-02
 last_activity_desc: Phase 40 execution started
+state_head: 879d20017ef396a73c310b1515ec05ea0ab2e6eb
 progress:
   total_phases: 18
   completed_phases: 12
-  total_plans: 85
+  total_plans: 90
   completed_plans: 85
-  percent: 67
-state_head: c8b4733630d48b8fe218c055491f865a9fc24c88
+  percent: 61
 ---
 
 # Project State
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 40 (post-auth-upgrade-anonymous) — EXECUTING
+Phase: 41 (POST /auth/claim-anonymous-grant) — READY TO EXECUTE
 Plan: 1 of 8
-Status: Executing Phase 40
+Status: Ready to execute
 Last activity: 2026-09-02 — Phase 40 execution started
 
 <!-- The same counter hazard recurred in 37.5 and is corrected here the same way. Waves 2 through 8

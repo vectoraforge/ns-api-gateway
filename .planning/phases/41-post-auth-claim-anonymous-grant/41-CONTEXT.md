@@ -58,8 +58,8 @@ registered grant and its supersession of an anonymous one); schema changes — *
   The check is repeated inside the locked transaction regardless. **FLAGGED CONFLICT** against the
   brief's steps 8–9 ("no DB grant may substitute for or suppress the platform-gate read").
 
-- **D-04: No iOS app exists, so the suite drives the endpoint with a scripted fake DeviceCheck
-  adapter**, a sibling of `tests/e2e/conftest.py::scripted_firebase_adapter`. The Apple adapter's
+- **D-04: No iOS app exists, so the suite drives the endpoint with a scripted fake DeviceCheck adapter**,
+  a sibling of `tests/e2e/conftest.py::scripted_firebase_adapter`. The Apple adapter's
   request signing and response parsing get unit tests against Apple's documented shapes. The first
   real round trip to Apple happens when an app exists; that is recorded here as a fact, not a gap
   the phase can close. Confirmed by the developer.
@@ -69,7 +69,7 @@ registered grant and its supersession of an anonymous one); schema changes — *
   delimiter. The key is a multi-line PEM, so it is stored base64-encoded or as a path to a mounted
   file; the planner picks. Never in `config.yaml`, which is tracked in git.
 
-- **D-06: Rules from the brief this phase implements as written, listed so nobody re-derives them:**
+- **D-06: Rules from the brief this phase implements as written, listed so nobody re-derives them.**
   bit0 only, never bit1; never accept client-supplied bit values; the write is fail-closed and
   load-bearing (only Apple's explicit confirmation permits activation; any exhausted failure,
   timeout or ambiguity → `verification_temporarily_unavailable`, no grant); every claim performs its
@@ -113,7 +113,7 @@ registered grant and its supersession of an anonymous one); schema changes — *
   construction. `Cache-Control: no-store`, as `/auth/challenge` and `/users/me` set it.
   — **Reversibility:** one-way in principle — a published contract; cheap pre-launch.
 
-- **D-11: Two new client-visible error codes, both 403:** `proof_rejected` for device tokens Apple
+- **D-11: Two new client-visible error codes, both 403.** `proof_rejected` for device tokens Apple
   rejects or that are present but malformed, and `device_grant_exhausted` for a device whose bit is
   already set, with non-accusatory copy directing to the registered path and no device state in the
   body. `verification_required` is **not** added — nothing in this phase would raise it; it arrives
