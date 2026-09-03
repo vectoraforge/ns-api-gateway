@@ -93,7 +93,7 @@ Archive: `.planning/milestones/v1.6-ROADMAP.md`
 
 </details>
 
-### ◆ v2.0 Authentication & Entitlements (Phases 34-46)
+### ◆ v2.0 Authentication & Entitlements
 
 Spec: `/home/init/native-speaker/specs/auth-refactor-phases/`. One phase per spec file, except `01-foundation.md`, which splits into Phase 35 (machinery, §1–§4 + §6 + §7) and Phase 36 (pre-existing route rebinding, §8). `§5` is deleted from the product and `§9` is deferred to v2.1 — see Phase 35. `SHARED-INVARIANTS.md` binds every phase and overrides any conflicting phase brief — flag conflicts, never resolve them silently.
 
