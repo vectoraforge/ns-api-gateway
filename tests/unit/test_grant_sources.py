@@ -87,7 +87,8 @@ class TestTheAnonymousDeviceGrantHasExactlyOneWriter:
     def test_the_one_site_is_inside_the_crud_activation_writer(self):
         """Not merely in the right module: in the one function that takes both lock tiers."""
         writer = _function(CRUD_GRANTS.read_text(), WRITER)
-        assert sum(_names_the_member(node) for node in ast.walk(writer)) == 1
+        # Two occurrences: the in-lock repeat test, and the one construction of the grant row.
+        assert sum(_names_the_member(node) for node in ast.walk(writer)) == 2
 
     def test_only_the_recorded_modules_name_the_member_at_all(self):
         naming = {path.relative_to(SRC).as_posix() for path in _modules()
@@ -110,8 +111,8 @@ class TestTheRegisteredAccountGrantHasExactlyOneWriter:
     def test_the_one_site_is_inside_the_crud_activation_writer(self):
         """Not merely in the right module: in the one function that takes both lock tiers."""
         writer = _function(CRUD_GRANTS.read_text(), WRITER_REGISTERED)
-        # Two occurrences: the in-lock repeat test, and the one construction of the grant row.
-        assert sum(_names_the_member(node, MEMBER_REGISTERED) for node in ast.walk(writer)) == 2
+        # Three: the in-lock repeat test, the lifetime index's own question, and the one construction.
+        assert sum(_names_the_member(node, MEMBER_REGISTERED) for node in ast.walk(writer)) == 3
 
     def test_only_the_recorded_modules_name_the_member_at_all(self):
         naming = {path.relative_to(SRC).as_posix() for path in _modules()

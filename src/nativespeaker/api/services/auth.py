@@ -12,6 +12,7 @@ from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.devicecheck import read_bits_with_retry, write_bits_with_retry
 from nativespeaker.api.auth.firebase import lookup_with_retry
 from nativespeaker.api.crud import ChallengesDB, GrantsDB, IdentitiesDB
+from nativespeaker.api.crud.grants import ActivationOutcome
 from nativespeaker.api.errors import (
     ActiveGrantOutsideItsTerm,
     AppError,
@@ -22,11 +23,13 @@ from nativespeaker.api.errors import (
     ChallengeOperationMismatch,
     ClaimantNotAnonymous,
     ClaimantNotRegistered,
+    ClaimRefusedUnderLock,
     DeviceGrantExhausted,
     FreeGrantAlreadyConsumed,
     HistoricalIdentity,
     IdentityAlreadyLinked,
     IdentityUnresolvable,
+    MultipleEffectiveGrantsError,
     NotLinked,
     OtherActiveGrantHeld,
     ProviderTransitionNotAllowed,
@@ -190,14 +193,12 @@ class AuthService:
         # bit1 is carried forward, never fabricated: Apple writes both bits in this one call.
         await write_bits_with_retry(self.devicecheck, device_token, bit0=True, bit1=state.bit1)
 
-        activated = await self.grants_db.activate_anonymous_device_grant(
+        outcome = await self.grants_db.activate_anonymous_device_grant(
             user_id=identity.user.id,
             identity_row=identity.identity,
             tier_id=ANONYMOUS_TIER_ID,
             evaluated_at=self.evaluated_at)
-        if not activated:
-            # The unique indexes are the arbiter, and the loser answers exactly as the repeat does.
-            await self.session.rollback()
+        await self._settle(identity, outcome)
 
     async def _claim_registered_grant(self, identity: Identity, *, device_token: str) -> None:
         """Refuse, or convert the caller's anonymous grant, or verify the device and activate a new one."""
@@ -206,6 +207,9 @@ class AuthService:
             raise ClaimantNotRegistered
 
         held = await self.grants_db.read_effective_grants(identity.user.id, self.evaluated_at)
+        if len(held) > 1:
+            # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
+            raise MultipleEffectiveGrantsError(len(held), identity.user.id)
         sources = [grant.source for grant in held]
         if AccessGrantSource.registered_account_grant in sources:
             # The repeat: nothing is written, Apple is never reached, and the entitlement is read after commit.
@@ -234,14 +238,24 @@ class AuthService:
             # bit0 is carried forward, never fabricated: Apple writes both bits in this one call.
             await write_bits_with_retry(self.devicecheck, device_token, bit0=state.bit0, bit1=True)
 
-        activated = await self.grants_db.activate_registered_account_grant(
+        outcome = await self.grants_db.activate_registered_account_grant(
             user_id=identity.user.id,
             identity_row=identity.identity,
             tier_id=REGISTERED_TIER_ID,
             evaluated_at=self.evaluated_at)
-        if not activated:
-            # The unique indexes are the arbiter, and the loser answers exactly as the repeat does.
-            await self.session.rollback()
+        await self._settle(identity, outcome)
+
+    async def _settle(self, identity: Identity, outcome: ActivationOutcome) -> None:
+        """Answer for what the writer did: a race re-reads the winner's row, and a refusal raises."""
+        if outcome is ActivationOutcome.activated:
+            return
+        # The writer's transaction is unusable either way, and the read below needs a fresh one.
+        await self.session.rollback()
+        if outcome is ActivationOutcome.lost_race and await self.grants_db.read_effective_grants(
+                identity.user.id, self.evaluated_at):
+            # The loser answers exactly as the repeat does, because the winner's row is there to read.
+            return
+        raise ClaimRefusedUnderLock
 
     async def _apply_create_user(self, identity: Identity,
                                  facts: VerifiedProviderIdentity) -> IdentityProvider:

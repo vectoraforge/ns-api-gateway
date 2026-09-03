@@ -1,6 +1,7 @@
 """Entitlement reads over `core.access_grants`, and the one writer of each of the two free grants.
 Global lock order: grant rows ascending by id, then usage rows, and never a third tier."""
 from datetime import datetime
+from enum import StrEnum
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -8,6 +9,7 @@ from sqlmodel import col, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.crud.identities import IdentitiesDB
+from nativespeaker.api.errors import MultipleEffectiveGrantsError
 from nativespeaker.api.tables import (
     FREE_GRANT_SOURCES,
     AccessGrant,
@@ -64,6 +66,21 @@ def _prior_free_grant_statement(user_id: UUID):
                                      col(AccessGrant.source).in_(FREE_GRANT_SOURCES))
 
 
+# The SQL standard's unique-violation class: the one violation this design delegates to the database.
+UNIQUE_VIOLATION = "23505"
+
+
+# A state the preflight tested that changed under the lock is a race; every other refusal is a refusal.
+class ActivationOutcome(StrEnum):
+    """What a writer did under the locks, in the three terms the route branches on."""
+    # The grant was written.
+    activated = "activated"
+    # Another writer holds the slot, and the caller re-reads the winner's row.
+    lost_race = "lost_race"
+    # The write was impossible, and there is nothing to re-read.
+    refused = "refused"
+
+
 class GrantsDB:
 
     def __init__(self, session: AsyncSession):
@@ -118,7 +135,7 @@ class GrantsDB:
                                               user_id: UUID,
                                               identity_row: ExternalIdentity,
                                               tier_id: str,
-                                              evaluated_at: datetime) -> bool:
+                                              evaluated_at: datetime) -> ActivationOutcome:
         """Take both lock tiers, then write the grant, its usage row and the identity marker."""
         grants = await self.lock_effective_grants(user_id, evaluated_at)
         for grant in grants:
@@ -128,11 +145,18 @@ class GrantsDB:
         stored = await IdentitiesDB(self.session).resolve_existing(issuer=identity_row.issuer,
                                                                    subject=identity_row.subject)
         if stored is None or stored.provider is not IdentityProvider.anonymous:
-            return False
+            return ActivationOutcome.refused
+        if len(grants) > 1:
+            # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
+            raise MultipleEffectiveGrantsError(len(grants), user_id)
+        if any(grant.source is AccessGrantSource.anonymous_device_grant for grant in grants):
+            # The repeat under the lock, and the only branch here whose row is there to be read back.
+            return ActivationOutcome.lost_race
         if grants or stored.free_grant_consumed_at is not None:
-            return False
+            return ActivationOutcome.refused
         if await self.has_prior_free_grant(user_id):
-            return False
+            # No conversion exists on this route, so no loser lands here and nothing is left to re-read.
+            return ActivationOutcome.refused
 
         activated = AccessGrant(user_id=user_id,
                                 tier_id=tier_id,
@@ -153,17 +177,22 @@ class GrantsDB:
         # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
         try:
             await self.session.flush()
-        except IntegrityError:
+        except IntegrityError as violation:
             # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-            return False
-        return True
+            if getattr(violation.orig.__cause__, "sqlstate", None) != UNIQUE_VIOLATION:
+                # A CHECK or a foreign-key failure is a broken invariant, and never a race this lost.
+                raise
+            return ActivationOutcome.lost_race
+        return ActivationOutcome.activated
 
     async def activate_registered_account_grant(self, *,
                                                 user_id: UUID,
                                                 identity_row: ExternalIdentity,
                                                 tier_id: str,
-                                                evaluated_at: datetime) -> bool:
+                                                evaluated_at: datetime) -> ActivationOutcome:
         """Take both lock tiers, re-decide the destination, and write it: a conversion, or a new grant."""
+        # First and ascending by id: this set contains the effective one, so one grant-tier order holds.
+        marked_active = await self.lock_active_grants(user_id)
         grants = await self.lock_effective_grants(user_id, evaluated_at)
         # The usage row is kept rather than discarded: the conversion carries the old counters across.
         locked_usage: dict[UUID, UserMonthlyUsage | None] = {}
@@ -175,17 +204,28 @@ class GrantsDB:
                                                                    subject=identity_row.subject)
         # Tested positively, so a NULL or any future provider member is refused on this same branch.
         if stored is None or stored.provider not in (IdentityProvider.google, IdentityProvider.apple):
-            return False
+            return ActivationOutcome.refused
 
         held = [grant.source for grant in grants]
         if AccessGrantSource.registered_account_grant in held:
-            return False
+            # The repeat under the lock, and the one branch here whose row is there to be read back.
+            return ActivationOutcome.lost_race
         if any(source is not AccessGrantSource.anonymous_device_grant for source in held):
-            return False
+            return ActivationOutcome.refused
+        if len(grants) > 1:
+            # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
+            raise MultipleEffectiveGrantsError(len(grants), user_id)
         superseded = grants[0] if grants else None
+        # A row the one-active index sees and this window cannot: the insert below would be refused.
+        if [grant for grant in marked_active if superseded is None or grant.id != superseded.id]:
+            return ActivationOutcome.refused
         # History by source and status, never `free_grant_consumed_at`, which the conversion already carries.
         if superseded is None and await self.has_prior_free_grant(user_id):
-            return False
+            # The conversion race loser and nothing else: only a concurrent commit takes its locked row away.
+            return ActivationOutcome.lost_race
+        # The lifetime index's own question, which one revoked registered row is enough to answer.
+        if await self.holds_grant_of_source(user_id, AccessGrantSource.registered_account_grant):
+            return ActivationOutcome.refused
 
         carried = locked_usage.get(superseded.id) if superseded is not None else None
         if superseded is not None:
@@ -195,9 +235,12 @@ class GrantsDB:
             # Flushed alone and first: the ORM emits inserts before updates, and the one-active index is per-statement.
             try:
                 await self.session.flush()
-            except IntegrityError:
+            except IntegrityError as violation:
                 # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-                return False
+                if getattr(violation.orig.__cause__, "sqlstate", None) != UNIQUE_VIOLATION:
+                    # A CHECK or a foreign-key failure is a broken invariant, and never a race this lost.
+                    raise
+                return ActivationOutcome.lost_race
 
         activated = AccessGrant(user_id=user_id,
                                 tier_id=tier_id,
@@ -221,7 +264,10 @@ class GrantsDB:
         # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
         try:
             await self.session.flush()
-        except IntegrityError:
+        except IntegrityError as violation:
             # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-            return False
-        return True
+            if getattr(violation.orig.__cause__, "sqlstate", None) != UNIQUE_VIOLATION:
+                # A CHECK or a foreign-key failure is a broken invariant, and never a race this lost.
+                raise
+            return ActivationOutcome.lost_race
+        return ActivationOutcome.activated

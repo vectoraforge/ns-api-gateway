@@ -13,7 +13,7 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.crud.grants import GrantsDB
+from nativespeaker.api.crud.grants import ActivationOutcome, GrantsDB
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.tables.grants import FREE_GRANT_SOURCES
 from schema.helpers import insert_grant, insert_tier, insert_usage, insert_user
@@ -265,11 +265,11 @@ async def activation_statements(_schema_db_uri):
                                                                        subject=subject)
             # Everything above is setup; only what the writer itself issues is the subject of this fixture.
             recorded.clear()
-            activated = await GrantsDB(session).activate_anonymous_device_grant(
+            outcome = await GrantsDB(session).activate_anonymous_device_grant(
                 user_id=user_id, identity_row=identity_row,
                 tier_id=tier_id, evaluated_at=evaluated_at)
             await session.rollback()
-        yield {"statements": list(recorded), "activated": activated}
+        yield {"statements": list(recorded), "outcome": outcome}
     finally:
         await engine.dispose()
         cleanup = await asyncpg.connect(_schema_db_uri)
@@ -309,7 +309,7 @@ class TestTheActivationAddsNoThirdLockTier:
         re_reads = [statement for statement in statements
                     if "core.external_identities" in statement and "FOR UPDATE" not in statement]
         assert len(re_reads) == 1, f"expected one plain identity re-read, got {statements}"
-        assert activation_statements["activated"] is False
+        assert activation_statements["outcome"] is ActivationOutcome.refused
         # The control that matters: `False` must come from the held-grant check, not from a rejected insert,
         # or the two tiers above would be one lock and one write and the count would read as two by accident.
         assert not [statement for statement in statements if statement.startswith("INSERT")], \
@@ -340,7 +340,7 @@ def assert_one_plain_identity_re_read(captured: dict) -> None:
                 if statement.startswith("SELECT") and "core.external_identities" in statement
                 and "FOR UPDATE" not in statement]
     assert len(re_reads) == 1, f"expected one plain identity re-read, got {statements}"
-    assert captured["activated"] is True
+    assert captured["outcome"] is ActivationOutcome.activated
     assert writes(statements), f"the writer must have written on this arm, got {statements}"
 
 
@@ -386,11 +386,11 @@ async def _registered_writer_run(schema_db_uri: str, *, holding_anonymous_grant:
                                                                        subject=subject)
             # Everything above is setup; only what the writer itself issues is the subject of this fixture.
             recorded.clear()
-            activated = await GrantsDB(session).activate_registered_account_grant(
+            outcome = await GrantsDB(session).activate_registered_account_grant(
                 user_id=user_id, identity_row=identity_row,
                 tier_id=tier_id, evaluated_at=evaluated_at)
             await session.rollback()
-        yield {"statements": list(recorded), "activated": activated}
+        yield {"statements": list(recorded), "outcome": outcome}
     finally:
         await engine.dispose()
         cleanup = await asyncpg.connect(schema_db_uri)
@@ -428,7 +428,9 @@ class TestTheRegisteredWriterAddsNoThirdLockTier:
                                                                              conversion_statements):
         """The ORDER BY is the lock order itself, not presentation, so it is asserted with the tier."""
         taken = locking(conversion_statements["statements"])
+        # Two grant-tier reads, the status-only one first: it contains the effective one, so one order holds.
         assert [relation_of(statement) for statement in taken] == ["core.access_grants",
+                                                                   "core.access_grants",
                                                                    "core.user_monthly_usage"]
         assert "ORDER BY core.access_grants.id ASC" in taken[0]
 
@@ -444,7 +446,7 @@ class TestTheRegisteredWriterAddsNoThirdLockTier:
             self, new_grant_statements):
         """A clean account has nothing in either tier, so `FOR UPDATE` locks nothing and the indexes arbitrate."""
         taken = [relation_of(statement) for statement in locking(new_grant_statements["statements"])]
-        assert taken == ["core.access_grants"]
+        assert taken == ["core.access_grants", "core.access_grants"]
         assert "core.external_identities" not in taken
         assert "core.users" not in taken
 

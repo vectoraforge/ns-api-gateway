@@ -461,6 +461,10 @@ class ActiveGrantOutsideItsTerm(ClaimRefused):
     """The account holds a row marked active whose term has passed, so the index refuses every grant."""
 
 
+class ClaimRefusedUnderLock(ClaimRefused):
+    """The state the preflight read changed before the locks were taken, so the write was refused."""
+
+
 # --- Challenge arms ---
 
 

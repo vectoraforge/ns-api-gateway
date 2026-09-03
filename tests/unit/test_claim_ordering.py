@@ -30,7 +30,8 @@ SEAM_NAMES = frozenset({"devicecheck", "read_bits", "write_bits",
                         "DeviceCheckAdapter", "AppleDeviceCheck", "BitState"})
 
 # The crud module's import roots: the standard library, the ORM it is written in, and this project.
-ALLOWED_IMPORT_ROOTS = {"datetime", "uuid", "sqlalchemy", "sqlmodel", "nativespeaker"}
+# `enum` joins `datetime` and `uuid` as a named stdlib module; the driver is still not one of them.
+ALLOWED_IMPORT_ROOTS = {"datetime", "enum", "uuid", "sqlalchemy", "sqlmodel", "nativespeaker"}
 
 # An HTTP client reachable from the crud module is exactly the drift this file exists to catch.
 FORBIDDEN_MODULES = ("httpx", "requests", "aiohttp", "urllib3")

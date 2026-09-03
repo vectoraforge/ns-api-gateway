@@ -18,7 +18,7 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.devicecheck import BitState, RetryableDeviceCheckError
-from nativespeaker.api.crud.grants import GrantsDB
+from nativespeaker.api.crud.grants import ActivationOutcome, GrantsDB
 from nativespeaker.api.errors import ProofRejected
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.schemas.auth import (
@@ -379,7 +379,8 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
             self, client, store, account, grants, devicecheck, session):
         """The unique indexes are the arbiter, and the loser answers exactly as the repeat does."""
         identity_row, _ = account
-        grants.activation_wins = False
+        grants.outcome = ActivationOutcome.lost_race
+        grants.won_by = [_a_grant(AccessGrantSource.registered_account_grant)]
         store.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
@@ -390,6 +391,54 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert session.rollbacks >= 1
         # The caller's rows came from a closed session, so a refresh on this arm is the 500 this pins.
         assert session.refresh_calls == []
+
+    def test_a_refused_write_rolls_back_answers_four_hundred_and_three_and_refreshes_nothing(
+            self, client, store, account, grants, devicecheck, session):
+        """WR-03: the write was impossible, so there is no row to read back and no 200 to give."""
+        identity_row, _ = account
+        grants.outcome = ActivationOutcome.refused
+        # A readable grant after the rollback, so only the outcome itself can produce the 403 below.
+        grants.won_by = [_a_grant(AccessGrantSource.anonymous_device_grant)]
+        store.row = _issued(bound_to=identity_row.id)
+
+        response = _claim(client)
+
+        assert response.status_code == 403
+        assert response.json() == REFUSED
+        assert store.consume_calls == 1
+        assert grants.activates == 1
+        assert session.rollbacks >= 1
+        assert session.refresh_calls == []
+
+    def test_a_lost_race_whose_re_read_finds_nothing_is_refused_rather_than_reported_as_a_grant(
+            self, client, store, account, grants, devicecheck, session):
+        """The backstop: a 200 that reports a grant the caller does not hold is structurally impossible."""
+        identity_row, _ = account
+        grants.outcome = ActivationOutcome.lost_race
+        grants.won_by = []
+        store.row = _issued(bound_to=identity_row.id)
+
+        response = _claim(client)
+
+        assert response.status_code == 403
+        assert response.json() == REFUSED
+        assert store.consume_calls == 1
+        assert session.refresh_calls == []
+
+    def test_a_second_effective_grant_trips_the_wire_rather_than_choosing_between_them(
+            self, client, store, account, grants, devicecheck):
+        """WR-04: the tripwire the two reading services already raise, on the writer's own caller."""
+        identity_row, _ = account
+        grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant),
+                       _a_grant(AccessGrantSource.anonymous_device_grant)]
+        store.row = _issued(bound_to=identity_row.id)
+
+        response = _claim(client)
+
+        assert response.status_code == 500
+        assert store.consume_calls == 1
+        assert grants.activates == 0
+        assert devicecheck.read_calls == []
 
 
 class TestThePrecedenceOrderAndNotOnlyTheOutcome:
@@ -474,7 +523,18 @@ def _apple_unavailable(identity_row, grants, devicecheck) -> None:
 
 
 def _race_lost(identity_row, grants, devicecheck) -> None:
-    grants.activation_wins = False
+    grants.outcome = ActivationOutcome.lost_race
+    grants.won_by = [_a_grant(AccessGrantSource.registered_account_grant)]
+
+
+def _write_refused(identity_row, grants, devicecheck) -> None:
+    grants.outcome = ActivationOutcome.refused
+    grants.won_by = [_a_grant(AccessGrantSource.anonymous_device_grant)]
+
+
+def _race_lost_with_nothing_to_read(identity_row, grants, devicecheck) -> None:
+    grants.outcome = ActivationOutcome.lost_race
+    grants.won_by = []
 
 
 def _new_grant(identity_row, grants, devicecheck) -> None:
@@ -483,7 +543,7 @@ def _new_grant(identity_row, grants, devicecheck) -> None:
 
 POST_CLAIM_OUTCOMES = (_anonymous_claimant, _other_source_held, _free_grant_already_consumed,
                        _repeat, _conversion, _device_spent, _proof_refused, _apple_unavailable,
-                       _race_lost, _new_grant)
+                       _race_lost, _write_refused, _race_lost_with_nothing_to_read, _new_grant)
 
 
 class TestTheConsumptionCounterIsOneForEveryPostClaimOutcome:
