@@ -66,8 +66,11 @@ class BreakerSpy:
         breaker = policy._circuit_breaker
         self.failures = 0
         self.successes = 0
+        # One consultation per attempt, so this count is the number of attempts entered.
+        self.checks = 0
         real_failure = breaker.record_failure
         real_success = breaker.record_success
+        real_before_call = breaker.before_call
 
         async def counting_failure() -> None:
             self.failures += 1
@@ -77,8 +80,13 @@ class BreakerSpy:
             self.successes += 1
             await real_success()
 
+        async def counting_before_call() -> None:
+            self.checks += 1
+            await real_before_call()
+
         breaker.record_failure = counting_failure
         breaker.record_success = counting_success
+        breaker.before_call = counting_before_call
 
 
 @pytest.fixture
@@ -192,6 +200,33 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
 
         assert entered is False
         assert spy.failures == 1  # unchanged: `before_call` refusing is not a new failure
+
+    async def test_a_breaker_opening_mid_flight_ends_the_request_on_its_next_attempt(self, sleeps):
+        """D-14: the request dies on the reopened breaker instead of spending its last attempt on a dead provider."""
+        policy = ResiliencePolicy(make_config(circuit_breaker_failure_threshold=1))
+        spy = BreakerSpy(policy)
+        operation = ScriptedOperation(TRANSIENT)
+
+        with pytest.raises(CircuitOpenError) as caught:
+            await policy.ainvoke(operation, ADMITTED)
+
+        # Two attempts entered against one provider call: the third is never reached.
+        assert spy.checks == 2
+        assert operation.calls == 1
+        # The breaker's own refusal is not a provider failure, so the tally is the one genuine failure.
+        assert spy.failures == 1
+        # The answer a fresh request would get, headers and all, rather than a generic wrapped 503.
+        assert (caught.value.status, caught.value.code) == (503, "service_unavailable")
+        assert int(caught.value.extra_headers()["Retry-After"]) >= 1
+
+    async def test_the_full_budget_is_still_spent_while_the_breaker_stays_closed(self, policy, spy, sleeps):
+        """The control: the case above must pass because the breaker opened, not because retrying broke generally."""
+        operation = ScriptedOperation(TRANSIENT)
+
+        with pytest.raises(TransientLLMError):
+            await policy.ainvoke(operation, ADMITTED)
+
+        assert (spy.checks, operation.calls) == (MAX_ATTEMPTS, MAX_ATTEMPTS)
 
 
 class TestFailureAccounting:
