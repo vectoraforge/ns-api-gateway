@@ -2,6 +2,18 @@
 
 The spec sections are confirmed. Here is the authoritative implementation brief.
 
+> ⚠️ **This file is a verbatim copy of the specification text, and it is not amended. Read
+> `.planning/REQUIREMENTS.md` beside it.** Where this project has knowingly built something else, the
+> divergence is recorded under the requirement it belongs to, never by editing the specification or a
+> copy of it. **Correction of fact, added by Phase 42 (D-07), 2026-09-03:** the tables
+> `core.access_grants_anti_abuse`, `core.provider_accounts` and `core.provider_account_gate_consumptions`
+> were deleted from the one migration, with the `core.gate_consumption_kind` enum and everything only
+> they needed. Every step below that writes one of them — the anti-abuse rows in the two claim
+> transactions, the provider-account resolve-or-create, and the gate-consumption insert — describes a
+> table that no longer exists. See REQUIREMENTS.md § REGGRANT-02 for what shipped instead, and
+> § ANONGRANT for the anonymous claim's corrected row count. Other divergences on these two endpoints
+> are recorded under ANONGRANT-01 … ANONGRANT-03 and REGGRANT-01 … REGGRANT-03.
+
 ## POST /auth/sync
 
 **Description:** The business-state read-only auth resolution endpoint. It is the client's single reconciliation surface: after sign-in, after a lost response from any state-changing auth operation, and after losing the create-user race, the client calls /auth/sync and proceeds on current backend state. Route category: **authenticated** AND a **canonical state-changing auth operation by route** (inventory operation `sync`) — this is deliberate: it is on the audited attempt path even though its handler mutates nothing. It is NOT challenge-bearing and NOT pre-auth-callable. Caller: any client holding a Firebase ID token whose backend-verified (iss, sub) resolves to a linked, active identity. Credential: exactly one `Authorization: Bearer <Firebase ID token>` header — the sole identity carrier; no body field, header, cookie, or query parameter contributes identity.

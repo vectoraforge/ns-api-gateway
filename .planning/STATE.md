@@ -51,6 +51,14 @@ found a genuine 500 on the loser's path, now fixed. Four divergences from `06-cl
 are recorded as **flagged conflicts** under ANONGRANT-01…03 rather than resolved by editing the brief.
 Suite **950 unit / 226 e2e / 134 schema**, `ruff check src tests` clean.
 
+⚠️ **Corrected by Phase 42 (D-07), 2026-09-03.** The paragraph above says four rows go in one flush and
+names the anti-abuse row among them. That was true until this date. `core.access_grants_anti_abuse` and
+its model were deleted, and the anonymous writer stopped writing the receipt row, so **one successful
+anonymous claim now writes three rows**: the grant, its usage row and `free_grant_consumed_at`. The
+device platform is still recorded, on the identity row's `native_claim_platform` column, which survives
+with the `core.native_claim_provider` enum that types it. Nothing else in the paragraph changed. The
+text is left as written, because it records what Phase 41 delivered.
+
 <!-- The same counter hazard recurred in 37.5 and is corrected here the same way. Waves 2 through 8
      ran as parallel worktree agents which deliberately do not write STATE.md, so the counter sat at
      1 while nine plans landed. Ten is disk truth: ten SUMMARY files exist (37.5-01..37.5-10). The
@@ -268,6 +276,7 @@ Resume file: None
 - [Phase ?]: resolved_mode and response stay required on AnalyzeResponse, pinned by a new test — T-36-llmshape's 'exactly two field defaults' is now enforced, not just asserted in a comment.
 - [Phase ?]: The withdrawn PROJECT.md constrained-decoding claim stays in place marked '✗ Withdrawn — never shipped' rather than being deleted, so the over-claim that made D-35-11-A reachable leaves a trace.
 - [Phase ?]: 36-03: seed_grant defaults to source=manual — the two free grant sources require a core.access_grants_anti_abuse row via a deferrable FK, and that table has no model in this phase
+  - ⚠️ Corrected by Phase 42 (D-07), 2026-09-03: the table and both deferrable FKs are deleted, so a free-source grant now seeds with no companion row and `seed_grant` no longer takes `with_anti_abuse`. The default of `source=manual` is unchanged. The entry is kept, because the constraint it names was real when it was written.
 - [Phase ?]: 36-03: consume_quota takes a required keyword-only route parameter, so the fail-closed branch can log the route path template as a closed-set telemetry label
 - [Phase ?]: 36-03: registry condition 10 matches route.dependencies by callable identity, never route.dependant.dependencies (which conflates parameter-level dependencies)
 - [Phase ?]: 36-04: the resolver never mints a usage row — a missing one is a 500 tripwire, not a free allowance (D-09)
@@ -299,6 +308,7 @@ Resume file: None
 - [Phase ?]: 37.4-07: three flagged conflicts, not five — the developer deleted the exactly-one-Authorization wire contract from SHARED-INVARIANTS.md and deleted FOUND-02, so D-10 and A-09 have no surviving binding text to diverge from; both are recorded under FOUND-01 as properties given up
 - [Phase ?]: 37.4-07: the deleted wire rule survives verbatim in 01-foundation.md:40-46, 02-create-user.md:81/:69, 06-claim-anonymous-grant.md:86 and 11-sign-out-all.md:42 — reported under FOUND-01, not resolved; whether the phase briefs follow SHARED-INVARIANTS.md is a spec decision this phase had no direction on
 - [Phase ?]: 37.4-07: the orphan idp-account-hash columns are on core.access_grants_anti_abuse, NOT core.provider_accounts as plan 37.4-05 reported — a later phase acting on the misattributed name would edit the wrong table
+  - ⚠️ Corrected by Phase 42 (D-07 and D-08), 2026-09-03: both tables are deleted, so neither column exists and the misattribution can no longer mislead anyone. D-08 declines to rebuild the hash, the key or the key version anywhere; `provider_uid` stays raw in `core.external_identities`. The entry is kept as the record of a real reporting error.
 - [Phase 37.5]: The layering rule is in AGENTS.md and applies at write time: business logic in services/, database access in crud/, bodies in schemas/, tables in tables/, handlers in routers/, external-SDK seams in auth/ — with a one-line carve-out for errors.py, because SHARED-INVARIANTS.md requires the one shared error module to own the client-visible response shape (A-07/P-08)
 - [Phase 37.5]: resolve_identity's four rejections stay with the query in crud/identities.py, and the admission rule stays in one place, app/dependencies.py::get_identity — splitting them would let a caller read a broken link as an unlinked pair (A-06)
 - [Phase 37.5]: D-08's rule — delete a function that is only a step, keep one that states a rule or marks a boundary (a lock, a transaction, or a callable a library requires). A recursive function is NEVER a step: it cannot be inlined. 21 private single-caller definitions classified, 3 deleted and 18 kept, each with a written ground
