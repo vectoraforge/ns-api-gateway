@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 41
 current_phase_name: POST /auth/claim-anonymous-grant
 status: executing
-stopped_at: Completed 41-04-PLAN.md
-last_updated: "2026-09-03T06:16:29.676Z"
+stopped_at: Completed 41-05-PLAN.md
+last_updated: "2026-09-03T06:34:31.527Z"
 last_activity: 2026-09-03
 last_activity_desc: Phase 41 close-out — the ANONGRANT amendments and the ledger
-state_head: 278a8aa7de57c428320754842d171645c2d9cfd8
+state_head: d9fec803e24a667982e88b5bf59770a0b7b46e55
 progress:
   total_phases: 18
   completed_phases: 11
   total_plans: 90
-  completed_plans: 89
+  completed_plans: 90
   percent: 61
 ---
 
@@ -31,14 +31,15 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 Phase: 41 (POST /auth/claim-anonymous-grant) — EXECUTING
 Plan: 5 of 5
-Status: Executing 41-05, the documentation close-out — the endpoint itself is complete
-Last activity: 2026-09-03 — 41-05 amending the ledger
+Status: All 5 plans executed — ready for verification
+Last activity: 2026-09-03 — 41-05 amended the ledger and closed the phase
 
-<!-- Counts read against disk rather than incremented (41-05): 90 PLAN files and 89 SUMMARY files
-     exist across .planning/phases/, which is exactly what the frontmatter already carried, so
-     nothing was corrected here. The ninetieth summary is 41-05's own and does not exist while this
-     line is written; `state advance-plan` and `state update-progress` recalculate from disk after
-     it lands. Phase 41 itself: 5 plans, 4 summaries at this moment. -->
+<!-- Counts read against disk rather than incremented (41-05). At Task 3 time: 90 PLAN files and 89
+     SUMMARY files across .planning/phases/, which is exactly what the frontmatter already carried,
+     so nothing needed correcting. 41-05's own summary is the ninetieth and landed after Task 3, at
+     which point `state advance-plan` reported `last_plan` and `completed_plans` went 89 -> 90.
+     Phase 41 itself: 5 plans, 5 summaries. The phase is executed, not yet verified, so
+     `completed_phases` stays at 11. -->
 
 **Phase 41 outcome.** `POST /auth/claim-anonymous-grant` ships: a linked **anonymous** caller spends a
 challenge, Apple's bit0 is read and set through the new ES256-signed `auth/devicecheck.py` seam, and
@@ -197,10 +198,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-03T06:16:15.577Z
+**Last session:** 2026-09-03T06:34:30.926Z
 
 Last activity: 2026-08-31
-Stopped at: Completed 41-04-PLAN.md
+Stopped at: Completed 41-05-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -235,6 +236,7 @@ Resume file: None
 | Phase 41 P02 | 38 min | 3 tasks | 8 files |
 | Phase 41 P03 | 20 min | 3 tasks | 8 files |
 | Phase 41 P04 | 20 min | 2 tasks | 3 files |
+| Phase 41 P05 | 12 min | 3 tasks | 3 files |
 
 ## Decisions
 
@@ -319,3 +321,6 @@ Resume file: None
 - [Phase 41]: For two simultaneous first claims the arbiter is the unique index, not the lock — with no grant row to lock, `FOR UPDATE` locks nothing, so the concurrency guarantee rests on `ix_access_grants_one_free_grant_per_user_source` and `ix_access_grants_one_active_per_user` refusing the second insert, and the IntegrityError is caught without naming a constraint or parsing a message.
 - [Phase 41]: The shared completion sequence grew an injected post-claim callable rather than forking — `AuthService._complete` takes a `PostClaim`, and the two Firebase routes pass `partial(self._read_then_write, write=...)`; a second copy of locate-claim-commit-work-spend is the thing Phase 40 D-16 forbids.
 - [Phase 41]: Both services on this route share one captured instant through a FastAPI dependency rather than reading the clock twice — `get_evaluated_at` makes SHARED-INVARIANTS § Grants' one-evaluation-time rule structural instead of a convention two call sites must remember.
+- [Phase 41]: 41-05: a specification divergence is recorded under the requirement it belongs to, never resolved by editing the specification — the brief and SHARED-INVARIANTS.md stay verbatim — Four new flagged conflicts against 06-claim-anonymous-grant.md (iOS-only gate, database before Apple, anonymous claimants only, the idempotent repeat) live under ANONGRANT-01..03 with what the brief asks and what shipped, so a reader of the brief finds the divergence rather than discovering it.
+- [Phase 41]: 41-05: a brief-versus-invariants conflict is resolved by precedence and counted only among the divergences, not among the flagged conflicts — The brief's step 11 locks the target user before the grant set and SHARED-INVARIANTS forbids it; the invariants win, so the code obeys binding text rather than diverging from it. A flagged conflict is reserved for a knowing divergence FROM binding text.
+- [Phase 41]: 41-05: the header's flagged-conflict count is ten and the set of known divergences sixteen, re-derived against six named SHARED-INVARIANTS sections rather than inherited; the gap of six is enumerated — All four new conflicts are against the brief; not one invariant section produced a new divergence. The gap between the two numbers is the difference between a counted conflict and a recorded override, forward flag or precedence resolution, and has been kept deliberately since Phase 37.5.
