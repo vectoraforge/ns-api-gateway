@@ -3,16 +3,17 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 42
-current_phase_name: POST /auth/claim-registered-grant
-status: planning
+current_phase_name: post-auth-claim-registered-grant
+status: executing
 stopped_at: Phase 42 context gathered
-last_updated: "2026-09-03T17:59:29.322Z"
+last_updated: "2026-09-03T18:50:42.562Z"
 last_activity: 2026-09-03
-state_head: 1f35b4376288a384c4f288c885c700fb0ebeedc3
+last_activity_desc: Phase 42 planning complete
+state_head: 66d007e1614eddac071e152e713c35abdc62ed46
 progress:
   total_phases: 18
   completed_phases: 12
-  total_plans: 90
+  total_plans: 96
   completed_plans: 90
   percent: 67
 ---
@@ -28,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 42 — POST /auth/claim-registered-grant
+Phase: 42 (post-auth-claim-registered-grant) — READY TO EXECUTE
 Plan: Not started
-Status: Ready to plan
-Last activity: 2026-09-03
+Status: Ready to execute
+Last activity: 2026-09-03 — Phase 42 planning complete
 
 <!-- Counts read against disk rather than incremented (41-05). At Task 3 time: 90 PLAN files and 89
      SUMMARY files across .planning/phases/, which is exactly what the frontmatter already carried,
