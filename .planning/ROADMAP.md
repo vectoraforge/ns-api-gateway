@@ -603,7 +603,7 @@ Plans:
 **Goal:** Ship the sole creator of `registered_account_grant` grants, including supersession of an active anonymous device grant.
 **Requirements:** REGGRANT-01 … REGGRANT-03
 **Depends on:** 34, 35, 40, 41
-**Plans:** 6/6 plans executed
+**Plans:** 7/7 plans executed
 **Success criteria:**
 
 1. This is the only code path that writes a grant row with `source='registered_account_grant'` — **met as written, 2026-09-03.** Proven by an AST walk over every module under `src/`, not by a grep: one construction site, inside `crud/grants.py::activate_registered_account_grant`, and the walk was mutation-tested twice. *Verified against the text rather than the prediction: plan 42-06 expected this criterion to carry a "prepare and completion modes" clause needing a reword. It does not — that clause is in REGGRANT-01, which carries the reword.* Matching requirement: REGGRANT-01.
@@ -612,6 +612,9 @@ Plans:
 4. An account that already consumed its free grant as anonymous does not receive a second free entitlement — **reworded by Phase 42, 2026-09-03; the property is delivered in full.** As written, the criterion implies one answer for every such account: a refusal. Two answers ship, and the difference is whether the anonymous grant is still active. **An account holding an active `anonymous_device_grant` is converted, not refused** — the one allowance moves to the registered tier, the anonymous row is expired in the same transaction, the usage counters carry across unchanged, and no second allowance is issued. **An account whose free grant is no longer active** — revoked, expired or superseded — **is refused** 403 through `FreeGrantAlreadyConsumed`, by a history read carrying no status predicate. Reworded rather than withdrawn: what the criterion protects is that no account ends with two free entitlements, and that holds on both paths. This is the treatment Phase 40 and Phase 41 gave their own criteria. Matching requirement: REGGRANT-03, amended on the same date.
 
 Plans:
+
+- [x] 42-07-PLAN.md
+
 **Wave 1**
 
 - [x] 42-01-PLAN.md — The D-07 deletion: three tables, everything only they need, and the six-file test cascade *(has a blocking decision checkpoint — one-way door)* (wave 1)
@@ -723,7 +726,7 @@ Plans:
 | 39. GET /users/me | v2.0 | 4/4 | Complete    | 2026-09-01 |
 | 40. POST /auth/upgrade-anonymous | v2.0 | 8/8 | In Progress|  |
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 5/5 | Complete    | 2026-09-03 |
-| 42. POST /auth/claim-registered-grant | v2.0 | 6/6 | Complete    | 2026-09-03 |
+| 42. POST /auth/claim-registered-grant | v2.0 | 7/7 | In Progress|  |
 | 43. POST /webhooks/app-store | v2.0 | 0/? | Pending | — |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 0/? | Pending | — |
 | 45. POST /auth/restore-subscription | v2.0 | 0/? | Pending | — |

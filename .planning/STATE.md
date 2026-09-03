@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 42
 current_phase_name: POST /auth/claim-registered-grant
 status: ready_for_verification
-stopped_at: Completed 42-06-PLAN.md — Phase 42 complete
-last_updated: "2026-09-03T20:45:35.733Z"
+stopped_at: Completed 42-07-PLAN.md
+last_updated: "2026-09-03T22:55:08.125Z"
 last_activity: 2026-09-03
 last_activity_desc: Phase 42 execution complete — all six plans landed
-state_head: 261473c67628604c2f0d7ef95e71ae4c952823e2
+state_head: 4961331248c29716a8e9e455f2cf87df203ae6e0
 progress:
   total_phases: 18
   completed_phases: 12
-  total_plans: 96
-  completed_plans: 96
+  total_plans: 97
+  completed_plans: 97
   percent: 67
 ---
 
@@ -228,10 +228,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-03T20:45:35.052Z
+**Last session:** 2026-09-03T22:55:07.391Z
 
 Last activity: 2026-08-31
-Stopped at: Completed 42-06-PLAN.md — Phase 42 complete
+Stopped at: Completed 42-07-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -273,6 +273,7 @@ Resume file: None
 | Phase 42 P04 | ~20 min | 2 tasks | 2 files |
 | Phase 42 P05 | ~40 min | 2 tasks | 1 files |
 | Phase 42 P06 | ~35 min | 3 tasks | 5 files |
+| Phase 42 P07 | 32 | 3 tasks | 11 files |
 
 ## Decisions
 
@@ -377,3 +378,6 @@ Resume file: None
 - [Phase 42]: 42-06: ROADMAP criterion 4 is reworded, not withdrawn — an account holding an ACTIVE anonymous grant is converted rather than refused, so the criterion's single implied answer is two answers; the property it protects, that no account ends with two free entitlements, holds on both paths.
 - [Phase 42]: 42-06: the flagged-conflict count is sixteen and the set of known divergences twenty-three, re-derived against six named SHARED-INVARIANTS sections rather than inherited; the gap of seven is enumerated. Not one invariant section produced a divergence, and the invariants name no anti-abuse row at all — the phase's largest deletion diverges from the schema reference and the brief, and from no invariant text.
 - [Phase 42]: 42-06: two counts in the traceability table had been stale since Phase 41 updated the header alone; a count is re-derived against the sections it summarises, and a table that disagrees with its own header is corrected rather than left as evidence.
+- [Phase 42]: 42-07: the index question is asked before Apple; the two predicates are answered by two reads, and the status-only read carries no time window because a partial index predicate must be IMMUTABLE
+- [Phase 42]: 42-07: crud writers return a three-valued ActivationOutcome; refused is a 403 and only lost_race is the repeat's 200, with a backstop re-read after every race
+- [Phase 42]: 42-07: only SQLSTATE 23505 is a lost race; the class is read off violation.orig.__cause__.sqlstate so the crud module still imports no driver
