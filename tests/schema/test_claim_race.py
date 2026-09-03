@@ -104,7 +104,25 @@ async def commit_anonymous_account(harness: _Harness, *, subject: str) -> uuid.U
     return user_id
 
 
-async def commit_issued_challenge(harness: _Harness, *, subject: str) -> tuple[uuid.UUID, str]:
+async def commit_registered_account(harness: _Harness, *, subject: str) -> uuid.UUID:
+    """One google identity and its user, committed, because each attempt reads them on its own connection."""
+    user_id, identity_id = uuid.uuid4(), uuid.uuid4()
+    async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
+        await conn.execute(text("INSERT INTO core.users (id) VALUES (:id)"), {"id": user_id})
+        # provider_uid must be non-empty here, which is the table's CHECK for exactly the google arm.
+        await conn.execute(
+            text("INSERT INTO core.external_identities "
+                 "(id, user_id, issuer, subject, provider, provider_uid, identity_state, "
+                 " created_at, updated_at) "
+                 "VALUES (:id, :user_id, :issuer, :subject, 'google', :provider_uid, 'active', "
+                 "        :now, :now)"),
+            {"id": identity_id, "user_id": user_id, "issuer": harness.issuer,
+             "subject": subject, "provider_uid": f"uid-{uuid.uuid4().hex[:16]}", "now": NOW})
+    return user_id
+
+
+async def commit_issued_challenge(harness: _Harness, *, subject: str,
+                                  operation: str) -> tuple[uuid.UUID, str]:
     """One issued challenge; the completion under test claims it itself, so `claimed_at` starts NULL."""
     row_id = uuid.uuid4()
     challenge_id = f"handle-{uuid.uuid4().hex[:16]}"
@@ -113,10 +131,11 @@ async def commit_issued_challenge(harness: _Harness, *, subject: str) -> tuple[u
             text("INSERT INTO core.auth_challenges "
                  "(id, challenge_id, operation, preauth_issuer, preauth_subject, "
                  " expires_at, created_at) "
-                 "VALUES (:id, :challenge_id, 'claim_anonymous_grant', :issuer, :subject, "
-                 "        :expires_at, :now)"),
-            {"id": row_id, "challenge_id": challenge_id, "issuer": harness.issuer,
-             "subject": subject, "expires_at": NOW + timedelta(seconds=300), "now": NOW})
+                 "VALUES (:id, :challenge_id, CAST(:operation AS core.auth_operation), "
+                 "        :issuer, :subject, :expires_at, :now)"),
+            {"id": row_id, "challenge_id": challenge_id, "operation": operation,
+             "issuer": harness.issuer, "subject": subject,
+             "expires_at": NOW + timedelta(seconds=300), "now": NOW})
     return row_id, challenge_id
 
 
@@ -176,6 +195,7 @@ class _Attempt:
     subject: str
     challenge_row_id: uuid.UUID
     challenge_id: str
+    operation: str = "claim_anonymous_grant"
     # What the call produced: the entitlement read after commit, or the rejection it raised.
     result: Entitlement | AppError | None = None
     grants_seen_at_barrier: int | None = None
@@ -194,9 +214,12 @@ def status_of(attempt: _Attempt) -> int:
     return attempt.result.status if isinstance(attempt.result, AppError) else 200
 
 
-async def prepare_attempt(harness: _Harness, *, name: str, subject: str) -> _Attempt:
-    row_id, challenge_id = await commit_issued_challenge(harness, subject=subject)
-    return _Attempt(name=name, subject=subject, challenge_row_id=row_id, challenge_id=challenge_id)
+async def prepare_attempt(harness: _Harness, *, name: str, subject: str,
+                          operation: str = "claim_anonymous_grant") -> _Attempt:
+    row_id, challenge_id = await commit_issued_challenge(harness, subject=subject,
+                                                         operation=operation)
+    return _Attempt(name=name, subject=subject, challenge_row_id=row_id,
+                    challenge_id=challenge_id, operation=operation)
 
 
 async def resolve_identity(harness: _Harness, subject: str):
@@ -217,8 +240,11 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=N
             object_session(row) is None for row in (identity.user, identity.identity))
         service = AuthService(db=session, challenge_store=store, adapter=None,
                               evaluated_at=NOW, devicecheck=_NeverSetDevice())
+        completion = (service.complete_claim_registered_grant
+                      if attempt.operation == "claim_registered_grant"
+                      else service.complete_claim_anonymous_grant)
         try:
-            await service.complete_claim_anonymous_grant(
+            await completion(
                 identity=identity,
                 challenge_id=attempt.challenge_id,
                 device_token=f"device-{attempt.name}")
@@ -322,6 +348,93 @@ class TestTwoSimultaneousFirstClaimsAllocateOnce:
         # Field for field, because both read the same row after the winner committed.
         assert loser.result.model_dump() == winner.result.model_dump()
         assert loser.result.type is EntitlementType.anonymous_device_grant
+        assert loser.result.status is EntitlementStatus.active
+
+    async def test_the_losers_violation_arrived_at_the_flush_and_not_at_the_commit(self, raced):
+        """The two unique indexes fire per statement, so the violation arrives at the flush."""
+        winner, loser = raced["by_role"]["won"], raced["by_role"]["lost_at_flush"]
+        assert (loser.integrity_at_flush, loser.integrity_at_commit) == (True, False)
+        assert (winner.integrity_at_flush, winner.integrity_at_commit) == (False, False)
+
+
+class TestTwoSimultaneousRegisteredClaimsAllocateOnce:
+    """D-11 and D-12. On a first claim there is no row to lock, so the unique indexes are the arbiter."""
+
+    @pytest_asyncio.fixture
+    async def raced(self, harness):
+        """Two challenges for one registered account, released together and held until both have re-resolved."""
+        subject = f"claimant-{uuid.uuid4().hex[:8]}"
+        user_id = await commit_registered_account(harness, subject=subject)
+        first = await prepare_attempt(harness, name="first", subject=subject,
+                                      operation="claim_registered_grant")
+        second = await prepare_attempt(harness, name="second", subject=subject,
+                                       operation="claim_registered_grant")
+
+        first_ready, second_ready = asyncio.Event(), asyncio.Event()
+        await asyncio.gather(
+            run_attempt(harness, first,
+                        barrier_for(harness, first, user_id, first_ready, second_ready)),
+            run_attempt(harness, second,
+                        barrier_for(harness, second, user_id, second_ready, first_ready)))
+
+        return {"subject": subject, "user_id": user_id, "attempts": (first, second),
+                "by_role": {role_of(attempt): attempt for attempt in (first, second)}}
+
+    async def test_both_attempts_observed_an_account_with_no_grant(self, raced):
+        """The premise: without this the case could be two sequential claims, and everything below vacuous."""
+        assert [attempt.grants_seen_at_barrier for attempt in raced["attempts"]] == [0, 0]
+
+    async def test_neither_attempt_handed_the_service_a_row_of_its_own_session(self, raced):
+        """The second premise: the caller's rows belong to no session, so refreshing either one would raise."""
+        assert [attempt.caller_rows_detached for attempt in raced["attempts"]] == [True, True]
+
+    async def test_exactly_one_attempt_lost_the_race(self, raced):
+        """Both answer 200, so losing at the flush is the only thing that separates them."""
+        assert set(raced["by_role"]) == {"won", "lost_at_flush"}
+
+    async def test_exactly_one_grant_row_exists_on_the_registered_tier(self, harness, raced):
+        """Two rows would mean the indexes did not arbitrate; zero would mean both rolled back."""
+        rows = await read(
+            harness,
+            "SELECT source::text, status::text, tier_id FROM core.access_grants WHERE user_id = :id",
+            {"id": raced["user_id"]})
+        assert rows == [("registered_account_grant", "active", "registered")]
+
+    async def test_exactly_one_usage_row_exists_at_zero_used(self, harness, raced):
+        rows = await read(
+            harness,
+            "SELECT u.monthly_period, u.monthly_used FROM core.user_monthly_usage u "
+            "JOIN core.access_grants g ON g.id = u.grant_id WHERE g.user_id = :id",
+            {"id": raced["user_id"]})
+        assert rows == [("2026-08", 0)]
+
+    async def test_the_lifetime_marker_is_set_once(self, harness, raced):
+        """Read as a single value, not as a count of writes: the column is set once and never cleared."""
+        rows = await read(
+            harness,
+            "SELECT free_grant_consumed_at, native_claim_platform::text "
+            "FROM core.external_identities WHERE issuer = :issuer AND subject = :s",
+            {"issuer": harness.issuer, "s": raced["subject"]})
+        assert rows == [(NOW, None)]
+
+    async def test_both_challenges_were_consumed_and_their_verifiers_cleared(self, harness, raced):
+        """The loser consumes too, so a retry needs a fresh prepare rather than a replay of either handle."""
+        for attempt in raced["attempts"]:
+            rows = await read(
+                harness,
+                "SELECT consumed_at, preauth_subject FROM core.auth_challenges WHERE id = :id",
+                {"id": attempt.challenge_row_id})
+            assert rows[0][0] is not None, f"the {attempt.name} attempt left its challenge unconsumed"
+            assert rows[0][1] is None
+
+    async def test_the_loser_answers_two_hundred_with_the_winners_entitlement(self, raced):
+        """D-13, inverting the create race: the loser is answered as a repeat is, not with a rejection."""
+        winner, loser = raced["by_role"]["won"], raced["by_role"]["lost_at_flush"]
+        assert status_of(loser) == 200
+        assert isinstance(loser.result, Entitlement)
+        # Field for field, because both read the same row after the winner committed.
+        assert loser.result.model_dump() == winner.result.model_dump()
+        assert loser.result.type is EntitlementType.registered_account_grant
         assert loser.result.status is EntitlementStatus.active
 
     async def test_the_losers_violation_arrived_at_the_flush_and_not_at_the_commit(self, raced):
