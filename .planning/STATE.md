@@ -3,18 +3,18 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 42
-current_phase_name: post-auth-claim-registered-grant
+current_phase_name: POST /auth/claim-registered-grant
 status: executing
-stopped_at: Phase 42 context gathered
-last_updated: "2026-09-03T18:50:42.562Z"
+stopped_at: Completed 42-01-PLAN.md
+last_updated: "2026-09-03T19:23:37.082Z"
 last_activity: 2026-09-03
-last_activity_desc: Phase 42 planning complete
-state_head: 66d007e1614eddac071e152e713c35abdc62ed46
+last_activity_desc: Phase 42 execution started
+state_head: 29ecaf3fd37019be2791b3783dccb21a3ca0a415
 progress:
   total_phases: 18
   completed_phases: 12
   total_plans: 96
-  completed_plans: 90
+  completed_plans: 91
   percent: 67
 ---
 
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-19)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 41 — POST /auth/claim-anonymous-grant
+**Current focus:** Phase 42 — POST /auth/claim-registered-grant
 
 ## Current Position
 
-Phase: 42 (post-auth-claim-registered-grant) — READY TO EXECUTE
-Plan: Not started
+Phase: 42 (POST /auth/claim-registered-grant) — EXECUTING
+Plan: 2 of 6
 Status: Ready to execute
-Last activity: 2026-09-03 — Phase 42 planning complete
+Last activity: 2026-09-03 — Phase 42 execution started
 
 <!-- Counts read against disk rather than incremented (41-05). At Task 3 time: 90 PLAN files and 89
      SUMMARY files across .planning/phases/, which is exactly what the frontmatter already carried,
@@ -198,11 +198,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-03T17:59:28.666Z
+**Last session:** 2026-09-03T19:23:11.602Z
 
 Last activity: 2026-08-31
-Stopped at: Phase 42 context gathered
-Resume file: .planning/phases/42-post-auth-claim-registered-grant/42-CONTEXT.md
+Stopped at: Completed 42-01-PLAN.md
+Resume file: None
 
 ## Performance Metrics
 
@@ -237,6 +237,7 @@ Resume file: .planning/phases/42-post-auth-claim-registered-grant/42-CONTEXT.md
 | Phase 41 P03 | 20 min | 3 tasks | 8 files |
 | Phase 41 P04 | 20 min | 2 tasks | 3 files |
 | Phase 41 P05 | 12 min | 3 tasks | 3 files |
+| Phase 42 P01 | 30m | 3 tasks | 10 files |
 
 ## Decisions
 
@@ -324,3 +325,5 @@ Resume file: .planning/phases/42-post-auth-claim-registered-grant/42-CONTEXT.md
 - [Phase 41]: 41-05: a specification divergence is recorded under the requirement it belongs to, never resolved by editing the specification — the brief and SHARED-INVARIANTS.md stay verbatim — Four new flagged conflicts against 06-claim-anonymous-grant.md (iOS-only gate, database before Apple, anonymous claimants only, the idempotent repeat) live under ANONGRANT-01..03 with what the brief asks and what shipped, so a reader of the brief finds the divergence rather than discovering it.
 - [Phase 41]: 41-05: a brief-versus-invariants conflict is resolved by precedence and counted only among the divergences, not among the flagged conflicts — The brief's step 11 locks the target user before the grant set and SHARED-INVARIANTS forbids it; the invariants win, so the code obeys binding text rather than diverging from it. A flagged conflict is reserved for a knowing divergence FROM binding text.
 - [Phase 41]: 41-05: the header's flagged-conflict count is ten and the set of known divergences sixteen, re-derived against six named SHARED-INVARIANTS sections rather than inherited; the gap of six is enumerated — All four new conflicts are against the brief; not one invariant section produced a new divergence. The gap between the two numbers is the difference between a counted conflict and a recorded override, forward flag or precedence resolution, and has been kept deliberately since Phase 37.5.
+- [Phase 42]: D-07 executed: the anti-abuse receipt table and the two provider-account tables left the one migration with everything only they needed; core.native_claim_provider stays as the record of the device platform
+- [Phase 42]: D-08 held: no hash column, no key and no key-version surface exists anywhere in src/ or migrations/; provider_uid stays raw
