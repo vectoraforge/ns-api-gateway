@@ -90,8 +90,7 @@ and vendor budget; any `audit.auth_events` row; a `?challenge=true` mode; `claim
 
 ### The schema deletion
 
-- **D-07: Delete `core.access_grants_anti_abuse`, `core.provider_accounts` and
-  `core.provider_account_gate_consumptions` from `migrations/20260818_01_initial-release.sql`.**
+- **D-07: Delete `core.access_grants_anti_abuse`, `core.provider_accounts` and `core.provider_account_gate_consumptions` from `migrations/20260818_01_initial-release.sql`.**
   With them go everything only they need: the `core.gate_consumption_kind` enum,
   `ix_access_grants_anti_abuse_idp_account_hash`, `ix_gate_consumptions_grant_id`, the generated
   columns `anti_abuse_required_grant_id` and `active_registered_account_grant_id` on
