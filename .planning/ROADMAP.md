@@ -638,12 +638,36 @@ Plans:
 **Goal:** Ingest Apple App Store Server Notifications as the first of exactly two provider-callback routes.
 **Requirements:** APPLEHOOK-01, APPLEHOOK-02
 **Depends on:** 34, 35
+**Plans:** 6 plans
 **Success criteria:**
 
 1. The route sits outside the auth dependency and authenticates solely by verifying Apple's `signedPayload` JWS *(noun reworded by Phase 37.1 (D-06), 2026-08-24 — the barrier is a FastAPI dependency now; the requirement is unchanged)*
 2. A payload with an invalid or absent signature is rejected without touching subscription state
 3. **The category machinery this names was deleted by Phase 37.1. Phase 43 must answer it.** As written: the route appears in the provider-callback category by exact path and the enumeration assertion still passes. `Category`, `RouteMetadata`, `VERIFIERS` and `NamedVerifier` went with the route registry (D-06/D-10), 2026-08-24, before this phase exists. `VERIFIERS` had no members, so nothing regressed — but **the control is real**: exact-path enumeration is what stops a wildcard or prefix accidentally admitting an unauthenticated route, and `SHARED-INVARIANTS.md` still forbids wildcard or prefix membership. **A pointer, not a design:** a dedicated `APIRouter` carrying a named-verifier dependency, whose membership is the set of routes registered on it. Phase 43 evaluates that on its own terms; Phase 37.1 adds no replacement mechanism. Matching requirement: APPLEHOOK-02.
 4. Replayed notifications do not double-apply subscription state
+
+Plans:
+
+**Wave 1** *(two parallel plans, no shared file)*
+
+- [ ] 43-01-PLAN.md — TRACER: one verified Apple notification, end to end through every layer to a committed subscription row, plus the seam proved against a real certificate chain (wave 1)
+- [ ] 43-02-PLAN.md — The gateway path rename and the App Store block in `.env.example` (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 43-03-PLAN.md — Attribution: the purchase row, the way back from a store token to a user, and the refused conflict (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 43-04-PLAN.md — The subscription grant under the two lock tiers, measured on real PostgreSQL, with its lock-tier and single-writer proofs (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 43-05-PLAN.md — The two-connection race, the byte-identical refusal matrix, and the configuration gate (wave 4)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 43-06-PLAN.md — The dated APPLEHOOK amendments, the answered criterion 3, and the phase close (wave 5)
 
 #### Phase 44: POST /webhooks/google-play/rtdn
 

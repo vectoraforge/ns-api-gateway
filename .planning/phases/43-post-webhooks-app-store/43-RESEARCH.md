@@ -1264,26 +1264,47 @@ Mitigating, and it is the reason this is a record and not a blocker: the work is
 | A5 | The e2e fixture will swap `app.state.app_store_notifications` the way `scripted_devicecheck_adapter` swaps `app.state.devicecheck_adapter`. I read that fixture but did not write and run a webhook equivalent. | Wave 0 Gaps | Low. The mechanism is identical and already proven by three routes. |
 | A6 | A third single-writer walk for `AccessGrantSource.subscription` is worth roughly 25 lines. Estimated from the shape of the existing two classes, not written. | Test Ratchets | Estimation only; the recommendation stands regardless of the exact size. |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All five were closed during planning. Each carries its answer and the plan that holds it.
 
 1. **Does `AppStoreConfig.environment` become a typed value or stay a free string?**
+   - **RESOLVED — typed.** 43-01 Task 1 § Config declares `StoreEnvironment`, a StrEnum with exactly
+     `sandbox` and `production`, and lifespan maps it to the library enum by an explicit two-arm
+     mapping, so `Xcode` and `LocalTesting` are unreachable. 43-05 Task 3 asserts the member set by
+     equality and asserts that both skipping values are refused at load. Carried as threat T-43-04.
    - What we know: D-11 says `sandbox | production` with no default, and the library's `Environment` enum also carries `Xcode` and `LocalTesting`, which **skip signature verification entirely** (verified, quoted above).
    - What's unclear: whether D-11 intended `Literal["sandbox", "production"]` or a plain `str | None`.
    - Recommendation: **typed**, with a case proving `"Xcode"` and `"LocalTesting"` are refused at config load. This is the one place where a config-validation choice is a security control rather than a convenience, and it should be decided deliberately rather than fall out of an implementation.
 
 2. **What is the arm order in `status_at`, and what justifies it?** (A1.)
+   - **RESOLVED — order fixed and grounded.** 43-01 Task 1 § Service states the five arms in order —
+     revoked, live `expires_at`, grace, billing retry, expired — each carrying its one-line ground in
+     the code, and grace is tested before billing retry because Apple sets the billing-retry flag
+     during grace too. The arms are exercised where they have a consequence: the entitled set is
+     exactly `active` and `grace_period` (43-04 Task 1), and 43-04 Task 2 runs one real-database case
+     per entitlement arm.
    - What we know: the five labels, the entitled set, and that the notification type is only recorded.
    - What's unclear: the precedence, especially between `grace_period` and `billing_retry`, and whether a live `expires_at` should outrank a set `grace_period_expires_at`.
    - Recommendation: the plan states the order with a one-line ground for each arm and a table-driven unit case per arm, in the shape `tests/unit/test_claim_precedence.py` uses. This is D-13's whole content and deserves its own task.
 
 3. **Does the phase add a single-writer walk for the subscription grant?**
+   - **RESOLVED — yes.** 43-04 Task 3 extends `tests/unit/test_grant_sources.py` with a third
+     single-writer class for `AccessGrantSource.subscription`, and mutation-checks it by adding a
+     second construction site and showing the case fail.
    - What we know: measured — `test_grant_sources.py` does not cover it, and this will be the third source with the first two guarded.
    - Recommendation: yes, ~25 lines with its control, on the Phase 41 precedent that a structural `ast` test ships with a control. Phase 45's restore is the specific future writer it protects against.
 
 4. **Does the phase bound `verify()`'s cost?** (A2.)
+   - **RESOLVED — no, and the reason is recorded.** 43-01 `<flagged_assumptions>` states that A2 is
+     closed structurally rather than by timing: no code path in the seam performs I/O, asserted by
+     `enable_online_checks=False` at construction and by the negative greps on the seam. A wall-clock
+     bound would be the flakiest kind of case and would not prove the property.
    - Recommendation: one unit case timing a verification, if it is cheap to write. Not a blocker.
 
 5. **Where does the throwaway chain live?**
+   - **RESOLVED — in the seam's own unit test file.** 43-01 Task 2 builds it as a module-scoped
+     fixture in `tests/unit/test_app_store_notifications.py`, not in `tests/unit/conftest.py`.
    - What we know: it is the biggest new test fixture and D-24 leaves the location at discretion.
    - Recommendation: a module-scoped fixture in the seam's own unit test file rather than `tests/unit/conftest.py`, until Phase 44 needs it. Phase 44 verifies a Google OIDC token, not an Apple chain, so it probably never will.
 

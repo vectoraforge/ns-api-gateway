@@ -155,7 +155,7 @@ allowlist, certificate pinning beyond Apple's root, mTLS; online certificate rev
   and the user holds no grant at all. Ingestion never reactivates a grant; restore (Phase 45) is
   the only path back. A product consequence, not a divergence.
 
-- **D-19: The rest of the brief's lifecycle rules ship as written:** newest verified purchase wins
+- **D-19: The rest of the brief's lifecycle rules ship as written.** Newest verified purchase wins
   across two different subscriptions (the same expire-then-insert path); repeat events for an
   existing `(provider, external_id)` update the canonical row in place with no second purchase
   row; a new `external_id` under the same token inserts a new purchase row; a status, tier or
