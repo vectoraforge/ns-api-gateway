@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 9
+open_count: 10
 waived_count: 1
 fixed_count: 5
-total_count: 15
-last_updated: 2026-09-03T20:43:36.670Z
+total_count: 16
+last_updated: 2026-09-04T22:09:58.987Z
 ---
 
 # Broken Windows Ledger
@@ -30,6 +30,7 @@ last_updated: 2026-09-03T20:43:36.670Z
 | 13 | 42 | deviation | tests/schema/test_claim_race.py |  | 42-05: the conversion race's loser-separation observable differs from the plan's prediction — no IntegrityError is raised; recorded and asserted as measured | open |  | 2026-09-03T20:26:15.152Z |  |
 | 14 | 42 | deviation | .planning/phases/42-post-auth-claim-registered-grant/42-06-PLAN.md |  | 42-06 Task 1: the acceptance criterion requiring 'git status --porcelain -- specs/' to be empty cannot pass — specs/auth-refactor-phases/ is untracked in the parent repo and reports '??' regardless. No spec file was modified; the tracked specs/auth-refactor/ is clean and both brief mtimes predate this phase. | open |  | 2026-09-03T20:43:36.530Z |  |
 | 15 | 42 | deviation | .planning/phases/42-post-auth-claim-registered-grant/42-06-PLAN.md |  | 42-06 Task 2: the verify block's allow-list names only 41-*, 42-*, milestones/ and the two ledgers, but phases 34, 36, 37.4 and 37.5 all mention the deleted table in their own artifacts. The task action's rule (leave a completed phase's artifacts as written) was applied instead. | open |  | 2026-09-03T20:43:36.670Z |  |
+| 16 | 43 | stub | config/config.yaml |  | Placeholder App Store product id com.nativespeaker.subscription.monthly in app_store.products; no iOS app exists yet, so an operator edits the map. An unmapped id is a logged 500 with nothing written. | open |  | 2026-09-04T22:09:58.987Z |  |
 
 ````json
 [
@@ -211,6 +212,18 @@ last_updated: 2026-09-03T20:43:36.670Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-09-03T20:43:36.670Z",
+    "resolved_at": null
+  },
+  {
+    "id": 16,
+    "kind": "stub",
+    "phase": "43",
+    "file": "config/config.yaml",
+    "line": null,
+    "description": "Placeholder App Store product id com.nativespeaker.subscription.monthly in app_store.products; no iOS app exists yet, so an operator edits the map. An unmapped id is a logged 500 with nothing written.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-04T22:09:58.987Z",
     "resolved_at": null
   }
 ]

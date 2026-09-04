@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 43
 current_phase_name: POST /webhooks/app-store
 status: executing
-stopped_at: Phase 43 context gathered
-last_updated: "2026-09-04T21:41:39.231Z"
-last_activity: 2026-09-03
-last_activity_desc: Phase 42 complete, transitioned to Phase 43
-state_head: 054d854cafb8be2545d0cc74b39c001f3610fabd
+stopped_at: Completed 43-01-PLAN.md
+last_updated: "2026-09-04T22:09:52.261Z"
+last_activity: 2026-09-04
+last_activity_desc: Phase 43 execution started
+state_head: 3bdf1418d59799170e20319c1e48850ee0057853
 progress:
   total_phases: 18
   completed_phases: 13
   total_plans: 103
-  completed_plans: 97
+  completed_plans: 98
   percent: 72
 ---
 
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-19)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 42 — POST /auth/claim-registered-grant
+**Current focus:** Phase 43 — POST /webhooks/app-store
 
 ## Current Position
 
-Phase: 43 (POST /webhooks/app-store) — READY TO EXECUTE
-Plan: Not started
+Phase: 43 (POST /webhooks/app-store) — EXECUTING
+Plan: 2 of 6
 Status: Ready to execute
-Last activity: 2026-09-03 — Phase 42 complete, transitioned to Phase 43
+Last activity: 2026-09-04 — Phase 43 execution started
 
 <!-- Counts read against disk rather than incremented (41-05). At Task 3 time: 90 PLAN files and 89
      SUMMARY files across .planning/phases/, which is exactly what the frontmatter already carried,
@@ -228,11 +228,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-04T20:34:02.206Z
+**Last session:** 2026-09-04T22:09:51.509Z
 
 Last activity: 2026-08-31
-Stopped at: Phase 43 context gathered
-Resume file: .planning/phases/43-post-webhooks-app-store/43-CONTEXT.md
+Stopped at: Completed 43-01-PLAN.md
+Resume file: None
 
 ## Performance Metrics
 
@@ -274,6 +274,7 @@ Resume file: .planning/phases/43-post-webhooks-app-store/43-CONTEXT.md
 | Phase 42 P05 | ~40 min | 2 tasks | 1 files |
 | Phase 42 P06 | ~35 min | 3 tasks | 5 files |
 | Phase 42 P07 | 32 | 3 tasks | 11 files |
+| Phase 43 P01 | 17min | 2 tasks | 23 files |
 
 ## Decisions
 
@@ -381,3 +382,6 @@ Resume file: .planning/phases/43-post-webhooks-app-store/43-CONTEXT.md
 - [Phase 42]: 42-07: the index question is asked before Apple; the two predicates are answered by two reads, and the status-only read carries no time window because a partial index predicate must be IMMUTABLE
 - [Phase 42]: 42-07: crud writers return a three-valued ActivationOutcome; refused is a 403 and only lost_race is the repeat's 200, with a backstop re-read after every race
 - [Phase 42]: 42-07: only SQLSTATE 23505 is a lost race; the class is read off violation.orig.__cause__.sqlstate so the crud module still imports no driver
+- [Phase 43]: 43-01: A mid-term tier change updates core.subscriptions.tier_id in place; the unique index on (provider, external_id) allows one row per lifecycle key, and old_tier_id/new_tier_id on the event record the change (43-CONTEXT.md discretion, recorded).
+- [Phase 43]: 43-01: The ingestion lost race raises the generic InternalError, not a fourth error leaf, because the phase artifact list fixes the new exception classes at three; a WARNING with a closed-set provider label is written before the raise.
+- [Phase 43]: 43-01: status_at's arm order is revoked, live expires_at, grace, billing retry, expired. Grace is tested before billing retry because Apple sets the retry flag during grace too. This closes 43-RESEARCH assumption A1.
