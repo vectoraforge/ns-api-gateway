@@ -7,11 +7,14 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
+from nativespeaker.api.app.lifespan import build_app_store_verifier
 from nativespeaker.api.config import (
     AppConfig,
+    AppStoreConfig,
     EnvironmentConfig,
     ModelConfig,
     ResilienceConfig,
+    StoreEnvironment,
 )
 
 # Removed for these cases: the nested delimiter makes pytest-dotenv's CONFIG_DIR ambiguous.
@@ -26,6 +29,37 @@ _ENV_SECRETS = {
     "DB_PASSWORD": "p", "DB_NAME": "d",
     "JWT_PROJECT_ID": "test-project", "JWT_API_KEY": "test-api-key",
 }
+
+
+# The repository root, so a path the application resolves against its own cwd resolves here too.
+REPOSITORY_ROOT = TRACKED_CONFIG.parents[1]
+
+# The three variables a deployer supplies; the fourth field defaults to the committed root certificate.
+_APP_STORE_ENV = {"APP_STORE_BUNDLE_ID": "com.nativespeaker.app",
+                  "APP_STORE_APP_APPLE_ID": "6001234567",
+                  "APP_STORE_ENVIRONMENT": "production"}
+
+# The library's two other environment values, as literals: importing its enum would make the cases below
+# follow a library change instead of catching it.
+VERIFICATION_SKIPPING_ENVIRONMENTS = ("Xcode", "LocalTesting")
+
+
+def load_tracked_config(env: dict[str, str]) -> AppConfig:
+    """Load the tracked configuration file under a replaced environment, as the application does at boot."""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        Path(tmp_dir, "config.yaml").write_text(TRACKED_CONFIG.read_text())
+        Path(tmp_dir, "prompt.txt").write_text("Analyze {lang} phrase: {phrase}")
+        Path(tmp_dir, "examples.yaml").write_text('en:\n  - "Example 1"\n')
+
+        with patch.dict(os.environ, {**_ENV_SECRETS, **env}, clear=True):
+            # See below: _env_file is invisible to ty's synthesised __init__.
+            loaded = EnvironmentConfig(config_dir=Path(tmp_dir),
+                                       _env_file=None)  # ty: ignore[unknown-argument]
+        assert loaded.app_config is not None
+        return loaded.app_config
+    finally:
+        shutil.rmtree(tmp_dir)
 
 
 def test_model_config_defaults():
@@ -187,3 +221,80 @@ class TestNoTrackedYamlCarriesKeyMaterial:
             text = path.read_text()
             assert "private_key" not in text, f"{path} carries key material"
             assert "service_account" not in text, f"{path} carries key material"
+
+
+class TestTheStoreEnvironmentCannotSkipSignatureVerification:
+    """D-11, T-43-04. A security case: two of the library's four environments verify no signature at all."""
+
+    def test_the_member_set_is_exactly_sandbox_and_production(self):
+        assert {member.value for member in StoreEnvironment} == {"sandbox", "production"}
+
+    @pytest.mark.parametrize("value", VERIFICATION_SKIPPING_ENVIRONMENTS)
+    def test_a_verification_skipping_environment_is_refused_at_load(self, value):
+        # These two make the library skip verification, so a free-text field would open this route.
+        with pytest.raises(ValidationError):
+            load_tracked_config({**_APP_STORE_ENV, "APP_STORE_ENVIRONMENT": value})
+
+    def test_a_named_environment_still_loads(self):
+        """The control: a loader that refused everything would pass both cases above."""
+        assert load_tracked_config(_APP_STORE_ENV).app_store.environment is StoreEnvironment.production
+
+
+class TestTheThreeDeployerVariablesLandOnTheConfig:
+    """P-13, P-14. The deployer supplies three variables and the tracked file supplies the product map."""
+
+    def test_every_app_store_variable_lands_on_the_nested_model(self):
+        store = load_tracked_config(_APP_STORE_ENV).app_store
+        assert store.bundle_id == "com.nativespeaker.app"
+        assert store.app_apple_id == 6001234567
+        assert store.environment is StoreEnvironment.production
+
+    def test_the_tracked_product_map_merges_with_the_environment_nesting(self):
+        """D-16, P-13: the partial `app_store:` block coexists with APP_STORE_*, as `db:` does with DB_*."""
+        store = load_tracked_config(_APP_STORE_ENV).app_store
+        assert store.products
+        assert set(store.products.values()) <= {"anonymous", "registered", "paid"}
+        assert (store.bundle_id, store.app_apple_id) == ("com.nativespeaker.app", 6001234567)
+
+    def test_the_model_declares_no_sibling_field_that_would_make_a_variable_ambiguous(self):
+        """P-14: a field named `appstore` beside `app_store` was measured to stop APP_STORE_APP_APPLE_ID landing."""
+        assert "appstore" not in AppConfig.model_fields
+        assert "app_store" in AppConfig.model_fields
+
+
+class TestTheDefaultRootCertificateIsTheCommittedAppleRoot:
+    """D-10. A deployment that configures no certificate still pins Apple's own root."""
+
+    def test_the_default_path_is_the_committed_file(self):
+        assert AppStoreConfig().root_certificate_path == "config/certs/AppleRootCA-G3.cer"
+
+    def test_the_default_path_reads_as_bytes(self):
+        default = REPOSITORY_ROOT / AppStoreConfig().root_certificate_path
+        assert default.read_bytes()
+
+
+class TestAnIncompleteConfigurationBootsAndHoldsNoVerifier:
+    """D-02, P-04. The library raises ValueError from its own constructor, which would kill the pod at boot."""
+
+    def _store(self, **overrides) -> AppStoreConfig:
+        """A complete Production configuration, with `overrides` removing whatever a case wants absent."""
+        complete = {"bundle_id": "com.nativespeaker.app",
+                    "environment": StoreEnvironment.production,
+                    "app_apple_id": 6001234567,
+                    "root_certificate_path": str(REPOSITORY_ROOT
+                                                 / "config/certs/AppleRootCA-G3.cer")}
+        return AppStoreConfig(**(complete | overrides))
+
+    def test_production_without_an_app_id_yields_no_verifier_and_does_not_raise(self):
+        assert build_app_store_verifier(self._store(app_apple_id=None)) is None
+
+    def test_a_complete_production_configuration_yields_one(self):
+        """The control: without it the case above would pass with a builder that always answers None."""
+        assert build_app_store_verifier(self._store()) is not None
+
+    def test_an_absent_environment_yields_no_verifier(self):
+        assert build_app_store_verifier(self._store(environment=None)) is None
+
+    def test_an_unreadable_root_certificate_yields_no_verifier(self):
+        assert build_app_store_verifier(
+            self._store(root_certificate_path="/nonexistent/AppleRootCA-G3.cer")) is None
