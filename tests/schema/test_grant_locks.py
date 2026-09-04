@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.crud.grants import UNIQUE_VIOLATION, ActivationOutcome, GrantsDB
+from nativespeaker.api.crud.grants import ActivationOutcome, GrantsDB
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.tables.grants import FREE_GRANT_SOURCES, AccessGrant, AccessGrantSource
 from schema.helpers import insert_grant, insert_tier, insert_usage, insert_user
@@ -650,7 +650,7 @@ class TestTheRegisteredWriterNamesWhyItRefused:
             with pytest.raises(IntegrityError) as refused:
                 await account.activate()
             # Not 23505, which is the whole reason the narrowed catch re-raises this one.
-            assert getattr(refused.value.orig.__cause__, "sqlstate", None) != UNIQUE_VIOLATION
+            assert refused.value.orig.sqlstate != "23505"
 
 
 @pytest.mark.asyncio
@@ -666,7 +666,7 @@ class TestTheDriverCarriesTheSqlstateTheNarrowingReads:
             with pytest.raises(IntegrityError) as violation:
                 await account.session.flush()
 
-        assert getattr(violation.value.orig.__cause__, "sqlstate", None) == UNIQUE_VIOLATION
+        assert violation.value.orig.sqlstate == "23505"
         assert type(violation.value.orig.__cause__).__name__ == "UniqueViolationError"
 
 

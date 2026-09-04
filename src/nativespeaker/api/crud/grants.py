@@ -66,10 +66,6 @@ def _prior_free_grant_statement(user_id: UUID):
                                      col(AccessGrant.source).in_(FREE_GRANT_SOURCES))
 
 
-# The SQL standard's unique-violation class: the one violation this design delegates to the database.
-UNIQUE_VIOLATION = "23505"
-
-
 # A state the preflight tested that changed under the lock is a race; every other refusal is a refusal.
 class ActivationOutcome(StrEnum):
     """What a writer did under the locks, in the three terms the route branches on."""
@@ -179,8 +175,8 @@ class GrantsDB:
             await self.session.flush()
         except IntegrityError as violation:
             # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-            if getattr(violation.orig.__cause__, "sqlstate", None) != UNIQUE_VIOLATION:
-                # A CHECK or a foreign-key failure is a broken invariant, and never a race this lost.
+            if violation.orig.sqlstate != "23505":
+                # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                 raise
             return ActivationOutcome.lost_race
         return ActivationOutcome.activated
@@ -237,8 +233,8 @@ class GrantsDB:
                 await self.session.flush()
             except IntegrityError as violation:
                 # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-                if getattr(violation.orig.__cause__, "sqlstate", None) != UNIQUE_VIOLATION:
-                    # A CHECK or a foreign-key failure is a broken invariant, and never a race this lost.
+                if violation.orig.sqlstate != "23505":
+                    # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                     raise
                 return ActivationOutcome.lost_race
 
@@ -266,8 +262,8 @@ class GrantsDB:
             await self.session.flush()
         except IntegrityError as violation:
             # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-            if getattr(violation.orig.__cause__, "sqlstate", None) != UNIQUE_VIOLATION:
-                # A CHECK or a foreign-key failure is a broken invariant, and never a race this lost.
+            if violation.orig.sqlstate != "23505":
+                # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                 raise
             return ActivationOutcome.lost_race
         return ActivationOutcome.activated
