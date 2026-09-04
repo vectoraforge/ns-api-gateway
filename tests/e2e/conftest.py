@@ -15,7 +15,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from unit.conftest import FakeFirebaseAdapter, make_test_verifier
 
 from nativespeaker.api.app.main import app
-from nativespeaker.api.auth.app_store import VerifiedNotification
+from nativespeaker.api.auth.app_store import AppStoreNotifications, VerifiedNotification
 from nativespeaker.api.auth.devicecheck import BitState
 from nativespeaker.api.auth.firebase import _application_default_credential
 from nativespeaker.api.config import EnvironmentConfig
@@ -292,6 +292,17 @@ def scripted_app_store_notifications(_app_lifespan):
     _app_lifespan.state.app_store_notifications = notifications
     try:
         yield notifications
+    finally:
+        _app_lifespan.state.app_store_notifications = original
+
+
+@pytest.fixture
+def unconfigured_app_store_notifications(_app_lifespan):
+    """Swap app.state.app_store_notifications for one holding no verifier, as an incomplete config leaves it."""
+    original = _app_lifespan.state.app_store_notifications
+    _app_lifespan.state.app_store_notifications = AppStoreNotifications(verifier=None)
+    try:
+        yield _app_lifespan.state.app_store_notifications
     finally:
         _app_lifespan.state.app_store_notifications = original
 

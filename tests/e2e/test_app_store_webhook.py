@@ -4,18 +4,22 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+from appstoreserverlibrary.signed_data_verifier import VerificationStatus
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func
 from sqlmodel import col, select
 from unit.conftest import make_token
 
 from nativespeaker.api.auth.app_store import VerifiedNotification
-from nativespeaker.api.errors import NotificationRejected, Unavailable
+from nativespeaker.api.errors import NotificationRejected
 from nativespeaker.api.tables import (
     PurchaseProvider,
     StorePurchase,
+    StorePurchaseToken,
     Subscription,
     SubscriptionEvent,
     SubscriptionStatus,
+    User,
 )
 
 pytestmark = pytest.mark.e2e
@@ -28,23 +32,38 @@ PAID_TIER_ID = "paid"
 # The one body every verification failure answers with, compared by equality so a richer field fails here.
 REJECTED = {"code": "auth_required"}
 
-# The same body as bytes, so the refusals are compared on the wire and not after parsing.
-REJECTED_BODY = '{"code":"auth_required"}'
+# The same body as raw bytes, so the refusals are compared on the wire and not after parsing.
+REJECTED_BODY = b'{"code":"auth_required"}'
+
+# The 503 an incomplete configuration answers, and the 500 both refusal leaves share.
+UNAVAILABLE = {"code": "verification_temporarily_unavailable"}
+INTERNAL = {"code": "internal_error"}
 
 # The seam is scripted, so the envelope is never parsed here; it only has to be a non-empty string.
 ENVELOPE = "signed-payload-that-only-the-scripted-seam-reads"
 
-# The four `VerificationStatus` names a misconfigured deployment and a forged payload produce.
-REFUSAL_STAGES = ("VERIFICATION_FAILURE", "INVALID_CERTIFICATE",
-                  "INVALID_APP_IDENTIFIER", "INVALID_ENVIRONMENT")
+# Every reachable arm: the library's whole status set less the one that is not a refusal.
+REFUSAL_STAGES = tuple(status.name for status in VerificationStatus
+                       if status is not VerificationStatus.OK)
 
 # One obviously synthetic attribution token, and a second that disagrees with it.
 TOKEN = "a-synthetic-attribution-token"
 OTHER_TOKEN = "a-different-synthetic-attribution-token"
 
+# The value a `core.store_purchase_tokens` row carries, which resolves a delivery to a real owner.
+STORE_TOKEN = "a-synthetic-store-purchase-token"
 
-class _ErrorSpy:
-    """A recording spy on the handler's own logger, so "which refusal, once" stays observable."""
+# Every value a log record must never carry: the payload, both attribution tokens and the store token.
+SENSITIVE_VALUES = (ENVELOPE, TOKEN, OTHER_TOKEN, STORE_TOKEN)
+
+
+# The two modules that write a record on this route: the error handler, and the service's own INFO line.
+_LOGGERS = ("nativespeaker.api.app.error_handlers.logger",
+            "nativespeaker.api.services.subscriptions.logger")
+
+
+class _LogSpy:
+    """A recording spy on a module's own logger, so "which record, once" stays observable."""
 
     def __init__(self) -> None:
         self.entries: list[tuple[str, dict]] = []
@@ -53,12 +72,31 @@ class _ErrorSpy:
         self.entries.append((event, fields))
 
 
-@pytest.fixture
-def error_records(monkeypatch) -> _ErrorSpy:
+def _spy_on(monkeypatch, targets: tuple[str, ...], levels: tuple[str, ...]) -> _LogSpy:
     """A spy, not `capture_logs`: the module-level logger caches its binding, so capture sees nothing."""
-    spy = _ErrorSpy()
-    monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.error", spy.record)
+    spy = _LogSpy()
+    for target in targets:
+        for level in levels:
+            monkeypatch.setattr(f"{target}.{level}", spy.record)
     return spy
+
+
+@pytest.fixture
+def error_records(monkeypatch) -> _LogSpy:
+    """Every ERROR record the handler writes, and nothing else."""
+    return _spy_on(monkeypatch, (_LOGGERS[0],), ("error",))
+
+
+@pytest.fixture
+def info_records(monkeypatch) -> _LogSpy:
+    """Every INFO record the service writes, and nothing else."""
+    return _spy_on(monkeypatch, (_LOGGERS[1],), ("info",))
+
+
+@pytest.fixture
+def captured_records(monkeypatch) -> _LogSpy:
+    """One list holding every record either module writes at any level, for the hygiene walk."""
+    return _spy_on(monkeypatch, _LOGGERS, ("info", "warning", "error"))
 
 
 @pytest_asyncio.fixture(loop_scope="module")
@@ -93,6 +131,17 @@ def _empty_notification(**overrides) -> VerifiedNotification:
                          product_id=None, purchased_at=None, expires_at=None, **overrides)
 
 
+async def _seed_store_token(factory, value: str) -> None:
+    """One user holding one Apple store token, so a delivery carrying that token resolves an owner."""
+    async with factory() as session:
+        user = User()
+        session.add(user)
+        await session.flush()
+        session.add(StorePurchaseToken(user_id=user.id, provider=PurchaseProvider.apple,
+                                       identity_value=value, created_at=datetime.now(UTC)))
+        await session.commit()
+
+
 async def _subscriptions_of(factory, external_id: str) -> list[Subscription]:
     """Every canonical row for one lifecycle key; the unique index allows at most one."""
     async with factory() as session:
@@ -105,6 +154,15 @@ async def _purchases_of(factory, external_id: str) -> list[StorePurchase]:
     async with factory() as session:
         return list((await session.exec(
             select(StorePurchase).where(col(StorePurchase.external_id) == external_id))).all())
+
+
+async def _counts(factory) -> tuple[int, ...]:
+    """Row counts of the three tables one delivery writes, so a case naming no key can still say "nothing"."""
+    counted = []
+    async with factory() as session:
+        for model in (Subscription, StorePurchase, SubscriptionEvent):
+            counted.append((await session.exec(select(func.count()).select_from(model))).one())
+    return tuple(counted)
 
 
 async def _events_of(factory, notification_uuid: str) -> list[SubscriptionEvent]:
@@ -169,13 +227,20 @@ class TestEveryVerificationFailureAnswersTheOneBody:
     @pytest.mark.parametrize("stage", REFUSAL_STAGES)
     async def test_each_refusal_answers_the_same_401_body(
             self, webhook_client, scripted_app_store_notifications, stage):
+        """One parameter per reachable status, so an arm the library adds arrives here rather than silently."""
         scripted_app_store_notifications.script(NotificationRejected(stage=stage))
 
         response = await webhook_client.post(PATH, json={"signedPayload": ENVELOPE})
 
         assert response.status_code == 401
         assert response.json() == REJECTED
-        assert response.text == REJECTED_BODY
+        # On the wire, not after parsing: a field added later fails here rather than becoming an oracle.
+        assert response.content == REJECTED_BODY
+
+    async def test_every_reachable_arm_is_covered_by_one_parameter(self):
+        """The control: a narrowed tuple would leave an arm untested while every case above still passed."""
+        assert set(REFUSAL_STAGES) == {status.name for status in VerificationStatus} - {"OK"}
+        assert len(REFUSAL_STAGES) == len(VerificationStatus) - 1
 
     async def test_a_refused_payload_writes_nothing(
             self, webhook_client, scripted_app_store_notifications, _db_transaction):
@@ -200,17 +265,23 @@ class TestEveryVerificationFailureAnswersTheOneBody:
             headers={"Authorization": f"Bearer {make_token(sub='store-callback-subject')}"})
 
         assert response.status_code == 401
-        assert response.text == REJECTED_BODY
+        assert response.content == REJECTED_BODY
 
     async def test_an_unconfigured_deployment_answers_503(
-            self, webhook_client, scripted_app_store_notifications):
-        """The route is registered in every environment; an incomplete config fails it closed here."""
-        scripted_app_store_notifications.script(Unavailable(stage="app_store_verify"))
-
+            self, webhook_client, unconfigured_app_store_notifications):
+        """D-02. A real seam holding no verifier, which is what an incomplete configuration leaves behind."""
         response = await webhook_client.post(PATH, json={"signedPayload": ENVELOPE})
 
         assert response.status_code == 503
-        assert response.json() == {"code": "verification_temporarily_unavailable"}
+        assert response.json() == UNAVAILABLE
+
+    async def test_the_route_is_still_registered_while_the_seam_is_unconfigured(
+            self, _app_lifespan, webhook_client, unconfigured_app_store_notifications):
+        """D-02. The route set is identical in every environment: present and answering 503, never absent."""
+        response = await webhook_client.post(PATH, json={"signedPayload": ENVELOPE})
+
+        assert response.status_code == 503
+        assert PATH in {route.path for route in _app_lifespan.routes}
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -230,27 +301,41 @@ class TestTheReplayAndTheEmptyNotificationWriteNothing:
         assert len(await _subscriptions_of(_db_transaction, notification.external_id)) == 1
 
     async def test_a_notification_with_no_transaction_part_writes_nothing(
-            self, webhook_client, scripted_app_store_notifications, _db_transaction):
+            self, webhook_client, scripted_app_store_notifications, _db_transaction, info_records):
+        """D-22. A TEST or summary notification: 200, no row of any of the three kinds, one INFO line."""
         notification = _empty_notification()
         scripted_app_store_notifications.script(notification)
+        before = await _counts(_db_transaction)
 
         response = await webhook_client.post(PATH, json={"signedPayload": ENVELOPE})
 
         assert response.status_code == 200, response.text
         assert await _events_of(_db_transaction, notification.notification_uuid) == []
+        assert await _counts(_db_transaction) == before
+        assert len(info_records.entries) == 1
+        event, fields = info_records.entries[0]
+        assert event == "store_notification_without_transaction"
+        assert fields["event_type"] == notification.event_type
 
     async def test_an_unmapped_product_answers_500_and_writes_nothing(
-            self, webhook_client, scripted_app_store_notifications, _db_transaction):
-        """An operator adds the map line and Apple's next retry succeeds; nothing is written meanwhile."""
+            self, webhook_client, scripted_app_store_notifications, _db_transaction, error_records):
+        """D-14, D-21. An operator adds the map line and Apple's next retry succeeds; nothing is written."""
         notification = _notification(product_id="com.nativespeaker.subscription.unmapped")
         scripted_app_store_notifications.script(notification)
+        before = await _counts(_db_transaction)
 
         response = await webhook_client.post(PATH, json={"signedPayload": ENVELOPE})
 
         assert response.status_code == 500
-        assert response.json() == {"code": "internal_error"}
+        assert response.json() == INTERNAL
         assert await _subscriptions_of(_db_transaction, notification.external_id) == []
+        assert await _purchases_of(_db_transaction, notification.external_id) == []
         assert await _events_of(_db_transaction, notification.notification_uuid) == []
+        assert await _counts(_db_transaction) == before
+        assert len(error_records.entries) == 1
+        event, fields = error_records.entries[0]
+        assert event == "unmapped_store_product"
+        assert fields["product_id"] == notification.product_id
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -275,7 +360,7 @@ class TestAChangedAttributionIsRefusedAndNothingIsWritten:
             webhook_client, scripted_app_store_notifications, external_id)
 
         assert response.status_code == 500
-        assert response.json() == {"code": "internal_error"}
+        assert response.json() == INTERNAL
 
     async def test_the_conflicting_delivery_adds_no_row_of_any_of_the_three_kinds(
             self, webhook_client, scripted_app_store_notifications, _db_transaction):
@@ -367,3 +452,45 @@ class TestTheRouteIsReachableWithoutACredential:
         response = await webhook_client.post(f"{PATH}/", json={"signedPayload": ENVELOPE})
 
         assert response.status_code == 404
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestNoRecordCarriesASensitiveValue:
+    """T-43-06: the signed payload, both attribution tokens and a store token reach no log record at all."""
+
+    async def _drive_every_recording_arm(self, client, seam, factory, records):
+        """One delivery per arm that writes a record, plus the attributed one that writes rows and none."""
+        await _seed_store_token(factory, STORE_TOKEN)
+        external_id = f"original-{uuid4()}"
+
+        for scripted in (_empty_notification(),
+                         NotificationRejected(stage="VERIFICATION_FAILURE"),
+                         _notification(product_id="com.nativespeaker.subscription.unmapped",
+                                       attribution_token=TOKEN),
+                         _notification(attribution_token=STORE_TOKEN, external_id=external_id),
+                         _notification(attribution_token=OTHER_TOKEN, external_id=external_id)):
+            seam.script(scripted)
+            await client.post(PATH, json={"signedPayload": ENVELOPE})
+        return records.entries
+
+    async def test_the_walk_sees_the_records_the_deliveries_produced(
+            self, webhook_client, scripted_app_store_notifications, _db_transaction,
+            captured_records):
+        """The control: a capture returning nothing would pass the hygiene case below without reading a record."""
+        entries = await self._drive_every_recording_arm(
+            webhook_client, scripted_app_store_notifications, _db_transaction, captured_records)
+
+        assert {event for event, _ in entries} == {"store_notification_without_transaction",
+                                                   "notification_rejected",
+                                                   "unmapped_store_product",
+                                                   "attribution_conflict"}
+
+    async def test_no_record_carries_the_payload_an_attribution_token_or_the_store_token(
+            self, webhook_client, scripted_app_store_notifications, _db_transaction,
+            captured_records):
+        entries = await self._drive_every_recording_arm(
+            webhook_client, scripted_app_store_notifications, _db_transaction, captured_records)
+
+        rendered = repr(entries)
+        for secret in SENSITIVE_VALUES:
+            assert secret not in rendered, f"a log record carries {secret!r}"
