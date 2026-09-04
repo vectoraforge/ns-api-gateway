@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 43
 current_phase_name: POST /webhooks/app-store
 status: executing
-stopped_at: Completed 43-02-PLAN.md
-last_updated: "2026-09-04T22:18:16.507Z"
+stopped_at: Completed 43-03-PLAN.md
+last_updated: "2026-09-04T22:35:30.645Z"
 last_activity: 2026-09-04
 last_activity_desc: Phase 43 execution started
-state_head: cb36a59c86fe468c5c2e565d39577cb13d8e4f9d
+state_head: 7fbd77be4b899c4ab33c0a53cedfdd198cb6555f
 progress:
   total_phases: 18
   completed_phases: 13
   total_plans: 103
-  completed_plans: 99
+  completed_plans: 100
   percent: 72
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 43 (POST /webhooks/app-store) — EXECUTING
-Plan: 3 of 6
+Plan: 4 of 6
 Status: Ready to execute
 Last activity: 2026-09-04 — Phase 43 execution started
 
@@ -228,10 +228,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-04T22:18:15.750Z
+**Last session:** 2026-09-04T22:35:20.589Z
 
 Last activity: 2026-08-31
-Stopped at: Completed 43-02-PLAN.md
+Stopped at: Completed 43-03-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -276,6 +276,7 @@ Resume file: None
 | Phase 42 P07 | 32 | 3 tasks | 11 files |
 | Phase 43 P01 | 17min | 2 tasks | 23 files |
 | Phase 43 P02 | 4min | 2 tasks | 2 files |
+| Phase 43 P03 | 12min | 3 tasks | 9 files |
 
 ## Decisions
 
@@ -389,3 +390,6 @@ Resume file: None
 - [Phase 43]: 43-02: The .env.example App Store block names no variable in its prose, only on the three assignment lines — the plan's own gate counts matching lines, so a helpfully repeated name would fail it
 - [Phase 43]: 43-02: APP_STORE_ROOT_CERTIFICATE_PATH is named nowhere in .env.example, not even in a comment; the block states the default path config/certs/AppleRootCA-G3.cer instead
 - [Phase 43]: 43-02: The gateway per-IP and per-URL limits the brief requires stay deferred to the v2.1 gateway contract (D-06, Phase 35 D-05/D-08); 43-06 should record this with 43-01's uncredentialed-route residual, because one limit closes both
+- [Phase 43]: 43-03: core.store_purchases.identity_value is the presented attribution token whenever the notification carries one; a server-generated UUID only when the store gives none. The plan's broader spelling would make every repeat delivery of a token-bearing but unbound purchase a permanent AttributionConflict.
+- [Phase 43]: 43-03: the conflict arm fires only when the notification presents a token; a delivery carrying no appAccountToken disagrees with nothing.
+- [Phase 43]: 43-03: an owner is added to core.subscriptions.user_id, never cleared, so a token-less renewal cannot strip a link restore created.

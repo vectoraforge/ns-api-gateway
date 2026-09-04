@@ -638,7 +638,7 @@ Plans:
 **Goal:** Ingest Apple App Store Server Notifications as the first of exactly two provider-callback routes.
 **Requirements:** APPLEHOOK-01, APPLEHOOK-02
 **Depends on:** 34, 35
-**Plans:** 2/6 plans executed
+**Plans:** 3/6 plans executed
 **Success criteria:**
 
 1. The route sits outside the auth dependency and authenticates solely by verifying Apple's `signedPayload` JWS *(noun reworded by Phase 37.1 (D-06), 2026-08-24 — the barrier is a FastAPI dependency now; the requirement is unchanged)*
@@ -655,7 +655,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 43-03-PLAN.md — Attribution: the purchase row, the way back from a store token to a user, and the refused conflict (wave 2)
+- [x] 43-03-PLAN.md — Attribution: the purchase row, the way back from a store token to a user, and the refused conflict (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -751,7 +751,7 @@ Plans:
 | 40. POST /auth/upgrade-anonymous | v2.0 | 8/8 | In Progress|  |
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 5/5 | Complete    | 2026-09-03 |
 | 42. POST /auth/claim-registered-grant | v2.0 | 7/7 | Complete    | 2026-09-03 |
-| 43. POST /webhooks/app-store | v2.0 | 2/6 | In Progress|  |
+| 43. POST /webhooks/app-store | v2.0 | 3/6 | In Progress|  |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 0/? | Pending | — |
 | 45. POST /auth/restore-subscription | v2.0 | 0/? | Pending | — |
 | 46. POST /auth/sign-out-all | v2.0 | 0/? | Pending | — |
