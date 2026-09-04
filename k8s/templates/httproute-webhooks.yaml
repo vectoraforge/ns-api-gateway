@@ -8,11 +8,12 @@ metadata:
 spec:
   parentRefs:
   - name: {{ .Values.gateway.name }}
+  # This route is outside the JWT SecurityPolicy. Apple sends no Authorization header.
   rules:
   - matches:
     - path:
         type: Exact
-        value: /webhooks/apple
+        value: /webhooks/app-store
       method: POST
     backendRefs:
     - name: {{ include "ns-api-gateway.fullname" . }}
