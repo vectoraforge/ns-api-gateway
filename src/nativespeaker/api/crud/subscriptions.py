@@ -1,5 +1,5 @@
-"""Store-subscription reads and writes over `core.subscriptions` and `audit.subscription_events`.
-Takes no lock: a subscription-row lock would be a tier ahead of the grant locks."""
+"""Store-subscription writes over `core.subscriptions`, `audit.subscription_events` and the buyer's grant.
+Lock order: grant rows ascending by id, then their usage rows; the subscription row is never locked."""
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
@@ -8,13 +8,22 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from nativespeaker.api.crud.grants import GrantsDB
 from nativespeaker.api.tables import (
+    FREE_GRANT_SOURCES,
+    AccessGrant,
+    AccessGrantSource,
+    AccessGrantStatus,
     PurchaseProvider,
     StorePurchase,
     Subscription,
     SubscriptionEvent,
     SubscriptionStatus,
+    UserMonthlyUsage,
 )
+
+# The set `core.subscriptions.product_entitled_subscription_id` is generated over, named once for its readers.
+ENTITLED_STATUSES = frozenset({SubscriptionStatus.active, SubscriptionStatus.grace_period})
 
 
 class WriteOutcome(StrEnum):
@@ -46,6 +55,18 @@ class SubscriptionsDB:
 
     def __init__(self, session: AsyncSession):
         self.session = session
+        # The one spelling of the lock order: a second pair of statements would be a second thing to keep correct.
+        self.grants_db = GrantsDB(session)
+
+    async def lock_grants(self, user_id: UUID, evaluated_at: datetime) -> list[AccessGrant]:
+        """Take both lock tiers for one buyer and return every grant row marked active."""
+        # First and ascending by id: this set contains the effective one, so one grant-tier order holds.
+        marked_active = await self.grants_db.lock_active_grants(user_id)
+        effective = await self.grants_db.lock_effective_grants(user_id, evaluated_at)
+        for grant in effective:
+            # Second in the lock order, always after the grant rows.
+            await self.grants_db.lock_usage(grant.id)
+        return marked_active
 
     async def read_event(self, notification_uuid: str) -> SubscriptionEvent | None:
         """The already-recorded event for `notification_uuid`, or `None`, taking no lock."""
@@ -148,6 +169,80 @@ class SubscriptionsDB:
                                            old_tier_id=old_tier_id,
                                            new_tier_id=new_tier_id,
                                            created_at=evaluated_at))
+
+        # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
+        try:
+            await self.session.flush()
+        except IntegrityError as violation:
+            # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
+            if violation.orig.sqlstate != "23505":
+                # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
+                raise
+            return WriteOutcome.lost_race
+        return WriteOutcome.applied
+
+    async def write_subscription_grant(self, *,
+                                       user_id: UUID,
+                                       subscription_id: UUID,
+                                       status: SubscriptionStatus,
+                                       marked_active: list[AccessGrant],
+                                       tier_id: str,
+                                       starts_at: datetime,
+                                       ends_at: datetime | None,
+                                       evaluated_at: datetime) -> WriteOutcome:
+        """Supersede the buyer's held grants and insert this term's, under locks `lock_grants` took."""
+        entitled = status in ENTITLED_STATUSES
+        held = [grant for grant in marked_active
+                if grant.source is AccessGrantSource.subscription
+                and grant.subscription_id == subscription_id]
+        # The tier is asked with the term: a mid-term tier change takes the same expire-then-insert path below.
+        if entitled and [grant for grant in held
+                         if grant.ends_at == ends_at and grant.tier_id == tier_id]:
+            return WriteOutcome.replayed
+
+        superseded = list(held)
+        if entitled:
+            # The lifetime free slot is spent here, and only restore is a path back to a grant.
+            superseded += [grant for grant in marked_active if grant.source in FREE_GRANT_SOURCES]
+        for grant in superseded:
+            # Revoked only where the store withdrew the purchase; every other end of a term is an expiry.
+            grant.status = (AccessGrantStatus.revoked
+                            if grant.source is AccessGrantSource.subscription
+                            and status is SubscriptionStatus.revoked
+                            else AccessGrantStatus.expired)
+            grant.ends_at = evaluated_at
+            grant.updated_at = evaluated_at
+
+        if superseded:
+            # Flushed alone and first: the ORM emits inserts before updates, and the index is per-statement.
+            try:
+                await self.session.flush()
+            except IntegrityError as violation:
+                # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
+                if violation.orig.sqlstate != "23505":
+                    # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
+                    raise
+                return WriteOutcome.lost_race
+
+        if not entitled:
+            # The buyer holds no grant outside the entitled set; the deferrable foreign key is the backstop, not this.
+            return WriteOutcome.applied if superseded else WriteOutcome.replayed
+
+        activated = AccessGrant(user_id=user_id,
+                                tier_id=tier_id,
+                                source=AccessGrantSource.subscription,
+                                subscription_id=subscription_id,
+                                starts_at=starts_at,
+                                ends_at=ends_at,
+                                created_at=evaluated_at,
+                                updated_at=evaluated_at)
+        self.session.add(activated)
+        # Minted with its grant and never for an existing one: a missing usage row is a broken invariant.
+        self.session.add(UserMonthlyUsage(grant_id=activated.id,
+                                          monthly_period=evaluated_at.strftime("%Y-%m"),
+                                          monthly_used=0,
+                                          created_at=evaluated_at,
+                                          updated_at=evaluated_at))
 
         # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
         try:

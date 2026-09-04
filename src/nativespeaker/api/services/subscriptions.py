@@ -64,6 +64,16 @@ class SubscriptionsService:
         user_id = (None if token is None
                    else await self.purchases_db.resolve_user(notification.provider, token))
 
+        stored = await self.subscriptions_db.read_subscription(notification.provider,
+                                                               notification.external_id)
+        old_tier_id = None if stored is None else stored.tier_id
+        # A plain read, never a lock: a subscription-row lock would sit ahead of the grant locks below.
+        owner = user_id if user_id is not None else (None if stored is None else stored.user_id)
+
+        # An unattributed purchase has no buyer, so there is no row to lock and no grant to hold.
+        marked_active = ([] if owner is None
+                         else await self.subscriptions_db.lock_grants(owner, self.evaluated_at))
+
         if await self.subscriptions_db.read_event(notification.notification_uuid) is not None:
             # The replay: the store's own key is already recorded, so this delivery writes nothing.
             return
@@ -74,16 +84,13 @@ class SubscriptionsService:
             # Refused, never repaired: this route cannot verify a changed owner, and the store retries.
             raise AttributionConflict(notification.provider, notification.external_id)
 
-        stored = await self.subscriptions_db.read_subscription(notification.provider,
-                                                               notification.external_id)
-        old_tier_id = None if stored is None else stored.tier_id
-
+        status = status_at(notification, self.evaluated_at)
         subscription, outcome = await self.subscriptions_db.upsert_subscription(
             provider=notification.provider,
             external_id=notification.external_id,
             user_id=user_id,
             tier_id=tier_id,
-            status=status_at(notification, self.evaluated_at),
+            status=status,
             evaluated_at=self.evaluated_at)
         await self._settle(outcome, notification)
 
@@ -109,6 +116,19 @@ class SubscriptionsService:
             old_tier_id=old_tier_id,
             new_tier_id=tier_id,
             evaluated_at=self.evaluated_at), notification)
+
+        if subscription.user_id is not None:
+            await self._settle(await self.subscriptions_db.write_subscription_grant(
+                user_id=subscription.user_id,
+                subscription_id=subscription.id,
+                status=status,
+                marked_active=marked_active,
+                tier_id=tier_id,
+                # The captured instant stands in where the store gave no purchase date for this term.
+                starts_at=(self.evaluated_at if notification.purchased_at is None
+                           else notification.purchased_at),
+                ends_at=notification.expires_at,
+                evaluated_at=self.evaluated_at), notification)
 
         # Deliberate commit: the store reads the status code, so 200 must mean the rows are durable.
         await self.session.commit()

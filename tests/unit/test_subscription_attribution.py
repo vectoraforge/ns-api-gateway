@@ -74,6 +74,16 @@ class _RecordingSubscriptions:
         self.inserted: list[dict] = []
         self.upserts: list[dict] = []
         self.appended: list[dict] = []
+        self.locked: list[UUID] = []
+        self.granted: list[dict] = []
+
+    async def lock_grants(self, user_id: UUID, evaluated_at: datetime) -> list:  # noqa: ARG002
+        self.locked.append(user_id)
+        return []
+
+    async def write_subscription_grant(self, **fields) -> WriteOutcome:
+        self.granted.append(fields)
+        return WriteOutcome.applied
 
     async def read_event(self, notification_uuid: str) -> dict | None:
         return self.events.get(notification_uuid)
