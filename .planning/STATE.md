@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 43
 current_phase_name: POST /webhooks/app-store
 status: executing
-stopped_at: Completed 43-05-PLAN.md
-last_updated: "2026-09-04T23:16:59.180Z"
+stopped_at: Completed 43-06-PLAN.md
+last_updated: "2026-09-04T23:27:00.000Z"
 last_activity: 2026-09-04
-last_activity_desc: Phase 43 execution started
-state_head: 0a1d6edc2e664977972db2e7e5ea5e1199f6adf0
+last_activity_desc: Phase 43 executed — all six plans complete
+state_head: 1f3f1971e681cfe4d9bce605c3d0b2e9c4deb3a4
 progress:
   total_phases: 18
   completed_phases: 13
   total_plans: 103
-  completed_plans: 102
+  completed_plans: 103
   percent: 72
 ---
 
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 43 (POST /webhooks/app-store) — EXECUTING
+Phase: 43 (POST /webhooks/app-store) — EXECUTED
 Plan: 6 of 6
-Status: Ready to execute
-Last activity: 2026-09-04 — Phase 43 execution started
+Status: All six plans complete; the phase is executed, not yet verified
+Last activity: 2026-09-04 — Phase 43 executed, all six plans complete
 
 <!-- Counts read against disk rather than incremented (41-05). At Task 3 time: 90 PLAN files and 89
      SUMMARY files across .planning/phases/, which is exactly what the frontmatter already carried,
@@ -40,6 +40,43 @@ Last activity: 2026-09-04 — Phase 43 execution started
      which point `state advance-plan` reported `last_plan` and `completed_plans` went 89 -> 90.
      Phase 41 itself: 5 plans, 5 summaries. The phase is executed, not yet verified, so
      `completed_phases` stays at 11. -->
+
+<!-- Counts read against disk rather than incremented, as 41-05 and 42-06 did. Read at 2026-09-04T23:26Z,
+     during this plan's Task 2: 103 PLAN files and 102 SUMMARY files across .planning/phases/, and the
+     frontmatter carried 103 and 102, so nothing needed correcting. This plan's own summary is the
+     hundred-and-third and lands after Task 2, which is why completed_plans is written as 103 here
+     rather than 102. Phase 43 itself: 6 PLAN files and 5 SUMMARY files at the moment this was read,
+     the sixth being this plan's. The phase is executed, not yet verified, so completed_phases stays
+     at 13 and percent stays at 72. Parallel wave agents do not write STATE.md, so an incremented
+     counter would be stale; these numbers were counted, not advanced. -->
+
+**Phase 43 outcome.** `POST /webhooks/app-store` ships. Apple's store server posts a `signedPayload` JWS
+to a route that sits outside the auth dependency and reads no `Authorization` header at all. The one
+credential is the payload. Apple's own library verifies the envelope and **both** nested payloads on
+their own against the vendored Apple Root CA G3, in the route's dependency and therefore **before**
+`get_db`, so a refused payload never opens a database session. One transaction then upserts
+`core.subscriptions` by `(provider, external_id)`, writes one `core.store_purchases` row, appends one
+`audit.subscription_events` row, and expires-then-inserts the `core.access_grants` row with its fresh
+`core.user_monthly_usage` row under the fixed two-tier lock order; 200 is answered only after the one
+`commit()`. An unattributed notification is recorded honestly with `user_id` NULL, no grant and no usage
+row, and takes no lock at all. **What was measured rather than assumed:** the chain walk runs for real
+against a throwaway root, intermediate and leaf carrying Apple's two OIDs, with the real Apple root
+refusing the same payload as the control; two deliveries of one `notification_uuid` on two real
+PostgreSQL connections leave one committed set of rows, the loser reading SQLSTATE 23505 and writing
+nothing; all seven reachable verification statuses answer a byte-identical 401 compared as raw response
+bytes; and the two library environments that skip signature verification are refused at configuration
+load. **The provider-callback partition is answered, not described** — a dedicated `APIRouter` whose
+route set is the partition, counted by the `PROVIDER_CALLBACK_PATHS` literal, which closes APPLEHOOK-02
+after it stood open since 2026-08-24. Three divergences from `08-webhook-app-store.md` are recorded as
+**flagged conflicts** under APPLEHOOK-01 rather than resolved by editing the brief. Suite **1089 unit /
+272 e2e / 182 schema**, `ruff check src tests` clean. **Recorded as accepted rather than fixed:** the
+unbounded unauthenticated request cost, and the certificate-validity clock moving to the payload.
+
+**A counting note, so a difference is not read as a regression.** The Phase 42 paragraph below quotes
+**1001 / 237 / 147**, measured in plan 42-06. Phase 43's research baseline was **1016 / 241 / 154**,
+measured before this phase started. **Plan 42-07 ran after 42-06 wrote that paragraph** and is what
+supersedes the figure; nothing was removed from the suite between the two readings. The Phase 42
+numbers are left as written, because they record what that phase measured on the day it closed.
 
 <!-- Counts read against disk rather than incremented, as 41-05 did. At Task 3 time: 96 PLAN files and
      95 SUMMARY files across .planning/phases/, and the frontmatter carried 96 and 95. This plan's own
@@ -216,6 +253,9 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 - ACCEPTED (41-05, D-20): every eligible claim makes an unbounded pair of Apple DeviceCheck round trips. `06-claim-anonymous-grant.md:79` forbids any cached or coalesced substitute for the bit read or the bit write — every claim performs its own — and that rule is right, because a cached bit is a bit that can be stale in the direction that hands out a second grant. With the backend rate-limit engine deleted from the product (Phase 35 D-05) and the Envoy gateway contract deferred to v2.1 (Phase 35 D-08), a caller holding a valid ID token for an **eligible** anonymous account can make the backend call Apple as often as it can prepare challenges. **Mitigating:** it is one account looping on itself, not a fan-out — the caller must already hold a valid token for an existing linked anonymous account; the eligibility preflight (D-03) refuses an ineligible account before Apple is reached, so the loop is only open to an account that has not yet claimed; and each turn additionally costs a fresh challenge from `POST /auth/challenge`. **Closes with:** the v2.1 gateway contract. Recorded as **accepted, not as an open defect** — it is a consequence of a decision this project made three phases ago, and filing it as a new problem would misrepresent it. Same treatment Phase 40 D-22 gave the unbounded Firebase read; recorded under ANONGRANT-01 in `REQUIREMENTS.md`.
 - ACCEPTED FACT ABOUT THE WORLD, not a gap the phase left (41-05, D-04): **no real round trip to Apple has ever been made.** No iOS app exists, so nothing can produce a real DeviceCheck device token. The wire shapes `auth/devicecheck.py` implements — the host, the query and update paths, the request bodies and the five ordered response-parse arms — come from secondary sources and are marked `[ASSUMED]`; no official Apple page was fetchable during research. `tests/unit/test_devicecheck_adapter.py` carries that provenance in its module docstring. **The first real 400 or 401 from Apple is authoritative over anything in this repository**, and reads as evidence about those literals rather than as a regression. Written down so a later reader does not treat the 21 green adapter unit cases as evidence the integration works — they pin the seam's behaviour, not the wire.
 - ACCEPTED (42-06, D-16): every eligible **new-grant** claim on `POST /auth/claim-registered-grant` makes an unbounded pair of Apple DeviceCheck round trips, for the same reason the anonymous route does. **Mitigating:** the caller must already hold a valid token for a linked `google` or `apple` account; the preflight refuses an ineligible account before Apple is reached; each turn costs a fresh challenge. **Narrower than the anonymous route:** the conversion destination reaches Apple not at all (D-02), so an account holding an active anonymous grant cannot use this route to reach Apple even once. **Closes with:** the v2.1 gateway contract. Recorded as accepted, not as an open defect, and recorded under REGGRANT-01 in `REQUIREMENTS.md`.
+- ACCEPTED (43-06): **`POST /webhooks/app-store` is reachable by anyone, with no credential and no limiter at either layer, and each request costs a certificate-path build plus up to three ES256 verifications.** The backend rate-limit engine was deleted from the product (Phase 35 D-05) and the Envoy gateway contract is deferred to v2.1 (Phase 35 D-08), so nothing bounds the volume. **This one is WIDER than the three residuals above** — 40 D-22's Firebase read, 41 D-20's and 42 D-16's Apple DeviceCheck reads. Each of those three needs a valid Firebase ID token for an existing account first, so each is one subject looping on itself. **This route needs no credential at all.** It is stated that way deliberately, rather than filed as a fourth instance of a known pattern, because reading it as one more of the same understates it. **Mitigating, and this is why it is a record and not a blocker:** the work is local and bounded — no network call, and verification runs and fails **before** `get_db`, so no session is opened; nothing is written; the answer is a constant-size body. It is a CPU-burn vector, not an amplification vector and not a data vector. **Closes with:** the v2.1 gateway contract, which is the same limit that closes D-06's flagged gateway deferral — one item seen from two ends, not two. Recorded under APPLEHOOK-01 in `REQUIREMENTS.md`.
+- ACCEPTED (43-06, D-09): **with online certificate checks off, the certificate-validity window is evaluated at the payload's own claimed signing date, so leaf expiry is not enforced against wall-clock time.** `enable_online_checks=False` is what makes verification pure local computation with no network call on the admission path, which the Phase 35 barrier rule requires. The cost is larger than "a revoked Apple intermediate goes unnoticed", and it was **measured, not reasoned about** (43-RESEARCH P-09): the library sets the certificate store's clock to the payload's `signedDate` before walking the chain, so an expired leaf with a backdated `signedDate` verifies while the same expired leaf with a current one fails. An attacker holding an Apple-issued signing leaf's private key could keep using it after that leaf expired. **Accepted because of the size of the prerequisite:** the attacker must first hold a leaf key chaining to Apple Root CA G3, which no ordinary attacker has, and the prize is one wrongly applied sub-$5 subscription. `enable_strict_checks` stays at its default `True`. Reopen if the threat model changes. Recorded under APPLEHOOK-01.
+- ACCEPTED FACT ABOUT THE WORLD, not a gap the phase left (43-06): **no real Apple notification has ever reached this route, and none can until an iOS app exists.** Nothing can produce a genuine `signedPayload` without one. This is the same standing fact recorded above for DeviceCheck (41-05 D-04), and **the difference is large and in this phase's favour.** DeviceCheck's wire shapes are `[ASSUMED]` from secondary sources, because no official Apple page was fetchable. **This route's shapes come from Apple's own installed library**, and the chain walk — the path build, the two OID checks, the ES256 rule and the signature check — **runs for real in the unit suite** against a locally minted payload, with the vendored Apple root refusing it as the control. So the residual here is only whether Apple's **production** notifications match the shapes Apple's own library declares, which is a far smaller thing than a hand-derived wire contract. The one genuinely human deliverable stays open: setting both Server URLs in App Store Connect and confirming a Test Notification returns 200.
 - OPEN (37.5-06): a real coverage loss. `test_foundation_calls_no_adapter_method_anywhere_in_src` was the only enforcement that `get_user_provider_data` is named nowhere in `src/` outside `auth/adapters.py` and `auth/firebase.py`. The property holds today by grep, but nothing fails if a third file starts calling the adapter. ~25 lines to restore, with its allow-list and two controls. Not restored — unlike the two security cases the developer restored in `658895e`.
 
 ### Quick Tasks Completed
@@ -228,10 +268,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-04T23:16:46.637Z
+**Last session:** 2026-09-04T23:27:00.000Z
 
-Last activity: 2026-08-31
-Stopped at: Completed 43-05-PLAN.md
+Last activity: 2026-09-04
+Stopped at: Completed 43-06-PLAN.md — Phase 43 executed, all six plans complete
 Resume file: None
 
 ## Performance Metrics
@@ -279,6 +319,7 @@ Resume file: None
 | Phase 43 P03 | 12min | 3 tasks | 9 files |
 | Phase 43 P04 | 20min | 3 tasks | 7 files |
 | Phase 43 P05 | 12min | 3 tasks | 4 files |
+| Phase 43 P06 | 14min | 2 tasks | 3 files |
 
 ## Decisions
 
@@ -386,6 +427,7 @@ Resume file: None
 - [Phase 42]: 42-07: the index question is asked before Apple; the two predicates are answered by two reads, and the status-only read carries no time window because a partial index predicate must be IMMUTABLE
 - [Phase 42]: 42-07: crud writers return a three-valued ActivationOutcome; refused is a 403 and only lost_race is the repeat's 200, with a backstop re-read after every race
 - [Phase 42]: 42-07: only SQLSTATE 23505 is a lost race; the class is read off violation.orig.__cause__.sqlstate so the crud module still imports no driver
+  - ⚠️ Spelling corrected by Phase 43 (43-06), 2026-09-04: the shipped code reads `violation.orig.sqlstate`, with no `__cause__` step. Verified this session — `__cause__` appears nowhere in `crud/grants.py` or `crud/subscriptions.py`, and every 23505 arm in both modules uses the shorter spelling. The rule this entry states is unchanged and still binds: only 23505 is a lost race, no constraint name is read, and the crud module imports no driver. Only the attribute path was wrong, and 43-CONTEXT.md § "Carried forward" copied it forward.
 - [Phase 43]: 43-01: A mid-term tier change updates core.subscriptions.tier_id in place; the unique index on (provider, external_id) allows one row per lifecycle key, and old_tier_id/new_tier_id on the event record the change (43-CONTEXT.md discretion, recorded).
 - [Phase 43]: 43-01: The ingestion lost race raises the generic InternalError, not a fourth error leaf, because the phase artifact list fixes the new exception classes at three; a WARNING with a closed-set provider label is written before the raise.
 - [Phase 43]: 43-01: status_at's arm order is revoked, live expires_at, grace, billing retry, expired. Grace is tested before billing retry because Apple sets the retry flag during grace too. This closes 43-RESEARCH assumption A1.
@@ -403,3 +445,15 @@ Resume file: None
 - [Phase 43]: 43-05: the two library environment values that skip signature verification (Xcode, LocalTesting) are named as string literals in tests, never imported from the library enum, so the case catches a library change instead of following it
 - [Phase 43]: 43-05: the unconfigured-seam e2e case swaps in a real AppStoreNotifications(verifier=None) rather than scripting Unavailable on the fake, so the 503 comes from the production fail-closed path
 - [Phase 43]: 43-05: Phase 42's post-rollback expiry hazard does not recur on the ingestion path -- _settle logs off the frozen VerifiedNotification and the router reads nothing, so no re-read was added
+- [Phase 43]: 43-06: D-01 — the provider-callback partition is a dedicated APIRouter and its membership IS the set of routes on it, counted by the PROVIDER_CALLBACK_PATHS literal — There is then no second table that can disagree with the first, which is what the deleted route registry died of, and widening the partition is a visible one-line edit. This closes APPLEHOOK-02, open since 2026-08-24, and PLAYHOOK-03 inherits the mechanism rather than a question.
+- [Phase 43]: 43-06: the two structural wiring cases HAD to change, and a separate literal case now carries the public allowlist — Both cases compute their sets over app.routes, so a route declaring no identity accessor joins them by itself; the callback route satisfies "declares no identity accessor" too. The structural case can therefore no longer hold PUBLIC_PATHS to one member, and `PUBLIC_PATHS == {"/health/ready"}` as a literal is what does. Measured before the route was built (43-RESEARCH P-05), not discovered after.
+- [Phase 43]: 43-01: the store seam is declared beside its first implementation and holds no logger at all — StoreNotificationVerifier is a Protocol beside AppStoreNotifications in auth/app_store.py, with VerifiedNotification as the frozen value out. This is FOUND-08's forward-flag treatment, and the module is its own because auth/adapters.py is fenced by an import allowlist that excludes the store library. No logger means no code path exists that could write a signed payload to a log line.
+- [Phase 43]: 43-01: event_type is read off rawNotificationType, never the typed notificationType — The library sets the typed attribute only when the raw string is already an enum member, so an unknown or new Apple type yields None. Reading it would write NULL into a NOT NULL column the first time Apple ships a twenty-first type, turning D-13's "an unknown type costs nothing" into a 500 at the flush. Measured against the installed library (43-RESEARCH P-03). The same rule binds every raw* pair.
+- [Phase 43]: 43-06 correction: the shipped SQLSTATE spelling is `violation.orig.sqlstate`, NOT the `orig.__cause__.sqlstate` that 43-CONTEXT.md § "Carried forward" and the 42-07 entry above both carry — Verified this session: `__cause__` appears in neither crud/subscriptions.py nor crud/grants.py, and both modules read `violation.orig.sqlstate` at every 23505 arm. The prose was wrong about working code, in both files. Recorded here rather than by editing 43-CONTEXT.md, which is a completed phase artifact.
+- [Phase 43]: 43-01: status_at's arm order is revoked, live expires_at, grace, billing retry, expired — and grace is tested BEFORE billing retry — Apple sets the billing-retry flag during the grace period too, so the reverse order would drop entitlement from a subscriber Apple is still serving. Each arm carries its one-line ground in the code.
+- [Phase 43]: 43-04: the same-term no-op is conditioned on the resolved tier as well as the term — Asking the term alone would swallow a mid-term tier change, because the expiry has not moved. Asking both means the change is applied through the ordinary expire-then-insert path.
+- [Phase 43]: 43-01 with 43-04: a mid-term tier change updates core.subscriptions.tier_id IN PLACE, and flips-and-inserts the GRANT — two different rows, and the distinction must not be collapsed — ix_subscriptions_provider_external_id allows exactly one subscription row per lifecycle key, so a flip has nowhere to put a second one; the grant flips so the superseded term stays readable in history, and the change is recorded as old_tier_id/new_tier_id on the event row. Moot with one paid tier; recorded per 43-CONTEXT.md Claude's Discretion.
+- [Phase 43]: 43-01 with 43-05: app_store.environment is a two-member StoreEnvironment with no default, and that typing is a security control rather than tidiness — Environment.XCODE and Environment.LOCAL_TESTING make Apple's library return the decoded payload without verifying the signature at all. A free string with a case transformation would accept "xcode" and turn a credential-free public route into an open endpoint. Both values are refused at config load, asserted with string literals rather than the library enum, so the case catches a library rename instead of following it.
+- [Phase 43]: 43-06: a divergence from a THIRD PARTY's guidance is recorded under the requirement but joins neither count — D-09's departure from Apple's production guidance is real and is written up in full under APPLEHOOK-01, but the two numbers in the REQUIREMENTS header measure divergences from the binding specification, and neither spec file mandates an online revocation check. Filing it in either number would make the numbers mean two different things at once; leaving it unwritten would hide it. It is named in the header instead, so a reader auditing divergences meets it.
+- [Phase 43]: 43-06: the counts are nineteen and twenty-seven, re-derived against four named SHARED-INVARIANTS sections rather than inherited; the gap of eight is enumerated — All three new conflicts are against the brief, and not one of § "Global deletions", § "Locks and transactions", § "Grants and evaluation time" or § "Fail-closed defaults" produced a divergence. § "Global deletions" is the one that mattered: it survived the machinery that enforced it, and exact-path registration satisfies it structurally.
+- [Phase 43]: 43-06: `requirements.mark-complete` applied nothing for APPLEHOOK-01 and APPLEHOOK-02 and returned `table_unmatched` for both — the same result 42-06 recorded, for the same reason: the traceability row is a range the tool does not expand. Both surfaces were finished by hand. Measured, not predicted.

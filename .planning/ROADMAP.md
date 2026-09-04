@@ -638,13 +638,13 @@ Plans:
 **Goal:** Ingest Apple App Store Server Notifications as the first of exactly two provider-callback routes.
 **Requirements:** APPLEHOOK-01, APPLEHOOK-02
 **Depends on:** 34, 35
-**Plans:** 5/6 plans executed
+**Plans:** 6/6 plans complete
 **Success criteria:**
 
-1. The route sits outside the auth dependency and authenticates solely by verifying Apple's `signedPayload` JWS *(noun reworded by Phase 37.1 (D-06), 2026-08-24 — the barrier is a FastAPI dependency now; the requirement is unchanged)*
-2. A payload with an invalid or absent signature is rejected without touching subscription state
-3. **The category machinery this names was deleted by Phase 37.1. Phase 43 must answer it.** As written: the route appears in the provider-callback category by exact path and the enumeration assertion still passes. `Category`, `RouteMetadata`, `VERIFIERS` and `NamedVerifier` went with the route registry (D-06/D-10), 2026-08-24, before this phase exists. `VERIFIERS` had no members, so nothing regressed — but **the control is real**: exact-path enumeration is what stops a wildcard or prefix accidentally admitting an unauthenticated route, and `SHARED-INVARIANTS.md` still forbids wildcard or prefix membership. **A pointer, not a design:** a dedicated `APIRouter` carrying a named-verifier dependency, whose membership is the set of routes registered on it. Phase 43 evaluates that on its own terms; Phase 37.1 adds no replacement mechanism. Matching requirement: APPLEHOOK-02.
-4. Replayed notifications do not double-apply subscription state
+1. The route sits outside the auth dependency and authenticates solely by verifying Apple's `signedPayload` JWS — **met as written, 2026-09-04.** The route sits on a dedicated router outside the auth dependency and reads no `Authorization` header at all. Apple's library verifies the envelope and both nested signed payloads on their own, against the vendored Apple Root CA G3. A valid Firebase ID token sent with a bad payload changes nothing — an executed case. *(noun reworded by Phase 37.1 (D-06), 2026-08-24 — the barrier is a FastAPI dependency now; the requirement is unchanged)* Matching requirement: APPLEHOOK-01.
+2. A payload with an invalid or absent signature is rejected without touching subscription state — **met as written, 2026-09-04.** Verification runs in the route's dependency, **before** `get_db`, so a refused payload opens no database session and can touch no state. All seven reachable verification statuses answer the byte-identical `{"code":"auth_required"}` at 401, compared as raw response bytes rather than parsed, so the route is no oracle about which check failed. Matching requirement: APPLEHOOK-01.
+3. The route appears in the provider-callback category by exact path — **ANSWERED by Phase 43 (D-01), 2026-09-04.** The partition is a dedicated `APIRouter` in `routers/webhooks.py` whose router-level dependency is `verify_app_store_notification`; **membership is the set of routes registered on it**, so no second table exists to disagree with the first. `tests/unit/test_app_wiring.py` holds `PROVIDER_CALLBACK_PATHS` as a literal compared with `==`, which makes the partition **countable** and widening it a visible one-line edit. The exact-path prohibition in `SHARED-INVARIANTS.md` § "Global deletions" is satisfied: the route is registered at the literal `/webhooks/app-store`, never by wildcard or prefix, and is not on the public allowlist, which a separate literal case pins to `/health/ready` alone. *The machinery this criterion originally named — `Category`, `RouteMetadata`, `VERIFIERS` and `NamedVerifier` — went with the route registry (Phase 37.1 D-06/D-10), 2026-08-24, before this phase existed; the prohibition survived it and is now enforced structurally instead.* Matching requirement: APPLEHOOK-02, answered and closed on the same date.
+4. Replayed notifications do not double-apply subscription state — **met as written, 2026-09-04.** The replay key is `audit.subscription_events.notification_uuid`, read inside the transaction after the grant locks and before any write; found, nothing is written and the answer is 200. Proven under contention rather than argued: two deliveries of one `notification_uuid` on two real PostgreSQL connections leave exactly one row in each of the three tables, the loser meets SQLSTATE 23505, rolls back having written nothing and answers 5xx, and a third delivery finds the event row and answers 200, so Apple's retry schedule converges. Matching requirement: APPLEHOOK-01.
 
 Plans:
 
@@ -667,7 +667,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 43-06-PLAN.md — The dated APPLEHOOK amendments, the answered criterion 3, and the phase close (wave 5)
+- [x] 43-06-PLAN.md — The dated APPLEHOOK amendments, the answered criterion 3, and the phase close (wave 5)
 
 #### Phase 44: POST /webhooks/google-play/rtdn
 
@@ -678,7 +678,7 @@ Plans:
 
 1. The route authenticates solely by backend verification of Google's signed OIDC push token
 2. It calls Phase 43's shared ingestion module rather than a forked copy
-3. The provider-callback category contains exactly these two routes, both by exact path — **in whatever form Phase 43 defines, since Phase 37.1 deleted the category machinery (D-06), 2026-08-24.** Phase 44 inherits Phase 43's answer rather than inventing a second one; PLAYHOOK-02 already binds it to Phase 43's shared module, and two competing partition mechanisms would recreate the drift the registry died of. The "exactly two" clause needs that partition to be countable. Matching requirement: PLAYHOOK-03.
+3. The provider-callback category contains exactly these two routes, both by exact path — **Phase 43 has now defined the form (D-01), 2026-09-04. Read it under APPLEHOOK-02 in `REQUIREMENTS.md` and at Phase 43 criterion 3 above; it is deliberately not restated here.** Phase 44 inherits that answer rather than inventing a second one; PLAYHOOK-02 already binds it to Phase 43's shared module, and two competing partition mechanisms would recreate the drift the registry died of. The "exactly two" clause needs that partition to be countable, and it now is. Matching requirement: PLAYHOOK-03.
 4. A push with an invalid OIDC token is rejected without touching subscription state
 
 #### Phase 45: POST /auth/restore-subscription
@@ -751,7 +751,7 @@ Plans:
 | 40. POST /auth/upgrade-anonymous | v2.0 | 8/8 | In Progress|  |
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 5/5 | Complete    | 2026-09-03 |
 | 42. POST /auth/claim-registered-grant | v2.0 | 7/7 | Complete    | 2026-09-03 |
-| 43. POST /webhooks/app-store | v2.0 | 5/6 | In Progress|  |
+| 43. POST /webhooks/app-store | v2.0 | 6/6 | Complete    | 2026-09-04 |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 0/? | Pending | — |
 | 45. POST /auth/restore-subscription | v2.0 | 0/? | Pending | — |
 | 46. POST /auth/sign-out-all | v2.0 | 0/? | Pending | — |
