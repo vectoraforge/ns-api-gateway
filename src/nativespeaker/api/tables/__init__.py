@@ -5,7 +5,7 @@ __all__ = [
     "Chat", "ChatRequest", "ChatResponse", "ChatRole",
     "ExamplesResponse", "ExternalIdentity", "FollowUpInput", "FollowUpResponse", "IdentityProvider",
     "IdentityState", "Issue", "Message", "MessageRequest", "MessageResponse", "NativeClaimProvider",
-    "PurchaseProvider", "RejectResponse", "StorePurchaseToken", "Subscription",
+    "PurchaseProvider", "RejectResponse", "StorePurchase", "StorePurchaseToken", "Subscription",
     "SubscriptionEvent", "SubscriptionStatus", "User",
     "UserMonthlyUsage",
 ]
@@ -43,6 +43,7 @@ from nativespeaker.api.tables.identities import (
 )
 from nativespeaker.api.tables.purchases import (
     PurchaseProvider,
+    StorePurchase,
     StorePurchaseToken,
     Subscription,
     SubscriptionEvent,

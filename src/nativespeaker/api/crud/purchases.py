@@ -24,3 +24,11 @@ class PurchasesDB:
             # Completeness, never emptiness: one row present and one absent is the same broken invariant.
             raise MissingPurchaseTokenError(user_id, sorted(missing))
         return tokens
+
+    async def resolve_user(self, provider: PurchaseProvider, identity_value: str) -> UUID | None:
+        """Return the user bound to one store's attribution token, taking no lock, or `None`."""
+        statement = (select(StorePurchaseToken.user_id)
+                     .where(col(StorePurchaseToken.provider) == provider,
+                            col(StorePurchaseToken.identity_value) == identity_value))
+        # Unlike `read_tokens` above, an absent binding is an ordinary outcome and never a raise.
+        return (await self.session.exec(statement)).first()

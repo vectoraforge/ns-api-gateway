@@ -82,6 +82,7 @@ EVENT_NAMES = frozenset({
     "unknown_tier_error",
     "missing_purchase_token_error",
     "unmapped_store_product",
+    "attribution_conflict",
     "queue_full_error",
     "circuit_open_error",
     # The admission arms.
@@ -155,6 +156,7 @@ CONSTRUCTOR_ARGUMENTS: dict[type, tuple[tuple, dict]] = {
     errors_module.UnknownTierError: (("registered", uuid7()), {}),
     errors_module.MissingPurchaseTokenError: ((uuid7(), [PurchaseProvider.apple]), {}),
     errors_module.UnmappedStoreProduct: ((PurchaseProvider.apple, "com.example.monthly"), {}),
+    errors_module.AttributionConflict: ((PurchaseProvider.apple, "original-transaction-id"), {}),
     errors_module.QueueFullError: ((30,), {}),
     errors_module.CircuitOpenError: ((60,), {}),
     errors_module.InvalidExternalJwt: ((), {"bounded_reason": BoundedReason.expired}),

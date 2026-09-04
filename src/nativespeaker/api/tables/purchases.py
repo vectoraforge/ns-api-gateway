@@ -77,3 +77,25 @@ class SubscriptionEvent(SQLModel, table=True):
     old_tier_id: str | None = Field(default=None, foreign_key="core.access_tiers.id")
     new_tier_id: str | None = Field(default=None, foreign_key="core.access_tiers.id")
     created_at: datetime = Field(sa_type=DateTimeType)
+
+
+# The table's two composite foreign keys are left to the database: SQLModel's `foreign_key=` is single-column.
+class StorePurchase(SQLModel, table=True):
+    """One accepted store subscription, written once per lifecycle key and never updated."""
+
+    __tablename__ = "store_purchases"
+    __table_args__ = {"schema": "core"}
+
+    id: UUID = Field(default_factory=uuid7, primary_key=True)
+    provider: PurchaseProvider = Field(sa_type=PurchaseProviderType)
+    # A server-generated UUID when the store gave no attribution token: the column is TEXT NOT NULL.
+    identity_value: str = Field()
+    # Deliberately not `unique=True`: the table's rule is the composite UNIQUE (provider, external_id).
+    external_id: str = Field()
+    store_transaction_id: str | None = Field(default=None)
+    store_original_transaction_id: str | None = Field(default=None)
+    # Nullable: an unattributed purchase belongs to nobody until restore adopts it.
+    purchase_user_id: UUID | None = Field(default=None, foreign_key="core.users.id")
+    # Either NULL or exactly `identity_value`: the table's CHECK allows no third value.
+    resolved_token_value: str | None = Field(default=None)
+    created_at: datetime = Field(sa_type=DateTimeType)

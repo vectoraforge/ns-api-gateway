@@ -274,6 +274,22 @@ class UnmappedStoreProduct(InternalError):
         return {"provider": str(self.provider), "product_id": self.product_id}
 
 
+class AttributionConflict(InternalError):
+    """A recorded store purchase whose attribution value differs from the one presented."""
+    # Refused, never repaired: an owner this route cannot verify is a wrong entitlement waiting to happen.
+    log_level = logging.ERROR
+
+    def __init__(self, provider: PurchaseProvider, external_id: str):
+        self.provider = provider
+        self.external_id = external_id
+        super().__init__(f"Store purchase {external_id!r} of {provider.value} presents "
+                         f"another attribution value")
+
+    def log_fields(self) -> dict[str, str | None]:
+        # The lifecycle key finds the row and the provider names the store; the token is not admissible.
+        return {"provider": str(self.provider), "external_id": self.external_id}
+
+
 class QueueFullError(ServiceUnavailable):
     """The LLM queue is full."""
 
