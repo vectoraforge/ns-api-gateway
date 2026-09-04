@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 43
 current_phase_name: POST /webhooks/app-store
 status: executing
-stopped_at: Completed 43-03-PLAN.md
-last_updated: "2026-09-04T22:35:30.645Z"
+stopped_at: Completed 43-04-PLAN.md
+last_updated: "2026-09-04T22:58:52.138Z"
 last_activity: 2026-09-04
 last_activity_desc: Phase 43 execution started
-state_head: 7fbd77be4b899c4ab33c0a53cedfdd198cb6555f
+state_head: 266790e0da74ac0d3333f65d97be84873f86b9e7
 progress:
   total_phases: 18
   completed_phases: 13
   total_plans: 103
-  completed_plans: 100
+  completed_plans: 101
   percent: 72
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 43 (POST /webhooks/app-store) — EXECUTING
-Plan: 4 of 6
+Plan: 5 of 6
 Status: Ready to execute
 Last activity: 2026-09-04 — Phase 43 execution started
 
@@ -228,10 +228,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-04T22:35:20.589Z
+**Last session:** 2026-09-04T22:58:39.064Z
 
 Last activity: 2026-08-31
-Stopped at: Completed 43-03-PLAN.md
+Stopped at: Completed 43-04-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -277,6 +277,7 @@ Resume file: None
 | Phase 43 P01 | 17min | 2 tasks | 23 files |
 | Phase 43 P02 | 4min | 2 tasks | 2 files |
 | Phase 43 P03 | 12min | 3 tasks | 9 files |
+| Phase 43 P04 | 20min | 3 tasks | 7 files |
 
 ## Decisions
 
@@ -393,3 +394,7 @@ Resume file: None
 - [Phase 43]: 43-03: core.store_purchases.identity_value is the presented attribution token whenever the notification carries one; a server-generated UUID only when the store gives none. The plan's broader spelling would make every repeat delivery of a token-bearing but unbound purchase a permanent AttributionConflict.
 - [Phase 43]: 43-03: the conflict arm fires only when the notification presents a token; a delivery carrying no appAccountToken disagrees with nothing.
 - [Phase 43]: 43-03: an owner is added to core.subscriptions.user_id, never cleared, so a token-less renewal cannot strip a link restore created.
+- [Phase 43]: 43-04: the ingestion writer locks lock_active_grants first and lock_effective_grants second, mirroring the registered writer — a renewal's superseded grant is time-ended and outside the effective set, so the effective read alone would 500 on every Apple retry for ever
+- [Phase 43]: 43-04: when the subscription is entitled, every grant the buyer holds is superseded, not this subscription's alone — ix_access_grants_one_active_per_user allows one active grant per user, so a manual or a second subscription's grant must end before the paid one lands
+- [Phase 43]: 43-04: FREE_GRANT_SOURCES is not named by the subscription writer — the free grant is expired because it is one of the buyer's held grants, and a source test would be a second, narrower copy of a rule the index already carries
+- [Phase 43]: 43-04: ENTITLED_STATUSES names the set core.subscriptions.product_entitled_subscription_id is generated over, once, in crud/subscriptions.py; the deferrable foreign key is the backstop and was shown to fail the commit, not the mechanism
