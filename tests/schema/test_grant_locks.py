@@ -16,8 +16,10 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.crud.grants import ActivationOutcome, GrantsDB
 from nativespeaker.api.crud.identities import IdentitiesDB
+from nativespeaker.api.services.subscriptions import SubscriptionsService
 from nativespeaker.api.tables.grants import FREE_GRANT_SOURCES, AccessGrant, AccessGrantSource
 from schema.helpers import insert_grant, insert_tier, insert_usage, insert_user
+from schema.test_subscription_ingestion import PRODUCT_ID, _clean, _notification
 
 pytestmark = pytest.mark.schema
 
@@ -683,3 +685,106 @@ class TestTheFreeGrantSourceSetMatchesTheIndex:
         carried = set(_SOURCE_LITERAL.findall(predicate or ""))
         assert carried, f"no source literal parsed out of {predicate!r}"
         assert carried == {source.value for source in FREE_GRANT_SOURCES}
+
+
+# The subscription writer, captured on the same terms as the two above and never from a mirrored literal.
+
+
+@contextlib.asynccontextmanager
+async def _ingestion_run(schema_db_uri: str, *, attributed: bool):
+    """Drive SubscriptionsService.ingest once, recording every statement the writer issues."""
+    token = f"token-{uuid.uuid4()}" if attributed else None
+    user_id = None
+
+    setup = await asyncpg.connect(schema_db_uri)
+    try:
+        tier_id = await insert_tier(setup)
+        if attributed:
+            user_id = await insert_user(setup)
+            await setup.execute(
+                "INSERT INTO core.store_purchase_tokens (user_id, provider, identity_value) "
+                "VALUES ($1, 'apple', $2)", user_id, token)
+            # A held `manual` grant with its usage row, so both tiers have a real row to lock and to order.
+            grant_id = await insert_grant(setup, user_id=user_id, tier_id=tier_id, source="manual")
+            await insert_usage(setup, grant_id=grant_id)
+            await setup.execute("UPDATE core.access_grants SET starts_at = $2 WHERE id = $1",
+                                grant_id, datetime.now(UTC) - timedelta(hours=1))
+    finally:
+        await setup.close()
+
+    engine = create_async_engine(schema_db_uri.replace(_ASYNCPG_PREFIX, _SQLALCHEMY_PREFIX, 1))
+    recorded: list[str] = []
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def record(conn, cursor, statement, parameters, context, executemany):  # noqa: ARG001
+        recorded.append(" ".join(statement.split()))
+
+    evaluated_at = datetime.now(UTC)
+    external_id = f"original-{uuid.uuid4().hex[:12]}"
+    factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            # Everything above is setup; only what the writer itself issues is the subject of this fixture.
+            recorded.clear()
+            await SubscriptionsService(db=session, evaluated_at=evaluated_at,
+                                       products={PRODUCT_ID: tier_id}).ingest(_notification(
+                                           external_id=external_id,
+                                           token=token,
+                                           purchased_at=evaluated_at - timedelta(days=30),
+                                           expires_at=evaluated_at + timedelta(days=30)))
+        yield {"statements": list(recorded)}
+    finally:
+        await engine.dispose()
+        cleanup = await asyncpg.connect(schema_db_uri)
+        try:
+            await _clean(cleanup, user_id=user_id, tier_id=tier_id)
+        finally:
+            await cleanup.close()
+
+
+@pytest_asyncio.fixture
+async def ingestion_statements(_schema_db_uri):
+    """The ingestion driven for a buyer who holds one grant, so both tiers have a row to take."""
+    async with _ingestion_run(_schema_db_uri, attributed=True) as run:
+        yield run
+
+
+@pytest_asyncio.fixture
+async def unattributed_statements(_schema_db_uri):
+    """The ingestion driven for a notification with no attribution token, which has no buyer."""
+    async with _ingestion_run(_schema_db_uri, attributed=False) as run:
+        yield run
+
+
+@pytest.mark.asyncio
+class TestTheSubscriptionWriterAddsNoThirdLockTier:
+    """APPLEHOOK-01, D-16. The store callback runs under the same fixed order the two claims do:
+    SHARED-INVARIANTS:33, proven from the statements the writer emits rather than from its Python."""
+
+    async def test_the_ingestion_locks_the_grant_rows_then_their_usage_rows(self,
+                                                                            ingestion_statements):
+        """The ORDER BY is the lock order itself, not presentation, so it is asserted with the tier."""
+        taken = locking(ingestion_statements["statements"])
+        # Two grant-tier reads, the status-only one first: it contains the effective one, so one order holds.
+        assert [relation_of(statement) for statement in taken] == ["core.access_grants",
+                                                                   "core.access_grants",
+                                                                   "core.user_monthly_usage"]
+        assert "ORDER BY core.access_grants.id ASC" in taken[0]
+
+    async def test_exactly_two_distinct_lock_tiers_are_taken_on_the_ingestion(self,
+                                                                              ingestion_statements):
+        """Two, and never a third: a writer that locks the subscription or the purchase row fails here."""
+        taken = [relation_of(statement) for statement in locking(ingestion_statements["statements"])]
+        assert len(set(taken)) == 2
+        assert "core.subscriptions" not in taken
+        assert "core.store_purchases" not in taken
+        assert "core.users" not in taken
+
+    async def test_the_unattributed_path_takes_no_lock_at_all(self, unattributed_statements):
+        """With no buyer there is no row to lock, and the unique indexes are what serialise the case."""
+        assert locking(unattributed_statements["statements"]) == []
+
+    async def test_each_arm_wrote_something(self, ingestion_statements, unattributed_statements):
+        """The control: a writer that issued nothing would satisfy both counts above vacuously."""
+        assert writes(ingestion_statements["statements"])
+        assert writes(unattributed_statements["statements"])

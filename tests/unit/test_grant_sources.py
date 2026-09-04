@@ -9,6 +9,7 @@ import pytest
 
 from nativespeaker.api import crud as crud_package
 from nativespeaker.api.crud.grants import GrantsDB
+from nativespeaker.api.crud.subscriptions import SubscriptionsDB
 from nativespeaker.api.tables.grants import FREE_GRANT_SOURCES, AccessGrantSource
 
 SRC = Path(crud_package.__file__).parents[3]
@@ -32,6 +33,14 @@ NAMING_MODULES_REGISTERED = {
     "nativespeaker/api/crud/grants.py",
     "nativespeaker/api/services/auth.py",
     "nativespeaker/api/tables/grants.py",
+}
+
+MEMBER_SUBSCRIPTION = "subscription"
+WRITER_SUBSCRIPTION = "write_subscription_grant"
+
+# Every module under `src/` that names the subscription member off its enum. A new entry is a new site.
+NAMING_MODULES_SUBSCRIPTION = {
+    "nativespeaker/api/crud/subscriptions.py",
 }
 
 
@@ -72,6 +81,7 @@ def _function(source: str, name: str) -> ast.AST:
 
 
 CRUD_GRANTS = SRC / "nativespeaker/api/crud/grants.py"
+CRUD_SUBSCRIPTIONS = SRC / "nativespeaker/api/crud/subscriptions.py"
 
 
 class TestTheAnonymousDeviceGrantHasExactlyOneWriter:
@@ -194,3 +204,60 @@ class TestTheRegisteredWalkFires:
         source = "g = AccessGrant(source=AccessGrantSource.anonymous_device_grant)"
         assert _construction_sites(source, MEMBER_REGISTERED) == []
         assert len(_construction_sites(source)) == 1
+
+
+class TestTheSubscriptionGrantHasExactlyOneWriter:
+    """APPLEHOOK-01. The third grant source, and the first with a walk behind it from its first day:
+    Phase 45's restore is the specific future writer this keeps from arriving quietly."""
+
+    def test_the_whole_tree_holds_exactly_one_construction_site(self):
+        sites = {path.relative_to(SRC).as_posix(): _construction_sites(path.read_text(),
+                                                                      MEMBER_SUBSCRIPTION)
+                 for path in _modules()}
+        found = {module: lines for module, lines in sites.items() if lines}
+        assert list(found) == ["nativespeaker/api/crud/subscriptions.py"]
+        assert len(next(iter(found.values()))) == 1
+
+    def test_the_one_site_is_inside_the_crud_subscription_writer(self):
+        """Not merely in the right module: in the one function the two lock tiers are taken for."""
+        writer = _function(CRUD_SUBSCRIPTIONS.read_text(), WRITER_SUBSCRIPTION)
+        # Two: the held-term filter, and the one construction of the grant row.
+        assert sum(_names_the_member(node, MEMBER_SUBSCRIPTION) for node in ast.walk(writer)) == 2
+
+    def test_only_the_recorded_modules_name_the_member_at_all(self):
+        naming = {path.relative_to(SRC).as_posix() for path in _modules()
+                  if _mentions(path.read_text(), MEMBER_SUBSCRIPTION)}
+        assert naming == NAMING_MODULES_SUBSCRIPTION
+
+    def test_the_writer_is_reachable_as_a_method_rather_than_a_free_function(self):
+        """The control on the three cases above: they parse the module the class is defined in."""
+        assert hasattr(SubscriptionsDB, WRITER_SUBSCRIPTION)
+
+
+class TestTheSubscriptionWalkFires:
+    """The same control for the subscription member: a walk that quietly found nothing would pass."""
+
+    def test_a_synthetic_module_with_two_sites_is_counted_as_two(self):
+        source = ("g = AccessGrant(user_id=u, source=AccessGrantSource.subscription)\n"
+                  "def later():\n"
+                  "    return AccessGrant(source=AccessGrantSource.subscription)\n")
+        assert len(_construction_sites(source, MEMBER_SUBSCRIPTION)) == 2
+
+    @pytest.mark.parametrize("source", [
+        "g = AccessGrant(source=AccessGrantSource.manual)",
+        "g = AccessGrant(source=other.subscription)",
+        "g = UserMonthlyUsage(source=AccessGrantSource.subscription)",
+    ], ids=["another_source", "another_enum", "another_table_same_member"])
+    def test_a_near_miss_is_not_counted(self, source):
+        """The walk matches the construction it claims to, not anything that merely spells the word."""
+        assert _construction_sites(source, MEMBER_SUBSCRIPTION) == []
+
+    def test_the_mention_count_distinguishes_a_read_from_a_definition(self):
+        assert _mentions("x = AccessGrantSource.subscription", MEMBER_SUBSCRIPTION) == 1
+        assert _mentions("subscription = 'subscription'", MEMBER_SUBSCRIPTION) == 0
+
+    def test_the_free_members_are_not_counted_as_the_subscription_one(self):
+        """The three walks must not alias: every near-miss above would pass vacuously if they did."""
+        source = "g = AccessGrant(source=AccessGrantSource.registered_account_grant)"
+        assert _construction_sites(source, MEMBER_SUBSCRIPTION) == []
+        assert len(_construction_sites(source, MEMBER_REGISTERED)) == 1
