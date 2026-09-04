@@ -10,7 +10,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.crud.grants import GrantsDB
 from nativespeaker.api.tables import (
-    FREE_GRANT_SOURCES,
     AccessGrant,
     AccessGrantSource,
     AccessGrantStatus,
@@ -200,16 +199,13 @@ class SubscriptionsDB:
                          if grant.ends_at == ends_at and grant.tier_id == tier_id]:
             return WriteOutcome.replayed
 
-        superseded = list(held)
-        if entitled:
-            # The lifetime free slot is spent here, and only restore is a path back to a grant.
-            superseded += [grant for grant in marked_active if grant.source in FREE_GRANT_SOURCES]
+        # Every held grant goes, the free one included: `ix_access_grants_one_active_per_user` allows one.
+        superseded = list(marked_active) if entitled else held
+        # Revoked only where the store withdrew this subscription; every other end of a term is an expiry.
+        ended = (AccessGrantStatus.revoked if status is SubscriptionStatus.revoked
+                 else AccessGrantStatus.expired)
         for grant in superseded:
-            # Revoked only where the store withdrew the purchase; every other end of a term is an expiry.
-            grant.status = (AccessGrantStatus.revoked
-                            if grant.source is AccessGrantSource.subscription
-                            and status is SubscriptionStatus.revoked
-                            else AccessGrantStatus.expired)
+            grant.status = ended
             grant.ends_at = evaluated_at
             grant.updated_at = evaluated_at
 
@@ -225,7 +221,7 @@ class SubscriptionsDB:
                 return WriteOutcome.lost_race
 
         if not entitled:
-            # The buyer holds no grant outside the entitled set; the deferrable foreign key is the backstop, not this.
+            # The buyer holds no grant outside the entitled set, and only restore is a path back to one.
             return WriteOutcome.applied if superseded else WriteOutcome.replayed
 
         activated = AccessGrant(user_id=user_id,

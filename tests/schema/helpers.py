@@ -60,6 +60,56 @@ async def insert_grant(
     return grant_id
 
 
+async def insert_subscription(
+    conn: asyncpg.Connection,
+    *,
+    external_id: str,
+    tier_id: str,
+    provider: str = "apple",
+    status: str = "active",
+    user_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    """Insert one core.subscriptions row; provider and status bind as text against the enum columns."""
+    subscription_id = uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO core.subscriptions "
+        "(id, user_id, provider, external_id, tier_id, status, created_at, updated_at) "
+        "VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        subscription_id,
+        user_id,
+        provider,
+        external_id,
+        tier_id,
+        status,
+    )
+    return subscription_id
+
+
+async def insert_store_purchase(
+    conn: asyncpg.Connection,
+    *,
+    identity_value: str,
+    external_id: str,
+    provider: str = "apple",
+    purchase_user_id: uuid.UUID | None = None,
+    resolved_token_value: str | None = None,
+) -> uuid.UUID:
+    """Insert one core.store_purchases row; its created_at is NOT NULL with no default, so it is named."""
+    purchase_id = uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO core.store_purchases "
+        "(id, provider, identity_value, external_id, purchase_user_id, resolved_token_value, created_at) "
+        "VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)",
+        purchase_id,
+        provider,
+        identity_value,
+        external_id,
+        purchase_user_id,
+        resolved_token_value,
+    )
+    return purchase_id
+
+
 async def insert_usage(
     conn: asyncpg.Connection,
     *,
