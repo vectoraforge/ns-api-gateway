@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 43
 current_phase_name: POST /webhooks/app-store
 status: executing
-stopped_at: Completed 43-04-PLAN.md
-last_updated: "2026-09-04T22:58:52.138Z"
+stopped_at: Completed 43-05-PLAN.md
+last_updated: "2026-09-04T23:16:59.180Z"
 last_activity: 2026-09-04
 last_activity_desc: Phase 43 execution started
-state_head: 266790e0da74ac0d3333f65d97be84873f86b9e7
+state_head: 0a1d6edc2e664977972db2e7e5ea5e1199f6adf0
 progress:
   total_phases: 18
   completed_phases: 13
   total_plans: 103
-  completed_plans: 101
+  completed_plans: 102
   percent: 72
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 43 (POST /webhooks/app-store) — EXECUTING
-Plan: 5 of 6
+Plan: 6 of 6
 Status: Ready to execute
 Last activity: 2026-09-04 — Phase 43 execution started
 
@@ -228,10 +228,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-04T22:58:39.064Z
+**Last session:** 2026-09-04T23:16:46.637Z
 
 Last activity: 2026-08-31
-Stopped at: Completed 43-04-PLAN.md
+Stopped at: Completed 43-05-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -278,6 +278,7 @@ Resume file: None
 | Phase 43 P02 | 4min | 2 tasks | 2 files |
 | Phase 43 P03 | 12min | 3 tasks | 9 files |
 | Phase 43 P04 | 20min | 3 tasks | 7 files |
+| Phase 43 P05 | 12min | 3 tasks | 4 files |
 
 ## Decisions
 
@@ -398,3 +399,7 @@ Resume file: None
 - [Phase 43]: 43-04: when the subscription is entitled, every grant the buyer holds is superseded, not this subscription's alone — ix_access_grants_one_active_per_user allows one active grant per user, so a manual or a second subscription's grant must end before the paid one lands
 - [Phase 43]: 43-04: FREE_GRANT_SOURCES is not named by the subscription writer — the free grant is expired because it is one of the buyer's held grants, and a source test would be a second, narrower copy of a rule the index already carries
 - [Phase 43]: 43-04: ENTITLED_STATUSES names the set core.subscriptions.product_entitled_subscription_id is generated over, once, in crud/subscriptions.py; the deferrable foreign key is the backstop and was shown to fail the commit, not the mechanism
+- [Phase 43]: 43-05: REFUSAL_STAGES is derived from the library's VerificationStatus set less OK, with a control asserting the derivation, so an arm the library adds becomes a new parameter instead of a silent gap
+- [Phase 43]: 43-05: the two library environment values that skip signature verification (Xcode, LocalTesting) are named as string literals in tests, never imported from the library enum, so the case catches a library change instead of following it
+- [Phase 43]: 43-05: the unconfigured-seam e2e case swaps in a real AppStoreNotifications(verifier=None) rather than scripting Unavailable on the fake, so the 503 comes from the production fail-closed path
+- [Phase 43]: 43-05: Phase 42's post-rollback expiry hazard does not recur on the ingestion path -- _settle logs off the frozen VerifiedNotification and the router reads nothing, so no re-read was added
