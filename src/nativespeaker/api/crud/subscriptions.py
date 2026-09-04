@@ -2,6 +2,7 @@
 Takes no lock: a subscription-row lock would be a tier ahead of the grant locks."""
 from datetime import datetime
 from enum import StrEnum
+from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
@@ -9,6 +10,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.tables import (
     PurchaseProvider,
+    StorePurchase,
     Subscription,
     SubscriptionEvent,
     SubscriptionStatus,
@@ -34,6 +36,12 @@ def _subscription_statement(provider: PurchaseProvider, external_id: str):
                                       col(Subscription.external_id) == external_id)
 
 
+def _purchase_statement(provider: PurchaseProvider, external_id: str):
+    """The `core.store_purchases` row for the lifecycle pair its UNIQUE constraint keys."""
+    return select(StorePurchase).where(col(StorePurchase.provider) == provider,
+                                       col(StorePurchase.external_id) == external_id)
+
+
 class SubscriptionsDB:
 
     def __init__(self, session: AsyncSession):
@@ -48,9 +56,15 @@ class SubscriptionsDB:
         """The canonical row for the lifecycle pair, or `None`, taking no lock."""
         return (await self.session.exec(_subscription_statement(provider, external_id))).first()
 
+    async def read_purchase(self, provider: PurchaseProvider,
+                            external_id: str) -> StorePurchase | None:
+        """The recorded purchase for the lifecycle pair, or `None`, taking no lock."""
+        return (await self.session.exec(_purchase_statement(provider, external_id))).first()
+
     async def upsert_subscription(self, *,
                                   provider: PurchaseProvider,
                                   external_id: str,
+                                  user_id: UUID | None,
                                   tier_id: str,
                                   status: SubscriptionStatus,
                                   evaluated_at: datetime) -> tuple[Subscription, WriteOutcome]:
@@ -60,19 +74,24 @@ class SubscriptionsDB:
         if stored is None:
             stored = Subscription(provider=provider,
                                   external_id=external_id,
+                                  user_id=user_id,
                                   tier_id=tier_id,
                                   status=status,
                                   created_at=evaluated_at,
                                   updated_at=evaluated_at)
             self.session.add(stored)
-        elif (stored.tier_id, stored.status) == (tier_id, status):
-            # The lifecycle row already says this, so a repeat event carries no change to record.
-            outcome = WriteOutcome.replayed
         else:
-            # Updated in place, never flipped and re-inserted: one row per lifecycle pair is the index's rule.
-            stored.tier_id = tier_id
-            stored.status = status
-            stored.updated_at = evaluated_at
+            # An owner is added, never cleared: a later notification without a token unlinks nobody.
+            owner = stored.user_id if user_id is None else user_id
+            if (stored.tier_id, stored.status, stored.user_id) == (tier_id, status, owner):
+                # The lifecycle row already says this, so a repeat event carries no change to record.
+                outcome = WriteOutcome.replayed
+            else:
+                # Updated in place, never flipped and re-inserted: one row per lifecycle pair is the index's rule.
+                stored.tier_id = tier_id
+                stored.status = status
+                stored.user_id = owner
+                stored.updated_at = evaluated_at
 
         # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
         try:
@@ -84,6 +103,36 @@ class SubscriptionsDB:
                 raise
             return stored, WriteOutcome.lost_race
         return stored, outcome
+
+    async def insert_purchase(self, *,
+                              provider: PurchaseProvider,
+                              identity_value: str,
+                              external_id: str,
+                              store_transaction_id: str | None,
+                              store_original_transaction_id: str | None,
+                              purchase_user_id: UUID | None,
+                              resolved_token_value: str | None,
+                              evaluated_at: datetime) -> WriteOutcome:
+        """Add the one purchase row for this lifecycle pair and flush it."""
+        self.session.add(StorePurchase(provider=provider,
+                                       identity_value=identity_value,
+                                       external_id=external_id,
+                                       store_transaction_id=store_transaction_id,
+                                       store_original_transaction_id=store_original_transaction_id,
+                                       purchase_user_id=purchase_user_id,
+                                       resolved_token_value=resolved_token_value,
+                                       created_at=evaluated_at))
+
+        # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
+        try:
+            await self.session.flush()
+        except IntegrityError as violation:
+            # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
+            if violation.orig.sqlstate != "23505":
+                # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
+                raise
+            return WriteOutcome.lost_race
+        return WriteOutcome.applied
 
     async def append_event(self, *,
                            subscription: Subscription,

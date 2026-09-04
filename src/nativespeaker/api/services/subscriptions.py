@@ -1,12 +1,14 @@
 """Store-subscription ingestion: one verified notification, one transaction, one commit."""
 from datetime import datetime
+from uuid import uuid7
 
 import structlog
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.app_store import VerifiedNotification
+from nativespeaker.api.crud.purchases import PurchasesDB
 from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
-from nativespeaker.api.errors import InternalError, UnmappedStoreProduct
+from nativespeaker.api.errors import AttributionConflict, InternalError, UnmappedStoreProduct
 from nativespeaker.api.tables import SubscriptionStatus
 
 logger = structlog.get_logger()
@@ -37,13 +39,15 @@ class SubscriptionsService:
                  products: dict[str, str]) -> None:
         self.session = db
         self.subscriptions_db = SubscriptionsDB(db)
+        self.purchases_db = PurchasesDB(db)
         # One instant for this request; nothing below it reads the clock again.
         self.evaluated_at = evaluated_at
         # Server-controlled reference data, never a value the store supplied.
         self.products = products
 
     async def ingest(self, notification: VerifiedNotification) -> None:
-        """Record one verified notification and commit, or return having written nothing."""
+        """Record one verified notification and commit, or return having written nothing.
+        The purchase arms run in order: refuse a changed attribution, keep an agreeing one, insert a new pair."""
         if notification.external_id is None or notification.product_id is None:
             # Verified but unwritable: `audit.subscription_events.subscription_id` is NOT NULL.
             logger.info("store_notification_without_transaction",
@@ -55,9 +59,20 @@ class SubscriptionsService:
             # Refused before any write: `core.subscriptions.tier_id` is NOT NULL and has no default.
             raise UnmappedStoreProduct(notification.provider, notification.product_id)
 
+        token = notification.attribution_token
+        # Read before the transaction writes, so no token read happens under a lock.
+        user_id = (None if token is None
+                   else await self.purchases_db.resolve_user(notification.provider, token))
+
         if await self.subscriptions_db.read_event(notification.notification_uuid) is not None:
             # The replay: the store's own key is already recorded, so this delivery writes nothing.
             return
+
+        recorded = await self.subscriptions_db.read_purchase(notification.provider,
+                                                             notification.external_id)
+        if recorded is not None and token is not None and recorded.identity_value != token:
+            # Refused, never repaired: this route cannot verify a changed owner, and the store retries.
+            raise AttributionConflict(notification.provider, notification.external_id)
 
         stored = await self.subscriptions_db.read_subscription(notification.provider,
                                                                notification.external_id)
@@ -66,10 +81,25 @@ class SubscriptionsService:
         subscription, outcome = await self.subscriptions_db.upsert_subscription(
             provider=notification.provider,
             external_id=notification.external_id,
+            user_id=user_id,
             tier_id=tier_id,
             status=status_at(notification, self.evaluated_at),
             evaluated_at=self.evaluated_at)
         await self._settle(outcome, notification)
+
+        if recorded is None:
+            # Inserted after the subscription flushed: `core.store_purchases` keys a foreign key on the pair.
+            await self._settle(await self.subscriptions_db.insert_purchase(
+                provider=notification.provider,
+                # A generated value only when the store gave none: the column is NOT NULL.
+                identity_value=str(uuid7()) if token is None else token,
+                external_id=notification.external_id,
+                store_transaction_id=notification.transaction_id,
+                store_original_transaction_id=notification.external_id,
+                purchase_user_id=user_id,
+                # Set only when the token resolved: the second foreign key needs a binding to point at.
+                resolved_token_value=None if user_id is None else token,
+                evaluated_at=self.evaluated_at), notification)
 
         # Appended after the subscription flushed: the event row's `subscription_id` references it.
         await self._settle(await self.subscriptions_db.append_event(
