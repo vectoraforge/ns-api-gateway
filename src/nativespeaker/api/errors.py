@@ -259,6 +259,21 @@ class MissingPurchaseTokenError(InternalError):
                          f"{', '.join(store.value for store in missing)}")
 
 
+class UnmappedStoreProduct(InternalError):
+    """A verified store product id with no entry in the configured product map."""
+    # An operator edits the map and the store's next retry succeeds; nothing is written meanwhile.
+    log_level = logging.ERROR
+
+    def __init__(self, provider: PurchaseProvider, product_id: str):
+        self.provider = provider
+        self.product_id = product_id
+        super().__init__(f"Store product {product_id!r} of {provider.value} maps to no tier")
+
+    def log_fields(self) -> dict[str, str | None]:
+        # The store product id is a server-side catalogue value, so it is admissible; a token is not.
+        return {"provider": str(self.provider), "product_id": self.product_id}
+
+
 class QueueFullError(ServiceUnavailable):
     """The LLM queue is full."""
 
@@ -422,6 +437,13 @@ class ProofRejected(ProviderLookupError):
     """Apple refused the device token, or accepted it and refused the bit write."""
     status = 403
     code = "proof_rejected"
+
+
+class NotificationRejected(ProviderLookupError):
+    """The store notification did not verify: the signature, the chain, the app or the environment."""
+    # One class for every arm, so the answer tells a caller nothing about which check refused it.
+    status = 401
+    code = "auth_required"
 
 
 class DeviceGrantExhausted(ProviderLookupError):

@@ -15,6 +15,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from unit.conftest import FakeFirebaseAdapter, make_test_verifier
 
 from nativespeaker.api.app.main import app
+from nativespeaker.api.auth.app_store import VerifiedNotification
 from nativespeaker.api.auth.devicecheck import BitState
 from nativespeaker.api.auth.firebase import _application_default_credential
 from nativespeaker.api.config import EnvironmentConfig
@@ -261,6 +262,38 @@ def scripted_devicecheck_adapter(_app_lifespan):
         yield adapter
     finally:
         _app_lifespan.state.devicecheck_adapter = original
+
+
+class FakeAppStoreNotifications:
+    """A scriptable stand-in for the store-callback seam, recording every payload it was given."""
+
+    def __init__(self) -> None:
+        # No default answer: every case scripts the notification it wants verified or refused.
+        self.answer: BaseException | VerifiedNotification | None = None
+        self.calls: list[str] = []
+
+    def script(self, answer: BaseException | VerifiedNotification) -> None:
+        """Raise-or-return: a scripted exception is raised, a scripted notification is returned."""
+        self.answer = answer
+
+    def verify(self, signed_payload: str) -> VerifiedNotification:
+        self.calls.append(signed_payload)
+        if isinstance(self.answer, BaseException):
+            raise self.answer
+        assert self.answer is not None, "the seam was called before a case scripted it"
+        return self.answer
+
+
+@pytest.fixture
+def scripted_app_store_notifications(_app_lifespan):
+    """Swap app.state.app_store_notifications for a scripted fake, scripted per case."""
+    original = _app_lifespan.state.app_store_notifications
+    notifications = FakeAppStoreNotifications()
+    _app_lifespan.state.app_store_notifications = notifications
+    try:
+        yield notifications
+    finally:
+        _app_lifespan.state.app_store_notifications = original
 
 
 @pytest_asyncio.fixture(loop_scope="module")

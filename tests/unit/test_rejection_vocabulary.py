@@ -81,6 +81,7 @@ EVENT_NAMES = frozenset({
     "multiple_effective_grants_error",
     "unknown_tier_error",
     "missing_purchase_token_error",
+    "unmapped_store_product",
     "queue_full_error",
     "circuit_open_error",
     # The admission arms.
@@ -102,6 +103,8 @@ EVENT_NAMES = frozenset({
     # The device-gate arms, under the same lookup base.
     "proof_rejected",
     "device_grant_exhausted",
+    # The store-callback arm, under the same lookup base.
+    "notification_rejected",
     # The claim arms, group base included: the walk finds it, though only its leaves are raised.
     "claim_refused",
     "claimant_not_anonymous",
@@ -151,6 +154,7 @@ CONSTRUCTOR_ARGUMENTS: dict[type, tuple[tuple, dict]] = {
     errors_module.MultipleEffectiveGrantsError: ((2, uuid7()), {}),
     errors_module.UnknownTierError: (("registered", uuid7()), {}),
     errors_module.MissingPurchaseTokenError: ((uuid7(), [PurchaseProvider.apple]), {}),
+    errors_module.UnmappedStoreProduct: ((PurchaseProvider.apple, "com.example.monthly"), {}),
     errors_module.QueueFullError: ((30,), {}),
     errors_module.CircuitOpenError: ((60,), {}),
     errors_module.InvalidExternalJwt: ((), {"bounded_reason": BoundedReason.expired}),
@@ -160,6 +164,7 @@ CONSTRUCTOR_ARGUMENTS: dict[type, tuple[tuple, dict]] = {
     errors_module.NotLinked: ((), {"stage": "provider_classification", "cause": "invalid-shape"}),
     errors_module.ProofRejected: ((), {"stage": "devicecheck_read", "cause": "rejected"}),
     errors_module.DeviceGrantExhausted: ((), {"stage": "devicecheck_read", "cause": "already_set"}),
+    errors_module.NotificationRejected: ((), {"stage": "VERIFICATION_FAILURE"}),
     errors_module.UpgradeRefused: ((), UPGRADE_SAMPLE),
     errors_module.ProviderTransitionNotAllowed: ((), UPGRADE_SAMPLE),
     errors_module.ProviderAccountAlreadyLinked: ((), UPGRADE_SAMPLE),

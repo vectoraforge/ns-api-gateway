@@ -7,13 +7,21 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
+from nativespeaker.api.auth.app_store import VerifiedNotification
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.crud.purchases import PurchasesDB
 from nativespeaker.api.errors import InvalidExternalJwt, PreAuthIdentityNotAllowed
 from nativespeaker.api.schemas.auth import Identity
-from nativespeaker.api.services import AuthService, ChatService, QuotaService, SyncService
+from nativespeaker.api.schemas.webhooks import AppStoreNotificationRequest
+from nativespeaker.api.services import (
+    AuthService,
+    ChatService,
+    QuotaService,
+    SubscriptionsService,
+    SyncService,
+)
 
 
 def get_config(request: Request) -> AppConfig:
@@ -124,6 +132,21 @@ def get_auth_service(db: AsyncSession = Depends(get_db),
 def get_sync_service(db: AsyncSession = Depends(get_db),
                      evaluated_at: datetime = Depends(get_evaluated_at)) -> SyncService:
     return SyncService(db=db, evaluated_at=evaluated_at)
+
+
+def get_subscriptions_service(db: AsyncSession = Depends(get_db),
+                              config: AppConfig = Depends(get_config),
+                              evaluated_at: datetime = Depends(get_evaluated_at),
+                              ) -> SubscriptionsService:
+    return SubscriptionsService(db=db, evaluated_at=evaluated_at,
+                                products=config.app_store.products)
+
+
+def verify_app_store_notification(request: Request,
+                                  body: AppStoreNotificationRequest) -> VerifiedNotification:
+    """Turn the posted envelope into a verified notification, before the handler and before `get_db`."""
+    # Never `run_in_threadpool`: with online checks off, no code path in the seam performs I/O.
+    return request.app.state.app_store_notifications.verify(body.signedPayload)
 
 
 # This accessor exists so the profile route can stay Depends()-only and never construct a database class itself.

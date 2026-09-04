@@ -10,7 +10,7 @@ from nativespeaker.api import auth as auth_package
 AUTH_PACKAGE = Path(auth_package.__file__).parent
 
 # What it measures now: modules, classes, functions.
-CURRENT = (5, 12, 35)
+CURRENT = (6, 15, 40)
 
 
 def _measure(directory: Path) -> tuple[int, int, int]:

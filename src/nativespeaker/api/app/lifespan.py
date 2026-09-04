@@ -1,12 +1,16 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import firebase_admin
 import httpx
 import structlog
+from appstoreserverlibrary.models.Environment import Environment
+from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
+from nativespeaker.api.auth.app_store import AppStoreNotifications
 from nativespeaker.api.auth.devicecheck import (
     DEVICECHECK_HTTP_TIMEOUT_SECONDS,
     AppleDeviceCheck,
@@ -14,12 +18,31 @@ from nativespeaker.api.auth.devicecheck import (
 )
 from nativespeaker.api.auth.firebase import FirebaseAdminLookup, build_admin_apps
 from nativespeaker.api.auth.jwt_verifier import JWTVerifier
-from nativespeaker.api.config import EnvironmentConfig
+from nativespeaker.api.config import AppStoreConfig, EnvironmentConfig, StoreEnvironment
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.logs import setup_logging
 from nativespeaker.api.services import LLMService
 
 logger = structlog.get_logger()
+
+# Two arms and no case transform, so the two library members that skip verification stay unreachable.
+_STORE_ENVIRONMENTS = {StoreEnvironment.sandbox: Environment.SANDBOX,
+                       StoreEnvironment.production: Environment.PRODUCTION}
+
+
+def build_app_store_verifier(store: AppStoreConfig) -> SignedDataVerifier | None:
+    """The one verifier, or `None` when this deployment cannot build one."""
+    root = Path(store.root_certificate_path) if store.root_certificate_path else None
+    # Production needs the app id too: the library raises ValueError without it, and that would stop boot.
+    if not (store.bundle_id and store.environment and root and root.is_file()) or (
+            store.environment is StoreEnvironment.production and store.app_apple_id is None):
+        return None
+    return SignedDataVerifier(root_certificates=[root.read_bytes()],
+                              # No network call on the admission path, so `verify` performs no I/O.
+                              enable_online_checks=False,
+                              environment=_STORE_ENVIRONMENTS[store.environment],
+                              bundle_id=store.bundle_id,
+                              app_apple_id=store.app_apple_id)
 
 
 @asynccontextmanager
@@ -48,6 +71,16 @@ async def lifespan(app: FastAPI):
                                                      team_id=config.devicecheck.team_id,
                                                      private_key=devicecheck_key,
                                                      client=devicecheck_client)
+
+    app_store_verifier = build_app_store_verifier(config.app_store)
+    if app_store_verifier is None:
+        logger.warning("app_store_configuration_absent",
+                       consequence="POST /webhooks/app-store fails closed as "
+                                   "verification_temporarily_unavailable until the App Store bundle "
+                                   "id, environment, app id and root certificate are available in "
+                                   "this environment")
+    # Set unconditionally, so the route set is the same in every environment.
+    app.state.app_store_notifications = AppStoreNotifications(verifier=app_store_verifier)
 
     db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)
     app.state.session_factory = async_sessionmaker(db_engine, class_=SQLModelAsyncSession,

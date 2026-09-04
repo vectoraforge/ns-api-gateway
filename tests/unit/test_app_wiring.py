@@ -3,7 +3,11 @@ import pytest
 from fastapi import Depends
 from fastapi.routing import APIRoute
 
-from nativespeaker.api.app.dependencies import get_identity, get_linked_identity
+from nativespeaker.api.app.dependencies import (
+    get_identity,
+    get_linked_identity,
+    verify_app_store_notification,
+)
 from nativespeaker.api.app.main import app as real_app
 
 DOC_PATHS = {"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
@@ -11,6 +15,7 @@ DOC_PATHS = {"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
 # Literals rather than derived from anything, so widening the exemption is a visible edit here.
 PUBLIC_PATHS = {"/health/ready"}
 PREAUTH_CALLABLE_PATHS = {"/auth/create-user", "/auth/challenge"}
+PROVIDER_CALLBACK_PATHS = {"/webhooks/app-store"}
 
 
 def _api_routes() -> list[APIRoute]:
@@ -28,6 +33,7 @@ class TestEveryRouteIsAuthenticated:
     def test_every_route_but_the_two_exemptions_requires_a_linked_identity(self):
         missing = [route.path for route in _api_routes()
                    if route.path not in PUBLIC_PATHS | PREAUTH_CALLABLE_PATHS
+                   | PROVIDER_CALLBACK_PATHS
                    and get_linked_identity not in _declared(route)]
         assert missing == [], f"routes serving without a linked-identity declaration: {missing}"
 
@@ -55,11 +61,15 @@ class TestEveryRouteIsAuthenticated:
         assert path not in PUBLIC_PATHS | PREAUTH_CALLABLE_PATHS
 
     def test_the_public_allowlist_is_exactly_the_readiness_probe(self):
-        """A second public route would have to be added to `PUBLIC_PATHS` above to pass."""
+        """The literal alone, separated from the structural set below, which the callbacks also join."""
+        assert PUBLIC_PATHS == {"/health/ready"}
+
+    def test_no_route_serves_without_an_identity_or_a_callback_declaration(self):
+        """A second such route would have to be added to one of the two literals above to pass."""
         unauthenticated = {route.path for route in _api_routes()
                            if get_linked_identity not in _declared(route)
                            and get_identity not in _declared(route)}
-        assert unauthenticated == PUBLIC_PATHS
+        assert unauthenticated == PUBLIC_PATHS | PROVIDER_CALLBACK_PATHS
 
     def test_no_route_declares_a_wrapper_around_an_accessor(self):
         """The cache keys on the callable, so a `wraps` wrapper would key differently and verify twice."""
@@ -68,6 +78,35 @@ class TestEveryRouteIsAuthenticated:
                 wrapped = getattr(call, "__wrapped__", None)
                 assert wrapped not in (get_linked_identity, get_identity), \
                     f"{route.path} declares a wrapper around {getattr(wrapped, '__name__', wrapped)}"
+
+
+class TestTheProviderCallbackPartition:
+    """Membership is the set of routes on the webhooks router, counted here against one literal."""
+
+    def test_the_partition_is_exactly_the_routes_on_the_webhooks_router(self):
+        from nativespeaker.api.routers import webhooks_router
+
+        assert {route.path for route in webhooks_router.routes} == PROVIDER_CALLBACK_PATHS
+
+    @pytest.mark.parametrize("path", sorted(PROVIDER_CALLBACK_PATHS))
+    def test_each_callback_route_declares_the_verifier_and_neither_identity(self, path):
+        """Named rather than left to a generic case, which would also pass if the route were absent."""
+        declared = [_declared(route) for route in _api_routes() if route.path == path]
+        assert declared, f"{path} is not a registered route"
+        for calls in declared:
+            assert verify_app_store_notification in calls
+            assert get_identity not in calls
+            assert get_linked_identity not in calls
+
+    def test_no_route_outside_the_partition_declares_the_verifier(self):
+        leaked = [route.path for route in _api_routes()
+                  if route.path not in PROVIDER_CALLBACK_PATHS
+                  and verify_app_store_notification in _declared(route)]
+        assert leaked == [], f"routes declaring the callback verifier off the partition: {leaked}"
+
+    def test_the_partition_is_disjoint_from_both_other_literals(self):
+        """A callback path in either exemption set would make the three literals disagree silently."""
+        assert PROVIDER_CALLBACK_PATHS & (PUBLIC_PATHS | PREAUTH_CALLABLE_PATHS) == set()
 
 
 class TestDocumentationRoutes:

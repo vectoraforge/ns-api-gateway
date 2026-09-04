@@ -33,5 +33,9 @@ jwt:
 # can override a key declared here. The Secret Manager follow-up must REMOVE these entries, not
 # shadow them.
 #
+# An operator edits this map; a verified product id absent from it is a 500 and Apple's next retry succeeds.
+app_store:
+  products:
+    com.nativespeaker.subscription.monthly: paid
 chats_limit: 50
 messages_limit: 50

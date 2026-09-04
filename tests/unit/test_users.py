@@ -13,15 +13,17 @@ EXPECTED_FIELDS = {
 # Absent by design: the verified pair, the display name and the allowance all live elsewhere now.
 ABSENT_FIELDS = ("jwt_sub", "name", "subscription_plan")
 
-# Symbols that left with tables/subscriptions.py and tables.users.UsageMonthly.
+# Symbols that left with tables/subscriptions.py and tables.users.UsageMonthly, and stayed gone.
+# `Subscription`, `SubscriptionEvent` and the two status names came back in 43-01, against the v2.0
+# migration and in tables/purchases.py; the plan names below are the v1 layer and have no crud table.
 REMOVED_SYMBOLS = frozenset({
-    "Subscription", "SubscriptionEvent", "SubscriptionPlan", "SubscriptionPlanType",
-    "SubscriptionProvider", "SubscriptionProviderType", "SubscriptionStatus",
-    "SubscriptionStatusType", "UsageMonthly",
+    "SubscriptionPlan", "SubscriptionPlanType",
+    "SubscriptionProvider", "SubscriptionProviderType", "UsageMonthly",
 })
 
 # Exempted by name rather than by weakening the backstop, so every other such symbol still trips it.
-ALLOWED_USAGE_SYMBOLS = frozenset({"UserMonthlyUsage"})
+ALLOWED_MODEL_SYMBOLS = frozenset({"Subscription", "SubscriptionEvent", "SubscriptionStatus",
+                                   "UserMonthlyUsage"})
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -80,13 +82,13 @@ class TestUserModel:
 
 
 class TestSubscriptionModelLayerIsGone:
-    """The model layer no longer describes subscription plans or monthly usage."""
+    """The v1 model layer no longer describes subscription plans or monthly usage."""
 
     def test_barrel_exports_no_removed_symbol(self):
         assert REMOVED_SYMBOLS.isdisjoint(tables.__all__)
         suspect = [
             name for name in tables.__all__
-            if ("Subscription" in name or "Usage" in name) and name not in ALLOWED_USAGE_SYMBOLS
+            if ("Subscription" in name or "Usage" in name) and name not in ALLOWED_MODEL_SYMBOLS
         ]
         assert not suspect, f"barrel exports a removed-layer symbol: {suspect}"
 

@@ -9,6 +9,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 LogLevel = StrEnum("LogLevel", {k: k for k in logging.getLevelNamesMapping()})
 
 
+class StoreEnvironment(StrEnum):
+    """The two App Store environments whose notifications Apple signs."""
+    sandbox = "sandbox"
+    production = "production"
+
+
 class BaseConfig(BaseSettings):
     # `hide_input_in_errors` belongs here, not on the nested tables: a nested error renders under the outer config.
     model_config = SettingsConfigDict(env_nested_delimiter="_",
@@ -62,6 +68,19 @@ class DeviceCheckConfig(BaseModel):
     private_key_path: str | None = Field(default=None, description="Path to the ES256 private key PEM")
 
 
+class AppStoreConfig(BaseModel):
+    """The App Store Server Notifications settings the JWS verifier is built from."""
+    # All five optional, like DeviceCheckConfig: an absent value lets boot proceed and the route fail closed.
+    bundle_id: str | None = Field(default=None, description="The app's bundle ID")
+    app_apple_id: int | None = Field(default=None, description="The app's App Store ID, required in production")
+    # No default: a typed member, never free text, because two library values skip signature verification.
+    environment: StoreEnvironment | None = Field(default=None, description="The store environment")
+    root_certificate_path: str | None = Field(default="config/certs/AppleRootCA-G3.cer",
+                                              description="Path to the Apple root CA in DER form")
+    products: dict[str, str] = Field(default_factory=dict,
+                                     description="Store product ID to core.access_tiers.id")
+
+
 class ModelConfig(BaseModel):
     name: str = Field(default="gpt-4o-mini")
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
@@ -77,6 +96,7 @@ class AppConfig(BaseConfig):
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)
     jwt: JWTConfig = Field(default_factory=JWTConfig)
     devicecheck: DeviceCheckConfig = Field(default_factory=DeviceCheckConfig)
+    app_store: AppStoreConfig = Field(default_factory=AppStoreConfig)
     chats_limit: int = Field(default=50, ge=1)
     messages_limit: int = Field(default=50, ge=1)
 
