@@ -1,6 +1,6 @@
 """The App Store notification callback, end to end through the real router against a real database."""
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -12,6 +12,7 @@ from nativespeaker.api.auth.app_store import VerifiedNotification
 from nativespeaker.api.errors import NotificationRejected, Unavailable
 from nativespeaker.api.tables import (
     PurchaseProvider,
+    StorePurchase,
     Subscription,
     SubscriptionEvent,
     SubscriptionStatus,
@@ -36,6 +37,28 @@ ENVELOPE = "signed-payload-that-only-the-scripted-seam-reads"
 # The four `VerificationStatus` names a misconfigured deployment and a forged payload produce.
 REFUSAL_STAGES = ("VERIFICATION_FAILURE", "INVALID_CERTIFICATE",
                   "INVALID_APP_IDENTIFIER", "INVALID_ENVIRONMENT")
+
+# One obviously synthetic attribution token, and a second that disagrees with it.
+TOKEN = "a-synthetic-attribution-token"
+OTHER_TOKEN = "a-different-synthetic-attribution-token"
+
+
+class _ErrorSpy:
+    """A recording spy on the handler's own logger, so "which refusal, once" stays observable."""
+
+    def __init__(self) -> None:
+        self.entries: list[tuple[str, dict]] = []
+
+    def record(self, event: str, **fields) -> None:
+        self.entries.append((event, fields))
+
+
+@pytest.fixture
+def error_records(monkeypatch) -> _ErrorSpy:
+    """A spy, not `capture_logs`: the module-level logger caches its binding, so capture sees nothing."""
+    spy = _ErrorSpy()
+    monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.error", spy.record)
+    return spy
 
 
 @pytest_asyncio.fixture(loop_scope="module")
@@ -75,6 +98,13 @@ async def _subscriptions_of(factory, external_id: str) -> list[Subscription]:
     async with factory() as session:
         return list((await session.exec(
             select(Subscription).where(col(Subscription.external_id) == external_id))).all())
+
+
+async def _purchases_of(factory, external_id: str) -> list[StorePurchase]:
+    """Every purchase row for one lifecycle key; the UNIQUE constraint allows at most one."""
+    async with factory() as session:
+        return list((await session.exec(
+            select(StorePurchase).where(col(StorePurchase.external_id) == external_id))).all())
 
 
 async def _events_of(factory, notification_uuid: str) -> list[SubscriptionEvent]:
@@ -221,6 +251,102 @@ class TestTheReplayAndTheEmptyNotificationWriteNothing:
         assert response.json() == {"code": "internal_error"}
         assert await _subscriptions_of(_db_transaction, notification.external_id) == []
         assert await _events_of(_db_transaction, notification.notification_uuid) == []
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestAChangedAttributionIsRefusedAndNothingIsWritten:
+    """T-43-07: a recorded owner is never reassigned, because a wrongly granted entitlement cannot be undone."""
+
+    async def _record_then_conflict(self, client, seam, external_id: str):
+        """Deliver one purchase under `TOKEN`, then a second delivery of the same key under another."""
+        seam.script(_notification(attribution_token=TOKEN, external_id=external_id))
+        first = await client.post(PATH, json={"signedPayload": ENVELOPE})
+        assert first.status_code == 200, first.text
+
+        conflicting = _notification(attribution_token=OTHER_TOKEN, external_id=external_id)
+        seam.script(conflicting)
+        return conflicting, await client.post(PATH, json={"signedPayload": ENVELOPE})
+
+    async def test_the_conflicting_delivery_answers_the_shared_500_body(
+            self, webhook_client, scripted_app_store_notifications, _db_transaction):
+        external_id = f"original-{uuid4()}"
+
+        _, response = await self._record_then_conflict(
+            webhook_client, scripted_app_store_notifications, external_id)
+
+        assert response.status_code == 500
+        assert response.json() == {"code": "internal_error"}
+
+    async def test_the_conflicting_delivery_adds_no_row_of_any_of_the_three_kinds(
+            self, webhook_client, scripted_app_store_notifications, _db_transaction):
+        external_id = f"original-{uuid4()}"
+
+        conflicting, response = await self._record_then_conflict(
+            webhook_client, scripted_app_store_notifications, external_id)
+
+        assert response.status_code == 500
+        assert len(await _subscriptions_of(_db_transaction, external_id)) == 1
+        assert len(await _purchases_of(_db_transaction, external_id)) == 1
+        assert await _events_of(_db_transaction, conflicting.notification_uuid) == []
+
+    async def test_the_recorded_attribution_is_left_as_the_first_delivery_wrote_it(
+            self, webhook_client, scripted_app_store_notifications, _db_transaction):
+        external_id = f"original-{uuid4()}"
+
+        await self._record_then_conflict(
+            webhook_client, scripted_app_store_notifications, external_id)
+
+        purchases = await _purchases_of(_db_transaction, external_id)
+        assert purchases[0].identity_value == TOKEN
+        # No binding row exists for this token, so the purchase is recorded unowned and stays so.
+        assert purchases[0].resolved_token_value is None
+        assert purchases[0].purchase_user_id is None
+
+    async def test_the_refusal_logs_once_and_never_carries_the_attribution_token(
+            self, webhook_client, scripted_app_store_notifications, error_records):
+        external_id = f"original-{uuid4()}"
+
+        await self._record_then_conflict(
+            webhook_client, scripted_app_store_notifications, external_id)
+
+        assert len(error_records.entries) == 1
+        event, fields = error_records.entries[0]
+        assert event == "attribution_conflict"
+        assert fields["provider"] == "apple"
+        assert fields["external_id"] == external_id
+        # T-43-06: the token is a lifetime attribution value, so it reaches no record at all.
+        assert TOKEN not in repr(error_records.entries)
+        assert OTHER_TOKEN not in repr(error_records.entries)
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheRowCountHelpersSeeARow:
+    """The control: a helper quietly returning an empty list would pass every "nothing added" assertion."""
+
+    async def test_a_successful_delivery_is_counted_by_all_three_helpers(
+            self, webhook_client, scripted_app_store_notifications, _db_transaction):
+        notification = _notification(attribution_token=TOKEN)
+        scripted_app_store_notifications.script(notification)
+
+        response = await webhook_client.post(PATH, json={"signedPayload": ENVELOPE})
+
+        assert response.status_code == 200, response.text
+        assert len(await _subscriptions_of(_db_transaction, notification.external_id)) == 1
+        assert len(await _purchases_of(_db_transaction, notification.external_id)) == 1
+        assert len(await _events_of(_db_transaction, notification.notification_uuid)) == 1
+
+    async def test_an_unattributed_delivery_records_a_generated_identity_value(
+            self, webhook_client, scripted_app_store_notifications, _db_transaction):
+        """P-10: `identity_value` is TEXT NOT NULL, so a store that gives no token still writes a row."""
+        notification = _notification(attribution_token=None)
+        scripted_app_store_notifications.script(notification)
+
+        response = await webhook_client.post(PATH, json={"signedPayload": ENVELOPE})
+
+        assert response.status_code == 200, response.text
+        purchases = await _purchases_of(_db_transaction, notification.external_id)
+        assert UUID(purchases[0].identity_value)
+        assert purchases[0].resolved_token_value is None
 
 
 @pytest.mark.asyncio(loop_scope="module")
