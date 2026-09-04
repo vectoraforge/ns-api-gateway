@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 43
 current_phase_name: POST /webhooks/app-store
 status: executing
-stopped_at: Completed 43-01-PLAN.md
-last_updated: "2026-09-04T22:09:52.261Z"
+stopped_at: Completed 43-02-PLAN.md
+last_updated: "2026-09-04T22:18:16.507Z"
 last_activity: 2026-09-04
 last_activity_desc: Phase 43 execution started
-state_head: 3bdf1418d59799170e20319c1e48850ee0057853
+state_head: cb36a59c86fe468c5c2e565d39577cb13d8e4f9d
 progress:
   total_phases: 18
   completed_phases: 13
   total_plans: 103
-  completed_plans: 98
+  completed_plans: 99
   percent: 72
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 43 (POST /webhooks/app-store) — EXECUTING
-Plan: 2 of 6
+Plan: 3 of 6
 Status: Ready to execute
 Last activity: 2026-09-04 — Phase 43 execution started
 
@@ -228,10 +228,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-04T22:09:51.509Z
+**Last session:** 2026-09-04T22:18:15.750Z
 
 Last activity: 2026-08-31
-Stopped at: Completed 43-01-PLAN.md
+Stopped at: Completed 43-02-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -275,6 +275,7 @@ Resume file: None
 | Phase 42 P06 | ~35 min | 3 tasks | 5 files |
 | Phase 42 P07 | 32 | 3 tasks | 11 files |
 | Phase 43 P01 | 17min | 2 tasks | 23 files |
+| Phase 43 P02 | 4min | 2 tasks | 2 files |
 
 ## Decisions
 
@@ -385,3 +386,6 @@ Resume file: None
 - [Phase 43]: 43-01: A mid-term tier change updates core.subscriptions.tier_id in place; the unique index on (provider, external_id) allows one row per lifecycle key, and old_tier_id/new_tier_id on the event record the change (43-CONTEXT.md discretion, recorded).
 - [Phase 43]: 43-01: The ingestion lost race raises the generic InternalError, not a fourth error leaf, because the phase artifact list fixes the new exception classes at three; a WARNING with a closed-set provider label is written before the raise.
 - [Phase 43]: 43-01: status_at's arm order is revoked, live expires_at, grace, billing retry, expired. Grace is tested before billing retry because Apple sets the retry flag during grace too. This closes 43-RESEARCH assumption A1.
+- [Phase 43]: 43-02: The .env.example App Store block names no variable in its prose, only on the three assignment lines — the plan's own gate counts matching lines, so a helpfully repeated name would fail it
+- [Phase 43]: 43-02: APP_STORE_ROOT_CERTIFICATE_PATH is named nowhere in .env.example, not even in a comment; the block states the default path config/certs/AppleRootCA-G3.cer instead
+- [Phase 43]: 43-02: The gateway per-IP and per-URL limits the brief requires stay deferred to the v2.1 gateway contract (D-06, Phase 35 D-05/D-08); 43-06 should record this with 43-01's uncredentialed-route residual, because one limit closes both
