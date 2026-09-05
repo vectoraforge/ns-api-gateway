@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 44
 current_phase_name: POST /webhooks/google-play/rtdn
 status: executing
-stopped_at: Completed 44-05-PLAN.md
-last_updated: "2026-09-05T11:52:46.760Z"
+stopped_at: Completed 44-06-PLAN.md
+last_updated: "2026-09-05T12:13:20.464Z"
 last_activity: 2026-09-05
 last_activity_desc: Phase 44 execution started
-state_head: 77d91b1418784e11ab179c81f024e40efd4afe91
+state_head: 6bd45e12d0026b6e1ccec4c7d21486776dc6e36c
 progress:
   total_phases: 18
   completed_phases: 14
   total_plans: 110
-  completed_plans: 108
+  completed_plans: 109
   percent: 78
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 44 (POST /webhooks/google-play/rtdn) — EXECUTING
-Plan: 6 of 7
+Plan: 7 of 7
 Status: Ready to execute
 Last activity: 2026-09-05 — Phase 44 execution started
 
@@ -269,10 +269,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-05T11:52:45.884Z
+**Last session:** 2026-09-05T12:13:02.037Z
 
 Last activity: 2026-09-04
-Stopped at: Completed 44-05-PLAN.md
+Stopped at: Completed 44-06-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -326,6 +326,7 @@ Resume file: None
 | Phase 44 P03 | 10 min | 3 tasks | 3 files |
 | Phase 44 P04 | 7 min | 2 tasks | 2 files |
 | Phase 44 P05 | 20min | 3 tasks | 3 files |
+| Phase 44 P06 | 11 min | 2 tasks | 7 files |
 
 ## Decisions
 
@@ -475,3 +476,5 @@ Resume file: None
 - [Phase 44]: 44-04: assumption A5 holds — all three GOOGLE_PLAY_ variables land on GooglePlayConfig under env_nested_max_split=1 — pydantic-settings matches the longest known field name first; this is now measured by loading the real config rather than assumed
 - [Phase 44]: 44-05: the absent-grace-end control asserts an unbounded grant, not an ineffective one — a NULL ends_at is effective by _effective_grants_statement
 - [Phase 44]: 44-05: a second control covers the ineffective half — a grace window already closed, which is Phase 43's CR-02 verbatim
+- [Phase 44]: AttributionConflict is raised with the store_purchases row id and logs purchase_id: on the Google path external_id is the purchase token itself (44 D-10), so the Phase 43 log field was a credential in an ERROR record — The lifecycle key was the right operator handle while Apple was the only provider. The row's own primary key resolves external_id and everything else, and carries nothing the store supplied, so no capability is lost on either path.
+- [Phase 44]: The Google refusal completeness control reads both raise sites with ast, so a refusal stage added later fails the control rather than shipping untested — A hand-written set of expected stages drifts silently; reading the code is the only version of the control worth having.

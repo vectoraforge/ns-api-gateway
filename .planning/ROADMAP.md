@@ -674,7 +674,7 @@ Plans:
 **Goal:** Ingest Google Play RTDN via Cloud Pub/Sub push as the second and last provider-callback route.
 **Requirements:** PLAYHOOK-01 … PLAYHOOK-03
 **Depends on:** 34, 35 (soft: 43)
-**Plans:** 5/7 plans executed
+**Plans:** 6/7 plans executed
 **Success criteria:**
 
 1. The route authenticates solely by backend verification of Google's signed OIDC push token
@@ -697,7 +697,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 44-06-PLAN.md — The byte-identical refusal matrix, the 503 from a still-registered route, the two 200-without-writing arms and the sensitive-value walk (wave 3)
+- [x] 44-06-PLAN.md — The byte-identical refusal matrix, the 503 from a still-registered route, the two 200-without-writing arms and the sensitive-value walk (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -774,6 +774,6 @@ Plans:
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 5/5 | Complete    | 2026-09-03 |
 | 42. POST /auth/claim-registered-grant | v2.0 | 7/7 | Complete    | 2026-09-03 |
 | 43. POST /webhooks/app-store | v2.0 | 6/6 | Complete    | 2026-09-04 |
-| 44. POST /webhooks/google-play/rtdn | v2.0 | 5/7 | In Progress|  |
+| 44. POST /webhooks/google-play/rtdn | v2.0 | 6/7 | In Progress|  |
 | 45. POST /auth/restore-subscription | v2.0 | 0/? | Pending | — |
 | 46. POST /auth/sign-out-all | v2.0 | 0/? | Pending | — |
