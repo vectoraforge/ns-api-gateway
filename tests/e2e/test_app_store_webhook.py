@@ -343,8 +343,10 @@ class TestTheReplayAndTheEmptyNotificationWriteNothing:
 class TestAChangedAttributionIsRefusedAndNothingIsWritten:
     """T-43-07: a recorded owner is never reassigned, because a wrongly granted entitlement cannot be undone."""
 
-    async def _record_then_conflict(self, client, seam, external_id: str):
+    async def _record_then_conflict(self, client, seam, factory, external_id: str):
         """Deliver one purchase under `TOKEN`, then a second delivery of the same key under another."""
+        # The binding is what makes the first delivery record a store-supplied owner to disagree with.
+        await _seed_store_token(factory, TOKEN)
         seam.script(_notification(attribution_token=TOKEN, external_id=external_id))
         first = await client.post(PATH, json={"signedPayload": ENVELOPE})
         assert first.status_code == 200, first.text
@@ -358,7 +360,7 @@ class TestAChangedAttributionIsRefusedAndNothingIsWritten:
         external_id = f"original-{uuid4()}"
 
         _, response = await self._record_then_conflict(
-            webhook_client, scripted_app_store_notifications, external_id)
+            webhook_client, scripted_app_store_notifications, _db_transaction, external_id)
 
         assert response.status_code == 500
         assert response.json() == INTERNAL
@@ -368,7 +370,7 @@ class TestAChangedAttributionIsRefusedAndNothingIsWritten:
         external_id = f"original-{uuid4()}"
 
         conflicting, response = await self._record_then_conflict(
-            webhook_client, scripted_app_store_notifications, external_id)
+            webhook_client, scripted_app_store_notifications, _db_transaction, external_id)
 
         assert response.status_code == 500
         assert len(await _subscriptions_of(_db_transaction, external_id)) == 1
@@ -380,20 +382,21 @@ class TestAChangedAttributionIsRefusedAndNothingIsWritten:
         external_id = f"original-{uuid4()}"
 
         await self._record_then_conflict(
-            webhook_client, scripted_app_store_notifications, external_id)
+            webhook_client, scripted_app_store_notifications, _db_transaction, external_id)
 
         purchases = await _purchases_of(_db_transaction, external_id)
         assert purchases[0].identity_value == TOKEN
-        # No binding row exists for this token, so the purchase is recorded unowned and stays so.
-        assert purchases[0].resolved_token_value is None
-        assert purchases[0].purchase_user_id is None
+        # The store-supplied owner the first delivery resolved, which is what the guard compares against.
+        assert purchases[0].resolved_token_value == TOKEN
+        assert purchases[0].purchase_user_id is not None
 
     async def test_the_refusal_logs_once_and_never_carries_the_attribution_token(
-            self, webhook_client, scripted_app_store_notifications, error_records):
+            self, webhook_client, scripted_app_store_notifications, _db_transaction,
+            error_records):
         external_id = f"original-{uuid4()}"
 
         await self._record_then_conflict(
-            webhook_client, scripted_app_store_notifications, external_id)
+            webhook_client, scripted_app_store_notifications, _db_transaction, external_id)
 
         assert len(error_records.entries) == 1
         event, fields = error_records.entries[0]
