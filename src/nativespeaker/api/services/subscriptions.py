@@ -97,7 +97,11 @@ class SubscriptionsService:
 
         recorded = await self.subscriptions_db.read_purchase(notification.provider,
                                                              notification.external_id)
-        if recorded is not None and token is not None and recorded.identity_value != token:
+        # Keyed on the only-ever-store-supplied value: a server-minted placeholder is no rival owner.
+        # That placeholder stays: the purchase row is written once per lifecycle key and never updated.
+        if (recorded is not None and token is not None
+                and recorded.resolved_token_value is not None
+                and recorded.resolved_token_value != token):
             # Refused, never repaired: this route cannot verify a changed owner, and the store retries.
             raise AttributionConflict(notification.provider, notification.external_id)
 
