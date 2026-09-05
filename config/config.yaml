@@ -37,5 +37,9 @@ jwt:
 app_store:
   products:
     com.nativespeaker.subscription.monthly: paid
+# The same map for Google. An unmapped verified product id is a 500 and Pub/Sub redelivers.
+google_play:
+  products:
+    nativespeaker.subscription.monthly: paid
 chats_limit: 50
 messages_limit: 50
