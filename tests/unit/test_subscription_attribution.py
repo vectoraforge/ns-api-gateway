@@ -304,8 +304,8 @@ class TestTheConflictArm:
         stored = writer.purchases[(PurchaseProvider.apple, external_id)]
         assert stored.identity_value == TOKEN
 
-    async def test_the_refusal_carries_the_lifecycle_key_and_not_the_token(self, session, writer):
-        """T-43-06: the two fields an operator needs, and the attribution token is not one of them."""
+    async def test_the_refusal_carries_the_rows_own_key_and_not_the_token(self, session, writer):
+        """T-43-06, 44 T-44-26: the row's key finds the purchase, and no store value is in the record."""
         service = _service(session, writer, uuid7())
         external_id = f"original-{uuid4()}"
         await service.ingest(_notification(attribution_token=TOKEN, external_id=external_id))
@@ -314,7 +314,11 @@ class TestTheConflictArm:
             await service.ingest(_notification(attribution_token=OTHER_TOKEN,
                                                external_id=external_id))
 
-        assert refusal.value.log_fields() == {"provider": "apple", "external_id": external_id}
+        recorded = writer.purchases[(PurchaseProvider.apple, external_id)]
+        assert refusal.value.log_fields() == {"provider": "apple",
+                                              "purchase_id": str(recorded.id)}
+        # The lifecycle key is the Google purchase token on the other path, so it is not admissible.
+        assert external_id not in repr(refusal.value.log_fields())
         assert TOKEN not in repr(refusal.value.log_fields())
         assert OTHER_TOKEN not in repr(refusal.value.log_fields())
 

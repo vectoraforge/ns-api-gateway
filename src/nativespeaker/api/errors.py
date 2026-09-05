@@ -279,15 +279,16 @@ class AttributionConflict(InternalError):
     # Refused, never repaired: an owner this route cannot verify is a wrong entitlement waiting to happen.
     log_level = logging.ERROR
 
-    def __init__(self, provider: PurchaseProvider, external_id: str):
+    def __init__(self, provider: PurchaseProvider, purchase_id: UUID):
         self.provider = provider
-        self.external_id = external_id
-        super().__init__(f"Store purchase {external_id!r} of {provider.value} presents "
+        self.purchase_id = purchase_id
+        super().__init__(f"Store purchase {purchase_id} of {provider.value} presents "
                          f"another attribution value")
 
     def log_fields(self) -> dict[str, str | None]:
-        # The lifecycle key finds the row and the provider names the store; the token is not admissible.
-        return {"provider": str(self.provider), "external_id": self.external_id}
+        # The row's own key, never the lifecycle key: on the Google path the lifecycle key is the
+        # purchase token itself (44 D-10), which is not admissible in a log line.
+        return {"provider": str(self.provider), "purchase_id": str(self.purchase_id)}
 
 
 class QueueFullError(ServiceUnavailable):

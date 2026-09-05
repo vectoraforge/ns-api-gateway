@@ -79,7 +79,7 @@ class SubscriptionsService:
                 and recorded.resolved_token_value is not None
                 and recorded.resolved_token_value != token):
             # Refused, never repaired: this route cannot verify a changed owner, and the store retries.
-            raise AttributionConflict(notification.provider, notification.external_id)
+            raise AttributionConflict(notification.provider, recorded.id)
 
         # The store's own word, read live or from the signed envelope: never derived here.
         status = notification.status

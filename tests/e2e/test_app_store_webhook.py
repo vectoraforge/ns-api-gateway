@@ -408,7 +408,8 @@ class TestAChangedAttributionIsRefusedAndNothingIsWritten:
         event, fields = error_records.entries[0]
         assert event == "attribution_conflict"
         assert fields["provider"] == "apple"
-        assert fields["external_id"] == external_id
+        # The row's own key, not the lifecycle key: it finds the purchase and carries no store value.
+        assert fields["purchase_id"] == str((await _purchases_of(_db_transaction, external_id))[0].id)
         # T-43-06: the token is a lifetime attribution value, so it reaches no record at all.
         assert TOKEN not in repr(error_records.entries)
         assert OTHER_TOKEN not in repr(error_records.entries)
