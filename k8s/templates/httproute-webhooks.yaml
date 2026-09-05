@@ -8,12 +8,19 @@ metadata:
 spec:
   parentRefs:
   - name: {{ .Values.gateway.name }}
-  # This route is outside the JWT SecurityPolicy. Apple sends no Authorization header.
+  # Both paths are outside the JWT SecurityPolicy. Envoy cannot verify a store-signed token.
+  # Apple sends no Authorization header. The signed payload is the only credential.
+  # Google sends `Authorization: Bearer <OIDC token>`. That header must reach the backend
+  # unchanged, because it is the only credential of the Google route.
   rules:
   - matches:
     - path:
         type: Exact
         value: /webhooks/app-store
+      method: POST
+    - path:
+        type: Exact
+        value: /webhooks/google-play/rtdn
       method: POST
     backendRefs:
     - name: {{ include "ns-api-gateway.fullname" . }}
