@@ -332,6 +332,32 @@ class TestTheConflictArm:
         assert writer.subscriptions[(PurchaseProvider.apple, external_id)].user_id is not None
 
 
+    async def test_a_purchase_recorded_unattributed_accepts_a_later_real_token(self,
+                                                                                session, writer):
+        """CR-03: the store gave no token first, so the row carries a placeholder and no rival owner."""
+        owner = uuid7()
+        service = _service(session, writer, owner)
+        external_id = f"original-{uuid4()}"
+        await service.ingest(_notification(attribution_token=None, external_id=external_id))
+        assert writer.purchases[(PurchaseProvider.apple, external_id)].resolved_token_value is None
+
+        await service.ingest(_notification(attribution_token=TOKEN, external_id=external_id))
+
+        assert writer.subscriptions[(PurchaseProvider.apple, external_id)].user_id == owner
+        assert [grant["user_id"] for grant in writer.granted] == [owner]
+
+    async def test_a_store_supplied_owner_that_disagrees_is_still_refused(self, session, writer):
+        """The mirror the change must not lose: the recorded value came from the store, and they disagree."""
+        service = _service(session, writer, uuid7())
+        external_id = f"original-{uuid4()}"
+        await service.ingest(_notification(attribution_token=TOKEN, external_id=external_id))
+        assert writer.purchases[(PurchaseProvider.apple, external_id)].resolved_token_value == TOKEN
+
+        with pytest.raises(AttributionConflict):
+            await service.ingest(_notification(attribution_token=OTHER_TOKEN,
+                                               external_id=external_id))
+
+
 @pytest.mark.asyncio
 class TestTheMeasurementFires:
     """The controls: a recording stand-in that quietly recorded nothing would pass every count above."""
