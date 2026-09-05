@@ -674,12 +674,34 @@ Plans:
 **Goal:** Ingest Google Play RTDN via Cloud Pub/Sub push as the second and last provider-callback route.
 **Requirements:** PLAYHOOK-01 … PLAYHOOK-03
 **Depends on:** 34, 35 (soft: 43)
+**Plans:** 0/7 plans complete
 **Success criteria:**
 
 1. The route authenticates solely by backend verification of Google's signed OIDC push token
 2. It calls Phase 43's shared ingestion module rather than a forked copy
 3. The provider-callback category contains exactly these two routes, both by exact path — **Phase 43 has now defined the form (D-01), 2026-09-04. Read it under APPLEHOOK-02 in `REQUIREMENTS.md` and at Phase 43 criterion 3 above; it is deliberately not restated here.** Phase 44 inherits that answer rather than inventing a second one; PLAYHOOK-02 already binds it to Phase 43's shared module, and two competing partition mechanisms would recreate the drift the registry died of. The "exactly two" clause needs that partition to be countable, and it now is. Matching requirement: PLAYHOOK-03.
 4. A push with an invalid OIDC token is rejected without touching subscription state
+
+Plans:
+
+**Wave 1** *(two parallel plans, no shared file)*
+
+- [ ] 44-01-PLAN.md — TRACER: one verified Google push, end to end through every layer to a committed subscription row, plus the inherited suite re-greened against the promoted value type and the two-member partition (wave 1)
+- [ ] 44-02-PLAN.md — The exact-path gateway match, the direct `google-auth` edge, and the three deployer variables in `.env.example` (wave 1)
+
+**Wave 2** *(three parallel plans, blocked on Wave 1 completion)*
+
+- [ ] 44-03-PLAN.md — The nine prefixed subscription states, the grace window Google carries no field for, and the four arms that answer without writing (wave 2)
+- [ ] 44-04-PLAN.md — The tracked Google product map and the falsification that the three `GOOGLE_PLAY_` variables actually land on the model (wave 2)
+- [ ] 44-05-PLAN.md — Redelivery, out-of-order delivery, the two-connection race and the grace-period grant, measured on real PostgreSQL, plus Apple's five values re-proved (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 44-06-PLAN.md — The byte-identical refusal matrix, the 503 from a still-registered route, the two 200-without-writing arms and the sensitive-value walk (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 44-07-PLAN.md — The dated PLAYHOOK amendments, the two research corrections to the record, the answered criterion 3, and the phase close (wave 4)
 
 #### Phase 45: POST /auth/restore-subscription
 
