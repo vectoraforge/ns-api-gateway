@@ -1,188 +1,253 @@
 ---
 phase: 43-post-webhooks-app-store
-verified: 2026-09-04T00:00:00Z
-status: gaps_found
-score: 4/6 must-haves verified
+verified: 2026-09-05T05:35:54Z
+status: passed
+score: 6/6 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
-gaps:
-  - truth: "Ingested notifications leave the buyer with the correct entitlement over time — a subscription's status is not corrupted by out-of-order delivery, a grace-period grant is actually effective, and an untokened-then-tokened purchase does not permanently break the route."
-    status: failed
+re_verification:
+  previous_status: gaps_found
+  previous_score: 4/6
+  gaps_closed:
+    - "Ingested notifications leave the buyer with the correct entitlement over time — a subscription's status is not corrupted by out-of-order delivery, a grace-period grant is actually effective, and an untokened-then-tokened purchase does not permanently break the route."
+    - "With config.app_store incomplete, the application boots, logs one warning, and the route answers 503 — including when the App Store environment variables are present but malformed, which is the exact shape .env.example ships."
+  gaps_remaining: []
+  regressions: []
+advisory:
+  - finding: "core.store_purchases is never backfilled: a purchase first recorded unattributed keeps its server-minted identity_value and NULL resolved_token_value forever, even after a later delivery carries a real appAccountToken."
+    category: architectural
     reason: >
-      Three critical, independently reproduced defects in the state machine that turns a verified
-      notification into a subscription row and a grant (43-REVIEW.md CR-01, CR-02, CR-03), all
-      unfixed as of this verification:
-      (1) CR-01 — `status_at` reads only the incoming notification's own dates and
-      `upsert_subscription`/`write_subscription_grant` overwrite the stored row unconditionally.
-      The only replay guard is `notification_uuid`, which differs between distinct notifications,
-      and Apple does not guarantee delivery order. A `DID_RENEW` for term N+1 followed by a
-      delayed `EXPIRED` for term N ends with the buyer's grant flipped to `expired`, even though
-      the buyer paid through term N+1. `tests/schema/test_subscription_ingestion.py`'s
-      `TestTheNewestPurchaseWins` tests two *different* subscriptions for one buyer, and a
-      same-subscription reorder case, confirmed absent by direct inspection.
-      (2) CR-02 — reproduced independently in this verification (see artifacts): `status_at`
-      correctly returns `grace_period` when the paid term has ended but Apple's grace window has
-      not, but `write_subscription_grant` is called with `ends_at=notification.expires_at`, which
-      is the already-past paid-term expiry, not the grace window. `_effective_grants_statement`
-      requires `ends_at > evaluated_at`, so the resulting grant is written as `grace_period` but is
-      never effective — the buyer holds zero allowance despite Apple still covering the gap,
-      defeating the exact purpose the grace-before-billing-retry arm order in
-      `services/subscriptions.py::status_at` states it exists for. No fixture in any test file
-      (`tests/e2e/test_app_store_webhook.py`, `tests/unit/test_subscription_attribution.py`,
-      `tests/schema/test_subscription_ingestion.py`) ever sets `grace_period_expires_at` to a
-      non-`None` value, so this path is untested.
-      (3) CR-03 — a purchase first observed with no `appAccountToken` stores a server-minted
-      `str(uuid7())` as `identity_value` (`services/subscriptions.py:101-103`). A later, legitimate
-      delivery for the same purchase that *does* carry a real `appAccountToken` then fails the
-      conflict guard at `services/subscriptions.py:83` (`recorded.identity_value != token`),
-      raising `AttributionConflict` — a 500 with no recovery path through this route. Apple retries
-      for three days and gives up. Confirmed by direct code reading; the guard compares a
-      server-minted value as if it were store-supplied, and nothing distinguishes the two in the
-      `identity_value` column.
-    artifacts:
-      - path: src/nativespeaker/api/services/subscriptions.py
-        issue: "status_at/write_subscription_grant (CR-01, CR-02); the attribution conflict guard at :83 (CR-03)"
-      - path: src/nativespeaker/api/crud/subscriptions.py
-        issue: "upsert_subscription overwrites the stored row unconditionally with no ordering/monotonicity check (CR-01)"
-    missing:
-      - "A monotonicity guard comparing the incoming notification's signing instant (or its transaction's expiresDate) against the stored row's last-updated instant, refusing to regress an already-applied later state (CR-01)."
-      - "write_subscription_grant using notification.grace_period_expires_at as ends_at when status is grace_period, not notification.expires_at (CR-02)."
-      - "A conflict guard keyed on a value that is only ever store-supplied (e.g. resolved_token_value) rather than the server-minted identity_value placeholder (CR-03)."
-      - "A schema test exercising grace_period through write_subscription_grant, and a same-subscription out-of-order-delivery schema test."
-  - truth: "With config.app_store incomplete, the application boots, logs one warning, and the route answers 503 — including when the App Store environment variables are present but malformed, which is the exact shape .env.example ships."
-    status: failed
-    reason: >
-      The documented and tested fail-closed guarantee ("With config.app_store incomplete ...
-      the application boots ... and the route answers 503", 43-01 must_have #6; ROADMAP SC1's
-      supporting design) only holds when the three App Store environment variables are *absent*.
-      `.env.example:105-107` ships `APP_STORE_APP_APPLE_ID=...` and `APP_STORE_ENVIRONMENT=...`.
-      `app_apple_id` is `int | None` and `environment` is `StoreEnvironment | None` with no
-      placeholder-tolerant validator, so pydantic-settings raises `ValidationError` at config load —
-      before lifespan.py's own completeness check ever runs. Reproduced independently in this
-      verification: `AppStoreConfig(app_apple_id='...', environment='...')` raises two
-      `ValidationError`s. `pyproject.toml` sets `env_files = [".env"]`, and the file's own comment
-      block instructs the reader to fill or leave these three values, which is the same workflow
-      used for every other `.env.example` block (`OPENAI_API_KEY=...` etc. load fine as strings).
-      A deployer following that instruction verbatim crashes the whole service's boot, not just the
-      one route — the opposite of the recorded guarantee, and this specific malformed-but-present
-      shape is exactly what the committed file ships (43-REVIEW.md CR-04).
-    artifacts:
-      - path: .env.example
-        issue: "Lines 105-107 ship APP_STORE_APP_APPLE_ID=... and APP_STORE_ENVIRONMENT=..., both of which raise ValidationError rather than resolving to None"
-      - path: src/nativespeaker/api/config.py
-        issue: "AppStoreConfig has no validator degrading a malformed placeholder value to None the way absence already is"
-    missing:
-      - "A field_validator on app_apple_id/environment (or equivalent) that treats an unparsable placeholder as absent, so a malformed value costs the one route its 503 rather than the whole service its boot."
-      - "Alternatively, comment out the three App Store lines in .env.example so copying the file does not supply any value for them."
-advisory: []
+      Explicitly recorded by the quick task as an accepted residual of the promote-with-no-new-column
+      decision, not a new defect. The subscription row does gain the owner and the buyer does get
+      their grant — the route recovers, which is what CR-03 was scoped to fix. Only the purchase row's
+      own provenance stays stale. Judged acceptable at this phase's scope: backfilling the purchase row
+      is restore's job (Phase 45), and neither route performs it today. Flagged so a future reader of
+      core.store_purchases does not mistake a stale identity_value for a live one.
+    evidence_status: "recorded in 260904-u7t-SUMMARY.md and in the code's own comment at services/subscriptions.py:100-101; not a gap"
 ---
 
 # Phase 43: POST /webhooks/app-store Verification Report
 
 **Phase Goal:** Ingest Apple App Store Server Notifications as the first of exactly two provider-callback routes.
-**Verified:** 2026-09-04
-**Status:** gaps_found
-**Re-verification:** No — initial verification
+**Verified:** 2026-09-05
+**Status:** passed
+**Re-verification:** Yes — after gap closure. This report supersedes the initial verification
+(`43-VERIFICATION.md`, 2026-09-04, `status: gaps_found`, `score: 4/6`), which found two failed
+derived truths tied to four critical findings in `43-REVIEW.md` (CR-01 … CR-04). Quick task
+`260904-u7t` (commits `29082dd`..`f9b2557`, docs `db4f737`) claims to close all four. This report
+re-derives all six truths independently — reading the live code, reproducing the two previously
+hand-reproduced defects, and running every suite in this session — rather than accepting that claim.
 
 ## Goal Achievement
 
 ### Observable Truths
 
-The four ROADMAP.md success criteria are evaluated on their literal text first, then the phase's
-own plan-level must-haves and the phase's own committed code review (`43-REVIEW.md`) are checked
-for defects that undermine the substance behind those criteria, per this verifier's instruction to
-weigh, not inherit, the review's findings.
+All six truths from the prior report were re-checked, not only the two that had failed — CR-01's
+superseded arm sits on the same `ingest()` path as the replay guard behind criterion 4, and CR-04
+touched `config.py`, which criterion 1's boot path reads.
 
-| # | Truth (ROADMAP success criterion) | Status | Evidence |
+| # | Truth (ROADMAP success criterion / derived) | Status | Evidence |
 |---|------|--------|----------|
-| 1 | The route sits outside the auth dependency and authenticates solely by verifying Apple's `signedPayload` JWS | ✓ VERIFIED | `routers/webhooks.py` reads no `Authorization` header; `AppStoreNotifications.verify` (auth/app_store.py) is the sole gate, calling Apple's `SignedDataVerifier` three times (envelope, nested transaction, nested renewal info) against the vendored Apple Root CA G3. `tests/e2e/test_app_store_webhook.py::test_a_valid_firebase_token_does_not_change_the_refusal` proves a valid Firebase ID token changes nothing. |
-| 2 | A payload with an invalid or absent signature is rejected without touching subscription state | ✓ VERIFIED | `verify_app_store_notification` (app/dependencies.py:145-149) takes only `Request` and the body — no `Depends(get_db)` in its own chain — and is declared as the webhooks router's own `dependencies=[...]`, which FastAPI resolves ahead of the handler's own parameter dependencies (`get_subscriptions_service`, which does depend on `get_db`). A rejection raises before any session opens. `tests/e2e/test_app_store_webhook.py::test_a_refused_payload_writes_nothing` asserts zero subscription and event rows after every reachable 401 arm. (WR-02 in 43-REVIEW.md notes this correctness rests on an internal FastAPI de-duplication behavior; the failure mode if that changed is a total, closed 422 outage of the route, not silent state corruption — it does not defeat this truth.) |
-| 3 | The route appears in the provider-callback category by exact path | ✓ VERIFIED | `tests/unit/test_app_wiring.py` holds `PROVIDER_CALLBACK_PATHS = {"/webhooks/app-store"}` as a literal, compared with `==` against `webhooks_router.routes`; `PUBLIC_PATHS == {"/health/ready"}` is asserted as a separate literal case so the callback route joining the "no identity accessor" structural exemption does not silently widen the true public allowlist. Confirmed by reading the test file directly (lines 16, 18, 65, 72, 89, 109). |
-| 4 | Replayed notifications do not double-apply subscription state | ✓ VERIFIED | The replay key is `audit.subscription_events.notification_uuid`, read inside the transaction (`services/subscriptions.py:77`) before any write. `tests/schema/test_subscription_race.py::TestTwoDeliveriesOfOneStoreKeyCommitOnce` races two real PostgreSQL connections and was re-run in this verification (`uv run python -m pytest tests/schema/test_subscription_race.py -m schema -k TestTwoDeliveriesOfOneStoreKeyCommitOnce` → 8 passed): exactly one row lands in each of the three tables, the loser reads SQLSTATE 23505, rolls back, and answers 5xx; a third delivery finds the event row and answers 200. `tests/schema/test_subscription_ingestion.py::test_a_replayed_notification_uuid_leaves_every_count_unchanged` confirms the same for an identical `notificationUUID`. |
-| 5 (derived, plan-level) | Ingested notifications leave the buyer with the correct entitlement over time — no false downgrade from reordering, no permanently-inert grace grant, no permanent lockout from an attribution conflict | ✗ FAILED | See Gaps below (CR-01, CR-02, CR-03). CR-02 was independently reproduced in this verification, not just read from the review. |
-| 6 (derived, plan-level, 43-01 must_have #6) | An incomplete App Store configuration — including a malformed-but-present one, which is what `.env.example` ships — costs the route a 503, never the service its boot | ✗ FAILED | See Gaps below (CR-04). Independently reproduced in this verification: `AppStoreConfig(app_apple_id='...', environment='...')` raises `ValidationError`, and `.env.example` ships exactly those two placeholder values. |
+| 1 | The route sits outside the auth dependency and authenticates solely by verifying Apple's `signedPayload` JWS | ✓ VERIFIED | Unchanged by this quick task except one additive field (`VerifiedNotification.signed_at`, set in `_crossed` from `payload.signedDate`). `routers/webhooks.py` still reads no `Authorization` header; `tests/unit/test_app_store_notifications.py` (27 passed) and `tests/e2e/test_app_store_webhook.py::test_a_valid_firebase_token_does_not_change_the_refusal` re-run clean. |
+| 2 | A payload with an invalid or absent signature is rejected without touching subscription state | ✓ VERIFIED | `verify_app_store_notification` is untouched by this quick task. `tests/e2e/test_app_store_webhook.py::test_a_refused_payload_writes_nothing` re-run clean as part of the 272-passed e2e run below. |
+| 3 | The route appears in the provider-callback category by exact path | ✓ VERIFIED | `tests/unit/test_app_wiring.py` untouched by this quick task; re-run in this session, 23 passed. `PROVIDER_CALLBACK_PATHS = {"/webhooks/app-store"}` still holds as a literal. |
+| 4 | Replayed notifications do not double-apply subscription state | ✓ VERIFIED | The replay key (`notification_uuid`, read before any write) is untouched; the new superseded-arm check (truth 5 below) is placed *after* this guard, so it cannot weaken it. `tests/schema/test_subscription_race.py::TestTwoDeliveriesOfOneStoreKeyCommitOnce` re-run in this session — 8 passed. `tests/schema/test_subscription_ingestion.py::test_a_replayed_notification_uuid_leaves_every_count_unchanged` re-run clean as part of the 189-passed schema run below. |
+| 5 (derived, plan-level) | Ingested notifications leave the buyer with the correct entitlement over time — no false downgrade from reordering, no permanently-inert grace grant, no permanent lockout from an attribution conflict | ✓ VERIFIED | All three defects closed and independently confirmed in this session — see "CR-01/02/03 Independent Reproduction" below. |
+| 6 (derived, plan-level, 43-01 must_have #6) | An incomplete App Store configuration — including a malformed-but-present one, which is what `.env.example` ships — costs the route a 503, never the service its boot | ✓ VERIFIED | Independently reproduced in this session — see "CR-04 Independent Reproduction" below. |
 
-**Score:** 4/6 truths verified (the 4 literal ROADMAP criteria hold; 2 derived truths tied to the phase's own plan intent and its own committed code review do not).
+**Score:** 6/6 truths verified.
+
+### CR-01 Independent Reproduction (out-of-order delivery)
+
+Read `services/subscriptions.py:81-96` directly: a superseded arm sits after the `notification_uuid`
+replay check and before the attribution guard, keyed on `stored.store_signed_at` vs.
+`notification.signed_at` (both present, incoming strictly earlier). It appends the event row (audited),
+logs `store_notification_superseded`, commits, and returns — no status write, no grant write.
+
+Ran the new schema tests directly (`tests/schema/test_subscription_ingestion.py::TestAPayloadSignedBeforeTheRecordedStateAppliesNothing`, 4 cases, part of the 189-passed run below). Read every case:
+- `test_a_stale_expiry_leaves_the_term_and_the_status_alone` — a fresh `DID_RENEW` then a stale
+  `EXPIRED` signed a day earlier: grant stays `active`, `ends_at` stays the fresh term, status stays
+  `active`.
+- `test_the_same_two_deliveries_in_the_stores_own_order_do_expire_it_control` — **the discriminating
+  control**: same two deliveries, signing instants in Apple's actual order, DO expire the grant. This
+  proves the guard (not delivery order in the test) is what saves the grant in the case above.
+- `test_the_stale_delivery_is_still_audited_and_does_not_raise` — both notification UUIDs land in
+  `audit.subscription_events`; the route does not raise.
+- `test_a_row_carrying_no_store_clock_applies_the_delivery_normally` — a pre-migration row with
+  `store_signed_at` NULL is not frozen by the new guard.
+
+### CR-02 Independent Reproduction (grace-period grant)
+
+Read `services/subscriptions.py:150-154`: `ends_at` is `notification.grace_period_expires_at` when
+`status is SubscriptionStatus.grace_period`, else `notification.expires_at`.
+
+Reproduced by hand in this session, independent of any test file:
+```
+status_at(...) -> grace_period
+ends_at = grace_period_expires_at = 2026-09-21 05:34:40+00
+effective (ends_at > evaluated_at)? True
+```
+This is the exact scenario the prior verification reproduced as FAILING (`ends_at` was the already-past
+paid-term expiry); it now resolves to an effective grant.
+
+Read the new schema tests
+(`TestAGracePeriodDeliveryIsEntitledForTheGraceWindow`, part of the 189-passed run):
+- `test_the_grant_runs_to_the_grace_window_and_the_read_returns_it` — asserts effectiveness by calling
+  `GrantsDB.lock_effective_grants` on a real session, not by re-spelling the `ends_at > evaluated_at`
+  predicate.
+- `test_a_grace_window_already_past_leaves_no_effective_grant_control` — **the discriminating control**:
+  same shape, grace window also past, yields `expired` and zero effective grants. Proves the case above
+  passes on the window, not on the delivery reaching a write at all.
+
+### CR-03 Independent Reproduction (attribution conflict guard)
+
+Read `services/subscriptions.py:98-106`: the guard now compares `recorded.resolved_token_value`
+(only ever store-supplied, per the table's CHECK and the code that sets it), firing only when that
+value is not None and disagrees with the presented token.
+
+Read the unit tests in `tests/unit/test_subscription_attribution.py::TestTheConflictArm`:
+- `test_a_purchase_recorded_unattributed_accepts_a_later_real_token` — a purchase recorded with
+  `attribution_token=None` (so `resolved_token_value is None`), then a real token arrives: no raise,
+  the subscription gains the owner, a grant is written.
+- `test_a_store_supplied_owner_that_disagrees_is_still_refused` — **the discriminating mirror case**:
+  a purchase recorded with a real token (`resolved_token_value == TOKEN`), then a different token
+  arrives: `AttributionConflict` still raises. This is the case the fix must not lose, and it does not.
+
+Read the e2e deviation the SUMMARY records for `TestAChangedAttributionIsRefusedAndNothingIsWritten`:
+before this fix, that class's setup recorded a purchase with **no** store binding, so under the new
+guard its "conflict" was actually CR-03's first-honest-attribution case — three of its cases genuinely
+failed after Task 4 landed, per the SUMMARY's own account, and this was caught by the plan's own gate
+rather than concealed. The fix (`a0f3a0c`) now seeds `core.store_purchase_tokens` for `TOKEN` before
+the first delivery, so the first delivery resolves a real owner
+(`test_the_recorded_attribution_is_left_as_the_first_delivery_wrote_it` asserts
+`resolved_token_value == TOKEN`, not None) and the second delivery under `OTHER_TOKEN` is a genuine
+changed-owner conflict. Read the sibling class `TestNoRecordCarriesASensitiveValue`, which seeds a
+binding throughout and never needed this fix — its conflict case passed unchanged before and after,
+which is independent evidence the guard fired end to end the whole time and only the *other* class's
+setup was wrong. **Verdict: this deviation is a legitimate bug fix in a test fixture, not a weakened
+assertion — the conflict guard genuinely still fires end to end**, confirmed by reading both the
+before/after setup and the sibling class's unaffected pass.
+
+### CR-04 Independent Reproduction (malformed App Store config)
+
+Reproduced by hand in this session, the same construction the prior verification used to prove the
+defect:
+```python
+AppStoreConfig(app_apple_id='...', environment='...')
+-> app_apple_id=None, environment=None   # no ValidationError
+build_app_store_verifier(store) -> None
+```
+Read `config.py:85-98`: two `field_validator`s in `mode="before"` degrade an unparsable
+`app_apple_id`/`environment` to `None` rather than raising. Read `.env.example:105-107`: the three
+App Store lines now ship **commented out** with values that parse if uncommented
+(`#APP_STORE_APP_APPLE_ID=6001234567`, `#APP_STORE_ENVIRONMENT=sandbox`), removing the
+`ValidationError`-triggering shape the prior verification found shipped uncommented.
+
+Scrutinized the recorded test-setup deviation for the security property: the pre-existing case
+`test_a_verification_skipping_environment_is_refused_at_load` asserted `ValidationError` for the
+library's two verification-skipping environments (`Xcode`, `LocalTesting`). It was rewritten to
+`test_a_verification_skipping_environment_never_reaches_a_verifier`, which asserts **both**
+`store.environment is None` **and** `build_app_store_verifier(store) is None` for each of the two
+values (`tests/unit/test_config.py:232-238`), with a control
+(`test_a_named_environment_still_loads`) proving a loader that refused everything would not
+distinguish the two cases. Independently re-derived the underlying guarantee by reading
+`_named_or_absent`: it keeps membership by value against `tuple(StoreEnvironment)`, which is
+`{sandbox, production}` only — `Xcode` and `LocalTesting` are not members of that enum at all, so no
+value reachable from `.env` can ever equal one of the two library environments that skip verification.
+**Verdict: the security property moved from "refused at load" to "degraded to absent, which builds no
+verifier" — it was not weakened.** A verification-skipping environment still cannot end up usable.
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |----------|----------|--------|---------|
-| `src/nativespeaker/api/auth/app_store.py` | JWS verification seam, `VerifiedNotification`, `StoreNotificationVerifier` | ✓ VERIFIED | Present; no logger, no `run_in_threadpool`, reads `rawNotificationType` for the event type. |
-| `src/nativespeaker/api/schemas/webhooks.py` | Request body schema | ✓ VERIFIED | `AppStoreNotificationRequest.signedPayload` present (WR-01: no `max_length` bound — a warning, not a blocker). |
-| `src/nativespeaker/api/routers/webhooks.py` | The one registered route | ✓ VERIFIED | `POST /webhooks/app-store`, exact path, thin handler. |
-| `src/nativespeaker/api/crud/subscriptions.py` | `SubscriptionsDB` | ✓ VERIFIED, but substantively defective | Exists, wired, flushed in the right order — but see gap 5/CR-01. |
-| `src/nativespeaker/api/services/subscriptions.py` | `SubscriptionsService`, `status_at` | ✓ VERIFIED, but substantively defective | Exists, wired, imports nothing from the Apple library (proved by the `ast` walk in `tests/unit/test_app_store_notifications.py`) — but see gap 5/CR-01, CR-02, CR-03. |
-| `tests/unit/test_app_store_notifications.py` | Real-chain seam proof | ✓ VERIFIED | Contains both Apple OID literals, references the vendored root, control case present. |
-| `tests/e2e/test_app_store_webhook.py` | End-to-end round trip | ✓ VERIFIED | Happy path, all refusal arms, replay, no-transaction case all present and passing. |
+| `core.subscriptions.store_signed_at` (migration + `Subscription` model) | The store's own clock, separate from `updated_at` | ✓ VERIFIED | Column confirmed present by direct introspection of the dev database (`information_schema.columns`, 12th column, `timestamp with time zone`). Migration edited in place under its existing id — only one file exists in `migrations/`, no incremental migration was added. |
+| `VerifiedNotification.signed_at` | Carried from `payload.signedDate` | ✓ VERIFIED | `auth/app_store.py:26`, `:60`; all four construction sites updated (`_crossed` plus three test builders). |
+| `services/subscriptions.py` superseded arm | Refuses a payload signed before the recorded state (CR-01) | ✓ VERIFIED, substantively | Present, wired before the attribution guard, exercised by 4 new schema cases with a discriminating control. |
+| `services/subscriptions.py` grace-window `ends_at` | Grace grant carries the grace window, not the lapsed term (CR-02) | ✓ VERIFIED, substantively | Present, exercised by 2 new schema cases with a discriminating control, reproduced by hand. |
+| Attribution conflict guard keyed on `resolved_token_value` (CR-03) | Only-ever-store-supplied value (CR-03) | ✓ VERIFIED, substantively | Present, exercised by 2 new unit cases (accept + still-refuses mirror) and corrected end-to-end e2e coverage. |
+| `AppStoreConfig` validators (CR-04) | Degrade unparsable `app_apple_id`/`environment` to `None` | ✓ VERIFIED, substantively | Present, `mode="before"`, exercised by 5 new unit cases including a file-reads-constructible regression test over the committed `.env.example`. |
+| Two named schema tests the prior report required as missing | Grace-period-through-`write_subscription_grant`, and same-subscription out-of-order-delivery | ✓ VERIFIED | Both exist: `TestAGracePeriodDeliveryIsEntitledForTheGraceWindow` and `TestAPayloadSignedBeforeTheRecordedStateAppliesNothing`, both in `tests/schema/test_subscription_ingestion.py`, both with discriminating controls, both re-run in this session. |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 |------|-----|-----|--------|---------|
-| `app/lifespan.py` | `app.state.app_store_notifications` | one `SignedDataVerifier` built at boot | ✓ WIRED | Confirmed by reading `verify_app_store_notification` reading `request.app.state.app_store_notifications`. |
-| `routers/webhooks.py` | `verify_app_store_notification` | router-level `Depends()` | ✓ WIRED | Confirmed; see truth 2 evidence above and WR-02 caveat (non-blocking). |
-| `services/subscriptions.py` | `crud/subscriptions.py` | `SubscriptionsDB` composition | ✓ WIRED | `SubscriptionsService.__init__` constructs `SubscriptionsDB(db)`. |
-| `crud/subscriptions.py` | `core.subscriptions` / `audit.subscription_events` | SQLAlchemy `session.flush()` | ✓ WIRED, data flows | Subscription flushed before the event append (FK-ordering respected), confirmed by reading `crud/subscriptions.py:84-181`. |
+| `auth/app_store.py::_crossed` | `services/subscriptions.py::ingest` | `VerifiedNotification.signed_at` | ✓ WIRED | Read at `services/subscriptions.py:82` and `:115`. |
+| `services/subscriptions.py::ingest` | `crud/subscriptions.py::upsert_subscription` | `signed_at` keyword, advances `store_signed_at` only when not None | ✓ WIRED | Confirmed by direct read of `crud/subscriptions.py:90-119`. |
+| `services/subscriptions.py::ingest` | `crud/subscriptions.py::write_subscription_grant` | grace-branch `ends_at` | ✓ WIRED | Confirmed at `services/subscriptions.py:150-154`. |
+| `config.py::AppStoreConfig` | `app/lifespan.py::build_app_store_verifier` | degraded `None` still yields no verifier, one warning, route 503 | ✓ WIRED | Confirmed by hand reproduction above; `lifespan.py`'s absence branch is untouched by this quick task. |
 
-### Behavioral Spot-Checks
+### Behavioral Spot-Checks / Independent Reproductions
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| Replay/race guarantee (criterion 4) | `uv run python -m pytest tests/schema/test_subscription_race.py -m schema -k TestTwoDeliveriesOfOneStoreKeyCommitOnce` | 8 passed | ✓ PASS |
-| CR-02 grace-period grant term (gap 5) | inline script calling `status_at` then computing the `ends_at` the shipped `write_subscription_grant` call site passes | `status_at` returns `grace_period`; `ends_at` is already in the past; `_effective_grants_statement`'s `ends_at > evaluated_at` is `False` | ✗ FAIL (confirms gap) |
-| CR-04 malformed `.env.example` values (gap 6) | `AppStoreConfig(app_apple_id='...', environment='...')` | Two `ValidationError`s raised | ✗ FAIL (confirms gap) |
+| Full unit suite | `uv run pytest -q` | 1098 passed, 461 deselected | ✓ PASS (matches SUMMARY's claimed 1098, up from baseline 1089) |
+| Full schema suite | `uv run pytest -m schema -q` | 189 passed, 1370 deselected | ✓ PASS (matches SUMMARY's claimed 189, up from baseline 182) |
+| Full e2e suite | `uv run pytest -m e2e -q` | 272 passed, 1287 deselected | ✓ PASS (matches SUMMARY's claimed 272, unchanged from baseline) |
+| Lint | `uv run ruff check src tests` | All checks passed | ✓ PASS |
+| CR-02 grace grant effectiveness | inline reproduction of `status_at` + the `ends_at` branch | `grace_period`, `ends_at` in the future, effective | ✓ PASS (was ✗ FAIL in prior verification) |
+| CR-04 malformed config | `AppStoreConfig(app_apple_id='...', environment='...')` | Both fields `None`, no raise; `build_app_store_verifier` returns `None` | ✓ PASS (was ✗ FAIL — raised `ValidationError` — in prior verification) |
+| `store_signed_at` column present | `information_schema.columns` query against the dev database | 12 columns, `store_signed_at timestamp with time zone` present | ✓ PASS |
+| Migration edited in place | `ls migrations/` | One file: `20260818_01_initial-release.sql` | ✓ PASS |
+| Race/replay guarantee (criterion 4) unaffected | `uv run pytest tests/schema/test_subscription_race.py -m schema -k TestTwoDeliveriesOfOneStoreKeyCommitOnce` | 8 passed | ✓ PASS |
+| Wiring/callback partition (criterion 3) unaffected | `uv run pytest tests/unit/test_app_wiring.py -q` | 23 passed | ✓ PASS |
+| Auth seam (criteria 1-2) unaffected | `uv run pytest tests/unit/test_app_store_notifications.py tests/e2e/test_app_store_webhook.py -m e2e -q` (run separately) | 27 passed / 28 passed | ✓ PASS |
 
 ### Requirements Coverage
 
 | Requirement | Source Plan | Description | Status | Evidence |
 |-------------|-------------|--------------|--------|----------|
-| APPLEHOOK-01 | 43-01 … 43-06 | Ingest Apple notifications outside the auth dependency, JWS-only auth | ⚠ PARTIALLY SATISFIED | The auth/verification half is solid (truths 1–2). The ingestion-correctness half the requirement's own text implies ("ingests") is undermined by gap 5 (CR-01/02/03) and gap 6 (CR-04). REQUIREMENTS.md marks it "met as written" on the literal auth text, which is defensible, but does not mention CR-01/02/03/04 at all — the amendment (plan 43-06) was written before/without incorporating the code review's findings. |
-| APPLEHOOK-02 | 43-01, 43-06 | Route in the provider-callback category by exact path | ✓ SATISFIED | Truth 3, fully verified. No orphaned Phase 43 requirement IDs found in REQUIREMENTS.md's traceability table. |
+| APPLEHOOK-01 | 43-01 … 43-06, 260904-u7t | Ingest Apple notifications outside the auth dependency, JWS-only auth, correct entitlement over time | ✓ SATISFIED | Both the auth half (truths 1-2) and the ingestion-correctness half (truth 5, CR-01/02/03) now hold on independently gathered evidence. |
+| APPLEHOOK-02 | 43-01, 43-06 | Route in the provider-callback category by exact path | ✓ SATISFIED | Truth 3, unaffected by this quick task, re-confirmed. |
+
+No orphaned Phase 43 requirement IDs found in REQUIREMENTS.md's traceability table. Note:
+REQUIREMENTS.md and ROADMAP.md still record the pre-quick-task counts (1089/272/182); this report
+does not update either file — per this verification's scope, that is the orchestrator's job.
 
 ### Anti-Patterns Found
 
+No `TBD`/`FIXME`/`XXX`/`TODO`/`HACK`/`PLACEHOLDER` markers in any of the 12 files this quick task
+modified. `ruff check src tests` is clean.
+
 | File | Line | Pattern | Severity | Impact |
 |------|------|---------|----------|--------|
-| `src/nativespeaker/api/services/subscriptions.py` | 83-85, 87-131 | No monotonicity/ordering guard on subscription-state writes | 🛑 Blocker | CR-01 — see gap 5 |
-| `src/nativespeaker/api/services/subscriptions.py` | 128-130 | `grace_period` grant written with an already-past `ends_at` | 🛑 Blocker | CR-02 — see gap 5, independently reproduced |
-| `src/nativespeaker/api/services/subscriptions.py` | 83, 101-103 | Server-minted UUID indistinguishable from a real attribution token in the conflict guard | 🛑 Blocker | CR-03 — see gap 5 |
-| `.env.example` | 105-107 | Placeholder values that raise `ValidationError` rather than resolving to `None` | 🛑 Blocker | CR-04 — see gap 6, independently reproduced |
-| `src/nativespeaker/api/crud/subscriptions.py` | 121, 151, 177, 218, 248 | `violation.orig.sqlstate` accessed with no `getattr` guard (flagged by `ty`) | ⚠️ Warning | WR-03 in 43-REVIEW.md; not independently reproduced, not treated as a blocker here since it degrades a lost-race into an opaque 500 rather than corrupting data |
-| `src/nativespeaker/api/routers/webhooks.py` | 13-14, 24 | Verifier dependency declared twice, correctness rests on undocumented FastAPI de-dup behavior | ⚠️ Warning | WR-02 in 43-REVIEW.md; failure mode is closed (a total, visible 422 outage), not open |
-| `src/nativespeaker/api/tables/purchases.py` | 91-92 | `identity_value` conflates server-minted and store-supplied values with no discriminator column | ⚠️ Warning | WR-06 in 43-REVIEW.md; root cause of CR-03 |
+| `src/nativespeaker/api/crud/subscriptions.py` | 126 (and 4 other sites) | `violation.orig.sqlstate` still accessed with no `getattr` guard | ⚠️ Warning | Pre-existing WR-03 from `43-REVIEW.md`, untouched by this quick task, explicitly out of scope per this task's instructions (not treated as a blocker: degrades a lost race into an opaque 500, does not corrupt data) |
 
-No `TBD`/`FIXME`/`XXX` markers found in the phase's own new/modified files.
+### Advisory (New Scope, Unevidenced)
+
+| # | Finding | Category | Why Advisory |
+|---|---------|----------|--------------|
+| 1 | `core.store_purchases` is never backfilled — a purchase first recorded unattributed keeps its server-minted `identity_value` and NULL `resolved_token_value` forever, even after a later delivery carries a real token | architectural | Explicitly recorded as an accepted residual in `260904-u7t-SUMMARY.md` and grounded in the code's own comment (`services/subscriptions.py:100-101`); the subscription row and the buyer's grant do recover, which is what CR-03 was scoped to fix. Backfilling the purchase row is Phase 45 (restore)'s job. Judged acceptable at this phase's scope — not a gap. |
 
 ### Human Verification Required
 
-None. All findings above were verified either by direct code reading, by re-running an existing automated test, or by independent reproduction with a standalone script (CR-02, CR-04) in this verification session.
+None. Every finding above was verified either by direct code reading, by re-running an existing or
+new automated test in this session, or by independent hand reproduction of the exact scenario the
+prior verification used to prove the four defects (CR-02's inert grace grant, CR-04's boot-crashing
+placeholder), plus a fresh read of both recorded test-setup deviations to confirm neither weakened
+the property it touches.
 
 ### Gaps Summary
 
-The route's authentication and callback-partition mechanics (ROADMAP criteria 1–3) and its literal
-replay/idempotency guarantee (criterion 4) are all solidly built and independently confirmed —
-this is not a superficial or stubbed implementation. The gap is downstream of verification, in the
-state machine that turns a verified notification into a subscription row and a grant, exactly where
-this phase's own committed code review (`43-REVIEW.md`, status `issues_found`, 4 critical findings)
-already found it, and none of the four critical findings has been fixed by any plan in this phase
-(43-06 is documentation-only; no 43-07 exists). Two of the four (CR-02, CR-04) were independently
-reproduced in this verification rather than taken on the review's word.
+No gaps remain. The two derived truths that failed in the initial verification — ingestion-correctness
+over time (CR-01/02/03) and the fail-closed configuration guarantee under a malformed value (CR-04) —
+now hold on evidence gathered independently in this session: direct code reading of the fix sites, the
+same hand reproductions the prior verifier used (now resolving the opposite way), reading every new
+test for a discriminating control rather than counting them, and reading both recorded test-setup
+deviations closely enough to distinguish "papered over" from "a real bug in the old fixture, now fixed
+correctly" — which is what both turned out to be. The four ROADMAP-literal criteria (1-4) were
+re-confirmed unaffected by this quick task's changes. All three measured suite counts (1098 unit / 189
+schema / 272 e2e) and the ruff-clean result were reproduced by running the commands directly in this
+session, not taken from the SUMMARY.
 
-The practical consequence: a paying customer's grant can be silently downgraded by an
-out-of-order Apple delivery (CR-01), a subscriber Apple is actively covering during a grace period
-can hold an entitlement label with zero actual allowance (CR-02), a purchase first seen without an
-attribution token can never be attributed and permanently 500s on every subsequent delivery
-(CR-03), and the checked-in `.env.example` — if a deployer follows its own instructions — crashes
-the whole service's boot rather than costing only this route its documented 503 (CR-04). These are
-not edge cases invented by this verification; three were reproduced against the real service over
-the phase's own test stubs by the code review, and two were reproduced again, independently, here.
-
-`08-webhook-app-store.md`'s flagged divergences (D-02, D-04, D-06, D-09) recorded under
-APPLEHOOK-01 are legitimate, deliberate, and correctly documented — they are not part of this
-report's gaps. The gaps above are implementation defects, not documented divergences.
+One accepted residual (the purchase row's own provenance staying stale after a later honest
+attribution) is recorded as advisory, not a gap, per the explicit scope decision in the quick task's
+plan. The WARNING findings WR-01…WR-06 remain out of scope, as instructed, and none has become a
+blocker as a result of this change — WR-03's unguarded `sqlstate` access is untouched and unchanged in
+severity.
 
 ---
 
-_Verified: 2026-09-04_
+_Verified: 2026-09-05T05:35:54Z_
 _Verifier: Claude (gsd-verifier)_
