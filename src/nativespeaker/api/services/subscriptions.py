@@ -145,7 +145,9 @@ class SubscriptionsService:
                 # The captured instant stands in where the store gave no purchase date for this term.
                 starts_at=(self.evaluated_at if notification.purchased_at is None
                            else notification.purchased_at),
-                ends_at=notification.expires_at,
+                # During grace the term is Apple's grace window, because the paid term has lapsed.
+                ends_at=(notification.grace_period_expires_at
+                         if status is SubscriptionStatus.grace_period else notification.expires_at),
                 evaluated_at=self.evaluated_at), notification)
 
         # Deliberate commit: the store reads the status code, so 200 must mean the rows are durable.
