@@ -11,11 +11,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth.app_store import VerifiedNotification
+from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.errors import AppError, InternalError
 from nativespeaker.api.services.subscriptions import SubscriptionsService
 from schema.test_claim_race import _RacingSession, read, scalar
-from schema.test_subscription_ingestion import PRODUCT_ID, _notification
+from schema.test_subscription_ingestion import _notification
 
 pytestmark = pytest.mark.schema
 
@@ -119,6 +119,7 @@ def notification_for(harness: _Harness, *, store_key: str = "one") -> VerifiedNo
     """One verified, unattributed delivery on this test's private keys."""
     return _notification(external_id=harness.external_id,
                          token=None,
+                         tier_id=TIER_ID,
                          purchased_at=NOW - _A_MONTH,
                          expires_at=NOW + _A_MONTH,
                          notification_uuid=f"{harness.uuid_prefix}-{store_key}")
@@ -128,8 +129,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=N
     """Drive the production ingestion once, on its own session and connection, as one request does."""
     async with harness.factory() as real_session:
         session = _RacedSession(real_session, before_first_flush)
-        service = SubscriptionsService(db=session, evaluated_at=NOW,
-                                       products={PRODUCT_ID: TIER_ID})
+        service = SubscriptionsService(db=session, evaluated_at=NOW)
         try:
             await service.ingest(attempt.notification)
         except AppError as rejection:

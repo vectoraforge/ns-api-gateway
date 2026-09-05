@@ -19,7 +19,7 @@ from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.services.subscriptions import SubscriptionsService
 from nativespeaker.api.tables.grants import FREE_GRANT_SOURCES, AccessGrant, AccessGrantSource
 from schema.helpers import insert_grant, insert_tier, insert_usage, insert_user
-from schema.test_subscription_ingestion import PRODUCT_ID, _clean, _notification
+from schema.test_subscription_ingestion import _clean, _notification
 
 pytestmark = pytest.mark.schema
 
@@ -726,10 +726,11 @@ async def _ingestion_run(schema_db_uri: str, *, attributed: bool):
         async with factory() as session:
             # Everything above is setup; only what the writer itself issues is the subject of this fixture.
             recorded.clear()
-            await SubscriptionsService(db=session, evaluated_at=evaluated_at,
-                                       products={PRODUCT_ID: tier_id}).ingest(_notification(
+            await SubscriptionsService(db=session,
+                                       evaluated_at=evaluated_at).ingest(_notification(
                                            external_id=external_id,
                                            token=token,
+                                           tier_id=tier_id,
                                            purchased_at=evaluated_at - timedelta(days=30),
                                            expires_at=evaluated_at + timedelta(days=30)))
         yield {"statements": list(recorded)}

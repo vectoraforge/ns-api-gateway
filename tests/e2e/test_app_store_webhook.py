@@ -10,8 +10,8 @@ from sqlalchemy import func
 from sqlmodel import col, select
 from unit.conftest import make_token
 
-from nativespeaker.api.auth.app_store import VerifiedNotification
-from nativespeaker.api.errors import NotificationRejected
+from nativespeaker.api.auth.store_notifications import VerifiedNotification
+from nativespeaker.api.errors import NotificationRejected, UnmappedStoreProduct
 from nativespeaker.api.tables import (
     PurchaseProvider,
     StorePurchase,
@@ -41,6 +41,9 @@ INTERNAL = {"code": "internal_error"}
 
 # The seam is scripted, so the envelope is never parsed here; it only has to be a non-empty string.
 ENVELOPE = "signed-payload-that-only-the-scripted-seam-reads"
+
+# The product id the Apple seam refuses, because the configured map has no line for it.
+UNMAPPED_PRODUCT_ID = "com.nativespeaker.subscription.unmapped"
 
 # Every reachable arm: the library's whole status set less the one that is not a refusal.
 REFUSAL_STAGES = tuple(status.name for status in VerificationStatus
@@ -116,20 +119,22 @@ def _notification(**overrides) -> VerifiedNotification:
               "external_id": f"original-{uuid4()}",
               "transaction_id": f"txn-{uuid4()}",
               "product_id": "com.nativespeaker.subscription.monthly",
+              # Resolved in the Apple seam from its own configured map, never by the service.
+              "tier_id": PAID_TIER_ID,
               "attribution_token": None,
+              "status": SubscriptionStatus.active,
               "signed_at": now,
               "purchased_at": now,
               "expires_at": now + timedelta(days=30),
-              "revoked_at": None,
-              "grace_period_expires_at": None,
-              "in_billing_retry": False}
+              "grace_period_expires_at": None}
     return VerifiedNotification(**(fields | overrides))
 
 
 def _empty_notification(**overrides) -> VerifiedNotification:
     """A TEST or summary notification: verified, and carrying no transaction part at all."""
     return _notification(event_type="TEST", external_id=None, transaction_id=None,
-                         product_id=None, purchased_at=None, expires_at=None, **overrides)
+                         product_id=None, tier_id=None, status=SubscriptionStatus.expired,
+                         purchased_at=None, expires_at=None, **overrides)
 
 
 async def _seed_store_token(factory, value: str) -> None:
@@ -321,8 +326,9 @@ class TestTheReplayAndTheEmptyNotificationWriteNothing:
     async def test_an_unmapped_product_answers_500_and_writes_nothing(
             self, webhook_client, scripted_app_store_notifications, _db_transaction, error_records):
         """D-14, D-21. An operator adds the map line and Apple's next retry succeeds; nothing is written."""
-        notification = _notification(product_id="com.nativespeaker.subscription.unmapped")
-        scripted_app_store_notifications.script(notification)
+        notification = _notification()
+        scripted_app_store_notifications.script(
+            UnmappedStoreProduct(PurchaseProvider.apple, UNMAPPED_PRODUCT_ID))
         before = await _counts(_db_transaction)
 
         response = await webhook_client.post(PATH, json={"signedPayload": ENVELOPE})
@@ -336,7 +342,7 @@ class TestTheReplayAndTheEmptyNotificationWriteNothing:
         assert len(error_records.entries) == 1
         event, fields = error_records.entries[0]
         assert event == "unmapped_store_product"
-        assert fields["product_id"] == notification.product_id
+        assert fields["product_id"] == UNMAPPED_PRODUCT_ID
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -469,8 +475,7 @@ class TestNoRecordCarriesASensitiveValue:
 
         for scripted in (_empty_notification(),
                          NotificationRejected(stage="VERIFICATION_FAILURE"),
-                         _notification(product_id="com.nativespeaker.subscription.unmapped",
-                                       attribution_token=TOKEN),
+                         UnmappedStoreProduct(PurchaseProvider.apple, UNMAPPED_PRODUCT_ID),
                          _notification(attribution_token=STORE_TOKEN, external_id=external_id),
                          _notification(attribution_token=OTHER_TOKEN, external_id=external_id)):
             seam.script(scripted)

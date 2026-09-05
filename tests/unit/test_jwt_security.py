@@ -175,15 +175,17 @@ class TestValidToken:
 
 
 class TestVerifiedClaims:
-    """The accepted value object carries the verified (iss, sub) and nothing else."""
+    """The accepted value object carries the verified (iss, sub), and a payload only when one was pinned."""
 
-    def test_carries_exactly_issuer_and_subject(self):
-        assert sorted(VerifiedClaims.__dataclass_fields__) == ["issuer", "subject"]
+    def test_carries_the_two_verified_claims_and_the_pinned_payload(self):
+        assert sorted(VerifiedClaims.__dataclass_fields__) == ["issuer", "payload", "subject"]
 
     def test_fields(self):
         claims = VerifiedClaims(issuer=TEST_ISSUER, subject="abc123")
         assert claims.issuer == TEST_ISSUER
         assert claims.subject == "abc123"
+        # Absent for every caller that pinned no required claim, which is every caller but Google's.
+        assert claims.payload is None
 
     def test_frozen(self):
         claims = VerifiedClaims(issuer=TEST_ISSUER, subject="abc123")

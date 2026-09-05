@@ -309,7 +309,7 @@ def scripted_app_store_notifications(_app_lifespan):
 def unconfigured_app_store_notifications(_app_lifespan):
     """Swap app.state.app_store_notifications for one holding no verifier, as an incomplete config leaves it."""
     original = _app_lifespan.state.app_store_notifications
-    _app_lifespan.state.app_store_notifications = AppStoreNotifications(verifier=None)
+    _app_lifespan.state.app_store_notifications = AppStoreNotifications(verifier=None, products={})
     try:
         yield _app_lifespan.state.app_store_notifications
     finally:

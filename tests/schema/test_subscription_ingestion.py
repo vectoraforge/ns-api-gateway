@@ -10,10 +10,10 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth.app_store import VerifiedNotification
+from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.crud.grants import GrantsDB
 from nativespeaker.api.services.subscriptions import SubscriptionsService
-from nativespeaker.api.tables import PurchaseProvider
+from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
 from schema.helpers import (
     insert_store_purchase,
     insert_subscription,
@@ -34,7 +34,8 @@ _A_MONTH = timedelta(days=30)
 
 
 def _notification(*, external_id: str, token: str | None, purchased_at: datetime,
-                  expires_at: datetime | None, revoked_at: datetime | None = None,
+                  expires_at: datetime | None, tier_id: str,
+                  status: SubscriptionStatus = SubscriptionStatus.active,
                   grace_period_expires_at: datetime | None = None,
                   signed_at: datetime | None = None, event_type: str = "DID_RENEW",
                   notification_uuid: str | None = None) -> VerifiedNotification:
@@ -46,14 +47,16 @@ def _notification(*, external_id: str, token: str | None, purchased_at: datetime
         external_id=external_id,
         transaction_id=f"transaction-{uuid.uuid4().hex[:12]}",
         product_id=PRODUCT_ID,
+        # Resolved in the provider's own class, which is where the configured map is read.
+        tier_id=tier_id,
         attribution_token=token,
+        # The store's own word for this subscription, which the service writes unchanged.
+        status=status,
         # The purchase instant unless a case places it: two deliveries otherwise share one signing date.
         signed_at=purchased_at if signed_at is None else signed_at,
         purchased_at=purchased_at,
         expires_at=expires_at,
-        revoked_at=revoked_at,
-        grace_period_expires_at=grace_period_expires_at,
-        in_billing_retry=False)
+        grace_period_expires_at=grace_period_expires_at)
 
 
 async def _seed_grant(conn: asyncpg.Connection, *, user_id: uuid.UUID, tier_id: str, source: str,
@@ -83,11 +86,12 @@ class _Buyer:
     async def ingest(self, notification: VerifiedNotification) -> None:
         """Drive one delivery through the real service on its own session, as one request would."""
         async with self.factory() as session:
-            await SubscriptionsService(db=session, evaluated_at=self.evaluated_at,
-                                       products={PRODUCT_ID: self.tier_id}).ingest(notification)
+            await SubscriptionsService(db=session,
+                                       evaluated_at=self.evaluated_at).ingest(notification)
 
     async def deliver(self, *, external_id: str | None = None, expires_in: timedelta | None = _A_MONTH,
-                      purchased_before: timedelta = _A_MONTH, revoked: bool = False,
+                      purchased_before: timedelta = _A_MONTH,
+                      status: SubscriptionStatus = SubscriptionStatus.active,
                       grace_period_in: timedelta | None = None,
                       signed_at: datetime | None = None, event_type: str = "DID_RENEW",
                       notification_uuid: str | None = None) -> None:
@@ -95,9 +99,10 @@ class _Buyer:
         await self.ingest(_notification(
             external_id=external_id or self.external_id,
             token=self.token,
+            tier_id=self.tier_id,
             purchased_at=self.evaluated_at - purchased_before,
             expires_at=None if expires_in is None else self.evaluated_at + expires_in,
-            revoked_at=self.evaluated_at - timedelta(hours=1) if revoked else None,
+            status=status,
             grace_period_expires_at=(None if grace_period_in is None
                                      else self.evaluated_at + grace_period_in),
             signed_at=signed_at,
@@ -303,7 +308,8 @@ class TestLeavingTheEntitledSet:
         async with _buyer(_schema_db_uri) as buyer:
             await buyer.deliver()
 
-            await buyer.deliver(expires_in=-timedelta(minutes=1))
+            await buyer.deliver(expires_in=-timedelta(minutes=1),
+                                status=SubscriptionStatus.expired)
 
             held = await buyer.grants()
             assert [row["status"] for row in held] == ["expired"]
@@ -313,7 +319,7 @@ class TestLeavingTheEntitledSet:
         async with _buyer(_schema_db_uri) as buyer:
             await buyer.deliver()
 
-            await buyer.deliver(revoked=True)
+            await buyer.deliver(status=SubscriptionStatus.revoked)
 
             assert [row["status"] for row in await buyer.grants()] == ["revoked"]
 
@@ -325,6 +331,7 @@ class TestAGracePeriodDeliveryIsEntitledForTheGraceWindow:
     async def test_the_grant_runs_to_the_grace_window_and_the_read_returns_it(self, _schema_db_uri):
         async with _buyer(_schema_db_uri) as buyer:
             await buyer.deliver(expires_in=-timedelta(minutes=1),
+                                status=SubscriptionStatus.grace_period,
                                 grace_period_in=timedelta(days=16))
 
             held = await buyer.grants()
@@ -337,6 +344,7 @@ class TestAGracePeriodDeliveryIsEntitledForTheGraceWindow:
         """The control: the case above passes on the window, not on the delivery reaching a write at all."""
         async with _buyer(_schema_db_uri) as buyer:
             await buyer.deliver(expires_in=-timedelta(minutes=1),
+                                status=SubscriptionStatus.expired,
                                 grace_period_in=-timedelta(minutes=1))
 
             assert await buyer.status() == "expired"
@@ -389,6 +397,7 @@ class TestAPayloadSignedBeforeTheRecordedStateAppliesNothing:
             await buyer.deliver(signed_at=buyer.evaluated_at - timedelta(hours=1))
 
             await buyer.deliver(expires_in=-timedelta(minutes=1), event_type="EXPIRED",
+                                status=SubscriptionStatus.expired,
                                 signed_at=buyer.evaluated_at - timedelta(days=1))
 
             held = await buyer.grants()
@@ -405,6 +414,7 @@ class TestAPayloadSignedBeforeTheRecordedStateAppliesNothing:
                                 notification_uuid=fresh)
 
             await buyer.deliver(expires_in=-timedelta(minutes=1), event_type="EXPIRED",
+                                status=SubscriptionStatus.expired,
                                 signed_at=buyer.evaluated_at - timedelta(days=1),
                                 notification_uuid=stale)
 
@@ -417,6 +427,7 @@ class TestAPayloadSignedBeforeTheRecordedStateAppliesNothing:
             await buyer.deliver(signed_at=buyer.evaluated_at - timedelta(days=1))
 
             await buyer.deliver(expires_in=-timedelta(minutes=1), event_type="EXPIRED",
+                                status=SubscriptionStatus.expired,
                                 signed_at=buyer.evaluated_at - timedelta(hours=1))
 
             assert [row["status"] for row in await buyer.grants()] == ["expired"]
@@ -429,6 +440,7 @@ class TestAPayloadSignedBeforeTheRecordedStateAppliesNothing:
                                       tier_id=buyer.tier_id, user_id=buyer.user_id)
 
             await buyer.deliver(expires_in=-timedelta(minutes=1), event_type="EXPIRED",
+                                status=SubscriptionStatus.expired,
                                 signed_at=buyer.evaluated_at - timedelta(days=365))
 
             assert await buyer.status() == "expired"

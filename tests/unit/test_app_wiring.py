@@ -4,9 +4,11 @@ from fastapi import Depends
 from fastapi.routing import APIRoute
 
 from nativespeaker.api.app.dependencies import (
+    get_db,
     get_identity,
     get_linked_identity,
     verify_app_store_notification,
+    verify_google_play_notification,
 )
 from nativespeaker.api.app.main import app as real_app
 
@@ -15,7 +17,9 @@ DOC_PATHS = {"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
 # Literals rather than derived from anything, so widening the exemption is a visible edit here.
 PUBLIC_PATHS = {"/health/ready"}
 PREAUTH_CALLABLE_PATHS = {"/auth/create-user", "/auth/challenge"}
-PROVIDER_CALLBACK_PATHS = {"/webhooks/app-store"}
+PROVIDER_CALLBACK_VERIFIERS = {"/webhooks/app-store": verify_app_store_notification,
+                               "/webhooks/google-play/rtdn": verify_google_play_notification}
+PROVIDER_CALLBACK_PATHS = set(PROVIDER_CALLBACK_VERIFIERS)
 
 
 def _api_routes() -> list[APIRoute]:
@@ -25,6 +29,26 @@ def _api_routes() -> list[APIRoute]:
 def _declared(route: APIRoute) -> list:
     """The callables FastAPI resolved for this route, router-level declarations included."""
     return [dependency.call for dependency in route.dependant.dependencies]
+
+
+def _flattened(route: APIRoute) -> list:
+    """Every dependency callable in resolution order, sub-dependencies depth-first under their parent."""
+    order = []
+
+    def walk(dependencies):
+        for dependency in dependencies:
+            order.append(dependency.call)
+            walk(dependency.dependencies)
+
+    walk(route.dependant.dependencies)
+    return order
+
+
+def _route_at(path: str) -> APIRoute:
+    """The one registered route at this exact path."""
+    routes = [route for route in _api_routes() if route.path == path]
+    assert len(routes) == 1, f"{path} is registered {len(routes)} times"
+    return routes[0]
 
 
 class TestEveryRouteIsAuthenticated:
@@ -88,21 +112,32 @@ class TestTheProviderCallbackPartition:
 
         assert {route.path for route in webhooks_router.routes} == PROVIDER_CALLBACK_PATHS
 
-    @pytest.mark.parametrize("path", sorted(PROVIDER_CALLBACK_PATHS))
-    def test_each_callback_route_declares_the_verifier_and_neither_identity(self, path):
-        """Named rather than left to a generic case, which would also pass if the route were absent."""
-        declared = [_declared(route) for route in _api_routes() if route.path == path]
-        assert declared, f"{path} is not a registered route"
-        for calls in declared:
-            assert verify_app_store_notification in calls
-            assert get_identity not in calls
-            assert get_linked_identity not in calls
+    @pytest.mark.parametrize("path,verifier", sorted(PROVIDER_CALLBACK_VERIFIERS.items()))
+    def test_each_callback_route_declares_its_own_verifier_and_neither_identity(self, path, verifier):
+        """Its own, not any: one route declaring the other's verifier would pass a shared-name case."""
+        calls = _declared(_route_at(path))
+        assert verifier in calls
+        assert get_identity not in calls
+        assert get_linked_identity not in calls
 
-    def test_no_route_outside_the_partition_declares_the_verifier(self):
+    @pytest.mark.parametrize("verifier", sorted(PROVIDER_CALLBACK_VERIFIERS.values(),
+                                                key=lambda call: call.__name__))
+    def test_no_route_outside_the_partition_declares_any_callback_verifier(self, verifier):
         leaked = [route.path for route in _api_routes()
                   if route.path not in PROVIDER_CALLBACK_PATHS
-                  and verify_app_store_notification in _declared(route)]
-        assert leaked == [], f"routes declaring the callback verifier off the partition: {leaked}"
+                  and verifier in _declared(route)]
+        assert leaked == [], f"routes declaring a callback verifier off the partition: {leaked}"
+
+    @pytest.mark.parametrize("path,verifier", sorted(PROVIDER_CALLBACK_VERIFIERS.items()))
+    def test_the_verifier_is_the_routes_first_declared_dependency(self, path, verifier):
+        """D-02. A reordered parameter list is what this catches, and it costs a connection per junk request."""
+        assert _route_at(path).dependant.dependencies[0].call is verifier
+
+    @pytest.mark.parametrize("path,verifier", sorted(PROVIDER_CALLBACK_VERIFIERS.items()))
+    def test_the_verifier_resolves_before_any_session_is_taken(self, path, verifier):
+        """D-02. `get_db` is a sub-dependency, so the order is read off the flattened resolution walk."""
+        order = _flattened(_route_at(path))
+        assert order.index(verifier) < order.index(get_db)
 
     def test_the_partition_is_disjoint_from_both_other_literals(self):
         """A callback path in either exemption set would make the three literals disagree silently."""

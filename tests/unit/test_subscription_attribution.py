@@ -7,7 +7,7 @@ from uuid import UUID, uuid4, uuid7
 
 import pytest
 
-from nativespeaker.api.auth.app_store import VerifiedNotification
+from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.crud.subscriptions import WriteOutcome
 from nativespeaker.api.errors import AttributionConflict
 from nativespeaker.api.services.subscriptions import SubscriptionsService
@@ -17,9 +17,6 @@ from nativespeaker.api.tables import (
     Subscription,
     SubscriptionStatus,
 )
-
-# The map the deployment configures; only the mapped product reaches a write.
-PRODUCTS = {"com.nativespeaker.subscription.monthly": "paid"}
 
 PAID_TIER_ID = "paid"
 
@@ -38,13 +35,14 @@ def _notification(**overrides) -> VerifiedNotification:
               "external_id": f"original-{uuid4()}",
               "transaction_id": f"txn-{uuid4()}",
               "product_id": "com.nativespeaker.subscription.monthly",
+              # Resolved in the provider's class before this value type exists, never by the service.
+              "tier_id": PAID_TIER_ID,
               "attribution_token": None,
+              "status": SubscriptionStatus.active,
               "signed_at": NOW,
               "purchased_at": NOW,
               "expires_at": NOW + timedelta(days=30),
-              "revoked_at": None,
-              "grace_period_expires_at": None,
-              "in_billing_retry": False}
+              "grace_period_expires_at": None}
     return VerifiedNotification(**(fields | overrides))
 
 
@@ -164,7 +162,7 @@ def writer() -> _RecordingSubscriptions:
 
 def _service(session, writer, bound: UUID | None) -> SubscriptionsService:
     """The real service over the two recording crud stands-in, so its own arms are what runs."""
-    service = SubscriptionsService(db=session, evaluated_at=NOW, products=PRODUCTS)
+    service = SubscriptionsService(db=session, evaluated_at=NOW)
     service.subscriptions_db = writer
     service.purchases_db = _RecordingPurchases(bound)
     return service
@@ -374,16 +372,18 @@ class TestTheMeasurementFires:
         """The control's mirror: the counts really do fall to zero when nothing is written."""
         service = _service(session, writer, uuid7())
 
-        await service.ingest(_notification(external_id=None, product_id=None, event_type="TEST"))
+        await service.ingest(_notification(external_id=None, product_id=None, tier_id=None,
+                                           event_type="TEST"))
 
         assert [len(writer.inserted), len(writer.upserts), len(writer.appended)] == [0, 0, 0]
         assert session.commits == 0
 
-    async def test_the_status_written_is_the_one_the_dates_earn(self, session, writer):
-        """A revoked term is recorded revoked, so the upsert really carries a derived value."""
+    async def test_the_status_written_is_the_one_the_notification_carries(self, session, writer):
+        """The store's own word reaches the upsert unchanged, so no date is read on the way."""
         service = _service(session, writer, uuid7())
 
-        await service.ingest(_notification(attribution_token=TOKEN, revoked_at=NOW))
+        await service.ingest(_notification(attribution_token=TOKEN,
+                                           status=SubscriptionStatus.revoked))
 
         assert writer.upserts[0]["status"] is SubscriptionStatus.revoked
         assert writer.upserts[0]["tier_id"] == PAID_TIER_ID

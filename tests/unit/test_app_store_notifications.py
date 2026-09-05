@@ -18,13 +18,10 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509.oid import NameOID
 
-from nativespeaker.api.auth.app_store import (
-    AppStoreNotifications,
-    StoreNotificationVerifier,
-    VerifiedNotification,
-)
+from nativespeaker.api.auth.app_store import AppStoreNotifications, StoreNotificationVerifier
+from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.errors import NotificationRejected, Unavailable
-from nativespeaker.api.tables import PurchaseProvider
+from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -48,6 +45,10 @@ PRODUCT_ID = "com.example.nativespeaker.subscription.monthly"
 ORIGINAL_TRANSACTION_ID = "2000000000000001"
 TRANSACTION_ID = "2000000000000002"
 ATTRIBUTION_TOKEN = "8f4d1a2e-0000-4000-8000-000000000001"
+
+# The tier the configured map resolves this product to, and Apple's own word for an entitled term.
+TIER_ID = "paid"
+APPLE_STATUS_ACTIVE = 1
 
 
 def _milliseconds(moment: datetime) -> int:
@@ -191,9 +192,12 @@ def _envelope(chain: _Chain, *, notification_type: str = "SUBSCRIBED",
               bundle_id: str = BUNDLE_ID, environment: str = "Sandbox",
               app_apple_id: int = APP_APPLE_ID,
               transaction: dict | None = None, renewal: dict | None = None,
+              status: int | None = APPLE_STATUS_ACTIVE,
               signed_date: int | None = None, with_signed_date: bool = True) -> dict:
     """The minimum envelope the library accepts, plus whichever nested payloads a case wants."""
     data = {"environment": environment, "appAppleId": app_apple_id, "bundleId": bundle_id}
+    if status is not None:
+        data["status"] = status
     if transaction is not None:
         data["signedTransactionInfo"] = _mint(chain, transaction)
     if renewal is not None:
@@ -219,7 +223,7 @@ def _notifications(chain: _Chain, *, root_certificates: list[bytes] | None = Non
         environment=environment,
         bundle_id=bundle_id,
         app_apple_id=app_apple_id)
-    return AppStoreNotifications(verifier=verifier)
+    return AppStoreNotifications(verifier=verifier, products={PRODUCT_ID: TIER_ID})
 
 
 def _full(chain: _Chain, **overrides) -> str:
@@ -271,20 +275,21 @@ class TestTheValueTypeCarriesThisProjectsFieldNames:
     def test_every_apple_millisecond_stamp_became_an_aware_datetime(self, verified):
         assert verified.purchased_at.tzinfo is not None
         assert verified.expires_at > verified.purchased_at
-        # Not revoked: an absent stamp stays absent rather than becoming the epoch.
-        assert verified.revoked_at is None
 
-    def test_the_two_renewal_only_fields_come_from_the_renewal_payload(self, verified):
-        assert verified.in_billing_retry is True
+    def test_the_status_and_the_tier_are_resolved_in_this_seam(self, verified):
+        """D-11, D-16: the service writes both, and neither is derived from a date any more."""
+        assert verified.status is SubscriptionStatus.active
+        assert verified.tier_id == TIER_ID
+
+    def test_the_grace_period_comes_from_the_renewal_payload(self, verified):
         assert verified.grace_period_expires_at is not None
 
-    def test_an_envelope_without_a_renewal_payload_carries_neither(self, chain):
-        """The transaction payload has no grace period and no retry flag, so both must fail closed."""
+    def test_an_envelope_without_a_renewal_payload_carries_no_grace_period(self, chain):
+        """The transaction payload has no grace period, so the field must fail closed."""
         verified = _notifications(chain).verify(
             _mint(chain, _envelope(chain, transaction=_transaction())))
 
         assert verified.grace_period_expires_at is None
-        assert verified.in_billing_retry is False
 
     def test_the_envelopes_signing_instant_crosses_the_seam(self, chain):
         """The store's own clock, and the envelope is its only source: neither nested payload carries one."""
@@ -314,7 +319,9 @@ class TestTheValueTypeCarriesThisProjectsFieldNames:
         assert verified.event_type == "TEST"
         assert (verified.external_id, verified.transaction_id, verified.product_id) == (
             None, None, None)
-        assert verified.in_billing_retry is False
+        # No transaction part means no product, so there is no tier to resolve and nothing to grant.
+        assert verified.tier_id is None
+        assert verified.status is SubscriptionStatus.expired
 
 
 class TestEveryReachableRefusalIsOneClassWithItsOwnStage:
@@ -418,7 +425,7 @@ class TestAnAbsentVerifierFailsClosedOnUse:
 
     def test_it_raises_unavailable_rather_than_returning_anything(self):
         with pytest.raises(Unavailable) as failure:
-            AppStoreNotifications(verifier=None).verify("anything at all")
+            AppStoreNotifications(verifier=None, products={}).verify("anything at all")
 
         assert failure.value.status == 503
         assert failure.value.code == "verification_temporarily_unavailable"
