@@ -87,6 +87,7 @@ class SubscriptionsDB:
                                   user_id: UUID | None,
                                   tier_id: str,
                                   status: SubscriptionStatus,
+                                  signed_at: datetime | None,
                                   evaluated_at: datetime) -> tuple[Subscription, WriteOutcome]:
         """Update the existing canonical row in place, or insert one, and flush it."""
         stored = await self.read_subscription(provider, external_id)
@@ -97,6 +98,7 @@ class SubscriptionsDB:
                                   user_id=user_id,
                                   tier_id=tier_id,
                                   status=status,
+                                  store_signed_at=signed_at,
                                   created_at=evaluated_at,
                                   updated_at=evaluated_at)
             self.session.add(stored)
@@ -112,6 +114,9 @@ class SubscriptionsDB:
                 stored.status = status
                 stored.user_id = owner
                 stored.updated_at = evaluated_at
+                if signed_at is not None:
+                    # Only ever advanced by a payload that carries one: an absent date clears nothing.
+                    stored.store_signed_at = signed_at
 
         # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
         try:

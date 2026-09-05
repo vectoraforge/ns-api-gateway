@@ -91,6 +91,7 @@ class SubscriptionsService:
             user_id=user_id,
             tier_id=tier_id,
             status=status,
+            signed_at=notification.signed_at,
             evaluated_at=self.evaluated_at)
         await self._settle(outcome, notification)
 

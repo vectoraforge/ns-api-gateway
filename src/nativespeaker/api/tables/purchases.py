@@ -61,6 +61,8 @@ class Subscription(SQLModel, table=True):
     restore_bound_user_id: UUID | None = Field(default=None, foreign_key="core.users.id")
     created_at: datetime = Field(sa_type=DateTimeType)
     updated_at: datetime = Field(sa_type=DateTimeType)
+    # The store's own clock on the applied notification, unlike updated_at, which is this server's.
+    store_signed_at: datetime | None = Field(default=None, sa_type=DateTimeType)
 
 
 class SubscriptionEvent(SQLModel, table=True):

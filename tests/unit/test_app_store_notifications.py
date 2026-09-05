@@ -191,18 +191,21 @@ def _envelope(chain: _Chain, *, notification_type: str = "SUBSCRIBED",
               bundle_id: str = BUNDLE_ID, environment: str = "Sandbox",
               app_apple_id: int = APP_APPLE_ID,
               transaction: dict | None = None, renewal: dict | None = None,
-              signed_date: int | None = None) -> dict:
+              signed_date: int | None = None, with_signed_date: bool = True) -> dict:
     """The minimum envelope the library accepts, plus whichever nested payloads a case wants."""
     data = {"environment": environment, "appAppleId": app_apple_id, "bundleId": bundle_id}
     if transaction is not None:
         data["signedTransactionInfo"] = _mint(chain, transaction)
     if renewal is not None:
         data["signedRenewalInfo"] = _mint(chain, renewal)
-    return {"notificationType": notification_type,
-            "notificationUUID": notification_uuid,
-            "version": "2.0",
-            "signedDate": _milliseconds(datetime.now(UTC)) if signed_date is None else signed_date,
-            "data": data}
+    envelope = {"notificationType": notification_type,
+                "notificationUUID": notification_uuid,
+                "version": "2.0",
+                "data": data}
+    if with_signed_date:
+        envelope["signedDate"] = (_milliseconds(datetime.now(UTC)) if signed_date is None
+                                  else signed_date)
+    return envelope
 
 
 def _notifications(chain: _Chain, *, root_certificates: list[bytes] | None = None,
@@ -282,6 +285,20 @@ class TestTheValueTypeCarriesThisProjectsFieldNames:
 
         assert verified.grace_period_expires_at is None
         assert verified.in_billing_retry is False
+
+    def test_the_envelopes_signing_instant_crosses_the_seam(self, chain):
+        """The store's own clock, and the envelope is its only source: neither nested payload carries one."""
+        signed = _milliseconds(datetime.now(UTC) - timedelta(hours=3))
+
+        verified = _notifications(chain).verify(_full(chain, signed_date=signed))
+
+        assert verified.signed_at == datetime.fromtimestamp(signed / 1000, UTC)
+
+    def test_an_envelope_carrying_no_signing_date_yields_none(self, chain):
+        """An absent stamp stays absent rather than becoming this server's own receipt instant."""
+        verified = _notifications(chain).verify(_full(chain, with_signed_date=False))
+
+        assert verified.signed_at is None
 
     def test_an_unrecognised_notification_type_yields_the_raw_string(self, chain):
         """`notificationType` is None for a type this library build does not know; the raw one is not."""

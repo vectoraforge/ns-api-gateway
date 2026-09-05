@@ -39,6 +39,7 @@ def _notification(**overrides) -> VerifiedNotification:
               "transaction_id": f"txn-{uuid4()}",
               "product_id": "com.nativespeaker.subscription.monthly",
               "attribution_token": None,
+              "signed_at": NOW,
               "purchased_at": NOW,
               "expires_at": NOW + timedelta(days=30),
               "revoked_at": None,
@@ -106,6 +107,7 @@ class _RecordingSubscriptions:
                                   user_id=fields["user_id"],
                                   tier_id=fields["tier_id"],
                                   status=fields["status"],
+                                  store_signed_at=fields["signed_at"],
                                   created_at=fields["evaluated_at"],
                                   updated_at=fields["evaluated_at"])
             self.subscriptions[key] = stored
@@ -114,6 +116,9 @@ class _RecordingSubscriptions:
             stored.user_id = stored.user_id if fields["user_id"] is None else fields["user_id"]
             stored.tier_id = fields["tier_id"]
             stored.status = fields["status"]
+            # The same rule the crud holds: an absent signing date clears nothing.
+            stored.store_signed_at = (stored.store_signed_at if fields["signed_at"] is None
+                                      else fields["signed_at"])
         return stored, WriteOutcome.applied
 
     async def insert_purchase(self, **fields) -> WriteOutcome:

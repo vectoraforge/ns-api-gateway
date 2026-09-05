@@ -143,6 +143,8 @@ CREATE TABLE core.subscriptions (
     ) STORED,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
+    -- The store's own clock on the applied notification, unlike updated_at, which is this server's.
+    store_signed_at TIMESTAMPTZ,
     -- Exists solely as a composite FK target; it adds no uniqueness beyond the primary key.
     UNIQUE (id, user_id),
     UNIQUE (product_entitled_subscription_id)

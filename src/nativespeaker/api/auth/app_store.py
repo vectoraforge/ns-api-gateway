@@ -23,6 +23,7 @@ class VerifiedNotification:
     transaction_id: str | None
     product_id: str | None
     attribution_token: str | None
+    signed_at: datetime | None
     purchased_at: datetime | None
     expires_at: datetime | None
     revoked_at: datetime | None
@@ -55,6 +56,8 @@ def _crossed(payload, transaction: JWSTransactionDecodedPayload | None,
         transaction_id=None if transaction is None else transaction.transactionId,
         product_id=None if transaction is None else transaction.productId,
         attribution_token=None if transaction is None else transaction.appAccountToken,
+        # The envelope's own instant: neither nested payload carries a signing date.
+        signed_at=_instant(payload.signedDate),
         purchased_at=None if transaction is None else _instant(transaction.purchaseDate),
         expires_at=None if transaction is None else _instant(transaction.expiresDate),
         revoked_at=None if transaction is None else _instant(transaction.revocationDate),

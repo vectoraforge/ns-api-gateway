@@ -34,6 +34,7 @@ _A_MONTH = timedelta(days=30)
 
 def _notification(*, external_id: str, token: str | None, purchased_at: datetime,
                   expires_at: datetime | None, revoked_at: datetime | None = None,
+                  signed_at: datetime | None = None,
                   notification_uuid: str | None = None) -> VerifiedNotification:
     """One verified notification carrying the transaction part every write needs."""
     return VerifiedNotification(
@@ -44,6 +45,8 @@ def _notification(*, external_id: str, token: str | None, purchased_at: datetime
         transaction_id=f"transaction-{uuid.uuid4().hex[:12]}",
         product_id=PRODUCT_ID,
         attribution_token=token,
+        # The purchase instant unless a case places it: two deliveries otherwise share one signing date.
+        signed_at=purchased_at if signed_at is None else signed_at,
         purchased_at=purchased_at,
         expires_at=expires_at,
         revoked_at=revoked_at,
@@ -83,6 +86,7 @@ class _Buyer:
 
     async def deliver(self, *, external_id: str | None = None, expires_in: timedelta | None = _A_MONTH,
                       purchased_before: timedelta = _A_MONTH, revoked: bool = False,
+                      signed_at: datetime | None = None,
                       notification_uuid: str | None = None) -> None:
         """Ingest one notification for this buyer, with its term placed around the captured instant."""
         await self.ingest(_notification(
@@ -91,6 +95,7 @@ class _Buyer:
             purchased_at=self.evaluated_at - purchased_before,
             expires_at=None if expires_in is None else self.evaluated_at + expires_in,
             revoked_at=self.evaluated_at - timedelta(hours=1) if revoked else None,
+            signed_at=signed_at,
             notification_uuid=notification_uuid))
 
     async def grants(self) -> list[asyncpg.Record]:
@@ -115,6 +120,12 @@ class _Buyer:
             "  ON g.id = u.grant_id WHERE g.tier_id = $1), "
             "(SELECT count(*) FROM audit.subscription_events e JOIN core.subscriptions s "
             "  ON s.id = e.subscription_id WHERE s.tier_id = $1)", self.tier_id))
+
+    async def signed_at(self, external_id: str | None = None) -> datetime | None:
+        """The committed store clock on one lifecycle key's subscription row."""
+        return await self.probe.fetchval(
+            "SELECT store_signed_at FROM core.subscriptions WHERE provider = 'apple' "
+            "AND external_id = $1", external_id or self.external_id)
 
     async def subscription_id(self, external_id: str | None = None) -> uuid.UUID:
         """The committed subscription id for one lifecycle key."""
@@ -198,6 +209,15 @@ class TestTheFirstTermIsWritten:
             assert usage is not None
             assert usage["monthly_used"] == 0
             assert usage["monthly_period"] == buyer.evaluated_at.strftime("%Y-%m")
+
+    async def test_the_store_signing_instant_is_kept_on_the_subscription_row(self, _schema_db_uri):
+        """The store's own clock, which is the value the out-of-order guard compares."""
+        async with _buyer(_schema_db_uri) as buyer:
+            signed = buyer.evaluated_at - timedelta(minutes=5)
+
+            await buyer.deliver(signed_at=signed)
+
+            assert await buyer.signed_at() == signed
 
     async def test_the_buyers_free_grant_is_expired_and_not_deleted(self, _schema_db_uri):
         """D-18. The lifetime slot is spent, so a later lapse leaves the buyer holding nothing."""

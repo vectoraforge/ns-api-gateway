@@ -117,6 +117,7 @@ def _notification(**overrides) -> VerifiedNotification:
               "transaction_id": f"txn-{uuid4()}",
               "product_id": "com.nativespeaker.subscription.monthly",
               "attribution_token": None,
+              "signed_at": now,
               "purchased_at": now,
               "expires_at": now + timedelta(days=30),
               "revoked_at": None,
