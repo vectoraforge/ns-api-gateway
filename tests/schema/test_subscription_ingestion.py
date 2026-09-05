@@ -1,5 +1,5 @@
 """What one ingested notification leaves behind on real PostgreSQL: the term, the renewal, the free
-grant, the non-entitled transition, the unattributed path and the replay."""
+grant, the non-entitled transition, the unattributed path, the replay and the Google half of each."""
 import contextlib
 import uuid
 from dataclasses import dataclass
@@ -7,9 +7,11 @@ from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
+from nativespeaker.api.auth.google_play import instant_from_millis, notification_key_for
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.crud.grants import GrantsDB
 from nativespeaker.api.services.subscriptions import SubscriptionsService
@@ -32,16 +34,27 @@ PRODUCT_ID = "com.nativespeaker.subscription.monthly"
 
 _A_MONTH = timedelta(days=30)
 
+# Google's own RTDN type names, which reach `audit.subscription_events.event_type` unchanged.
+GOOGLE_RENEWED = "SUBSCRIPTION_RENEWED"
+GOOGLE_EXPIRED = "SUBSCRIPTION_EXPIRED"
+
+
+def _millis(moment: datetime) -> int:
+    """Google's `eventTimeMillis` is UNIX milliseconds as an int, so a case's instant is minted as one."""
+    return int(moment.timestamp() * 1000)
+
 
 def _notification(*, external_id: str, token: str | None, purchased_at: datetime,
                   expires_at: datetime | None, tier_id: str,
+                  provider: PurchaseProvider = PurchaseProvider.apple,
                   status: SubscriptionStatus = SubscriptionStatus.active,
                   grace_period_expires_at: datetime | None = None,
                   signed_at: datetime | None = None, event_type: str = "DID_RENEW",
                   notification_uuid: str | None = None) -> VerifiedNotification:
     """One verified notification carrying the transaction part every write needs."""
     return VerifiedNotification(
-        provider=PurchaseProvider.apple,
+        # Defaulted, never inferred: a case that means the Google path says so at its call site.
+        provider=provider,
         notification_uuid=notification_uuid or f"notification-{uuid.uuid4()}",
         event_type=event_type,
         external_id=external_id,
@@ -71,6 +84,32 @@ async def _seed_grant(conn: asyncpg.Connection, *, user_id: uuid.UUID, tier_id: 
     return grant_id
 
 
+class _CommitInterrupted(Exception):
+    """The interruption a case injects at the commit: a crash, never a refusal the database raised."""
+
+
+class _InterruptedSession:
+    """The real session with its commit replaced, so everything the ingest flushed is rolled back."""
+
+    def __init__(self, session, tier_id: str) -> None:
+        self._session = session
+        self._tier_id = tier_id
+        # What the one transaction held when it was interrupted, read on its own connection.
+        self.held: tuple[int, ...] | None = None
+
+    async def commit(self, *args, **kwargs):
+        """Record what this transaction was about to make durable, then fail instead of committing."""
+        rows = await self._session.execute(
+            text("SELECT (SELECT count(*) FROM core.subscriptions WHERE tier_id = :tier), "
+                 "(SELECT count(*) FROM core.access_grants WHERE tier_id = :tier)"),
+            {"tier": self._tier_id})
+        self.held = tuple(rows.all()[0])
+        raise _CommitInterrupted
+
+    def __getattr__(self, name):
+        return getattr(self._session, name)
+
+
 @dataclass(frozen=True)
 class _Buyer:
     """A seeded account with its store token, a session factory, and a probe for committed reads."""
@@ -82,6 +121,7 @@ class _Buyer:
     token: str | None
     external_id: str
     evaluated_at: datetime
+    provider: PurchaseProvider
 
     async def ingest(self, notification: VerifiedNotification) -> None:
         """Drive one delivery through the real service on its own session, as one request would."""
@@ -89,17 +129,18 @@ class _Buyer:
             await SubscriptionsService(db=session,
                                        evaluated_at=self.evaluated_at).ingest(notification)
 
-    async def deliver(self, *, external_id: str | None = None, expires_in: timedelta | None = _A_MONTH,
-                      purchased_before: timedelta = _A_MONTH,
-                      status: SubscriptionStatus = SubscriptionStatus.active,
-                      grace_period_in: timedelta | None = None,
-                      signed_at: datetime | None = None, event_type: str = "DID_RENEW",
-                      notification_uuid: str | None = None) -> None:
-        """Ingest one notification for this buyer, with its term placed around the captured instant."""
-        await self.ingest(_notification(
+    def built(self, *, external_id: str | None = None, expires_in: timedelta | None = _A_MONTH,
+              purchased_before: timedelta = _A_MONTH,
+              status: SubscriptionStatus = SubscriptionStatus.active,
+              grace_period_in: timedelta | None = None,
+              signed_at: datetime | None = None, event_type: str = "DID_RENEW",
+              notification_uuid: str | None = None) -> VerifiedNotification:
+        """One notification for this buyer, with its term placed around the captured instant."""
+        return _notification(
             external_id=external_id or self.external_id,
             token=self.token,
             tier_id=self.tier_id,
+            provider=self.provider,
             purchased_at=self.evaluated_at - purchased_before,
             expires_at=None if expires_in is None else self.evaluated_at + expires_in,
             status=status,
@@ -107,7 +148,25 @@ class _Buyer:
                                      else self.evaluated_at + grace_period_in),
             signed_at=signed_at,
             event_type=event_type,
-            notification_uuid=notification_uuid))
+            notification_uuid=notification_uuid)
+
+    async def deliver(self, **placement) -> None:
+        """Ingest one notification for this buyer, built by `built` from the same keywords."""
+        await self.ingest(self.built(**placement))
+
+    async def interrupt(self, **placement) -> tuple[int, ...] | None:
+        """Drive one delivery whose commit never runs, and answer what its transaction held."""
+        async with self.factory() as session:
+            interrupted = _InterruptedSession(session, self.tier_id)
+            service = SubscriptionsService(db=interrupted, evaluated_at=self.evaluated_at)
+            with pytest.raises(_CommitInterrupted):
+                await service.ingest(self.built(**placement))
+            # Leaving the block closes the session, which rolls the whole transaction back.
+            return interrupted.held
+
+    def rtdn_key(self, event_time_millis: int, event_type: str) -> str:
+        """The replay key this buyer's RTDN derives, through the production function itself."""
+        return notification_key_for(self.external_id, event_time_millis, event_type)
 
     async def grants(self) -> list[asyncpg.Record]:
         """Every committed grant on this case's tier, oldest first."""
@@ -145,23 +204,35 @@ class _Buyer:
             "JOIN core.subscriptions s ON s.id = e.subscription_id WHERE s.tier_id = $1",
             self.tier_id)}
 
+    async def events_under(self, notification_uuid: str) -> int:
+        """How many committed event rows carry one replay key, which the UNIQUE index caps at one."""
+        return await self.probe.fetchval(
+            "SELECT count(*) FROM audit.subscription_events WHERE notification_uuid = $1",
+            notification_uuid)
+
+    async def subscription_rows(self, external_id: str | None = None) -> int:
+        """How many committed subscription rows exist on this buyer's provider and lifecycle key."""
+        return await self.probe.fetchval(
+            "SELECT count(*) FROM core.subscriptions WHERE provider::text = $1 AND external_id = $2",
+            self.provider.value, external_id or self.external_id)
+
     async def status(self, external_id: str | None = None) -> str:
         """The committed status on one lifecycle key's subscription row."""
         return await self.probe.fetchval(
-            "SELECT status::text FROM core.subscriptions WHERE provider = 'apple' "
-            "AND external_id = $1", external_id or self.external_id)
+            "SELECT status::text FROM core.subscriptions WHERE provider::text = $1 "
+            "AND external_id = $2", self.provider.value, external_id or self.external_id)
 
     async def signed_at(self, external_id: str | None = None) -> datetime | None:
         """The committed store clock on one lifecycle key's subscription row."""
         return await self.probe.fetchval(
-            "SELECT store_signed_at FROM core.subscriptions WHERE provider = 'apple' "
-            "AND external_id = $1", external_id or self.external_id)
+            "SELECT store_signed_at FROM core.subscriptions WHERE provider::text = $1 "
+            "AND external_id = $2", self.provider.value, external_id or self.external_id)
 
     async def subscription_id(self, external_id: str | None = None) -> uuid.UUID:
         """The committed subscription id for one lifecycle key."""
         return await self.probe.fetchval(
-            "SELECT id FROM core.subscriptions WHERE provider = 'apple' AND external_id = $1",
-            external_id or self.external_id)
+            "SELECT id FROM core.subscriptions WHERE provider::text = $1 AND external_id = $2",
+            self.provider.value, external_id or self.external_id)
 
 
 async def _clean(conn: asyncpg.Connection, *, user_id: uuid.UUID | None, tier_id: str) -> None:
@@ -181,7 +252,8 @@ async def _clean(conn: asyncpg.Connection, *, user_id: uuid.UUID | None, tier_id
 
 
 @contextlib.asynccontextmanager
-async def _buyer(schema_db_uri: str, *, attributed: bool = True):
+async def _buyer(schema_db_uri: str, *, attributed: bool = True,
+                 provider: PurchaseProvider = PurchaseProvider.apple):
     """Seed one account and its throwaway tier, and yield the handle every case drives."""
     token = f"token-{uuid.uuid4()}" if attributed else None
     user_id = None
@@ -193,18 +265,20 @@ async def _buyer(schema_db_uri: str, *, attributed: bool = True):
             user_id = await insert_user(setup)
             await setup.execute(
                 "INSERT INTO core.store_purchase_tokens (user_id, provider, identity_value) "
-                "VALUES ($1, 'apple', $2)", user_id, token)
+                "VALUES ($1, $2, $3)", user_id, provider.value, token)
     finally:
         await setup.close()
 
+    # Apple's lifecycle key is the original transaction id; Google's is the purchase token itself.
+    key = "original" if provider is PurchaseProvider.apple else "purchase-token"
     engine = create_async_engine(schema_db_uri.replace(_ASYNCPG_PREFIX, _SQLALCHEMY_PREFIX, 1))
     probe = await asyncpg.connect(schema_db_uri)
     try:
         yield _Buyer(factory=async_sessionmaker(engine, class_=SQLModelAsyncSession,
                                                 expire_on_commit=False),
                      probe=probe, user_id=user_id, tier_id=tier_id, token=token,
-                     external_id=f"original-{uuid.uuid4().hex[:12]}",
-                     evaluated_at=datetime.now(UTC))
+                     external_id=f"{key}-{uuid.uuid4().hex[:12]}",
+                     evaluated_at=datetime.now(UTC), provider=provider)
     finally:
         await probe.close()
         await engine.dispose()
@@ -213,6 +287,29 @@ async def _buyer(schema_db_uri: str, *, attributed: bool = True):
             await _clean(cleanup, user_id=user_id, tier_id=tier_id)
         finally:
             await cleanup.close()
+
+
+class _RecordedLogs:
+    """Every line the service logged during one case, as `(level, event)` pairs and nothing else."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def at(self, level: str):
+        """The stand-in for one level's call, which records the event name and drops the fields."""
+        def record(event: str, **_fields) -> None:
+            self.calls.append((level, event))
+        return record
+
+
+@pytest.fixture
+def service_logs(monkeypatch) -> _RecordedLogs:
+    """A spy, not `capture_logs`: the service binds its module-level logger at import."""
+    recorded = _RecordedLogs()
+    for level in ("info", "warning", "error"):
+        monkeypatch.setattr(f"nativespeaker.api.services.subscriptions.logger.{level}",
+                            recorded.at(level))
+    return recorded
 
 
 @pytest.mark.asyncio
@@ -469,6 +566,93 @@ class TestNothingIsWrittenWithoutABuyerOrOnAReplay:
             assert await buyer.counts() == before
             assert [row["ends_at"] for row in await buyer.grants()] == \
                 [buyer.evaluated_at + _A_MONTH]
+
+
+@pytest.mark.asyncio
+class TestAGoogleRedeliveryWritesNothing:
+    """D-17, OQ-4. Pub/Sub delivers at least once, and the composite key is what makes the second a no-op."""
+
+    async def test_the_same_rtdn_delivered_twice_leaves_every_count_and_every_grant_unchanged(
+            self, _schema_db_uri):
+        async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
+            event_time = _millis(buyer.evaluated_at - timedelta(minutes=2))
+            # Derived twice from the same RTDN body, never carried over from the first delivery.
+            first = buyer.rtdn_key(event_time, GOOGLE_RENEWED)
+            second = buyer.rtdn_key(event_time, GOOGLE_RENEWED)
+            await buyer.deliver(event_type=GOOGLE_RENEWED, notification_uuid=first,
+                                signed_at=instant_from_millis(event_time))
+            before, granted = await buyer.counts(), await buyer.grants()
+
+            await buyer.deliver(event_type=GOOGLE_RENEWED, notification_uuid=second,
+                                signed_at=instant_from_millis(event_time))
+
+            assert second == first
+            assert await buyer.counts() == before
+            assert await buyer.events_under(first) == 1
+            assert await buyer.subscription_rows() == 1
+            assert await buyer.grants() == granted
+
+    async def test_a_later_rtdn_for_the_same_token_does_record_its_own_event_row_control(
+            self, _schema_db_uri):
+        """The control: the case above passes on the key repeating, not on the token being seen twice."""
+        async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
+            earlier = _millis(buyer.evaluated_at - timedelta(minutes=2))
+            later = _millis(buyer.evaluated_at - timedelta(minutes=1))
+            await buyer.deliver(event_type=GOOGLE_RENEWED,
+                                notification_uuid=buyer.rtdn_key(earlier, GOOGLE_RENEWED),
+                                signed_at=instant_from_millis(earlier))
+
+            await buyer.deliver(event_type=GOOGLE_RENEWED,
+                                notification_uuid=buyer.rtdn_key(later, GOOGLE_RENEWED),
+                                signed_at=instant_from_millis(later))
+
+            assert buyer.rtdn_key(later, GOOGLE_RENEWED) != buyer.rtdn_key(earlier, GOOGLE_RENEWED)
+            assert await buyer.events() == {buyer.rtdn_key(earlier, GOOGLE_RENEWED),
+                                            buyer.rtdn_key(later, GOOGLE_RENEWED)}
+            assert await buyer.subscription_rows() == 1
+
+
+@pytest.mark.asyncio
+class TestAGoogleGracePeriodGrantIsEffective:
+    """P-01. `SubscriptionPurchaseV2` names no grace field, so the window is the line item's own expiry."""
+
+    async def test_the_grant_ends_after_the_captured_instant_and_the_read_returns_it(
+            self, _schema_db_uri):
+        async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
+            # In grace Play's `expiryTime` is both the term's end and the end of the grace window.
+            await buyer.deliver(event_type=GOOGLE_RENEWED,
+                                status=SubscriptionStatus.grace_period,
+                                expires_in=timedelta(days=16), grace_period_in=timedelta(days=16))
+
+            held = await buyer.grants()
+            assert await buyer.status() == "grace_period"
+            assert held[0]["ends_at"] is not None
+            assert held[0]["ends_at"] > buyer.evaluated_at
+            assert await buyer.effective() == [held[0]["id"]]
+
+    async def test_an_absent_grace_end_writes_a_grant_carrying_no_end_at_all_control(
+            self, _schema_db_uri):
+        """P-01's first failure, reproduced: the term written is the grace value and nothing else."""
+        async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
+            await buyer.deliver(event_type=GOOGLE_RENEWED,
+                                status=SubscriptionStatus.grace_period,
+                                expires_in=timedelta(days=16), grace_period_in=None)
+
+            # Unbounded, not ineffective: `expires_at` was never read for a grace-period term.
+            assert [row["ends_at"] for row in await buyer.grants()] == [None]
+
+    async def test_a_grace_window_already_closed_leaves_no_effective_grant_control(
+            self, _schema_db_uri):
+        """Phase 43's CR-02 verbatim: an already-past window writes a grant the read never returns."""
+        async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
+            await buyer.deliver(event_type=GOOGLE_RENEWED,
+                                status=SubscriptionStatus.grace_period,
+                                expires_in=-timedelta(minutes=1),
+                                grace_period_in=-timedelta(minutes=1))
+
+            assert [row["ends_at"] for row in await buyer.grants()] == \
+                [buyer.evaluated_at - timedelta(minutes=1)]
+            assert await buyer.effective() == []
 
 
 @pytest.mark.asyncio
