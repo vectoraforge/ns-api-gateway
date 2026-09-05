@@ -36,6 +36,9 @@ PLAY_URL = ("https://androidpublisher.googleapis.com/androidpublisher/v3/applica
 # A per-request option because every call sends one bearer and reads one subscription.
 PLAY_HTTP_TIMEOUT_SECONDS = 8
 
+# The two Play statuses that say this purchase token is gone, which no later attempt can change.
+_GONE_STATUSES = frozenset({404, 410})
+
 # The envelope fields every RTDN carries, so the rest of the set names the bodies it carries.
 _ENVELOPE_FIELDS = frozenset({"version", "packageName", "eventTimeMillis"})
 
@@ -101,8 +104,8 @@ class PlaySubscriptionSource(Protocol):
     """The Play read seam: one live subscription as this project's value type, or a raise."""
 
     async def read(self, *, package_name: str, purchase_token: str, event_type: str,
-                   notification_uuid: str, signed_at: datetime | None) -> VerifiedNotification:
-        """The `subscriptionsv2.get` call: this project's value type, or a raise."""
+                   notification_uuid: str, signed_at: datetime | None) -> VerifiedNotification | None:
+        """The `subscriptionsv2.get` call: the value type, `None` for a gone token, or a raise."""
         ...
 
 
@@ -134,6 +137,18 @@ def notification_key_for(purchase_token: str, event_time_millis: int, event_type
     """The replay key for one delivery, derived from the RTDN so a redelivery repeats it."""
     # The provider prefix keeps a Google key from colliding with an Apple UUID in the shared index.
     return f"google_play:{purchase_token}:{event_time_millis}:{event_type}"
+
+
+def _play_answer_is_usable(response: httpx.Response) -> bool:
+    """Classify one Play answer in the one order that lets nothing fall through to a default."""
+    if response.status_code // 100 == 2:
+        return True
+    if response.status_code in _GONE_STATUSES:
+        # Definitive: a token Google says is gone can never resolve, so a retry loops until retention.
+        logger.error("google_play_purchase_token_gone", status_code=response.status_code)
+        return False
+    # Pub/Sub acknowledges five statuses only, so a failed read is redelivered rather than lost.
+    raise InternalError
 
 
 def _status_for(state: str, expiry: datetime | None,
@@ -178,15 +193,14 @@ class PlayDeveloperSubscriptions:
         self._evaluated_at_source = evaluated_at_source
 
     async def read(self, *, package_name: str, purchase_token: str, event_type: str,
-                   notification_uuid: str, signed_at: datetime | None) -> VerifiedNotification:
-        """Read this subscription's live state from Play and return this project's value type."""
+                   notification_uuid: str, signed_at: datetime | None) -> VerifiedNotification | None:
+        """Read this subscription's live state from Play, or answer `None` for a gone token."""
         if self._credential is None:
             raise Unavailable(stage="play_subscriptions_read")
 
         response = await self._get(package_name, purchase_token)
-        if response.status_code // 100 != 2:
-            # Pub/Sub acknowledges five statuses only, so a failed read is redelivered rather than lost.
-            raise InternalError
+        if not _play_answer_is_usable(response):
+            return None
         subscription = PlaySubscription.model_validate(response.json())
 
         line_item = subscription.lineItems[0] if subscription.lineItems else None
