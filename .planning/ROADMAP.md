@@ -748,7 +748,7 @@ Plans:
 | 37. POST /auth/create-user | v2.0 | 10/10 | Complete    | 2026-08-23 |
 | 38. POST /auth/sync | v2.0 | 6/6 | Complete    | 2026-09-01 |
 | 39. GET /users/me | v2.0 | 4/4 | Complete    | 2026-09-01 |
-| 40. POST /auth/upgrade-anonymous | v2.0 | 8/8 | In Progress|  |
+| 40. POST /auth/upgrade-anonymous | v2.0 | 8/8 | Complete    | 2026-09-02 |
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 5/5 | Complete    | 2026-09-03 |
 | 42. POST /auth/claim-registered-grant | v2.0 | 7/7 | Complete    | 2026-09-03 |
 | 43. POST /webhooks/app-store | v2.0 | 6/6 | Complete    | 2026-09-04 |
