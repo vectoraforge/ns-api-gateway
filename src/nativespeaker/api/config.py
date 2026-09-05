@@ -3,7 +3,7 @@ from enum import StrEnum
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogLevel = StrEnum("LogLevel", {k: k for k in logging.getLevelNamesMapping()})
@@ -79,6 +79,23 @@ class AppStoreConfig(BaseModel):
                                               description="Path to the Apple root CA in DER form")
     products: dict[str, str] = Field(default_factory=dict,
                                      description="Store product ID to core.access_tiers.id")
+
+    # Degrading beats raising: absence is already the fail-closed path this route answers 503 from,
+    # and `lifespan` logs the same app_store_configuration_absent warning for it either way.
+    @field_validator("app_apple_id", mode="before")
+    @classmethod
+    def _numeric_or_absent(cls, value):
+        """Keep an int or an all-digit string, and read anything else as absent."""
+        return value if isinstance(value, int) or (isinstance(value, str)
+                                                   and value.isdigit()) else None
+
+    @field_validator("environment", mode="before")
+    @classmethod
+    def _named_or_absent(cls, value):
+        """Keep one of the two named environments, and read anything else as absent."""
+        # Membership by value, never a case transform: the library's two verification-skipping
+        # environments have to stay unreachable, which is why this field is typed at all.
+        return value if value in tuple(StoreEnvironment) else None
 
 
 class ModelConfig(BaseModel):

@@ -230,10 +230,12 @@ class TestTheStoreEnvironmentCannotSkipSignatureVerification:
         assert {member.value for member in StoreEnvironment} == {"sandbox", "production"}
 
     @pytest.mark.parametrize("value", VERIFICATION_SKIPPING_ENVIRONMENTS)
-    def test_a_verification_skipping_environment_is_refused_at_load(self, value):
+    def test_a_verification_skipping_environment_never_reaches_a_verifier(self, value):
         # These two make the library skip verification, so a free-text field would open this route.
-        with pytest.raises(ValidationError):
-            load_tracked_config({**_APP_STORE_ENV, "APP_STORE_ENVIRONMENT": value})
+        store = load_tracked_config({**_APP_STORE_ENV, "APP_STORE_ENVIRONMENT": value}).app_store
+
+        assert store.environment is None
+        assert build_app_store_verifier(store) is None
 
     def test_a_named_environment_still_loads(self):
         """The control: a loader that refused everything would pass both cases above."""
@@ -298,3 +300,55 @@ class TestAnIncompleteConfigurationBootsAndHoldsNoVerifier:
     def test_an_unreadable_root_certificate_yields_no_verifier(self):
         assert build_app_store_verifier(
             self._store(root_certificate_path="/nonexistent/AppleRootCA-G3.cer")) is None
+
+
+def _uncommented(path: Path) -> dict[str, str]:
+    """Every assignment a file ships uncommented, which is what a copied .env carries to boot."""
+    pairs = (line.split("=", 1) for line in path.read_text().splitlines()
+             if "=" in line and not line.lstrip().startswith("#"))
+    return {key.strip(): value.strip() for key, value in pairs}
+
+
+class TestAMalformedAppStoreValueCostsTheRouteAndNotTheBoot:
+    """CR-04, T-U7T-03. An operator error costs one route its 503, never the pod its boot."""
+
+    def test_the_shipped_placeholders_degrade_to_absent(self):
+        store = AppStoreConfig(app_apple_id="...",  # ty: ignore[invalid-argument-type]
+                               environment="...")  # ty: ignore[invalid-argument-type]
+
+        assert (store.app_apple_id, store.environment) == (None, None)
+
+    def test_a_degraded_configuration_holds_no_verifier(self):
+        """The 503 path: the route fails closed and the rest of the service is untouched."""
+        degraded = AppStoreConfig(bundle_id="com.nativespeaker.app",
+                                  app_apple_id="...",  # ty: ignore[invalid-argument-type]
+                                  environment="...")  # ty: ignore[invalid-argument-type]
+
+        assert build_app_store_verifier(degraded) is None
+
+    def test_a_well_formed_pair_still_parses_and_builds_a_verifier_control(self):
+        """The control: a validator that degraded everything would pass both cases above."""
+        store = AppStoreConfig(bundle_id="com.nativespeaker.app",
+                               app_apple_id="6001234567",  # ty: ignore[invalid-argument-type]
+                               environment="production",  # ty: ignore[invalid-argument-type]
+                               root_certificate_path=str(REPOSITORY_ROOT
+                                                         / "config/certs/AppleRootCA-G3.cer"))
+
+        assert (store.app_apple_id, store.environment) == (6001234567,
+                                                           StoreEnvironment.production)
+        assert build_app_store_verifier(store) is not None
+
+
+class TestTheCommittedEnvExampleCannotCrashABoot:
+    """CR-04. The shipped placeholders parsed as an int and an enum, so a copied file killed the pod."""
+
+    def test_the_app_store_lines_it_ships_are_constructible(self):
+        shipped = _uncommented(REPOSITORY_ROOT / ".env.example")
+        fields = {key.removeprefix("APP_STORE_").lower(): value
+                  for key, value in shipped.items() if key.startswith("APP_STORE_")}
+
+        assert isinstance(AppStoreConfig(**fields), AppStoreConfig)
+
+    def test_the_reader_finds_the_assignments_that_file_does_ship_control(self):
+        """The control: a reader that quietly returned nothing would pass the case above."""
+        assert "DB_HOST" in _uncommented(REPOSITORY_ROOT / ".env.example")
