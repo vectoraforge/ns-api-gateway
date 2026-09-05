@@ -7,14 +7,24 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from nativespeaker.api.auth.app_store import VerifiedNotification
+from nativespeaker.api.auth.google_play import (
+    developer_notification_from,
+    instant_from_millis,
+    notification_key_for,
+    subscription_notification_from,
+)
+from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.crud.purchases import PurchasesDB
-from nativespeaker.api.errors import InvalidExternalJwt, PreAuthIdentityNotAllowed
+from nativespeaker.api.errors import (
+    InvalidExternalJwt,
+    NotificationRejected,
+    PreAuthIdentityNotAllowed,
+)
 from nativespeaker.api.schemas.auth import Identity
-from nativespeaker.api.schemas.webhooks import AppStoreNotificationRequest
+from nativespeaker.api.schemas.webhooks import AppStoreNotificationRequest, PubSubPushRequest
 from nativespeaker.api.services import (
     AuthService,
     ChatService,
@@ -135,11 +145,9 @@ def get_sync_service(db: AsyncSession = Depends(get_db),
 
 
 def get_subscriptions_service(db: AsyncSession = Depends(get_db),
-                              config: AppConfig = Depends(get_config),
                               evaluated_at: datetime = Depends(get_evaluated_at),
                               ) -> SubscriptionsService:
-    return SubscriptionsService(db=db, evaluated_at=evaluated_at,
-                                products=config.app_store.products)
+    return SubscriptionsService(db=db, evaluated_at=evaluated_at)
 
 
 def verify_app_store_notification(request: Request,
@@ -147,6 +155,40 @@ def verify_app_store_notification(request: Request,
     """Turn the posted envelope into a verified notification, before the handler and before `get_db`."""
     # Never `run_in_threadpool`: with online checks off, no code path in the seam performs I/O.
     return request.app.state.app_store_notifications.verify(body.signedPayload)
+
+
+async def verify_google_play_notification(
+        request: Request,
+        body: PubSubPushRequest,
+        credential: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> VerifiedNotification | None:
+    """Verify the push token and read the live subscription, before the handler and before `get_db`."""
+    if credential is None:
+        raise NotificationRejected(stage="push_credential_absent")
+
+    await request.app.state.google_push_tokens.verify(credential.credentials)
+    # Decoded only after the token check, so a forged body is never parsed.
+    notification = developer_notification_from(body.message.data)
+    if notification is None:
+        return None
+
+    subscription = subscription_notification_from(notification)
+    if subscription is None:
+        return None
+
+    if notification.packageName != request.app.state.config.google_play.package_name:
+        # Refused before the Play call: this delivery names an application this deployment does not serve.
+        raise NotificationRejected(stage="package_name_mismatch")
+
+    event_type = str(subscription.notificationType)
+    return await request.app.state.play_subscriptions.read(
+        package_name=notification.packageName,
+        purchase_token=subscription.purchaseToken,
+        event_type=event_type,
+        notification_uuid=notification_key_for(subscription.purchaseToken,
+                                               notification.eventTimeMillis, event_type),
+        # Google's own instant for the event, which is what the out-of-order guard compares.
+        signed_at=instant_from_millis(notification.eventTimeMillis))
 
 
 # This accessor exists so the profile route can stay Depends()-only and never construct a database class itself.

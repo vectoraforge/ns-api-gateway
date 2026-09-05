@@ -2,14 +2,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import firebase_admin
+import google.auth
+import google.auth.exceptions
 import httpx
 import structlog
 from appstoreserverlibrary.models.Environment import Environment
 from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier
 from fastapi import FastAPI
+from jwt.exceptions import PyJWTError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
+from nativespeaker.api.app.dependencies import get_evaluated_at
 from nativespeaker.api.auth.app_store import AppStoreNotifications
 from nativespeaker.api.auth.devicecheck import (
     DEVICECHECK_HTTP_TIMEOUT_SECONDS,
@@ -17,8 +21,21 @@ from nativespeaker.api.auth.devicecheck import (
     read_private_key,
 )
 from nativespeaker.api.auth.firebase import FirebaseAdminLookup, build_admin_apps
+from nativespeaker.api.auth.google_play import (
+    GOOGLE_ISSUER,
+    GOOGLE_JWKS_URL,
+    PLAY_HTTP_TIMEOUT_SECONDS,
+    PLAY_SCOPE,
+    PlayDeveloperSubscriptions,
+    PubSubPushTokens,
+)
 from nativespeaker.api.auth.jwt_verifier import JWTVerifier
-from nativespeaker.api.config import AppStoreConfig, EnvironmentConfig, StoreEnvironment
+from nativespeaker.api.config import (
+    AppStoreConfig,
+    EnvironmentConfig,
+    GooglePlayConfig,
+    StoreEnvironment,
+)
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.logs import setup_logging
 from nativespeaker.api.services import LLMService
@@ -43,6 +60,31 @@ def build_app_store_verifier(store: AppStoreConfig) -> SignedDataVerifier | None
                               environment=_STORE_ENVIRONMENTS[store.environment],
                               bundle_id=store.bundle_id,
                               app_apple_id=store.app_apple_id)
+
+
+def build_google_push_verifier(play: GooglePlayConfig) -> JWTVerifier | None:
+    """The Pub/Sub push-token verifier, or `None` when this deployment cannot build one."""
+    if not (play.push_audience and play.push_service_account_email):
+        return None
+    try:
+        return JWTVerifier(jwks_url=GOOGLE_JWKS_URL,
+                           audience=play.push_audience,
+                           issuer=GOOGLE_ISSUER,
+                           # The audience alone is a value the deployer chose, so the push identity is pinned too.
+                           required_claims={"email": play.push_service_account_email,
+                                            "email_verified": True})
+    except PyJWTError:
+        # The warm-up fetch raises on an unreachable JWKS, and one route's 503 beats a dead pod.
+        return None
+
+
+def _play_credential():
+    """ADC scoped for the Play Developer API, or `None` if the environment supplies none."""
+    try:
+        credential, _project = google.auth.default(scopes=[PLAY_SCOPE])
+    except google.auth.exceptions.DefaultCredentialsError:
+        return None
+    return credential
 
 
 @asynccontextmanager
@@ -80,7 +122,25 @@ async def lifespan(app: FastAPI):
                                    "id, environment, app id and root certificate are available in "
                                    "this environment")
     # Set unconditionally, so the route set is the same in every environment.
-    app.state.app_store_notifications = AppStoreNotifications(verifier=app_store_verifier)
+    app.state.app_store_notifications = AppStoreNotifications(verifier=app_store_verifier,
+                                                              products=config.app_store.products)
+
+    google_push_verifier = build_google_push_verifier(config.google_play)
+    play_credential = _play_credential()
+    if google_push_verifier is None or play_credential is None:
+        logger.warning("google_play_configuration_absent",
+                       consequence="POST /webhooks/google-play/rtdn fails closed as "
+                                   "verification_temporarily_unavailable until the Play package "
+                                   "name, push audience, push service account and Application "
+                                   "Default Credentials are available in this environment")
+    play_client = httpx.AsyncClient(timeout=PLAY_HTTP_TIMEOUT_SECONDS)
+    # Set unconditionally, so the route set is the same in every environment.
+    app.state.google_push_tokens = PubSubPushTokens(verifier=google_push_verifier)
+    app.state.play_subscriptions = PlayDeveloperSubscriptions(
+        credential=play_credential,
+        client=play_client,
+        products=config.google_play.products,
+        evaluated_at_source=get_evaluated_at)
 
     db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)
     app.state.session_factory = async_sessionmaker(db_engine, class_=SQLModelAsyncSession,
@@ -102,6 +162,7 @@ async def lifespan(app: FastAPI):
 
     await db_engine.dispose()
     await devicecheck_client.aclose()
+    await play_client.aclose()
 
     # firebase_admin registers named apps process-globally and raises on a repeat, so a second boot needs these gone.
     for firebase_app in firebase_apps.values():

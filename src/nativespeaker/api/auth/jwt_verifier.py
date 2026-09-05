@@ -40,6 +40,8 @@ class VerifiedClaims:
     """Exactly the verified `iss` and `sub`, never reconstructed from transport metadata."""
     issuer: str
     subject: str
+    # Carried only for a caller that pinned required claims; every other caller reads `None`.
+    payload: dict | None = None
 
 
 # A bounded reason is never client-visible: it reaches the security log and nowhere else.
@@ -86,7 +88,8 @@ class JWTVerifier:
                  cache_ttl_seconds: float = 3600,
                  fetch_timeout_seconds: float = 3.0,
                  unknown_kid_ttl_seconds: float = 60.0,
-                 unknown_kid_cache_size: int = 256):
+                 unknown_kid_cache_size: int = 256,
+                 required_claims: dict[str, object] | None = None):
         # Explicit `timeout=`: PyJWT defaults to 30 seconds, which would pin a worker on a hang.
         self._jwks_client = PyJWKClient(jwks_url,
                                         cache_jwk_set=True,
@@ -95,6 +98,8 @@ class JWTVerifier:
         self._audience = audience
         self._issuer = issuer
         self._leeway = leeway
+        # Exact expected values, checked after decode: a claim in `require` would refuse a shape change.
+        self._required_claims = required_claims
         self._unknown_kid_ttl = unknown_kid_ttl_seconds
         self._unknown_kid_cache_size = unknown_kid_cache_size
         # Key id -> monotonic deadline. Negative only: a positive cache would outlive a pulled key.
@@ -164,4 +169,15 @@ class JWTVerifier:
             # What makes "never raises" structural -- an escape would 500 a caller owed a 401.
             return None, BoundedReason.bad_signature
 
-        return claims_from_payload(payload)
+        if self._required_claims is None:
+            return claims_from_payload(payload)
+
+        for claim, expected in self._required_claims.items():
+            if payload.get(claim) != expected:
+                # The same reason every other refusal carries, so the answer names no failed check.
+                return None, BoundedReason.bad_signature
+
+        claims, reason = claims_from_payload(payload)
+        if claims is None:
+            return None, reason
+        return VerifiedClaims(issuer=claims.issuer, subject=claims.subject, payload=payload), None

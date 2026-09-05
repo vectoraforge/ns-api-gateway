@@ -5,45 +5,23 @@ from uuid import uuid7
 import structlog
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.auth.app_store import VerifiedNotification
+from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.crud.purchases import PurchasesDB
 from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
-from nativespeaker.api.errors import AttributionConflict, InternalError, UnmappedStoreProduct
+from nativespeaker.api.errors import AttributionConflict, InternalError
 from nativespeaker.api.tables import SubscriptionStatus
 
 logger = structlog.get_logger()
 
 
-def status_at(notification: VerifiedNotification,
-              evaluated_at: datetime) -> SubscriptionStatus:
-    """The subscription's status from its dates alone. The notification type is only recorded."""
-    if notification.revoked_at is not None:
-        # A withdrawal is terminal, so it outranks every date below it.
-        return SubscriptionStatus.revoked
-    if notification.expires_at is not None and notification.expires_at > evaluated_at:
-        # An unfinished paid term is entitled, whatever the renewal flags say about the next one.
-        return SubscriptionStatus.active
-    if (notification.grace_period_expires_at is not None
-            and notification.grace_period_expires_at > evaluated_at):
-        # Tested before billing retry: Apple sets the retry flag during grace too, and grace is entitled.
-        return SubscriptionStatus.grace_period
-    if notification.in_billing_retry:
-        # The term is over and Apple is still charging, so the store has not given up on it.
-        return SubscriptionStatus.billing_retry
-    return SubscriptionStatus.expired
-
-
 class SubscriptionsService:
 
-    def __init__(self, db: AsyncSession, evaluated_at: datetime,
-                 products: dict[str, str]) -> None:
+    def __init__(self, db: AsyncSession, evaluated_at: datetime) -> None:
         self.session = db
         self.subscriptions_db = SubscriptionsDB(db)
         self.purchases_db = PurchasesDB(db)
         # One instant for this request; nothing below it reads the clock again.
         self.evaluated_at = evaluated_at
-        # Server-controlled reference data, never a value the store supplied.
-        self.products = products
 
     async def ingest(self, notification: VerifiedNotification) -> None:
         """Record one verified notification and commit, or return having written nothing.
@@ -54,10 +32,8 @@ class SubscriptionsService:
                         event_type=notification.event_type)
             return
 
-        tier_id = self.products.get(notification.product_id)
-        if tier_id is None:
-            # Refused before any write: `core.subscriptions.tier_id` is NOT NULL and has no default.
-            raise UnmappedStoreProduct(notification.provider, notification.product_id)
+        # Resolved in the provider's own class, which refuses a product the configured map misses.
+        tier_id = notification.tier_id
 
         token = notification.attribution_token
         # Read before the transaction writes, so no token read happens under a lock.
@@ -81,7 +57,7 @@ class SubscriptionsService:
         if (stored is not None and stored.store_signed_at is not None
                 and notification.signed_at is not None
                 and notification.signed_at < stored.store_signed_at):
-            # Apple guarantees no delivery order, and `notification_uuid` only catches the same payload twice.
+            # Neither store guarantees delivery order, and `notification_uuid` only catches one payload twice.
             await self._settle(await self.subscriptions_db.append_event(
                 subscription=stored,
                 event_type=notification.event_type,
@@ -90,7 +66,7 @@ class SubscriptionsService:
                 old_tier_id=stored.tier_id,
                 new_tier_id=stored.tier_id,
                 evaluated_at=self.evaluated_at), notification)
-            logger.info("store_notification_superseded", event_type=notification.event_type)
+            logger.warning("store_notification_superseded", event_type=notification.event_type)
             # Reached before the attribution guard: a stale payload must not earn the 500 that guard raises.
             await self.session.commit()
             return
@@ -105,7 +81,8 @@ class SubscriptionsService:
             # Refused, never repaired: this route cannot verify a changed owner, and the store retries.
             raise AttributionConflict(notification.provider, notification.external_id)
 
-        status = status_at(notification, self.evaluated_at)
+        # The store's own word, read live or from the signed envelope: never derived here.
+        status = notification.status
         subscription, outcome = await self.subscriptions_db.upsert_subscription(
             provider=notification.provider,
             external_id=notification.external_id,

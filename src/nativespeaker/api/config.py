@@ -98,6 +98,18 @@ class AppStoreConfig(BaseModel):
         return value if value in tuple(StoreEnvironment) else None
 
 
+class GooglePlayConfig(BaseModel):
+    """The Google Play settings the push-token verifier and the Play read are built from."""
+    # All four optional, like AppStoreConfig: an absent value lets boot proceed and the route fail closed.
+    package_name: str | None = Field(default=None, description="The Android app's package name")
+    push_audience: str | None = Field(default=None,
+                                      description="The exact `aud` the Pub/Sub push token carries")
+    push_service_account_email: str | None = Field(
+        default=None, description="The push subscription's service account address")
+    products: dict[str, str] = Field(default_factory=dict,
+                                     description="Play product ID to core.access_tiers.id")
+
+
 class ModelConfig(BaseModel):
     name: str = Field(default="gpt-4o-mini")
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
@@ -114,6 +126,7 @@ class AppConfig(BaseConfig):
     jwt: JWTConfig = Field(default_factory=JWTConfig)
     devicecheck: DeviceCheckConfig = Field(default_factory=DeviceCheckConfig)
     app_store: AppStoreConfig = Field(default_factory=AppStoreConfig)
+    google_play: GooglePlayConfig = Field(default_factory=GooglePlayConfig)
     chats_limit: int = Field(default=50, ge=1)
     messages_limit: int = Field(default=50, ge=1)
 

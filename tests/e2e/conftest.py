@@ -1,5 +1,5 @@
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import firebase_admin
@@ -13,11 +13,20 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from unit.conftest import FakeFirebaseAdapter, make_test_verifier
+from unit.test_jwks_offload import install_counted_transport
 
 from nativespeaker.api.app.main import app
-from nativespeaker.api.auth.app_store import AppStoreNotifications, VerifiedNotification
+from nativespeaker.api.auth.app_store import AppStoreNotifications
 from nativespeaker.api.auth.devicecheck import BitState
 from nativespeaker.api.auth.firebase import _application_default_credential
+from nativespeaker.api.auth.google_play import (
+    GOOGLE_ISSUER,
+    GOOGLE_JWKS_URL,
+    PlayDeveloperSubscriptions,
+    PubSubPushTokens,
+)
+from nativespeaker.api.auth.jwt_verifier import JWTVerifier
+from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.tables import (
     AccessGrant,
@@ -305,6 +314,94 @@ def unconfigured_app_store_notifications(_app_lifespan):
         yield _app_lifespan.state.app_store_notifications
     finally:
         _app_lifespan.state.app_store_notifications = original
+
+
+# The three values a deployment configures for the Pub/Sub push, in obviously synthetic form.
+GOOGLE_PUSH_AUDIENCE = "https://nativespeaker.test/webhooks/google-play/rtdn"
+GOOGLE_PUSH_SERVICE_ACCOUNT = "rtdn-push@nativespeaker-test.iam.gserviceaccount.com"
+GOOGLE_PACKAGE_NAME = "com.nativespeaker.app"
+
+# Google's own issuer, read from the module under test so a changed constant fails the cases.
+GOOGLE_PUSH_ISSUER = GOOGLE_ISSUER
+
+# The Play product the scripted map resolves, and the tier the migration seeds for a paid one.
+GOOGLE_PRODUCT_ID = "nativespeaker.subscription.monthly"
+GOOGLE_PAID_TIER_ID = "paid"
+
+
+def play_subscription_body(**overrides) -> dict:
+    """One `purchases.subscriptionsv2.get` response body, active on one line item."""
+    now = datetime.now(UTC)
+    body = {"subscriptionState": "SUBSCRIPTION_STATE_ACTIVE",
+            "startTime": now.isoformat(),
+            "latestOrderId": f"order-{uuid4()}",
+            "lineItems": [{"productId": GOOGLE_PRODUCT_ID,
+                           "expiryTime": (now + timedelta(days=30)).isoformat()}]}
+    return body | overrides
+
+
+class ScriptedPlayApi:
+    """The Play read scripted at the transport, recording every request the real class sent."""
+
+    def __init__(self) -> None:
+        self.body = play_subscription_body()
+        self.status_code = 200
+        self.requests: list[httpx.Request] = []
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return httpx.Response(self.status_code, json=self.body)
+
+
+class StubPlayCredential:
+    """A credential that is already valid, so no case ever reaches a token refresh."""
+
+    valid = True
+    token = "a-synthetic-play-access-token"
+
+    def refresh(self, request) -> None:
+        raise AssertionError("a valid credential was refreshed")
+
+
+@pytest.fixture
+def real_google_play_seam(_app_lifespan, monkeypatch):
+    """Install the real Google classes: a real verifier over a fake JWKS, and a scripted Play transport."""
+    install_counted_transport(monkeypatch)
+    play = _app_lifespan.state.config.google_play
+    original = (_app_lifespan.state.google_push_tokens, _app_lifespan.state.play_subscriptions,
+                play.package_name, play.push_audience, play.push_service_account_email)
+    play.package_name = GOOGLE_PACKAGE_NAME
+    play.push_audience = GOOGLE_PUSH_AUDIENCE
+    play.push_service_account_email = GOOGLE_PUSH_SERVICE_ACCOUNT
+
+    scripted = ScriptedPlayApi()
+    verifier = JWTVerifier(jwks_url=GOOGLE_JWKS_URL,
+                           audience=GOOGLE_PUSH_AUDIENCE,
+                           issuer=GOOGLE_ISSUER,
+                           required_claims={"email": GOOGLE_PUSH_SERVICE_ACCOUNT,
+                                            "email_verified": True})
+    _app_lifespan.state.google_push_tokens = PubSubPushTokens(verifier=verifier)
+    _app_lifespan.state.play_subscriptions = PlayDeveloperSubscriptions(
+        credential=StubPlayCredential(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(scripted.handle)),
+        products={GOOGLE_PRODUCT_ID: GOOGLE_PAID_TIER_ID},
+        evaluated_at_source=lambda: datetime.now(UTC))
+    try:
+        yield scripted
+    finally:
+        (_app_lifespan.state.google_push_tokens, _app_lifespan.state.play_subscriptions,
+         play.package_name, play.push_audience, play.push_service_account_email) = original
+
+
+@pytest.fixture
+def unconfigured_google_play_seam(_app_lifespan):
+    """Swap the push-token class for one holding no verifier, as an incomplete configuration leaves it."""
+    original = _app_lifespan.state.google_push_tokens
+    _app_lifespan.state.google_push_tokens = PubSubPushTokens(verifier=None)
+    try:
+        yield _app_lifespan.state.google_push_tokens
+    finally:
+        _app_lifespan.state.google_push_tokens = original
 
 
 @pytest_asyncio.fixture(loop_scope="module")
