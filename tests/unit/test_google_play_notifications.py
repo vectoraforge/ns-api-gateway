@@ -4,26 +4,39 @@ Untested by construction: only whether Google's live tokens and answers match Go
 import ast
 import base64
 import json
+import urllib.error
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.security import HTTPAuthorizationCredentials
+from jwt.exceptions import PyJWKClientConnectionError
 
 from nativespeaker.api.app.dependencies import verify_google_play_notification
+from nativespeaker.api.app.lifespan import build_google_push_verifier
 from nativespeaker.api.auth.google_play import (
+    GOOGLE_ISSUER,
+    GOOGLE_JWKS_URL,
     PlayDeveloperSubscriptions,
+    PubSubPushTokens,
     developer_notification_from,
 )
+from nativespeaker.api.auth.jwt_verifier import BoundedReason, JWTVerifier
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.config import GooglePlayConfig
-from nativespeaker.api.errors import InternalError, NotificationRejected
+from nativespeaker.api.errors import InternalError, NotificationRejected, Unavailable
 from nativespeaker.api.schemas.webhooks import PubSubPushRequest
 from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
+from unit.conftest import PRIVATE_KEY_PEM, make_token
+from unit.test_jwks_offload import CountedJwksTransport, install_counted_transport, jwks_body
 
-PLAY_MODULE = Path(__file__).resolve().parents[2] / "src/nativespeaker/api/auth/google_play.py"
+_SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src/nativespeaker/api"
+PLAY_MODULE = _SOURCE_ROOT / "auth/google_play.py"
+VERIFIER_MODULE = _SOURCE_ROOT / "auth/jwt_verifier.py"
 
 PACKAGE_NAME = "com.example.nativespeaker"
 PRODUCT_ID = "com.example.nativespeaker.subscription.monthly"
@@ -378,3 +391,141 @@ class TestTheRefusalsDifferOnlyInStage:
 
         assert len({refusal.stage for refusal in refusals}) == len(refusals)
         assert all(set(refusal.log_fields()) == {"stage"} for refusal in refusals)
+
+
+# The two deployer values the push token is pinned to, and the key id this suite's JWKS serves.
+PUSH_AUDIENCE = "https://api.example.com/webhooks/google-play/rtdn"
+PUSH_SERVICE_ACCOUNT = "rtdn-push@example-project.iam.gserviceaccount.com"
+PUSH_KID = "google-push-key-1"
+
+# The push identity Google mints these tokens for, which is a numeric service-account subject.
+PUSH_SUBJECT = "116000000000000000000"
+
+# A second keypair no JWKS document serves, so a token signed with it fails on the signature alone.
+_foreign_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+FOREIGN_PRIVATE_KEY_PEM = _foreign_key.private_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PrivateFormat.PKCS8,
+    encryption_algorithm=serialization.NoEncryption())
+
+
+def _play_config(**overrides) -> GooglePlayConfig:
+    """This deployment's Play settings, with whichever value the case under way replaces."""
+    values = {"package_name": PACKAGE_NAME, "push_audience": PUSH_AUDIENCE,
+              "push_service_account_email": PUSH_SERVICE_ACCOUNT,
+              "products": {PRODUCT_ID: TIER_ID}}
+    return GooglePlayConfig(**(values | overrides))
+
+
+def _push_token(*, aud: str = PUSH_AUDIENCE, iss: str = GOOGLE_ISSUER,
+                email: str = PUSH_SERVICE_ACCOUNT, email_verified: bool = True,
+                private_key: bytes = PRIVATE_KEY_PEM) -> str:
+    """One Google-shaped Pub/Sub push token: the five required claims plus Google's own two."""
+    return make_token(PUSH_SUBJECT, aud=aud, iss=iss, email_verified=email_verified,
+                      extra_claims={"email": email}, private_key=private_key,
+                      headers={"kid": PUSH_KID})
+
+
+def _require_list() -> list[str]:
+    """The claims `jwt.decode` is told to require, read off the verifier's own source."""
+    for node in ast.walk(ast.parse(VERIFIER_MODULE.read_text())):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "decode"):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "options" or not isinstance(keyword.value, ast.Dict):
+                continue
+            for key, value in zip(keyword.value.keys, keyword.value.values, strict=True):
+                if isinstance(key, ast.Constant) and key.value == "require":
+                    return [element.value for element in value.elts]
+    raise AssertionError("the verifier makes no jwt.decode(options={'require': ...}) call")
+
+
+# Each arm of the push-token check, with the bounded reason the refusal carries as its `stage`.
+TOKEN_REFUSALS = [
+    ({"private_key": FOREIGN_PRIVATE_KEY_PEM}, "bad_signature"),
+    ({"email": "someone-else@example-project.iam.gserviceaccount.com"}, "bad_signature"),
+    ({"email_verified": False}, "bad_signature"),
+    ({"aud": "https://api.example.com/webhooks/somewhere-else"}, "audience_mismatch"),
+    ({"iss": "https://accounts.example.com"}, "issuer_mismatch"),
+]
+TOKEN_REFUSAL_IDS = ["signature", "email", "email-verified", "aud", "iss"]
+
+
+@pytest.fixture
+def jwks(monkeypatch) -> CountedJwksTransport:
+    """The offload suite's counted transport, serving this suite's one push key."""
+    transport = install_counted_transport(monkeypatch)
+    transport.body = jwks_body(PUSH_KID)
+    return transport
+
+
+@pytest.fixture
+def push_tokens(jwks) -> PubSubPushTokens:
+    """The real push-token class over a real `JWTVerifier`, built the way lifespan builds it."""
+    return PubSubPushTokens(verifier=build_google_push_verifier(_play_config()))
+
+
+async def _refused(push_tokens: PubSubPushTokens, token: str) -> NotificationRejected:
+    """Verify a token that must be refused, and hand back the refusal it raised."""
+    with pytest.raises(NotificationRejected) as refusal:
+        await push_tokens.verify(token)
+    return refusal.value
+
+
+class TestThePushTokenCheck:
+    """Every arm run against a real verifier over a fake JWKS document, not against a stub."""
+
+    async def test_a_token_carrying_every_pinned_claim_verifies(self, push_tokens):
+        assert await push_tokens.verify(_push_token()) is None
+
+    @pytest.mark.parametrize(("overrides", "stage"), TOKEN_REFUSALS, ids=TOKEN_REFUSAL_IDS)
+    async def test_each_arm_refuses_with_its_own_stage(self, overrides, stage, push_tokens):
+        assert (await _refused(push_tokens, _push_token(**overrides))).stage == stage
+
+    async def test_an_unconfigured_deployment_answers_503_rather_than_admitting_the_push(self):
+        """The verifier the builder could not build: the route fails closed, it does not open."""
+        with pytest.raises(Unavailable):
+            await PubSubPushTokens(verifier=None).verify(_push_token())
+
+    async def test_every_refusal_is_one_class_with_one_body(self, push_tokens):
+        refusals = [await _refused(push_tokens, _push_token(**overrides))
+                    for overrides, _stage in TOKEN_REFUSALS]
+
+        assert {type(refusal) for refusal in refusals} == {NotificationRejected}
+        assert {(refusal.status, refusal.code) for refusal in refusals} == {(401, "auth_required")}
+        assert all(set(refusal.log_fields()) == {"stage"} for refusal in refusals)
+
+
+class TestTheClaimPinsArePostDecodeComparisons:
+    """D-09's two properties, which a passing verification case would otherwise hide."""
+
+    def test_bounded_reason_still_has_exactly_five_members(self):
+        """A sixth member would be a new refusal word the client-visible answer does not carry."""
+        assert len(BoundedReason) == 5
+
+    def test_email_is_compared_after_decode_rather_than_required(self):
+        """In `require`, a Google token shape without `email` would fail like a forgery (P-03)."""
+        assert "email" not in _require_list()
+        assert _require_list() == ["exp", "iat", "aud", "iss", "sub"]
+
+
+class TestTheJwksWarmUpGuard:
+    """F-04: the constructor fetches, so an unguarded second verifier is a pod that will not start."""
+
+    def test_an_unreachable_jwks_endpoint_raises_at_construction(self, jwks):
+        """Measured, not assumed: this is the raise the builder's guard exists to catch."""
+        jwks.error = urllib.error.URLError("the JWKS endpoint is unreachable")
+
+        with pytest.raises(PyJWKClientConnectionError):
+            JWTVerifier(jwks_url=GOOGLE_JWKS_URL, audience=PUSH_AUDIENCE, issuer=GOOGLE_ISSUER)
+
+    def test_the_builder_answers_none_and_lets_the_pod_boot(self, jwks):
+        jwks.error = urllib.error.URLError("the JWKS endpoint is unreachable")
+
+        assert build_google_push_verifier(_play_config()) is None
+
+    @pytest.mark.parametrize("absent", ["push_audience", "push_service_account_email"])
+    def test_an_unconfigured_value_answers_none_without_a_fetch(self, absent, jwks):
+        assert build_google_push_verifier(_play_config(**{absent: None})) is None
+        assert len(jwks) == 0, "an unconfigured deployment must not reach for Google's keys"
