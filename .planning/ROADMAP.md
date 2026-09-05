@@ -674,7 +674,7 @@ Plans:
 **Goal:** Ingest Google Play RTDN via Cloud Pub/Sub push as the second and last provider-callback route.
 **Requirements:** PLAYHOOK-01 … PLAYHOOK-03
 **Depends on:** 34, 35 (soft: 43)
-**Plans:** 2/7 plans executed
+**Plans:** 3/7 plans executed
 **Success criteria:**
 
 1. The route authenticates solely by backend verification of Google's signed OIDC push token
@@ -691,7 +691,7 @@ Plans:
 
 **Wave 2** *(three parallel plans, blocked on Wave 1 completion)*
 
-- [ ] 44-03-PLAN.md — The nine prefixed subscription states, the grace window Google carries no field for, and the four arms that answer without writing (wave 2)
+- [x] 44-03-PLAN.md — The nine prefixed subscription states, the grace window Google carries no field for, and the four arms that answer without writing (wave 2)
 - [ ] 44-04-PLAN.md — The tracked Google product map and the falsification that the three `GOOGLE_PLAY_` variables actually land on the model (wave 2)
 - [ ] 44-05-PLAN.md — Redelivery, out-of-order delivery, the two-connection race and the grace-period grant, measured on real PostgreSQL, plus Apple's five values re-proved (wave 2)
 
@@ -774,6 +774,6 @@ Plans:
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 5/5 | Complete    | 2026-09-03 |
 | 42. POST /auth/claim-registered-grant | v2.0 | 7/7 | Complete    | 2026-09-03 |
 | 43. POST /webhooks/app-store | v2.0 | 6/6 | Complete    | 2026-09-04 |
-| 44. POST /webhooks/google-play/rtdn | v2.0 | 2/7 | In Progress|  |
+| 44. POST /webhooks/google-play/rtdn | v2.0 | 3/7 | In Progress|  |
 | 45. POST /auth/restore-subscription | v2.0 | 0/? | Pending | — |
 | 46. POST /auth/sign-out-all | v2.0 | 0/? | Pending | — |

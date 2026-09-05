@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 44
 current_phase_name: POST /webhooks/google-play/rtdn
 status: executing
-stopped_at: Completed 44-02-PLAN.md
-last_updated: "2026-09-05T11:11:26.983Z"
+stopped_at: Completed 44-03-PLAN.md
+last_updated: "2026-09-05T11:29:43.071Z"
 last_activity: 2026-09-05
 last_activity_desc: Phase 44 execution started
-state_head: 2d4f05bed0776e7a8cdbb4da3538e0b1d4f49a4b
+state_head: 83c1a31f42fdd71626bf5ca4053e62adca6c7fbf
 progress:
   total_phases: 18
   completed_phases: 14
   total_plans: 110
-  completed_plans: 104
+  completed_plans: 106
   percent: 78
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 44 (POST /webhooks/google-play/rtdn) — EXECUTING
-Plan: 3 of 7
+Plan: 4 of 7
 Status: Ready to execute
 Last activity: 2026-09-05 — Phase 44 execution started
 
@@ -269,10 +269,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-05T11:10:56.626Z
+**Last session:** 2026-09-05T11:29:42.217Z
 
 Last activity: 2026-09-04
-Stopped at: Completed 44-02-PLAN.md
+Stopped at: Completed 44-03-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -323,6 +323,7 @@ Resume file: None
 | Phase 43 P06 | 14min | 2 tasks | 3 files |
 | Phase 44 P01 | 64 min | 2 tasks | 21 files |
 | Phase 44 P02 | 5min | 2 tasks | 4 files |
+| Phase 44 P03 | 10 min | 3 tasks | 3 files |
 
 ## Decisions
 
@@ -464,3 +465,6 @@ Resume file: None
 - [Phase 44]: Both providers map their own store status word and their own product map; `status_at` and `SubscriptionsService(products=...)` are deleted (44 D-11/D-16, amending 43 D-13/D-14) — The Google path must write the live `subscriptionState` Play reports, so a date-derived status in the service would silently overrule it. `VerifiedNotification` moved to `auth/store_notifications.py` and now carries the finished `status` and `tier_id`.
 - [Phase 44]: 44-02: the Google callback is a second `matches` entry on the EXISTING rule of httproute-webhooks.yaml, not a second rule — D-19 requires the existing backendRefs block to be reused unchanged. Gateway API ORs the matches within one rule, so one rule with two exact POST matches and one backendRefs is the literal reuse; a second rule would have duplicated the block and its Helm expressions.
 - [Phase 44]: 44-02: the three GOOGLE_PLAY_ environment variables were verified to map onto GooglePlayConfig before being documented — BaseConfig sets env_nested_delimiter="_" with env_nested_max_split=1, so the mapping of a two-word section name is not obvious from the setting alone. All three were loaded through EnvironmentConfig with the exact values .env.example ships, rather than assumed from the APP_STORE_ precedent.
+- [Phase 44]: Every Google state literal carries the SUBSCRIPTION_STATE_ prefix — 44-CONTEXT.md D-11's bare words match nothing Google sends, so a dict keyed on them would route every subscriber to expired
+- [Phase 44]: In grace, the Play line item's own expiryTime is both expires_at and grace_period_expires_at — SubscriptionPurchaseV2 carries no grace field, so leaving it None would send ends_at=None into every grace-period grant write
+- [Phase 44]: A Play 404 or 410 answers 200 having written nothing — Pub/Sub acknowledges only five statuses, so retrying a purchase token Google says is gone loops until retention expires
