@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 44
 current_phase_name: POST /webhooks/google-play/rtdn
 status: executing
-stopped_at: Phase 44 context gathered
-last_updated: "2026-09-05T09:43:02.917Z"
-last_activity: 2026-09-04
-last_activity_desc: Phase 43 complete and verified (6/6), transitioned to Phase 44
-state_head: e381274f1e4f11c7c7b654324ccb52929f63d0a0
+stopped_at: Completed 44-01-PLAN.md
+last_updated: "2026-09-05T11:04:19.447Z"
+last_activity: 2026-09-05
+last_activity_desc: Phase 44 execution started
+state_head: 8baf44aae522816f48114417772ebc43317f286d
 progress:
   total_phases: 18
   completed_phases: 14
   total_plans: 110
-  completed_plans: 103
+  completed_plans: 104
   percent: 78
 ---
 
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 44 (POST /webhooks/google-play/rtdn) — READY TO EXECUTE
-Plan: Not started
+Phase: 44 (POST /webhooks/google-play/rtdn) — EXECUTING
+Plan: 2 of 7
 Status: Ready to execute
-Last activity: 2026-09-04 — Phase 43 complete, transitioned to Phase 44
+Last activity: 2026-09-05 — Phase 44 execution started
 
 <!-- Counts read against disk rather than incremented (41-05). At Task 3 time: 90 PLAN files and 89
      SUMMARY files across .planning/phases/, which is exactly what the frontmatter already carried,
@@ -269,11 +269,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-05T08:24:45.223Z
+**Last session:** 2026-09-05T11:03:56.045Z
 
 Last activity: 2026-09-04
-Stopped at: Phase 44 context gathered
-Resume file: .planning/phases/44-post-webhooks-google-play-rtdn/44-CONTEXT.md
+Stopped at: Completed 44-01-PLAN.md
+Resume file: None
 
 ## Performance Metrics
 
@@ -321,6 +321,7 @@ Resume file: .planning/phases/44-post-webhooks-google-play-rtdn/44-CONTEXT.md
 | Phase 43 P04 | 20min | 3 tasks | 7 files |
 | Phase 43 P05 | 12min | 3 tasks | 4 files |
 | Phase 43 P06 | 14min | 2 tasks | 3 files |
+| Phase 44 P01 | 64 min | 2 tasks | 21 files |
 
 ## Decisions
 
@@ -458,3 +459,5 @@ Resume file: .planning/phases/44-post-webhooks-google-play-rtdn/44-CONTEXT.md
 - [Phase 43]: 43-06: a divergence from a THIRD PARTY's guidance is recorded under the requirement but joins neither count — D-09's departure from Apple's production guidance is real and is written up in full under APPLEHOOK-01, but the two numbers in the REQUIREMENTS header measure divergences from the binding specification, and neither spec file mandates an online revocation check. Filing it in either number would make the numbers mean two different things at once; leaving it unwritten would hide it. It is named in the header instead, so a reader auditing divergences meets it.
 - [Phase 43]: 43-06: the counts are nineteen and twenty-seven, re-derived against four named SHARED-INVARIANTS sections rather than inherited; the gap of eight is enumerated — All three new conflicts are against the brief, and not one of § "Global deletions", § "Locks and transactions", § "Grants and evaluation time" or § "Fail-closed defaults" produced a divergence. § "Global deletions" is the one that mattered: it survived the machinery that enforced it, and exact-path registration satisfies it structurally.
 - [Phase 43]: 43-06: `requirements.mark-complete` applied nothing for APPLEHOOK-01 and APPLEHOOK-02 and returned `table_unmatched` for both — the same result 42-06 recorded, for the same reason: the traceability row is a range the tool does not expand. Both surfaces were finished by hand. Measured, not predicted.
+- [Phase 44]: The Google deduplication key (OQ-4) is the payload-derived composite `google_play:{purchaseToken}:{eventTimeMillis}:{notificationType}` — Chosen by the user at the 44-01 checkpoint. It is derived from the RTDN body alone, so it dedupes both a Pub/Sub redelivery and a Play republish of the same event without relying on any Google delivery-id guarantee; the `google_play:` prefix keeps Google keys from colliding with Apple `notificationUUID` values in the shared `audit.subscription_events.notification_uuid` UNIQUE index; and it stays readable in a database row during an incident. `message.messageId` is not used and the components are not hashed.
+- [Phase 44]: Both providers map their own store status word and their own product map; `status_at` and `SubscriptionsService(products=...)` are deleted (44 D-11/D-16, amending 43 D-13/D-14) — The Google path must write the live `subscriptionState` Play reports, so a date-derived status in the service would silently overrule it. `VerifiedNotification` moved to `auth/store_notifications.py` and now carries the finished `status` and `tier_id`.
