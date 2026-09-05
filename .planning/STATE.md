@@ -8,7 +8,7 @@ status: executing
 stopped_at: Completed 43-06-PLAN.md
 last_updated: "2026-09-04T23:27:00.000Z"
 last_activity: 2026-09-04
-last_activity_desc: Phase 43 executed — all six plans complete
+last_activity_desc: Quick task 260904-u7t — the four Phase 43 critical findings closed; 1098 unit / 272 e2e / 189 schema
 state_head: 1f3f1971e681cfe4d9bce605c3d0b2e9c4deb3a4
 progress:
   total_phases: 18
@@ -31,8 +31,9 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 Phase: 43 (POST /webhooks/app-store) — EXECUTED
 Plan: 6 of 6
-Status: All six plans complete; the phase is executed, not yet verified
-Last activity: 2026-09-04 — Phase 43 executed, all six plans complete
+Status: All six plans complete; verified with gaps_found (4/6); the four critical findings
+        CR-01..CR-04 are closed by quick task 260904-u7t; re-verification has not run
+Last activity: 2026-09-04 — Completed quick task 260904-u7t: fix the gaps of the phase 43
 
 <!-- Counts read against disk rather than incremented (41-05). At Task 3 time: 90 PLAN files and 89
      SUMMARY files across .planning/phases/, which is exactly what the frontmatter already carried,
@@ -265,13 +266,14 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 | 260325-jrd | Fix tests: POST /chats returns empty content field | 2026-03-25 | ea6bea1 | [260325-jrd-fix-tests-post-chats-returns-empty-conte](./quick/260325-jrd-fix-tests-post-chats-returns-empty-conte/) |
 | 260326-h2r | Fix incorrect content->message renames in unit tests | 2026-03-26 | 93f95da | [260326-h2r-i-renamed-the-follow-up-message-field-se](./quick/260326-h2r-i-renamed-the-follow-up-message-field-se/) |
 | 260326-ico | Add OpenAPI tags, summaries, descriptions to all endpoints | 2026-03-26 | 52b7173 | [260326-ico-the-api-endpoints-have-no-descriptions-i](./quick/260326-ico-the-api-endpoints-have-no-descriptions-i/) |
+| 260904-u7t | Fix the four critical gaps of Phase 43 (CR-01..CR-04) | 2026-09-04 | f9b2557 | [260904-u7t-fix-the-gaps-of-the-phase-43](./quick/260904-u7t-fix-the-gaps-of-the-phase-43/) |
 
 ## Session Continuity
 
 **Last session:** 2026-09-04T23:27:00.000Z
 
 Last activity: 2026-09-04
-Stopped at: Completed 43-06-PLAN.md — Phase 43 executed, all six plans complete
+Stopped at: Completed quick task 260904-u7t — the four Phase 43 critical findings are closed
 Resume file: None
 
 ## Performance Metrics
