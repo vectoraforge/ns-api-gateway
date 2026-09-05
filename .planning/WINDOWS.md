@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 13
+open_count: 14
 waived_count: 1
 fixed_count: 6
-total_count: 20
-last_updated: 2026-09-05T11:53:19.656Z
+total_count: 21
+last_updated: 2026-09-05T12:31:21.640Z
 ---
 
 # Broken Windows Ledger
@@ -35,6 +35,7 @@ last_updated: 2026-09-05T11:53:19.656Z
 | 18 | 43 | deviation | .planning/phases/43-post-webhooks-app-store/43-06-PLAN.md |  | 43-06 Task 2: the verify block requires six 43-0*-SUMMARY.md files at the time the task runs, which cannot hold — this plan's own summary is written after Task 2 by construction, as 41-05 and 42-06 both recorded. Read 5 at Task 2 time and 6 after the summary landed. | open |  | 2026-09-04T23:29:52.710Z |  |
 | 19 | 44 | unrun-verify | k8s/templates/httproute-webhooks.yaml |  | helm is not installed in this environment, so 'the template still parses as a Helm template' was checked by substituting the Helm expressions and parsing the result with PyYAML, not by rendering with helm | open |  | 2026-09-05T11:11:39.493Z |  |
 | 20 | 44 | deviation | tests/schema/test_subscription_ingestion.py |  | 44-05: the plan's absent-grace-end control expected an ineffective grant; a NULL ends_at is effective, so the control was split into an unbounded-grant case and a closed-window case | open |  | 2026-09-05T11:53:19.656Z |  |
+| 21 | 44 | deviation | .planning/phases/44-post-webhooks-google-play-rtdn/44-07-PLAN.md |  | 44-07: the plan's specs/ cleanliness gate (git status --porcelain -- specs/) can never pass here — specs/auth-refactor-phases/ has never been tracked in the parent repo, so the gate fires on an untracked path, not an edit. D-22 proved instead by git status --untracked-files=no -- specs/ being empty and by no file under specs/ having a today mtime | open |  | 2026-09-05T12:31:21.640Z |  |
 
 ````json
 [
@@ -276,6 +277,18 @@ last_updated: 2026-09-05T11:53:19.656Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-09-05T11:53:19.656Z",
+    "resolved_at": null
+  },
+  {
+    "id": 21,
+    "kind": "deviation",
+    "phase": "44",
+    "file": ".planning/phases/44-post-webhooks-google-play-rtdn/44-07-PLAN.md",
+    "line": null,
+    "description": "44-07: the plan's specs/ cleanliness gate (git status --porcelain -- specs/) can never pass here — specs/auth-refactor-phases/ has never been tracked in the parent repo, so the gate fires on an untracked path, not an edit. D-22 proved instead by git status --untracked-files=no -- specs/ being empty and by no file under specs/ having a today mtime",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-05T12:31:21.640Z",
     "resolved_at": null
   }
 ]
