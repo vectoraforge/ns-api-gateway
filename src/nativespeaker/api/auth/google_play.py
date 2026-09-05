@@ -39,8 +39,21 @@ PLAY_HTTP_TIMEOUT_SECONDS = 8
 # The envelope fields every RTDN carries, so the rest of the set names the bodies it carries.
 _ENVELOPE_FIELDS = frozenset({"version", "packageName", "eventTimeMillis"})
 
-# One state for now: the remaining eight values and the grace window are a later plan's.
-_STATES = {"SUBSCRIPTION_STATE_ACTIVE": SubscriptionStatus.active}
+# The state Google is in during grace, whose line item expiry is also the end of the grace window.
+GRACE_STATE = "SUBSCRIPTION_STATE_IN_GRACE_PERIOD"
+
+# Canceled is the one value whose answer depends on a date, so it is decided before this lookup.
+_CANCELED_STATE = "SUBSCRIPTION_STATE_CANCELED"
+
+# The four states that answer from Google's word alone. Every literal carries Google's own prefix.
+_STATES = {
+    "SUBSCRIPTION_STATE_ACTIVE": SubscriptionStatus.active,
+    GRACE_STATE: SubscriptionStatus.grace_period,
+    # On hold is Play's billing retry: the paid term ended and Google is still charging for it.
+    "SUBSCRIPTION_STATE_ON_HOLD": SubscriptionStatus.billing_retry,
+    # This enum carries no paused word, and the auto-resume arrives as a fresh active state.
+    "SUBSCRIPTION_STATE_PAUSED": SubscriptionStatus.expired,
+}
 
 
 class PlayExternalAccountIdentifiers(BaseModel):
@@ -126,6 +139,12 @@ def notification_key_for(purchase_token: str, event_time_millis: int, event_type
 def _status_for(state: str, expiry: datetime | None,
                 evaluated_at: datetime) -> SubscriptionStatus:
     """The subscription's status from Play's own state word, which is the only source here."""
+    if state == _CANCELED_STATE:
+        # Canceled but not expired is still a paid term: Google says so in the field's own text.
+        return (SubscriptionStatus.active if expiry is not None and expiry > evaluated_at
+                else SubscriptionStatus.expired)
+    # `revoked` is unreachable on this path: `subscriptionsv2` publishes no revocation signal, and
+    # a revoked subscription reports SUBSCRIPTION_STATE_EXPIRED with the reason in its event type.
     # Every unlisted value is unentitled, so a state this build has never seen never grants.
     return _STATES.get(state, SubscriptionStatus.expired)
 
@@ -177,6 +196,9 @@ class PlayDeveloperSubscriptions:
             raise UnmappedStoreProduct(PurchaseProvider.google_play, str(product_id))
 
         expiry = None if line_item is None else line_item.expiryTime
+        # Google carries no separate grace field, so in grace this expiry is the end of the window.
+        # Left as None, every grace-period subscriber's grant would be written with no end date.
+        in_grace = subscription.subscriptionState == GRACE_STATE
         identifiers = subscription.externalAccountIdentifiers
         return VerifiedNotification(
             provider=PurchaseProvider.google_play,
@@ -194,7 +216,7 @@ class PlayDeveloperSubscriptions:
             signed_at=signed_at,
             purchased_at=subscription.startTime,
             expires_at=expiry,
-            grace_period_expires_at=None,
+            grace_period_expires_at=expiry if in_grace else None,
         )
 
     async def _get(self, package_name: str, purchase_token: str) -> httpx.Response:
