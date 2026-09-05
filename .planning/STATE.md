@@ -5,11 +5,11 @@ milestone_name: Authentication & Entitlements
 current_phase: 44
 current_phase_name: POST /webhooks/google-play/rtdn
 status: executing
-stopped_at: Completed 44-01-PLAN.md
-last_updated: "2026-09-05T11:04:19.447Z"
+stopped_at: Completed 44-02-PLAN.md
+last_updated: "2026-09-05T11:11:26.983Z"
 last_activity: 2026-09-05
 last_activity_desc: Phase 44 execution started
-state_head: 8baf44aae522816f48114417772ebc43317f286d
+state_head: 2d4f05bed0776e7a8cdbb4da3538e0b1d4f49a4b
 progress:
   total_phases: 18
   completed_phases: 14
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 44 (POST /webhooks/google-play/rtdn) — EXECUTING
-Plan: 2 of 7
+Plan: 3 of 7
 Status: Ready to execute
 Last activity: 2026-09-05 — Phase 44 execution started
 
@@ -269,10 +269,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-05T11:03:56.045Z
+**Last session:** 2026-09-05T11:10:56.626Z
 
 Last activity: 2026-09-04
-Stopped at: Completed 44-01-PLAN.md
+Stopped at: Completed 44-02-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -322,6 +322,7 @@ Resume file: None
 | Phase 43 P05 | 12min | 3 tasks | 4 files |
 | Phase 43 P06 | 14min | 2 tasks | 3 files |
 | Phase 44 P01 | 64 min | 2 tasks | 21 files |
+| Phase 44 P02 | 5min | 2 tasks | 4 files |
 
 ## Decisions
 
@@ -461,3 +462,5 @@ Resume file: None
 - [Phase 43]: 43-06: `requirements.mark-complete` applied nothing for APPLEHOOK-01 and APPLEHOOK-02 and returned `table_unmatched` for both — the same result 42-06 recorded, for the same reason: the traceability row is a range the tool does not expand. Both surfaces were finished by hand. Measured, not predicted.
 - [Phase 44]: The Google deduplication key (OQ-4) is the payload-derived composite `google_play:{purchaseToken}:{eventTimeMillis}:{notificationType}` — Chosen by the user at the 44-01 checkpoint. It is derived from the RTDN body alone, so it dedupes both a Pub/Sub redelivery and a Play republish of the same event without relying on any Google delivery-id guarantee; the `google_play:` prefix keeps Google keys from colliding with Apple `notificationUUID` values in the shared `audit.subscription_events.notification_uuid` UNIQUE index; and it stays readable in a database row during an incident. `message.messageId` is not used and the components are not hashed.
 - [Phase 44]: Both providers map their own store status word and their own product map; `status_at` and `SubscriptionsService(products=...)` are deleted (44 D-11/D-16, amending 43 D-13/D-14) — The Google path must write the live `subscriptionState` Play reports, so a date-derived status in the service would silently overrule it. `VerifiedNotification` moved to `auth/store_notifications.py` and now carries the finished `status` and `tier_id`.
+- [Phase 44]: 44-02: the Google callback is a second `matches` entry on the EXISTING rule of httproute-webhooks.yaml, not a second rule — D-19 requires the existing backendRefs block to be reused unchanged. Gateway API ORs the matches within one rule, so one rule with two exact POST matches and one backendRefs is the literal reuse; a second rule would have duplicated the block and its Helm expressions.
+- [Phase 44]: 44-02: the three GOOGLE_PLAY_ environment variables were verified to map onto GooglePlayConfig before being documented — BaseConfig sets env_nested_delimiter="_" with env_nested_max_split=1, so the mapping of a two-word section name is not obvious from the setting alone. All three were loaded through EnvironmentConfig with the exact values .env.example ships, rather than assumed from the APP_STORE_ precedent.

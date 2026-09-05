@@ -674,7 +674,7 @@ Plans:
 **Goal:** Ingest Google Play RTDN via Cloud Pub/Sub push as the second and last provider-callback route.
 **Requirements:** PLAYHOOK-01 … PLAYHOOK-03
 **Depends on:** 34, 35 (soft: 43)
-**Plans:** 1/7 plans executed
+**Plans:** 2/7 plans executed
 **Success criteria:**
 
 1. The route authenticates solely by backend verification of Google's signed OIDC push token
@@ -687,7 +687,7 @@ Plans:
 **Wave 1** *(two parallel plans, no shared file)*
 
 - [x] 44-01-PLAN.md — TRACER: one verified Google push, end to end through every layer to a committed subscription row, plus the inherited suite re-greened against the promoted value type and the two-member partition (wave 1)
-- [ ] 44-02-PLAN.md — The exact-path gateway match, the direct `google-auth` edge, and the three deployer variables in `.env.example` (wave 1)
+- [x] 44-02-PLAN.md — The exact-path gateway match, the direct `google-auth` edge, and the three deployer variables in `.env.example` (wave 1)
 
 **Wave 2** *(three parallel plans, blocked on Wave 1 completion)*
 
@@ -774,6 +774,6 @@ Plans:
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 5/5 | Complete    | 2026-09-03 |
 | 42. POST /auth/claim-registered-grant | v2.0 | 7/7 | Complete    | 2026-09-03 |
 | 43. POST /webhooks/app-store | v2.0 | 6/6 | Complete    | 2026-09-04 |
-| 44. POST /webhooks/google-play/rtdn | v2.0 | 1/7 | In Progress|  |
+| 44. POST /webhooks/google-play/rtdn | v2.0 | 2/7 | In Progress|  |
 | 45. POST /auth/restore-subscription | v2.0 | 0/? | Pending | — |
 | 46. POST /auth/sign-out-all | v2.0 | 0/? | Pending | — |

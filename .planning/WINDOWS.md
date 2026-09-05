@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 11
+open_count: 12
 waived_count: 1
 fixed_count: 6
-total_count: 18
-last_updated: 2026-09-04T23:29:52.710Z
+total_count: 19
+last_updated: 2026-09-05T11:11:39.493Z
 ---
 
 # Broken Windows Ledger
@@ -33,6 +33,7 @@ last_updated: 2026-09-04T23:29:52.710Z
 | 16 | 43 | stub | config/config.yaml |  | Placeholder App Store product id com.nativespeaker.subscription.monthly in app_store.products; no iOS app exists yet, so an operator edits the map. An unmapped id is a logged 500 with nothing written. | open |  | 2026-09-04T22:09:58.987Z |  |
 | 17 | 43 | deviation | .planning/REQUIREMENTS.md |  | APPLEHOOK-01 left unchecked by 43-05: 43-CONTEXT.md D-26 assigns the dated amendments and header counts to plan 43-06 | fixed |  | 2026-09-04T23:17:12.416Z | 2026-09-04T23:29:52.559Z |
 | 18 | 43 | deviation | .planning/phases/43-post-webhooks-app-store/43-06-PLAN.md |  | 43-06 Task 2: the verify block requires six 43-0*-SUMMARY.md files at the time the task runs, which cannot hold — this plan's own summary is written after Task 2 by construction, as 41-05 and 42-06 both recorded. Read 5 at Task 2 time and 6 after the summary landed. | open |  | 2026-09-04T23:29:52.710Z |  |
+| 19 | 44 | unrun-verify | k8s/templates/httproute-webhooks.yaml |  | helm is not installed in this environment, so 'the template still parses as a Helm template' was checked by substituting the Helm expressions and parsing the result with PyYAML, not by rendering with helm | open |  | 2026-09-05T11:11:39.493Z |  |
 
 ````json
 [
@@ -250,6 +251,18 @@ last_updated: 2026-09-04T23:29:52.710Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-09-04T23:29:52.710Z",
+    "resolved_at": null
+  },
+  {
+    "id": 19,
+    "kind": "unrun-verify",
+    "phase": "44",
+    "file": "k8s/templates/httproute-webhooks.yaml",
+    "line": null,
+    "description": "helm is not installed in this environment, so 'the template still parses as a Helm template' was checked by substituting the Helm expressions and parsing the result with PyYAML, not by rendering with helm",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-05T11:11:39.493Z",
     "resolved_at": null
   }
 ]
