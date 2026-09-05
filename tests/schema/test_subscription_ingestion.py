@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth.app_store import VerifiedNotification
+from nativespeaker.api.crud.grants import GrantsDB
 from nativespeaker.api.services.subscriptions import SubscriptionsService
 from nativespeaker.api.tables import PurchaseProvider
 from schema.helpers import (
@@ -34,6 +35,7 @@ _A_MONTH = timedelta(days=30)
 
 def _notification(*, external_id: str, token: str | None, purchased_at: datetime,
                   expires_at: datetime | None, revoked_at: datetime | None = None,
+                  grace_period_expires_at: datetime | None = None,
                   signed_at: datetime | None = None, event_type: str = "DID_RENEW",
                   notification_uuid: str | None = None) -> VerifiedNotification:
     """One verified notification carrying the transaction part every write needs."""
@@ -50,7 +52,7 @@ def _notification(*, external_id: str, token: str | None, purchased_at: datetime
         purchased_at=purchased_at,
         expires_at=expires_at,
         revoked_at=revoked_at,
-        grace_period_expires_at=None,
+        grace_period_expires_at=grace_period_expires_at,
         in_billing_retry=False)
 
 
@@ -86,6 +88,7 @@ class _Buyer:
 
     async def deliver(self, *, external_id: str | None = None, expires_in: timedelta | None = _A_MONTH,
                       purchased_before: timedelta = _A_MONTH, revoked: bool = False,
+                      grace_period_in: timedelta | None = None,
                       signed_at: datetime | None = None, event_type: str = "DID_RENEW",
                       notification_uuid: str | None = None) -> None:
         """Ingest one notification for this buyer, with its term placed around the captured instant."""
@@ -95,6 +98,8 @@ class _Buyer:
             purchased_at=self.evaluated_at - purchased_before,
             expires_at=None if expires_in is None else self.evaluated_at + expires_in,
             revoked_at=self.evaluated_at - timedelta(hours=1) if revoked else None,
+            grace_period_expires_at=(None if grace_period_in is None
+                                     else self.evaluated_at + grace_period_in),
             signed_at=signed_at,
             event_type=event_type,
             notification_uuid=notification_uuid))
@@ -121,6 +126,12 @@ class _Buyer:
             "  ON g.id = u.grant_id WHERE g.tier_id = $1), "
             "(SELECT count(*) FROM audit.subscription_events e JOIN core.subscriptions s "
             "  ON s.id = e.subscription_id WHERE s.tier_id = $1)", self.tier_id))
+
+    async def effective(self) -> list[uuid.UUID]:
+        """The grants the entitlement read itself returns for this buyer at the captured instant."""
+        async with self.factory() as session:
+            return [grant.id for grant in await GrantsDB(session).lock_effective_grants(
+                self.user_id, self.evaluated_at)]
 
     async def events(self) -> set[str]:
         """Every committed event row's notification uuid on this case's tier."""
@@ -305,6 +316,31 @@ class TestLeavingTheEntitledSet:
             await buyer.deliver(revoked=True)
 
             assert [row["status"] for row in await buyer.grants()] == ["revoked"]
+
+
+@pytest.mark.asyncio
+class TestAGracePeriodDeliveryIsEntitledForTheGraceWindow:
+    """CR-02. During grace the interval the buyer is entitled for is Apple's window, not the lapsed term."""
+
+    async def test_the_grant_runs_to_the_grace_window_and_the_read_returns_it(self, _schema_db_uri):
+        async with _buyer(_schema_db_uri) as buyer:
+            await buyer.deliver(expires_in=-timedelta(minutes=1),
+                                grace_period_in=timedelta(days=16))
+
+            held = await buyer.grants()
+            assert await buyer.status() == "grace_period"
+            assert held[0]["ends_at"] == buyer.evaluated_at + timedelta(days=16)
+            assert await buyer.effective() == [held[0]["id"]]
+
+    async def test_a_grace_window_already_past_leaves_no_effective_grant_control(self,
+                                                                                _schema_db_uri):
+        """The control: the case above passes on the window, not on the delivery reaching a write at all."""
+        async with _buyer(_schema_db_uri) as buyer:
+            await buyer.deliver(expires_in=-timedelta(minutes=1),
+                                grace_period_in=-timedelta(minutes=1))
+
+            assert await buyer.status() == "expired"
+            assert await buyer.effective() == []
 
 
 @pytest.mark.asyncio
