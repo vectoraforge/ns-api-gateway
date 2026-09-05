@@ -34,13 +34,13 @@ _A_MONTH = timedelta(days=30)
 
 def _notification(*, external_id: str, token: str | None, purchased_at: datetime,
                   expires_at: datetime | None, revoked_at: datetime | None = None,
-                  signed_at: datetime | None = None,
+                  signed_at: datetime | None = None, event_type: str = "DID_RENEW",
                   notification_uuid: str | None = None) -> VerifiedNotification:
     """One verified notification carrying the transaction part every write needs."""
     return VerifiedNotification(
         provider=PurchaseProvider.apple,
         notification_uuid=notification_uuid or f"notification-{uuid.uuid4()}",
-        event_type="DID_RENEW",
+        event_type=event_type,
         external_id=external_id,
         transaction_id=f"transaction-{uuid.uuid4().hex[:12]}",
         product_id=PRODUCT_ID,
@@ -86,7 +86,7 @@ class _Buyer:
 
     async def deliver(self, *, external_id: str | None = None, expires_in: timedelta | None = _A_MONTH,
                       purchased_before: timedelta = _A_MONTH, revoked: bool = False,
-                      signed_at: datetime | None = None,
+                      signed_at: datetime | None = None, event_type: str = "DID_RENEW",
                       notification_uuid: str | None = None) -> None:
         """Ingest one notification for this buyer, with its term placed around the captured instant."""
         await self.ingest(_notification(
@@ -96,6 +96,7 @@ class _Buyer:
             expires_at=None if expires_in is None else self.evaluated_at + expires_in,
             revoked_at=self.evaluated_at - timedelta(hours=1) if revoked else None,
             signed_at=signed_at,
+            event_type=event_type,
             notification_uuid=notification_uuid))
 
     async def grants(self) -> list[asyncpg.Record]:
@@ -120,6 +121,19 @@ class _Buyer:
             "  ON g.id = u.grant_id WHERE g.tier_id = $1), "
             "(SELECT count(*) FROM audit.subscription_events e JOIN core.subscriptions s "
             "  ON s.id = e.subscription_id WHERE s.tier_id = $1)", self.tier_id))
+
+    async def events(self) -> set[str]:
+        """Every committed event row's notification uuid on this case's tier."""
+        return {row["notification_uuid"] for row in await self.probe.fetch(
+            "SELECT e.notification_uuid FROM audit.subscription_events e "
+            "JOIN core.subscriptions s ON s.id = e.subscription_id WHERE s.tier_id = $1",
+            self.tier_id)}
+
+    async def status(self, external_id: str | None = None) -> str:
+        """The committed status on one lifecycle key's subscription row."""
+        return await self.probe.fetchval(
+            "SELECT status::text FROM core.subscriptions WHERE provider = 'apple' "
+            "AND external_id = $1", external_id or self.external_id)
 
     async def signed_at(self, external_id: str | None = None) -> datetime | None:
         """The committed store clock on one lifecycle key's subscription row."""
@@ -328,6 +342,60 @@ class TestTheNewestPurchaseWins:
             assert await buyer.probe.fetchval(
                 "SELECT count(*) FROM core.store_purchases WHERE external_id = $1",
                 buyer.external_id) == 1
+
+
+@pytest.mark.asyncio
+class TestAPayloadSignedBeforeTheRecordedStateAppliesNothing:
+    """CR-01. Apple guarantees no delivery order, so an older payload must not downgrade a paying buyer."""
+
+    async def test_a_stale_expiry_leaves_the_term_and_the_status_alone(self, _schema_db_uri):
+        async with _buyer(_schema_db_uri) as buyer:
+            await buyer.deliver(signed_at=buyer.evaluated_at - timedelta(hours=1))
+
+            await buyer.deliver(expires_in=-timedelta(minutes=1), event_type="EXPIRED",
+                                signed_at=buyer.evaluated_at - timedelta(days=1))
+
+            held = await buyer.grants()
+            assert [row["status"] for row in held] == ["active"]
+            assert held[0]["ends_at"] == buyer.evaluated_at + _A_MONTH
+            assert await buyer.status() == "active"
+
+    async def test_the_stale_delivery_is_still_audited_and_does_not_raise(self, _schema_db_uri):
+        """The store reads 200 over an appended row, so refusing to apply it loses nothing."""
+        async with _buyer(_schema_db_uri) as buyer:
+            fresh = f"notification-{uuid.uuid4()}"
+            stale = f"notification-{uuid.uuid4()}"
+            await buyer.deliver(signed_at=buyer.evaluated_at - timedelta(hours=1),
+                                notification_uuid=fresh)
+
+            await buyer.deliver(expires_in=-timedelta(minutes=1), event_type="EXPIRED",
+                                signed_at=buyer.evaluated_at - timedelta(days=1),
+                                notification_uuid=stale)
+
+            assert await buyer.events() == {fresh, stale}
+
+    async def test_the_same_two_deliveries_in_the_stores_own_order_do_expire_it_control(
+            self, _schema_db_uri):
+        """The control: the guard is what saved the grant above, and not the order this case delivered in."""
+        async with _buyer(_schema_db_uri) as buyer:
+            await buyer.deliver(signed_at=buyer.evaluated_at - timedelta(days=1))
+
+            await buyer.deliver(expires_in=-timedelta(minutes=1), event_type="EXPIRED",
+                                signed_at=buyer.evaluated_at - timedelta(hours=1))
+
+            assert [row["status"] for row in await buyer.grants()] == ["expired"]
+            assert await buyer.status() == "expired"
+
+    async def test_a_row_carrying_no_store_clock_applies_the_delivery_normally(self, _schema_db_uri):
+        """A NULL store clock is unknown, never newest: a row written before this column is not frozen."""
+        async with _buyer(_schema_db_uri) as buyer:
+            await insert_subscription(buyer.probe, external_id=buyer.external_id,
+                                      tier_id=buyer.tier_id, user_id=buyer.user_id)
+
+            await buyer.deliver(expires_in=-timedelta(minutes=1), event_type="EXPIRED",
+                                signed_at=buyer.evaluated_at - timedelta(days=365))
+
+            assert await buyer.status() == "expired"
 
 
 @pytest.mark.asyncio
