@@ -674,13 +674,13 @@ Plans:
 **Goal:** Ingest Google Play RTDN via Cloud Pub/Sub push as the second and last provider-callback route.
 **Requirements:** PLAYHOOK-01 … PLAYHOOK-03
 **Depends on:** 34, 35 (soft: 43)
-**Plans:** 6/7 plans executed
+**Plans:** 7/7 plans executed
 **Success criteria:**
 
-1. The route authenticates solely by backend verification of Google's signed OIDC push token
-2. It calls Phase 43's shared ingestion module rather than a forked copy
-3. The provider-callback category contains exactly these two routes, both by exact path — **Phase 43 has now defined the form (D-01), 2026-09-04. Read it under APPLEHOOK-02 in `REQUIREMENTS.md` and at Phase 43 criterion 3 above; it is deliberately not restated here.** Phase 44 inherits that answer rather than inventing a second one; PLAYHOOK-02 already binds it to Phase 43's shared module, and two competing partition mechanisms would recreate the drift the registry died of. The "exactly two" clause needs that partition to be countable, and it now is. Matching requirement: PLAYHOOK-03.
-4. A push with an invalid OIDC token is rejected without touching subscription state
+1. The route authenticates solely by backend verification of Google's signed OIDC push token — **met as written, 2026-09-05.** The route reads no Firebase identity and resolves no user; its one credential is Google's Pub/Sub OIDC bearer, verified by the backend itself through the existing `JWTVerifier` pinned to issuer `https://accounts.google.com`, RS256, and the exact configured `aud`, with the service-account `email` and `email_verified` compared after decode rather than placed in the verifier's require list — because a claim the store may stop sending must not become a verification error. A valid Firebase ID token, checked against the application's own verifier first so the case cannot pass vacuously, buys a bad push nothing. Matching requirement: PLAYHOOK-01.
+2. It calls Phase 43's shared ingestion module rather than a forked copy — **met as written, 2026-09-05.** The Google path reaches `SubscriptionsService.ingest` unchanged; no lifecycle rule is re-implemented or varied per provider. What moved is the seam, not the service: `VerifiedNotification` was promoted into `auth/store_notifications.py` carrying the finished `status` and `tier_id`, so each provider class resolves its own store status word and its own product map and the service only writes what the value type carries. The four database guarantees this criterion claims the Google path inherits — replay, out-of-order refusal, the two-connection race and the one-transaction rule — are **executed for `google_play` on real PostgreSQL** rather than argued from Apple's. Matching requirement: PLAYHOOK-02.
+3. The provider-callback category contains exactly these two routes, both by exact path — **ANSWERED by Phase 44 (D-03), 2026-09-05.** Phase 43 defined the form (D-01) and Phase 44 **added one route and one literal member rather than a second mechanism**. `tests/unit/test_app_wiring.py` holds `PROVIDER_CALLBACK_VERIFIERS`, a dict mapping each exact path to its own verifier, and `PROVIDER_CALLBACK_PATHS` is its **key set** — so the partition is countable through one literal, no second table can disagree with the first, and "exactly two" is a property of a dict rather than a claim in prose. Both members are registered at exact literals, never by wildcard or prefix, and neither is on the public allowlist, which a separate literal case still pins to `/health/ready` alone. **What this phase changed in the inherited form:** two routes need two verifiers, so the router-level gate of 43 D-01 is replaced by per-route verifier declaration (D-01), and a wiring case now pins that the verifier resolves **before `get_db`** (D-02) — an ordering Phase 43 assumed. Matching requirement: PLAYHOOK-03, answered and closed on the same date, which settles the last of the four flags Phase 37.1 raised on the deleted route registry.
+4. A push with an invalid OIDC token is rejected without touching subscription state — **met as written, 2026-09-05.** The verifier is each callback route's parameter 0 and resolves **before `get_db`**, so a refused push opens no database session and can touch no state — pinned by a flattened dependency-resolution walk rather than assumed. Nine pushes over the seven stages this route can refuse with answer the **byte-identical** 401 body, compared as raw response bytes, so the route is no oracle about which check failed; the distinguishing detail reaches the operator's WARNING record alone, as `stage`. The matrix's completeness control reads the two raise sites' AST rather than restating a list, so an eighth arm added later fails the control instead of shipping untested. Matching requirement: PLAYHOOK-01.
 
 Plans:
 
@@ -701,7 +701,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 44-07-PLAN.md — The dated PLAYHOOK amendments, the two research corrections to the record, the answered criterion 3, and the phase close (wave 4)
+- [x] 44-07-PLAN.md — The dated PLAYHOOK amendments, the two research corrections to the record, the answered criterion 3, and the phase close (wave 4)
 
 #### Phase 45: POST /auth/restore-subscription
 

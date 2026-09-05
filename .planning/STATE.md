@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 44
 current_phase_name: POST /webhooks/google-play/rtdn
 status: executing
-stopped_at: Completed 44-06-PLAN.md
-last_updated: "2026-09-05T12:13:20.464Z"
+stopped_at: Completed 44-07-PLAN.md
+last_updated: "2026-09-05T12:35:00.000Z"
 last_activity: 2026-09-05
-last_activity_desc: Phase 44 execution started
+last_activity_desc: Phase 44 executed — all seven plans complete, awaiting verification
 state_head: 6bd45e12d0026b6e1ccec4c7d21486776dc6e36c
 progress:
   total_phases: 18
   completed_phases: 14
   total_plans: 110
-  completed_plans: 109
+  completed_plans: 110
   percent: 78
 ---
 
@@ -29,10 +29,53 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 44 (POST /webhooks/google-play/rtdn) — EXECUTING
-Plan: 7 of 7
-Status: Ready to execute
-Last activity: 2026-09-05 — Phase 44 execution started
+Phase: 44 (POST /webhooks/google-play/rtdn) — EXECUTED, NOT YET VERIFIED
+Plan: 7 of 7 — all seven complete
+Status: Ready for `/gsd:verify-work 44`
+Last activity: 2026-09-05 — Phase 44 executed; all seven plans complete
+
+<!-- Counts read against disk rather than incremented, as 41-05, 42-07 and 43-06 did. Read at
+     2026-09-05T12:35Z, during plan 44-07's Task 2: 110 PLAN files and 109 SUMMARY files across
+     .planning/phases/, and the frontmatter carried 110 and 109, so nothing needed correcting.
+     This plan's own summary is the hundred-and-tenth and lands after Task 2, which is why
+     completed_plans is written as 110 here rather than 109. Phase 44 itself: 7 PLAN files and 6
+     SUMMARY files at the moment this was read, the seventh being this plan's. The phase is
+     executed, not yet verified, so completed_phases stays at 14 and percent stays at 78.
+     Parallel wave agents do not write STATE.md, so an incremented counter would be stale; these
+     numbers were counted, not advanced. -->
+
+**Phase 44 outcome.** `POST /webhooks/google-play/rtdn` ships. Google's Pub/Sub push infrastructure
+posts an OIDC bearer to the second and last member of the provider-callback partition. That token is
+the one credential: the existing `JWTVerifier` checks the signature against Google's published keys
+with issuer `https://accounts.google.com` and RS256, pins the exact configured `aud`, and the
+service-account `email` and `email_verified` are compared **after** decode rather than required —
+a claim the store may stop sending must not become a verification error. The verifier is the route's
+**parameter 0** and resolves **before `get_db`**, pinned by a flattened resolution walk rather than
+assumed, so a refused push never opens a database session. Only then is `message.data` decoded, only
+then is `packageName` compared, and only then does `purchases.subscriptionsv2.get` supply **every**
+written value — the message is a trigger, never evidence. One transaction then runs Phase 43's
+service **unforked**. **What was measured rather than assumed:** all nine `SUBSCRIPTION_STATE_`
+values Google publishes have an executed answer with `expired` as the fall-through; one RTDN
+ingested twice under the payload-derived composite key leaves every count and every grant untouched,
+with the control that a later `eventTimeMillis` does record its own row; a straggler carrying an
+older instant leaves a paying subscriber alone and logs one WARNING; two connections raced for one
+purchase token commit exactly one subscription, the loser reading SQLSTATE 23505 and writing
+nothing; an ingest interrupted at its commit committed neither the subscription nor its grant; and
+nine pushes over seven refusal stages answer a byte-identical 401 compared as raw response bytes,
+with the matrix's completeness control reading the two raise sites' AST so an eighth arm fails the
+control instead of shipping untested. **PLAYHOOK-03 is answered and closed** by adding one route and
+one literal member to Phase 43's partition — `PROVIDER_CALLBACK_PATHS` is the key set of
+`PROVIDER_CALLBACK_VERIFIERS` — which settles the last of the four flags Phase 37.1 raised on the
+deleted route registry, open since 2026-08-24. **Two of this phase's own findings changed shipped
+behaviour rather than only the record:** the grace window Google carries no field for (a `None`
+would have written `ends_at=None` into every grace-period grant), and a real leak — every attribution
+conflict was writing the Google purchase token into an ERROR record, now the row's own primary key.
+Suite **1190 unit / 298 e2e / 205 schema**, `ruff check src tests` clean. Five divergences from
+`09-webhook-google-play-rtdn.md` are recorded as **flagged conflicts** under PLAYHOOK-01 rather than
+resolved by editing the brief. **Recorded as accepted rather than fixed:** the unbounded
+unauthenticated request cost, the narrowest of the five such residuals this project now carries.
+**Recorded as NOT run:** `helm template`, because helm is absent from this environment — logged in
+`.planning/WINDOWS.md` as an `unrun-verify`, not claimed as a pass.
 
 <!-- Counts read against disk rather than incremented (41-05). At Task 3 time: 90 PLAN files and 89
      SUMMARY files across .planning/phases/, which is exactly what the frontmatter already carried,
@@ -269,10 +312,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-05T12:13:02.037Z
+**Last session:** 2026-09-05T12:35:00.000Z
 
-Last activity: 2026-09-04
-Stopped at: Completed 44-06-PLAN.md
+Last activity: 2026-09-05
+Stopped at: Completed 44-07-PLAN.md — Phase 44 executed, all seven plans complete
 Resume file: None
 
 ## Performance Metrics
@@ -327,6 +370,7 @@ Resume file: None
 | Phase 44 P04 | 7 min | 2 tasks | 2 files |
 | Phase 44 P05 | 20min | 3 tasks | 3 files |
 | Phase 44 P06 | 11 min | 2 tasks | 7 files |
+| Phase 44 P07 | 22 min | 2 tasks | 3 files |
 
 ## Decisions
 
@@ -478,3 +522,11 @@ Resume file: None
 - [Phase 44]: 44-05: a second control covers the ineffective half — a grace window already closed, which is Phase 43's CR-02 verbatim
 - [Phase 44]: AttributionConflict is raised with the store_purchases row id and logs purchase_id: on the Google path external_id is the purchase token itself (44 D-10), so the Phase 43 log field was a credential in an ERROR record — The lifecycle key was the right operator handle while Apple was the only provider. The row's own primary key resolves external_id and everything else, and carries nothing the store supplied, so no capability is lost on either path.
 - [Phase 44]: The Google refusal completeness control reads both raise sites with ast, so a refusal stage added later fails the control rather than shipping untested — A hand-written set of expected stages drifts silently; reading the code is the only version of the control worth having.
+- [Phase 44]: 44-07: the Google seam is TWO classes behind ONE dependency, and the split is for Phase 45 rather than for tidiness — `PubSubPushTokens` verifies the push credential and `PlayDeveloperSubscriptions` makes the authoritative `purchases.subscriptionsv2.get` call. `verify_google_play_notification` composes both. **Phase 45's restore route needs the Play lookup alone**, with no Pub/Sub token to verify, so a single fused class would have forced that phase either to fork the lookup or to synthesise a credential it does not have. The Protocol `PlaySubscriptionSource` is declared beside its first implementation in `auth/google_play.py` — FOUND-08's forward-flag treatment, and its own module because `auth/adapters.py` is fenced by an import allowlist that excludes `httpx`. Neither class holds a logger, so no code path exists that could write a push token or a Play response to a log line.
+- [Phase 44]: 44-07: the Play credential is Application Default Credentials, never a key file (D-14) — `google.auth.default()` with the `androidpublisher` scope, which is the identity Firebase Admin already runs on. This is the same decision Phase 37.2 D-08 made for Firebase and for the same reason: the org policy `iam.disableServiceAccountKeyCreation` forbids minting a key. No new secret is introduced; the operator makes one grant in **Play Console → Users and permissions**, not in GCP IAM, which is the step an operator reading GCP documentation alone will not find. An absent credential logs one warning at boot and the route answers 503 rather than killing the pod.
+- [Phase 44]: 44-07: `SubscriptionStatus.revoked` is Apple-only, and that is a measured provider asymmetry rather than an omission (OQ-1) — `subscriptionsv2` exposes no citable revocation signal: nine states and none is a revocation, no revocation or refund field on `SubscriptionPurchaseV2`, and a revoked subscription reports `SUBSCRIPTION_STATE_EXPIRED`. So a Google revocation is recorded as `expired` with the reason preserved in `event_type` 12. A sweep drives all nine states through the real read on both sides of their expiry and none reaches `revoked`, so a later plan wanting a Google revocation signal fails that case and is forced to say so.
+- [Phase 44]: 44-07: `linkedPurchaseToken` is parsed and not acted on, so an upgrade or re-signup leaves two `core.subscriptions` rows for one buyer (OQ-3) — Google returns the old subscription's token on a re-signup, upgrade, downgrade, prepaid conversion or top-up. The old row keeps its last known status until Google sends that token's own expiry notification. **The buyer's grant is correct throughout**, because the service supersedes every grant the buyer holds before inserting the new one and `ix_access_grants_one_active_per_user` allows exactly one — so this is a stale row a reader must not mistake for a live one, and not an entitlement error. Acting on it would mean a second subscription write outside the notification's own lifecycle key.
+- [Phase 44]: 44-07: the counts are twenty-four and thirty-three, re-derived against four named SHARED-INVARIANTS sections rather than inherited; the gap of nine is enumerated — All five new conflicts are against the brief and not one invariant section produced a divergence. **Three of the five are Phase 43's three counted a second time**, because `09-webhook-google-play-rtdn.md` states the same three rules in its own unamended text; a conflict is counted against each binding passage it diverges from, not once per idea. The two genuinely new ones are D-10's raw purchase token and OQ-4's composite replay key, both rated one-way.
+- [Phase 44]: 44-07: the `09` brief's DELETIONS line forbids the mechanism it mandates two clauses earlier, and the divergence is recorded rather than reasoned away — `:53` names the whole control set as *"the Pub/Sub OIDC verification **plus the authoritative Play lookup**"* and then forbids persisting raw purchase tokens. The lookup accepts no handle but the token, so a backend obeying the second clause can never perform the first. D-10 is filed as a counted flagged conflict with that reading stated, rather than as an interpretation that makes the conflict disappear.
+- [Phase 44]: 44-07: the traceability row for PLAYHOOK is deliberately left as a range, and `requirements.mark-complete` reporting `table_unmatched` is accepted rather than fixed — Every row in that table is a range with no per-id anchor; reshaping this one row to satisfy the tool's parser would make it inconsistent with the twelve others and would fix the tool for none of them. The same result 41-05, 42-06, 43-06 and 44-05 each recorded. Both surfaces were finished by hand, as before.
+- [Phase 44]: 44-07: the plan's own `specs/` cleanliness gate could never pass in this repository, and was replaced by two checks that measure the property — `git status --porcelain -- specs/` reports `?? specs/auth-refactor-phases/` because that directory has **never been tracked** in the parent repo, so the gate fired on an untracked path rather than on an edit. D-22 is instead proved by `git status --untracked-files=no -- specs/` being empty and by no file under `specs/` having an mtime inside today. The distinction matters: the gate exists to catch a specification **edit**, and untracked-ness is not one.
