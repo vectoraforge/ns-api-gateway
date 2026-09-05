@@ -78,6 +78,23 @@ class SubscriptionsService:
             # The replay: the store's own key is already recorded, so this delivery writes nothing.
             return
 
+        if (stored is not None and stored.store_signed_at is not None
+                and notification.signed_at is not None
+                and notification.signed_at < stored.store_signed_at):
+            # Apple guarantees no delivery order, and `notification_uuid` only catches the same payload twice.
+            await self._settle(await self.subscriptions_db.append_event(
+                subscription=stored,
+                event_type=notification.event_type,
+                notification_uuid=notification.notification_uuid,
+                # The recorded tier on both sides: no transition was applied, so none is claimed.
+                old_tier_id=stored.tier_id,
+                new_tier_id=stored.tier_id,
+                evaluated_at=self.evaluated_at), notification)
+            logger.info("store_notification_superseded", event_type=notification.event_type)
+            # Reached before the attribution guard: a stale payload must not earn the 500 that guard raises.
+            await self.session.commit()
+            return
+
         recorded = await self.subscriptions_db.read_purchase(notification.provider,
                                                              notification.external_id)
         if recorded is not None and token is not None and recorded.identity_value != token:
