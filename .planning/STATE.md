@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 44
 current_phase_name: POST /webhooks/google-play/rtdn
 status: executing
-stopped_at: Completed 44-03-PLAN.md
-last_updated: "2026-09-05T11:29:43.071Z"
+stopped_at: Completed 44-04-PLAN.md
+last_updated: "2026-09-05T11:38:11.372Z"
 last_activity: 2026-09-05
 last_activity_desc: Phase 44 execution started
-state_head: 83c1a31f42fdd71626bf5ca4053e62adca6c7fbf
+state_head: b895c24870b126715535913dd30b6a720411672e
 progress:
   total_phases: 18
   completed_phases: 14
   total_plans: 110
-  completed_plans: 106
+  completed_plans: 107
   percent: 78
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 44 (POST /webhooks/google-play/rtdn) — EXECUTING
-Plan: 4 of 7
+Plan: 5 of 7
 Status: Ready to execute
 Last activity: 2026-09-05 — Phase 44 execution started
 
@@ -269,10 +269,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-05T11:29:42.217Z
+**Last session:** 2026-09-05T11:38:00.223Z
 
 Last activity: 2026-09-04
-Stopped at: Completed 44-03-PLAN.md
+Stopped at: Completed 44-04-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -324,6 +324,7 @@ Resume file: None
 | Phase 44 P01 | 64 min | 2 tasks | 21 files |
 | Phase 44 P02 | 5min | 2 tasks | 4 files |
 | Phase 44 P03 | 10 min | 3 tasks | 3 files |
+| Phase 44 P04 | 7 min | 2 tasks | 2 files |
 
 ## Decisions
 
@@ -468,3 +469,6 @@ Resume file: None
 - [Phase 44]: Every Google state literal carries the SUBSCRIPTION_STATE_ prefix — 44-CONTEXT.md D-11's bare words match nothing Google sends, so a dict keyed on them would route every subscriber to expired
 - [Phase 44]: In grace, the Play line item's own expiryTime is both expires_at and grace_period_expires_at — SubscriptionPurchaseV2 carries no grace field, so leaving it None would send ends_at=None into every grace-period grant write
 - [Phase 44]: A Play 404 or 410 answers 200 having written nothing — Pub/Sub acknowledges only five statuses, so retrying a purchase token Google says is gone loops until retention expires
+- [Phase 44]: 44-04: the tracked Play product id is nativespeaker.subscription.monthly, the id the e2e seam already ships — A second spelling in config/config.yaml would make the catalogue and the only executed Google purchase path disagree
+- [Phase 44]: 44-04: only google_play.products is declared in the tracked YAML; the three deployer values stay in the environment — init_settings outranks env_settings, so a deployer value written in the tracked file could never be overridden
+- [Phase 44]: 44-04: assumption A5 holds — all three GOOGLE_PLAY_ variables land on GooglePlayConfig under env_nested_max_split=1 — pydantic-settings matches the longest known field name first; this is now measured by loading the real config rather than assumed
