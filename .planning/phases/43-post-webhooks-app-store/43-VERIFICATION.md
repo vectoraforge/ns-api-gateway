@@ -29,7 +29,7 @@ advisory:
 # Phase 43: POST /webhooks/app-store Verification Report
 
 **Phase Goal:** Ingest Apple App Store Server Notifications as the first of exactly two provider-callback routes.
-**Verified:** 2026-09-05
+**Verified:** 2026-09-04
 **Status:** passed
 **Re-verification:** Yes — after gap closure. This report supersedes the initial verification
 (`43-VERIFICATION.md`, 2026-09-04, `status: gaps_found`, `score: 4/6`), which found two failed
