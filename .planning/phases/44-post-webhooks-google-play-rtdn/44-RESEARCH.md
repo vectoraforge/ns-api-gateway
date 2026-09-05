@@ -1429,9 +1429,9 @@ unbounded-cost residual a CPU-burn vector rather than a pool-exhaustion vector.
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-### OQ-1: The `revoked` word for Google — **answered: there is no citable signal**
+### RESOLVED: OQ-1 — The `revoked` word for Google — **answered: there is no citable signal**
 
 - **What we know:** `SubscriptionState` has nine values and none of them is a revocation
   (F-08). `SubscriptionPurchaseV2` has no revocation or refund field; the reference lists a
@@ -1447,7 +1447,7 @@ unbounded-cost residual a CPU-burn vector rather than a pool-exhaustion vector.
   asymmetry between the two providers and belongs in the D-21 requirement amendment, not only in a
   code comment.
 
-### OQ-2: Apple's `data.status` optionality — **could not be verified**
+### RESOLVED: OQ-2 — Apple's `data.status` optionality — **could not be verified**
 
 - **What we know:** `Data` carries both `status` and `rawStatus`, and the library types `status`
   as optional. `[VERIFIED: executed `dir()` on the installed `appstoreserverlibrary.models.Data`]`
@@ -1460,7 +1460,7 @@ unbounded-cost residual a CPU-burn vector rather than a pool-exhaustion vector.
   to a date-derived status — that would resurrect `status_at`, which D-11 deletes, and would hide
   the case. Add one named unit case so the arm is not vacuous.
 
-### OQ-3: `linkedPurchaseToken` on an upgrade or re-signup
+### RESOLVED: OQ-3 — `linkedPurchaseToken` on an upgrade or re-signup
 
 - **What we know:** Google returns the **old** subscription's purchase token when this
   subscription is a re-signup, an upgrade/downgrade, a prepaid conversion or a top-up.
@@ -1477,7 +1477,12 @@ unbounded-cost residual a CPU-burn vector rather than a pool-exhaustion vector.
   outside the notification's own lifecycle key, which is a bigger change than this phase's scope.
   Google will send `SUBSCRIPTION_EXPIRED` for the old token on its own schedule.
 
-### OQ-4: What is `notification_uuid` for Google? — **the one genuine design gap**
+### OPEN BY DESIGN: OQ-4 — What is `notification_uuid` for Google? — **the one genuine design gap**
+
+> Deliberately not settled here. It is routed to plan `44-01`'s `checkpoint:decision`
+> (`gate="blocking-human"`, rated `one-way`), which is this project's mechanism for a
+> one-way-door decision research cannot settle on its own. The recommendation below is the
+> option put to that checkpoint, not a resolution.
 
 - **What we know:** `VerifiedNotification.notification_uuid` is `str` and **not** optional, and
   `audit.subscription_events.notification_uuid` is `UNIQUE`.
@@ -1507,7 +1512,7 @@ unbounded-cost residual a CPU-burn vector rather than a pool-exhaustion vector.
   same RTDN twice and asserts exactly one `audit.subscription_events` row** — the property is
   otherwise untested and its failure is silent.
 
-### OQ-5: The failure taxonomy of the Play GET
+### RESOLVED: OQ-5 — The failure taxonomy of the Play GET
 
 - **What we know:** D-20 says a failed Play call answers 500 so Pub/Sub redelivers. Community
   sources report a `410 Gone` with `purchaseTokenNoLongerValid` for a token whose Google account

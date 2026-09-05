@@ -179,8 +179,8 @@ allowlist, mTLS; provisioning the Pub/Sub topic and push subscription themselves
   rate limits and budgets). Record the amendments to 43 D-13 and D-14 as dated notes under
   APPLEHOOK-01 and in `STATE.md` § Decisions. Update the header's counts. Mark ROADMAP
   criterion 3 answered.
-- **D-22: `09-webhook-google-play-rtdn.md`, `08-webhook-app-store.md` and `SHARED-INVARIANTS.md`
-  are NOT edited** (43 D-27). Divergences live in REQUIREMENTS.md.
+- **D-22: `09-webhook-google-play-rtdn.md`, `08-webhook-app-store.md` and `SHARED-INVARIANTS.md` are NOT edited** (43 D-27).
+  Divergences live in REQUIREMENTS.md.
 - **D-23: Every comment this phase writes is ASD-STE100, inline where possible** (43 D-25).
 
 ### Carried forward — decided earlier, binding here, do NOT rebuild
