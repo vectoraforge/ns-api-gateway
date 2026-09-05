@@ -11,6 +11,7 @@ from pathlib import Path
 import jwt as pyjwt
 import pytest
 from appstoreserverlibrary.models.Environment import Environment
+from appstoreserverlibrary.models.Status import Status
 from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
@@ -20,8 +21,15 @@ from cryptography.x509.oid import NameOID
 
 from nativespeaker.api.auth.app_store import AppStoreNotifications, StoreNotificationVerifier
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
-from nativespeaker.api.errors import NotificationRejected, Unavailable
+from nativespeaker.api.errors import InternalError, NotificationRejected, Unavailable
 from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
+from unit.test_google_play_notifications import (
+    LAPSED,
+    PUBLISHED_STATES,
+    UNEXPIRED,
+    UNKNOWN_STATE,
+    _read,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -49,6 +57,15 @@ ATTRIBUTION_TOKEN = "8f4d1a2e-0000-4000-8000-000000000001"
 # The tier the configured map resolves this product to, and Apple's own word for an entitled term.
 TIER_ID = "paid"
 APPLE_STATUS_ACTIVE = 1
+
+# Apple's five `Status` members and the `SubscriptionStatus` word each must still cross the seam as.
+APPLE_STATUS_WORDS = (
+    (Status.ACTIVE, SubscriptionStatus.active),
+    (Status.EXPIRED, SubscriptionStatus.expired),
+    (Status.BILLING_RETRY, SubscriptionStatus.billing_retry),
+    (Status.BILLING_GRACE_PERIOD, SubscriptionStatus.grace_period),
+    (Status.REVOKED, SubscriptionStatus.revoked),
+)
 
 
 def _milliseconds(moment: datetime) -> int:
@@ -322,6 +339,51 @@ class TestTheValueTypeCarriesThisProjectsFieldNames:
         # No transaction part means no product, so there is no tier to resolve and nothing to grant.
         assert verified.tier_id is None
         assert verified.status is SubscriptionStatus.expired
+
+
+class TestApplesFiveStatusesStillMapOneToOne:
+    """D-11, D-13. The status word moved into the provider class, so the map itself is re-measured here."""
+
+    @pytest.mark.parametrize(("apple", "expected"), APPLE_STATUS_WORDS)
+    def test_each_apple_status_crosses_the_seam_as_its_own_word(self, chain, apple, expected):
+        verified = _notifications(chain).verify(_full(chain, status=int(apple)))
+
+        assert verified.status is expected
+
+    def test_the_map_is_total_and_injective_over_apples_five(self, chain):
+        """Both halves at once: five distinct inputs give five distinct words, and they are all five."""
+        words = [_notifications(chain).verify(_full(chain, status=int(apple))).status
+                 for apple, _ in APPLE_STATUS_WORDS]
+
+        assert len(list(Status)) == len(words) == len(set(words))
+        # A later edit that collapses two Apple states onto one word fails on the line above.
+        assert set(words) == set(SubscriptionStatus)
+
+    def test_a_subscription_payload_with_no_status_raises_rather_than_deriving_one(self, chain):
+        """OQ-2 stands unverified, so this arm is executed rather than assumed unreachable."""
+        with pytest.raises(InternalError):
+            _notifications(chain).verify(
+                _mint(chain, _envelope(chain, transaction=_transaction(), status=None)))
+
+
+class TestRevokedIsAnAppleOnlyWord:
+    """OQ-1. `subscriptionsv2` publishes no revocation signal, so the asymmetry is measured, not described."""
+
+    def test_the_apple_map_reaches_revoked(self, chain):
+        verified = _notifications(chain).verify(_full(chain, status=int(Status.REVOKED)))
+
+        assert verified.status is SubscriptionStatus.revoked
+
+    async def test_no_google_state_reaches_revoked_on_either_side_of_its_expiry(self):
+        """Every published state and one Google has not shipped, each read on both sides of its term."""
+        words = {(await _read(state, expiry=expiry)).status
+                 for state in (*PUBLISHED_STATES, UNKNOWN_STATE)
+                 for expiry in (UNEXPIRED, LAPSED, None)}
+
+        assert SubscriptionStatus.revoked not in words
+        # The control: the sweep reaches four real words, so an empty set could not pass the line above.
+        assert words == {SubscriptionStatus.active, SubscriptionStatus.grace_period,
+                         SubscriptionStatus.billing_retry, SubscriptionStatus.expired}
 
 
 class TestEveryReachableRefusalIsOneClassWithItsOwnStage:
