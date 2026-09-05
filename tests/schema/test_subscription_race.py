@@ -14,6 +14,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.errors import AppError, InternalError
 from nativespeaker.api.services.subscriptions import SubscriptionsService
+from nativespeaker.api.tables import PurchaseProvider
 from schema.test_claim_race import _RacingSession, read, scalar
 from schema.test_subscription_ingestion import _notification
 
@@ -115,11 +116,14 @@ def status_of(attempt: _Attempt) -> int:
     return attempt.result.status if isinstance(attempt.result, AppError) else 200
 
 
-def notification_for(harness: _Harness, *, store_key: str = "one") -> VerifiedNotification:
+def notification_for(harness: _Harness, *, store_key: str = "one", tier_id: str = TIER_ID,
+                     provider: PurchaseProvider = PurchaseProvider.apple) -> VerifiedNotification:
     """One verified, unattributed delivery on this test's private keys."""
+    # The key is this test's own, not the Google composite: its stability is the ingestion file's subject.
     return _notification(external_id=harness.external_id,
                          token=None,
-                         tier_id=TIER_ID,
+                         tier_id=tier_id,
+                         provider=provider,
                          purchased_at=NOW - _A_MONTH,
                          expires_at=NOW + _A_MONTH,
                          notification_uuid=f"{harness.uuid_prefix}-{store_key}")
@@ -228,6 +232,72 @@ class TestTwoDeliveriesOfOneStoreKeyCommitOnce:
         assert status_of(third) == 200
         assert third.flushes == 0
         assert await counts(harness) == (1, 1, 1)
+
+
+def google_notification_for(harness: _Harness, **placement) -> VerifiedNotification:
+    """One verified, unattributed Google delivery: the lifecycle key is the purchase token itself."""
+    return notification_for(harness, provider=PurchaseProvider.google_play, **placement)
+
+
+@pytest.mark.asyncio
+class TestTwoGoogleDeliveriesOfOnePurchaseTokenCommitOnce:
+    """PLAYHOOK-01. Pub/Sub can push one RTDN twice at once; the unique indexes are the only arbiter."""
+
+    @pytest_asyncio.fixture
+    async def raced(self, harness):
+        """Two deliveries for one purchase token, released together once both have read the event table."""
+        return await race(harness,
+                          _Attempt(name="first", notification=google_notification_for(harness)),
+                          _Attempt(name="second", notification=google_notification_for(harness)))
+
+    async def test_both_deliveries_read_the_event_table_before_either_wrote(self, raced):
+        """The premise: without this the case is a delivery and its replay, and everything below vacuous."""
+        assert [attempt.events_seen_at_barrier for attempt in raced["attempts"]] == [0, 0]
+
+    async def test_exactly_one_delivery_lost_the_race(self, raced):
+        assert set(raced["by_role"]) == {"won", "lost_at_flush"}
+
+    async def test_exactly_one_row_exists_in_each_of_the_three_tables(self, harness, raced):
+        """The loser wrote nothing: two rows would mean no arbitration, zero that both rolled back."""
+        assert await counts(harness) == (1, 1, 1)
+
+    async def test_the_winner_committed_and_answered_two_hundred(self, raced):
+        winner = raced["by_role"]["won"]
+        assert status_of(winner) == 200
+        assert winner.result is None
+
+    async def test_the_loser_read_the_unique_violation_off_the_sqlstate(self, raced):
+        """D-20, 42-07. The SQLSTATE is the whole classification; no index and no message is read."""
+        loser = raced["by_role"]["lost_at_flush"]
+        assert loser.sqlstate == "23505"
+        assert (loser.integrity_at_flush, loser.integrity_at_commit) == (True, False)
+
+    async def test_the_loser_answers_the_five_hundred_that_makes_pubsub_redeliver(self, raced):
+        """D-23. The exact class, not a subclass: Pub/Sub acknowledges the status and resends on a 5xx."""
+        loser = raced["by_role"]["lost_at_flush"]
+        assert status_of(loser) == 500
+        assert type(loser.result) is InternalError
+
+    async def test_the_redelivery_finds_the_event_row_and_writes_nothing(self, harness, raced):
+        """What the loser's 500 buys: Pub/Sub's resend is a replay, and the replay read stops it."""
+        resent = await run_attempt(harness, _Attempt(name="resent",
+                                                     notification=google_notification_for(harness)))
+
+        assert status_of(resent) == 200
+        assert resent.flushes == 0
+        assert await counts(harness) == (1, 1, 1)
+
+    async def test_an_integrity_failure_that_is_not_a_unique_violation_still_surfaces_control(
+            self, harness):
+        """The control on the classification: 23505 alone is a lost race, and a 23503 must not be read as one."""
+        attempt = _Attempt(name="unmapped",
+                           notification=google_notification_for(harness, tier_id="tier_never_seeded"))
+
+        with pytest.raises(IntegrityError) as violation:
+            await run_attempt(harness, attempt)
+
+        assert violation.value.orig.sqlstate == "23503"
+        assert await counts(harness) == (0, 0, 0)
 
 
 @pytest.mark.asyncio

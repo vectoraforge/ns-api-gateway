@@ -99,7 +99,9 @@ class _InterruptedSession:
 
     async def commit(self, *args, **kwargs):
         """Record what this transaction was about to make durable, then fail instead of committing."""
-        rows = await self._session.execute(
+        # The session's own connection, so the read sees this transaction's uncommitted rows.
+        connection = await self._session.connection()
+        rows = await connection.execute(
             text("SELECT (SELECT count(*) FROM core.subscriptions WHERE tier_id = :tier), "
                  "(SELECT count(*) FROM core.access_grants WHERE tier_id = :tier)"),
             {"tier": self._tier_id})
@@ -610,6 +612,62 @@ class TestAGoogleRedeliveryWritesNothing:
             assert await buyer.events() == {buyer.rtdn_key(earlier, GOOGLE_RENEWED),
                                             buyer.rtdn_key(later, GOOGLE_RENEWED)}
             assert await buyer.subscription_rows() == 1
+
+
+@pytest.mark.asyncio
+class TestAnOlderGoogleDeliveryDoesNotDowngradeTheSubscriber:
+    """D-12. Pub/Sub guarantees no order, so a straggler carrying an older eventTimeMillis applies nothing."""
+
+    async def test_the_newer_state_survives_and_the_refusal_is_recorded_at_warning(
+            self, _schema_db_uri, service_logs):
+        async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
+            newer = _millis(buyer.evaluated_at - timedelta(minutes=1))
+            older = _millis(buyer.evaluated_at - timedelta(days=1))
+            await buyer.deliver(event_type=GOOGLE_RENEWED, signed_at=instant_from_millis(newer),
+                                notification_uuid=buyer.rtdn_key(newer, GOOGLE_RENEWED))
+            granted = await buyer.grants()
+
+            await buyer.deliver(event_type=GOOGLE_EXPIRED, status=SubscriptionStatus.expired,
+                                expires_in=-timedelta(minutes=1),
+                                signed_at=instant_from_millis(older),
+                                notification_uuid=buyer.rtdn_key(older, GOOGLE_EXPIRED))
+
+            assert await buyer.status() == "active"
+            assert await buyer.grants() == granted
+            # Plan 44-01 raised this line: a refused Google straggler is worth seeing in the log.
+            assert ("warning", "store_notification_superseded") in service_logs.calls
+            assert ("info", "store_notification_superseded") not in service_logs.calls
+
+    async def test_the_same_two_deliveries_in_googles_own_order_do_expire_it_control(
+            self, _schema_db_uri):
+        """The control: the guard is what saved the grant above, and not the order this case delivered in."""
+        async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
+            older = _millis(buyer.evaluated_at - timedelta(days=1))
+            newer = _millis(buyer.evaluated_at - timedelta(minutes=1))
+            await buyer.deliver(event_type=GOOGLE_RENEWED, signed_at=instant_from_millis(older),
+                                notification_uuid=buyer.rtdn_key(older, GOOGLE_RENEWED))
+
+            await buyer.deliver(event_type=GOOGLE_EXPIRED, status=SubscriptionStatus.expired,
+                                expires_in=-timedelta(minutes=1),
+                                signed_at=instant_from_millis(newer),
+                                notification_uuid=buyer.rtdn_key(newer, GOOGLE_EXPIRED))
+
+            assert await buyer.status() == "expired"
+            assert [row["status"] for row in await buyer.grants()] == ["expired"]
+
+
+@pytest.mark.asyncio
+class TestOneGoogleDeliveryIsOneTransaction:
+    """PLAYHOOK-01. The subscription row and the grant it earns become durable together or not at all."""
+
+    async def test_an_interrupted_delivery_commits_neither_the_subscription_nor_its_grant(
+            self, _schema_db_uri):
+        async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
+            held = await buyer.interrupt(event_type=GOOGLE_RENEWED)
+
+            # The premise: both rows were written, so this is not an ingest that stopped before the grant.
+            assert held == (1, 1)
+            assert await buyer.counts() == (0, 0, 0, 0)
 
 
 @pytest.mark.asyncio
