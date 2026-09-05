@@ -39,6 +39,11 @@ _APP_STORE_ENV = {"APP_STORE_BUNDLE_ID": "com.nativespeaker.app",
                   "APP_STORE_APP_APPLE_ID": "6001234567",
                   "APP_STORE_ENVIRONMENT": "production"}
 
+# The three variables a deployer supplies for Google; `products` comes from the tracked file, as Apple's does.
+_GOOGLE_PLAY_ENV = {"GOOGLE_PLAY_PACKAGE_NAME": "com.nativespeaker.app",
+                    "GOOGLE_PLAY_PUSH_AUDIENCE": "https://api.nativespeaker.com/webhooks/google-play/rtdn",
+                    "GOOGLE_PLAY_PUSH_SERVICE_ACCOUNT_EMAIL": "rtdn-push@nativespeaker.iam.gserviceaccount.com"}
+
 # The library's two other environment values, as literals: importing its enum would make the cases below
 # follow a library change instead of catching it.
 VERIFICATION_SKIPPING_ENVIRONMENTS = ("Xcode", "LocalTesting")
@@ -262,6 +267,36 @@ class TestTheThreeDeployerVariablesLandOnTheConfig:
         """P-14: a field named `appstore` beside `app_store` was measured to stop APP_STORE_APP_APPLE_ID landing."""
         assert "appstore" not in AppConfig.model_fields
         assert "app_store" in AppConfig.model_fields
+
+
+class TestTheThreeGooglePlayVariablesLandOnTheConfig:
+    """A5, D-16, D-18. The Apple class above, executed for the block whose section name is two words."""
+
+    # A variable that does not land leaves its field at None, so the seam reads unconfigured and the route
+    # answers 503 in every environment with nothing written anywhere. That costs a deployment to find.
+    def test_every_google_play_variable_lands_on_the_nested_model(self):
+        """A5 falsified: `env_nested_max_split=1` was read from the source; the split is executed here."""
+        play = load_tracked_config(_GOOGLE_PLAY_ENV).google_play
+
+        assert play.package_name == "com.nativespeaker.app"
+        assert play.push_audience == "https://api.nativespeaker.com/webhooks/google-play/rtdn"
+        assert play.push_service_account_email == "rtdn-push@nativespeaker.iam.gserviceaccount.com"
+
+    def test_the_tracked_product_map_merges_with_the_environment_nesting(self):
+        """D-16, D-18: the partial `google_play:` block coexists with GOOGLE_PLAY_*, as `app_store:` does."""
+        play = load_tracked_config(_GOOGLE_PLAY_ENV).google_play
+
+        assert play.products
+        assert set(play.products.values()) <= {"anonymous", "registered", "paid"}
+        assert play.package_name == "com.nativespeaker.app"
+
+    # `google` already names five things here: the Firebase sign-in provider, the Firebase Admin
+    # credential, the Pub/Sub push identity, the Play Developer API and the purchase provider. A field
+    # of that name beside `google_play` would take the first split of every GOOGLE_PLAY_* variable.
+    def test_the_model_declares_no_sibling_field_that_would_make_a_variable_ambiguous(self):
+        """The `appstore` / `app_store` case, for the prefix this project already gives five meanings."""
+        assert "google" not in AppConfig.model_fields
+        assert "google_play" in AppConfig.model_fields
 
 
 class TestTheDefaultRootCertificateIsTheCommittedAppleRoot:
