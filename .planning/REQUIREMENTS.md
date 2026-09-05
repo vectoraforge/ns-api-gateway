@@ -411,7 +411,7 @@ Shared machinery only. Rebinding the pre-existing routes is Phase 36.
 ### PLAYHOOK — Phase 44 (`09-webhook-google-play-rtdn.md`) — `POST /webhooks/google-play/rtdn`
 
 - [ ] **PLAYHOOK-01**: The endpoint ingests Google Play RTDN via a Cloud Pub/Sub push subscription, authenticated solely by backend verification of Google's signed OIDC push token
-- [ ] **PLAYHOOK-02**: The endpoint reuses the shared store-ingestion module owned by Phase 43 rather than forking it
+- [x] **PLAYHOOK-02**: The endpoint reuses the shared store-ingestion module owned by Phase 43 rather than forking it
   > **Adapter seam flagged forward by Phase 37.2 (D-09), 2026-08-25.** The store-ingestion Protocols Phase 35 declared under FOUND-08 were deleted as zero-consumer code before this phase exists. Phase 44 inherits **Phase 43's** adapter interface along with the shared module this requirement already binds it to, and defines no second store seam of its own — the same argument PLAYHOOK-03 makes about competing partition mechanisms applies to competing adapter seams.
 
 - [ ] **PLAYHOOK-03** — **The category machinery this names was deleted by Phase 37.1. Phase 44 must answer it.** As written: the route is enumerated individually by exact path in the closed provider-callback category, as the second and last member of that partition
