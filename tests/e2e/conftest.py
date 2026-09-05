@@ -393,15 +393,88 @@ def real_google_play_seam(_app_lifespan, monkeypatch):
          play.package_name, play.push_audience, play.push_service_account_email) = original
 
 
+class FakePlaySubscriptions:
+    """A scriptable stand-in for the Play read seam, recording every read it was asked for."""
+
+    def __init__(self) -> None:
+        # No default answer: every case scripts the notification it wants read or the failure it wants.
+        self.answer: BaseException | VerifiedNotification | None = None
+        self.calls: list[dict] = []
+
+    def script(self, answer: BaseException | VerifiedNotification) -> None:
+        """Raise-or-return: a scripted exception is raised, a scripted notification is returned."""
+        self.answer = answer
+
+    # `async` because the live read does I/O; FakeDeviceCheckAdapter above is the same precedent.
+    async def read(self, *, package_name: str, purchase_token: str, event_type: str,
+                   notification_uuid: str, signed_at: datetime | None) -> VerifiedNotification:
+        self.calls.append({"package_name": package_name, "purchase_token": purchase_token,
+                           "event_type": event_type, "notification_uuid": notification_uuid,
+                           "signed_at": signed_at})
+        if isinstance(self.answer, BaseException):
+            raise self.answer
+        assert self.answer is not None, "the seam was called before a case scripted it"
+        return self.answer
+
+
+class AcceptingPushTokens:
+    """A push-token seam that admits any bearer, for the cases that are not about the token."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def verify(self, bearer: str) -> None:
+        self.calls.append(bearer)
+
+
 @pytest.fixture
-def unconfigured_google_play_seam(_app_lifespan):
-    """Swap the push-token class for one holding no verifier, as an incomplete configuration leaves it."""
-    original = _app_lifespan.state.google_push_tokens
+def scripted_play_subscriptions(_app_lifespan):
+    """Swap app.state.play_subscriptions for a scripted fake, scripted per case."""
+    original = _app_lifespan.state.play_subscriptions
+    subscriptions = FakePlaySubscriptions()
+    _app_lifespan.state.play_subscriptions = subscriptions
+    try:
+        yield subscriptions
+    finally:
+        _app_lifespan.state.play_subscriptions = original
+
+
+@pytest.fixture
+def scripted_google_play(_app_lifespan, scripted_play_subscriptions):
+    """The scripted Play read with the push check neutralised, so a case scripts an outcome
+    without minting a token; it yields the same fake."""
+    play = _app_lifespan.state.config.google_play
+    original = (_app_lifespan.state.google_push_tokens, play.package_name)
+    _app_lifespan.state.google_push_tokens = AcceptingPushTokens()
+    play.package_name = GOOGLE_PACKAGE_NAME
+    try:
+        yield scripted_play_subscriptions
+    finally:
+        (_app_lifespan.state.google_push_tokens, play.package_name) = original
+
+
+def _play_is_never_reached(request: httpx.Request) -> httpx.Response:
+    """The transport an unconfigured deployment holds: reaching Play at all is the failure."""
+    raise AssertionError(f"an unconfigured deployment reached {request.url}")
+
+
+@pytest.fixture
+def unconfigured_google_play(_app_lifespan):
+    """Swap both Google classes for ones holding no verifier and no credential, which is the
+    state an incomplete configuration leaves them in."""
+    original = (_app_lifespan.state.google_push_tokens, _app_lifespan.state.play_subscriptions)
     _app_lifespan.state.google_push_tokens = PubSubPushTokens(verifier=None)
+    # Constructed with None, never deleted: lifespan always builds both, configured or not.
+    _app_lifespan.state.play_subscriptions = PlayDeveloperSubscriptions(
+        credential=None,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(_play_is_never_reached)),
+        products={},
+        evaluated_at_source=lambda: datetime.now(UTC))
     try:
         yield _app_lifespan.state.google_push_tokens
     finally:
-        _app_lifespan.state.google_push_tokens = original
+        (_app_lifespan.state.google_push_tokens,
+         _app_lifespan.state.play_subscriptions) = original
 
 
 @pytest_asyncio.fixture(loop_scope="module")

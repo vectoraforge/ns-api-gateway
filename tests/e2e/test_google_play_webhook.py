@@ -144,7 +144,7 @@ class TestAnIncompleteDeploymentStillRegistersTheRoute:
     """D-14, D-18. The route set is identical in every environment: present and answering 503, never absent."""
 
     async def test_an_unconfigured_deployment_answers_503(
-            self, webhook_client, unconfigured_google_play_seam):
+            self, webhook_client, unconfigured_google_play):
         response = await webhook_client.post(PATH, json=_push_body("a-purchase-token"),
                                              headers={"Authorization": "Bearer a-token"})
 
@@ -152,7 +152,7 @@ class TestAnIncompleteDeploymentStillRegistersTheRoute:
         assert response.json() == UNAVAILABLE
 
     async def test_both_callback_routes_are_registered_while_the_seam_is_unconfigured(
-            self, _app_lifespan, webhook_client, unconfigured_google_play_seam):
+            self, _app_lifespan, webhook_client, unconfigured_google_play):
         response = await webhook_client.post(PATH, json=_push_body("a-purchase-token"),
                                              headers={"Authorization": "Bearer a-token"})
 
