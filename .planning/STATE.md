@@ -2,20 +2,20 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
-current_phase: 44
-current_phase_name: POST /webhooks/google-play/rtdn
-status: executing
-stopped_at: Completed 44-07-PLAN.md
-last_updated: "2026-09-05T12:35:00.000Z"
-last_activity: 2026-09-05
-last_activity_desc: Phase 44 executed — all seven plans complete, awaiting verification
-state_head: 6bd45e12d0026b6e1ccec4c7d21486776dc6e36c
+current_phase: 45
+current_phase_name: POST /auth/restore-subscription
+status: planning
+stopped_at: Phase 44 complete, ready to plan Phase 45
+last_updated: "2026-09-07T03:17:00.000Z"
+last_activity: 2026-09-06
+last_activity_desc: Phase 44 complete and verified (7/7, CR-01 accepted as override), transitioned to Phase 45
+state_head: 60e93bd983ff3b0d35b48e80aec0491db22ebcd3
 progress:
   total_phases: 18
-  completed_phases: 14
+  completed_phases: 15
   total_plans: 110
   completed_plans: 110
-  percent: 78
+  percent: 83
 ---
 
 # Project State
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-19)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 44 — POST /webhooks/google-play/rtdn
+**Current focus:** Phase 45 — POST /auth/restore-subscription
 
 ## Current Position
 
-Phase: 44 (POST /webhooks/google-play/rtdn) — EXECUTED, NOT YET VERIFIED
-Plan: 7 of 7 — all seven complete
-Status: Ready for `/gsd:verify-work 44`
-Last activity: 2026-09-05 — Phase 44 executed; all seven plans complete
+Phase: 45 — POST /auth/restore-subscription
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-09-06 — Phase 44 complete, transitioned to Phase 45
 
 <!-- Counts read against disk rather than incremented, as 41-05, 42-07 and 43-06 did. Read at
      2026-09-05T12:35Z, during plan 44-07's Task 2: 110 PLAN files and 109 SUMMARY files across
@@ -74,6 +74,11 @@ Suite **1190 unit / 298 e2e / 205 schema**, `ruff check src tests` clean. Five d
 `09-webhook-google-play-rtdn.md` are recorded as **flagged conflicts** under PLAYHOOK-01 rather than
 resolved by editing the brief. **Recorded as accepted rather than fixed:** the unbounded
 unauthenticated request cost, the narrowest of the five such residuals this project now carries.
+**Verified 2026-09-05 with one gap, closed 2026-09-06 by an accepted override, not a fix:** the code
+review's CR-01 (an entitled Play state carrying no line-item `expiryTime` would write an open-ended
+grant) has no producer — the `None` is this project's own defensive typing, Google documents no state
+that omits the field, and the two states that plausibly could both resolve to `expired`. Reasoning in
+`44-VERIFICATION.md` § Gap Resolution; no guard added.
 **Recorded as NOT run:** `helm template`, because helm is absent from this environment — logged in
 `.planning/WINDOWS.md` as an `unrun-verify`, not claimed as a pass.
 
@@ -315,7 +320,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 **Last session:** 2026-09-05T12:35:00.000Z
 
 Last activity: 2026-09-05
-Stopped at: Completed 44-07-PLAN.md — Phase 44 executed, all seven plans complete
+Stopped at: Phase 44 complete, ready to plan Phase 45
 Resume file: None
 
 ## Performance Metrics

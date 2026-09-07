@@ -1,10 +1,11 @@
 ---
 phase: 44-post-webhooks-google-play-rtdn
 verified: 2026-09-05T13:30:00Z
-status: gaps_found
-score: 8/9 must-haves verified
+status: passed
+score: 9/9 must-haves verified (1 closed by accepted override)
 behavior_unverified: 0
-overrides_applied: 0
+overrides_applied: 1
+gaps_resolved: true
 gaps:
   - truth: "A Google subscription in an entitled state (active or grace_period) writes an access grant that terminates, never one effective forever (plan 44-05 must-have: 'A Google subscription in grace produces an access grant that is effective at evaluated_at rather than one with an absent or already-past end date', P-01)."
     status: failed
@@ -40,8 +41,8 @@ human_verification: []
 
 **Phase Goal:** Ingest Google Play RTDN via Cloud Pub/Sub push as the second and last provider-callback route.
 **Verified:** 2026-09-05
-**Status:** gaps_found
-**Re-verification:** No — initial verification
+**Status:** passed — amended from gaps_found on 2026-09-06; see Gap Resolution below
+**Re-verification:** No — initial verification; the one gap was closed by an accepted override, not by a code change
 
 ## Goal Achievement
 
@@ -164,3 +165,45 @@ carried forward by a test that calls the bug "correct."
 
 _Verified: 2026-09-05_
 _Verifier: Claude (gsd-verifier)_
+
+---
+
+## Gap Resolution (recorded 2026-09-06, post-verification)
+
+The one gap is closed. Status amended `gaps_found` → `passed`.
+
+### Gap 1 — CR-01 entitled state with no line-item expiry — ACCEPTED AS OVERRIDE
+
+**Decision:** accepted as an override on 2026-09-06. No guard was added and no code path changed; the
+one source edit is a comment on `PlaySubscriptionLineItem.expiryTime` naming the reason below, so the
+next reviewer does not raise CR-01 again.
+
+**Why the input has no producer:**
+
+- The `None` comes from this project's own model. `PlaySubscriptionLineItem.expiryTime` is declared
+  `datetime | None = None` as defensive typing. Google's reference describes the field as the time at
+  which the subscription expired or will expire, and documents no state in which it is absent.
+- The states that plausibly carry no expiry are pending and paused. Pending is not listed in `_STATES`
+  and falls through to `expired`; paused is listed and maps to `expired`. Neither is in
+  `ENTITLED_STATUSES`, so neither reaches the grant write.
+- An active subscription has a running paid term, and a grace period is a bounded window. Neither can
+  lack an end.
+- So entitled-with-no-expiry is a gap between what the type admits and what the code assumes, not a
+  store behaviour.
+
+**Why a guard is the wrong price:** the value is read from this service's own signed call to Play,
+never from the push payload, so no caller can produce it. If Play ever did send it, the open grant
+would be superseded by the next notification for the same purchase token, and an active term always
+produces one (renewal, cancellation or expiry). A guard would be a code path with no producer whose
+only effect, if reached, is a 500 and a Pub/Sub redelivery loop.
+
+**Still true:** `tests/schema/test_subscription_ingestion.py::test_an_absent_grace_end_writes_a_grant_carrying_no_end_at_all_control`
+records the unbounded outcome as the service's behaviour on that input. It is a control on the
+service, not a claim that Play sends the input, and it stays as written.
+
+**One correction to the reasoning above:** the report's artifact note treats the states outside
+`_STATES` as the risk. `SUBSCRIPTION_STATE_PAUSED` is in `_STATES` and maps to `expired`; the
+unlisted state is `SUBSCRIPTION_STATE_PENDING`. Both end in `expired`, so the conclusion stands.
+
+The Warnings (CR-02, WR-01, WR-03) are unchanged and remain open, not blocking, as the report already
+classifies them.

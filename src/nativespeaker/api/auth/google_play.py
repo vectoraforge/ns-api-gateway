@@ -67,6 +67,7 @@ class PlayExternalAccountIdentifiers(BaseModel):
 class PlaySubscriptionLineItem(BaseModel):
     """One line item of a Play subscription: the product bought, and when its term ends."""
     productId: str | None = None
+    # Optional as defensive typing only: Play gives every entitled term an end, so no producer sends None here.
     expiryTime: datetime | None = None
 
 

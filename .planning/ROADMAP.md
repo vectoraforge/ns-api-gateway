@@ -674,7 +674,7 @@ Plans:
 **Goal:** Ingest Google Play RTDN via Cloud Pub/Sub push as the second and last provider-callback route.
 **Requirements:** PLAYHOOK-01 … PLAYHOOK-03
 **Depends on:** 34, 35 (soft: 43)
-**Plans:** 7/7 plans executed
+**Plans:** 7/7 plans complete
 **Success criteria:**
 
 1. The route authenticates solely by backend verification of Google's signed OIDC push token — **met as written, 2026-09-05.** The route reads no Firebase identity and resolves no user; its one credential is Google's Pub/Sub OIDC bearer, verified by the backend itself through the existing `JWTVerifier` pinned to issuer `https://accounts.google.com`, RS256, and the exact configured `aud`, with the service-account `email` and `email_verified` compared after decode rather than placed in the verifier's require list — because a claim the store may stop sending must not become a verification error. A valid Firebase ID token, checked against the application's own verifier first so the case cannot pass vacuously, buys a bad push nothing. Matching requirement: PLAYHOOK-01.
@@ -774,6 +774,6 @@ Plans:
 | 41. POST /auth/claim-anonymous-grant | v2.0 | 5/5 | Complete    | 2026-09-03 |
 | 42. POST /auth/claim-registered-grant | v2.0 | 7/7 | Complete    | 2026-09-03 |
 | 43. POST /webhooks/app-store | v2.0 | 6/6 | Complete    | 2026-09-04 |
-| 44. POST /webhooks/google-play/rtdn | v2.0 | 6/7 | In Progress|  |
+| 44. POST /webhooks/google-play/rtdn | v2.0 | 7/7 | Complete    | 2026-09-06 |
 | 45. POST /auth/restore-subscription | v2.0 | 0/? | Pending | — |
 | 46. POST /auth/sign-out-all | v2.0 | 0/? | Pending | — |

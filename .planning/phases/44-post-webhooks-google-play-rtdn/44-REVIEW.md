@@ -141,6 +141,12 @@ Consider the symmetric guard on the Apple path (`app_store.py:59`, `expiresDate`
 tighten the schema case at `tests/schema/test_subscription_ingestion.py:691` to assert the
 refusal instead of the NULL.
 
+**Resolution (2026-09-06): accepted as an override, not fixed.** Entitled-with-no-expiry has no
+producer: `expiryTime` is optional only in this project's model, Google documents no state that
+omits it, and the two states that plausibly could (pending, paused) both resolve to `expired` and
+never reach the grant write. The value comes from the signed Play read, not the push payload. Full
+reasoning in `44-VERIFICATION.md` § Gap Resolution. The one source change is a comment on the field.
+
 ### CR-02: Every failed Play read answers 500 with no log record at all
 
 **File:** `src/nativespeaker/api/auth/google_play.py:151` and `:246-247`
