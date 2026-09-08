@@ -1,497 +1,245 @@
 ---
 phase: 45-post-auth-restore-subscription
-reviewed: 2026-09-08T02:38:38Z
+reviewed: 2026-09-08T21:42:08Z
 depth: standard
-files_reviewed: 22
+files_reviewed: 7
 files_reviewed_list:
-  - src/nativespeaker/api/app/dependencies.py
-  - src/nativespeaker/api/auth/app_store.py
   - src/nativespeaker/api/auth/google_play.py
-  - src/nativespeaker/api/auth/store_notifications.py
-  - src/nativespeaker/api/crud/grants.py
   - src/nativespeaker/api/crud/subscriptions.py
-  - src/nativespeaker/api/errors.py
-  - src/nativespeaker/api/routers/auth.py
   - src/nativespeaker/api/schemas/auth.py
-  - src/nativespeaker/api/services/__init__.py
   - src/nativespeaker/api/services/restore.py
-  - src/nativespeaker/api/services/subscriptions.py
-  - tests/e2e/conftest.py
   - tests/e2e/test_restore_subscription.py
   - tests/schema/test_restore_race.py
-  - tests/unit/test_app_wiring.py
-  - tests/unit/test_auth_package_shape.py
-  - tests/unit/test_error_contract.py
-  - tests/unit/test_error_registry.py
-  - tests/unit/test_rejection_vocabulary.py
   - tests/unit/test_restore_proof.py
-  - tests/unit/test_subscription_attribution.py
 findings:
-  critical: 3
-  warning: 7
-  info: 4
-  total: 14
+  critical: 1
+  warning: 4
+  info: 7
+  total: 12
 status: issues_found
 ---
 
-# Phase 45: Code Review Report
+# Phase 45: Code Review Report (gap closure)
 
-**Reviewed:** 2026-09-08T02:38:38Z
+**Reviewed:** 2026-09-08T21:42:08Z
 **Depth:** standard
-**Files Reviewed:** 22
+**Files Reviewed:** 7
+**Diff base:** 086b84cc682915ce9ee59f77bd32ceba14a9fe9c
 **Status:** issues_found
 
 ## Summary
 
-`POST /auth/restore-subscription` was reviewed end to end: the two store proof checks, the
-service's four branches (same-account replay, adoption, adoption-with-creation, capped move),
-the crud writers they call, the error tree, the route, and the three test suites.
+Incremental review of the 45-06 / 45-07 / 45-08 gap closure. Verdict on the three prior findings:
 
-The claims the phase makes about itself hold up under inspection:
+| Prior finding | Claimed closed by | Verdict |
+| --- | --- | --- |
+| CR-01 — unescaped caller value in the Play GET path | 45-06, `auth/google_play.py::_get` | **NOT closed.** `quote(..., safe="")` does not escape `.`, and httpx removes dot segments. A purchase token of `.` or `..` still walks out of the intended resource. Proven empirically through the production class — see CR-01 below. |
+| CR-02 — status from the row, `ends_at` from the proof, never reconciled | 45-07, `services/restore.py` | **Closed.** `term_ends_at` is derived once from the pair, checked against the captured instant before any write, and reused verbatim for `ends_at`. The NULL-`ends_at` permanent grant the prior report named is now unreachable. One residual behavioural gap: WR-01. |
+| CR-03 — a move expired every active grant of both accounts | 45-08, `crud/subscriptions.py` | **Closed.** `superseded` is now `user_id == user_id or subscription_id == subscription_id`. The webhook path is unchanged (its `marked_active` is single-account). `tests/schema/test_restore_race.py::TestAMoveTakesOnlyTheGrantForTheSubscriptionItMoves` verifies the protective half on real PostgreSQL with the production writer. One residual asymmetry: WR-03. |
 
-- Store verification does run before the first statement (`restore.py:49` precedes every read),
-  so no network call happens under a lock.
-- The two `RestoreRefused` leaves share one status, one code and one body, and the e2e suite
-  compares the two bodies byte for byte rather than each to a literal.
-- `write_subscription_grant`'s account conjunct (`crud/subscriptions.py:245`) does fix the
-  dropped destination grant on a move.
-- The deferred-constraint case lives in `tests/schema/test_restore_race.py:445`, not in the e2e
-  suite. No e2e assertion about a deferred constraint exists. Nothing to flag there.
+The new code is otherwise disciplined: read ordering, lock ordering, the `23505`-only race guard and the single-commit rule all hold. `ruff` is clean and `tests/unit/test_restore_proof.py` passes (39 cases). The findings below concentrate on the one unclosed control, one user-visible behavioural regression the closure introduced, one latent writer asymmetry, and a boundary case the new tests claim to pin but do not.
 
-Three defects nevertheless ship. One is a security hole: the Google purchase token is
-client-supplied and is interpolated into the Play API URL path with no percent-encoding, so a
-caller can redirect the deployment's OAuth-signed GET to a different `androidpublisher` endpoint.
-The other two are correctness: the entitled decision is taken from the stored row while the grant
-term is taken from the proof, which mints a never-expiring paid grant in one reachable
-combination; and the cross-account move supersedes *every* grant of both accounts, which can
-silently strip the source account of an active grant for an unrelated subscription it still pays
-for.
+## Critical Issues
 
-No structural pre-pass was supplied with this review, so this report carries narrative findings
-only.
+### CR-01: The Play read path is still escapable — a `.` or `..` purchase token leaves the `tokens/` resource
 
-## Narrative Findings (AI reviewer)
+**File:** `src/nativespeaker/api/auth/google_play.py:303-307`
+**Also:** `tests/unit/test_restore_proof.py:246-287` (the test that guards this invariant misses the input that breaks it)
 
-### Critical Issues
-
-#### CR-01: Client-supplied purchase token is path-injected into the Play API URL
-
-**File:** `src/nativespeaker/api/auth/google_play.py:34-35,296-304` (reached from
-`src/nativespeaker/api/services/restore.py:172-174`)
-
-**Issue:** `restore_proof` arrives straight from the request body
-(`schemas/auth.py:42` — a plain `str` with no pattern and no maximum), is passed unmodified as
-`purchase_token` to `read_for_restore`, and lands in `PLAY_URL.format(...)`. `str.format` does no
-percent-encoding, so every structural URL character the caller sends is honoured. Verified against
-the installed httpx:
+The fix escapes both interpolated values with `quote(value, safe="")`. `quote` never escapes the unreserved characters `A-Za-z0-9_.-~`, so `.` survives — and httpx performs RFC 3986 dot-segment removal when it builds the `URL`. The result is that a caller-supplied token still changes the *shape* of the path, not just one segment. Verified by driving the real `PlayDeveloperSubscriptions.read_for_restore` over a recording transport:
 
 ```
-'a/../../../../v3/applications/evil/edits'
-  -> https://androidpublisher.googleapis.com/androidpublisher/v3/applications/com.ns.app/v3/applications/evil/edits
-'../../../../../../etc'
-  -> https://androidpublisher.googleapis.com/androidpublisher/etc
-'x?alt=media'
-  -> .../tokens/x?alt=media
+'..' -> /androidpublisher/v3/applications/com.nativespeaker.app/purchases/subscriptionsv2
+'.'  -> /androidpublisher/v3/applications/com.nativespeaker.app/purchases/subscriptionsv2/tokens
 ```
 
-httpx's dot-segment normalisation collapses the traversal, so an authenticated caller chooses
-the path (and the query string) of a GET that carries this deployment's `androidpublisher`-scoped
-bearer token. The `package_name` guard the comment at `google_play.py:261-262` relies on ("a token
-of another application answers 404") is defeated by the same input, because the caller can escape
-the `applications/{package_name}` segment entirely. This is not the low-value-product threat
-model — it is the service's own Google credential being pointed at attacker-chosen endpoints.
+Both requests are sent with the deployment's own OAuth bearer. The code comment on line 303 ("a caller's token names one segment and never a path") and the docstring claim of T-45-06-01 are therefore both false as written.
 
-The same `_get` is used by the webhook `read()`, where the token comes from a Google-signed RTDN;
-fixing it in `_get` covers both callers.
+The guarding test picks an input that passes rather than the input that breaks the rule: `test_a_token_carrying_path_traversal_names_one_segment_and_no_other_path` (line 249) uses `"a/../../../../v3/applications/evil/edits"`, whose `/` characters *are* escaped, so the traversal is neutralised for the wrong reason. Feeding `".."` to the same test fails its `path.startswith(PLAY_TOKENS_PATH)` assertion.
 
-**Fix:**
+Impact today is bounded — only one dot-segment removal is possible (the `/` separators inside the token are escaped, so the token is always exactly one segment), so the reachable set is the two paths above, both on the same host, and `androidpublisher` v3 exposes no collection GET there. Both answer 404, which `read_for_restore` maps to `ProofRejected` — the same answer a genuinely gone token earns. But the security control does not hold, the claimed closure is not a closure, and the mitigation rests on Google's API surface rather than on this code.
+
+**Fix** — refuse a token that is nothing but dots, before the request is built, so the token can never be a dot segment:
 
 ```python
-from urllib.parse import quote
+# `quote` leaves `.` unescaped and httpx removes dot segments, so a dot-only
+# token would rewrite the path rather than name a resource in it.
+_DOT_ONLY = str.maketrans("", "", ".")
+
 
 async def _get(self, package_name: str, purchase_token: str) -> httpx.Response:
     """Send one signed read; each entry point classifies a transport failure its own way."""
-    if not self._credential.valid:
-        await run_in_threadpool(self._credential.refresh,
-                                google.auth.transport.requests.Request())
-    return await self._client.get(
-        # Every path segment is escaped: a caller-supplied token names one segment and never a path.
-        PLAY_URL.format(package_name=quote(package_name, safe=""),
-                        purchase_token=quote(purchase_token, safe="")),
-        headers={"Authorization": f"Bearer {self._credential.token}"})
+    if not purchase_token.translate(_DOT_ONLY):
+        # No live purchase token is dots alone, so this is a rejected proof and never a read.
+        raise ProofRejected(stage=RESTORE_TOKEN_GONE_STAGE)
+    ...
 ```
 
-Add a unit case in `tests/unit/test_restore_proof.py` asserting that a token containing `../` and
-`?` produces a request URL whose path is still
-`/androidpublisher/v3/applications/{package}/purchases/subscriptionsv2/tokens/...` and whose query
-is empty.
-
----
-
-#### CR-02: The entitled decision comes from the stored row, the term comes from the proof — the pair can mint a grant that never ends
-
-**File:** `src/nativespeaker/api/services/restore.py:58,133-139`
-
-**Issue:** Line 58 takes `status` from `stored.status` when a canonical row exists (D-06), but
-lines 134-138 take `starts_at`/`ends_at` from `proof`. The two sources are never reconciled, and
-`write_subscription_grant` writes whatever it is handed. `core.access_grants` has
-`CHECK (ends_at IS NULL OR ends_at > starts_at)` and nothing more, and
-`_effective_grants_statement` (`crud/grants.py:32-33`) treats `ends_at IS NULL` as effective
-forever. Two reachable combinations:
-
-1. **Never-expiring paid grant.** `stored.status is grace_period` (a webhook set it) and the
-   caller presents an Apple proof. `AppStoreNotifications.verify_transaction` hardcodes
-   `grace_period_expires_at=None` (`app_store.py:146-147`), so line 137-138 selects `None` and the
-   grant is inserted with `ends_at = NULL`. The account holds the `paid` tier (1000
-   credits/month) indefinitely, with no store event able to end it except a later notification for
-   the same subscription. The Google path reaches the same state whenever the stored row says
-   `grace_period` but the live read reports another state, because `read_for_restore` sets
-   `grace_period_expires_at` only when `subscriptionState == GRACE_STATE`
-   (`google_play.py:270,284`). `expires_at` is likewise `datetime | None` on both paths, so a
-   proof carrying no expiry does the same for `status is active`.
-
-2. **Bricked grant slot.** Apple's `originalTransactionId` is stable across renewals, so a client
-   may present a *stale* signed transaction. `stored.status` is `active`, so the restore proceeds,
-   but `proof.expires_at` is in the past. The grant is inserted `status='active'` with a past
-   `ends_at`: it satisfies the CHECK, occupies the one slot
-   `ix_access_grants_one_active_per_user` allows, and is effective for nothing. If the account
-   held a free grant, `superseded` expired it first, and
-   `ix_access_grants_one_free_grant_per_user_source` has no status predicate — that free grant is
-   gone for the account's lifetime. A repeat restore answers `replayed` (`ends_at` matches), so the
-   account cannot self-heal.
-
-Neither combination is covered: `tests/unit/test_restore_proof.py:134` proves grace is unreachable
-*from a proof*, and the only e2e grace case (`test_restore_subscription.py:290-297`) goes down the
-adoption-with-creation branch where `status` comes from the proof, so the mismatch never arises.
-
-**Fix:** refuse before any write when the term the proof carries does not support the status the
-stored row claims. In `RestoreService.restore`, after line 60:
+Guard `package_name` the same way at construction (it is operator config, so an assertion or a config-time check is enough). Then extend `TestThePlayRequestUrlIsConfinedToOneResource` with the input that actually breaks the rule:
 
 ```python
-        # The term is the proof's and the status is the row's, so the pair is checked before it is written.
-        term_ends_at = (proof.grace_period_expires_at
-                        if status is SubscriptionStatus.grace_period else proof.expires_at)
-        if term_ends_at is None or term_ends_at <= self.evaluated_at:
-            # A proof carrying no open term entitles nothing, whatever the canonical row still says.
-            raise RestoreSubscriptionNotEntitled
+@pytest.mark.parametrize("token", [".", "..", "...."])
+async def test_a_dot_only_token_never_rewrites_the_path(self, token):
+    sent, reader = _capturing_reader()
+    with pytest.raises(ProofRejected):
+        await reader.read_for_restore(package_name=PACKAGE_NAME, purchase_token=token)
+    assert sent == []
 ```
 
-and pass `ends_at=term_ends_at` at line 137. It joins the existing `restore_not_found` family, so
-the refusal body stays byte-identical to the other two arms and adds no oracle.
+## Warnings
 
----
+### WR-01: An Apple subscriber inside a billing grace period can never restore
 
-#### CR-03: A cross-account move supersedes every grant of the source account, including one for an unrelated subscription
+**File:** `src/nativespeaker/api/services/restore.py:62-67`
 
-**File:** `src/nativespeaker/api/crud/subscriptions.py:240-259` (line 252)
+`AppStoreNotifications.verify_transaction` sets `grace_period_expires_at=None` unconditionally (`auth/app_store.py:143-145`) — the grace window lives in Apple's renewal payload, which a client-presented signed transaction does not carry. `tests/unit/test_restore_proof.py:137-145` pins that as a fact.
 
-**Issue:** On a move, `marked_active` holds the active grants of *both* accounts
-(`restore.py:94-95`). `held` correctly narrows to the destination's own rows for this subscription
-(line 245), but line 252 then discards that narrowing:
+So when the canonical row says `grace_period` (written by a `DID_FAIL_TO_RENEW` webhook), the new check computes `term_ends_at = proof.grace_period_expires_at` → `None` → `RestoreSubscriptionNotEntitled` → 404 `restore_not_found`. A paying subscriber whose card failed, who reinstalls or switches device and taps "Restore Purchases", is refused for the whole grace window (Apple's is up to 16 days). Falling back to `proof.expires_at` would not help either: in grace the paid term has by definition already lapsed, so that value is also in the past.
+
+This contradicts the module's own D-06 premise on line 57 ("a row that exists decides with its own status"): the row says the caller is entitled, and the code then refuses because the *proof* carries no term for that status. The gap closure traded an over-grant (a permanent `ends_at IS NULL` grant, the prior CR-02) for an under-grant, and the e2e case at line 323 encodes the under-grant as intended behaviour without recording it as a known denial.
+
+**Fix** — the only honest source for an Apple grace window is the server's own record of it. Either persist it when the webhook writes `grace_period`:
+
+```sql
+ALTER TABLE core.subscriptions ADD COLUMN grace_period_expires_at TIMESTAMPTZ;
+```
 
 ```python
-superseded = list(marked_active) if entitled else held
+term_ends_at = (proof.grace_period_expires_at or (None if stored is None
+                                                  else stored.grace_period_expires_at)
+                if status is SubscriptionStatus.grace_period else proof.expires_at)
 ```
 
-Every row of both accounts is expired. For the destination that is right (one active grant per
-user). For the source it is right only if the source's active grant *is* the grant for this
-subscription. It need not be:
+or, if the column is judged too much for this milestone, accept the denial explicitly: log a closed-set event on this branch (see WR-02) so support can see it, and record it in the phase's known-limitations note.
 
-- `O` restores `S1` → `O` owns `S1`, active grant `G1(S1)`.
-- `O` restores `S2` → `G1` is superseded, `O` now holds `G2(S2)`. `O` still owns `S1`, whose row
-  still says `active`.
-- `D` restores `S1` with an unattributed proof → `current_owner = O`, `marked_active = [G2, ...]`,
-  `held = []`, and line 252 expires `G2`.
+### WR-02: All three restore refusals are silent server-side
 
-`O` is left with zero active grants while still owning — and paying for — the active subscription
-`S2`. The write commits silently: an expired grant's generated columns go NULL, so neither
-deferred foreign key fires, and `ix_access_grants_one_per_subscription` is satisfied. Nothing in
-`tests/schema/test_restore_race.py` or `tests/e2e/test_restore_subscription.py` gives the source
-account a second subscription, so the case is untested.
+**File:** `src/nativespeaker/api/services/restore.py:59-60, 65-67, 73-75`
 
-**Fix:**
+`RestoreSubscriptionNotEntitled` is now raised from two different places and `RestoreAttributionMismatch` from a third, and none of them logs anything. The client body is deliberately identical for all three (T-45-05, correctly), which means the server-side log is the *only* place the three can be told apart — and it is empty. `RestoreTransferRejected` (line 83) is silent too. Compare `routers/auth.py:169` and `services/restore.py:191`, which do log with closed-set labels.
+
+The new term check (WR-01) is the branch most likely to refuse a legitimate paying caller, and it is undiagnosable: a support ticket "restore says not found" cannot be resolved from the logs.
+
+**Fix** — one closed-set label per branch, carrying the store name only (never the proof, never the external id):
 
 ```python
-        # Every held grant goes, the free one included: `ix_access_grants_one_active_per_user` allows one.
-        # On a move that is the destination's whole set plus the old owner's row for *this*
-        # subscription; the old owner's grant for any other subscription is not this write's to end.
-        superseded = ([grant for grant in marked_active
-                       if grant.user_id == user_id or grant.subscription_id == subscription_id]
-                      if entitled else held)
+if status not in ENTITLED_STATUSES:
+    logger.info("restore_refused", stage="status_not_entitled", provider=str(proof.provider))
+    raise RestoreSubscriptionNotEntitled
+...
+if term_ends_at is None or term_ends_at <= self.evaluated_at:
+    logger.info("restore_refused", stage="no_open_term", provider=str(proof.provider))
+    raise RestoreSubscriptionNotEntitled
+...
+if attributed is not None and attributed != destination:
+    logger.info("restore_refused", stage="attribution_mismatch", provider=str(proof.provider))
+    raise RestoreAttributionMismatch
 ```
 
-Add a schema case: seed the source account with an active grant for a second subscription, run the
-move, and assert that grant is untouched and still active.
+### WR-03: The replay predicate and the supersede predicate now disagree on a move
 
----
+**File:** `src/nativespeaker/api/crud/subscriptions.py:240-255`
 
-### Warnings
+45-08 widened `superseded` to `grant.user_id == user_id or grant.subscription_id == subscription_id`, but left the replay short-circuit above it keyed on `held`, which is still narrowed to `grant.user_id == user_id`. The two predicates no longer cover the same rows.
 
-#### WR-01: `restore_bound_user_id` is designed and provisioned but never written; two migration comments now state the opposite of what the code does
+Consequence: on a move, if the destination happens to hold an active subscription grant for the moved subscription with a matching `ends_at` and `tier_id`, line 249 returns `WriteOutcome.replayed` — and the source's active grant for that same subscription, which the widened `superseded` set exists to expire, is never touched. `claim_subscription_owner` has already moved the owner column by then (`services/restore.py:107-116`), so the transaction would commit with the row owned by the destination while the source still holds an active grant for it.
 
-**File:** `migrations/20260818_01_initial-release.sql:136-139`,
-`src/nativespeaker/api/tables/purchases.py:61`,
-`src/nativespeaker/api/services/restore.py` (whole file)
+I could not construct a reachable sequence to this state (`ix_access_grants_one_active_per_user` allows the destination only one active grant, and every writer that could create the required combination expires it in the same transaction), so this is latent rather than live. But it is a new asymmetry the closure introduced, and it is exactly the invariant CR-03 was about.
 
-**Issue:** The schema declares `restore_bound_user_id` as the "Lifetime restore binding: NULL
-until the first successful restore, then never changed." No code writes it — `grep` finds it only
-in the table model and in assertions that it stays `None`
-(`tests/e2e/test_restore_subscription.py:617,661,687,708,724`;
-`tests/schema/test_restore_race.py:243`). The designed lifetime binding — the control that stops
-one leaked store artifact from walking a subscription between accounts month after month — is
-absent, and D-10's monthly cap is the only thing left. In the same block,
-`last_cross_account_transfer_month` still carries the comment "Written by nothing: cross-account
-restore transfer is never performed, so this stays NULL", which this phase falsified. A reader of
-the schema is now actively misled about both columns.
-
-**Fix:** either implement the binding (set it inside `claim_subscription_owner` on the first
-successful restore, and refuse in `RestoreService.restore` when it is set and is not the
-destination), or drop the column in a follow-up migration. Either way, correct both comments in
-the same change — `last_cross_account_transfer_month` should read "Written by the capped
-cross-account move only (D-10); one move per subscription per UTC month."
-
----
-
-#### WR-02: Caller-controlled `provider` and `restore_proof` have no length bound, and the route logs `provider` claiming it is bounded
-
-**File:** `src/nativespeaker/api/schemas/auth.py:41-42`,
-`src/nativespeaker/api/routers/auth.py:166-169`
-
-**Issue:** `RestoreRequest` declares `min_length=1` and no `max_length` on either field. The route
-then does:
+**Fix** — ask the replay question over the same set the supersede question is asked over:
 
 ```python
-logger.warning("restore_provider_not_served", provider=body.provider)
-# The rejected string is caller-supplied and bounded, so logging it is safe; a proof never is.
+# The rows this write is responsible for, asked once and used by both questions below.
+owned = [grant for grant in marked_active
+         if grant.user_id == user_id or grant.subscription_id == subscription_id]
+mine = [grant for grant in owned
+        if grant.source is AccessGrantSource.subscription
+        and grant.subscription_id == subscription_id
+        and grant.user_id == user_id]
+if entitled and len(owned) == len(mine) and [grant for grant in mine
+                                             if grant.ends_at == ends_at
+                                             and grant.tier_id == tier_id]:
+    return WriteOutcome.replayed
+superseded = owned if entitled else mine
 ```
 
-The comment's premise is false: nothing bounds `body.provider`. An authenticated caller can put a
-multi-megabyte string — or newlines and structured-log-shaped text — into the log pipeline on
-every refused request. `restore_proof` is likewise unbounded and is handed to Apple's JWS decoder
-or into an outbound URL. Envoy rate-limits requests, not payload size per field.
+### WR-04: The boundary the closure claims to pin is not tested
 
-**Fix:**
+**File:** `tests/e2e/test_restore_subscription.py:382-400`
+
+`test_a_term_ending_at_the_captured_instant_is_not_open` is named for the `==` case and its docstring calls it "the closed side of the boundary", but it scripts `expires_at = datetime.now(UTC) - timedelta(milliseconds=1)` and the service captures `evaluated_at` strictly later still. The case therefore only exercises `term_ends_at < evaluated_at`. Changing `services/restore.py:65` from `<=` to `<` leaves the whole suite green, so the boundary the gap closure was written to establish is unpinned.
+
+The `==` case is not reachable from e2e (the test cannot know the service's captured instant), but it is trivially reachable from the unit level, where `EVALUATED_AT` is fixed.
+
+**Fix** — add the case in `tests/unit/test_restore_proof.py`, where the instant is a constant:
 
 ```python
-class RestoreRequest(BaseModel):
-    """The restore body: the store the artifact came from, and the artifact itself."""
-    # Bounded here, so the handler's refusal log really is the bounded value its comment claims.
-    provider: str = Field(..., min_length=1, max_length=32)
-    # A signed transaction and a purchase token are both far below this; nothing legitimate exceeds it.
-    restore_proof: str = Field(..., min_length=1, max_length=8192)
+async def test_a_term_ending_exactly_at_the_captured_instant_is_not_open(self):
+    session = _CountingSession()
+    store = _ScriptedAppStore(session, replace(_restored(), expires_at=EVALUATED_AT))
+    with pytest.raises(RestoreSubscriptionNotEntitled):
+        await _service(session, store).restore(identity=_caller(),
+                                               provider=PurchaseProvider.apple,
+                                               restore_proof="a-signed-transaction")
+    assert session.statements == 1
 ```
 
----
+(`_CountingSession.exec` raises `_Stop` on the first statement, so the case needs a session that answers `read_subscription`/`read_purchase` with `None` — a two-statement stand-in — for the assertion to reach the term check.) Then rename the e2e case to what it actually measures.
 
-#### WR-03: `ingest` locks grants for an owner read before the transaction, but grants to the owner `upsert_subscription` re-reads
+## Info
 
-**File:** `src/nativespeaker/api/services/subscriptions.py:43-52,120-121`,
-`src/nativespeaker/api/crud/subscriptions.py:117,131`
+### IN-01: `write_subscription_grant`'s lock contract in its docstring is now wrong
 
-**Issue:** `owner` (line 48) comes from the read at line 43, and `marked_active` is locked for that
-account (line 52). `upsert_subscription` then performs its *own* `read_subscription` (line 117)
-and recomputes the owner from what it sees. Under READ COMMITTED the two reads can differ: a
-concurrent restore that adopts the subscription commits between them. When it does,
-`subscription.user_id` is the restore's destination while `marked_active` holds a different
-account's grants. `write_subscription_grant` is then called with `user_id` = the new owner and
-`marked_active` = someone else's rows, and (per CR-03) supersedes them — expiring an unrelated
-account's active grant, then failing the unique index for the real owner and answering 500.
+**File:** `src/nativespeaker/api/crud/subscriptions.py:238` (and `85-92`)
 
-Restore is what made this reachable: before this phase nothing but the webhook wrote
-`subscriptions.user_id`, so the two reads could not disagree on the owner.
+The docstring still says "under locks `lock_grants` took". The restore path calls `lock_grants_of`, which takes a *different* set: it locks usage rows for every marked-active grant rather than for the effective ones only, and it spans two accounts. The wider set is correct (it is a superset, so no lock is lost and the ascending-by-id order still holds), but a reader auditing the lock order is sent to the wrong method. Say "under the locks `lock_grants` or `lock_grants_of` took".
 
-**Fix:** have `upsert_subscription` return the owner it actually resolved, and refuse the delivery
-rather than write across accounts:
+`lock_grants_of`'s own docstring says "for two accounts at once"; restore passes a one-element list on the adoption and same-account branches (`services/restore.py:101`). Say "for one or two accounts".
+
+### IN-02: e2e helpers are defined ~440 lines below their first use
+
+**File:** `tests/e2e/test_restore_subscription.py:795-823`, used at `372`, `380`, `555`, `565`
+
+`_account_snapshot`, `_sync_as`, `_this_month`, `_earlier_month` and `_subscription_snapshot` sit at the bottom of the module but are called by `TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach` and `TestTheTwoRefusalsOfTheRestoreNotFoundFamily` far above. It resolves at call time, so it works, but a reader following the first `_account_snapshot` call has to scan past six classes to find it. Move the shared helpers up with the other module-level helpers (lines 122-199).
+
+### IN-03: `None` is passed where a `PlaySubscriptionSource` is declared
+
+**File:** `tests/schema/test_restore_race.py:232`
+
+`RestoreService(..., play=None, ...)` contradicts the declared type `play: PlaySubscriptionSource` (`services/restore.py:34`). It is safe because every attempt in the file names Apple, but it makes the parameter effectively `PlaySubscriptionSource | None` in practice with no annotation to say so. Either widen the annotation with a comment, or pass a stand-in that raises:
 
 ```python
-        subscription, outcome = await self.subscriptions_db.upsert_subscription(...)
-        await self._settle(outcome, notification)
-        if subscription.user_id != owner:
-            # The owner moved between the pre-lock read and this write: the locks held are the wrong ones.
-            await self.session.rollback()
-            logger.warning("store_notification_owner_moved_under_read")
-            raise InternalError
+class _PlayIsNeverRead:
+    async def read_for_restore(self, **_):
+        raise AssertionError("an Apple attempt reached the Play seam")
 ```
 
-CR-03's narrowed `superseded` removes the silent-corruption half of this on its own; this guard
-removes the rest.
+### IN-04: `_proof(expires_at=None)` cannot express "no expiry"
+
+**File:** `tests/e2e/test_restore_subscription.py:100, 111-112`
+
+`expires_at=None` is the "use the default open term" sentinel, so a case that wants a genuinely absent expiry has to reach around the helper with `dataclasses.replace` (line 353). Use a distinct sentinel (`_UNSET = object()`) so the helper can express both, and drop the `replace` import.
+
+### IN-05: Response bodies are asserted as `str` in one place and `bytes` everywhere else
+
+**File:** `tests/e2e/test_restore_subscription.py:61, 605, 628`
+
+`REFUSED_BODY` is a `str` compared against `refused.text`, while `PROOF_REJECTED_BODY`, `RESTORE_NOT_FOUND_BODY` and `TRANSFER_REJECTED_BODY` are `bytes` compared against `.content`. The comments on lines 604 and 627 claim the `.text` comparisons are "as bytes", which they are not. Make all four `bytes`/`.content` so the stated rule holds uniformly.
+
+### IN-06: One move-side assertion is vacuous by construction
+
+**File:** `tests/schema/test_restore_race.py:566-574`
+
+`test_the_source_holds_no_active_grant_for_the_moved_subscription` asserts an absence that the fixture already established: `hold-the-unrelated-one` supersedes every one of the source's active grants (including the one for the moved subscription) before the move runs. The docstring says so. The assertion therefore passes whether or not the move expires anything, and would still pass against the pre-45-08 writer. The genuine source-side coverage is `test_the_source_keeps_its_active_grant_for_the_unrelated_subscription` (line 533) plus the e2e move at `tests/e2e/test_restore_subscription.py:850`. Either delete the vacuous case or re-shape the fixture so the source really does hold an active grant for the moved subscription at move time (which requires dropping the unrelated restore, since `ix_access_grants_one_active_per_user` allows the source only one active row).
+
+### IN-07: `restore_bound_user_id` is dead, and the new tests add five more assertions on it
+
+**File:** `src/nativespeaker/api/tables/purchases.py:61`; `tests/e2e/test_restore_subscription.py:823, 867, 911, 937, 958, 974`; `tests/schema/test_restore_race.py:249`
+
+No code path writes `core.subscriptions.restore_bound_user_id` — D-10 replaced the binding it was for, as the comments say. The column, the model field and the `is None` assertions are all inert. They are cheap regression tripwires for "nothing started writing this column", but they read as coverage of a live invariant. Either add a one-line comment at the model field marking it unwritten and scheduled for removal, or drop the column in the next migration and the assertions with it.
 
 ---
 
-#### WR-04: A restore writes no `audit.subscription_events` row, so a cross-account move leaves no audit trail
-
-**File:** `src/nativespeaker/api/services/restore.py:46-143`
-
-**Issue:** `SubscriptionsService.ingest` appends an event for every notification it applies
-(`services/subscriptions.py:112-118`), including the superseded-payload arm. `RestoreService`
-appends none. The one operation in the system that moves paid entitlement from one account to
-another therefore records nothing in `audit.subscription_events` — the only durable evidence is
-`core.subscriptions.updated_at` and `last_cross_account_transfer_month`, both of which the next
-webhook overwrites or leaves ambiguous. There is no way after the fact to answer "which account
-did this subscription come from, and when".
-
-**Fix:** append one event per applied restore, after the owner claim and before the grant write.
-`notification_uuid` is UNIQUE and shared with the store keys, so give restore its own prefixed
-key, e.g. `f"restore:{subscription_id}:{self.evaluated_at.isoformat()}"`, with
-`event_type="restore_move"` / `"restore_adopt"` and `old_tier_id == new_tier_id == tier_id`.
-
----
-
-#### WR-05: A restore adopting a subscription leaves `store_purchases.purchase_user_id` NULL
-
-**File:** `src/nativespeaker/api/services/restore.py:113-124` (line 122)
-
-**Issue:** `purchase_user_id=attributed` — the account the *token* resolved to, which on the whole
-adoption branch is `None` (the branch runs precisely when no token bound the purchase). The
-destination account is known at that point and is written to `core.subscriptions.user_id` a few
-lines earlier, so the purchase row ends up disagreeing with the subscription row about who owns
-the purchase, and `ix_store_purchases_purchase_user_id` cannot find it. `purchase_user_id` carries
-a plain single-column FK to `core.users` — the two composite FKs are on `(provider, external_id)`
-and `(provider, resolved_token_value)` — so writing the destination is legal. The comment on line
-123 correctly explains why `resolved_token_value` must stay NULL, but that reason does not extend
-to `purchase_user_id`.
-
-**Fix:**
-
-```python
-                # The account this restore attached it to: the row is written once, so it is written right.
-                purchase_user_id=destination,
-                # Set only when the token resolved: the second foreign key needs a binding to point at.
-                resolved_token_value=None if attributed is None else token,
-```
-
----
-
-#### WR-06: Two devices of one account restoring at once answer 500 to a correct request
-
-**File:** `src/nativespeaker/api/services/restore.py:89,113,140,178-187`
-
-**Issue:** `_settle` is copied from the webhook service, where the caller is a store that retries
-on its own schedule and where "a lost race is a 5xx whose retry then finds the rows" is a
-reasonable contract. On `/auth/restore-subscription` the caller is the app. The realistic race —
-the same user tapping Restore on two devices, or a client retry crossing the original — takes the
-adoption-with-creation branch on both connections, one loses the unique index in
-`upsert_subscription`, and that user is shown `internal_error`. `_answer_as_the_winner_left_it`
-already implements the right behaviour for the owner-claim race; the writer races are not routed
-through it.
-
-**Fix:** on the restore path, treat `WriteOutcome.lost_race` the way the owner-claim loser is
-treated — roll back, re-read, and answer as the winner's committed state earns:
-
-```python
-    async def _settle(self, outcome: WriteOutcome, proof: RestoredSubscription,
-                      destination: UUID) -> None:
-        if outcome is not WriteOutcome.lost_race:
-            return
-        logger.warning("restore_grant_race_lost", provider=str(proof.provider))
-        # The client is a phone, not a retrying store: answer as the winner left it, as D-08 does.
-        return await self._answer_as_the_winner_left_it(proof, destination)
-```
-
----
-
-#### WR-07: The loser of an adoption race is refused 404, but its immediate retry is a move that spends the D-10 cap
-
-**File:** `src/nativespeaker/api/services/restore.py:150-161`
-
-**Issue:** When two accounts adopt one unowned subscription, the loser reaches
-`_answer_as_the_winner_left_it`, finds the row owned by the winner, and raises
-`RestoreSubscriptionNotEntitled` — asserted at `tests/schema/test_restore_race.py:340-345`. But
-the state that produced the 404 is exactly the state a *move* is defined over: the loser's next
-attempt (same second, same proof) takes the `current_owner is not None` branch, succeeds, and
-consumes that subscription's one move for the whole UTC month. So a lost race silently converts a
-would-be adoption into a cap-spending transfer, and the client sees 404-then-200 for two identical
-requests. The 404 also tells the loser nothing actionable.
-
-**Fix:** decide the intended semantics and make them explicit. Either treat the loser as a move
-attempt in the same request (re-run the branch decision once against the re-read row, so the cap
-is spent knowingly), or refuse the retry as well by recording that this subscription was just
-adopted. Whichever is chosen, add a schema case that runs the loser's retry and asserts what the
-transfer month reads afterwards — no test currently exercises it.
-
----
-
-### Info
-
-#### IN-01: The Play read decides status against a second clock
-
-**File:** `src/nativespeaker/api/auth/google_play.py:280-281` vs
-`src/nativespeaker/api/services/restore.py:43-44`
-
-**Issue:** `RestoreService` captures one instant and its comment states "nothing below it reads
-the clock again", but `read_for_restore` calls `self._evaluated_at_source()` to classify
-`SUBSCRIPTION_STATE_CANCELED`. Two instants decide one request. The skew is milliseconds and no
-current case turns on it, but the invariant the service documents is not actually held.
-
-**Fix:** pass the captured instant down — `read_for_restore(..., evaluated_at=self.evaluated_at)`
-— and keep `_evaluated_at_source` for the webhook path, which has no request instant to inherit.
-
----
-
-#### IN-02: `restore()` returns the value of a `-> None` coroutine
-
-**File:** `src/nativespeaker/api/services/restore.py:109`
-
-**Issue:** `return await self._answer_as_the_winner_left_it(proof, destination)` reads as though
-the helper produces the method's result; it is declared `-> None` and produces nothing. The intent
-is "stop here".
-
-**Fix:**
-
-```python
-            if not claimed:
-                await self._answer_as_the_winner_left_it(proof, destination)
-                return
-```
-
----
-
-#### IN-03: `identity.user.id` is dereferenced without a guard
-
-**File:** `src/nativespeaker/api/services/restore.py:50`
-
-**Issue:** `Identity.user` is `User | None` (`schemas/auth.py:99`). The route guarantees it is set
-via `get_linked_identity`, but the service accepts the whole `Identity` and states no
-precondition, so the guarantee lives one module away from the dereference. `tests/schema` already
-constructs `Identity` by hand (`test_restore_race.py:216`), which is exactly the caller that could
-get it wrong.
-
-**Fix:** take `destination: UUID` as a parameter instead of `identity`, so the type states the
-requirement. The service uses nothing else from `Identity`.
-
----
-
-#### IN-04: The flush/`23505` block is duplicated eight times, and the Play value-type assembly twice
-
-**File:** `src/nativespeaker/api/crud/subscriptions.py:146-153,193-200,219-226,262-270,292-300`;
-`src/nativespeaker/api/crud/grants.py:187-194,246-252,274-281`;
-`src/nativespeaker/api/auth/google_play.py:219-243` vs `267-285`
-
-**Issue:** The same nine lines — `try: await self.session.flush()` / `except IntegrityError` /
-`if violation.orig.sqlstate != "23505": raise` / `return ...lost_race` — appear eight times with
-identical comments. `read()` and `read_for_restore()` likewise repeat the whole
-`_product_of` → `in_grace` → `identifiers` → value-type assembly. Eight copies of a rule mean
-eight places to fix when the rule changes; `tests/schema/test_restore_race.py:469-471` already
-notes that a `23503` at commit is a code this guard does not cover, which is exactly the kind of
-change that would have to be made eight times.
-
-**Fix:** extract one helper in each module, e.g.
-
-```python
-async def _flush_or_lost_race(session: AsyncSession) -> bool:
-    """Flush, answering False where a unique index says a concurrent writer won."""
-    try:
-        await session.flush()
-    except IntegrityError as violation:
-        # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-        if violation.orig.sqlstate != "23505":
-            raise
-        return False
-    return True
-```
-
----
-
-_Reviewed: 2026-09-08T02:38:38Z_
+_Reviewed: 2026-09-08T21:42:08Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
