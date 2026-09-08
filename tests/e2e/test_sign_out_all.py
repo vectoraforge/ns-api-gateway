@@ -7,7 +7,13 @@ from httpx import ASGITransport, AsyncClient
 from unit.conftest import TEST_ISSUER, make_token
 
 from nativespeaker.api.auth.firebase import FirebaseAdminLookup
-from nativespeaker.api.tables.identities import IdentityProvider
+from nativespeaker.api.errors import (
+    BlockedUser,
+    HistoricalIdentity,
+    InvalidExternalJwt,
+    PreAuthIdentityNotAllowed,
+)
+from nativespeaker.api.tables.identities import IdentityProvider, IdentityState
 
 from .conftest import seed_identity
 
@@ -18,8 +24,9 @@ SUBJECT = "tracer-sign-out-all-subject"
 # The provider's own text, which every refusal keeps out of the body and out of the record.
 _PROVIDER_TEXT = "the identity toolkit answered no usable result for that request"
 
-# The one module that writes a record on the confirmed path: the router's own INFO line.
+# The two modules that write a record on this route: the router's INFO line and the handler's WARNING.
 _ROUTER_LOGGER = "nativespeaker.api.routers.auth.logger"
+_HANDLER_LOGGER = "nativespeaker.api.app.error_handlers.logger"
 
 
 class _LogSpy:
@@ -45,6 +52,12 @@ def _spy_on(monkeypatch, targets: tuple[str, ...], levels: tuple[str, ...]) -> _
 def info_records(monkeypatch) -> _LogSpy:
     """Every INFO record the router writes, and nothing else."""
     return _spy_on(monkeypatch, (_ROUTER_LOGGER,), ("info",))
+
+
+@pytest.fixture
+def route_records(monkeypatch) -> _LogSpy:
+    """Every INFO and WARNING record the router and the error handler write, in order."""
+    return _spy_on(monkeypatch, (_ROUTER_LOGGER, _HANDLER_LOGGER), ("info", "warning"))
 
 
 @pytest_asyncio.fixture(loop_scope="module")
@@ -92,6 +105,24 @@ def sdk_revocations(monkeypatch):
         return calls
 
     return script
+
+
+# Never seeded, so a token naming it verifies and still resolves to no identity row.
+_UNLINKED_SUBJECT = "sign-out-all-unlinked-subject"
+_RETIRED_SUBJECT = "sign-out-all-retired-subject"
+_BLOCKED_SUBJECT = "sign-out-all-blocked-subject"
+
+# Each rejection the shared barrier owns: the state that causes it, the header that reaches it, and its class.
+_BARRIER_REJECTIONS = (
+    pytest.param(None, None, InvalidExternalJwt, id="no-credential"),
+    pytest.param(None, {"Authorization": "Bearer not-a-signed-token"}, InvalidExternalJwt,
+                 id="an-unverifiable-token"),
+    pytest.param(None, _auth(_UNLINKED_SUBJECT), PreAuthIdentityNotAllowed, id="a-pre-auth-subject"),
+    pytest.param({"subject": _RETIRED_SUBJECT, "identity_state": IdentityState.historical},
+                 _auth(_RETIRED_SUBJECT), HistoricalIdentity, id="a-retired-identity"),
+    pytest.param({"subject": _BLOCKED_SUBJECT, "user_active": False},
+                 _auth(_BLOCKED_SUBJECT), BlockedUser, id="a-blocked-user"),
+)
 
 
 def _configured(real_seam) -> _NamedApp:
@@ -225,3 +256,72 @@ class TestARepeatedSignOut:
         assert second.content == b""
         # Both calls, so a route that cached the first answer would be visible as a missing second call.
         assert scripted_firebase_adapter.revoke_calls == [(TEST_ISSUER, SUBJECT)] * 2
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestEveryBarrierRejectionIsTheOneSyncAnswers:
+    """T-46-05: the barrier is shared and never re-implemented, so no rejection may differ by route."""
+
+    @pytest.mark.parametrize(("seeding", "headers", "rejection"), _BARRIER_REJECTIONS)
+    async def test_the_two_routes_answer_the_same_rejection(
+            self, sign_out_client, _db_transaction, scripted_firebase_adapter,
+            seeding, headers, rejection):
+        if seeding is not None:
+            await seed_identity(_db_transaction, issuer=TEST_ISSUER,
+                                provider=IdentityProvider.google, **seeding)
+        scripted_firebase_adapter.script_revocation(None)
+
+        synced = await sign_out_client.post("/auth/sync", headers=headers)
+        signed_out = await sign_out_client.post("/auth/sign-out-all", headers=headers)
+
+        # Read off the class the seeded state earns, so a row that reached a different barrier fails here.
+        assert (synced.status_code, synced.json()) == (rejection.status, {"code": rejection.code}), synced.text
+        assert signed_out.status_code == synced.status_code, signed_out.text
+        # Raw bytes, not the parsed body: a route-specific field would be invisible to the weaker check.
+        assert signed_out.content == synced.content
+        # No barrier rejection may reach the provider, on either route.
+        assert scripted_firebase_adapter.revoke_calls == []
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestWhatEachOutcomeWritesDown:
+    """The refused line, and the identifiers no line of this route may carry."""
+
+    async def test_a_refused_call_writes_the_warning_and_no_confirmation(
+            self, sign_out_client, _db_transaction, real_seam, sdk_revocations, route_records):
+        await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                            provider=IdentityProvider.google)
+        real_seam({})
+        sdk_revocations(None)
+
+        answered = await sign_out_client.post("/auth/sign-out-all", headers=_auth())
+
+        assert answered.status_code == 503, answered.text
+        # The whole entry list: the class name in snake case is the event, and the stage rides here alone.
+        assert route_records.entries == [("revocation_unconfirmed",
+                                          {"exc_info": False, "stage": "issuer_selection"})]
+        # Named on its own, because a confirmation line for a refused call is the lie SIGNOUT-02 forbids.
+        assert "sign_out_all_confirmed" not in {event for event, _ in route_records.entries}
+
+    async def test_no_record_of_any_outcome_carries_the_subject_or_the_provider_uid(
+            self, sign_out_client, _db_transaction, scripted_firebase_adapter, real_seam,
+            sdk_revocations, route_records):
+        """T-46-03: one confirmation and two refusals, and one assertion over every field of all three."""
+        _, identity = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                          provider=IdentityProvider.google)
+        scripted_firebase_adapter.script_revocation(None)
+        confirmed = await sign_out_client.post("/auth/sign-out-all", headers=_auth())
+        real_seam({})
+        refused = await sign_out_client.post("/auth/sign-out-all", headers=_auth())
+        _configured(real_seam)
+        sdk_revocations(auth.UserNotFoundError(_PROVIDER_TEXT))
+
+        rejected = await sign_out_client.post("/auth/sign-out-all", headers=_auth())
+
+        assert (confirmed.status_code, refused.status_code, rejected.status_code) == (204, 503, 401)
+        assert [event for event, _ in route_records.entries] == [
+            "sign_out_all_confirmed", "revocation_unconfirmed", "user_not_found"]
+        # Every value of every record, so a field added later cannot slip an identifier past this.
+        assert [value for _, fields in route_records.entries for value in fields.values()
+                if isinstance(value, str)
+                and (SUBJECT in value or identity.provider_uid in value)] == []
