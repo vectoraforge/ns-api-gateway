@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 46
 current_phase_name: POST /auth/sign-out-all
 status: executing
-stopped_at: Completed 46-02-PLAN.md
-last_updated: "2026-09-08T23:13:09.626Z"
+stopped_at: Completed 46-04-PLAN.md
+last_updated: "2026-09-08T23:27:05.735Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 46 execution started
-state_head: e2fcbccf6522321e7224a52fd558c79fadd5f015
+state_head: 3981a63b2db206050371254afa846f2c40e4e178
 progress:
   total_phases: 18
   completed_phases: 16
   total_plans: 124
-  completed_plans: 121
+  completed_plans: 122
   percent: 89
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 ## Current Position
 
 Phase: 46 (POST /auth/sign-out-all) — EXECUTING
-Plan: 3 of 5
+Plan: 4 of 5
 Status: Ready to execute
 Progress: [████████████████████] 119/119 plans ([█████████░] 89%)
 
@@ -454,10 +454,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-08T23:12:59.609Z
+**Last session:** 2026-09-08T23:26:51.388Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 46-02-PLAN.md
+Stopped at: Completed 46-04-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -523,6 +523,7 @@ Resume file: None
 | Phase 45 P09 | 9 min | 2 tasks | 2 files |
 | Phase 46 P01 | 6 min | 1 tasks | 6 files |
 | Phase 46 P02 | 7 min | 2 tasks | 4 files |
+| Phase 46 P04 | 11 min | 2 tasks | 1 files |
 
 ## Decisions
 
@@ -709,3 +710,5 @@ Resume file: None
 - [Phase 46]: 46-01: RevocationUnconfirmed shares verification_temporarily_unavailable at 503 with Unavailable — The error-tree totality walk rejects one code claimed at two statuses, not one code at one status. No ErrorCode member was added.
 - [Phase 46]: The auth-package ratchet moved to (8, 24, 64), read from the failing run rather than derived from the plan. — Task 1 (46-02)
 - [Phase 46]: D-04 is proven by one line: get_db is absent from _declared() for /auth/sign-out-all, so no session stand-in fixture was needed. — Task 2 (46-02), Research Q3
+- [Phase 46]: The e2e refusal cases run the real Firebase seam over a monkeypatched SDK, never the fake: the fake replaces FirebaseAdminLookup, which owns the except arms, so a fake scripted with an SDK error escapes unhandled instead of answering 503. — Measured: a probe scripting the fake with exceptions.UnavailableError produced "Unhandled exception" from app/error_handlers.py. The real seam over a monkeypatched auth.revoke_refresh_tokens answers 503 after three calls, 401 with the WWW-Authenticate challenge after one, and 503 after none for an unconfigured issuer.
+- [Phase 46]: Each barrier-parity row names the error class its seeded state earns, so a parity assertion cannot pass on two coincidentally equal answers. — InvalidExternalJwt, PreAuthIdentityNotAllowed, HistoricalIdentity and BlockedUser are read off the class as tests/e2e/test_sync.py already does; the class also proves the seeding reached the barrier it was meant to reach.
