@@ -708,7 +708,7 @@ Plans:
 **Goal:** Verify a native store artifact directly against Apple or Google and attach verified paid entitlement.
 **Requirements:** RESTORE-01, RESTORE-02
 **Depends on:** 34, 35, 37, 43, 44
-**Plans:** 5 plans
+**Plans:** 1/5 plans executed
 **Success criteria:**
 
 1. A valid Apple artifact and a valid Google artifact each attach entitlement through their server-determined branch
@@ -720,7 +720,7 @@ Plans:
 
 **Wave 1** *(the tracer; every later wave builds on it)*
 
-- [ ] 45-01-PLAN.md — TRACER: the same-account Apple restore, end to end through the request model, the surface gate, the `auth/` proof seam, the service, the transaction and the sync read-back (wave 1)
+- [x] 45-01-PLAN.md — TRACER: the same-account Apple restore, end to end through the request model, the surface gate, the `auth/` proof seam, the service, the transaction and the sync read-back (wave 1)
 
 **Wave 2** *(blocked on Wave 1)*
 
@@ -798,5 +798,5 @@ Plans:
 | 42. POST /auth/claim-registered-grant | v2.0 | 7/7 | Complete    | 2026-09-03 |
 | 43. POST /webhooks/app-store | v2.0 | 6/6 | Complete    | 2026-09-04 |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 7/7 | Complete    | 2026-09-06 |
-| 45. POST /auth/restore-subscription | v2.0 | 0/? | Pending | — |
+| 45. POST /auth/restore-subscription | v2.0 | 1/5 | In Progress|  |
 | 46. POST /auth/sign-out-all | v2.0 | 0/? | Pending | — |

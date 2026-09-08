@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 45
 current_phase_name: POST /auth/restore-subscription
 status: executing
-stopped_at: Phase 45 context gathered
-last_updated: "2026-09-08T00:42:45.663Z"
-last_activity: 2026-09-06
-last_activity_desc: Phase 44 complete and verified (7/7, CR-01 accepted as override), transitioned to Phase 45
-state_head: 4b208d3cbe8bea02b98e1ba80abdfa530dad51e3
+stopped_at: Completed 45-01-PLAN.md
+last_updated: "2026-09-08T01:03:52.292Z"
+last_activity: 2026-09-07
+last_activity_desc: Phase 45 execution started
+state_head: 24925606d24d145ec40799abcee8919a172e9a5e
 progress:
   total_phases: 18
   completed_phases: 15
   total_plans: 115
-  completed_plans: 110
+  completed_plans: 111
   percent: 83
 ---
 
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 45 (POST /auth/restore-subscription) — READY TO EXECUTE
-Plan: Not started
+Phase: 45 (POST /auth/restore-subscription) — EXECUTING
+Plan: 2 of 5
 Status: Ready to execute
-Last activity: 2026-09-06 — Phase 44 complete, transitioned to Phase 45
+Last activity: 2026-09-07 — Phase 45 execution started
 
 <!-- Counts read against disk rather than incremented, as 41-05, 42-07 and 43-06 did. Read at
      2026-09-05T12:35Z, during plan 44-07's Task 2: 110 PLAN files and 109 SUMMARY files across
@@ -317,11 +317,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-07T23:50:40.399Z
+**Last session:** 2026-09-08T01:03:51.363Z
 
 Last activity: 2026-09-05
-Stopped at: Phase 45 context gathered
-Resume file: .planning/phases/45-post-auth-restore-subscription/45-CONTEXT.md
+Stopped at: Completed 45-01-PLAN.md
+Resume file: None
 
 ## Performance Metrics
 
@@ -376,6 +376,7 @@ Resume file: .planning/phases/45-post-auth-restore-subscription/45-CONTEXT.md
 | Phase 44 P05 | 20min | 3 tasks | 3 files |
 | Phase 44 P06 | 11 min | 2 tasks | 7 files |
 | Phase 44 P07 | 22 min | 2 tasks | 3 files |
+| Phase 45 P01 | 15 min | 2 tasks | 15 files |
 
 ## Decisions
 
@@ -535,3 +536,6 @@ Resume file: .planning/phases/45-post-auth-restore-subscription/45-CONTEXT.md
 - [Phase 44]: 44-07: the `09` brief's DELETIONS line forbids the mechanism it mandates two clauses earlier, and the divergence is recorded rather than reasoned away — `:53` names the whole control set as *"the Pub/Sub OIDC verification **plus the authoritative Play lookup**"* and then forbids persisting raw purchase tokens. The lookup accepts no handle but the token, so a backend obeying the second clause can never perform the first. D-10 is filed as a counted flagged conflict with that reading stated, rather than as an interpretation that makes the conflict disappear.
 - [Phase 44]: 44-07: the traceability row for PLAYHOOK is deliberately left as a range, and `requirements.mark-complete` reporting `table_unmatched` is accepted rather than fixed — Every row in that table is a range with no per-id anchor; reshaping this one row to satisfy the tool's parser would make it inconsistent with the twelve others and would fix the tool for none of them. The same result 41-05, 42-06, 43-06 and 44-05 each recorded. Both surfaces were finished by hand, as before.
 - [Phase 44]: 44-07: the plan's own `specs/` cleanliness gate could never pass in this repository, and was replaced by two checks that measure the property — `git status --porcelain -- specs/` reports `?? specs/auth-refactor-phases/` because that directory has **never been tracked** in the parent repo, so the gate fired on an untracked path rather than on an edit. D-22 is instead proved by `git status --untracked-files=no -- specs/` being empty and by no file under `specs/` having an mtime inside today. The distinction matters: the gate exists to catch a specification **edit**, and untracked-ness is not one.
+- [Phase 45]: 45-01: RestoreProviderUnknown declares 403 operation_not_allowed on its own rather than joining ClaimRefused — Every ClaimRefused leaf describes a grant claim; the totality walk permits a second class at the same code and status
+- [Phase 45]: 45-01: RestoreService refuses provider google_play until 45-02 lands the Play read — The router gate admits google_play as a PurchaseProvider member, so without the arm a Play purchase token would reach the Apple SignedDataVerifier
+- [Phase 45]: 45-01: verify_transaction refuses a transaction carrying no originalTransactionId — That field is the lifecycle key the subscription row is read by; an absent one must never become a lookup key
