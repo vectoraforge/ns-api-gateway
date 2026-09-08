@@ -756,12 +756,28 @@ Plans:
 **Goal:** Revoke the verified subject's Firebase refresh tokens through the issuer-selected Admin client.
 **Requirements:** SIGNOUT-01, SIGNOUT-02
 **Depends on:** 34, 35
+**Plans:** 0/4 plans complete
 **Success criteria:**
 
 1. Success is returned only after Firebase confirms revocation
 2. An indeterminate or failed revocation fails closed — never a success response
 3. **BLOCKED: requires a mechanism Phase 37.1 deleted. Phase 46 must decide.** As written: exactly one `audit.auth_events` row is written per attempt. The table, the writer and every call site were deleted by Phase 37.1 (D-01), 2026-08-24, before this phase was built. **Phase 46 owns the decision** — the same choice Phase 38 faces — but must weigh it on this operation's own terms: criterion 2's fail-closed rule is untouched and still binding, and a sign-out-all that fails closed on an indeterminate revocation leaves *nothing* recording the attempt if the obligation is simply dropped. That is a different exposure from a read-only sync losing its attempt telemetry. Matching requirement: SIGNOUT-02.
 4. No backend token, session, or generation counter is introduced
+
+Plans:
+
+**Wave 1**
+
+- [ ] 46-01-PLAN.md — The end-to-end sign-out path — seam, leaf, route and one confirmed 204 — and the four broken test literals re-written (wave 1)
+
+**Wave 2** *(blocked on Wave 1; the two plans of this wave touch disjoint files and run in parallel)*
+
+- [ ] 46-02-PLAN.md — The app-selection cases and the attempt counts, including the exhaustion leaf asserted by class (wave 2)
+- [ ] 46-03-PLAN.md — The three refusals, the equal 503 bodies, the barrier parity with `/auth/sync` and the log discipline (wave 2)
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 46-04-PLAN.md — The dated SIGNOUT amendments, the two closed forward flags, the re-derived counts and the phase close (wave 3)
 
 ## Progress
 
