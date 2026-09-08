@@ -1,11 +1,13 @@
-"""The Apple restore proof, minted for real against a throwaway chain and refused by the real root.
+"""Both restore proofs: the Apple transaction minted against a throwaway chain, and the Play read.
 The store call's place in the request is measured here too: it runs before the session's first statement.
-Untested by construction: only whether Apple's live signed transactions match Apple's declared shapes."""
+Untested by construction: only whether the two stores' live artifacts match their declared shapes."""
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 from appstoreserverlibrary.signed_data_verifier import VerificationStatus
 
+from nativespeaker.api.auth.google_play import GRACE_STATE, PlayDeveloperSubscriptions
 from nativespeaker.api.auth.store_notifications import RestoredSubscription
 from nativespeaker.api.errors import (
     ProofRejected,
@@ -30,12 +32,32 @@ from unit.test_app_store_notifications import (
     _notifications,
     _transaction,
 )
+from unit.test_google_play_notifications import (
+    ATTRIBUTION_TOKEN as PLAY_ATTRIBUTION_TOKEN,
+)
+from unit.test_google_play_notifications import (
+    PRODUCT_ID as PLAY_PRODUCT_ID,
+)
+from unit.test_google_play_notifications import (
+    PURCHASE_TOKEN,
+    UNEXPIRED,
+    _answering,
+    _FakeCredential,
+    _subscription_body,
+)
+from unit.test_google_play_notifications import (
+    TIER_ID as PLAY_TIER_ID,
+)
 
 # One captured instant for every case below, so no assertion here depends on the wall clock.
 EVALUATED_AT = datetime(2026, 6, 1, tzinfo=UTC)
 
 # The application name the dependency passes in production; the Apple check never reads it.
 PACKAGE_NAME = "com.nativespeaker.app"
+
+# The two stages the Play restore read answers with, which are its whole label vocabulary.
+GONE_STAGE = "play_token_gone"
+READ_STAGE = "play_restore_read"
 
 
 @pytest.fixture(scope="module")
@@ -153,6 +175,136 @@ class TestAProofThatDoesNotVerifyIsRefusedWithoutNamingItself:
         for segment in proof.split("."):
             assert segment not in refusal.value.stage
             assert segment not in str(refusal.value)
+
+
+def _play_reader(handler, *, products: dict[str, str] | None = None) -> PlayDeveloperSubscriptions:
+    """The real Play read class over a stubbed transport and this module's captured instant."""
+    return PlayDeveloperSubscriptions(
+        credential=_FakeCredential(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        products={PLAY_PRODUCT_ID: PLAY_TIER_ID} if products is None else products,
+        evaluated_at_source=lambda: EVALUATED_AT)
+
+
+async def _restore_through(reader: PlayDeveloperSubscriptions) -> RestoredSubscription:
+    """One restore read on this reader, with the arguments the service passes in production."""
+    return await reader.read_for_restore(package_name=PACKAGE_NAME, purchase_token=PURCHASE_TOKEN)
+
+
+async def _play_restore(state: str, *, expiry: datetime | None = UNEXPIRED) -> RestoredSubscription:
+    """Read one subscription in this state through the real class, and return the value type."""
+    return await _restore_through(_play_reader(_answering(_subscription_body(state, expiry=expiry))))
+
+
+class TestThePlayReadReportsTheRestoreValueType:
+    """The purchase token is the only handle this subscription has, so it is the external id."""
+
+    async def test_a_live_subscription_is_reported_in_the_restore_value_type(self):
+        restored = await _play_restore("SUBSCRIPTION_STATE_ACTIVE")
+
+        assert isinstance(restored, RestoredSubscription)
+        assert restored.provider is PurchaseProvider.google_play
+        assert restored.external_id == PURCHASE_TOKEN
+        assert restored.product_id == PLAY_PRODUCT_ID
+        assert restored.tier_id == PLAY_TIER_ID
+        assert restored.attribution_token == PLAY_ATTRIBUTION_TOKEN
+        assert restored.status is SubscriptionStatus.active
+        assert restored.expires_at == UNEXPIRED
+
+    async def test_the_status_comes_from_the_state_map_the_webhook_already_uses(self):
+        """`_status_for` is reused, so both entry points read one state map and never two."""
+        restored = await _play_restore("SUBSCRIPTION_STATE_ON_HOLD")
+
+        assert restored.status is SubscriptionStatus.billing_retry
+
+    async def test_a_subscription_in_grace_carries_the_line_items_expiry_as_its_window(self):
+        restored = await _play_restore(GRACE_STATE)
+
+        assert restored.status is SubscriptionStatus.grace_period
+        assert restored.grace_period_expires_at == UNEXPIRED
+        assert restored.grace_period_expires_at == restored.expires_at
+
+    async def test_a_subscription_outside_grace_carries_no_window_control(self):
+        """The control that makes the case above non-vacuous: the field is not always the expiry."""
+        assert (await _play_restore("SUBSCRIPTION_STATE_ACTIVE")).grace_period_expires_at is None
+
+
+class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
+    """D-05: a gone token is a rejected proof, and every other failure is a 503 the app retries."""
+
+    @pytest.mark.parametrize("status_code", [404, 410])
+    async def test_a_gone_purchase_token_is_a_rejected_proof(self, status_code):
+        reader = _play_reader(_answering({"error": {"status": "NOT_FOUND"}}, status_code))
+
+        with pytest.raises(ProofRejected) as refusal:
+            await _restore_through(reader)
+
+        assert refusal.value.stage == GONE_STAGE
+        assert refusal.value.status == 403
+
+    @pytest.mark.parametrize("status_code", [400, 401, 403, 429, 500, 502, 503])
+    async def test_every_other_non_2xx_status_is_temporarily_unavailable(self, status_code):
+        reader = _play_reader(_answering({"error": {"status": "UNAVAILABLE"}}, status_code))
+
+        with pytest.raises(Unavailable) as refusal:
+            await _restore_through(reader)
+
+        assert refusal.value.stage == READ_STAGE
+        assert refusal.value.status == 503
+
+    async def test_a_transport_failure_is_temporarily_unavailable(self):
+        def _unreachable(_request):
+            raise httpx.ConnectError("the Play endpoint is unreachable")
+
+        with pytest.raises(Unavailable) as refusal:
+            await _restore_through(_play_reader(_unreachable))
+
+        assert refusal.value.stage == READ_STAGE
+
+    async def test_an_absent_credential_is_unavailable_and_reaches_no_transport(self):
+        """No credential is an operator state, not a refusal the caller earned, so it is a 503."""
+        def _never(request):
+            raise AssertionError(f"an unconfigured deployment reached {request.url}")
+
+        reader = PlayDeveloperSubscriptions(
+            credential=None,
+            client=httpx.AsyncClient(transport=httpx.MockTransport(_never)),
+            products={},
+            evaluated_at_source=lambda: EVALUATED_AT)
+
+        with pytest.raises(Unavailable) as refusal:
+            await _restore_through(reader)
+
+        assert refusal.value.stage == READ_STAGE
+
+    async def test_an_unmapped_play_product_is_the_operator_error_and_not_a_503(self):
+        """Pitfall 1: this class is an `InternalError`, so a caught base class would hide it here."""
+        reader = _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_ACTIVE",
+                                                            expiry=UNEXPIRED)),
+                              products={"another.product.entirely": PLAY_TIER_ID})
+
+        with pytest.raises(UnmappedStoreProduct) as failure:
+            await _restore_through(reader)
+
+        assert failure.value.status == 500
+        assert not isinstance(failure.value, Unavailable)
+
+
+class TestThePlayRefusalNamesNoPartOfTheToken:
+    """T-45-04: on this path the external id is the purchase token, so no label may carry it."""
+
+    @pytest.mark.parametrize(("status_code", "refusal_type"),
+                             [(404, ProofRejected), (500, Unavailable)])
+    async def test_neither_the_stage_nor_the_message_nor_the_log_fields_carry_it(
+            self, status_code, refusal_type):
+        reader = _play_reader(_answering({"error": {"status": "NOT_FOUND"}}, status_code))
+
+        with pytest.raises(refusal_type) as refusal:
+            await _restore_through(reader)
+
+        assert PURCHASE_TOKEN not in refusal.value.stage
+        assert PURCHASE_TOKEN not in str(refusal.value)
+        assert PURCHASE_TOKEN not in str(refusal.value.log_fields())
 
 
 class _Stop(Exception):
