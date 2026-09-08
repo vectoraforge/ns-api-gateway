@@ -3,17 +3,17 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 46
-current_phase_name: POST /auth/sign-out-all
-status: planning
+current_phase_name: post-auth-sign-out-all
+status: executing
 stopped_at: Phase 45 complete, ready to plan Phase 46
-last_updated: "2026-09-08T22:04:44.274Z"
+last_updated: "2026-09-08T22:54:00.566Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 45 complete, transitioned to Phase 46
-state_head: f4c006c51aac81a3cb9e9879f5fb44730a3050a4
+state_head: a6593cb46f18fa08a0d7653d7f74b6011d33f1a0
 progress:
   total_phases: 18
   completed_phases: 16
-  total_plans: 119
+  total_plans: 124
   completed_plans: 119
   percent: 89
 ---
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 
 ## Current Position
 
-Phase: 46 — POST /auth/sign-out-all
+Phase: 46 (post-auth-sign-out-all) — READY TO EXECUTE
 Plan: Not started
-Status: Ready to plan
+Status: Ready to execute
 Progress: [████████████████████] 119/119 plans (100%)
 
 **Phase 45 closed 2026-09-08.** Re-verification passed 7/7 after the four gap-closure plans. The
@@ -442,6 +442,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 - OPEN (45-REVIEW WR-01): **an Apple subscriber in a billing grace period cannot restore.** `auth/app_store.py` sets `grace_period_expires_at=None` unconditionally, so a `grace_period` stored row yields no proof term and 45-07's refusal fires. Fail-closed under-grant, the deliberate cost of closing CR-02's paid-grant-that-never-expires; the fix is persisting the grace window server-side, a schema change. Also open from the same review: WR-02 refusals log nothing, WR-03 replay/supersede predicate asymmetry (latent), WR-04 boundary pinned at `now − 1 ms`.
 - RESOLVED (45-06 addendum): CR-01 reopened by the second review — `quote(…, safe="")` never escapes `.` and httpx drops dot segments, so `..` rewrote the Play read path. Closed by refusing a dot-only token before the request is built, proved over a recording transport. The webhook `read()` carries no equivalent guard; nothing untrusted reaches it today.
+
 ### Quick Tasks Completed
 
 | # | Description | Date | Commit | Directory |
