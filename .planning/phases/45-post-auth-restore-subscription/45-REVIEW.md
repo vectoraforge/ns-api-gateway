@@ -43,6 +43,8 @@ The new code is otherwise disciplined: read ordering, lock ordering, the `23505`
 
 ### CR-01: The Play read path is still escapable — a `.` or `..` purchase token leaves the `tokens/` resource
 
+**Resolved:** 513ef70 — see 45-06-SUMMARY.md addendum.
+
 **File:** `src/nativespeaker/api/auth/google_play.py:303-307`
 **Also:** `tests/unit/test_restore_proof.py:246-287` (the test that guards this invariant misses the input that breaks it)
 

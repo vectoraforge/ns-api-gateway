@@ -251,3 +251,146 @@ All four modified files exist on disk; all four task commits (`72bac61`, `b3aca9
 ---
 *Phase: 45-post-auth-restore-subscription*
 *Completed: 2026-09-08*
+
+---
+
+## Addendum — CR-01 reopened and closed
+
+**Date:** 2026-09-08
+**Commits:** `f28047a` (test, RED), `513ef70` (fix, GREEN), and this record.
+
+### What the first closure missed, and why
+
+The first closure escaped both interpolated values with `quote(value, safe="")` and asserted the
+result on `request.url.raw_path`. The assertion was right and the escaping is real, but the closure
+picked the input that passes rather than the input that breaks the rule.
+
+`urllib.parse.quote` never escapes the unreserved set `A-Za-z0-9_.-~`, so a `.` survives, and httpx
+performs RFC 3986 dot-segment removal when it builds the `URL`. The guarding case used
+`"a/../../../../v3/applications/evil/edits"`, whose `/` characters **are** escaped. Escaping the
+separators makes the whole token one segment, which neutralises that particular traversal — but for
+the wrong reason. It says nothing about a token that **is** a dot segment. The comment the closure
+wrote at the send site ("a caller's token names one segment and never a path") was therefore false
+as written, and the plan's own acceptance criteria could not catch it: every criterion was about the
+presence of `quote`, not about the shape of the path a dot-only token produces.
+
+### The observed paths, before the fix
+
+Driven through the production `PlayDeveloperSubscriptions.read_for_restore` over the module's own
+`_capturing_reader()` recording transport, against the unchanged source at `6e0801b`:
+
+```
+'.'      sent=1 outcome=no raise paths=['/androidpublisher/v3/applications/com.nativespeaker.app/purchases/subscriptionsv2/tokens']
+'..'     sent=1 outcome=no raise paths=['/androidpublisher/v3/applications/com.nativespeaker.app/purchases/subscriptionsv2']
+'....'   sent=1 outcome=no raise paths=['/androidpublisher/v3/applications/com.nativespeaker.app/purchases/subscriptionsv2/tokens/....']
+```
+
+This reproduces the reviewer's two paths exactly. Each request carried the deployment's own
+`androidpublisher`-scoped bearer. `'....'` is not a dot segment, so it stays in the path and names
+one segment — it is included below because the rule the guard states is "a token of dots alone is
+not a name", which is the property that can be checked before the client normalises anything.
+
+### The RED run
+
+`tests/unit/test_restore_proof.py::TestThePlayRequestUrlIsConfinedToOneResource`, extended with the
+dot-only cases and run against the unchanged source:
+
+```
+tests/unit/test_restore_proof.py ....FFFF.                               [100%]
+E   Failed: DID NOT RAISE <class 'nativespeaker.api.errors.ProofRejected'>   [.]
+E   Failed: DID NOT RAISE <class 'nativespeaker.api.errors.ProofRejected'>   [..]
+E   Failed: DID NOT RAISE <class 'nativespeaker.api.errors.ProofRejected'>   [....]
+E   Failed: DID NOT RAISE <class 'nativespeaker.api.errors.Unavailable'>     (dot-only package name)
+============ 4 failed, 5 passed, 35 deselected, 1 warning in 0.19s =============
+```
+
+The 5 passing are the four original cases plus the new control
+`test_a_token_carrying_dots_among_other_characters_is_still_read_control`, which passes before and
+after and proves the guard is not over-broad. That control matters: a real Play purchase token
+carries dots, so a guard that refused every dot would refuse every live restore.
+
+### The fix
+
+`src/nativespeaker/api/auth/google_play.py`:
+
+- One module-level predicate `_names_one_path_segment(value)`, returning `bool(value.strip("."))`.
+- `read_for_restore` refuses, in this order: no credential, then an absent or dot-only
+  `package_name` as `Unavailable(stage=RESTORE_READ_STAGE)`, then a dot-only `purchase_token` as
+  `ProofRejected(stage=RESTORE_TOKEN_GONE_STAGE)`.
+- The send-site comment now reads "Escaping confines each value to one segment, except dots, which
+  `read_for_restore` refuses."
+
+No new error leaf. `ProofRejected(stage=RESTORE_TOKEN_GONE_STAGE)` is the answer a token Google
+reports as gone already earns, so the client-visible body is byte-identical to today's: 403
+`proof_rejected`. The `restore_not_found` family 45-07 pinned to one body is not touched at all.
+
+**Why the guard sits in `read_for_restore` and not in the shared `_get`.** A rejection needs a
+vocabulary, and the two entry points do not share one — `_get`'s own docstring already says "each
+entry point classifies a transport failure its own way". `ProofRejected` raised from `_get` would
+escape the webhook's `read()` as a 403 to Pub/Sub, which is not an answer that path may give;
+`Unavailable` raised from `_get` would turn the caller's dead token into a 503 that invites a retry
+that can never succeed, changing the client-visible body. `read_for_restore` is also the whole
+attack surface: the webhook's package name is compared byte-for-byte against config before the read
+(`app/dependencies.py:191`) and its purchase token arrives inside a Google-signed RTDN, so neither
+of its two values is caller-supplied.
+
+**Why not escape `.` to `%2E`.** It was considered and measured. httpx 0.28.1 does **not**
+re-normalise a percent-encoded dot — `%2E%2E` survives to `raw_path` intact — so the mechanism works
+at the transport. It was rejected on merits anyway: it rewrites the wire form of **every**
+legitimate request, including the package name (`com%2Enativespeaker%2Eapp`), and whether Google's
+own front end normalises `%2E` back to `.` before routing cannot be tested from here. Trading a
+proven-safe refusal of an input no real token uses for an untestable bet on a live billing API is
+the worse deal.
+
+### The green run
+
+Re-driving the same recording transport with the same three tokens, after the fix:
+
+```
+'.'      sent=0 outcome=ProofRejected paths=[]
+'..'     sent=0 outcome=ProofRejected paths=[]
+'....'   sent=0 outcome=ProofRejected paths=[]
+```
+
+Nothing reaches the transport.
+
+| Command | Result |
+|---|---|
+| `uv run pytest tests/unit/test_restore_proof.py -q` | 44 passed |
+| `uv run pytest -q` | 1255 passed, 562 deselected |
+| `uv run pytest -m e2e tests/e2e/test_restore_subscription.py -q` | 35 passed |
+| `uv run ruff check src tests` | All checks passed |
+
+### Deviations in this follow-up
+
+**1. [Rule 1 - Bug] An absent `package_name` was a 500, and the new guard would have been an `AttributeError`**
+
+- **Found during:** the first full run after the fix.
+- **Issue:** `GooglePlayConfig.package_name` is `str | None`, but `RestoreService.package_name` and
+  `read_for_restore` both declare `str`. On a deployment with a credential and no package name,
+  `quote(None, safe="")` already raised `TypeError` -> 500. Placing the dot guard ahead of the
+  credential check turned `test_an_unconfigured_credential_is_temporarily_unavailable` into an
+  `AttributeError` on `None.strip`.
+- **Fix:** the credential check stays first, and the package guard reads
+  `if not package_name or not _names_one_path_segment(package_name)`. An unconfigured deployment now
+  answers 503 `verification_temporarily_unavailable` — the meaning it always had — instead of 500.
+- **Verification:** `uv run pytest -m e2e tests/e2e/test_restore_subscription.py -q`, 35 passed.
+- **Committed in:** `513ef70`.
+
+**2. [Rule 3 - Blocking] The recorded auth package shape had to be rewritten**
+
+- **Found during:** the first full unit run after the fix.
+- **Issue:** `tests/unit/test_auth_package_shape.py` asserts a literal `(modules, classes,
+  functions)` triple. The new `_names_one_path_segment` made it `(8, 24, 59)` against a recorded
+  `(8, 24, 58)`.
+- **Fix:** `CURRENT` updated to `(8, 24, 59)`, which is what that case's own docstring instructs a
+  later phase to do.
+- **Verification:** `uv run pytest -q`, 1255 passed.
+- **Committed in:** `513ef70`.
+
+### What this leaves open
+
+The webhook entry point `read()` carries no equivalent guard. Its two values are not caller-supplied
+(see above), so no caller can reach it, but the invariant "every value interpolated into the Play
+read URL names one path segment" holds at `read_for_restore` and not at `_get`. If a later phase
+gives `read()` a value from an untrusted source, the guard has to move down or be repeated there.
