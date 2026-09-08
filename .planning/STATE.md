@@ -3,18 +3,18 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 46
-current_phase_name: post-auth-sign-out-all
+current_phase_name: POST /auth/sign-out-all
 status: executing
-stopped_at: Phase 45 complete, ready to plan Phase 46
-last_updated: "2026-09-08T22:54:00.566Z"
+stopped_at: Completed 46-01-PLAN.md
+last_updated: "2026-09-08T23:04:48.244Z"
 last_activity: 2026-09-08
-last_activity_desc: Phase 45 complete, transitioned to Phase 46
-state_head: a6593cb46f18fa08a0d7653d7f74b6011d33f1a0
+last_activity_desc: Phase 46 execution started
+state_head: 8952504ee03da9b81dcc06529ab79c160cf4883d
 progress:
   total_phases: 18
   completed_phases: 16
   total_plans: 124
-  completed_plans: 119
+  completed_plans: 120
   percent: 89
 ---
 
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 
 ## Current Position
 
-Phase: 46 (post-auth-sign-out-all) — READY TO EXECUTE
-Plan: Not started
+Phase: 46 (POST /auth/sign-out-all) — EXECUTING
+Plan: 2 of 5
 Status: Ready to execute
-Progress: [████████████████████] 119/119 plans (100%)
+Progress: [████████████████████] 119/119 plans ([█████████░] 89%)
 
 **Phase 45 closed 2026-09-08.** Re-verification passed 7/7 after the four gap-closure plans. The
 code review that followed them (`45-REVIEW.md`, second run) found CR-01 was NOT closed — `quote`
@@ -56,7 +56,7 @@ three fixes do not interact.
 `45-VERIFICATION.md` itself still reads `gaps_found` and still records RESTORE-01 as BLOCKED:
 **re-verification is what changes those, not this file.** `/gsd:verify-phase 45` decides whether the
 phase is complete; this plan does not.
-Last activity: 2026-09-08 — Phase 45 complete, transitioned to Phase 46
+Last activity: 2026-09-08 — Phase 46 execution started
 fixes together, and REQUIREMENTS.md carries the dated gap-closure record
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07 and 45-05 each did.
@@ -454,10 +454,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-08T22:06:33.000Z
+**Last session:** 2026-09-08T23:04:24.810Z
 
 Last activity: 2026-09-08
-Stopped at: Phase 45 complete, ready to plan Phase 46
+Stopped at: Completed 46-01-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -521,6 +521,7 @@ Resume file: None
 | Phase 45 P08 | 8 min | 2 tasks | 2 files |
 | Phase 45 P07 | 11 min | 2 tasks | 2 files |
 | Phase 45 P09 | 9 min | 2 tasks | 2 files |
+| Phase 46 P01 | 6 min | 1 tasks | 6 files |
 
 ## Decisions
 
@@ -702,3 +703,6 @@ Resume file: None
 - [Phase 45]: The grant's end is bound once before the check and passed by that name to write_subscription_grant — The expression existed in one place before and exists in one place after, so the term that was checked and the term that is written cannot drift apart. A second copy is what made CR-02 reachable.
 - [Phase 45]: Phase 45 gap closure closes on one joint run of the four suite commands, not on counts carried from 45-05 or from the three fix plans — Each of 45-06, 45-07 and 45-08 verified only its own files while the other two were in flight, so nothing had yet shown the three fixes do not interact. 45-09 ran uv run pytest -q (1250), -m e2e (333), -m schema (229) and ruff check src tests (clean) with all three present, and RESTORE-01 was marked met only after that run was green.
 - [Phase 45]: The 45-REVIEW findings this plan set did not incorporate are recorded by name under RESTORE-01 with the reason, so a later reviewer reads a decision rather than an omission — WR-01, WR-03, WR-05, WR-06, WR-07 and IN-01 to IN-04 are deferred; WR-04 is rejected for this phase as a carried-forward decision (37.1 D-01, 38 D-03) and not an oversight. The WR-01 half that misleads a reader is recorded as a known-stale migration comment on last_cross_account_transfer_month with the wording it needs, and the migration is not edited (D-14).
+- [Phase 46]: 46-01: the revocation ValueError arm is definitive, not retryable — The SDK validates the uid before it sends the request, so another attempt answers the same. This is the one place the revocation must NOT copy _read.
+- [Phase 46]: 46-01: revoke_with_retry gets its own exhaustion callback, _revocation_exhausted — An exhausted revocation budget must raise RevocationUnconfirmed. Reusing _exhausted raises Unavailable at a byte-identical 503, so only the log event name would differ and no wire assertion could see the mistake.
+- [Phase 46]: 46-01: RevocationUnconfirmed shares verification_temporarily_unavailable at 503 with Unavailable — The error-tree totality walk rejects one code claimed at two statuses, not one code at one status. No ErrorCode member was added.
