@@ -5,15 +5,15 @@ milestone_name: Authentication & Entitlements
 current_phase: 45
 current_phase_name: POST /auth/restore-subscription
 status: executing
-stopped_at: Completed 45-05-PLAN.md
-last_updated: "2026-09-08T02:08:20.180Z"
+stopped_at: Phase 46 context gathered
+last_updated: "2026-09-08T20:30:13.605Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 45 executed — 5 of 5 plans
-state_head: 96f881938d54afa74e684a33a516cc0102ac6f6e
+state_head: 81ddff37fcea8c956bf43c059ebfec4122a59709
 progress:
   total_phases: 18
   completed_phases: 15
-  total_plans: 115
+  total_plans: 119
   completed_plans: 115
   percent: 83
 ---
@@ -371,11 +371,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-08T02:07:52.770Z
+**Last session:** 2026-09-08T20:30:12.641Z
 
 Last activity: 2026-09-05
-Stopped at: Completed 45-04-PLAN.md
-Resume file: None
+Stopped at: Phase 46 context gathered
+Resume file: .planning/phases/46-post-auth-sign-out-all/46-CONTEXT.md
 
 ## Performance Metrics
 
