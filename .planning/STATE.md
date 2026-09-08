@@ -8,13 +8,13 @@ status: executing
 stopped_at: Completed 45-07-PLAN.md
 last_updated: "2026-09-08T21:18:36.442Z"
 last_activity: 2026-09-08
-last_activity_desc: Phase 45 gap closure — 45-07 executed, closing VERIFICATION truth 1 (CR-02)
+last_activity_desc: Phase 45 gap closure complete — 45-09 proved the three fixes together and recorded them
 state_head: 6eb03f1fd4fc235ea165a78e83ad0c8319d20e5c
 progress:
   total_phases: 18
   completed_phases: 15
   total_plans: 119
-  completed_plans: 118
+  completed_plans: 119
   percent: 83
 ---
 
@@ -29,23 +29,32 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 45 (POST /auth/restore-subscription) — EXECUTING (gap closure)
-Plan: 8 of 9 executed (45-01 … 45-08); 45-09 remains
-Status: all three blocker gaps of `45-VERIFICATION.md` are now closed in the source — 45-06 closed
-truth 7 (CR-01) and WR-02, 45-08 closed truth 6 (CR-03), and 45-07 closed truth 1 (CR-02). The
-report itself still reads `gaps_found` and RESTORE-01 still reads BLOCKED there: re-verification is
-what changes those, not this file. RESTORE-01 stays unmarked in REQUIREMENTS.md because 45-09 also
-declares it and has no SUMMARY yet.
-Last activity: 2026-09-08 — 45-07 executed: a restore now refuses a proof whose term is absent or
-already past, before any write
+Phase: 45 (POST /auth/restore-subscription) — EXECUTED, AWAITING RE-VERIFICATION
+Plan: 9 of 9 executed (45-01 … 45-09)
+Status: the three blocker gaps of `45-VERIFICATION.md` are closed and are now proved together.
+**Truth 7 (CR-01)** — 45-06 escaped both interpolated path segments of the Play read URL inside the
+shared `_get`, so a caller-supplied `restore_proof` names one path segment and can carry no query
+string; the same plan bounded `provider` at 32 and `restore_proof` at 8192 (WR-02). **Truth 1
+(CR-02)** — 45-07 binds the proof's own term once, before any write, and refuses an absent or
+already-past term into the existing `restore_not_found` family; the same binding is what
+`write_subscription_grant` is passed. **Truth 6 (CR-03)** — 45-08 narrowed the entitled arm of
+`superseded` to the destination's own rows plus this subscription's row, so a move ends only the
+grants the write is entitled to end. **45-09 ran the four commands against all three fixes at
+once**, on real PostgreSQL, and they are green: 1250 unit, 333 e2e, 229 schema, `ruff` clean. The
+three fixes do not interact.
+`45-VERIFICATION.md` itself still reads `gaps_found` and still records RESTORE-01 as BLOCKED:
+**re-verification is what changes those, not this file.** `/gsd:verify-phase 45` decides whether the
+phase is complete; this plan does not.
+Last activity: 2026-09-08 — 45-09 executed: the four suite commands run once against all three
+fixes together, and REQUIREMENTS.md carries the dated gap-closure record
 
-<!-- Counts read against disk rather than trusted from the handler, as every plan of this phase
-     has done. Read at 2026-09-08T21:18Z, after this plan's SUMMARY landed: 119 PLAN files and 118
-     SUMMARY files across .planning/phases/, which is exactly what the frontmatter now carries.
-     Phase 45 itself: 9 PLAN files and 8 SUMMARY files. The handler wrote "Plan: 8 of 9" by
-     incrementing 7, which was right by accident and wrong in its prose, so the line is rewritten
-     here from a count: 45-08 ran before 45-07, and 45-09 is the one that remains. The phase is
-     executed but not re-verified, so completed_phases stays at 15 and percent stays at 83. -->
+<!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07 and 45-05 each did.
+     Read at 2026-09-08T21:23Z, during this plan's Task 1: 119 PLAN files and 118 SUMMARY files
+     across .planning/phases/, and Phase 45 itself holds 9 PLAN files and 8 SUMMARY files. This
+     plan's own summary is the hundred-and-nineteenth and lands after Task 2, which is why
+     completed_plans is written as 119 here rather than the 118 on disk at the moment of the count.
+     The phase is executed but NOT re-verified, so completed_phases stays at 15 and percent stays
+     at 83; `/gsd:verify-phase 45` is what moves them. -->
 
 **45-07 outcome.** `services/restore.py` took the entitled decision from the stored row (D-06) and
 the grant's term from the client-presented proof, and never reconciled the two. Two combinations
