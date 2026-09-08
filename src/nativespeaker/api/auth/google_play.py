@@ -3,6 +3,7 @@ Log labels come from a closed set: the purchase token, the push token and every 
 import base64
 from datetime import UTC, datetime
 from typing import Protocol
+from urllib.parse import quote
 
 import google.auth.transport.requests
 import httpx
@@ -299,6 +300,8 @@ class PlayDeveloperSubscriptions:
             # `refresh` is synchronous and can block on a token fetch, so it never runs on the loop.
             await run_in_threadpool(self._credential.refresh,
                                     google.auth.transport.requests.Request())
+        # Every path segment is escaped, so a caller's token names one segment and never a path.
         return await self._client.get(
-            PLAY_URL.format(package_name=package_name, purchase_token=purchase_token),
+            PLAY_URL.format(package_name=quote(package_name, safe=""),
+                            purchase_token=quote(purchase_token, safe="")),
             headers={"Authorization": f"Bearer {self._credential.token}"})
