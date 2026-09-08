@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 46
 current_phase_name: POST /auth/sign-out-all
 status: executing
-stopped_at: Completed 46-04-PLAN.md
-last_updated: "2026-09-08T23:27:05.735Z"
+stopped_at: Completed 46-03-PLAN.md
+last_updated: "2026-09-08T23:36:07.923Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 46 execution started
-state_head: 3981a63b2db206050371254afa846f2c40e4e178
+state_head: aacd02c85b705b816b034daa4bbc48cfe53b3eaa
 progress:
   total_phases: 18
   completed_phases: 16
   total_plans: 124
-  completed_plans: 122
+  completed_plans: 123
   percent: 89
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 ## Current Position
 
 Phase: 46 (POST /auth/sign-out-all) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
 Progress: [████████████████████] 119/119 plans ([█████████░] 89%)
 
@@ -454,10 +454,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-08T23:26:51.388Z
+**Last session:** 2026-09-08T23:35:46.784Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 46-04-PLAN.md
+Stopped at: Completed 46-03-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -524,6 +524,7 @@ Resume file: None
 | Phase 46 P01 | 6 min | 1 tasks | 6 files |
 | Phase 46 P02 | 7 min | 2 tasks | 4 files |
 | Phase 46 P04 | 11 min | 2 tasks | 1 files |
+| Phase 46 P03 | 4 min | 2 tasks | 2 files |
 
 ## Decisions
 
@@ -712,3 +713,5 @@ Resume file: None
 - [Phase 46]: D-04 is proven by one line: get_db is absent from _declared() for /auth/sign-out-all, so no session stand-in fixture was needed. — Task 2 (46-02), Research Q3
 - [Phase 46]: The e2e refusal cases run the real Firebase seam over a monkeypatched SDK, never the fake: the fake replaces FirebaseAdminLookup, which owns the except arms, so a fake scripted with an SDK error escapes unhandled instead of answering 503. — Measured: a probe scripting the fake with exceptions.UnavailableError produced "Unhandled exception" from app/error_handlers.py. The real seam over a monkeypatched auth.revoke_refresh_tokens answers 503 after three calls, 401 with the WWW-Authenticate challenge after one, and 503 after none for an unconfigured issuer.
 - [Phase 46]: Each barrier-parity row names the error class its seeded state earns, so a parity assertion cannot pass on two coincidentally equal answers. — InvalidExternalJwt, PreAuthIdentityNotAllowed, HistoricalIdentity and BlockedUser are read off the class as tests/e2e/test_sync.py already does; the class also proves the seeding reached the barrier it was meant to reach.
+- [Phase 46]: CountingRevoker is a sibling of CountingAdapter, not a subclass: the two fakes share no method name, so no case can drive the wrong seam through the wrong wrapper.
+- [Phase 46]: The revocation exhaustion leaf is asserted by class and by a negative isinstance against Unavailable; the 503 and the code are byte-identical, so no status or wire assertion could see a reused read callback.

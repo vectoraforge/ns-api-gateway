@@ -756,7 +756,7 @@ Plans:
 **Goal:** Revoke the verified subject's Firebase refresh tokens through the issuer-selected Admin client.
 **Requirements:** SIGNOUT-01, SIGNOUT-02
 **Depends on:** 34, 35
-**Plans:** 3/5 plans executed
+**Plans:** 4/5 plans executed
 **Success criteria:**
 
 1. Success is returned only after Firebase confirms revocation
@@ -777,7 +777,7 @@ Plans:
 
 **Wave 3** *(blocked on 46-02, whose gate is the whole unit suite)*
 
-- [ ] 46-03-PLAN.md — The app-selection cases and the attempt counts, including the exhaustion leaf asserted by class (wave 3)
+- [x] 46-03-PLAN.md — The app-selection cases and the attempt counts, including the exhaustion leaf asserted by class (wave 3)
 
 **Wave 4** *(blocked on Wave 3)*
 
@@ -832,4 +832,4 @@ Plans:
 | 43. POST /webhooks/app-store | v2.0 | 6/6 | Complete    | 2026-09-04 |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 7/7 | Complete    | 2026-09-06 |
 | 45. POST /auth/restore-subscription | v2.0 | 9/9 | Complete    | 2026-09-08 |
-| 46. POST /auth/sign-out-all | v2.0 | 3/5 | In Progress|  |
+| 46. POST /auth/sign-out-all | v2.0 | 4/5 | In Progress|  |
