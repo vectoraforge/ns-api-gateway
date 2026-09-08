@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 15
+open_count: 17
 waived_count: 1
 fixed_count: 10
-total_count: 26
-last_updated: 2026-09-08T21:18:51.538Z
+total_count: 28
+last_updated: 2026-09-08T21:30:20.962Z
 ---
 
 # Broken Windows Ledger
@@ -41,6 +41,8 @@ last_updated: 2026-09-08T21:18:51.538Z
 | 24 | 45 | stub | src/nativespeaker/api/services/restore.py | 54 | Any owner other than the caller raises RestoreSubscriptionNotEntitled; 45-03 and 45-04 replace it with adoption and the capped move | fixed |  | 2026-09-08T01:04:03.976Z | 2026-09-08T01:39:50.046Z |
 | 25 | 45 | stub | src/nativespeaker/api/services/restore.py | 72 | An owner that is another account raises RestoreSubscriptionNotEntitled; 45-04 replaces it with the capped move | fixed |  | 2026-09-08T01:39:55.773Z | 2026-09-08T02:04:51.706Z |
 | 26 | 45 | todo | tests/e2e/test_restore_subscription.py |  | TestTheTwoRefusalsOfTheRestoreNotFoundFamily is named for two arms but now holds three; 45-07 corrected the docstring only, because the plan named the class in its acceptance criteria | open |  | 2026-09-08T21:18:51.538Z |  |
+| 27 | 45 | unrun-verify | .planning/phases/45-post-auth-restore-subscription/45-09-PLAN.md |  | 45-09 acceptance check 'git diff --quiet -- ../specs' cannot run: ../specs is in the parent superrepo, outside this repository. D-14 proved by file mtime instead. | open |  | 2026-09-08T21:30:16.158Z |  |
+| 28 | 45 | todo | migrations/20260818_01_initial-release.sql | 136 | Stale comment: last_cross_account_transfer_month says 'Written by nothing' which D-10 made false. Should read: written by the capped cross-account move only (D-10); one move per subscription per UTC month. Migration not edited (D-14). | open |  | 2026-09-08T21:30:20.962Z |  |
 
 ````json
 [
@@ -354,6 +356,30 @@ last_updated: 2026-09-08T21:18:51.538Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-09-08T21:18:51.538Z",
+    "resolved_at": null
+  },
+  {
+    "id": 27,
+    "kind": "unrun-verify",
+    "phase": "45",
+    "file": ".planning/phases/45-post-auth-restore-subscription/45-09-PLAN.md",
+    "line": null,
+    "description": "45-09 acceptance check 'git diff --quiet -- ../specs' cannot run: ../specs is in the parent superrepo, outside this repository. D-14 proved by file mtime instead.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-08T21:30:16.158Z",
+    "resolved_at": null
+  },
+  {
+    "id": 28,
+    "kind": "todo",
+    "phase": "45",
+    "file": "migrations/20260818_01_initial-release.sql",
+    "line": 136,
+    "description": "Stale comment: last_cross_account_transfer_month says 'Written by nothing' which D-10 made false. Should read: written by the capped cross-account move only (D-10); one move per subscription per UTC month. Migration not edited (D-14).",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-08T21:30:20.962Z",
     "resolved_at": null
   }
 ]
