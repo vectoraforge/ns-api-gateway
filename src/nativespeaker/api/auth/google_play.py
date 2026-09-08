@@ -151,6 +151,11 @@ def notification_key_for(purchase_token: str, event_time_millis: int, event_type
     return f"google_play:{purchase_token}:{event_time_millis}:{event_type}"
 
 
+def _names_one_path_segment(value: str) -> bool:
+    """`quote` leaves a dot unescaped and httpx deletes a dot segment, so dots alone name nothing."""
+    return bool(value.strip("."))
+
+
 def _play_answer_is_usable(response: httpx.Response) -> bool:
     """Classify one Play answer in the one order that lets nothing fall through to a default."""
     if response.status_code // 100 == 2:
@@ -251,6 +256,12 @@ class PlayDeveloperSubscriptions:
         # operator configuration error into a 503.
         if self._credential is None:
             raise Unavailable(stage=RESTORE_READ_STAGE)
+        if not package_name or not _names_one_path_segment(package_name):
+            # An absent or dot-only application name is an unusable deployment, never a refusal.
+            raise Unavailable(stage=RESTORE_READ_STAGE)
+        if not _names_one_path_segment(purchase_token):
+            # No live purchase token is dots alone, so this is a rejected proof and never a read.
+            raise ProofRejected(stage=RESTORE_TOKEN_GONE_STAGE)
 
         try:
             response = await self._get(package_name, purchase_token)
@@ -300,7 +311,7 @@ class PlayDeveloperSubscriptions:
             # `refresh` is synchronous and can block on a token fetch, so it never runs on the loop.
             await run_in_threadpool(self._credential.refresh,
                                     google.auth.transport.requests.Request())
-        # Every path segment is escaped, so a caller's token names one segment and never a path.
+        # Escaping confines each value to one segment, except dots, which `read_for_restore` refuses.
         return await self._client.get(
             PLAY_URL.format(package_name=quote(package_name, safe=""),
                             purchase_token=quote(purchase_token, safe="")),
