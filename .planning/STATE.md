@@ -5,11 +5,11 @@ milestone_name: Authentication & Entitlements
 current_phase: 45
 current_phase_name: POST /auth/restore-subscription
 status: executing
-stopped_at: Completed 45-07-PLAN.md
-last_updated: "2026-09-08T21:18:36.442Z"
+stopped_at: Completed 45-09-PLAN.md
+last_updated: "2026-09-08T21:30:03.318Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 45 gap closure complete — 45-09 proved the three fixes together and recorded them
-state_head: 6eb03f1fd4fc235ea165a78e83ad0c8319d20e5c
+state_head: e48855289b68a70734fafc9ef73b3a2b21e9fe88
 progress:
   total_phases: 18
   completed_phases: 15
@@ -440,10 +440,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-08T21:18:35.451Z
+**Last session:** 2026-09-08T21:29:41.757Z
 
 Last activity: 2026-09-05
-Stopped at: Completed 45-07-PLAN.md
+Stopped at: Completed 45-09-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -506,6 +506,7 @@ Resume file: None
 | Phase 45 P06 | 9 min | 2 tasks | 4 files |
 | Phase 45 P08 | 8 min | 2 tasks | 2 files |
 | Phase 45 P07 | 11 min | 2 tasks | 2 files |
+| Phase 45 P09 | 9 min | 2 tasks | 2 files |
 
 ## Decisions
 
@@ -685,3 +686,5 @@ Resume file: None
 - [Phase 45]: Both directions of a narrowing get a case: one fails if the set keeps too much, another fails if it keeps too little — TestAMoveTakesOnlyTheGrantForTheSubscriptionItMoves was observed red against the pre-fix source; TestTheDestinationStillLosesEverythingItHeld was observed red under an over-narrowed condition. Neither a later widening nor a later over-narrowing can land silently (45-08).
 - [Phase 45]: The restore's new term refusal reuses RestoreSubscriptionNotEntitled rather than a leaf of its own — All three arms of the restore_not_found family answer identical bytes, so the surface tells no caller which check refused (T-45-07-03). Pinned by test_the_three_arms_of_the_family_answer_the_same_bytes, confirmed red under a distinct leaf.
 - [Phase 45]: The grant's end is bound once before the check and passed by that name to write_subscription_grant — The expression existed in one place before and exists in one place after, so the term that was checked and the term that is written cannot drift apart. A second copy is what made CR-02 reachable.
+- [Phase 45]: Phase 45 gap closure closes on one joint run of the four suite commands, not on counts carried from 45-05 or from the three fix plans — Each of 45-06, 45-07 and 45-08 verified only its own files while the other two were in flight, so nothing had yet shown the three fixes do not interact. 45-09 ran uv run pytest -q (1250), -m e2e (333), -m schema (229) and ruff check src tests (clean) with all three present, and RESTORE-01 was marked met only after that run was green.
+- [Phase 45]: The 45-REVIEW findings this plan set did not incorporate are recorded by name under RESTORE-01 with the reason, so a later reviewer reads a decision rather than an omission — WR-01, WR-03, WR-05, WR-06, WR-07 and IN-01 to IN-04 are deferred; WR-04 is rejected for this phase as a carried-forward decision (37.1 D-01, 38 D-03) and not an oversight. The WR-01 half that misleads a reader is recorded as a known-stale migration comment on last_cross_account_transfer_month with the wording it needs, and the migration is not edited (D-14).
