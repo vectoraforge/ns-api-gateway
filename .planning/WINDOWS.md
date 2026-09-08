@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 14
+open_count: 15
 waived_count: 1
 fixed_count: 10
-total_count: 25
-last_updated: 2026-09-08T02:04:51.706Z
+total_count: 26
+last_updated: 2026-09-08T21:18:51.538Z
 ---
 
 # Broken Windows Ledger
@@ -40,6 +40,7 @@ last_updated: 2026-09-08T02:04:51.706Z
 | 23 | 45 | stub | src/nativespeaker/api/services/restore.py | 45 | No stored subscription row raises RestoreSubscriptionNotEntitled; 45-03 replaces it with adoption-with-creation | fixed |  | 2026-09-08T01:04:03.824Z | 2026-09-08T01:39:49.905Z |
 | 24 | 45 | stub | src/nativespeaker/api/services/restore.py | 54 | Any owner other than the caller raises RestoreSubscriptionNotEntitled; 45-03 and 45-04 replace it with adoption and the capped move | fixed |  | 2026-09-08T01:04:03.976Z | 2026-09-08T01:39:50.046Z |
 | 25 | 45 | stub | src/nativespeaker/api/services/restore.py | 72 | An owner that is another account raises RestoreSubscriptionNotEntitled; 45-04 replaces it with the capped move | fixed |  | 2026-09-08T01:39:55.773Z | 2026-09-08T02:04:51.706Z |
+| 26 | 45 | todo | tests/e2e/test_restore_subscription.py |  | TestTheTwoRefusalsOfTheRestoreNotFoundFamily is named for two arms but now holds three; 45-07 corrected the docstring only, because the plan named the class in its acceptance criteria | open |  | 2026-09-08T21:18:51.538Z |  |
 
 ````json
 [
@@ -342,6 +343,18 @@ last_updated: 2026-09-08T02:04:51.706Z
     "reason": "",
     "recorded_at": "2026-09-08T01:39:55.773Z",
     "resolved_at": "2026-09-08T02:04:51.706Z"
+  },
+  {
+    "id": 26,
+    "kind": "todo",
+    "phase": "45",
+    "file": "tests/e2e/test_restore_subscription.py",
+    "line": null,
+    "description": "TestTheTwoRefusalsOfTheRestoreNotFoundFamily is named for two arms but now holds three; 45-07 corrected the docstring only, because the plan named the class in its acceptance criteria",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-08T21:18:51.538Z",
+    "resolved_at": null
   }
 ]
 ````

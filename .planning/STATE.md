@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 45
 current_phase_name: POST /auth/restore-subscription
 status: executing
-stopped_at: Completed 45-08-PLAN.md
-last_updated: "2026-09-08T21:05:37.706Z"
+stopped_at: Completed 45-07-PLAN.md
+last_updated: "2026-09-08T21:18:36.442Z"
 last_activity: 2026-09-08
-last_activity_desc: Phase 45 gap closure — 45-08 executed, closing VERIFICATION truth 6 (CR-03)
-state_head: 201072745950923f822d4ed62f200c19dfb310d1
+last_activity_desc: Phase 45 gap closure — 45-07 executed, closing VERIFICATION truth 1 (CR-02)
+state_head: 6eb03f1fd4fc235ea165a78e83ad0c8319d20e5c
 progress:
   total_phases: 18
   completed_phases: 15
   total_plans: 119
-  completed_plans: 117
+  completed_plans: 118
   percent: 83
 ---
 
@@ -30,19 +30,46 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 45 (POST /auth/restore-subscription) — EXECUTING (gap closure)
-Plan: 7 of 9 executed (45-01 … 45-06, 45-08); 45-07 and 45-09 remain
-Status: 45-06 closed VERIFICATION truth 7 (CR-01) and WR-02; 45-08 closed truth 6 (CR-03). Truth 1
-(CR-02, the unreconciled status/term pair) stays open, for 45-07. RESTORE-01 stays BLOCKED in
-`45-VERIFICATION.md` until truth 1 is closed too, and stays unmarked in REQUIREMENTS.md because
-45-07 and 45-09 also declare it.
-Last activity: 2026-09-08 — 45-08 executed: a move now ends only the destination's own grants and
-the old owner's grant for the subscription it moves
+Plan: 8 of 9 executed (45-01 … 45-08); 45-09 remains
+Status: all three blocker gaps of `45-VERIFICATION.md` are now closed in the source — 45-06 closed
+truth 7 (CR-01) and WR-02, 45-08 closed truth 6 (CR-03), and 45-07 closed truth 1 (CR-02). The
+report itself still reads `gaps_found` and RESTORE-01 still reads BLOCKED there: re-verification is
+what changes those, not this file. RESTORE-01 stays unmarked in REQUIREMENTS.md because 45-09 also
+declares it and has no SUMMARY yet.
+Last activity: 2026-09-08 — 45-07 executed: a restore now refuses a proof whose term is absent or
+already past, before any write
 
 <!-- Counts read against disk rather than trusted from the handler, as every plan of this phase
-     has done. Read at 2026-09-08T21:05Z, after this plan's SUMMARY landed: 119 PLAN files and 117
+     has done. Read at 2026-09-08T21:18Z, after this plan's SUMMARY landed: 119 PLAN files and 118
      SUMMARY files across .planning/phases/, which is exactly what the frontmatter now carries.
-     Phase 45 itself: 9 PLAN files and 7 SUMMARY files. The phase is executed but not re-verified,
-     so completed_phases stays at 15 and percent stays at 83. -->
+     Phase 45 itself: 9 PLAN files and 8 SUMMARY files. The handler wrote "Plan: 8 of 9" by
+     incrementing 7, which was right by accident and wrong in its prose, so the line is rewritten
+     here from a count: 45-08 ran before 45-07, and 45-09 is the one that remains. The phase is
+     executed but not re-verified, so completed_phases stays at 15 and percent stays at 83. -->
+
+**45-07 outcome.** `services/restore.py` took the entitled decision from the stored row (D-06) and
+the grant's term from the client-presented proof, and never reconciled the two. Two combinations
+were reachable: a stored `grace_period` row plus an Apple proof — which carries no grace window,
+because Apple's renewal payload is not in a bare signed transaction — wrote a paid grant with
+`ends_at` **NULL**, which `crud/grants.py` reads as effective forever; and a stale proof against an
+`active` row wrote a term already past into the account's one slot, which a repeat restore then
+replayed. The term is now bound once, immediately after the entitled check and before the
+attribution read, and an absent or already-past term raises `RestoreSubscriptionNotEntitled`. The
+same binding is what `write_subscription_grant` is passed, so the checked term and the written term
+cannot drift. **Measured, not reasoned about:** the cases were written first and run against the
+unchanged source, where all four refusals answered 200; a throwaway probe printed what that source
+had committed for the grace combination — `status=200 ends_at=[None] status_of=[active]` — which is
+the report's truth 1 verbatim. **Both controls already passed pre-fix**, so the refusals do not pass
+because the write path stopped. **The one-body property was falsified before it was trusted:** the
+refusal was temporarily given a leaf of its own, and both pinning cases went red on the response
+**bytes** with the status still 404; the experiment was reverted and the module re-run green.
+`<=` and not `<`, because a term ending exactly at the captured instant is over; `is None` and not
+a falsy test, because a datetime is never falsy. No new error leaf (`grep -c 'class Restore'` reads
+5 before and after), no new clock read (`grep -c 'datetime.now'` reads 0), twelve source lines.
+**Recorded as a residual:** the class holding the family is still named
+`TestTheTwoRefusalsOfTheRestoreNotFoundFamily` while holding three arms — the plan named it in its
+acceptance criteria, so only the docstring was corrected. Suite **1250 unit / 333 e2e / 229
+schema**, `ruff check src tests` clean, every command run in this plan rather than copied.
 
 **45-08 outcome.** `crud/subscriptions.py::write_subscription_grant` decided which grants to expire
 from the whole set its caller locked. On a move `services/restore.py` locks
@@ -404,10 +431,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-08T21:05:26.936Z
+**Last session:** 2026-09-08T21:18:35.451Z
 
 Last activity: 2026-09-05
-Stopped at: Completed 45-08-PLAN.md
+Stopped at: Completed 45-07-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -469,6 +496,7 @@ Resume file: None
 | Phase 45 P04 | 21 min | 3 tasks | 8 files |
 | Phase 45 P06 | 9 min | 2 tasks | 4 files |
 | Phase 45 P08 | 8 min | 2 tasks | 2 files |
+| Phase 45 P07 | 11 min | 2 tasks | 2 files |
 
 ## Decisions
 
@@ -646,3 +674,5 @@ Resume file: None
 - [Phase 45]: 45-06 D-18: provider is bounded at 32 characters and restore_proof at 8192, with no pattern on either — The bounds stop an abusive payload before the refusal log, Apple's JWS decoder and the outbound URL; the store name stays the handler's membership check (D-01) and the artifact's shape is the store's to judge. routers/auth.py is unchanged, and its comment claiming the logged provider is bounded is now true in fact.
 - [Phase 45]: A write decides for itself which of the rows its caller locked it is entitled to change: the entitled arm of write_subscription_grant keeps a grant when grant.user_id == user_id or grant.subscription_id == subscription_id — On a move the caller locks two accounts, so the writer receives more rows than it may change. The two clauses are the two things a subscription write is entitled to end: everything the destination holds, because ix_access_grants_one_active_per_user allows one; and the old owner row for this subscription, because D-10 expires it in the same transaction (45-08, closes VERIFICATION truth 6 / CR-03).
 - [Phase 45]: Both directions of a narrowing get a case: one fails if the set keeps too much, another fails if it keeps too little — TestAMoveTakesOnlyTheGrantForTheSubscriptionItMoves was observed red against the pre-fix source; TestTheDestinationStillLosesEverythingItHeld was observed red under an over-narrowed condition. Neither a later widening nor a later over-narrowing can land silently (45-08).
+- [Phase 45]: The restore's new term refusal reuses RestoreSubscriptionNotEntitled rather than a leaf of its own — All three arms of the restore_not_found family answer identical bytes, so the surface tells no caller which check refused (T-45-07-03). Pinned by test_the_three_arms_of_the_family_answer_the_same_bytes, confirmed red under a distinct leaf.
+- [Phase 45]: The grant's end is bound once before the check and passed by that name to write_subscription_grant — The expression existed in one place before and exists in one place after, so the term that was checked and the term that is written cannot drift apart. A second copy is what made CR-02 reachable.
