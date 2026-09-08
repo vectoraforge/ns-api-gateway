@@ -1,4 +1,5 @@
 """The same-account restore of both stores, end to end through the real router and a real database."""
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
@@ -8,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlmodel import col, select
 from unit.conftest import TEST_ISSUER, make_token
 
+from nativespeaker.api.auth.google_play import GRACE_STATE
 from nativespeaker.api.auth.store_notifications import RestoredSubscription
 from nativespeaker.api.errors import ProofRejected
 from nativespeaker.api.tables.grants import (
@@ -28,6 +30,7 @@ from nativespeaker.api.tables.purchases import (
 from .conftest import (
     GOOGLE_PRODUCT_ID,
     play_subscription_body,
+    seed_grant,
     seed_identity,
     seed_subscription,
 )
@@ -75,6 +78,9 @@ TERM_REMAINING = timedelta(days=30)
 # An hour back, because `CHECK (ends_at IS NULL OR ends_at > starts_at)` is strict.
 PURCHASED_AGO = timedelta(hours=1)
 
+# A term that ended half an hour ago: past, and still after `PURCHASED_AGO`, which the CHECK compares it to.
+TERM_ENDED_AGO = timedelta(minutes=30)
+
 
 @pytest_asyncio.fixture(loop_scope="module")
 async def restore_client(_app_lifespan, stub_verifier):
@@ -90,7 +96,8 @@ def _auth(subject: str = SUBJECT) -> dict[str, str]:
 
 def _proof(external_id: str, *, status: SubscriptionStatus = SubscriptionStatus.active,
            grace_period_expires_at: datetime | None = None,
-           attribution_token: str | None = None) -> RestoredSubscription:
+           attribution_token: str | None = None,
+           expires_at: datetime | None = None) -> RestoredSubscription:
     """What the Apple check reports for this case, in the value type the seam returns."""
     now = datetime.now(UTC)
     return RestoredSubscription(provider=PurchaseProvider.apple,
@@ -100,7 +107,9 @@ def _proof(external_id: str, *, status: SubscriptionStatus = SubscriptionStatus.
                                 attribution_token=attribution_token,
                                 status=status,
                                 purchased_at=now - PURCHASED_AGO,
-                                expires_at=now + TERM_REMAINING,
+                                # A term a case names replaces the open one every other case wants.
+                                expires_at=(now + TERM_REMAINING if expires_at is None
+                                            else expires_at),
                                 grace_period_expires_at=grace_period_expires_at)
 
 
@@ -305,6 +314,130 @@ class TestTheAdoptionBranches:
         assert created.user_id == user.id
         grants = await _grants_of(_db_transaction, user.id)
         assert [grant.subscription_id for grant in grants] == [created.id]
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach:
+    """CR-02: the status is the row's and the term is the proof's, so the pair is checked first."""
+
+    async def test_a_stored_grace_row_and_an_apple_proof_attaches_nothing(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """An Apple proof carries no grace window, so a stored grace row has no term to attach."""
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        external_id = f"e2e-grace-row-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=external_id, user_id=user.id,
+                                tier_id=PAID_TIER_ID, status="grace_period")
+        before = await _four_counts(_db_transaction, user.id, external_id)
+        scripted_app_store_notifications.script_restore(_proof(external_id))
+
+        refused = await _restore(restore_client)
+
+        assert refused.status_code == 404
+        assert refused.content == RESTORE_NOT_FOUND_BODY
+        assert await _four_counts(_db_transaction, user.id, external_id) == before
+        # The truth the report names: a NULL end is a paid grant no store event can ever end.
+        assert [grant.ends_at for grant in await _grants_of(_db_transaction, user.id)
+                if grant.ends_at is None] == []
+
+    async def test_an_active_proof_carrying_no_expiry_attaches_nothing(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """The same absent term on the other arm: an active proof may carry no expiry either."""
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        external_id = f"e2e-no-expiry-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=external_id, user_id=user.id,
+                                tier_id=PAID_TIER_ID)
+        before = await _four_counts(_db_transaction, user.id, external_id)
+        scripted_app_store_notifications.script_restore(
+            replace(_proof(external_id), expires_at=None))
+
+        refused = await _restore(restore_client)
+
+        assert refused.status_code == 404
+        assert refused.content == RESTORE_NOT_FOUND_BODY
+        assert await _four_counts(_db_transaction, user.id, external_id) == before
+        assert [grant.ends_at for grant in await _grants_of(_db_transaction, user.id)
+                if grant.ends_at is None] == []
+
+    async def test_a_stale_proof_against_an_active_row_attaches_nothing_and_frees_no_slot(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """The account's one slot is held by a live grant, and a dead term may not take it."""
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        await seed_grant(_db_transaction, user_id=user.id)
+        external_id = f"e2e-stale-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=external_id, user_id=user.id,
+                                tier_id=PAID_TIER_ID)
+        before = await _account_snapshot(_db_transaction, user.id)
+        scripted_app_store_notifications.script_restore(
+            _proof(external_id, expires_at=datetime.now(UTC) - TERM_ENDED_AGO))
+
+        refused = await _restore(restore_client)
+
+        assert refused.status_code == 404
+        assert refused.content == RESTORE_NOT_FOUND_BODY
+        assert await _account_snapshot(_db_transaction, user.id) == before
+
+    async def test_a_term_ending_at_the_captured_instant_is_not_open(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """The closed side of the boundary, named as a term a moment past rather than read
+        from the service's own clock."""
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        external_id = f"e2e-boundary-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=external_id, user_id=user.id,
+                                tier_id=PAID_TIER_ID)
+        before = await _four_counts(_db_transaction, user.id, external_id)
+        scripted_app_store_notifications.script_restore(
+            _proof(external_id,
+                   expires_at=datetime.now(UTC) - timedelta(milliseconds=1)))
+
+        refused = await _restore(restore_client)
+
+        assert refused.status_code == 404
+        assert refused.content == RESTORE_NOT_FOUND_BODY
+        assert await _four_counts(_db_transaction, user.id, external_id) == before
+
+    async def test_an_open_term_still_attaches_the_grant_control(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """The control: the three refusals above must not pass because the write path stopped."""
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        external_id = f"e2e-open-term-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=external_id, user_id=user.id,
+                                tier_id=PAID_TIER_ID)
+        proof = _proof(external_id)
+        scripted_app_store_notifications.script_restore(proof)
+
+        answered = await _restore(restore_client)
+
+        assert answered.status_code == 200, answered.text
+        grants = await _grants_of(_db_transaction, user.id)
+        assert [grant.status for grant in grants] == [AccessGrantStatus.active]
+        assert grants[0].ends_at == proof.expires_at
+
+    async def test_a_stored_grace_row_and_a_play_proof_carrying_its_window_still_attaches(
+            self, restore_client, _db_transaction, real_google_play_seam):
+        """The second control, on the other store: Play reports the grace window this row needs."""
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        purchase_token = f"e2e-play-grace-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=purchase_token, user_id=user.id,
+                                provider=PurchaseProvider.google_play, tier_id=PAID_TIER_ID,
+                                status="grace_period")
+        window_ends = datetime.now(UTC) + TERM_REMAINING
+        real_google_play_seam.body = play_subscription_body(
+            subscriptionState=GRACE_STATE,
+            lineItems=[{"productId": GOOGLE_PRODUCT_ID, "expiryTime": window_ends.isoformat()}])
+
+        answered = await _restore(restore_client, provider="google_play",
+                                  restore_proof=purchase_token)
+
+        assert answered.status_code == 200, answered.text
+        grants = await _grants_of(_db_transaction, user.id)
+        assert [grant.status for grant in grants] == [AccessGrantStatus.active]
+        assert grants[0].ends_at == window_ends
 
 
 @pytest.mark.asyncio(loop_scope="module")
