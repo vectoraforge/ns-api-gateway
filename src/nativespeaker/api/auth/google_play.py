@@ -11,10 +11,11 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from nativespeaker.api.auth.jwt_verifier import JWTVerifier
-from nativespeaker.api.auth.store_notifications import VerifiedNotification
+from nativespeaker.api.auth.store_notifications import RestoredSubscription, VerifiedNotification
 from nativespeaker.api.errors import (
     InternalError,
     NotificationRejected,
+    ProofRejected,
     Unavailable,
     UnmappedStoreProduct,
 )
@@ -38,6 +39,10 @@ PLAY_HTTP_TIMEOUT_SECONDS = 8
 
 # The two Play statuses that say this purchase token is gone, which no later attempt can change.
 _GONE_STATUSES = frozenset({404, 410})
+
+# The two stage labels the restore read answers with, and its whole log vocabulary.
+RESTORE_READ_STAGE = "play_restore_read"
+RESTORE_TOKEN_GONE_STAGE = "play_token_gone"
 
 # The envelope fields every RTDN carries, so the rest of the set names the bodies it carries.
 _ENVELOPE_FIELDS = frozenset({"version", "packageName", "eventTimeMillis"})
@@ -107,6 +112,11 @@ class PlaySubscriptionSource(Protocol):
     async def read(self, *, package_name: str, purchase_token: str, event_type: str,
                    notification_uuid: str, signed_at: datetime | None) -> VerifiedNotification | None:
         """The `subscriptionsv2.get` call: the value type, `None` for a gone token, or a raise."""
+        ...
+
+    async def read_for_restore(self, *, package_name: str,
+                               purchase_token: str) -> RestoredSubscription:
+        """The same call for a client-presented token: the value type, or the refusal it earned."""
         ...
 
 
@@ -199,18 +209,16 @@ class PlayDeveloperSubscriptions:
         if self._credential is None:
             raise Unavailable(stage="play_subscriptions_read")
 
-        response = await self._get(package_name, purchase_token)
+        try:
+            response = await self._get(package_name, purchase_token)
+        except httpx.HTTPError as failure:
+            # A transport failure is the 500 that makes Pub/Sub redeliver this notification.
+            raise InternalError from failure
         if not _play_answer_is_usable(response):
             return None
         subscription = PlaySubscription.model_validate(response.json())
 
-        line_item = subscription.lineItems[0] if subscription.lineItems else None
-        product_id = None if line_item is None else line_item.productId
-        if product_id is None or product_id not in self._products:
-            # Refused before any write: `core.subscriptions.tier_id` is NOT NULL and has no default.
-            raise UnmappedStoreProduct(PurchaseProvider.google_play, str(product_id))
-
-        expiry = None if line_item is None else line_item.expiryTime
+        product_id, tier_id, expiry = self._product_of(subscription)
         # Google carries no separate grace field, so in grace this expiry is the end of the window.
         # Left as None, every grace-period subscriber's grant would be written with no end date.
         in_grace = subscription.subscriptionState == GRACE_STATE
@@ -223,7 +231,7 @@ class PlayDeveloperSubscriptions:
             external_id=purchase_token,
             transaction_id=subscription.latestOrderId,
             product_id=product_id,
-            tier_id=self._products[product_id],
+            tier_id=tier_id,
             attribution_token=(None if identifiers is None
                                else identifiers.obfuscatedExternalAccountId),
             status=_status_for(subscription.subscriptionState, expiry,
@@ -234,15 +242,63 @@ class PlayDeveloperSubscriptions:
             grace_period_expires_at=expiry if in_grace else None,
         )
 
+    async def read_for_restore(self, *, package_name: str,
+                               purchase_token: str) -> RestoredSubscription:
+        """Read the state of one client-presented purchase token, or raise the refusal it earned."""
+        # The answer is classified here and never by a caught base class, because
+        # `UnmappedStoreProduct` is an `InternalError` and a caught base would turn an
+        # operator configuration error into a 503.
+        if self._credential is None:
+            raise Unavailable(stage=RESTORE_READ_STAGE)
+
+        try:
+            response = await self._get(package_name, purchase_token)
+        except httpx.HTTPError as failure:
+            # The app retries later, so a transport failure is a 503 and never the webhook's 500.
+            raise Unavailable(stage=RESTORE_READ_STAGE) from failure
+
+        if response.status_code in _GONE_STATUSES:
+            # A gone token is a rejected proof, not a server failure. The package name travels in
+            # the URL path, so a token of another application answers 404 and arrives here too.
+            raise ProofRejected(stage=RESTORE_TOKEN_GONE_STAGE)
+        if response.status_code // 100 != 2:
+            raise Unavailable(stage=RESTORE_READ_STAGE)
+
+        subscription = PlaySubscription.model_validate(response.json())
+        product_id, tier_id, expiry = self._product_of(subscription)
+        # Google carries no separate grace field, so in grace this expiry is the end of the window.
+        in_grace = subscription.subscriptionState == GRACE_STATE
+        identifiers = subscription.externalAccountIdentifiers
+        return RestoredSubscription(
+            provider=PurchaseProvider.google_play,
+            # The purchase token: `subscriptionsv2.get` accepts no other handle for this subscription.
+            external_id=purchase_token,
+            product_id=product_id,
+            tier_id=tier_id,
+            attribution_token=(None if identifiers is None
+                               else identifiers.obfuscatedExternalAccountId),
+            status=_status_for(subscription.subscriptionState, expiry,
+                               self._evaluated_at_source()),
+            purchased_at=subscription.startTime,
+            expires_at=expiry,
+            grace_period_expires_at=expiry if in_grace else None,
+        )
+
+    def _product_of(self, subscription: PlaySubscription) -> tuple[str, str, datetime | None]:
+        """The line item's product, the tier it maps to, and the end of its term."""
+        line_item = subscription.lineItems[0] if subscription.lineItems else None
+        product_id = None if line_item is None else line_item.productId
+        if product_id is None or line_item is None or product_id not in self._products:
+            # Refused before any write: `core.subscriptions.tier_id` is NOT NULL and has no default.
+            raise UnmappedStoreProduct(PurchaseProvider.google_play, str(product_id))
+        return product_id, self._products[product_id], line_item.expiryTime
+
     async def _get(self, package_name: str, purchase_token: str) -> httpx.Response:
-        """Send one signed read; a transport failure is the 500 that makes Pub/Sub redeliver."""
+        """Send one signed read; each entry point classifies a transport failure its own way."""
         if not self._credential.valid:
             # `refresh` is synchronous and can block on a token fetch, so it never runs on the loop.
             await run_in_threadpool(self._credential.refresh,
                                     google.auth.transport.requests.Request())
-        try:
-            return await self._client.get(
-                PLAY_URL.format(package_name=package_name, purchase_token=purchase_token),
-                headers={"Authorization": f"Bearer {self._credential.token}"})
-        except httpx.HTTPError as failure:
-            raise InternalError from failure
+        return await self._client.get(
+            PLAY_URL.format(package_name=package_name, purchase_token=purchase_token),
+            headers={"Authorization": f"Bearer {self._credential.token}"})
