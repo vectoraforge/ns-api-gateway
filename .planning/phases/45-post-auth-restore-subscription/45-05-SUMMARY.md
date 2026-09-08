@@ -26,7 +26,7 @@ affects: [46-post-auth-sign-out-all, phase 45 verification, v2.0 milestone close
 actuals:
   tokens: 17000
   tasks: 2
-  commits: 3
+  commits: 5
 
 tech-stack:
   added: []
@@ -145,7 +145,7 @@ status: complete
 2. **Task 2: Record D-09 in STATE.md and mark the ROADMAP criteria** — `c63f54b` (docs)
 3. **Task 2 follow-on: the traceability row and the conflict-count cell** — `ae410df` (docs)
 
-**Plan metadata:** see the `docs(45-05)` commit that carries this file.
+**Plan metadata:** `9193672` carries this file, and `beb9b02` appends the self-check with the progress-table row `roadmap update-plan-progress 45` re-derived from disk. Five commits in all.
 
 ## Files Created/Modified
 
