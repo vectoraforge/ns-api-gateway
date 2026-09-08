@@ -45,6 +45,12 @@ OTHER_ACCOUNTS_TOKEN = "a-synthetic-token-recorded-against-another-account"
 # The artifact the client presents; the seam is scripted, so its content is never parsed here.
 RESTORE_PROOF = "a-signed-transaction-the-scripted-seam-accepts"
 
+# The schema's own bound on the store name, restated here so the boundary is pinned in one place.
+MAX_PROVIDER_LENGTH = 32
+
+# The schema's own bound on the artifact, restated here so the boundary is pinned in one place.
+MAX_PROOF_LENGTH = 8192
+
 # The tier the migration seeds for a paid subscription, which the proof's product maps to.
 PAID_TIER_ID = "paid"
 
@@ -417,6 +423,59 @@ class TestTheSurfaceGateIsTheStoreNameAndTheProof:
         refused = await _restore(restore_client, provider="", restore_proof=RESTORE_PROOF)
 
         assert refused.status_code == 422
+
+    async def test_a_store_name_at_the_bound_still_reaches_the_gates_own_refusal(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """The control: a bound one character too low would refuse this name before the gate."""
+        await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                            provider=IdentityProvider.google)
+
+        refused = await _restore(restore_client, provider="z" * MAX_PROVIDER_LENGTH,
+                                 restore_proof=RESTORE_PROOF)
+
+        assert refused.status_code == 403
+        assert refused.text == REFUSED_BODY
+
+    async def test_a_store_name_past_the_bound_is_the_frameworks_own_refusal(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """WR-02: the refusal log names this value, so the framework bounds it before the handler."""
+        await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                            provider=IdentityProvider.google)
+
+        refused = await _restore(restore_client, provider="z" * (MAX_PROVIDER_LENGTH + 1),
+                                 restore_proof=RESTORE_PROOF)
+
+        assert refused.status_code == 422
+        assert scripted_app_store_notifications.restore_calls == []
+
+    async def test_a_proof_at_the_bound_still_reaches_the_store_check(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """The control: a bound one character too low would refuse a legitimate artifact."""
+        await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                            provider=IdentityProvider.google)
+        scripted_app_store_notifications.script_restore(
+            ProofRejected(stage="VERIFICATION_FAILURE"))
+
+        refused = await _restore(restore_client, provider="apple",
+                                 restore_proof="z" * MAX_PROOF_LENGTH)
+
+        assert refused.status_code == 403
+        assert refused.content == PROOF_REJECTED_BODY
+        assert len(scripted_app_store_notifications.restore_calls) == 1
+
+    async def test_a_proof_past_the_bound_is_refused_before_any_store_call(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """WR-02: an unbounded artifact reaches Apple's decoder, so the bound refuses it first."""
+        await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                            provider=IdentityProvider.google)
+        scripted_app_store_notifications.script_restore(
+            ProofRejected(stage="VERIFICATION_FAILURE"))
+
+        refused = await _restore(restore_client, provider="apple",
+                                 restore_proof="z" * (MAX_PROOF_LENGTH + 1))
+
+        assert refused.status_code == 422
+        assert scripted_app_store_notifications.restore_calls == []
 
 
 @pytest.mark.asyncio(loop_scope="module")
