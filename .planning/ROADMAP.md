@@ -708,7 +708,7 @@ Plans:
 **Goal:** Verify a native store artifact directly against Apple or Google and attach verified paid entitlement.
 **Requirements:** RESTORE-01, RESTORE-02
 **Depends on:** 34, 35, 37, 43, 44
-**Plans:** 1/5 plans executed
+**Plans:** 2/5 plans executed
 **Success criteria:**
 
 1. A valid Apple artifact and a valid Google artifact each attach entitlement through their server-determined branch
@@ -724,7 +724,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1)*
 
-- [ ] 45-02-PLAN.md — The Google Play purchase token as the second proof, with the answer classification that keeps an unmapped product a 500 (wave 2)
+- [x] 45-02-PLAN.md — The Google Play purchase token as the second proof, with the answer classification that keeps an unmapped product a 500 (wave 2)
 
 **Wave 3** *(blocked on Wave 2)*
 
@@ -798,5 +798,5 @@ Plans:
 | 42. POST /auth/claim-registered-grant | v2.0 | 7/7 | Complete    | 2026-09-03 |
 | 43. POST /webhooks/app-store | v2.0 | 6/6 | Complete    | 2026-09-04 |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 7/7 | Complete    | 2026-09-06 |
-| 45. POST /auth/restore-subscription | v2.0 | 1/5 | In Progress|  |
+| 45. POST /auth/restore-subscription | v2.0 | 2/5 | In Progress|  |
 | 46. POST /auth/sign-out-all | v2.0 | 0/? | Pending | — |
