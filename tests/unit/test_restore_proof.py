@@ -58,6 +58,9 @@ PACKAGE_NAME = "com.nativespeaker.app"
 GONE_STAGE = "play_token_gone"
 READ_STAGE = "play_restore_read"
 
+# The fixed part of the read path, which every caller-supplied value must be measured against.
+PLAY_TOKENS_PATH = f"/androidpublisher/v3/applications/{PACKAGE_NAME}/purchases/subscriptionsv2/tokens/"
+
 
 @pytest.fixture(scope="module")
 def chain() -> _Chain:
@@ -226,6 +229,62 @@ class TestThePlayReadReportsTheRestoreValueType:
     async def test_a_subscription_outside_grace_carries_no_window_control(self):
         """The control that makes the case above non-vacuous: the field is not always the expiry."""
         assert (await _play_restore("SUBSCRIPTION_STATE_ACTIVE")).grace_period_expires_at is None
+
+
+def _capturing_reader() -> tuple[list[httpx.Request], PlayDeveloperSubscriptions]:
+    """A reader that records every request it sends, so a case reads the URL httpx built."""
+    sent: list[httpx.Request] = []
+    answer = _answering(_subscription_body("SUBSCRIPTION_STATE_ACTIVE"))
+
+    def _record(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return answer(request)
+
+    return sent, _play_reader(_record)
+
+
+class TestThePlayRequestUrlIsConfinedToOneResource:
+    """T-45-06-01: the caller's own token names one path segment of the intended resource, and no other."""
+
+    async def test_a_token_carrying_path_traversal_names_one_segment_and_no_other_path(self):
+        sent, reader = _capturing_reader()
+
+        await reader.read_for_restore(package_name=PACKAGE_NAME,
+                                      purchase_token="a/../../../../v3/applications/evil/edits")
+
+        # The wire form, because `url.path` percent-decodes and would hide the escaping this asserts.
+        path = sent[0].url.raw_path.decode()
+        assert path.startswith(PLAY_TOKENS_PATH)
+        assert "evil" not in path.split("/")
+
+    async def test_a_token_carrying_a_query_string_leaves_the_query_empty(self):
+        sent, reader = _capturing_reader()
+
+        await reader.read_for_restore(package_name=PACKAGE_NAME, purchase_token="x?alt=media")
+
+        assert sent[0].url.query == b""
+
+    async def test_a_package_name_carrying_a_separator_is_escaped_too(self):
+        """The guard cannot be escaped from either side, so both interpolated values are escaped."""
+        sent, reader = _capturing_reader()
+
+        await reader.read_for_restore(package_name=f"{PACKAGE_NAME}/evil",
+                                      purchase_token=PURCHASE_TOKEN)
+
+        path = sent[0].url.raw_path.decode()
+        assert "/" not in path.split("/applications/")[1].split("/purchases")[0]
+
+    async def test_an_ordinary_token_reaches_the_expected_path_control(self):
+        """The control: without it the three cases above would pass a read that called Play no more."""
+        sent, reader = _capturing_reader()
+
+        restored = await reader.read_for_restore(package_name=PACKAGE_NAME,
+                                                 purchase_token=PURCHASE_TOKEN)
+
+        assert sent[0].url.raw_path.decode() == PLAY_TOKENS_PATH + PURCHASE_TOKEN
+        assert isinstance(restored, RestoredSubscription)
+        # The escaping is the URL's alone: the persisted external id stays the token Google gave.
+        assert restored.external_id == PURCHASE_TOKEN
 
 
 class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
