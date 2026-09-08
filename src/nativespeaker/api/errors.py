@@ -520,6 +520,10 @@ class RestoreSubscriptionNotEntitled(RestoreRefused):
     """The proof verified, but the subscription behind it is not in the entitled set."""
 
 
+class RestoreAttributionMismatch(RestoreRefused):
+    """The proof carries a token this store recorded against another account."""
+
+
 class RestoreProviderUnknown(AppError):
     """The body names a store this deployment does not serve, so no proof check can be chosen."""
 

@@ -260,10 +260,15 @@ class TestTheAdoptionBranches:
                                                   user_id=None, tier_id=PAID_TIER_ID)
         scripted_app_store_notifications.script_restore(_proof(external_id))
 
+        seeded = (await _subscription_row(_db_transaction, external_id)).updated_at
+
         answered = await _restore(restore_client)
 
         assert answered.status_code == 200, answered.text
-        assert (await _subscription_row(_db_transaction, external_id)).user_id == user.id
+        adopted = await _subscription_row(_db_transaction, external_id)
+        assert adopted.user_id == user.id
+        # The control for the same-account case below: an owner update really does move this clock.
+        assert adopted.updated_at != seeded
         grants = await _grants_of(_db_transaction, user.id)
         assert len(grants) == 1
         assert grants[0].status is AccessGrantStatus.active
@@ -360,6 +365,28 @@ class TestTheTwoRefusalsOfTheRestoreNotFoundFamily:
         # Byte-equal, so a body naming which of the two checks refused fails here.
         assert first.content == second.content
         assert await _row_counts(_db_transaction, user.id) == (0, 0)
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheSameAccountBranchRunsNoOwnerUpdate:
+    """RESEARCH Q2: a no-op update would make "zero rows means a lost race" untrue for this branch."""
+
+    async def test_the_row_the_caller_already_owns_is_not_written_at_all(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        external_id = f"e2e-same-account-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=external_id, user_id=user.id,
+                                tier_id=PAID_TIER_ID)
+        seeded = (await _subscription_row(_db_transaction, external_id)).updated_at
+        scripted_app_store_notifications.script_restore(_proof(external_id))
+
+        assert (await _restore(restore_client)).status_code == 200
+
+        # `updated_at` is what the owner update writes, so an unmoved clock is a statement not run.
+        settled = await _subscription_row(_db_transaction, external_id)
+        assert settled.updated_at == seeded
+        assert settled.user_id == user.id
 
 
 @pytest.mark.asyncio(loop_scope="module")

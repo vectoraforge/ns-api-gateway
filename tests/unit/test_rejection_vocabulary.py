@@ -29,6 +29,7 @@ from nativespeaker.api.errors import (
     OtherActiveGrantHeld,
     ProviderAccountAlreadyLinked,
     ProviderTransitionNotAllowed,
+    RestoreAttributionMismatch,
     RestoreProviderUnknown,
     RestoreRefused,
     RestoreSubscriptionNotEntitled,
@@ -52,8 +53,8 @@ UPGRADE_ARMS = (ProviderTransitionNotAllowed, ProviderAccountAlreadyLinked)
 CLAIM_ARMS = (ClaimantNotAnonymous, ClaimantNotRegistered, FreeGrantAlreadyConsumed,
               OtherActiveGrantHeld, ActiveGrantOutsideItsTerm, ClaimRefusedUnderLock)
 
-# The one leaf under the restore's 404 base, listed on the same terms; 45-03 adds the second.
-RESTORE_ARMS = (RestoreSubscriptionNotEntitled,)
+# The two leaves under the restore's 404 base, listed on the same terms.
+RESTORE_ARMS = (RestoreSubscriptionNotEntitled, RestoreAttributionMismatch)
 
 # One drifted pair, reused wherever a live instance of an upgrade refusal is needed.
 UPGRADE_SAMPLE = {"identity_row_id": uuid7(),
@@ -131,9 +132,10 @@ EVENT_NAMES = frozenset({
     "upgrade_refused",
     "provider_transition_not_allowed",
     "provider_account_already_linked",
-    # The restore arms: one 404 base with its leaf, and the unserved-store 403 that stands alone.
+    # The restore arms: one 404 base with its leaves, and the unserved-store 403 that stands alone.
     "restore_refused",
     "restore_subscription_not_entitled",
+    "restore_attribution_mismatch",
     "restore_provider_unknown",
 })
 
@@ -442,4 +444,5 @@ class TestTheRestoreArmsAnswerOneThingAndDeclareNothingBelowTheBase:
         """One answer per base to the client, and one record per class in the log."""
         events = [camel_to_snake(cls.__name__) for cls in (*RESTORE_ARMS, RestoreProviderUnknown)]
         assert sorted(events) == sorted(set(events))
-        assert set(events) == {"restore_subscription_not_entitled", "restore_provider_unknown"}
+        assert set(events) == {"restore_subscription_not_entitled",
+                               "restore_attribution_mismatch", "restore_provider_unknown"}
