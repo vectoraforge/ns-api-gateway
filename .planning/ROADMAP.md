@@ -708,7 +708,7 @@ Plans:
 **Goal:** Verify a native store artifact directly against Apple or Google and attach verified paid entitlement.
 **Requirements:** RESTORE-01, RESTORE-02
 **Depends on:** 34, 35, 37, 43, 44
-**Plans:** 5/5 plans executed
+**Plans:** 9 plans — 5/5 executed, then 4 gap-closure plans (45-06 … 45-09) added 2026-09-08 to close the three blocker gaps `45-VERIFICATION.md` found
 **Success criteria:**
 
 1. A valid Apple artifact and a valid Google artifact each attach entitlement through their server-determined branch — **met as written, 2026-09-08.** Both stores cross the `auth/` seam as one value type, `RestoredSubscription`, so the entitled read, the grant locks, the writer and the one `commit()` are a single code path below the store call. **Three outcomes ship, each an executed case on the wire:** same-account, where the writer answers `replayed` and neither the grant id nor the monthly counter moves; adoption, including adoption-with-creation, where the canonical row is created at the proof's own state and tier; and a move, where the old owner's grant is expired and the destination's grant and usage row are inserted in the same transaction. **The Apple proof is verified locally** by Apple's own `SignedDataVerifier` against the vendored root, and **the Google proof is one `purchases.subscriptionsv2.get` call** that is the proof check and the live state together. **A departure a reader must not miss:** the brief performs no cross-account transfer at all; this phase ships a move capped at one per UTC calendar month, recorded as a flagged conflict (D-10) under RESTORE-01. Matching requirement: RESTORE-01.
@@ -737,6 +737,19 @@ Plans:
 **Wave 5** *(blocked on Wave 4)*
 
 - [x] 45-05-PLAN.md — The dated RESTORE and APPLEHOOK amendments, the answered operation-label flag, and the phase close (wave 5)
+
+**Wave 6** *(gap closure — blocked on Wave 5; the two plans of this wave touch disjoint files and run in parallel)*
+
+- [ ] 45-06-PLAN.md — GAP CLOSURE: the Play read URL confined to one resource, and a length bound on the two caller-controlled fields (wave 6)
+- [ ] 45-08-PLAN.md — GAP CLOSURE: a move takes only the grant for the subscription it moves (wave 6)
+
+**Wave 7** *(blocked on Wave 6)*
+
+- [ ] 45-07-PLAN.md — GAP CLOSURE: the proof's own term must support the status the stored row claims (wave 7)
+
+**Wave 8** *(blocked on Wave 7)*
+
+- [ ] 45-09-PLAN.md — GAP CLOSURE: the four suite commands run once against all three fixes, and the dated record of what changed and what was left open (wave 8)
 
 #### Phase 46: POST /auth/sign-out-all
 
