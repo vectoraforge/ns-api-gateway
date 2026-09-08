@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 45
 current_phase_name: POST /auth/restore-subscription
 status: executing
-stopped_at: Completed 45-03-PLAN.md
-last_updated: "2026-09-08T01:42:36.360Z"
+stopped_at: Completed 45-04-PLAN.md
+last_updated: "2026-09-08T02:08:20.180Z"
 last_activity: 2026-09-07
 last_activity_desc: Phase 45 execution started
-state_head: 5811122333301c41b39f1ae370998b8fdca087cd
+state_head: 96f881938d54afa74e684a33a516cc0102ac6f6e
 progress:
   total_phases: 18
   completed_phases: 15
   total_plans: 115
-  completed_plans: 113
+  completed_plans: 114
   percent: 83
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 45 (POST /auth/restore-subscription) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
 Last activity: 2026-09-07 — Phase 45 execution started
 
@@ -317,10 +317,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-08T01:42:16.432Z
+**Last session:** 2026-09-08T02:07:52.770Z
 
 Last activity: 2026-09-05
-Stopped at: Completed 45-03-PLAN.md
+Stopped at: Completed 45-04-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -379,6 +379,7 @@ Resume file: None
 | Phase 45 P01 | 15 min | 2 tasks | 15 files |
 | Phase 45 P02 | 14 min | 2 tasks | 7 files |
 | Phase 45 P03 | 17 min | 2 tasks | 8 files |
+| Phase 45 P04 | 21 min | 3 tasks | 8 files |
 
 ## Decisions
 
@@ -548,3 +549,6 @@ Resume file: None
 - [Phase 45]: RestoreService._verify names each PurchaseProvider member positively and raises RestoreProviderUnknown only on the unreachable fall-through the router already refuses
 - [Phase 45]: D-09 lands as three mirrors, not one: the crud rule, the unit suite's fake writer, and services/subscriptions.py::ingest, which locks the account it grants. Changing only the first would have made a renewal expire an unrelated account's grants and then loop on a 500. — The service computed the locked owner from the resolved token while the crud kept the stored owner. The two diverge on exactly the case D-09 exists for, so the rule must be restated in both places.
 - [Phase 45]: Restore adoption writes the created subscription row unowned and then claims it with the conditional UPDATE, because the pre-transaction read saw no row and owner_read must be the NULL that read produced. — It keeps the one owner write inside the one statement that settles owner writes, so "zero rows means a lost race" stays true on every branch that runs it.
+- [Phase 45]: The writer's replay check now matches the destination account as well as the subscription: on a move `marked_active` carries the old owner's grant for the same subscription at the same term, and the writer read it as the caller's own replay — Without it a move wrote nothing at all — the owner UPDATE ran, the destination got no grant, and in production the deferred composite foreign key would trip at COMMIT as 23503. Every single-account caller is unaffected, because the added conjunct is already true of every row they lock.
+- [Phase 45]: The e2e suite cannot observe a deferred foreign key: its session factory joins the outer transaction with `create_savepoint`, so every commit under test is a savepoint release — DEFERRABLE INITIALLY DEFERRED constraints are checked at the real COMMIT, which the e2e outer transaction never reaches. Confirmed by probe. Cases about deferred constraints belong in tests/schema, and an e2e pass is never evidence about one.
+- [Phase 45]: The two-connection restore barrier holds at the conditional owner UPDATE, not at the first flush — On the adoption path the subscription row already exists, so nothing flushes until insert_purchase, which runs after the claim. A flush barrier would release both attempts only once the winner had claimed, measuring a sequence rather than a race.

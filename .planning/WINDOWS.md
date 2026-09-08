@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 15
+open_count: 14
 waived_count: 1
-fixed_count: 9
+fixed_count: 10
 total_count: 25
-last_updated: 2026-09-08T01:39:55.773Z
+last_updated: 2026-09-08T02:04:51.706Z
 ---
 
 # Broken Windows Ledger
@@ -39,7 +39,7 @@ last_updated: 2026-09-08T01:39:55.773Z
 | 22 | 45 | stub | src/nativespeaker/api/services/restore.py | 81 | _verify refuses every provider that is not Apple; 45-02 replaces it with the Play read | fixed |  | 2026-09-08T01:04:03.689Z | 2026-09-08T01:17:08.716Z |
 | 23 | 45 | stub | src/nativespeaker/api/services/restore.py | 45 | No stored subscription row raises RestoreSubscriptionNotEntitled; 45-03 replaces it with adoption-with-creation | fixed |  | 2026-09-08T01:04:03.824Z | 2026-09-08T01:39:49.905Z |
 | 24 | 45 | stub | src/nativespeaker/api/services/restore.py | 54 | Any owner other than the caller raises RestoreSubscriptionNotEntitled; 45-03 and 45-04 replace it with adoption and the capped move | fixed |  | 2026-09-08T01:04:03.976Z | 2026-09-08T01:39:50.046Z |
-| 25 | 45 | stub | src/nativespeaker/api/services/restore.py | 72 | An owner that is another account raises RestoreSubscriptionNotEntitled; 45-04 replaces it with the capped move | open |  | 2026-09-08T01:39:55.773Z |  |
+| 25 | 45 | stub | src/nativespeaker/api/services/restore.py | 72 | An owner that is another account raises RestoreSubscriptionNotEntitled; 45-04 replaces it with the capped move | fixed |  | 2026-09-08T01:39:55.773Z | 2026-09-08T02:04:51.706Z |
 
 ````json
 [
@@ -338,10 +338,10 @@ last_updated: 2026-09-08T01:39:55.773Z
     "file": "src/nativespeaker/api/services/restore.py",
     "line": 72,
     "description": "An owner that is another account raises RestoreSubscriptionNotEntitled; 45-04 replaces it with the capped move",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-09-08T01:39:55.773Z",
-    "resolved_at": null
+    "resolved_at": "2026-09-08T02:04:51.706Z"
   }
 ]
 ````

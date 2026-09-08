@@ -708,7 +708,7 @@ Plans:
 **Goal:** Verify a native store artifact directly against Apple or Google and attach verified paid entitlement.
 **Requirements:** RESTORE-01, RESTORE-02
 **Depends on:** 34, 35, 37, 43, 44
-**Plans:** 3/5 plans executed
+**Plans:** 4/5 plans executed
 **Success criteria:**
 
 1. A valid Apple artifact and a valid Google artifact each attach entitlement through their server-determined branch
@@ -732,7 +732,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3)*
 
-- [ ] 45-04-PLAN.md — The move, the one-per-UTC-month cap, and the race, atomicity and deferred-foreign-key cases on real PostgreSQL (wave 4)
+- [x] 45-04-PLAN.md — The move, the one-per-UTC-month cap, and the race, atomicity and deferred-foreign-key cases on real PostgreSQL (wave 4)
 
 **Wave 5** *(blocked on Wave 4)*
 
@@ -798,5 +798,5 @@ Plans:
 | 42. POST /auth/claim-registered-grant | v2.0 | 7/7 | Complete    | 2026-09-03 |
 | 43. POST /webhooks/app-store | v2.0 | 6/6 | Complete    | 2026-09-04 |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 7/7 | Complete    | 2026-09-06 |
-| 45. POST /auth/restore-subscription | v2.0 | 3/5 | In Progress|  |
+| 45. POST /auth/restore-subscription | v2.0 | 4/5 | In Progress|  |
 | 46. POST /auth/sign-out-all | v2.0 | 0/? | Pending | — |
