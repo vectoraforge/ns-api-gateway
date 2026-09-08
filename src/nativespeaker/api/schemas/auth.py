@@ -38,8 +38,10 @@ class GrantClaimRequest(BaseModel):
 class RestoreRequest(BaseModel):
     """The restore body: the store the artifact came from, and the artifact itself."""
     # A plain `str`, as `ChallengeRequest.operation` is: an unserved store is the handler's 403.
-    provider: str = Field(..., min_length=1)
-    restore_proof: str = Field(..., min_length=1)
+    # Bounded well above every store name, because the handler's refusal log carries this value.
+    provider: str = Field(..., min_length=1, max_length=32)
+    # Bounded well above an Apple transaction and a Play token, which reach a decoder and a URL.
+    restore_proof: str = Field(..., min_length=1, max_length=8192)
 
 
 class CompletionResponse(BaseModel):
