@@ -233,3 +233,12 @@ None - no external service configuration required.
 ---
 *Phase: 45-post-auth-restore-subscription*
 *Completed: 2026-09-08*
+
+## Self-Check: PASSED
+
+- All three modified files exist on disk and carry this plan's changes; no file was created by this plan.
+- All four commits (`935edbb`, `c63f54b`, `ae410df`, `9193672`) are in the log.
+- Both tasks' `<verify>` blocks re-run and passing. Task 1: `RESTORE-01` occurs 9 times (≥ 2), `10-restore-subscription.md` 16 times (≥ 6), `D-09` 44 times (≥ 1), and `sha256sum -c` confirms `10-restore-subscription.md` and `SHARED-INVARIANTS.md` byte-identical to their pre-phase state. Task 2: `Phase 45 outcome` occurs exactly once; `uv run pytest -q` 1246 passed, `uv run pytest -m e2e -q` 321 passed, `uv run pytest -m schema -q` 222 passed, `uv run ruff check src tests` clean — run twice in this plan, before and after the STATE.md write.
+- Every acceptance criterion of both tasks re-checked against the file on disk, not against the intent: the six named conflicts each carry a line reference; RESTORE-02 carries the two-refusal gate; APPLEHOOK-01 carries the dated D-09 amendment naming 43 D-19 and 43-03; the eight untriggered codes are listed by name with the decision that removed each; the operation-label flag reads "no label is needed"; the Play-read entry names the v2.1 gateway contract; and the four open questions each appear once in the record.
+- **Tracking writes confirmed on disk, not merely issued.** `REQUIREMENTS.md`: both checkboxes read `- [x]`, the header carries the Phase 45 paragraph, and the traceability row reads `Complete`. `STATE.md`: `stopped_at: Completed 45-05-PLAN.md`, `completed_plans: 115`, the D-09 decision line, and one Phase 45 outcome paragraph. `ROADMAP.md`: all four criteria marked, `- [x] 45-05-PLAN.md`, `**Plans:** 5/5 plans executed`, and the progress table row re-derived from disk by `roadmap update-plan-progress 45`, which reports `plan_count: 5, summary_count: 5`.
+- **Phase 45 itself is NOT marked complete and `phase.complete` was not run.** The verb reports `status: In Progress, complete: false`, which is correct: the orchestrator owns phase completion after verification.

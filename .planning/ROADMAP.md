@@ -798,5 +798,5 @@ Plans:
 | 42. POST /auth/claim-registered-grant | v2.0 | 7/7 | Complete    | 2026-09-03 |
 | 43. POST /webhooks/app-store | v2.0 | 6/6 | Complete    | 2026-09-04 |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 7/7 | Complete    | 2026-09-06 |
-| 45. POST /auth/restore-subscription | v2.0 | 4/5 | In Progress|  |
+| 45. POST /auth/restore-subscription | v2.0 | 5/5 | In Progress|  |
 | 46. POST /auth/sign-out-all | v2.0 | 0/? | Pending | — |
