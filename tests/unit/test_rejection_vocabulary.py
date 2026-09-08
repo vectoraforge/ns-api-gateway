@@ -29,6 +29,9 @@ from nativespeaker.api.errors import (
     OtherActiveGrantHeld,
     ProviderAccountAlreadyLinked,
     ProviderTransitionNotAllowed,
+    RestoreProviderUnknown,
+    RestoreRefused,
+    RestoreSubscriptionNotEntitled,
     Unavailable,
     UpgradeRefused,
     UserNotFound,
@@ -48,6 +51,9 @@ UPGRADE_ARMS = (ProviderTransitionNotAllowed, ProviderAccountAlreadyLinked)
 # The six leaves under the claim's 403 base, listed on the same terms.
 CLAIM_ARMS = (ClaimantNotAnonymous, ClaimantNotRegistered, FreeGrantAlreadyConsumed,
               OtherActiveGrantHeld, ActiveGrantOutsideItsTerm, ClaimRefusedUnderLock)
+
+# The one leaf under the restore's 404 base, listed on the same terms; 45-03 adds the second.
+RESTORE_ARMS = (RestoreSubscriptionNotEntitled,)
 
 # One drifted pair, reused wherever a live instance of an upgrade refusal is needed.
 UPGRADE_SAMPLE = {"identity_row_id": uuid7(),
@@ -125,6 +131,10 @@ EVENT_NAMES = frozenset({
     "upgrade_refused",
     "provider_transition_not_allowed",
     "provider_account_already_linked",
+    # The restore arms: one 404 base with its leaf, and the unserved-store 403 that stands alone.
+    "restore_refused",
+    "restore_subscription_not_entitled",
+    "restore_provider_unknown",
 })
 
 
@@ -401,3 +411,35 @@ class TestTheSixClaimArmsAnswerOneThingAndLogSix:
         assert set(events) == {"claimant_not_anonymous", "claimant_not_registered",
                                "free_grant_already_consumed", "other_active_grant_held",
                                "active_grant_outside_its_term", "claim_refused_under_lock"}
+
+
+class TestTheRestoreArmsAnswerOneThingAndDeclareNothingBelowTheBase:
+    """The claim's shape once more: one 404 on the base, and leaves that only name themselves."""
+
+    def test_the_leaves_are_exactly_the_arms_under_the_shared_base(self):
+        """A second arm added without coming here would be a refusal nobody checked the answer of."""
+        assert set(_family(RestoreRefused)) == set(RESTORE_ARMS)
+
+    @pytest.mark.parametrize("arm", RESTORE_ARMS, ids=lambda c: c.__name__)
+    def test_no_arm_declares_a_status_or_a_code_of_its_own(self, arm):
+        assert "status" not in vars(arm)
+        assert "code" not in vars(arm)
+        assert (arm.status, arm.code) == (404, "restore_not_found")
+
+    @pytest.mark.parametrize("arm", RESTORE_ARMS, ids=lambda c: c.__name__)
+    def test_no_arm_can_carry_anything_into_its_log_line(self, arm):
+        """No `__init__` and no fields: the class name is the whole vocabulary these carry."""
+        assert "__init__" not in vars(arm)
+        assert arm().log_fields() == {}
+
+    def test_the_unserved_store_refusal_answers_the_claim_routes_own_body(self):
+        """D-01: an unserved store name is the same 403 body the claim refusals answer with."""
+        assert (RestoreProviderUnknown.status, RestoreProviderUnknown.code) == (403,
+                                                                               "operation_not_allowed")
+        assert RestoreProviderUnknown().log_fields() == {}
+
+    def test_the_restore_refusals_are_distinct_log_events(self):
+        """One answer per base to the client, and one record per class in the log."""
+        events = [camel_to_snake(cls.__name__) for cls in (*RESTORE_ARMS, RestoreProviderUnknown)]
+        assert sorted(events) == sorted(set(events))
+        assert set(events) == {"restore_subscription_not_entitled", "restore_provider_unknown"}

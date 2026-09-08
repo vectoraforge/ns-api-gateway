@@ -1,5 +1,5 @@
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
 import firebase_admin
@@ -9,6 +9,7 @@ import pytest
 import pytest_asyncio
 from firebase_admin import auth
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
@@ -26,7 +27,10 @@ from nativespeaker.api.auth.google_play import (
     PubSubPushTokens,
 )
 from nativespeaker.api.auth.jwt_verifier import JWTVerifier
-from nativespeaker.api.auth.store_notifications import VerifiedNotification
+from nativespeaker.api.auth.store_notifications import (
+    RestoredSubscription,
+    VerifiedNotification,
+)
 from nativespeaker.api.config import EnvironmentConfig
 from nativespeaker.api.tables import (
     AccessGrant,
@@ -279,11 +283,18 @@ class FakeAppStoreNotifications:
     def __init__(self) -> None:
         # No default answer: every case scripts the notification it wants verified or refused.
         self.answer: BaseException | VerifiedNotification | None = None
+        # The restore proof is a second entry point, so it carries a second scripted answer.
+        self.restore_answer: BaseException | RestoredSubscription | None = None
         self.calls: list[str] = []
+        self.restore_calls: list[str] = []
 
     def script(self, answer: BaseException | VerifiedNotification) -> None:
         """Raise-or-return: a scripted exception is raised, a scripted notification is returned."""
         self.answer = answer
+
+    def script_restore(self, answer: BaseException | RestoredSubscription) -> None:
+        """Raise-or-return on the restore entry point, on the same terms as `script` above."""
+        self.restore_answer = answer
 
     def verify(self, signed_payload: str) -> VerifiedNotification:
         self.calls.append(signed_payload)
@@ -291,6 +302,14 @@ class FakeAppStoreNotifications:
             raise self.answer
         assert self.answer is not None, "the seam was called before a case scripted it"
         return self.answer
+
+    def verify_transaction(self, signed_transaction: str,
+                           evaluated_at: datetime) -> RestoredSubscription:
+        self.restore_calls.append(signed_transaction)
+        if isinstance(self.restore_answer, BaseException):
+            raise self.restore_answer
+        assert self.restore_answer is not None, "the seam was called before a case scripted it"
+        return self.restore_answer
 
 
 @pytest.fixture
@@ -563,6 +582,33 @@ async def seed_grant(factory, *,
             session.add(usage)
         await session.commit()
     return grant, usage
+
+
+async def seed_subscription(factory, *,
+                            external_id: str,
+                            provider: PurchaseProvider = PurchaseProvider.apple,
+                            user_id: UUID | None = None,
+                            tier_id: str = REGISTERED_TIER_ID,
+                            status: str = "active",
+                            last_cross_account_transfer_month: date | None = None) -> UUID:
+    """Insert a core.subscriptions row and return its id; `user_id` is NULL on an unowned row."""
+    # The column list of `_seed_subscription_grant`, plus the one column a restore move writes.
+    now = datetime.now(UTC)
+    subscription_id = uuid4()
+    async with factory() as session:
+        await session.exec(text(
+            "INSERT INTO core.subscriptions"
+            " (id, user_id, provider, external_id, tier_id, status,"
+            " last_cross_account_transfer_month, created_at, updated_at)"
+            # The two enum columns are cast in the statement: a bound parameter arrives as text.
+            " VALUES (:id, :user_id, CAST(:provider AS core.subscription_provider),"
+            " :external_id, :tier_id, CAST(:status AS core.subscription_status),"
+            " CAST(:transfer_month AS DATE), :now, :now)")
+            .bindparams(id=subscription_id, user_id=user_id, provider=str(provider),
+                        external_id=external_id, tier_id=tier_id, status=status,
+                        transfer_month=last_cross_account_transfer_month, now=now))
+        await session.commit()
+    return subscription_id
 
 
 async def seed_purchase_tokens(factory, *,

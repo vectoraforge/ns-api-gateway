@@ -25,3 +25,21 @@ class VerifiedNotification:
     purchased_at: datetime | None
     expires_at: datetime | None
     grace_period_expires_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class RestoredSubscription:
+    """One client-presented store proof after verification, carrying only what a restore consumes."""
+
+    provider: PurchaseProvider
+    # On the Google path this is the purchase token itself, which no log line may ever carry.
+    external_id: str
+    product_id: str | None
+    # Resolved by the provider's own class, so a proof naming no mapped product never reaches here.
+    tier_id: str
+    attribution_token: str | None
+    # Derived by the provider's own class from the artifact alone, which is the only source here.
+    status: SubscriptionStatus
+    purchased_at: datetime | None
+    expires_at: datetime | None
+    grace_period_expires_at: datetime | None

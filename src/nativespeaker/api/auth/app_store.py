@@ -8,10 +8,11 @@ from appstoreserverlibrary.models.JWSTransactionDecodedPayload import JWSTransac
 from appstoreserverlibrary.models.Status import Status
 from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier, VerificationException
 
-from nativespeaker.api.auth.store_notifications import VerifiedNotification
+from nativespeaker.api.auth.store_notifications import RestoredSubscription, VerifiedNotification
 from nativespeaker.api.errors import (
     InternalError,
     NotificationRejected,
+    ProofRejected,
     Unavailable,
     UnmappedStoreProduct,
 )
@@ -36,6 +37,17 @@ class StoreNotificationVerifier(Protocol):
 def _instant(milliseconds: int | None) -> datetime | None:
     """Convert one of Apple's UNIX-millisecond stamps, keeping an absent one absent."""
     return None if milliseconds is None else datetime.fromtimestamp(milliseconds / 1000, UTC)
+
+
+def _transaction_status(transaction: JWSTransactionDecodedPayload,
+                        evaluated_at: datetime) -> SubscriptionStatus:
+    """The status one signed transaction reports, with no renewal payload to consult."""
+    if transaction.revocationDate is not None:
+        return SubscriptionStatus.revoked
+    expires_at = _instant(transaction.expiresDate)
+    # Grace and billing retry need the renewal payload, so an Apple restore reports three words only.
+    return (SubscriptionStatus.active if expires_at is not None and expires_at > evaluated_at
+            else SubscriptionStatus.expired)
 
 
 def _crossed(payload, transaction: JWSTransactionDecodedPayload | None,
@@ -105,6 +117,34 @@ class AppStoreNotifications:
             raise NotificationRejected(stage=failure.status.name) from failure
 
         return _crossed(payload, transaction, renewal, status=status, tier_id=tier_id)
+
+    def verify_transaction(self, signed_transaction: str,
+                           evaluated_at: datetime) -> RestoredSubscription:
+        """Verify one client-presented signed transaction and report the subscription it names."""
+        if self._verifier is None:
+            raise Unavailable(stage="app_store_verify")
+
+        try:
+            transaction = self._verifier.verify_and_decode_signed_transaction(signed_transaction)
+        except VerificationException as failure:
+            # `ProofRejected`, never `NotificationRejected`: this caller's own bearer token was valid.
+            raise ProofRejected(stage=failure.status.name) from failure
+
+        if transaction.originalTransactionId is None:
+            # Refused before any read: the lifecycle key this proof is looked up by is absent.
+            raise ProofRejected(stage="transaction_without_original_id")
+
+        return RestoredSubscription(
+            provider=PurchaseProvider.apple,
+            external_id=transaction.originalTransactionId,
+            product_id=transaction.productId,
+            tier_id=self._tier_for(transaction.productId),
+            attribution_token=transaction.appAccountToken,
+            status=_transaction_status(transaction, evaluated_at),
+            purchased_at=_instant(transaction.purchaseDate),
+            expires_at=_instant(transaction.expiresDate),
+            # Apple's grace window lives in the renewal payload, which this proof does not carry.
+            grace_period_expires_at=None)
 
     def _tier_for(self, product_id: str | None) -> str:
         """The tier this store product maps to, or a refusal that leaves nothing written."""

@@ -28,7 +28,8 @@ ErrorCode = Literal["auth_required",
                     "identity_already_linked",
                     "operation_not_allowed",
                     "proof_rejected",
-                    "device_grant_exhausted"]
+                    "device_grant_exhausted",
+                    "restore_not_found"]
 
 
 class ErrorResponse(BaseModel):
@@ -502,6 +503,29 @@ class ActiveGrantOutsideItsTerm(ClaimRefused):
 
 class ClaimRefusedUnderLock(ClaimRefused):
     """The state the preflight read changed before the locks were taken, so the write was refused."""
+
+
+# --- Restore arms ---
+
+
+class RestoreRefused(AppError):
+    """The restore's refusals share this shape, and its leaves add only their own name."""
+
+    # The 404 is declared here and nowhere below, so the refusal cannot become an enumeration oracle.
+    status = 404
+    code = "restore_not_found"
+
+
+class RestoreSubscriptionNotEntitled(RestoreRefused):
+    """The proof verified, but the subscription behind it is not in the entitled set."""
+
+
+class RestoreProviderUnknown(AppError):
+    """The body names a store this deployment does not serve, so no proof check can be chosen."""
+
+    # The claim refusals' own answer, reused: an unserved store name is a refusal, not a bad body.
+    status = 403
+    code = "operation_not_allowed"
 
 
 # --- Challenge arms ---

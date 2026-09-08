@@ -1,6 +1,6 @@
-"""The six auth routes: `/auth/challenge` issues a challenge, `/auth/create-user`,
-`/auth/upgrade-anonymous`, `/auth/claim-anonymous-grant` and `/auth/claim-registered-grant` spend
-one, and `/auth/sync` reports what the caller's account entitles it to."""
+"""The seven auth routes: `/auth/challenge` issues a challenge, `/auth/create-user`,
+`/auth/upgrade-anonymous`, `/auth/claim-anonymous-grant` and `/auth/claim-registered-grant` spend one,
+`/auth/restore-subscription` attaches a paid store subscription, and `/auth/sync` reports entitlement."""
 from datetime import UTC, datetime
 
 import structlog
@@ -14,10 +14,15 @@ from nativespeaker.api.app.dependencies import (
     get_db,
     get_identity,
     get_linked_identity,
+    get_restore_service,
     get_sync_service,
 )
 from nativespeaker.api.crud.challenges import ChallengesDB
-from nativespeaker.api.errors import InvalidRequest, PreAuthIdentityNotAllowed
+from nativespeaker.api.errors import (
+    InvalidRequest,
+    PreAuthIdentityNotAllowed,
+    RestoreProviderUnknown,
+)
 from nativespeaker.api.schemas.auth import (
     ChallengeRequest,
     CompletionRequest,
@@ -25,10 +30,12 @@ from nativespeaker.api.schemas.auth import (
     GrantClaimRequest,
     Identity,
     PrepareResponse,
+    RestoreRequest,
     SyncResponse,
 )
-from nativespeaker.api.services import AuthService, SyncService
+from nativespeaker.api.services import AuthService, RestoreService, SyncService
 from nativespeaker.api.tables.auth import AuthOperation
+from nativespeaker.api.tables.purchases import PurchaseProvider
 
 logger = structlog.get_logger()
 
@@ -137,6 +144,35 @@ async def claim_registered_grant(body: GrantClaimRequest,
                                                   challenge_id=body.challenge_id,
                                                   device_token=body.device_token)
     # Read after the completion committed, so the claim, the repeat and the race loser share one shape.
+    entitlement = await sync_service.read_entitlement(identity.user.id)
+    # Set on the injected response rather than returned as a JSONResponse, so the model still validates.
+    response.headers["Cache-Control"] = "no-store"
+    return SyncResponse(entitlement=entitlement, identity_provider=identity.identity.provider)
+
+
+# The route-level dependency narrows this one route to linked callers; the router-level one cannot.
+@router.post("/auth/restore-subscription",
+             response_model=SyncResponse,
+             summary="Attach a verified paid store subscription to the caller's account",
+             description="Verifies the store artifact supplied as `restore_proof` in the body "
+                         "against the store named by `provider`, and attaches the paid "
+                         "entitlement the subscription it names carries.")
+async def restore_subscription(body: RestoreRequest,
+                               response: Response,
+                               identity: Identity = Depends(get_linked_identity),
+                               service: RestoreService = Depends(get_restore_service),
+                               sync_service: SyncService = Depends(get_sync_service)) -> SyncResponse:
+    """Verify the store artifact and report the entitlement the caller's account now holds."""
+    if body.provider not in PurchaseProvider:
+        # The rejected string is caller-supplied and bounded, so logging it is safe; a proof never is.
+        logger.warning("restore_provider_not_served", provider=body.provider)
+        raise RestoreProviderUnknown
+
+    # Forwarded untouched and never logged: the store artifact is a secret.
+    await service.restore(identity=identity,
+                          provider=PurchaseProvider(body.provider),
+                          restore_proof=body.restore_proof)
+    # Read after the restore committed, so the restore and the repeat share one shape.
     entitlement = await sync_service.read_entitlement(identity.user.id)
     # Set on the injected response rather than returned as a JSONResponse, so the model still validates.
     response.headers["Cache-Control"] = "no-store"

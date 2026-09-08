@@ -35,6 +35,13 @@ class GrantClaimRequest(BaseModel):
     device_token: str = Field(..., min_length=1)
 
 
+class RestoreRequest(BaseModel):
+    """The restore body: the store the artifact came from, and the artifact itself."""
+    # A plain `str`, as `ChallengeRequest.operation` is: an unserved store is the handler's 403.
+    provider: str = Field(..., min_length=1)
+    restore_proof: str = Field(..., min_length=1)
+
+
 class CompletionResponse(BaseModel):
     """The completion body: the registration state, and nothing else."""
     identity_provider: IdentityProvider
