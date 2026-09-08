@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 45
 current_phase_name: POST /auth/restore-subscription
 status: executing
-stopped_at: Completed 45-06-PLAN.md
-last_updated: "2026-09-08T20:52:46.126Z"
+stopped_at: Completed 45-08-PLAN.md
+last_updated: "2026-09-08T21:05:37.706Z"
 last_activity: 2026-09-08
-last_activity_desc: Phase 45 gap closure — 45-06 executed, closing VERIFICATION truth 7 (CR-01) and WR-02
-state_head: bc01e99f33a6be170d90f3e66d47c8cd8444ffa5
+last_activity_desc: Phase 45 gap closure — 45-08 executed, closing VERIFICATION truth 6 (CR-03)
+state_head: 201072745950923f822d4ed62f200c19dfb310d1
 progress:
   total_phases: 18
   completed_phases: 15
   total_plans: 119
-  completed_plans: 116
+  completed_plans: 117
   percent: 83
 ---
 
@@ -30,9 +30,37 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 45 (POST /auth/restore-subscription) — EXECUTING (gap closure)
-Plan: 6 of 9 executed (45-01 … 45-06); 45-07, 45-08 and 45-09 remain
-Status: 45-06 closed VERIFICATION truth 7 (CR-01) and WR-02. Truths 1 and 6 stay open, for 45-07 and 45-08.
-Last activity: 2026-09-08 — 45-06 executed: the Play read URL is escaped, and both request fields are bounded
+Plan: 7 of 9 executed (45-01 … 45-06, 45-08); 45-07 and 45-09 remain
+Status: 45-06 closed VERIFICATION truth 7 (CR-01) and WR-02; 45-08 closed truth 6 (CR-03). Truth 1
+(CR-02, the unreconciled status/term pair) stays open, for 45-07. RESTORE-01 stays BLOCKED in
+`45-VERIFICATION.md` until truth 1 is closed too, and stays unmarked in REQUIREMENTS.md because
+45-07 and 45-09 also declare it.
+Last activity: 2026-09-08 — 45-08 executed: a move now ends only the destination's own grants and
+the old owner's grant for the subscription it moves
+
+<!-- Counts read against disk rather than trusted from the handler, as every plan of this phase
+     has done. Read at 2026-09-08T21:05Z, after this plan's SUMMARY landed: 119 PLAN files and 117
+     SUMMARY files across .planning/phases/, which is exactly what the frontmatter now carries.
+     Phase 45 itself: 9 PLAN files and 7 SUMMARY files. The phase is executed but not re-verified,
+     so completed_phases stays at 15 and percent stays at 83. -->
+
+**45-08 outcome.** `crud/subscriptions.py::write_subscription_grant` decided which grants to expire
+from the whole set its caller locked. On a move `services/restore.py` locks
+`[current_owner, destination]` together, so `superseded = list(marked_active)` ended **every**
+active grant of the source account — including its grant for a second subscription it still owned
+and still paid for, which the restoring caller's proof named nowhere. The entitled arm is now a
+comprehension keeping a grant when `grant.user_id == user_id or grant.subscription_id ==
+subscription_id`: the destination's whole set, because `ix_access_grants_one_active_per_user`
+allows one; plus the old owner's row for this subscription, because D-10 expires it in the same
+transaction. **Measured, not reasoned about:** the source-side case was written first and run
+against the unchanged source, where the unrelated grant came back `expired`. **Both directions are
+pinned** — a second class fails if the narrowing spares any row the destination held, confirmed red
+under `and` in place of `or` and under the `subscription_id` clause alone. The change is the
+membership test and only the membership test: no lock added or removed, no SQLSTATE handling
+touched, and the `held` comprehension, the replay test, the `ended` choice and the flush-alone block
+byte-unchanged. **Recorded as accepted rather than fixed:** a move still writes no audit row
+(45-REVIEW WR-04, T-45-08-03), so a wrongly-ended grant would leave no trail; CONTEXT's "Carried
+forward" deletes `audit.auth_events`, and a gap-closure plan may not reverse that.
 
 <!-- The counter above is read from disk, as this file's convention requires: read at
      2026-09-08T20:52Z, 119 PLAN files and 116 SUMMARY files across .planning/phases/, and
@@ -376,10 +404,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-08T20:52:11.437Z
+**Last session:** 2026-09-08T21:05:26.936Z
 
 Last activity: 2026-09-05
-Stopped at: Completed 45-06-PLAN.md
+Stopped at: Completed 45-08-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -440,6 +468,7 @@ Resume file: None
 | Phase 45 P03 | 17 min | 2 tasks | 8 files |
 | Phase 45 P04 | 21 min | 3 tasks | 8 files |
 | Phase 45 P06 | 9 min | 2 tasks | 4 files |
+| Phase 45 P08 | 8 min | 2 tasks | 2 files |
 
 ## Decisions
 
@@ -615,3 +644,5 @@ Resume file: None
 - [Phase 45]: 45-06 D-16: the Play read URL assertion measures httpx's raw_path, not url.path — httpx 0.28.1 percent-decodes the URL.path property, so a correctly escaped segment reads there exactly as the unescaped defect does; the case could never go green on it. raw_path is the wire form the transport sends.
 - [Phase 45]: 45-06 D-17: the escaping lives only in the shared _get, and read_for_restore adds no second site — Both the webhook read() and the restore read already share _get, so one call site fixes both entry points and they cannot drift; a second site would also double-encode.
 - [Phase 45]: 45-06 D-18: provider is bounded at 32 characters and restore_proof at 8192, with no pattern on either — The bounds stop an abusive payload before the refusal log, Apple's JWS decoder and the outbound URL; the store name stays the handler's membership check (D-01) and the artifact's shape is the store's to judge. routers/auth.py is unchanged, and its comment claiming the logged provider is bounded is now true in fact.
+- [Phase 45]: A write decides for itself which of the rows its caller locked it is entitled to change: the entitled arm of write_subscription_grant keeps a grant when grant.user_id == user_id or grant.subscription_id == subscription_id — On a move the caller locks two accounts, so the writer receives more rows than it may change. The two clauses are the two things a subscription write is entitled to end: everything the destination holds, because ix_access_grants_one_active_per_user allows one; and the old owner row for this subscription, because D-10 expires it in the same transaction (45-08, closes VERIFICATION truth 6 / CR-03).
+- [Phase 45]: Both directions of a narrowing get a case: one fails if the set keeps too much, another fails if it keeps too little — TestAMoveTakesOnlyTheGrantForTheSubscriptionItMoves was observed red against the pre-fix source; TestTheDestinationStillLosesEverythingItHeld was observed red under an over-narrowed condition. Neither a later widening nor a later over-narrowing can land silently (45-08).
