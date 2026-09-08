@@ -2,20 +2,20 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
-current_phase: 45
-current_phase_name: POST /auth/restore-subscription
-status: executing
-stopped_at: Completed 45-09-PLAN.md
-last_updated: "2026-09-08T21:30:03.318Z"
+current_phase: 46
+current_phase_name: POST /auth/sign-out-all
+status: planning
+stopped_at: Phase 45 complete, ready to plan Phase 46
+last_updated: "2026-09-08T22:04:44.274Z"
 last_activity: 2026-09-08
-last_activity_desc: Phase 45 gap closure complete — 45-09 proved the three fixes together and recorded them
-state_head: e48855289b68a70734fafc9ef73b3a2b21e9fe88
+last_activity_desc: Phase 45 complete, transitioned to Phase 46
+state_head: f4c006c51aac81a3cb9e9879f5fb44730a3050a4
 progress:
   total_phases: 18
-  completed_phases: 15
+  completed_phases: 16
   total_plans: 119
   completed_plans: 119
-  percent: 83
+  percent: 89
 ---
 
 # Project State
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 45 (POST /auth/restore-subscription) — EXECUTED, AWAITING RE-VERIFICATION
-Plan: 9 of 9 executed (45-01 … 45-09)
-Status: the three blocker gaps of `45-VERIFICATION.md` are closed and are now proved together.
+Phase: 46 — POST /auth/sign-out-all
+Plan: Not started
+Status: Ready to plan
 **Truth 7 (CR-01)** — 45-06 escaped both interpolated path segments of the Play read URL inside the
 shared `_get`, so a caller-supplied `restore_proof` names one path segment and can carry no query
 string; the same plan bounded `provider` at 32 and `restore_proof` at 8192 (WR-02). **Truth 1
@@ -45,7 +45,7 @@ three fixes do not interact.
 `45-VERIFICATION.md` itself still reads `gaps_found` and still records RESTORE-01 as BLOCKED:
 **re-verification is what changes those, not this file.** `/gsd:verify-phase 45` decides whether the
 phase is complete; this plan does not.
-Last activity: 2026-09-08 — 45-09 executed: the four suite commands run once against all three
+Last activity: 2026-09-08 — Phase 45 complete, transitioned to Phase 46
 fixes together, and REQUIREMENTS.md carries the dated gap-closure record
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07 and 45-05 each did.
@@ -443,7 +443,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 **Last session:** 2026-09-08T21:29:41.757Z
 
 Last activity: 2026-09-05
-Stopped at: Completed 45-09-PLAN.md
+Stopped at: Phase 45 complete, ready to plan Phase 46
 Resume file: None
 
 ## Performance Metrics

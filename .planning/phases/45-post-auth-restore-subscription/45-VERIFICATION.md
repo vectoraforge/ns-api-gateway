@@ -1,47 +1,27 @@
 ---
 phase: 45-post-auth-restore-subscription
-verified: 2026-09-07T00:00:00Z
-status: gaps_found
-score: 4/7 must-haves verified
+verified: 2026-09-08T22:15:00Z
+status: passed
+score: 7/7 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
-gaps:
-  - truth: "A valid Apple artifact and a valid Google artifact each attach entitlement through their server-determined branch, correctly reflecting what was verified (ROADMAP SC1)"
-    status: failed
-    reason: "The stored subscription's status decides entitlement (services/restore.py:58) while the grant term (starts_at/ends_at) is taken unreconciled from the client-presented proof (services/restore.py:134-139). A stored row at status=grace_period combined with an Apple proof (which always reports grace_period_expires_at=None, per app_store.py's hardcoded value) writes a grant with ends_at=NULL — a never-expiring paid grant reachable through the documented D-06 entitlement rule. A stale/expired proof against an active stored row writes an already-past ends_at that occupies the account's one grant slot and cannot self-heal (a repeat restore replays it). Confirmed by reading services/restore.py:56-60 and 134-139 directly; no test in tests/unit/test_restore_proof.py or tests/e2e/test_restore_subscription.py exercises a stored status that disagrees with the proof's own term."
-    artifacts:
-      - path: "src/nativespeaker/api/services/restore.py"
-        issue: "Lines 56-60 (status source) and 134-139 (term source) draw from two different, unreconciled inputs; nothing rejects a proof whose term does not support the status the stored row claims."
-    missing:
-      - "A check, before any write, that the proof's own term (grace_period_expires_at when status is grace_period, otherwise expires_at) is present and in the future; refuse RestoreSubscriptionNotEntitled otherwise, joining the existing byte-identical restore_not_found family."
-      - "A test case seeding a stored subscription at grace_period status and restoring an Apple proof against it, asserting the written grant is NOT ends_at=NULL."
-  - truth: "A cross-account move expires only the source account's grant for the subscription being moved; the source account's grants for other subscriptions are untouched (implied by ROADMAP SC1's 'the old owner's subscription grant is expired... in the same transaction')"
-    status: failed
-    reason: "crud/subscriptions.py:252 sets `superseded = list(marked_active) if entitled else held` — on a move, marked_active holds BOTH accounts' active grant rows (services/restore.py:94-95 locks [current_owner, destination]), so every active grant of the source account is expired, not only the one for the subscription being moved. An account that owns subscription S1 (active grant G1) and separately owns subscription S2, and loses S1 to a restoring caller D, has G2 (its S2 grant) silently expired even though D's proof said nothing about S2. This strips a paying customer of an unrelated, currently-paid entitlement. Confirmed by reading crud/subscriptions.py:240-259 directly. Neither tests/schema/test_restore_race.py nor tests/e2e/test_restore_subscription.py seeds the source account with a second, unrelated subscription — the code review (45-REVIEW.md CR-03) states this and the source confirms the gap: no such seed exists in either file."
-    artifacts:
-      - path: "src/nativespeaker/api/crud/subscriptions.py"
-        issue: "Line 252 supersedes every grant in marked_active rather than narrowing to the destination's own rows plus the source's row for the specific subscription_id being moved."
-    missing:
-      - "Narrow the superseded set: `[g for g in marked_active if g.user_id == user_id or g.subscription_id == subscription_id]` (per 45-REVIEW.md CR-03's suggested fix)."
-      - "A schema case seeding the source account with an active grant for a second, unrelated subscription, running the move, and asserting that grant is untouched and still active."
-  - truth: "The Google Play verification request is sent to the endpoint and package the server intends, and is not redirectable by caller-supplied restore_proof content (bears on ROADMAP SC1 'verify... against Google' and SC4 'an unverifiable artifact attaches nothing')"
-    status: failed
-    reason: "auth/google_play.py:302-304 builds the request URL with plain str.format (`PLAY_URL.format(package_name=package_name, purchase_token=purchase_token)`), and purchase_token is restore_proof taken unmodified from the request body (schemas/auth.py:38-42, no max_length, no pattern). str.format performs no percent-encoding, and httpx normalises dot-segments, so a caller-supplied token containing path-traversal sequences repoints the deployment's OAuth-bearer-signed GET at an arbitrary androidpublisher.googleapis.com path. Verified empirically in this session: formatting purchase_token='a/../../../../v3/applications/evil/edits' against package_name='com.ns.app' yields a URL whose path resolves (after httpx's own dot-segment collapse) outside the intended purchases/subscriptionsv2/tokens/{token} resource. This is the service's own Google-scoped credential being pointed at attacker-chosen endpoints, defeating the package-name guard the code's own comment at google_play.py:261-262 relies on. No unit or e2e case in tests/unit/test_restore_proof.py or tests/e2e/test_restore_subscription.py asserts the request path is confined to the expected shape for an adversarial token."
-    artifacts:
-      - path: "src/nativespeaker/api/auth/google_play.py"
-        issue: "_get (lines 296-304) interpolates package_name and purchase_token into PLAY_URL with str.format and no percent-encoding."
-    missing:
-      - "Percent-encode both path segments with urllib.parse.quote(..., safe=\"\") before interpolation, so a caller-supplied token can only ever name one path segment."
-      - "A unit case asserting a token containing '../' and '?' produces a request whose path is still /androidpublisher/v3/applications/{package}/purchases/subscriptionsv2/tokens/... and whose query string is empty."
-deferred: []
+re_verification:
+  previous_status: gaps_found
+  previous_score: 4/7
+  gaps_closed:
+    - "A valid Apple artifact and a valid Google artifact each attach entitlement through their server-determined branch, correctly reflecting what was verified (ROADMAP SC1) — CR-02"
+    - "A cross-account move expires only the source account's grant for the subscription being moved; the source account's grants for other subscriptions are untouched — CR-03"
+    - "The Google Play verification request is sent to the endpoint and package the server intends, and is not redirectable by caller-supplied restore_proof content — CR-01"
+  gaps_remaining: []
+  regressions: []
 ---
 
 # Phase 45: POST /auth/restore-subscription Verification Report
 
 **Phase Goal:** Verify a native store artifact directly against Apple or Google and attach verified paid entitlement.
-**Verified:** 2026-09-07
-**Status:** gaps_found
-**Re-verification:** No — initial verification
+**Verified:** 2026-09-08
+**Status:** passed
+**Re-verification:** Yes — after gap closure (45-06 … 45-09)
 
 ## Goal Achievement
 
@@ -49,92 +29,95 @@ deferred: []
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | A valid Apple and a valid Google artifact each attach entitlement through their server-determined branch, and the entitlement attached correctly reflects the verified state (ROADMAP SC1) | ✗ FAILED | `services/restore.py:56-60,134-139` — status and term are drawn from two unreconciled sources; a stored `grace_period` row plus an Apple proof (whose `grace_period_expires_at` is hardcoded `None`, `app_store.py`) writes `ends_at=NULL`, a never-expiring paid grant. See 45-REVIEW.md CR-02, confirmed against the current source in this session. |
-| 2 | All store verification completes before the mutating transaction opens; no network call runs under a lock (ROADMAP SC2) | ✓ VERIFIED | `services/restore.py:49` calls `self._verify(...)` as the method's first statement, before any `session.exec`/`read_subscription` call at lines 53-54. `tests/unit/test_restore_proof.py::TestTheStoreCallRunsBeforeTheSessionsFirstStatement` (counting-session recorder) passes; both stores' entry points are confirmed as the first call. |
-| 3 | A non-native surface (a `provider` outside `PurchaseProvider`) receives 403 `operation_not_allowed` (ROADMAP SC3) | ✓ VERIFIED | `routers/auth.py:166-169` checks `body.provider not in PurchaseProvider` and raises `RestoreProviderUnknown` before any proof check. `RestoreProviderUnknown` declares `status=403, code="operation_not_allowed"` (`errors.py`). Route registered exactly once: `grep -c 'router.post("/auth/restore-subscription"'` = 1. |
-| 4 | An unverifiable artifact (a proof that does not verify) attaches nothing and leaves grant/usage/subscription/purchase row counts unchanged (ROADMAP SC4) | ✓ VERIFIED | e2e refusal matrix (`tests/e2e/test_restore_subscription.py`) drives four proof-rejection arms across both stores through the real router and asserts row counts unchanged and bodies byte-equal; unit ordering cases assert zero session statements on refusal. |
-| 5 | The two-refusal surface gate (unserved provider, unverified proof) is the whole gate; no platform heuristic is applied | ✓ VERIFIED | `routers/auth.py` gate is exactly D-01 (provider membership) then the service's proof check (D-02); no header or stored column read. Confirmed by direct reading of the router and service. |
-| 6 | A cross-account move expires only the source account's grant for the subscription being moved, leaving the source account's grants for other subscriptions untouched | ✗ FAILED | `crud/subscriptions.py:252` — `superseded = list(marked_active) if entitled else held` supersedes **every** grant of both accounts (`marked_active` holds both, per `restore.py:94-95`), not merely the one tied to the moving subscription. A source account holding an unrelated, currently-paid subscription loses that grant silently on any move it loses. See 45-REVIEW.md CR-03, confirmed against current source; untested by both `tests/schema/test_restore_race.py` and `tests/e2e/test_restore_subscription.py`. |
-| 7 | The Google verification request cannot be redirected by caller-supplied `restore_proof` content — the service's own OAuth-signed call reaches only the intended `subscriptionsv2.get` endpoint | ✗ FAILED | `auth/google_play.py:296-304` builds the request URL with unencoded `str.format`; `restore_proof` (no `max_length`, no pattern — `schemas/auth.py:38-42`) flows unmodified into the path. Empirically reproduced in this session: a token containing `../` sequences relocates the resolved path outside `purchases/subscriptionsv2/tokens/{token}`. See 45-REVIEW.md CR-01, confirmed against current source. |
+| 1 | A valid Apple and a valid Google artifact each attach entitlement through their server-determined branch, and the entitlement attached correctly reflects the verified state (ROADMAP SC1) | ✓ VERIFIED | `services/restore.py:62-67,144` binds `term_ends_at` once from the proof (grace window when status is `grace_period`, else `expires_at`), refuses before any write when it is absent or already past, and passes that same binding as `ends_at` — the checked term and the written term cannot drift. Empirically confirmed pre-fix/post-fix by `tests/e2e/test_restore_subscription.py::TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach` (6 cases) and two cases in `TestTheTwoRefusalsOfTheRestoreNotFoundFamily`, all run and passing in this session (`uv run pytest -m e2e "tests/e2e/test_restore_subscription.py::TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach" -v` → 6 passed). CR-02's two reachable defects (permanent `ends_at IS NULL`, bricked stale-term slot) are closed. **See WR-01 below: an under-grant scenario is a known, accepted residual, not a failure of this truth's own claim.** |
+| 2 | All store verification completes before the mutating transaction opens; no network call runs under a lock (ROADMAP SC2) | ✓ VERIFIED | `services/restore.py:49` still calls `self._verify(...)` as the method's first statement, unchanged from the prior verification. `tests/unit/test_restore_proof.py`'s counting-session ordering cases pass (part of the 1255 unit total run in this session). |
+| 3 | A non-native surface (a `provider` outside `PurchaseProvider`) receives 403 `operation_not_allowed` (ROADMAP SC3) | ✓ VERIFIED | `routers/auth.py:166-169`, unchanged from the prior verification: `body.provider not in PurchaseProvider` raises `RestoreProviderUnknown` before any proof check. Route registered exactly once (`grep -c 'router.post("/auth/restore-subscription"'` = 1). |
+| 4 | An unverifiable artifact (a proof that does not verify) attaches nothing and leaves grant/usage/subscription/purchase row counts unchanged (ROADMAP SC4) | ✓ VERIFIED | e2e refusal matrix in `tests/e2e/test_restore_subscription.py` still drives four proof-rejection arms across both stores and asserts row counts unchanged and bodies byte-equal; part of the 333 e2e cases run and passing in this session. |
+| 5 | The two-refusal surface gate (unserved provider, unverified proof) is the whole gate; no platform heuristic is applied | ✓ VERIFIED | `routers/auth.py` gate is unchanged: D-01 (provider membership) then the service's proof check (D-02); no header or stored column read. Confirmed by direct reading of the current router source. |
+| 6 | A cross-account move expires only the source account's grant for the subscription being moved, leaving the source account's grants for other subscriptions untouched | ✓ VERIFIED | `crud/subscriptions.py:253-255` — `superseded` is now `[grant for grant in marked_active if grant.user_id == user_id or grant.subscription_id == subscription_id] if entitled else held`, narrowed from the prior unconditional `list(marked_active)`. Directly confirmed against the current source and empirically confirmed by running `tests/schema/test_restore_race.py::TestAMoveTakesOnlyTheGrantForTheSubscriptionItMoves` (4 cases) and `TestTheDestinationStillLosesEverythingItHeld` (3 cases) in this session against real PostgreSQL — 7/7 passed, including `test_the_source_keeps_its_active_grant_for_the_unrelated_subscription`, the case that reproduced CR-03 as a real `'expired' == 'active'` assertion failure pre-fix. **See WR-03 below: a latent (unreachable, per code-review construction attempt) asymmetry between the replay predicate and the widened supersede predicate is recorded as an open, non-blocking residual.** |
+| 7 | The Google verification request cannot be redirected by caller-supplied `restore_proof` content — the service's own OAuth-signed call reaches only the intended `subscriptionsv2.get` endpoint | ✓ VERIFIED | `auth/google_play.py:154-156,259-264,314-317` — both interpolated URL segments are percent-escaped with `quote(value, safe="")` (closing the original CR-01 finding), **and** `_names_one_path_segment` refuses a purchase token or package name that is nothing but dots before any request is built, closing the dot-segment-removal gap the first closure missed (45-REVIEW's reopened CR-01, fixed by `f28047a`/`513ef70`/`f4c006c`). Empirically re-verified in this session, not read from the SUMMARY: `uv run pytest tests/unit/test_restore_proof.py::TestThePlayRequestUrlIsConfinedToOneResource -v` → 9/9 passed, including the three dot-only-token cases (`.`, `..`, `....`) each asserting `sent == []` (nothing reaches the transport) and `refusal.value.stage == GONE_STAGE`. |
 
-**Score:** 4/7 truths verified (0 present, behavior-unverified)
+**Score:** 7/7 truths verified (0 present, behavior-unverified)
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |----------|----------|--------|---------|
-| `src/nativespeaker/api/services/restore.py` | `RestoreService` with `restore` method, four branches | ✓ VERIFIED (exists, substantive, wired) — but see truths 1 and 6 for correctness defects inside it |
-| `src/nativespeaker/api/auth/app_store.py` | Local Apple proof verification | ✓ VERIFIED |
-| `src/nativespeaker/api/auth/google_play.py` | `read_for_restore` Play proof read | ✓ VERIFIED (exists, wired) — see truth 7 for the unencoded-URL defect inside `_get` |
-| `src/nativespeaker/api/crud/subscriptions.py` | `claim_subscription_owner`, D-09 owner rule, `write_subscription_grant` account-scoped replay fix | ✓ VERIFIED (exists, wired) — see truth 6 for the `superseded` scoping defect |
-| `src/nativespeaker/api/crud/grants.py` | Two-user ascending grant lock | ✓ VERIFIED |
-| `src/nativespeaker/api/routers/auth.py` | `POST /auth/restore-subscription`, `Depends()`-only, surface gate | ✓ VERIFIED |
-| `src/nativespeaker/api/app/dependencies.py` | `get_restore_service` wiring `app_store`, `play`, `package_name` | ✓ VERIFIED |
-| `tests/e2e/test_restore_subscription.py` | e2e cases for all outcomes and refusals | ✓ VERIFIED (321 e2e passing) — coverage gap: no case with a source account holding an unrelated second subscription during a move |
-| `tests/schema/test_restore_race.py` | Race, atomicity, deferred-FK cases on real PostgreSQL | ✓ VERIFIED (222 schema passing) — same coverage gap as above |
-| `tests/unit/test_restore_proof.py` | Apple/Google proof unit cases, ordering | ✓ VERIFIED — coverage gap: no adversarial-token URL-shape assertion |
+| `src/nativespeaker/api/services/restore.py` | `RestoreService` with `restore` method, four branches, term reconciliation | ✓ VERIFIED (exists, substantive, wired) — CR-02 closed |
+| `src/nativespeaker/api/auth/app_store.py` | Local Apple proof verification | ✓ VERIFIED — unchanged; still reports `grace_period_expires_at=None` unconditionally (see WR-01) |
+| `src/nativespeaker/api/auth/google_play.py` | `read_for_restore` Play proof read, escaped URL, dot-only guard | ✓ VERIFIED (exists, wired) — CR-01 closed, including the reopened dot-segment gap |
+| `src/nativespeaker/api/crud/subscriptions.py` | `claim_subscription_owner`, D-09 owner rule, narrowed `superseded` scoping | ✓ VERIFIED (exists, wired) — CR-03 closed |
+| `src/nativespeaker/api/crud/grants.py` | Two-user ascending grant lock | ✓ VERIFIED — unchanged |
+| `src/nativespeaker/api/routers/auth.py` | `POST /auth/restore-subscription`, `Depends()`-only, surface gate | ✓ VERIFIED — unchanged, byte-identical per 45-06's own diff check |
+| `src/nativespeaker/api/schemas/auth.py` | `RestoreRequest` with bounded `provider`/`restore_proof` | ✓ VERIFIED — `max_length=32` / `max_length=8192` present (WR-02 closed) |
+| `src/nativespeaker/api/app/dependencies.py` | `get_restore_service` wiring `app_store`, `play`, `package_name` | ✓ VERIFIED — unchanged |
+| `tests/e2e/test_restore_subscription.py` | e2e cases for all outcomes, refusals, term reconciliation | ✓ VERIFIED (333 e2e passing, run in this session) |
+| `tests/schema/test_restore_race.py` | Race, atomicity, deferred-FK, move-scoping cases on real PostgreSQL | ✓ VERIFIED (229 schema passing, run in this session) |
+| `tests/unit/test_restore_proof.py` | Apple/Google proof unit cases, ordering, URL-escaping, dot-only guard | ✓ VERIFIED (1255 unit passing, run in this session; 9/9 URL-confinement class run individually) |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 |------|----|----|--------|---------|
-| `app.state.app_store_notifications` | `RestoreService.restore` | `get_restore_service` dependency | ✓ WIRED | `dependencies.py:155-162` reads `request.app.state.app_store_notifications` |
-| `app.state.play_subscriptions` | `RestoreService.restore` | `get_restore_service` dependency | ✓ WIRED | same function, `play=request.app.state.play_subscriptions` |
-| `RestoreService.restore` | `SubscriptionsDB.write_subscription_grant` | direct call, `services/restore.py:127-139` | ✓ WIRED | confirmed by direct read |
-| `RestoreService.restore`'s `starts_at`/`ends_at` expression | `SubscriptionsService.ingest`'s expression | textual match (D-07) | ✓ WIRED (mechanically identical) — see truth 1: identical expression, but the *inputs* feeding it are unreconciled across the status/term sources |
-| `routers/auth.py` | `get_restore_service` | `Depends()` only | ✓ WIRED | route handler takes no manual construction |
+| `app.state.app_store_notifications` | `RestoreService.restore` | `get_restore_service` dependency | ✓ WIRED | unchanged |
+| `app.state.play_subscriptions` | `RestoreService.restore` | `get_restore_service` dependency | ✓ WIRED | unchanged |
+| `RestoreService.restore` | `SubscriptionsDB.write_subscription_grant` | direct call, `services/restore.py:134-145` | ✓ WIRED | `ends_at` now names the single `term_ends_at` binding checked at line 65, closing the drift CR-02 named |
+| `RestoreService._verify` (Google branch) | `PlayDeveloperSubscriptions.read_for_restore` | direct call | ✓ WIRED | now refuses a dot-only token/package name before `_get` is ever called |
+| `routers/auth.py` | `get_restore_service` | `Depends()` only | ✓ WIRED | unchanged |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
 | Route registered exactly once | `grep -c 'router.post("/auth/restore-subscription"' src/nativespeaker/api/routers/auth.py` | `1` | ✓ PASS |
-| No debt markers (TBD/FIXME/XXX/TODO/HACK/PLACEHOLDER) in phase files | grep across all 10 phase-modified source files | no matches | ✓ PASS |
-| Play URL path-injection reproduction | `PLAY_URL.format(package_name='com.ns.app', purchase_token='a/../../../../v3/applications/evil/edits')` | resolves outside `purchases/subscriptionsv2/tokens/{token}` after httpx's dot-segment normalisation | ✗ FAIL (confirms CR-01) |
-| `get_restore_service` wiring | direct read of `dependencies.py:155-162` | both `app_store` and `play` sourced from `request.app.state`, `package_name` from config | ✓ PASS |
+| No debt markers (TBD/FIXME/XXX/TODO/HACK/PLACEHOLDER) across all 10 phase-modified files | grep across `services/restore.py`, `auth/google_play.py`, `auth/app_store.py`, `crud/subscriptions.py`, `schemas/auth.py`, `routers/auth.py`, `app/dependencies.py`, and the three test files | no matches | ✓ PASS |
+| CR-01 follow-up: dot-only Play tokens reach no transport | `uv run pytest tests/unit/test_restore_proof.py::TestThePlayRequestUrlIsConfinedToOneResource -v` | 9/9 passed, including `[.]`, `[..]`, `[....]` parametrizations, each asserting `sent == []` | ✓ PASS |
+| CR-02 follow-up: term reconciliation e2e class | `uv run pytest -m e2e "tests/e2e/test_restore_subscription.py::TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach" -v` | 6/6 passed | ✓ PASS |
+| CR-03 follow-up: move-scoping schema classes on real PostgreSQL | `uv run pytest -m schema "tests/schema/test_restore_race.py::TestAMoveTakesOnlyTheGrantForTheSubscriptionItMoves" "tests/schema/test_restore_race.py::TestTheDestinationStillLosesEverythingItHeld" -v` | 7/7 passed | ✓ PASS |
+| Full suite, run in this verification (not copied from any SUMMARY) | `uv run pytest -q` | **1255 passed**, 562 deselected | ✓ PASS |
+| Full suite, e2e marker | `uv run pytest -m e2e -q` | **333 passed**, 1484 deselected | ✓ PASS |
+| Full suite, schema marker (real PostgreSQL) | `uv run pytest -m schema -q` | **229 passed**, 1588 deselected | ✓ PASS |
+| Lint | `uv run ruff check src tests` | All checks passed | ✓ PASS |
 
-Full suite (evidence supplied by orchestrator, not re-run in this verification): `uv run pytest -q` 1246 passed, `uv run pytest -m e2e -q` 321 passed, `uv run pytest -m schema -q` 222 passed, `uv run ruff check src tests` clean. **A green suite does not certify truths 1, 6 and 7 above** — none of the 1246+321+222 cases exercises a stored-status/proof-term mismatch, a source account with an unrelated second subscription during a move, or an adversarial `restore_proof` value used as a Play path segment.
+All four counts match the orchestrator-observed figures (1255 / 333 / 229, ruff clean) exactly — run independently in this session against the current `HEAD` (`f4c006c`), not copied from any SUMMARY.
 
 ### Requirements Coverage
 
 | Requirement | Source Plan | Description | Status | Evidence |
 |-------------|-------------|--------------|--------|----------|
-| RESTORE-01 | 45-01, 45-02, 45-03, 45-04, 45-05 | Verifies a native store artifact directly against Apple or Google and attaches verified paid-subscription entitlement through one of two server-determined branches | ✗ BLOCKED | Marked `[x]` in REQUIREMENTS.md, but the entitlement attached is not reliably "verified": CR-02 shows a reachable combination producing a never-expiring or already-dead grant from an unreconciled status/term pair, and CR-03 shows a move can silently strip an unrelated, currently-paid entitlement from the source account. The requirement's own word "verified" is not honestly met while these hold. |
-| RESTORE-02 | 45-01, 45-02, 45-05 | The endpoint is a native-only surface; other surfaces receive `operation_not_allowed` | ✓ SATISFIED | The two-refusal gate (D-01 provider membership, D-02 proof verification) is implemented and tested as designed; not affected by CR-01/02/03, which concern the verification mechanism's internal correctness rather than the surface gate. |
+| RESTORE-01 | 45-01…45-05 (source), 45-06…45-09 (gap closure) | Verifies a native store artifact directly against Apple or Google and attaches verified paid-subscription entitlement through one of two server-determined branches | ✓ SATISFIED | Marked `[x]` in REQUIREMENTS.md with a dated 2026-09-08 gap-closure entry naming CR-01/CR-02/CR-03, their fixes, and their covering test classes by name. All three defects independently confirmed closed against the current source and by running the named tests myself in this session (not by reading the entry). |
+| RESTORE-02 | 45-01, 45-02, 45-05, 45-06, 45-09 | The endpoint is a native-only surface; other surfaces receive `operation_not_allowed` | ✓ SATISFIED | Unaffected by the gap closure's source changes; the two-refusal gate remains D-01 (provider membership) then D-02 (proof verification), now additionally guarded by the two field length bounds ahead of both (WR-02, closed in 45-06). |
 
-No orphaned requirements: `grep -E "Phase 45"` against REQUIREMENTS.md surfaces only RESTORE-01/02, both declared in the plans' frontmatter.
+No orphaned requirements: `grep -n "^\- \[.\]" REQUIREMENTS.md \| grep -i restore` surfaces only RESTORE-01/02, and every phase plan (45-01 through 45-09) declares one or both in its `requirements:` frontmatter.
 
 ### Anti-Patterns Found
 
-None (no TBD/FIXME/XXX/TODO/HACK/PLACEHOLDER markers in any phase-modified file). The three defects below are correctness/security bugs identified by direct code reading, corroborated by the phase's own 45-REVIEW.md.
+No debt markers (TBD/FIXME/XXX/TODO/HACK/PLACEHOLDER) in any phase-modified file. The items below are correctness/documentation observations from 45-REVIEW.md (2026-09-08T21:42:08Z) and this session's own reading, none of which defeats an observable truth above.
 
 | File | Line | Pattern | Severity | Impact |
 |------|------|---------|----------|--------|
-| `src/nativespeaker/api/auth/google_play.py` | 302-304 | Caller-supplied token interpolated into an OAuth-signed request URL with no percent-encoding | 🛑 Blocker | Path-traversal/SSRF-adjacent: an authenticated caller can redirect the deployment's own Google credential to arbitrary `androidpublisher.googleapis.com` endpoints |
-| `src/nativespeaker/api/services/restore.py` | 56-60, 134-139 | Entitlement status and grant term drawn from two unreconciled sources | 🛑 Blocker | Reachable never-expiring or dead paid grant; contradicts "verified paid entitlement" |
-| `src/nativespeaker/api/crud/subscriptions.py` | 252 | `superseded` set not scoped to the subscription/account the write is about | 🛑 Blocker | A move can silently strip a paying customer's unrelated, currently-active entitlement |
+| `src/nativespeaker/api/services/restore.py` | 62-67 | An Apple proof's `grace_period_expires_at` is always `None` (`app_store.py:147`), so a stored `grace_period` row can never itself supply an open term for the new check to accept | ⚠️ Warning (WR-01, 45-REVIEW.md) | A legitimate Apple subscriber whose card failed and whose account is genuinely in Apple's billing grace period (up to 16 days) is refused (`404 restore_not_found`) when restoring on a new device, rather than granted entitlement. **Judged non-blocking**: this is a fail-closed under-grant, not an over-grant — nothing incorrect is ever attached, which is the direction CLAUDE.md's security guidance favors, and the only honest fix (persisting the grace window server-side from the webhook payload) is a schema change out of this gap closure's scope. Recorded here for a product decision, not resolved silently. |
+| `src/nativespeaker/api/crud/subscriptions.py` | 240-249 | The replay short-circuit (`held`) is still narrowed to the destination's own rows, while the widened `superseded` set (245's fix) now also reaches the source's row for the moved subscription — the two predicates cover different sets | ℹ️ Info (WR-03, 45-REVIEW.md) | Reviewer could not construct a reachable sequence to the state this asymmetry would need (the one-active-grant-per-user index and every writer that could create the combination already expires it in the same transaction); confirmed latent, not live, by re-reading the code in this session. Recorded as a residual design asymmetry, not a live defect. |
+| `tests/e2e/test_restore_subscription.py` | 382-400 | `test_a_term_ending_at_the_captured_instant_is_not_open` is named for the `==` boundary but its fixture only reaches `term_ends_at < evaluated_at` | ℹ️ Info (WR-04, 45-REVIEW.md) | The source code (`services/restore.py:65`, `<=`) correctly implements the closed boundary; only the named e2e case doesn't independently pin the exact-equality case (it is reachable at the unit level, where the evaluated instant is a fixed constant, per the reviewer's suggested fix). Coverage gap, not a functional defect. |
+| `.planning/REQUIREMENTS.md` | 527 | The RESTORE-01 gap-closure entry's WR-01…WR-07/IN-01…IN-04 list is copied from the **pre-gap-closure** code review, whose WR-01 was about the unused `restore_bound_user_id` column — not the current 45-REVIEW.md's WR-01 (the Apple grace-period restore denial above), which post-dates 45-09's write of that entry | ℹ️ Info | REQUIREMENTS.md does not name the reopened-and-closed CR-01 dot-segment gap or the new WR-01/WR-03/WR-04 findings from the second (post-gap-closure) code review. Documentation staleness only — every finding was independently confirmed against the current source and test suite in this verification, not read from REQUIREMENTS.md. |
 
 ### Human Verification Required
 
-None. All three gaps are demonstrable by direct code reading and (for CR-01) empirical reproduction; no item requires subjective/visual/runtime judgment beyond what this report already performed.
+None. All seven truths, the CR-01 reopened-and-closed fix, and the WR-01/WR-03/WR-04 residuals were independently confirmed in this session by direct source reading and by running the named tests myself (not by reading SUMMARY or REQUIREMENTS.md claims). WR-01's acceptability as a known, fail-closed, documented product trade-off was judged directly in this report per the task's explicit instruction to render a judgment rather than escalate a technically-resolved question.
 
 ### Gaps Summary
 
-The phase delivers a large, well-tested surface — three outcomes (same-account, adoption, move) across two stores, ordering guarantees, a two-refusal gate, and real-PostgreSQL race/atomicity coverage — and the vast majority of the roadmap's stated success criteria and the plans' own must-haves are genuinely proven by executed cases, not merely claimed. SC2 (verification-before-lock) and SC3 (surface gate) are solid.
+None. All three blocker gaps from the 2026-09-07 verification are closed and independently re-confirmed in this session, on the current source at `HEAD f4c006c`:
 
-However, three defects identified in the phase's own code review (45-REVIEW.md CR-01, CR-02, CR-03) remain unfixed in the current source, and each one strikes at the phase's core goal — "verify a native store artifact... and attach verified paid entitlement":
+1. **CR-02 (truth 1)** — the status/term reconciliation check in `services/restore.py` closes both reachable defects the prior report named (the permanent `ends_at IS NULL` grant and the bricked stale-term slot). Confirmed by direct source reading and by running `TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach` (6/6 passed).
+2. **CR-03 (truth 6)** — the narrowed `superseded` set in `crud/subscriptions.py` confines a move's expiry to the destination's whole set plus only the source's row for the subscription actually being moved. Confirmed by direct source reading and by running the two move-scoping schema classes on real PostgreSQL (7/7 passed).
+3. **CR-01 (truth 7)** — the Play read URL is percent-escaped, **and** the reopened dot-segment-removal gap (found by 45-REVIEW.md after the first closure, closed by commits `f28047a`/`513ef70`/`f4c006c`) is independently confirmed closed in this session: driving the three adversarial tokens `.`, `..`, `....` through `TestThePlayRequestUrlIsConfinedToOneResource` shows nothing reaches the transport (`sent == []`).
 
-1. **CR-01** — the Google verification call is not defended against a caller-supplied path-traversal token, so "verify... against Google" can be redirected by the very input it is meant to check.
-2. **CR-02** — the status decided from the stored row and the term taken from the proof are never reconciled, so "attach verified paid entitlement" can mint a grant whose term does not correspond to anything actually verified (including a grant that never expires).
-3. **CR-03** — the move's write scoping supersedes every active grant of the source account rather than only the grant for the subscription being moved, so a customer paying for an unrelated subscription can silently lose it.
+The full suite — `uv run pytest -q` (1255 passed), `uv run pytest -m e2e -q` (333 passed), `uv run pytest -m schema -q` (229 passed), `uv run ruff check src tests` (clean) — was run independently in this verification session against the current `HEAD`, and matches the orchestrator-observed figures exactly.
 
-None of the three is covered by the phase's own test suite (1246 unit / 321 e2e / 222 schema all green), because none of those cases sets up the specific state each defect requires (a stored/proof status-term mismatch, a source account with a second unrelated subscription, or an adversarial token value). The green suite is real evidence for what it tests; it is not evidence against these three gaps, which is exactly why 45-REVIEW.md's code review — not the test run — is what surfaced them.
-
-These are BLOCKER-level findings: they are must-fix before this phase can be said to have achieved its goal soundly, not follow-on hardening. All three have concrete, narrow fixes recorded in 45-REVIEW.md (CR-01, CR-02, CR-03) that this report's `gaps:` frontmatter restates for `/gsd:plan-phase --gaps`.
-
-Not classified as gaps (recorded for completeness, non-blocking): 45-REVIEW.md's seven Warnings (WR-01 through WR-07) and four Info items (IN-01 through IN-04) describe real but lower-severity issues — an unused `restore_bound_user_id` binding column with stale migration comments, unbounded `provider`/`restore_proof` field lengths, an ingestion/restore owner-read race, a missing audit trail for restores, a NULL `purchase_user_id` on adoption, same-account-two-devices returning 500 instead of the idempotent answer, and a shared clock-source inconsistency. None of these was found to defeat a roadmap success criterion on inspection, but WR-02 (unbounded `restore_proof`/`provider` length) is the same input surface CR-01 exploits and should be fixed in the same change.
+**One warning is carried forward as an open, non-blocking residual rather than resolved**: WR-01 (an Apple subscriber genuinely inside a billing grace period cannot restore, because the client-presented proof carries no grace-window term for the server to check against). This is a fail-closed under-grant — no entitlement is ever incorrectly attached — introduced as the accepted cost of closing CR-02's over-grant, explicitly reasoned about in 45-REVIEW.md, and requiring a schema change (persisting the grace window server-side) to resolve properly. It does not defeat any of the phase's seven observable truths as written, and is recorded here for a product decision rather than silently dropped. WR-03 (a latent, unreachable predicate asymmetry) and WR-04 (an e2e boundary case that doesn't independently pin the `==` case the source already implements correctly) are lower-severity coverage/design notes, neither live nor blocking.
 
 ---
 
-_Verified: 2026-09-07_
+_Verified: 2026-09-08_
 _Verifier: Claude (gsd-verifier)_
