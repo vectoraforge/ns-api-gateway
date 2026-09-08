@@ -17,7 +17,13 @@ from nativespeaker.api.tables.grants import (
     UserMonthlyUsage,
 )
 from nativespeaker.api.tables.identities import IdentityProvider
-from nativespeaker.api.tables.purchases import PurchaseProvider, SubscriptionStatus
+from nativespeaker.api.tables.purchases import (
+    PurchaseProvider,
+    StorePurchase,
+    StorePurchaseToken,
+    Subscription,
+    SubscriptionStatus,
+)
 
 from .conftest import (
     GOOGLE_PRODUCT_ID,
@@ -30,6 +36,12 @@ pytestmark = pytest.mark.e2e
 
 SUBJECT = "tracer-restore-subscription-subject"
 
+# A second account, which the attribution-mismatch case binds the carried token to.
+OTHER_SUBJECT = "another-account-that-bought-the-subscription"
+
+# One obviously synthetic attribution token, recorded against that second account.
+OTHER_ACCOUNTS_TOKEN = "a-synthetic-token-recorded-against-another-account"
+
 # The artifact the client presents; the seam is scripted, so its content is never parsed here.
 RESTORE_PROOF = "a-signed-transaction-the-scripted-seam-accepts"
 
@@ -41,6 +53,9 @@ REFUSED_BODY = '{"code":"operation_not_allowed"}'
 
 # The one body every rejected proof of both stores answers with, compared as raw response bytes.
 PROOF_REJECTED_BODY = b'{"code":"proof_rejected"}'
+
+# The one body both refusals of the restore's own 404 family answer with, on the same terms.
+RESTORE_NOT_FOUND_BODY = b'{"code":"restore_not_found"}'
 
 # The three Apple arms the library refuses on: the chain, the application and the environment.
 APPLE_REJECTION_STAGES = ("VERIFICATION_FAILURE", "INVALID_APP_IDENTIFIER", "INVALID_ENVIRONMENT")
@@ -64,19 +79,20 @@ def _auth(subject: str = SUBJECT) -> dict[str, str]:
     return {"Authorization": f"Bearer {make_token(sub=subject)}"}
 
 
-def _proof(external_id: str, *, status: SubscriptionStatus = SubscriptionStatus.active
-           ) -> RestoredSubscription:
+def _proof(external_id: str, *, status: SubscriptionStatus = SubscriptionStatus.active,
+           grace_period_expires_at: datetime | None = None,
+           attribution_token: str | None = None) -> RestoredSubscription:
     """What the Apple check reports for this case, in the value type the seam returns."""
     now = datetime.now(UTC)
     return RestoredSubscription(provider=PurchaseProvider.apple,
                                 external_id=external_id,
                                 product_id="com.nativespeaker.subscription.monthly",
                                 tier_id=PAID_TIER_ID,
-                                attribution_token=None,
+                                attribution_token=attribution_token,
                                 status=status,
                                 purchased_at=now - PURCHASED_AGO,
                                 expires_at=now + TERM_REMAINING,
-                                grace_period_expires_at=None)
+                                grace_period_expires_at=grace_period_expires_at)
 
 
 async def _restore(client, subject: str = SUBJECT, **body):
@@ -117,6 +133,34 @@ async def _row_counts(factory, user_id) -> tuple[int, int]:
             select(UserMonthlyUsage)
             .where(col(UserMonthlyUsage.grant_id).in_(ids or [uuid4()])))).all()
         return len(grants), len(usage)
+
+
+async def _four_counts(factory, user_id, external_id) -> tuple[int, int, int, int]:
+    """The four kinds a restore can write: the caller's grants and usage, the row and its purchase."""
+    grants, usage = await _row_counts(factory, user_id)
+    async with factory() as session:
+        subscriptions = (await session.exec(
+            select(Subscription).where(col(Subscription.external_id) == external_id))).all()
+        purchases = (await session.exec(
+            select(StorePurchase).where(col(StorePurchase.external_id) == external_id))).all()
+    return grants, usage, len(subscriptions), len(purchases)
+
+
+async def _subscription_row(factory, external_id) -> Subscription:
+    """The canonical row for one lifecycle key, read back on a session of its own."""
+    async with factory() as session:
+        return (await session.exec(
+            select(Subscription).where(col(Subscription.external_id) == external_id))).one()
+
+
+async def _bind_token(factory, *, user_id, identity_value) -> None:
+    """Bind one Apple attribution token to an account, which is what `resolve_user` then reads."""
+    async with factory() as session:
+        session.add(StorePurchaseToken(user_id=user_id,
+                                       provider=PurchaseProvider.apple,
+                                       identity_value=identity_value,
+                                       created_at=datetime.now(UTC)))
+        await session.commit()
 
 
 async def _usage_of(factory, grant_id) -> UserMonthlyUsage:
@@ -201,6 +245,121 @@ class TestTheSameAccountAppleRestore:
         grants = await _grants_of(_db_transaction, user.id)
         assert [grant.id for grant in grants] == [first.id]
         assert (await _usage_of(_db_transaction, first.id)).monthly_used == 7
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheAdoptionBranches:
+    """The two branches that first write an owner: a row nobody owns, and no row at all."""
+
+    async def test_an_unowned_subscription_becomes_the_callers_and_carries_its_grant(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        external_id = f"e2e-adopt-{uuid4()}"
+        subscription_id = await seed_subscription(_db_transaction, external_id=external_id,
+                                                  user_id=None, tier_id=PAID_TIER_ID)
+        scripted_app_store_notifications.script_restore(_proof(external_id))
+
+        answered = await _restore(restore_client)
+
+        assert answered.status_code == 200, answered.text
+        assert (await _subscription_row(_db_transaction, external_id)).user_id == user.id
+        grants = await _grants_of(_db_transaction, user.id)
+        assert len(grants) == 1
+        assert grants[0].status is AccessGrantStatus.active
+        assert grants[0].source is AccessGrantSource.subscription
+        assert grants[0].subscription_id == subscription_id
+        assert (await _usage_of(_db_transaction, grants[0].id)).monthly_used == 0
+
+    async def test_a_proof_with_no_row_at_all_creates_it_at_the_proofs_own_state_and_tier(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """D-06: canonical state belongs to the webhooks, so the created row says what the proof says."""
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        external_id = f"e2e-create-{uuid4()}"
+        # Grace, not active: a hard-coded status on the create path would pass an `active` case.
+        scripted_app_store_notifications.script_restore(
+            _proof(external_id, status=SubscriptionStatus.grace_period,
+                   grace_period_expires_at=datetime.now(UTC) + TERM_REMAINING))
+
+        answered = await _restore(restore_client)
+
+        assert answered.status_code == 200, answered.text
+        created = await _subscription_row(_db_transaction, external_id)
+        assert created.status is SubscriptionStatus.grace_period
+        assert created.tier_id == PAID_TIER_ID
+        assert created.user_id == user.id
+        grants = await _grants_of(_db_transaction, user.id)
+        assert [grant.subscription_id for grant in grants] == [created.id]
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheTwoRefusalsOfTheRestoreNotFoundFamily:
+    """T-45-05: two causes, one body. The adoption case above is the control for both setups."""
+
+    async def test_a_subscription_outside_the_entitled_set_writes_nothing(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """D-06: the stored row's own status decides, and the proof never rewrites it."""
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        external_id = f"e2e-unentitled-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=external_id, user_id=None,
+                                tier_id=PAID_TIER_ID, status="expired")
+        before = await _four_counts(_db_transaction, user.id, external_id)
+        scripted_app_store_notifications.script_restore(_proof(external_id))
+
+        refused = await _restore(restore_client)
+
+        assert refused.status_code == 404
+        assert refused.content == RESTORE_NOT_FOUND_BODY
+        assert await _four_counts(_db_transaction, user.id, external_id) == before
+
+    async def test_a_token_recorded_against_another_account_answers_the_same_body(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """The setup of the adoption case exactly, plus one binding: the token is the only difference."""
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        other, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=OTHER_SUBJECT,
+                                       provider=IdentityProvider.google)
+        external_id = f"e2e-mismatch-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=external_id, user_id=None,
+                                tier_id=PAID_TIER_ID)
+        await _bind_token(_db_transaction, user_id=other.id, identity_value=OTHER_ACCOUNTS_TOKEN)
+        before = await _four_counts(_db_transaction, user.id, external_id)
+        scripted_app_store_notifications.script_restore(
+            _proof(external_id, attribution_token=OTHER_ACCOUNTS_TOKEN))
+
+        refused = await _restore(restore_client)
+
+        assert refused.status_code == 404
+        assert refused.content == RESTORE_NOT_FOUND_BODY
+        assert await _four_counts(_db_transaction, user.id, external_id) == before
+
+    async def test_the_two_refusals_answer_bodies_equal_to_each_other(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """One body for two causes, compared to each other rather than each to a literal."""
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        other, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=OTHER_SUBJECT,
+                                       provider=IdentityProvider.google)
+        unentitled = f"e2e-pair-unentitled-{uuid4()}"
+        mismatched = f"e2e-pair-mismatch-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=unentitled, user_id=None,
+                                tier_id=PAID_TIER_ID, status="expired")
+        await seed_subscription(_db_transaction, external_id=mismatched, user_id=None,
+                                tier_id=PAID_TIER_ID)
+        await _bind_token(_db_transaction, user_id=other.id, identity_value=OTHER_ACCOUNTS_TOKEN)
+
+        scripted_app_store_notifications.script_restore(_proof(unentitled))
+        first = await _restore(restore_client)
+        scripted_app_store_notifications.script_restore(
+            _proof(mismatched, attribution_token=OTHER_ACCOUNTS_TOKEN))
+        second = await _restore(restore_client)
+
+        assert [first.status_code, second.status_code] == [404, 404]
+        # Byte-equal, so a body naming which of the two checks refused fails here.
+        assert first.content == second.content
+        assert await _row_counts(_db_transaction, user.id) == (0, 0)
 
 
 @pytest.mark.asyncio(loop_scope="module")
