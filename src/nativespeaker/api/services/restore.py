@@ -59,6 +59,13 @@ class RestoreService:
         if status not in ENTITLED_STATUSES:
             raise RestoreSubscriptionNotEntitled
 
+        # The term is the proof's and the status is the row's, so the pair is checked before it is written.
+        term_ends_at = (proof.grace_period_expires_at
+                        if status is SubscriptionStatus.grace_period else proof.expires_at)
+        if term_ends_at is None or term_ends_at <= self.evaluated_at:
+            # A proof carrying no open term entitles nothing, whatever the canonical row still says.
+            raise RestoreSubscriptionNotEntitled
+
         token = proof.attribution_token
         # The nullable resolve, never the completeness-checking read: no row here is ordinary.
         attributed = (None if token is None
@@ -133,9 +140,8 @@ class RestoreService:
             # The captured instant stands in where the store gave no purchase date for this term.
             starts_at=(self.evaluated_at if proof.purchased_at is None
                        else proof.purchased_at),
-            # During grace the term is Apple's grace window, because the paid term has lapsed.
-            ends_at=(proof.grace_period_expires_at
-                     if status is SubscriptionStatus.grace_period else proof.expires_at),
+            # The term checked above, and never a second reading of it that could drift from it.
+            ends_at=term_ends_at,
             evaluated_at=self.evaluated_at)
         await self._settle(outcome, proof)
 
