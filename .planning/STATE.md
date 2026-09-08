@@ -5,11 +5,11 @@ milestone_name: Authentication & Entitlements
 current_phase: 46
 current_phase_name: POST /auth/sign-out-all
 status: executing
-stopped_at: Completed 46-03-PLAN.md
-last_updated: "2026-09-08T23:36:07.923Z"
+stopped_at: Completed 46-05-PLAN.md
+last_updated: "2026-09-08T23:49:03.792Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 46 execution started
-state_head: aacd02c85b705b816b034daa4bbc48cfe53b3eaa
+state_head: 18cfcacc69daa22442c103dfd9022ae77d9fb283
 progress:
   total_phases: 18
   completed_phases: 16
@@ -521,10 +521,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-08T23:35:46.784Z
+**Last session:** 2026-09-08T23:48:50.074Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 46-03-PLAN.md
+Stopped at: Completed 46-05-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -592,6 +592,7 @@ Resume file: None
 | Phase 46 P02 | 7 min | 2 tasks | 4 files |
 | Phase 46 P04 | 11 min | 2 tasks | 1 files |
 | Phase 46 P03 | 4 min | 2 tasks | 2 files |
+| Phase 46 P05 | 15 min | 2 tasks | 3 files |
 
 ## Decisions
 
@@ -782,3 +783,7 @@ Resume file: None
 - [Phase 46]: Each barrier-parity row names the error class its seeded state earns, so a parity assertion cannot pass on two coincidentally equal answers. — InvalidExternalJwt, PreAuthIdentityNotAllowed, HistoricalIdentity and BlockedUser are read off the class as tests/e2e/test_sync.py already does; the class also proves the seeding reached the barrier it was meant to reach.
 - [Phase 46]: CountingRevoker is a sibling of CountingAdapter, not a subclass: the two fakes share no method name, so no case can drive the wrong seam through the wrong wrapper.
 - [Phase 46]: The revocation exhaustion leaf is asserted by class and by a negative isinstance against Unavailable; the 503 and the code are byte-identical, so no status or wire assertion could see a reused read callback.
+- [Phase 46]: Phase 46 D-01/D-02: a second Firebase Admin call lives on the same seam — revoke_refresh_tokens beside get_user_provider_data, each with its own retry wrapper and its own exhaustion leaf
+- [Phase 46]: Phase 46 D-05: RevocationUnconfirmed shares 503 verification_temporarily_unavailable with Unavailable on purpose; the two are told apart by class and by log event name, never by the wire
+- [Phase 46]: Phase 46 D-06: POST /auth/sign-out-all answers 401 on a Firebase "no such user" — a flagged conflict against 11-sign-out-all.md, recorded under SIGNOUT-01, not a bug
+- [Phase 46]: Phase 46 D-07: /auth/sign-out-all writes one INFO line, sign_out_all_confirmed, carrying identity_row_id; this narrows Phase 38 D-02's "no success log line" to /auth/sync
