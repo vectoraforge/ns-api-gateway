@@ -418,11 +418,27 @@ class FakePlaySubscriptions:
     def __init__(self) -> None:
         # No default answer: every case scripts the notification it wants read or the failure it wants.
         self.answer: BaseException | VerifiedNotification | None = None
+        # The restore read is a second entry point, so it carries a second scripted answer.
+        self.restore_answer: BaseException | RestoredSubscription | None = None
         self.calls: list[dict] = []
+        self.restore_calls: list[dict] = []
 
     def script(self, answer: BaseException | VerifiedNotification) -> None:
         """Raise-or-return: a scripted exception is raised, a scripted notification is returned."""
         self.answer = answer
+
+    def script_restore(self, answer: BaseException | RestoredSubscription) -> None:
+        """Raise-or-return on the restore entry point, on the same terms as `script` above."""
+        self.restore_answer = answer
+
+    async def read_for_restore(self, *, package_name: str,
+                               purchase_token: str) -> RestoredSubscription:
+        self.restore_calls.append({"package_name": package_name,
+                                   "purchase_token": purchase_token})
+        if isinstance(self.restore_answer, BaseException):
+            raise self.restore_answer
+        assert self.restore_answer is not None, "the seam was called before a case scripted it"
+        return self.restore_answer
 
     # `async` because the live read does I/O; FakeDeviceCheckAdapter above is the same precedent.
     async def read(self, *, package_name: str, purchase_token: str, event_type: str,

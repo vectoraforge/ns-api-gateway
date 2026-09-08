@@ -11,7 +11,6 @@ from nativespeaker.api.auth.google_play import GRACE_STATE, PlayDeveloperSubscri
 from nativespeaker.api.auth.store_notifications import RestoredSubscription
 from nativespeaker.api.errors import (
     ProofRejected,
-    RestoreProviderUnknown,
     Unavailable,
     UnmappedStoreProduct,
 )
@@ -343,6 +342,21 @@ class _ScriptedAppStore:
         return self._answer
 
 
+class _ScriptedPlay:
+    """The Play read as a fake, recording the session's statement count at the moment it ran."""
+
+    def __init__(self, session: _CountingSession, answer) -> None:
+        self._session = session
+        self._answer = answer
+        self.statements_at_call: int | None = None
+
+    async def read_for_restore(self, *, package_name: str, purchase_token: str):
+        self.statements_at_call = self._session.statements
+        if isinstance(self._answer, BaseException):
+            raise self._answer
+        return self._answer
+
+
 def _restored() -> RestoredSubscription:
     """What a verified Apple proof reports, in the value type the service consumes."""
     return RestoredSubscription(provider=PurchaseProvider.apple,
@@ -356,9 +370,24 @@ def _restored() -> RestoredSubscription:
                                 grace_period_expires_at=None)
 
 
-def _service(session: _CountingSession, store: _ScriptedAppStore) -> RestoreService:
-    return RestoreService(db=session, evaluated_at=EVALUATED_AT,
-                          app_store=store, package_name=PACKAGE_NAME)
+def _play_restored() -> RestoredSubscription:
+    """What the Play read reports, in the same value type: only the provider and the id differ."""
+    return RestoredSubscription(provider=PurchaseProvider.google_play,
+                                external_id=PURCHASE_TOKEN,
+                                product_id=PLAY_PRODUCT_ID,
+                                tier_id=PLAY_TIER_ID,
+                                attribution_token=PLAY_ATTRIBUTION_TOKEN,
+                                status=SubscriptionStatus.active,
+                                purchased_at=EVALUATED_AT - timedelta(days=1),
+                                expires_at=EVALUATED_AT + timedelta(days=30),
+                                grace_period_expires_at=None)
+
+
+def _service(session: _CountingSession, store: _ScriptedAppStore,
+             play: _ScriptedPlay | None = None) -> RestoreService:
+    return RestoreService(db=session, evaluated_at=EVALUATED_AT, app_store=store,
+                          play=_ScriptedPlay(session, _play_restored()) if play is None else play,
+                          package_name=PACKAGE_NAME)
 
 
 def _caller() -> Identity:
@@ -381,18 +410,33 @@ class TestTheStoreCallRunsBeforeTheSessionsFirstStatement:
         assert store.statements_at_call == 0
         assert session.statements == 1
 
-    async def test_a_store_the_deployment_does_not_serve_runs_no_statement_at_all(self):
-        """The gate refusal writes nothing, so an interrupted refusal leaves every row unchanged."""
+    async def test_the_play_read_ran_while_the_statement_count_was_still_zero(self):
+        """The second store has the same place in the request, and it is measured the same way."""
         session = _CountingSession()
         store = _ScriptedAppStore(session, _restored())
+        play = _ScriptedPlay(session, _play_restored())
 
-        with pytest.raises(RestoreProviderUnknown):
-            await _service(session, store).restore(identity=_caller(),
-                                                   provider=PurchaseProvider.google_play,
-                                                   restore_proof="a-purchase-token")
+        with pytest.raises(_Stop):
+            await _service(session, store, play).restore(identity=_caller(),
+                                                         provider=PurchaseProvider.google_play,
+                                                         restore_proof="a-purchase-token")
 
-        assert session.statements == 0
-        assert store.statements_at_call is None
+        assert play.statements_at_call == 0
+        assert session.statements == 1
+
+    async def test_exactly_one_store_is_called_per_request(self):
+        """The dispatch names one member, so the other store's check never also runs."""
+        session = _CountingSession()
+        store = _ScriptedAppStore(session, _restored())
+        play = _ScriptedPlay(session, _play_restored())
+
+        with pytest.raises(_Stop):
+            await _service(session, store, play).restore(identity=_caller(),
+                                                         provider=PurchaseProvider.apple,
+                                                         restore_proof="a-signed-transaction")
+
+        assert store.statements_at_call == 0
+        assert play.statements_at_call is None
 
     async def test_a_proof_that_does_not_verify_runs_no_statement_either(self):
         session = _CountingSession()
@@ -405,6 +449,19 @@ class TestTheStoreCallRunsBeforeTheSessionsFirstStatement:
 
         assert session.statements == 0
         assert store.statements_at_call == 0
+
+    async def test_a_gone_purchase_token_runs_no_statement_either(self):
+        """T-45-03: a fabricated token is refused by Google, so nothing is read and nothing written."""
+        session = _CountingSession()
+        play = _ScriptedPlay(session, ProofRejected(stage=GONE_STAGE))
+
+        with pytest.raises(ProofRejected):
+            await _service(session, _ScriptedAppStore(session, _restored()), play).restore(
+                identity=_caller(), provider=PurchaseProvider.google_play,
+                restore_proof="a-fabricated-purchase-token")
+
+        assert session.statements == 0
+        assert play.statements_at_call == 0
 
     async def test_the_counting_session_really_counts_control(self):
         """The control: a recorder that never incremented would pass the two zero cases above."""

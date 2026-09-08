@@ -6,6 +6,7 @@ import structlog
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.app_store import AppStoreNotifications
+from nativespeaker.api.auth.google_play import PlaySubscriptionSource
 from nativespeaker.api.auth.store_notifications import RestoredSubscription
 from nativespeaker.api.crud.subscriptions import (
     ENTITLED_STATUSES,
@@ -26,11 +27,13 @@ logger = structlog.get_logger()
 class RestoreService:
 
     def __init__(self, db: AsyncSession, evaluated_at: datetime,
-                 app_store: AppStoreNotifications, package_name: str) -> None:
+                 app_store: AppStoreNotifications, play: PlaySubscriptionSource,
+                 package_name: str) -> None:
         self.session = db
         self.subscriptions_db = SubscriptionsDB(db)
         self.app_store = app_store
-        # Held for the Play read 45-02 adds; the Apple check needs no application name.
+        self.play = play
+        # The Play read travels the application name in its URL; the Apple check needs none.
         self.package_name = package_name
         # One instant for this request; nothing below it reads the clock again.
         self.evaluated_at = evaluated_at
@@ -38,7 +41,7 @@ class RestoreService:
     async def restore(self, identity: Identity, provider: PurchaseProvider,
                       restore_proof: str) -> None:
         """Verify the store proof and attach the entitlement the subscription it names carries."""
-        proof = self._verify(provider, restore_proof)
+        proof = await self._verify(provider, restore_proof)
 
         # A plain read, never a lock: a subscription-row lock would sit ahead of the grant locks below.
         stored = await self.subscriptions_db.read_subscription(proof.provider, proof.external_id)
@@ -75,14 +78,20 @@ class RestoreService:
         # Deliberate commit: the caller reads the sync body, so 200 must mean the rows are durable.
         await self.session.commit()
 
-    def _verify(self, provider: PurchaseProvider,
-                restore_proof: str) -> RestoredSubscription:
+    async def _verify(self, provider: PurchaseProvider,
+                      restore_proof: str) -> RestoredSubscription:
         """Run the one proof check this store answers to, before any statement opens a transaction."""
-        if provider is not PurchaseProvider.apple:
-            # 45-02 adds the Play read; until it lands this deployment serves the Apple proof only.
-            raise RestoreProviderUnknown
-        # Verified locally against the vendored root, never live (D-04).
-        return self.app_store.verify_transaction(restore_proof, self.evaluated_at)
+        # Each member is named: both stores report the same value type, so nothing below this
+        # method forks on the provider again.
+        if provider is PurchaseProvider.apple:
+            # Verified locally against the vendored root, never live (D-04).
+            return self.app_store.verify_transaction(restore_proof, self.evaluated_at)
+        if provider is PurchaseProvider.google_play:
+            # The purchase token is the proof, and the one live read is both checks (D-05).
+            return await self.play.read_for_restore(package_name=self.package_name,
+                                                    purchase_token=restore_proof)
+        # Unreachable: the route refuses a store name outside the enum before the service runs.
+        raise RestoreProviderUnknown
 
     async def _settle(self, outcome: WriteOutcome, proof: RestoredSubscription) -> None:
         """Answer for what the writer did: a lost race is a 5xx whose retry then finds the rows."""

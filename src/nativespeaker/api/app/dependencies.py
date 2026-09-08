@@ -158,6 +158,7 @@ def get_restore_service(request: Request,
     return RestoreService(db=db,
                           evaluated_at=evaluated_at,
                           app_store=request.app.state.app_store_notifications,
+                          play=request.app.state.play_subscriptions,
                           package_name=request.app.state.config.google_play.package_name)
 
 
