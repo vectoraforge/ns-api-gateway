@@ -756,7 +756,7 @@ Plans:
 **Goal:** Revoke the verified subject's Firebase refresh tokens through the issuer-selected Admin client.
 **Requirements:** SIGNOUT-01, SIGNOUT-02
 **Depends on:** 34, 35
-**Plans:** 0/4 plans complete
+**Plans:** 0/5 plans complete
 **Success criteria:**
 
 1. Success is returned only after Firebase confirms revocation
@@ -768,16 +768,20 @@ Plans:
 
 **Wave 1**
 
-- [ ] 46-01-PLAN.md — The end-to-end sign-out path — seam, leaf, route and one confirmed 204 — and the four broken test literals re-written (wave 1)
+- [ ] 46-01-PLAN.md — The end-to-end sign-out path: the Protocol method, the seam, the leaf, the route, the fake and one confirmed 204 (wave 1)
 
 **Wave 2** *(blocked on Wave 1; the two plans of this wave touch disjoint files and run in parallel)*
 
-- [ ] 46-02-PLAN.md — The app-selection cases and the attempt counts, including the exhaustion leaf asserted by class (wave 2)
-- [ ] 46-03-PLAN.md — The three refusals, the equal 503 bodies, the barrier parity with `/auth/sync` and the log discipline (wave 2)
+- [ ] 46-02-PLAN.md — The four hand-written unit literals re-written, and the case proving the handler declares no database session (wave 2)
+- [ ] 46-04-PLAN.md — The three refusals, the equal 503 bodies, the barrier parity with `/auth/sync` and the log discipline (wave 2)
 
-**Wave 3** *(blocked on Wave 2)*
+**Wave 3** *(blocked on 46-02, whose gate is the whole unit suite)*
 
-- [ ] 46-04-PLAN.md — The dated SIGNOUT amendments, the two closed forward flags, the re-derived counts and the phase close (wave 3)
+- [ ] 46-03-PLAN.md — The app-selection cases and the attempt counts, including the exhaustion leaf asserted by class (wave 3)
+
+**Wave 4** *(blocked on Wave 3)*
+
+- [ ] 46-05-PLAN.md — The dated SIGNOUT amendments, the two closed forward flags, the re-derived counts and the phase close (wave 4)
 
 ## Progress
 
@@ -828,4 +832,4 @@ Plans:
 | 43. POST /webhooks/app-store | v2.0 | 6/6 | Complete    | 2026-09-04 |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 7/7 | Complete    | 2026-09-06 |
 | 45. POST /auth/restore-subscription | v2.0 | 9/9 | Complete    | 2026-09-08 |
-| 46. POST /auth/sign-out-all | v2.0 | 0/? | Pending | — |
+| 46. POST /auth/sign-out-all | v2.0 | 0/5 | Pending | — |

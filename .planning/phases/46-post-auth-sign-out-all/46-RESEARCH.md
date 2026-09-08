@@ -823,7 +823,10 @@ test "$(grep -rc 'auth_events' src/nativespeaker/api/ | grep -v ':0' | wc -l)" =
 | A2 | The `stage` strings on `RevocationUnconfirmed` are free choices with no consumer beyond the log line. | Error-tree facts | Low. `ProviderLookupError.log_fields()` is the only reader, and no test asserts a specific stage string for a new leaf. |
 | A3 | The `get_db` count in `routers/auth.py` is 2 today (import + `issue_challenge`). | Validation Architecture | Low, and self-correcting: the plan author re-derives the number before writing the assertion. |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+Every question below carries a Recommendation, and every Recommendation was adopted by the plans.
+Each `RESOLVED:` line names the plan and task that carries it.
 
 1. **Does the phase take the generic-retry-wrapper discretion option?**
    - What we know: the two calls need different exhaustion leaves and different return types.
@@ -832,6 +835,10 @@ test "$(grep -rc 'auth_events' src/nativespeaker/api/ | grep -v ':0' | wc -l)" =
    - Recommendation: two wrappers. The generic one needs a comment at each call site to say which
      exhaustion leaf it will raise, which is precisely the § "Function shape" test for keeping the
      name — and here the name would be carrying *less* meaning, not more.
+   - **RESOLVED: adopted in 46-01 Task 1** — `revoke_with_retry` and `_revocation_exhausted` are
+     written beside `lookup_with_retry` and `_exhausted`, and the task says in words not to write one
+     generic wrapper shared with the read. 46-03 Task 2 pins the separate exhaustion leaf by asserting
+     the raised class is `RevocationUnconfirmed` and is not `Unavailable`.
 
 2. **Does the phase rename `FirebaseAdminLookup`?**
    - What we know: the name is imprecise once it holds two calls. CONTEXT.md leaves it open and
@@ -840,6 +847,9 @@ test "$(grep -rc 'auth_events' src/nativespeaker/api/ | grep -v ':0' | wc -l)" =
      `tests/unit/test_firebase_adapter.py` and `tests/unit/test_firebase_retry.py`.
    - Recommendation: leave it. A rename adds churn to four files for no behavioural gain and
      CONTEXT.md already provides the deferred slot.
+   - **RESOLVED: adopted in 46-01 Task 1** — the task instructs that the class name stays unchanged
+     and the rename is deferred. No plan in this phase edits the name, and no plan touches
+     `app/lifespan.py`.
 
 3. **Is the session stand-in worth building?**
    - What we know: D-04 declares no `get_db`, and `tests/unit/test_app_wiring.py` already proves the
@@ -847,6 +857,10 @@ test "$(grep -rc 'auth_events' src/nativespeaker/api/ | grep -v ':0' | wc -l)" =
    - Recommendation: skip it. `_declared(route)` in the wiring test names exactly the callables
      FastAPI resolved, so asserting `get_db not in _declared(route)` is a one-line case that proves
      the same property with none of the fixture cost.
+   - **RESOLVED: adopted in 46-02 Task 2** — one case asserts
+     `get_db not in _declared(_route_at("/auth/sign-out-all"))` and no stand-in fixture is built.
+     46-01 Task 1 carries the matching source-side gate, a grep pinning the `get_db` count in
+     `routers/auth.py` at two.
 
 ## Sources
 

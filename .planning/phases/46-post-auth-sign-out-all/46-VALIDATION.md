@@ -38,6 +38,11 @@ Schema is untouched by this phase and must still read 229.
   `uv run pytest -m e2e tests/e2e/test_sign_out_all.py -q` for any wave touching the router
 - **Before `/gsd:verify-work`:** all three suites green and `uv run ruff check src tests` clean
 - **Max feedback latency:** under 10 seconds for a single unit file
+- **One deliberate red window:** the unit suite is red between plan 46-01 and plan 46-02. Plan 46-01
+  changes the shape four hand-written literals record, and plan 46-02 re-writes them. `uv run pytest -q`
+  is therefore not a gate of plan 46-01, and plan 46-03 depends on 46-02 because its own gate is the
+  whole unit suite. Plan 46-04 runs in wave 2 beside 46-02, because its gates are `-m e2e` only and a
+  failing unit assertion does not stop e2e collection.
 
 ---
 
@@ -46,13 +51,14 @@ Schema is untouched by this phase and must still read 229.
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
 | 46-01-01 | 01 | 1 | SIGNOUT-01 | T-46-02 / T-46-03 | The seam passes `app=` explicitly; the INFO line carries `identity_row_id` only | e2e | `uv run pytest -m e2e tests/e2e/test_sign_out_all.py -q` | ✅ created by this task | ⬜ pending |
-| 46-01-02 | 01 | 1 | SIGNOUT-01, SIGNOUT-02 | T-46-05 | The route is pinned as narrowed and as declaring no database session | unit | `uv run pytest -q` | ✅ | ⬜ pending |
-| 46-02-01 | 02 | 2 | SIGNOUT-01 | T-46-02 | No ambient Admin client is reachable; an unconfigured issuer calls nothing | unit | `uv run pytest tests/unit/test_firebase_adapter.py -q` | ✅ | ⬜ pending |
-| 46-02-02 | 02 | 2 | SIGNOUT-02 | T-46-01 / T-46-07 | An exhausted budget raises `RevocationUnconfirmed`, never `Unavailable` or `RetryError` | unit | `uv run pytest tests/unit/test_firebase_retry.py -q` | ✅ | ⬜ pending |
-| 46-03-01 | 03 | 2 | SIGNOUT-02 | T-46-01 / T-46-04 | Every unconfirmed outcome is a refusal at the wire, and the two 503 bodies are equal | e2e | `uv run pytest -m e2e tests/e2e/test_sign_out_all.py -q` | ✅ after 46-01 | ⬜ pending |
-| 46-03-02 | 03 | 2 | SIGNOUT-01, SIGNOUT-02 | T-46-05 / T-46-03 | Barrier rejections match `/auth/sync` byte for byte; no record carries the subject | e2e | `uv run pytest -m e2e -q` | ✅ after 46-01 | ⬜ pending |
-| 46-04-01 | 04 | 3 | SIGNOUT-01, SIGNOUT-02 | T-46-08 | The departure and the accepted exposure are recorded, and the brief is unedited | CLI | `sha256sum -c --status` over the two spec files | ✅ | ⬜ pending |
-| 46-04-02 | 04 | 3 | SIGNOUT-01, SIGNOUT-02 | T-46-09 | The recorded suite counts come from a green run made in the plan | full suite | `uv run pytest -q && uv run pytest -m e2e -q && uv run pytest -m schema -q` | ✅ | ⬜ pending |
+| 46-02-01 | 02 | 2 | SIGNOUT-01 | T-46-11 | The recorded Protocol, ratchet and rejection vocabulary state the shape 46-01 left | unit | `uv run pytest tests/unit/test_adapter_interfaces.py tests/unit/test_auth_package_shape.py tests/unit/test_rejection_vocabulary.py -q` | ✅ | ⬜ pending |
+| 46-02-02 | 02 | 2 | SIGNOUT-01, SIGNOUT-02 | T-46-05 | The route is pinned as narrowed and as declaring no database session | unit | `uv run pytest -q` | ✅ | ⬜ pending |
+| 46-03-01 | 03 | 3 | SIGNOUT-01 | T-46-02 | No ambient Admin client is reachable; an unconfigured issuer calls nothing | unit | `uv run pytest tests/unit/test_firebase_adapter.py -q` | ✅ | ⬜ pending |
+| 46-03-02 | 03 | 3 | SIGNOUT-02 | T-46-01 / T-46-07 | An exhausted budget raises `RevocationUnconfirmed`, never `Unavailable` or `RetryError` | unit | `uv run pytest tests/unit/test_firebase_retry.py -q` | ✅ | ⬜ pending |
+| 46-04-01 | 04 | 2 | SIGNOUT-02 | T-46-01 / T-46-04 | Every unconfirmed outcome is a refusal at the wire, and the two 503 bodies are equal | e2e | `uv run pytest -m e2e tests/e2e/test_sign_out_all.py -q` | ✅ after 46-01 | ⬜ pending |
+| 46-04-02 | 04 | 2 | SIGNOUT-01, SIGNOUT-02 | T-46-05 / T-46-03 | Barrier rejections match `/auth/sync` byte for byte; no record carries the subject | e2e | `uv run pytest -m e2e -q` | ✅ after 46-01 | ⬜ pending |
+| 46-05-01 | 05 | 4 | SIGNOUT-01, SIGNOUT-02 | T-46-08 | The departure and the accepted exposure are recorded, and the brief is unedited | CLI | `sha256sum -c --status` over the two spec files | ✅ | ⬜ pending |
+| 46-05-02 | 05 | 4 | SIGNOUT-01, SIGNOUT-02 | T-46-09 | The recorded suite counts come from a green run made in the plan | full suite | `uv run pytest -q && uv run pytest -m e2e -q && uv run pytest -m schema -q` | ✅ | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
