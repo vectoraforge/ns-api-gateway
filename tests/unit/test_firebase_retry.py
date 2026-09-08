@@ -7,8 +7,9 @@ from nativespeaker.api.auth.firebase import (
     FIREBASE_LOOKUP_ATTEMPTS,
     RetryableLookupError,
     lookup_with_retry,
+    revoke_with_retry,
 )
-from nativespeaker.api.errors import NotLinked, Unavailable, UserNotFound
+from nativespeaker.api.errors import NotLinked, RevocationUnconfirmed, Unavailable, UserNotFound
 from nativespeaker.api.tables.identities import IdentityProvider
 
 ISSUER = "https://securetoken.google.com/ns-prod"
@@ -54,6 +55,35 @@ class AsyncCountingAdapter(CountingAdapter):
 
     async def get_user_provider_data(self, issuer: str, subject: str) -> VerifiedProviderIdentity:  # type: ignore[override]
         return CountingAdapter.get_user_provider_data(self, issuer, subject)
+
+
+class CountingRevoker:
+    """The revocation twin of `CountingAdapter`: a scripted sequence, and overrunning it is an error."""
+
+    def __init__(self, *answers) -> None:
+        self.scripted = answers
+        self.calls: list[tuple[str, str]] = []
+
+    async def revoke_refresh_tokens(self, issuer: str, subject: str) -> None:
+        self.calls.append((issuer, subject))
+        if len(self.calls) > len(self.scripted):
+            # Overrunning the script is the failure this file exists to catch, so name it.
+            raise AssertionError(
+                f"attempt {len(self.calls)} exceeds the scripted {len(self.scripted)}")
+        answer = self.scripted[len(self.calls) - 1]
+        if isinstance(answer, BaseException):
+            raise answer
+        # A confirmed revocation has no value to carry back, exactly as the seam has none.
+        return None
+
+
+# Every revocation answer the policy must not retry: a confirmation and three terminal rejections.
+REVOCATION_DEFINITIVE = [
+    (None, "a confirmed revocation"),
+    (UserNotFound(stage="token_revocation"), "the provider stated the account does not exist"),
+    (RevocationUnconfirmed(stage="issuer_selection"), "no app is configured for the issuer"),
+    (RevocationUnconfirmed(stage="subject_rejected"), "the SDK refused the uid before sending"),
+]
 
 
 class TestAttemptCountsPerOutcome:
@@ -178,3 +208,87 @@ class TestTheExhaustionConversion:
 
         assert not isinstance(raised.value, UserNotFound)
         assert raised.value.status != UserNotFound.status
+
+
+class TestTheRevocationWrapper:
+    """The revocation's own budget and its own exhaustion leaf, which shares a wire answer with the read's."""
+
+    @pytest.mark.parametrize("answer,why", REVOCATION_DEFINITIVE,
+                             ids=[case[1] for case in REVOCATION_DEFINITIVE])
+    async def test_a_definitive_revocation_answer_costs_exactly_one_attempt(self, answer, why):
+        """Retrying a definitive answer would burn attempts proving a fact already established."""
+        adapter = CountingRevoker(answer)
+
+        if isinstance(answer, BaseException):
+            with pytest.raises(type(answer)):
+                await revoke_with_retry(adapter, ISSUER, SUBJECT)
+        else:
+            assert await revoke_with_retry(adapter, ISSUER, SUBJECT) is None
+
+        assert len(adapter.calls) == 1, why
+
+    async def test_an_exhausted_budget_raises_the_revocation_leaf(self):
+        adapter = CountingRevoker(*[_retryable() for _ in range(FIREBASE_LOOKUP_ATTEMPTS)])
+
+        with pytest.raises(RevocationUnconfirmed) as raised:
+            await revoke_with_retry(adapter, ISSUER, SUBJECT)
+
+        assert raised.value.stage == "token_revocation"
+
+    async def test_neither_the_retry_error_nor_the_internal_marker_escapes(self):
+        """The class is the whole assertion: `Unavailable` carries the same 503 and the same code,
+        so a wrapper that reused the read's exhaustion callback answers the wire identically."""
+        adapter = CountingRevoker(*[_retryable() for _ in range(FIREBASE_LOOKUP_ATTEMPTS)])
+
+        with pytest.raises(BaseException) as raised:  # noqa: B017 -- the class is the assertion
+            await revoke_with_retry(adapter, ISSUER, SUBJECT)
+
+        assert not isinstance(raised.value, tenacity.RetryError)
+        assert not isinstance(raised.value, RetryableLookupError)
+        assert isinstance(raised.value, RevocationUnconfirmed)
+        assert not isinstance(raised.value, Unavailable)
+
+    async def test_the_last_marker_survives_as_the_chained_cause(self):
+        """Converted, not swallowed: the provider's own diagnosis is still reachable from the traceback."""
+        last = _retryable()
+        adapter = CountingRevoker(_retryable(), _retryable(), last)
+
+        with pytest.raises(RevocationUnconfirmed) as raised:
+            await revoke_with_retry(adapter, ISSUER, SUBJECT)
+
+        assert raised.value.__cause__ is last
+
+    async def test_the_conversion_does_not_fire_on_a_budget_that_was_not_exhausted(self):
+        """The control: a callback that raised unconditionally would pass every case above."""
+        adapter = CountingRevoker(_retryable(), None)
+
+        assert await revoke_with_retry(adapter, ISSUER, SUBJECT) is None
+        assert len(adapter.calls) == 2
+
+    async def test_the_client_facing_pair_is_a_503_with_the_matching_code(self):
+        adapter = CountingRevoker(*[_retryable() for _ in range(FIREBASE_LOOKUP_ATTEMPTS)])
+
+        with pytest.raises(RevocationUnconfirmed) as raised:
+            await revoke_with_retry(adapter, ISSUER, SUBJECT)
+
+        assert raised.value.status == 503
+        assert raised.value.code == "verification_temporarily_unavailable"
+
+    async def test_exhaustion_is_not_the_user_not_found_mapping(self):
+        """The two are routed apart: unconfirmed is a 503, unresolved is a 401."""
+        adapter = CountingRevoker(*[_retryable() for _ in range(FIREBASE_LOOKUP_ATTEMPTS)])
+
+        with pytest.raises(RevocationUnconfirmed) as raised:
+            await revoke_with_retry(adapter, ISSUER, SUBJECT)
+
+        assert not isinstance(raised.value, UserNotFound)
+        assert raised.value.status != UserNotFound.status
+
+    async def test_the_revocation_spends_the_whole_budget_and_no_more(self):
+        """The script holds exactly the budget, so a fourth call raises the fake's own overrun error."""
+        adapter = CountingRevoker(*[_retryable() for _ in range(FIREBASE_LOOKUP_ATTEMPTS)])
+
+        with pytest.raises(RevocationUnconfirmed):
+            await revoke_with_retry(adapter, ISSUER, SUBJECT)
+
+        assert adapter.calls == [(ISSUER, SUBJECT)] * FIREBASE_LOOKUP_ATTEMPTS
