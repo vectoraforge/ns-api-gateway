@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 45
 current_phase_name: POST /auth/restore-subscription
 status: executing
-stopped_at: Phase 45 gap closure planned (plans 45-06..45-09, waves 6-8), executes next; Phase 46 context gathered, follows
-last_updated: "2026-09-08T20:41:30.564Z"
+stopped_at: Completed 45-06-PLAN.md
+last_updated: "2026-09-08T20:52:46.126Z"
 last_activity: 2026-09-08
-last_activity_desc: Phase 45 gap closure planned — 4 plans; Phase 46 context gathered
-state_head: e15789ecefda9270317f827018756a4117a8373a
+last_activity_desc: Phase 45 gap closure — 45-06 executed, closing VERIFICATION truth 7 (CR-01) and WR-02
+state_head: bc01e99f33a6be170d90f3e66d47c8cd8444ffa5
 progress:
   total_phases: 18
   completed_phases: 15
   total_plans: 119
-  completed_plans: 115
+  completed_plans: 116
   percent: 83
 ---
 
@@ -29,10 +29,15 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 45 (POST /auth/restore-subscription) — READY TO EXECUTE (gap closure)
-Plan: 5 of 9 executed; 4 gap-closure plans planned, none executed
-Status: Verification found three blocker gaps. Plans 45-06 … 45-09 close them, in waves 6, 7 and 8.
-Last activity: 2026-09-08 — Phase 45 gap closure planned, 4 plans; Phase 46 context gathered
+Phase: 45 (POST /auth/restore-subscription) — EXECUTING (gap closure)
+Plan: 6 of 9 executed (45-01 … 45-06); 45-07, 45-08 and 45-09 remain
+Status: 45-06 closed VERIFICATION truth 7 (CR-01) and WR-02. Truths 1 and 6 stay open, for 45-07 and 45-08.
+Last activity: 2026-09-08 — 45-06 executed: the Play read URL is escaped, and both request fields are bounded
+
+<!-- The counter above is read from disk, as this file's convention requires: read at
+     2026-09-08T20:52Z, 119 PLAN files and 116 SUMMARY files across .planning/phases/, and
+     Phase 45 itself holds 9 PLAN files and 6 SUMMARY files. The "Plan: 2 of 9" the state
+     handler wrote was an increment of a stale counter, so it is corrected here by a count. -->
 
 <!-- Counts read against disk rather than incremented, as 41-05, 42-07, 43-06 and 44-07 did. Read
      at 2026-09-08T02:11Z, during plan 45-05's Task 2: 115 PLAN files and 114 SUMMARY files across
@@ -371,11 +376,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-08T20:41:29.585Z
+**Last session:** 2026-09-08T20:52:11.437Z
 
 Last activity: 2026-09-05
-Stopped at: Phase 45 gap closure planned (plans 45-06..45-09, waves 6-8), executes next; Phase 46 context gathered, follows
-Resume file: .planning/phases/45-post-auth-restore-subscription/45-06-PLAN.md
+Stopped at: Completed 45-06-PLAN.md
+Resume file: None
 
 ## Performance Metrics
 
@@ -434,6 +439,7 @@ Resume file: .planning/phases/45-post-auth-restore-subscription/45-06-PLAN.md
 | Phase 45 P02 | 14 min | 2 tasks | 7 files |
 | Phase 45 P03 | 17 min | 2 tasks | 8 files |
 | Phase 45 P04 | 21 min | 3 tasks | 8 files |
+| Phase 45 P06 | 9 min | 2 tasks | 4 files |
 
 ## Decisions
 
@@ -606,3 +612,6 @@ Resume file: .planning/phases/45-post-auth-restore-subscription/45-06-PLAN.md
 - [Phase 45]: The writer's replay check now matches the destination account as well as the subscription: on a move `marked_active` carries the old owner's grant for the same subscription at the same term, and the writer read it as the caller's own replay — Without it a move wrote nothing at all — the owner UPDATE ran, the destination got no grant, and in production the deferred composite foreign key would trip at COMMIT as 23503. Every single-account caller is unaffected, because the added conjunct is already true of every row they lock.
 - [Phase 45]: The e2e suite cannot observe a deferred foreign key: its session factory joins the outer transaction with `create_savepoint`, so every commit under test is a savepoint release — DEFERRABLE INITIALLY DEFERRED constraints are checked at the real COMMIT, which the e2e outer transaction never reaches. Confirmed by probe. Cases about deferred constraints belong in tests/schema, and an e2e pass is never evidence about one.
 - [Phase 45]: The two-connection restore barrier holds at the conditional owner UPDATE, not at the first flush — On the adoption path the subscription row already exists, so nothing flushes until insert_purchase, which runs after the claim. A flush barrier would release both attempts only once the winner had claimed, measuring a sequence rather than a race.
+- [Phase 45]: 45-06 D-16: the Play read URL assertion measures httpx's raw_path, not url.path — httpx 0.28.1 percent-decodes the URL.path property, so a correctly escaped segment reads there exactly as the unescaped defect does; the case could never go green on it. raw_path is the wire form the transport sends.
+- [Phase 45]: 45-06 D-17: the escaping lives only in the shared _get, and read_for_restore adds no second site — Both the webhook read() and the restore read already share _get, so one call site fixes both entry points and they cannot drift; a second site would also double-encode.
+- [Phase 45]: 45-06 D-18: provider is bounded at 32 characters and restore_proof at 8192, with no pattern on either — The bounds stop an abusive payload before the refusal log, Apple's JWS decoder and the outbound URL; the store name stays the handler's membership check (D-01) and the artifact's shape is the store's to judge. routers/auth.py is unchanged, and its comment claiming the logged provider is bounded is now true in fact.
