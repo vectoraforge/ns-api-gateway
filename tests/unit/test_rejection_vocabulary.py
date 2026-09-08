@@ -132,11 +132,12 @@ EVENT_NAMES = frozenset({
     "upgrade_refused",
     "provider_transition_not_allowed",
     "provider_account_already_linked",
-    # The restore arms: one 404 base with its leaves, and the unserved-store 403 that stands alone.
+    # The restore arms: one 404 base with its leaves, and the two that stand alone at 403 and 409.
     "restore_refused",
     "restore_subscription_not_entitled",
     "restore_attribution_mismatch",
     "restore_provider_unknown",
+    "restore_transfer_rejected",
 })
 
 
@@ -446,3 +447,42 @@ class TestTheRestoreArmsAnswerOneThingAndDeclareNothingBelowTheBase:
         assert sorted(events) == sorted(set(events))
         assert set(events) == {"restore_subscription_not_entitled",
                                "restore_attribution_mismatch", "restore_provider_unknown"}
+
+
+class TestTheTransferRefusalStandsAloneAtItsOwnStatus:
+    """D-10's cap answers 409 with a code of its own, beside the challenge class already at 409."""
+
+    @property
+    def arm(self) -> type[AppError]:
+        """Read off the module rather than imported, so a missing class names itself in the failure."""
+        return errors_module.RestoreTransferRejected
+
+    def test_it_answers_the_conflict_status_with_the_cap_s_own_code(self):
+        assert (self.arm.status, self.arm.code) == (409, "restore_transfer_rejected")
+
+    def test_it_declares_both_itself_and_sits_under_no_shared_refusal_base(self):
+        """Not a leaf of the 404 family: one status per family is what keeps each body honest."""
+        assert ("status" in vars(self.arm)) and ("code" in vars(self.arm))
+        assert self.arm not in set(_family(RestoreRefused))
+        assert self.arm.__bases__ == (AppError,)
+
+    def test_the_bare_409_still_resolves_to_the_challenge_class_and_not_to_this_one(self):
+        """Two classes may share a status; only one answers a bare framework rejection at it."""
+        assert "answers_framework_status" not in vars(self.arm)
+        assert errors_module.class_answering_status(409) is errors_module.ChallengeRequired
+
+    def test_it_carries_nothing_into_its_log_line(self):
+        """No `__init__` and no fields: the class name is the whole vocabulary this refusal has."""
+        assert "__init__" not in vars(self.arm)
+        assert self.arm().log_fields() == {}
+
+    def test_the_four_restore_refusals_are_four_records_and_three_answers(self):
+        """One event per class in the log, and one body per family on the wire."""
+        refusals = (*RESTORE_ARMS, RestoreProviderUnknown, self.arm)
+        events = [camel_to_snake(cls.__name__) for cls in refusals]
+        assert sorted(events) == sorted(set(events))
+        assert {(cls.status, cls.code) for cls in refusals} == {
+            (404, "restore_not_found"),
+            (403, "operation_not_allowed"),
+            (409, "restore_transfer_rejected"),
+        }

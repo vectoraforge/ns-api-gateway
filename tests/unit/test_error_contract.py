@@ -22,7 +22,7 @@ CONTRACT_CODES = {"auth_required", "preauth_identity_not_allowed", "account_unav
                   "rate_limited", "validation_error", "not_found", "method_not_allowed",
                   "internal_error", "service_unavailable", "quota_exceeded", "out_of_scope",
                   "identity_already_linked", "operation_not_allowed", "proof_rejected",
-                  "device_grant_exhausted", "restore_not_found"}
+                  "device_grant_exhausted", "restore_not_found", "restore_transfer_rejected"}
 CONTRACT_STATUSES = {400, 401, 403, 404, 405, 409, 422, 429, 500, 503}
 
 
