@@ -1,5 +1,5 @@
 """The same-account restore of both stores, end to end through the real router and a real database."""
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -56,6 +56,9 @@ PROOF_REJECTED_BODY = b'{"code":"proof_rejected"}'
 
 # The one body both refusals of the restore's own 404 family answer with, on the same terms.
 RESTORE_NOT_FOUND_BODY = b'{"code":"restore_not_found"}'
+
+# The body D-10's cap answers with, on the same terms: read as bytes, never parsed.
+TRANSFER_REJECTED_BODY = b'{"code":"restore_transfer_rejected"}'
 
 # The three Apple arms the library refuses on: the chain, the application and the environment.
 APPLE_REJECTION_STAGES = ("VERIFICATION_FAILURE", "INVALID_APP_IDENTIFIER", "INVALID_ENVIRONMENT")
@@ -537,3 +540,185 @@ class TestThePlayFailuresThatAreNotRefusals:
         assert answered.status_code == 500
         assert answered.json()["code"] == "internal_error"
         assert await _row_counts(_db_transaction, user.id) == (0, 0)
+
+
+async def _sync_as(client, subject: str) -> dict:
+    """What `/auth/sync` reports for one account, read back through the real route."""
+    answered = await client.post("/auth/sync", headers=_auth(subject))
+    assert answered.status_code == 200, answered.text
+    return answered.json()
+
+
+def _this_month() -> date:
+    """The first day of the current UTC month, which is what a move writes to the row."""
+    return datetime.now(UTC).date().replace(day=1)
+
+
+def _earlier_month() -> date:
+    """The first day of the month before this one, which the cap must let through."""
+    return (_this_month() - timedelta(days=1)).replace(day=1)
+
+
+async def _account_snapshot(factory, user_id) -> list[tuple]:
+    """Each grant of `user_id` with the fields a move rewrites, and its own usage counter."""
+    grants = await _grants_of(factory, user_id)
+    return [(grant.id, grant.status, grant.ends_at, grant.tier_id,
+             (await _usage_of(factory, grant.id)).monthly_used) for grant in grants]
+
+
+async def _subscription_snapshot(factory, external_id) -> tuple:
+    """The columns of the canonical row a move rewrites, read on a session of its own."""
+    row = await _subscription_row(factory, external_id)
+    return (row.user_id, row.status, row.last_cross_account_transfer_month,
+            row.updated_at, row.restore_bound_user_id)
+
+
+async def _held_by_the_old_owner(client, factory, notifications, *, external_id,
+                                 transfer_month: date | None = None):
+    """Seed both accounts and let the old owner restore first, so its grant is one the route wrote."""
+    # The old owner is `OTHER_SUBJECT` throughout; the caller under test is always `SUBJECT`.
+    old_owner, _ = await seed_identity(factory, issuer=TEST_ISSUER, subject=OTHER_SUBJECT,
+                                       provider=IdentityProvider.google)
+    caller, _ = await seed_identity(factory, issuer=TEST_ISSUER, subject=SUBJECT,
+                                    provider=IdentityProvider.google)
+    await seed_subscription(factory, external_id=external_id, user_id=old_owner.id,
+                            tier_id=PAID_TIER_ID,
+                            last_cross_account_transfer_month=transfer_month)
+    # One proof, returned for re-presentation: the store reports one term for one subscription,
+    # so the account it moves to is shown the same expiry the old owner was shown.
+    proof = _proof(external_id)
+    notifications.script_restore(proof)
+    answered = await _restore(client, OTHER_SUBJECT)
+    assert answered.status_code == 200, answered.text
+    return old_owner, caller, proof
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheSubscriptionMovesToTheCaller:
+    """D-10's third outcome: the subscription leaves the account holding it and joins the caller's."""
+
+    async def test_the_owner_the_grants_and_the_transfer_month_all_move_together(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        external_id = f"e2e-move-{uuid4()}"
+        old_owner, caller, proof = await _held_by_the_old_owner(
+            restore_client, _db_transaction, scripted_app_store_notifications,
+            external_id=external_id)
+        scripted_app_store_notifications.script_restore(proof)
+
+        answered = await _restore(restore_client)
+
+        assert answered.status_code == 200, answered.text
+        assert answered.json()["entitlement"]["type"] == "subscription"
+        assert answered.json()["entitlement"]["tier_id"] == PAID_TIER_ID
+        moved = await _subscription_row(_db_transaction, external_id)
+        assert moved.user_id == caller.id
+        assert moved.last_cross_account_transfer_month == _this_month()
+        # D-10 replaces this column; nothing on any branch writes it.
+        assert moved.restore_bound_user_id is None
+        # The old owner loses access at that moment: no grant of theirs is still active.
+        assert [grant.status for grant in await _grants_of(_db_transaction, old_owner.id)] == [
+            AccessGrantStatus.expired]
+        held = await _grants_of(_db_transaction, caller.id)
+        assert len(held) == 1
+        assert held[0].status is AccessGrantStatus.active
+        assert held[0].source is AccessGrantSource.subscription
+        assert held[0].subscription_id == moved.id
+        assert (await _usage_of(_db_transaction, held[0].id)).monthly_used == 0
+
+    async def test_the_account_it_moved_away_from_reads_no_entitlement_at_all(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """A5 as a measurement: the loss of access is read back through `/auth/sync`, not derived."""
+        external_id = f"e2e-moved-from-{uuid4()}"
+        _, _, proof = await _held_by_the_old_owner(
+            restore_client, _db_transaction, scripted_app_store_notifications,
+            external_id=external_id)
+        held = await _sync_as(restore_client, OTHER_SUBJECT)
+        assert held["entitlement"]["type"] == "subscription"
+        scripted_app_store_notifications.script_restore(proof)
+
+        assert (await _restore(restore_client)).status_code == 200
+
+        lost = await _sync_as(restore_client, OTHER_SUBJECT)
+        assert lost["entitlement"]["type"] == "none"
+        assert lost["entitlement"]["status"] == "none"
+        assert lost["entitlement"]["tier_id"] is None
+
+    async def test_a_stored_month_earlier_than_this_one_is_allowed_and_moves(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """The boundary: the cap is an equality on the month, so last month spends nothing."""
+        external_id = f"e2e-earlier-month-{uuid4()}"
+        _, caller, proof = await _held_by_the_old_owner(
+            restore_client, _db_transaction, scripted_app_store_notifications,
+            external_id=external_id, transfer_month=_earlier_month())
+        scripted_app_store_notifications.script_restore(proof)
+
+        answered = await _restore(restore_client)
+
+        assert answered.status_code == 200, answered.text
+        moved = await _subscription_row(_db_transaction, external_id)
+        assert moved.user_id == caller.id
+        assert moved.last_cross_account_transfer_month == _this_month()
+        assert moved.restore_bound_user_id is None
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheSecondMoveOfOneMonthIsRefused:
+    """T-45-01 and T-45-10: one stolen proof reaches at most two accounts in a UTC month."""
+
+    async def test_a_stored_month_equal_to_this_one_answers_the_conflict_and_writes_nothing(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        external_id = f"e2e-capped-{uuid4()}"
+        old_owner, caller, proof = await _held_by_the_old_owner(
+            restore_client, _db_transaction, scripted_app_store_notifications,
+            external_id=external_id, transfer_month=_this_month())
+        before = (await _account_snapshot(_db_transaction, old_owner.id),
+                  await _account_snapshot(_db_transaction, caller.id),
+                  await _subscription_snapshot(_db_transaction, external_id))
+        scripted_app_store_notifications.script_restore(proof)
+
+        refused = await _restore(restore_client)
+
+        assert refused.status_code == 409
+        assert refused.content == TRANSFER_REJECTED_BODY
+        assert (await _account_snapshot(_db_transaction, old_owner.id),
+                await _account_snapshot(_db_transaction, caller.id),
+                await _subscription_snapshot(_db_transaction, external_id)) == before
+        assert (await _subscription_row(_db_transaction,
+                                        external_id)).restore_bound_user_id is None
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestTheBranchesThatSpendNoneOfTheCap:
+    """D-10: only a move counts, so adoption and a same-account repeat leave the column NULL."""
+
+    async def test_adoption_leaves_the_transfer_month_unwritten(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        external_id = f"e2e-adopt-no-month-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=external_id, user_id=None,
+                                tier_id=PAID_TIER_ID)
+        scripted_app_store_notifications.script_restore(_proof(external_id))
+
+        assert (await _restore(restore_client)).status_code == 200
+
+        adopted = await _subscription_row(_db_transaction, external_id)
+        assert adopted.user_id == user.id
+        assert adopted.last_cross_account_transfer_month is None
+        assert adopted.restore_bound_user_id is None
+
+    async def test_a_same_account_repeat_leaves_the_transfer_month_unwritten(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        external_id = f"e2e-repeat-no-month-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=external_id, user_id=user.id,
+                                tier_id=PAID_TIER_ID)
+        proof = _proof(external_id)
+        for _ in range(2):
+            scripted_app_store_notifications.script_restore(proof)
+            assert (await _restore(restore_client)).status_code == 200
+
+        repeated = await _subscription_row(_db_transaction, external_id)
+        assert repeated.last_cross_account_transfer_month is None
+        assert repeated.restore_bound_user_id is None
