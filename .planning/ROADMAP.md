@@ -708,7 +708,7 @@ Plans:
 **Goal:** Verify a native store artifact directly against Apple or Google and attach verified paid entitlement.
 **Requirements:** RESTORE-01, RESTORE-02
 **Depends on:** 34, 35, 37, 43, 44
-**Plans:** 2/5 plans executed
+**Plans:** 3/5 plans executed
 **Success criteria:**
 
 1. A valid Apple artifact and a valid Google artifact each attach entitlement through their server-determined branch
@@ -728,7 +728,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2)*
 
-- [ ] 45-03-PLAN.md — The two-user grant lock, the conditional owner UPDATE, D-09's ingestion owner rule, and the two adoption branches (wave 3)
+- [x] 45-03-PLAN.md — The two-user grant lock, the conditional owner UPDATE, D-09's ingestion owner rule, and the two adoption branches (wave 3)
 
 **Wave 4** *(blocked on Wave 3)*
 
@@ -798,5 +798,5 @@ Plans:
 | 42. POST /auth/claim-registered-grant | v2.0 | 7/7 | Complete    | 2026-09-03 |
 | 43. POST /webhooks/app-store | v2.0 | 6/6 | Complete    | 2026-09-04 |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 7/7 | Complete    | 2026-09-06 |
-| 45. POST /auth/restore-subscription | v2.0 | 2/5 | In Progress|  |
+| 45. POST /auth/restore-subscription | v2.0 | 3/5 | In Progress|  |
 | 46. POST /auth/sign-out-all | v2.0 | 0/? | Pending | — |

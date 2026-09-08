@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 45
 current_phase_name: POST /auth/restore-subscription
 status: executing
-stopped_at: Completed 45-02-PLAN.md
-last_updated: "2026-09-08T01:18:32.535Z"
+stopped_at: Completed 45-03-PLAN.md
+last_updated: "2026-09-08T01:42:36.360Z"
 last_activity: 2026-09-07
 last_activity_desc: Phase 45 execution started
-state_head: 2211330d3f2cfccc8929a270e85c60ed34250a84
+state_head: 5811122333301c41b39f1ae370998b8fdca087cd
 progress:
   total_phases: 18
   completed_phases: 15
   total_plans: 115
-  completed_plans: 111
+  completed_plans: 113
   percent: 83
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 45 (POST /auth/restore-subscription) — EXECUTING
-Plan: 3 of 5
+Plan: 4 of 5
 Status: Ready to execute
 Last activity: 2026-09-07 — Phase 45 execution started
 
@@ -317,10 +317,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-08T01:18:17.635Z
+**Last session:** 2026-09-08T01:42:16.432Z
 
 Last activity: 2026-09-05
-Stopped at: Completed 45-02-PLAN.md
+Stopped at: Completed 45-03-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -378,6 +378,7 @@ Resume file: None
 | Phase 44 P07 | 22 min | 2 tasks | 3 files |
 | Phase 45 P01 | 15 min | 2 tasks | 15 files |
 | Phase 45 P02 | 14 min | 2 tasks | 7 files |
+| Phase 45 P03 | 17 min | 2 tasks | 8 files |
 
 ## Decisions
 
@@ -545,3 +546,5 @@ Resume file: None
 - [Phase 45]: _get no longer maps a transport failure: the webhook wants a redelivery (500) and the app wants a later retry (503), so each entry point classifies httpx.HTTPError itself
 - [Phase 45]: A Play token of another package answers 404 and reaches play_token_gone, so package mismatch gets no stage of its own
 - [Phase 45]: RestoreService._verify names each PurchaseProvider member positively and raises RestoreProviderUnknown only on the unreachable fall-through the router already refuses
+- [Phase 45]: D-09 lands as three mirrors, not one: the crud rule, the unit suite's fake writer, and services/subscriptions.py::ingest, which locks the account it grants. Changing only the first would have made a renewal expire an unrelated account's grants and then loop on a 500. — The service computed the locked owner from the resolved token while the crud kept the stored owner. The two diverge on exactly the case D-09 exists for, so the rule must be restated in both places.
+- [Phase 45]: Restore adoption writes the created subscription row unowned and then claims it with the conditional UPDATE, because the pre-transaction read saw no row and owner_read must be the NULL that read produced. — It keeps the one owner write inside the one statement that settles owner writes, so "zero rows means a lost race" stays true on every branch that runs it.
