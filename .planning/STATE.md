@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 45
 current_phase_name: POST /auth/restore-subscription
 status: executing
-stopped_at: Completed 45-04-PLAN.md
+stopped_at: Completed 45-05-PLAN.md
 last_updated: "2026-09-08T02:08:20.180Z"
-last_activity: 2026-09-07
-last_activity_desc: Phase 45 execution started
+last_activity: 2026-09-08
+last_activity_desc: Phase 45 executed — 5 of 5 plans
 state_head: 96f881938d54afa74e684a33a516cc0102ac6f6e
 progress:
   total_phases: 18
   completed_phases: 15
   total_plans: 115
-  completed_plans: 114
+  completed_plans: 115
   percent: 83
 ---
 
@@ -31,9 +31,62 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 Phase: 45 (POST /auth/restore-subscription) — EXECUTING
 Plan: 5 of 5
-Status: Ready to execute
-Last activity: 2026-09-07 — Phase 45 execution started
+Status: All plans executed — awaiting verification
+Last activity: 2026-09-08 — Phase 45 executed, 5 of 5 plans
 
+<!-- Counts read against disk rather than incremented, as 41-05, 42-07, 43-06 and 44-07 did. Read
+     at 2026-09-08T02:11Z, during plan 45-05's Task 2: 115 PLAN files and 114 SUMMARY files across
+     .planning/phases/, and the frontmatter carried 115 and 114, so nothing needed correcting.
+     This plan's own summary is the hundred-and-fifteenth and lands after Task 2, which is why
+     completed_plans is written as 115 here rather than 114. Phase 45 itself: 5 PLAN files and 4
+     SUMMARY files at the moment this was read, the fifth being this plan's. The phase is executed,
+     not yet verified, so completed_phases stays at 15 and percent stays at 83. These numbers were
+     counted, not advanced. -->
+
+**Phase 45 outcome.** `POST /auth/restore-subscription` ships as the seventh auth route, under
+`get_linked_identity`. The body names a store and carries that store's artifact. **Two proof checks,
+one value type.** An Apple proof is a StoreKit 2 signed transaction, verified locally by Apple's own
+`SignedDataVerifier` against the vendored root, the bundle id and the environment — no App Store
+Server API call and no new Apple key. A Google proof is a purchase token, and one
+`purchases.subscriptionsv2.get` call is the proof check and the live state at once. Both stores
+report `RestoredSubscription`, so the entitled read, the grant locks, the writer and the one
+`commit()` are one code path below the store call. The store call is the **first statement of the
+request**, measured by a session stand-in that counts statements rather than asserted in prose.
+**Three outcomes.** Same account: the writer answers `replayed`, and neither the grant id nor the
+monthly counter moves. Adoption: an unowned subscription becomes the caller's, and the canonical row
+is created at the proof's own state and tier where no row exists. A move: the subscription leaves the
+account holding it, the old owner's grant is expired in the same transaction, and the destination's
+grant and usage row are written. **The cap is one move per UTC calendar month, per subscription** — a
+second move answers 409 `restore_transfer_rejected` before any lock, with nothing written, and a
+third account that had spent nothing of its own is still refused, which is what makes the cap follow
+the subscription and never the user. **What was measured rather than assumed:** two adopters racing
+for one unowned subscription on two real connections commit exactly one grant, both attempts having
+read the row unowned at the barrier, and the loser writes nothing and answers 404 rather than a 5xx;
+a second move in the same month leaves both accounts' rows byte-identical; a restore interrupted at
+its commit changes neither the owner nor any grant; and a mis-ordered move surfaces as SQLSTATE 23503
+at `commit()` and at no flush, with the production write order committing the same move as its
+control. **Two of this phase's own findings changed shipped behaviour rather than only the record:**
+the shared grant writer read the old owner's grant as the caller's own replay on a move, so the move
+was a silent no-op on the scripted stack and a 500 in production; and D-09's new ingestion owner rule
+needed a third mirror in `services/subscriptions.py`, without which ingestion would have locked one
+account's grants and written the other's. Suite **1246 unit / 321 e2e / 222 schema**, `ruff check src
+tests` clean, all four commands run in plan 45-05 rather than copied. Six divergences from
+`10-restore-subscription.md` are recorded as **flagged conflicts** under RESTORE-01 rather than
+resolved by editing the brief, and **D-10 is the widest this project has recorded**: the brief deletes
+cross-account transfer outright, and this phase ships it under a cap. **The operation-label flag Phase
+40 raised on 2026-09-02 is answered and closed: no label is needed**, because restore is not
+challenge-bearing and writes no audit row. **Recorded as accepted rather than fixed:** the unbounded
+Play read per restore attempt, the sixth such residual this project carries. It is narrower than the
+two webhook residuals in one way — the caller must already hold a valid Firebase ID token for a
+linked account, so it is one subject looping on itself — and wider in another, because it costs a
+real network call to Google where an unverified webhook push costs local computation only. The Apple
+branch costs no network call at all. **Recorded as a limit of this project's own tests:** the e2e
+suite cannot observe a deferred foreign key, because `tests/e2e/conftest.py::_db_transaction` joins
+the outer transaction with `create_savepoint`, so no e2e pass is evidence about a deferred
+constraint. **Recorded as open product questions, raised and not answered:** Apple Family Sharing
+against D-10's one move a month, the parsed but unread `linkedPurchaseToken`, D-11's "package
+mismatch" stage that the code does not carry, and the migration comment on
+`last_cross_account_transfer_month` that D-10 made false.
 <!-- Counts read against disk rather than incremented, as 41-05, 42-07 and 43-06 did. Read at
      2026-09-05T12:35Z, during plan 44-07's Task 2: 110 PLAN files and 109 SUMMARY files across
      .planning/phases/, and the frontmatter carried 110 and 109, so nothing needed correcting.
@@ -238,6 +291,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 - No network call while any DB lock is held or a consuming transaction is open
 - Database credentials in .env use the DB_* prefix (read by pogo's database_config and AppConfig.db); POSTGRES_* exists only for the postgres:17 image, and the image's database key is POSTGRES_DB, never POSTGRES_NAME
 - Phase 34 dev database is the developer's local postgres:17 container on localhost:5432 — PostgreSQL 17.11; RESEARCH.md's introspection constants were captured on 16.2 and plan 34-03 must re-capture them (assumption A1 still open)
+- An owner, once set on `core.subscriptions`, is kept by ingestion: a notification's attribution token attributes an **unowned** row only, and restore alone changes an owner (Phase 45 D-09). This amends Phase 43 D-19 and 43-03's "an owner is added, never cleared", which now also reads "and never replaced by ingestion". The rule has three mirrors — `crud/subscriptions.py::upsert_subscription`, the owner line in `services/subscriptions.py::ingest` that decides which account is locked and granted, and the unit suite's fake writer — and a later phase must find it here rather than read the change as a regression
 
 ### Pending Todos
 

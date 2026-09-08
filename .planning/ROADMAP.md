@@ -708,13 +708,13 @@ Plans:
 **Goal:** Verify a native store artifact directly against Apple or Google and attach verified paid entitlement.
 **Requirements:** RESTORE-01, RESTORE-02
 **Depends on:** 34, 35, 37, 43, 44
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans executed
 **Success criteria:**
 
-1. A valid Apple artifact and a valid Google artifact each attach entitlement through their server-determined branch
-2. All store verification completes before the mutating transaction opens — no network call under lock
-3. A non-native surface receives `operation_not_allowed`
-4. An unverifiable artifact attaches nothing and leaves grant state untouched
+1. A valid Apple artifact and a valid Google artifact each attach entitlement through their server-determined branch — **met as written, 2026-09-08.** Both stores cross the `auth/` seam as one value type, `RestoredSubscription`, so the entitled read, the grant locks, the writer and the one `commit()` are a single code path below the store call. **Three outcomes ship, each an executed case on the wire:** same-account, where the writer answers `replayed` and neither the grant id nor the monthly counter moves; adoption, including adoption-with-creation, where the canonical row is created at the proof's own state and tier; and a move, where the old owner's grant is expired and the destination's grant and usage row are inserted in the same transaction. **The Apple proof is verified locally** by Apple's own `SignedDataVerifier` against the vendored root, and **the Google proof is one `purchases.subscriptionsv2.get` call** that is the proof check and the live state together. **A departure a reader must not miss:** the brief performs no cross-account transfer at all; this phase ships a move capped at one per UTC calendar month, recorded as a flagged conflict (D-10) under RESTORE-01. Matching requirement: RESTORE-01.
+2. All store verification completes before the mutating transaction opens — no network call under lock — **met as written, and measured rather than argued, 2026-09-08.** The store call is the **first statement of the request** for both providers. That is asserted by a session stand-in that counts `exec` calls: the count is still zero when the proof check returns, and a request refused by the surface gate or by the proof check runs no session statement at all. `SHARED-INVARIANTS.md` § "Locks and transactions" is therefore satisfied structurally rather than by inspection — no provider call can run while a lock is held, because the transaction has not opened when the only provider call is made. Matching requirement: RESTORE-01.
+3. A non-native surface receives `operation_not_allowed` — **ANSWERED by Phase 45 (D-01 and D-02), 2026-09-08, and the answer is narrower than the criterion reads.** The gate is exactly two refusals. **D-01:** a `provider` outside `PurchaseProvider` answers 403 `operation_not_allowed` through the `RestoreProviderUnknown` leaf, before any proof check and before the first session statement, with a body byte-identical to the claim routes'. **D-02:** a proof that does not verify answers 403 `proof_rejected`. **Nothing else is checked** — no platform header, no `native_claim_platform` comparison and no attempt to tell an iPhone from an Android phone, because § "Fail-closed defaults" forbids substituting a client declaration for a verified fact. A web client cannot obtain a store artifact, and a fabricated one fails verification, so the web half of the brief's gate is served by the proof check. **What is not detected:** one store's artifact presented from the other platform; the server has no signal for it. That is the flagged conflict against `10-restore-subscription.md:43`, recorded in full under RESTORE-01. Matching requirement: RESTORE-02.
+4. An unverifiable artifact attaches nothing and leaves grant state untouched — **met as written, and measured as row counts rather than as a status code, 2026-09-08.** Every refusal arm of both stores was driven through the real router and the caller's grant, usage, subscription and purchase counts were compared before and after: **all four unchanged**. The four proof-rejection arms — the Apple chain, application and environment arms and the Play gone-token arm — additionally answer **one set of raw response bytes**, asserted equal to each other rather than merely each valid, so the refusal is no oracle about which check failed; the distinguishing `stage` reaches the operator's WARNING record alone. The two refusals of the `restore_not_found` family are byte-equal for the same reason, and the cap's 409 leaves both accounts' rows byte-identical on real PostgreSQL. Matching requirement: RESTORE-02.
 
 Plans:
 
@@ -736,7 +736,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4)*
 
-- [ ] 45-05-PLAN.md — The dated RESTORE and APPLEHOOK amendments, the answered operation-label flag, and the phase close (wave 5)
+- [x] 45-05-PLAN.md — The dated RESTORE and APPLEHOOK amendments, the answered operation-label flag, and the phase close (wave 5)
 
 #### Phase 46: POST /auth/sign-out-all
 
