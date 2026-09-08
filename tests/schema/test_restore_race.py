@@ -169,11 +169,12 @@ class _ScriptedAppStore:
         return self.proof
 
 
-def proof_for(harness: _Harness) -> RestoredSubscription:
-    """One verified proof for this test's lifecycle key, shared so every attempt sees one term."""
+def proof_for(harness: _Harness, *, external_id: str | None = None) -> RestoredSubscription:
+    """One verified proof for one lifecycle key, shared so every attempt of it sees one term."""
+    # A second key names a second subscription, so one account can hold two proofs at once.
     # One term for one subscription, as a store reports it: a re-read never moves the expiry.
     return RestoredSubscription(provider=PurchaseProvider.apple,
-                                external_id=harness.external_id,
+                                external_id=harness.external_id if external_id is None else external_id,
                                 product_id="com.nativespeaker.subscription.monthly",
                                 tier_id=TIER_ID,
                                 attribution_token=None,
@@ -193,9 +194,13 @@ async def commit_account(harness: _Harness) -> uuid.UUID:
 
 
 async def commit_subscription(harness: _Harness, *, user_id: uuid.UUID | None = None,
-                              transfer_month: date | None = None) -> uuid.UUID:
+                              transfer_month: date | None = None,
+                              external_id: str | None = None) -> uuid.UUID:
     """One canonical row on this test's lifecycle key, committed for the attempts to read."""
     subscription_id = uuid.uuid4()
+    # A caller's own key must start with the harness key, because `clean_up` deletes on that
+    # `LIKE :lifecycle` pattern alone and a key outside it would leak between runs.
+    key = harness.external_id if external_id is None else external_id
     async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
         await conn.execute(
             # The two enum columns are cast in the statement: a bound parameter arrives as text.
@@ -206,7 +211,7 @@ async def commit_subscription(harness: _Harness, *, user_id: uuid.UUID | None = 
                  "         :external_id, :tier_id, CAST('active' AS core.subscription_status),"
                  "         CAST(:transfer_month AS DATE), :now, :now)"),
             {"id": subscription_id, "user_id": user_id, "provider": str(PurchaseProvider.apple),
-             "external_id": harness.external_id, "tier_id": TIER_ID,
+             "external_id": key, "tier_id": TIER_ID,
              "transfer_month": transfer_month, "now": NOW})
     return subscription_id
 
@@ -487,3 +492,83 @@ class TestTheDeferredForeignKeysFireAtCommitAndNotAtAFlush:
 
         assert status_of(moved) == 200
         assert await owner_of(harness, misordered["subscription_id"]) == (mover, THIS_MONTH, None)
+
+
+def active_grants(rows: list[tuple]) -> list[tuple]:
+    """The rows of `grants_of` still marked active; every other row is history."""
+    return [row for row in rows if row[1] == "active"]
+
+
+def grants_for(rows: list[tuple], subscription_id: uuid.UUID) -> list[tuple]:
+    """The rows of `grants_of` that belong to one subscription, in any status."""
+    return [row for row in rows if row[4] == subscription_id]
+
+
+@pytest.mark.asyncio
+class TestAMoveTakesOnlyTheGrantForTheSubscriptionItMoves:
+    """CR-03, T-45-08-01. A move ends the source's grant for the moved subscription and no other."""
+
+    @pytest_asyncio.fixture
+    async def moved(self, harness):
+        """The source owns two subscriptions and holds a grant for the second; the first then moves."""
+        source = await commit_account(harness)
+        destination = await commit_account(harness)
+        moving_id = await commit_subscription(harness, user_id=source)
+        unrelated_key = f"{harness.external_id}-unrelated"
+        unrelated_id = await commit_subscription(harness, user_id=source,
+                                                 external_id=unrelated_key)
+        moving_proof = proof_for(harness)
+        unrelated_proof = proof_for(harness, external_id=unrelated_key)
+        # Every grant here is written by the production writer, so no hand-inserted row can
+        # disagree with the shape a real restore leaves behind.
+        await run_attempt(harness, _Attempt(name="hold-the-moving-one", user_id=source),
+                          moving_proof)
+        await run_attempt(harness, _Attempt(name="hold-the-unrelated-one", user_id=source),
+                          unrelated_proof)
+        move = await run_attempt(harness, _Attempt(name="move", user_id=destination),
+                                 moving_proof)
+        return {"move": move, "accounts": (source, destination),
+                "subscriptions": (moving_id, unrelated_id)}
+
+    async def test_the_source_keeps_its_active_grant_for_the_unrelated_subscription(
+            self, harness, moved):
+        """VERIFICATION truth 6: the restoring caller's proof said nothing about this subscription."""
+        source, _ = moved["accounts"]
+        _, unrelated_id = moved["subscriptions"]
+
+        kept = grants_for(await grants_of(harness, source), unrelated_id)
+
+        assert len(kept) == 1
+        # The status, the term and the counter together: an expiry rewrites the first two.
+        assert kept[0][1] == "active"
+        assert kept[0][2] == NOW + _A_MONTH
+        assert kept[0][5] == 0
+
+    async def test_the_moving_subscription_is_owned_by_the_destination_and_the_month_is_spent(
+            self, harness, moved):
+        """The premise: a move that wrote nothing would make every case here vacuous."""
+        _, destination = moved["accounts"]
+        moving_id, _ = moved["subscriptions"]
+        assert status_of(moved["move"]) == 200
+        assert await owner_of(harness, moving_id) == (destination, THIS_MONTH, None)
+
+    async def test_the_destination_holds_exactly_one_active_grant_and_it_is_for_the_moved_subscription(
+            self, harness, moved):
+        """The index invariant on the winning side: one account may hold one active grant."""
+        _, destination = moved["accounts"]
+        moving_id, _ = moved["subscriptions"]
+
+        held = active_grants(await grants_of(harness, destination))
+
+        assert len(held) == 1
+        assert held[0][4] == moving_id
+
+    async def test_the_source_holds_no_active_grant_for_the_moved_subscription(self, harness,
+                                                                               moved):
+        """D-10: the account that loses the subscription loses its access to it in the same transaction."""
+        source, _ = moved["accounts"]
+        moving_id, _ = moved["subscriptions"]
+        # The source's own row for the moved subscription was already superseded, by the restore
+        # of the unrelated subscription above. So this asserts the absence of an active row for
+        # that subscription, not the presence of a row this move expired.
+        assert grants_for(active_grants(await grants_of(harness, source)), moving_id) == []
