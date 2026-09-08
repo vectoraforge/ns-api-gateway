@@ -5,11 +5,11 @@ milestone_name: Authentication & Entitlements
 current_phase: 45
 current_phase_name: POST /auth/restore-subscription
 status: executing
-stopped_at: Completed 45-01-PLAN.md
-last_updated: "2026-09-08T01:03:52.292Z"
+stopped_at: Completed 45-02-PLAN.md
+last_updated: "2026-09-08T01:18:32.535Z"
 last_activity: 2026-09-07
 last_activity_desc: Phase 45 execution started
-state_head: 24925606d24d145ec40799abcee8919a172e9a5e
+state_head: 2211330d3f2cfccc8929a270e85c60ed34250a84
 progress:
   total_phases: 18
   completed_phases: 15
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 ## Current Position
 
 Phase: 45 (POST /auth/restore-subscription) — EXECUTING
-Plan: 2 of 5
+Plan: 3 of 5
 Status: Ready to execute
 Last activity: 2026-09-07 — Phase 45 execution started
 
@@ -317,10 +317,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-08T01:03:51.363Z
+**Last session:** 2026-09-08T01:18:17.635Z
 
 Last activity: 2026-09-05
-Stopped at: Completed 45-01-PLAN.md
+Stopped at: Completed 45-02-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -377,6 +377,7 @@ Resume file: None
 | Phase 44 P06 | 11 min | 2 tasks | 7 files |
 | Phase 44 P07 | 22 min | 2 tasks | 3 files |
 | Phase 45 P01 | 15 min | 2 tasks | 15 files |
+| Phase 45 P02 | 14 min | 2 tasks | 7 files |
 
 ## Decisions
 
@@ -539,3 +540,8 @@ Resume file: None
 - [Phase 45]: 45-01: RestoreProviderUnknown declares 403 operation_not_allowed on its own rather than joining ClaimRefused — Every ClaimRefused leaf describes a grant claim; the totality walk permits a second class at the same code and status
 - [Phase 45]: 45-01: RestoreService refuses provider google_play until 45-02 lands the Play read — The router gate admits google_play as a PurchaseProvider member, so without the arm a Play purchase token would reach the Apple SignedDataVerifier
 - [Phase 45]: 45-01: verify_transaction refuses a transaction carrying no originalTransactionId — That field is the lifecycle key the subscription row is read by; an absent one must never become a lookup key
+- [Phase 45]: The Play restore read is a second entry point on PlayDeveloperSubscriptions, not a reuse of read with synthesized notification fields, because restore has no source for event_type, notification_uuid or signed_at
+- [Phase 45]: read_for_restore classifies its own answer at the source, so UnmappedStoreProduct is never caught as an InternalError and an unmapped product stays a 500 rather than a 503
+- [Phase 45]: _get no longer maps a transport failure: the webhook wants a redelivery (500) and the app wants a later retry (503), so each entry point classifies httpx.HTTPError itself
+- [Phase 45]: A Play token of another package answers 404 and reaches play_token_gone, so package mismatch gets no stage of its own
+- [Phase 45]: RestoreService._verify names each PurchaseProvider member positively and raises RestoreProviderUnknown only on the unreachable fall-through the router already refuses

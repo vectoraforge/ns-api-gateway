@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 17
+open_count: 16
 waived_count: 1
-fixed_count: 6
+fixed_count: 7
 total_count: 24
-last_updated: 2026-09-08T01:04:03.976Z
+last_updated: 2026-09-08T01:17:08.716Z
 ---
 
 # Broken Windows Ledger
@@ -36,7 +36,7 @@ last_updated: 2026-09-08T01:04:03.976Z
 | 19 | 44 | unrun-verify | k8s/templates/httproute-webhooks.yaml |  | helm is not installed in this environment, so 'the template still parses as a Helm template' was checked by substituting the Helm expressions and parsing the result with PyYAML, not by rendering with helm | open |  | 2026-09-05T11:11:39.493Z |  |
 | 20 | 44 | deviation | tests/schema/test_subscription_ingestion.py |  | 44-05: the plan's absent-grace-end control expected an ineffective grant; a NULL ends_at is effective, so the control was split into an unbounded-grant case and a closed-window case | open |  | 2026-09-05T11:53:19.656Z |  |
 | 21 | 44 | deviation | .planning/phases/44-post-webhooks-google-play-rtdn/44-07-PLAN.md |  | 44-07: the plan's specs/ cleanliness gate (git status --porcelain -- specs/) can never pass here — specs/auth-refactor-phases/ has never been tracked in the parent repo, so the gate fires on an untracked path, not an edit. D-22 proved instead by git status --untracked-files=no -- specs/ being empty and by no file under specs/ having a today mtime | open |  | 2026-09-05T12:31:21.640Z |  |
-| 22 | 45 | stub | src/nativespeaker/api/services/restore.py | 81 | _verify refuses every provider that is not Apple; 45-02 replaces it with the Play read | open |  | 2026-09-08T01:04:03.689Z |  |
+| 22 | 45 | stub | src/nativespeaker/api/services/restore.py | 81 | _verify refuses every provider that is not Apple; 45-02 replaces it with the Play read | fixed |  | 2026-09-08T01:04:03.689Z | 2026-09-08T01:17:08.716Z |
 | 23 | 45 | stub | src/nativespeaker/api/services/restore.py | 45 | No stored subscription row raises RestoreSubscriptionNotEntitled; 45-03 replaces it with adoption-with-creation | open |  | 2026-09-08T01:04:03.824Z |  |
 | 24 | 45 | stub | src/nativespeaker/api/services/restore.py | 54 | Any owner other than the caller raises RestoreSubscriptionNotEntitled; 45-03 and 45-04 replace it with adoption and the capped move | open |  | 2026-09-08T01:04:03.976Z |  |
 
@@ -301,10 +301,10 @@ last_updated: 2026-09-08T01:04:03.976Z
     "file": "src/nativespeaker/api/services/restore.py",
     "line": 81,
     "description": "_verify refuses every provider that is not Apple; 45-02 replaces it with the Play read",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-09-08T01:04:03.689Z",
-    "resolved_at": null
+    "resolved_at": "2026-09-08T01:17:08.716Z"
   },
   {
     "id": 23,
