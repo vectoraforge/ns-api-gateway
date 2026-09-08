@@ -15,7 +15,13 @@ from nativespeaker.api.auth.firebase import (
     lookup_with_retry,
 )
 from nativespeaker.api.config import JWTConfig
-from nativespeaker.api.errors import AppError, NotLinked, Unavailable, UserNotFound
+from nativespeaker.api.errors import (
+    AppError,
+    NotLinked,
+    RevocationUnconfirmed,
+    Unavailable,
+    UserNotFound,
+)
 from nativespeaker.api.tables.identities import IdentityProvider
 
 PROJECT_ID = "ns-test-project"
@@ -115,6 +121,24 @@ def get_user_calls(monkeypatch):
     return script
 
 
+@pytest.fixture
+def revoke_calls(monkeypatch):
+    """Monkeypatches `auth.revoke_refresh_tokens` to record its calls; the test scripts the answer."""
+    calls: list[dict] = []
+
+    def script(answer):
+        def fake_revoke(uid, app=None):
+            calls.append({"uid": uid, "app": app})
+            if isinstance(answer, BaseException):
+                raise answer
+            # The SDK returns nothing on a confirmed revocation, so neither does the stand-in.
+            return None
+        monkeypatch.setattr(auth, "revoke_refresh_tokens", fake_revoke)
+        return calls
+
+    return script
+
+
 class TestBuildAdminApps:
     """One named app per configured issuer, and never a `[DEFAULT]` one."""
 
@@ -186,6 +210,77 @@ class TestSelection:
         calls = get_user_calls(StubUserRecord())
         await adapter.get_user_provider_data(ISSUER, SUBJECT)
         assert calls == [{"uid": SUBJECT, "app": app}]
+
+
+class TestTheRevocation:
+    """The second seam method: its app selection, its confirmed answer, and its four raising arms."""
+
+    async def test_a_configured_issuer_passes_its_own_app_explicitly(self, adapter, app,
+                                                                     revoke_calls):
+        """A forgotten `app=` would reach the `[DEFAULT]` app -- which is why none is created."""
+        calls = revoke_calls(None)
+        await adapter.revoke_refresh_tokens(ISSUER, SUBJECT)
+        assert calls == [{"uid": SUBJECT, "app": app}]
+
+    async def test_a_confirmed_revocation_returns_none(self, adapter, revoke_calls):
+        """The call returning without a raise is the whole confirmation; there is no value to read."""
+        revoke_calls(None)
+        assert await adapter.revoke_refresh_tokens(ISSUER, SUBJECT) is None
+
+    async def test_an_unconfigured_issuer_fails_closed_and_calls_nothing(self, adapter,
+                                                                        revoke_calls):
+        calls = revoke_calls(None)
+        with pytest.raises(RevocationUnconfirmed) as raised:
+            await adapter.revoke_refresh_tokens(OTHER_ISSUER, SUBJECT)
+        assert raised.value.stage == "issuer_selection"
+        assert calls == []
+
+    async def test_an_empty_mapping_fails_closed_for_every_issuer(self, revoke_calls):
+        calls = revoke_calls(None)
+        with pytest.raises(RevocationUnconfirmed) as raised:
+            await FirebaseAdminLookup({}).revoke_refresh_tokens(ISSUER, SUBJECT)
+        assert raised.value.stage == "issuer_selection"
+        assert calls == []
+
+    async def test_the_issuer_arm_answers_the_retryable_class_not_a_hard_failure(self, adapter):
+        """503, not 500: a misconfigured issuer is ours to fix, and the caller may usefully come back."""
+        with pytest.raises(RevocationUnconfirmed) as raised:
+            await adapter.revoke_refresh_tokens(OTHER_ISSUER, SUBJECT)
+        assert raised.value.status == 503
+        assert raised.value.code == "verification_temporarily_unavailable"
+
+    async def test_user_not_found_answers_the_401_arm_and_not_the_firebase_error_one(
+            self, adapter, revoke_calls):
+        """`UserNotFoundError` subclasses `FirebaseError`; a reordered `except` would misclassify."""
+        assert issubclass(auth.UserNotFoundError, exceptions.FirebaseError)
+        revoke_calls(auth.UserNotFoundError(PROVIDER_TEXT))
+        with pytest.raises(UserNotFound) as raised:
+            await adapter.revoke_refresh_tokens(ISSUER, SUBJECT)
+        assert raised.value.stage == "token_revocation"
+        assert raised.value.status == 401
+
+    async def test_a_malformed_subject_is_definitive_and_never_the_retry_marker(self, adapter,
+                                                                               revoke_calls):
+        """The SDK checks the uid before it sends the request, so another attempt answers the same."""
+        revoke_calls(ValueError("Invalid uid: the uid must be a non-empty string"))
+        with pytest.raises(RevocationUnconfirmed) as raised:
+            await adapter.revoke_refresh_tokens(ISSUER, SUBJECT)
+        assert raised.value.stage == "subject_rejected"
+        # The read classes this arm as retryable; here it must not be, or a settled uid burns the budget.
+        assert not isinstance(raised.value, RetryableLookupError)
+
+    async def test_a_firebase_error_is_retryable(self, adapter, revoke_calls):
+        revoke_calls(exceptions.FirebaseError("unavailable", PROVIDER_TEXT))
+        with pytest.raises(RetryableLookupError):
+            await adapter.revoke_refresh_tokens(ISSUER, SUBJECT)
+
+    async def test_a_credential_refresh_failure_is_retryable_and_never_escapes(self, adapter,
+                                                                               revoke_calls):
+        """A refresh error is none of the types the other arms catch, so without this arm it escapes as a 500."""
+        assert not issubclass(google.auth.exceptions.RefreshError, exceptions.FirebaseError)
+        revoke_calls(google.auth.exceptions.RefreshError("token refresh failed"))
+        with pytest.raises(RetryableLookupError):
+            await adapter.revoke_refresh_tokens(ISSUER, SUBJECT)
 
 
 class TestSuccessfulReads:
