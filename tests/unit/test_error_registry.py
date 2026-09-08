@@ -328,7 +328,8 @@ class TestPhase37Classes:
     def test_sharing_409_with_challenge_required_is_legal_and_intended(self):
         """Codes must be unique to one status; statuses may be shared by several codes."""
         at_409 = sorted({cls.code for cls in _family(AppError) if cls.status == 409})
-        assert at_409 == ["challenge_required", "identity_already_linked"]
+        assert at_409 == ["challenge_required", "identity_already_linked",
+                          "restore_transfer_rejected"]
 
     def test_operation_not_allowed_joins_the_existing_403_codes(self):
         at_403 = sorted({cls.code for cls in _family(AppError) if cls.status == 403})

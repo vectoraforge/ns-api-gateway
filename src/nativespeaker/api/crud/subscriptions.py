@@ -239,7 +239,10 @@ class SubscriptionsDB:
         entitled = status in ENTITLED_STATUSES
         held = [grant for grant in marked_active
                 if grant.source is AccessGrantSource.subscription
-                and grant.subscription_id == subscription_id]
+                and grant.subscription_id == subscription_id
+                # The buyer's own rows only: on a move `marked_active` also holds the old owner's,
+                # and reading one of those as a replay would leave the destination with no grant.
+                and grant.user_id == user_id]
         # The tier is asked with the term: a mid-term tier change takes the same expire-then-insert path below.
         if entitled and [grant for grant in held
                          if grant.ends_at == ends_at and grant.tier_id == tier_id]:

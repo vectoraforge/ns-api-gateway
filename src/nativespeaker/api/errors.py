@@ -29,7 +29,8 @@ ErrorCode = Literal["auth_required",
                     "operation_not_allowed",
                     "proof_rejected",
                     "device_grant_exhausted",
-                    "restore_not_found"]
+                    "restore_not_found",
+                    "restore_transfer_rejected"]
 
 
 class ErrorResponse(BaseModel):
@@ -530,6 +531,14 @@ class RestoreProviderUnknown(AppError):
     # The claim refusals' own answer, reused: an unserved store name is a refusal, not a bad body.
     status = 403
     code = "operation_not_allowed"
+
+
+class RestoreTransferRejected(AppError):
+    """This subscription already moved to another account this UTC month, so the cap refuses (D-10)."""
+
+    # A second class at 409: `ChallengeRequired` keeps the bare framework answer, and this one raises only.
+    status = 409
+    code = "restore_transfer_rejected"
 
 
 # --- Challenge arms ---

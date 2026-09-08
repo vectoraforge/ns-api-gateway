@@ -1,6 +1,6 @@
 """Store-subscription restore: one client-presented proof, one transaction, one commit.
 Lock order: grant rows ascending by id, then their usage rows; the subscription row is never locked."""
-from datetime import datetime
+from datetime import UTC, date, datetime
 from uuid import UUID, uuid7
 
 import structlog
@@ -20,6 +20,7 @@ from nativespeaker.api.errors import (
     RestoreAttributionMismatch,
     RestoreProviderUnknown,
     RestoreSubscriptionNotEntitled,
+    RestoreTransferRejected,
 )
 from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
@@ -68,9 +69,11 @@ class RestoreService:
 
         owner_read = None if stored is None else stored.user_id
         month_read = None if stored is None else stored.last_cross_account_transfer_month
-        if owner_read is not None and owner_read != destination:
-            # 45-04 replaces this arm with the move, which is capped at one per UTC month.
-            raise RestoreSubscriptionNotEntitled
+        # The account this restore takes the subscription from, and `None` on every other branch.
+        current_owner = None if owner_read == destination else owner_read
+        if current_owner is not None and month_read == self._this_month():
+            # D-10: one move per subscription per UTC month, refused before any lock and with nothing written.
+            raise RestoreTransferRejected
 
         if stored is None:
             # Adoption-with-creation: written unowned, so the one owner write is the update below.
@@ -87,19 +90,20 @@ class RestoreService:
         subscription_id = stored.id
         tier_id = stored.tier_id
 
-        # One statement for the accounts this restore touches; 45-04 adds the current owner to it.
-        marked_active = await self.subscriptions_db.lock_grants_of([destination])
+        # One statement for every account this restore touches: a move also takes from the old owner.
+        accounts = [destination] if current_owner is None else [current_owner, destination]
+        marked_active = await self.subscriptions_db.lock_grants_of(accounts)
 
         if owner_read != destination:
-            # Adoption alone runs it: a same-account restore changes no owner, and a no-op update
-            # would make "zero rows means a lost race" untrue for that branch.
+            # Adoption and the move run it: a same-account restore changes no owner, and a no-op
+            # update would make "zero rows means a lost race" untrue for that branch.
             claimed = await self.subscriptions_db.claim_subscription_owner(
                 subscription_id=subscription_id,
                 owner_read=owner_read,
                 month_read=month_read,
                 destination=destination,
-                # The move alone writes a month, and 45-04 is its only caller.
-                transfer_month=None,
+                # The move alone spends a month of the cap; adoption leaves the column untouched.
+                transfer_month=None if current_owner is None else self._this_month(),
                 evaluated_at=self.evaluated_at)
             if not claimed:
                 return await self._answer_as_the_winner_left_it(proof, destination)
@@ -137,6 +141,11 @@ class RestoreService:
 
         # Deliberate commit: the caller reads the sync body, so 200 must mean the rows are durable.
         await self.session.commit()
+
+    def _this_month(self) -> date:
+        """The first day of the captured instant's UTC month, as the `DATE` column stores it."""
+        # Real dates on both sides of the comparison; `monthly_period`'s `YYYY-MM` string is another thing.
+        return self.evaluated_at.astimezone(UTC).date().replace(day=1)
 
     async def _answer_as_the_winner_left_it(self, proof: RestoredSubscription,
                                             destination: UUID) -> None:
