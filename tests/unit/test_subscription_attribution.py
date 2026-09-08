@@ -26,6 +26,10 @@ OTHER_TOKEN = "a-different-synthetic-attribution-token"
 
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
 
+# The two accounts of the D-09 case: the one a restore made the owner, and the one that bought it.
+RESTORER = uuid7()
+ORIGINAL_BUYER = uuid7()
+
 
 def _notification(**overrides) -> VerifiedNotification:
     """One verified subscription notification; `overrides` replaces any field a case cares about."""
@@ -158,6 +162,20 @@ def session() -> _StubSession:
 @pytest.fixture
 def writer() -> _RecordingSubscriptions:
     return _RecordingSubscriptions()
+
+
+def _seed_owned(writer, owner: UUID) -> str:
+    """Put one already-owned canonical row in the writer, as a restore leaves it; return its key."""
+    external_id = f"original-{uuid4()}"
+    writer.subscriptions[(PurchaseProvider.apple, external_id)] = Subscription(
+        provider=PurchaseProvider.apple,
+        external_id=external_id,
+        user_id=owner,
+        tier_id=PAID_TIER_ID,
+        status=SubscriptionStatus.active,
+        created_at=NOW,
+        updated_at=NOW)
+    return external_id
 
 
 def _service(session, writer, bound: UUID | None) -> SubscriptionsService:
@@ -358,6 +376,33 @@ class TestTheConflictArm:
         with pytest.raises(AttributionConflict):
             await service.ingest(_notification(attribution_token=OTHER_TOKEN,
                                                external_id=external_id))
+
+
+@pytest.mark.asyncio
+class TestTheOwnerIsChangedByRestoreAlone:
+    """D-09: the token attributes an unowned row only, and a row that has an owner keeps it."""
+
+    async def test_a_row_that_already_has_an_owner_keeps_it(self, session, writer):
+        """T-45-07: a renewal carrying the original buyer's token must not take a restored row back."""
+        external_id = _seed_owned(writer, RESTORER)
+        # The token resolves to the account that bought the subscription before the restore moved it.
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        await service.ingest(_notification(attribution_token=TOKEN, external_id=external_id,
+                                           event_type="DID_RENEW"))
+
+        assert writer.subscriptions[(PurchaseProvider.apple, external_id)].user_id == RESTORER
+
+    async def test_the_locks_and_the_grant_follow_the_row_and_not_the_token(self, session, writer):
+        """The kept owner is the account whose grants are locked and whose grant the renewal writes."""
+        external_id = _seed_owned(writer, RESTORER)
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        await service.ingest(_notification(attribution_token=TOKEN, external_id=external_id,
+                                           event_type="DID_RENEW"))
+
+        assert writer.locked == [RESTORER]
+        assert [grant["user_id"] for grant in writer.granted] == [RESTORER]
 
 
 @pytest.mark.asyncio
