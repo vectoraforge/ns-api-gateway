@@ -572,3 +572,56 @@ class TestAMoveTakesOnlyTheGrantForTheSubscriptionItMoves:
         # of the unrelated subscription above. So this asserts the absence of an active row for
         # that subscription, not the presence of a row this move expired.
         assert grants_for(active_grants(await grants_of(harness, source)), moving_id) == []
+
+
+@pytest.mark.asyncio
+class TestTheDestinationStillLosesEverythingItHeld:
+    """T-45-08-02. The narrowing keeps the destination's whole set, so it may not spare a row.
+    No free-grant case here: `tests/e2e/test_restore_subscription.py` already covers a free grant
+    superseded on the restore path, and a second copy on real PostgreSQL buys nothing."""
+
+    @pytest_asyncio.fixture
+    async def moved(self, harness):
+        """The destination holds a grant for a subscription of its own, then a second one moves to it."""
+        source = await commit_account(harness)
+        destination = await commit_account(harness)
+        moving_id = await commit_subscription(harness, user_id=source)
+        own_key = f"{harness.external_id}-destination"
+        own_id = await commit_subscription(harness, user_id=destination, external_id=own_key)
+        # Written by the production writer, so the row the move must end has a real restore's shape.
+        await run_attempt(harness, _Attempt(name="hold-its-own", user_id=destination),
+                          proof_for(harness, external_id=own_key))
+        move = await run_attempt(harness, _Attempt(name="move", user_id=destination),
+                                 proof_for(harness))
+        assert status_of(move) == 200
+        return {"move": move, "accounts": (source, destination),
+                "subscriptions": (moving_id, own_id)}
+
+    async def test_the_destinations_grant_for_another_subscription_is_ended_by_the_move(
+            self, harness, moved):
+        """The counterpart of the source-side case: this is what stops the narrowing going too far."""
+        _, destination = moved["accounts"]
+        _, own_id = moved["subscriptions"]
+
+        ended = grants_for(await grants_of(harness, destination), own_id)
+
+        assert len(ended) == 1
+        assert ended[0][1] == "expired"
+        # The move's own instant, which is what the writer ends a superseded term at.
+        assert ended[0][2] == NOW
+
+    async def test_the_destination_ends_with_exactly_one_active_grant(self, harness, moved):
+        """`ix_access_grants_one_active_per_user` reads one row, and so must this."""
+        _, destination = moved["accounts"]
+        moving_id, _ = moved["subscriptions"]
+
+        held = active_grants(await grants_of(harness, destination))
+
+        assert len(held) == 1
+        assert held[0][4] == moving_id
+
+    async def test_the_unique_index_never_fired(self, harness, moved):
+        """The answer came from the writer's own set, not from an index violation it caught."""
+        assert moved["move"].sqlstate is None
+        assert (moved["move"].integrity_at_flush, moved["move"].integrity_at_commit) == (False,
+                                                                                         False)
