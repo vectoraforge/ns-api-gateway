@@ -1202,7 +1202,11 @@ Missing any of these is the most likely cause of a red suite at the end of the p
 | A4 | The `SUS` verdicts in § Package Legitimacy Audit are driven by PyPI's absence of download statistics rather than by real risk. | § Package Legitimacy Audit | If wrong, four long-installed dependencies would warrant review — but none is newly introduced by this phase, so nothing this phase does changes the exposure. |
 | A5 | A grant expired by a move leaves the old owner with no active grant, and `SyncService.read_entitlement` reports `type=none` for them on their next `/auth/sync`. Derived from `read_effective_grants` + the `Entitlement(type=none)` branch, not executed. | § Architecture Patterns | Low. If the old owner instead sees a stale entitlement, the move is not observable and D-10's "the old owner loses access at that moment" is not delivered. A test should assert it rather than assume it. |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+Every question below carries a Recommendation, and every Recommendation was adopted by the
+plans. Each `RESOLVED:` line names the plan and task that carries it. The § Source Coverage
+table in `45-01-PLAN.md` mirrors the same five mappings.
 
 1. **What value type crosses the `auth/` seam on the restore path?**
    - What we know: both store classes today return `VerifiedNotification`, whose `notification_uuid`
@@ -1215,12 +1219,18 @@ Missing any of these is the most likely cause of a red suite at the end of the p
      `attribution_token`, `status`, `purchased_at`, `expires_at`, `grace_period_expires_at`. A
      synthesized `notification_uuid` is a value that means nothing and would eventually be written
      somewhere. Note this costs one class against the `test_auth_package_shape.py` ratchet.
+   - **RESOLVED: adopted in 45-01 Task 1** — a frozen `RestoredSubscription` dataclass beside
+     `VerifiedNotification` in `auth/store_notifications.py`, and the same task re-measures the
+     `test_auth_package_shape.py` ratchet for the added class.
 
 2. **Does the same-account repeat need the conditional UPDATE at all?**
    - What we know: D-08 describes the UPDATE as settling *owner changes*. A same-account restore
      changes no owner.
    - Recommendation: skip the statement on the same-account branch. Running it would return
      `rowcount == 1` harmlessly but would make "0 rows means a lost race" untrue for one branch.
+   - **RESOLVED: adopted in 45-03 Task 2** — the same-account branch runs no owner UPDATE, asserted
+     as a `<behavior>` line and gated by the `claim_subscription_owner` call-site check. 45-01
+     Task 1 builds that branch without the statement, so the two plans agree.
 
 3. **`linkedPurchaseToken` — the comment in `google_play.py:79` names this route.**
    - What we know: Google sets it when a subscription is upgraded/downgraded and a new purchase token
@@ -1230,6 +1240,8 @@ Missing any of these is the most likely cause of a red suite at the end of the p
    - Recommendation: **out of scope.** CONTEXT names no such branch, D-11 adds no code for it, and
      inventing one would be an unflagged departure. Record it in Deferred Ideas and leave the comment
      stale — or, cheaper, note in the plan that the comment now over-promises.
+   - **RESOLVED: adopted in 45-05 Task 1** — recorded out of scope in REQUIREMENTS.md, with the
+     note that the `google_play.py` comment now over-promises. No plan adds code for it.
 
 4. **Apple Family Sharing (`inAppOwnershipType`).**
    - What we know: the field is `PURCHASED` or `FAMILY_SHARED`
@@ -1241,12 +1253,18 @@ Missing any of these is the most likely cause of a red suite at the end of the p
    - Recommendation: **do not add a check this phase** (it is not in CONTEXT), but raise it to the
      user as a one-line product question, because a shared receipt plus D-10's cap can take the
      subscription away from the person who is paying for it. This is the sharpest edge D-10 has.
+   - **RESOLVED: adopted in 45-05 Task 1** — no check is added this phase, and the question is
+     raised to the developer in the requirement record. 45-05 also carries it as threat T-45-13
+     with disposition `transfer`.
 
 5. **Where does a `MissingPurchaseTokenError` land on this route?**
    - What we know: `PurchasesDB.read_tokens` raises it when a user lacks a row for either store
      (`crud/purchases.py:22-25`), but restore uses `resolve_user`, which returns `None` instead
      (`crud/purchases.py:33-34`).
    - Recommendation: use `resolve_user` only. Nothing on this route needs the completeness check.
+   - **RESOLVED: adopted in 45-03 Task 2** — the service resolves attribution with `resolve_user`,
+     gated by `grep -c 'read_tokens' src/nativespeaker/api/services/restore.py` returning 0.
+     45-01 Task 1 writes the first call site the same way.
 
 ## Environment Availability
 

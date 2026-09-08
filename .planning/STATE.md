@@ -4,16 +4,16 @@ milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 45
 current_phase_name: POST /auth/restore-subscription
-status: planning
+status: executing
 stopped_at: Phase 45 context gathered
-last_updated: "2026-09-07T23:50:41.318Z"
+last_updated: "2026-09-08T00:42:45.663Z"
 last_activity: 2026-09-06
 last_activity_desc: Phase 44 complete and verified (7/7, CR-01 accepted as override), transitioned to Phase 45
-state_head: 9c71826903b876d05ebf05d4a7c4253049b47610
+state_head: 4b208d3cbe8bea02b98e1ba80abdfa530dad51e3
 progress:
   total_phases: 18
   completed_phases: 15
-  total_plans: 110
+  total_plans: 115
   completed_plans: 110
   percent: 83
 ---
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 45 — POST /auth/restore-subscription
+Phase: 45 (POST /auth/restore-subscription) — READY TO EXECUTE
 Plan: Not started
-Status: Ready to plan
+Status: Ready to execute
 Last activity: 2026-09-06 — Phase 44 complete, transitioned to Phase 45
 
 <!-- Counts read against disk rather than incremented, as 41-05, 42-07 and 43-06 did. Read at

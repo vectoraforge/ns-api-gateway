@@ -708,12 +708,35 @@ Plans:
 **Goal:** Verify a native store artifact directly against Apple or Google and attach verified paid entitlement.
 **Requirements:** RESTORE-01, RESTORE-02
 **Depends on:** 34, 35, 37, 43, 44
+**Plans:** 5 plans
 **Success criteria:**
 
 1. A valid Apple artifact and a valid Google artifact each attach entitlement through their server-determined branch
 2. All store verification completes before the mutating transaction opens — no network call under lock
 3. A non-native surface receives `operation_not_allowed`
 4. An unverifiable artifact attaches nothing and leaves grant state untouched
+
+Plans:
+
+**Wave 1** *(the tracer; every later wave builds on it)*
+
+- [ ] 45-01-PLAN.md — TRACER: the same-account Apple restore, end to end through the request model, the surface gate, the `auth/` proof seam, the service, the transaction and the sync read-back (wave 1)
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 45-02-PLAN.md — The Google Play purchase token as the second proof, with the answer classification that keeps an unmapped product a 500 (wave 2)
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 45-03-PLAN.md — The two-user grant lock, the conditional owner UPDATE, D-09's ingestion owner rule, and the two adoption branches (wave 3)
+
+**Wave 4** *(blocked on Wave 3)*
+
+- [ ] 45-04-PLAN.md — The move, the one-per-UTC-month cap, and the race, atomicity and deferred-foreign-key cases on real PostgreSQL (wave 4)
+
+**Wave 5** *(blocked on Wave 4)*
+
+- [ ] 45-05-PLAN.md — The dated RESTORE and APPLEHOOK amendments, the answered operation-label flag, and the phase close (wave 5)
 
 #### Phase 46: POST /auth/sign-out-all
 
