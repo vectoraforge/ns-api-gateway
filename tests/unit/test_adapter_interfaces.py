@@ -105,10 +105,11 @@ class TestTheValueTypeIsImmutable:
 
 
 class TestFirebaseAdminAdapter:
-    """One method, one issuer-selected client, and no fallback expressible."""
+    """Two methods, one issuer-selected client, and no fallback expressible."""
 
-    def test_it_declares_exactly_the_one_surviving_method(self):
-        assert self._methods(FirebaseAdminAdapter) == {"get_user_provider_data"}
+    def test_it_declares_exactly_the_two_surviving_methods(self):
+        assert self._methods(FirebaseAdminAdapter) == {"get_user_provider_data",
+                                                       "revoke_refresh_tokens"}
 
     def test_get_user_provider_data_returns_the_verified_identity(self):
         """The seam's whole return surface: the verified identity, or a raise."""
@@ -116,6 +117,14 @@ class TestFirebaseAdminAdapter:
 
     def test_the_lookup_method_takes_the_issuer_so_selection_is_per_call(self):
         parameters = inspect.signature(FirebaseAdminAdapter.get_user_provider_data).parameters
+        assert "issuer" in parameters
+
+    def test_revoke_refresh_tokens_returns_nothing_at_all(self):
+        """The revocation reports no value: the call returns to confirm it, or it raises."""
+        assert self._returns(FirebaseAdminAdapter.revoke_refresh_tokens) is None
+
+    def test_the_revocation_method_takes_the_issuer_so_selection_is_per_call(self):
+        parameters = inspect.signature(FirebaseAdminAdapter.revoke_refresh_tokens).parameters
         assert "issuer" in parameters
 
     @staticmethod

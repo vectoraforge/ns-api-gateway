@@ -107,6 +107,8 @@ EVENT_NAMES = frozenset({
     "provider_lookup_error",
     "user_not_found",
     "unavailable",
+    # The revocation's own leaf, so an unconfirmed revocation is not read as a failed lookup.
+    "revocation_unconfirmed",
     "not_linked",
     # The device-gate arms, under the same lookup base.
     "proof_rejected",
@@ -176,6 +178,7 @@ CONSTRUCTOR_ARGUMENTS: dict[type, tuple[tuple, dict]] = {
     errors_module.ProviderLookupError: ((), {"stage": "provider_lookup", "cause": "bounded"}),
     errors_module.UserNotFound: ((), {"stage": "provider_lookup"}),
     errors_module.Unavailable: ((), {"stage": "issuer_selection"}),
+    errors_module.RevocationUnconfirmed: ((), {"stage": "issuer_selection"}),
     errors_module.NotLinked: ((), {"stage": "provider_classification", "cause": "invalid-shape"}),
     errors_module.ProofRejected: ((), {"stage": "devicecheck_read", "cause": "rejected"}),
     errors_module.DeviceGrantExhausted: ((), {"stage": "devicecheck_read", "cause": "already_set"}),
