@@ -5,11 +5,11 @@ milestone_name: Authentication & Entitlements
 current_phase: 45
 current_phase_name: POST /auth/restore-subscription
 status: executing
-stopped_at: Phase 45 gap closure planned; Phase 46 context gathered
-last_updated: "2026-09-08T20:39:23.571Z"
+stopped_at: Phase 45 gap closure planned (plans 45-06..45-09, waves 6-8), executes next; Phase 46 context gathered, follows
+last_updated: "2026-09-08T20:41:30.564Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 45 gap closure planned — 4 plans; Phase 46 context gathered
-state_head: eff4fdc77705891fcbca758cb6839d3f119ae599
+state_head: e15789ecefda9270317f827018756a4117a8373a
 progress:
   total_phases: 18
   completed_phases: 15
@@ -371,11 +371,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-08T20:30:12.641Z
+**Last session:** 2026-09-08T20:41:29.585Z
 
 Last activity: 2026-09-05
-Stopped at: Phase 45 gap closure planned; Phase 46 context gathered
-Resume file: .planning/phases/46-post-auth-sign-out-all/46-CONTEXT.md
+Stopped at: Phase 45 gap closure planned (plans 45-06..45-09, waves 6-8), executes next; Phase 46 context gathered, follows
+Resume file: .planning/phases/45-post-auth-restore-subscription/45-06-PLAN.md
 
 ## Performance Metrics
 
