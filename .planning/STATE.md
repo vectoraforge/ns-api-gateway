@@ -5,11 +5,11 @@ milestone_name: Authentication & Entitlements
 current_phase: 45
 current_phase_name: POST /auth/restore-subscription
 status: executing
-stopped_at: Phase 46 context gathered
-last_updated: "2026-09-08T20:30:13.605Z"
+stopped_at: Phase 45 gap closure planned; Phase 46 context gathered
+last_updated: "2026-09-08T20:39:23.571Z"
 last_activity: 2026-09-08
-last_activity_desc: Phase 45 executed — 5 of 5 plans
-state_head: 81ddff37fcea8c956bf43c059ebfec4122a59709
+last_activity_desc: Phase 45 gap closure planned — 4 plans; Phase 46 context gathered
+state_head: eff4fdc77705891fcbca758cb6839d3f119ae599
 progress:
   total_phases: 18
   completed_phases: 15
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-08-19)
 
 ## Current Position
 
-Phase: 45 (POST /auth/restore-subscription) — EXECUTING
-Plan: 5 of 5
-Status: All plans executed — awaiting verification
-Last activity: 2026-09-08 — Phase 45 executed, 5 of 5 plans
+Phase: 45 (POST /auth/restore-subscription) — READY TO EXECUTE (gap closure)
+Plan: 5 of 9 executed; 4 gap-closure plans planned, none executed
+Status: Verification found three blocker gaps. Plans 45-06 … 45-09 close them, in waves 6, 7 and 8.
+Last activity: 2026-09-08 — Phase 45 gap closure planned, 4 plans; Phase 46 context gathered
 
 <!-- Counts read against disk rather than incremented, as 41-05, 42-07, 43-06 and 44-07 did. Read
      at 2026-09-08T02:11Z, during plan 45-05's Task 2: 115 PLAN files and 114 SUMMARY files across
@@ -374,7 +374,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 **Last session:** 2026-09-08T20:30:12.641Z
 
 Last activity: 2026-09-05
-Stopped at: Phase 46 context gathered
+Stopped at: Phase 45 gap closure planned; Phase 46 context gathered
 Resume file: .planning/phases/46-post-auth-sign-out-all/46-CONTEXT.md
 
 ## Performance Metrics
