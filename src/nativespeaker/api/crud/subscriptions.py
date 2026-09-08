@@ -248,8 +248,11 @@ class SubscriptionsDB:
                          if grant.ends_at == ends_at and grant.tier_id == tier_id]:
             return WriteOutcome.replayed
 
-        # Every held grant goes, the free one included: `ix_access_grants_one_active_per_user` allows one.
-        superseded = list(marked_active) if entitled else held
+        # Every grant the destination holds goes, the free one too: `ix_access_grants_one_active_per_user` allows one.
+        # The old owner's grant for another subscription is not this write's to end.
+        superseded = ([grant for grant in marked_active
+                       if grant.user_id == user_id or grant.subscription_id == subscription_id]
+                      if entitled else held)
         # Revoked only where the store withdrew this subscription; every other end of a term is an expiry.
         ended = (AccessGrantStatus.revoked if status is SubscriptionStatus.revoked
                  else AccessGrantStatus.expired)
