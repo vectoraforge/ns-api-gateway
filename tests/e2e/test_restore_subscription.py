@@ -442,7 +442,7 @@ class TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheTwoRefusalsOfTheRestoreNotFoundFamily:
-    """T-45-05: two causes, one body. The adoption case above is the control for both setups."""
+    """T-45-05: three causes, one body. The adoption case above is the control for every setup."""
 
     async def test_a_subscription_outside_the_entitled_set_writes_nothing(
             self, restore_client, _db_transaction, scripted_app_store_notifications):
@@ -507,6 +507,64 @@ class TestTheTwoRefusalsOfTheRestoreNotFoundFamily:
         # Byte-equal, so a body naming which of the two checks refused fails here.
         assert first.content == second.content
         assert await _row_counts(_db_transaction, user.id) == (0, 0)
+
+    async def test_the_three_arms_of_the_family_answer_the_same_bytes(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """The third arm joins the family, so the surface still tells no caller which check refused."""
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        other, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=OTHER_SUBJECT,
+                                       provider=IdentityProvider.google)
+        unentitled = f"e2e-arm-unentitled-{uuid4()}"
+        no_term = f"e2e-arm-no-term-{uuid4()}"
+        mismatched = f"e2e-arm-mismatch-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=unentitled, user_id=None,
+                                tier_id=PAID_TIER_ID, status="expired")
+        # Entitled, so this arm reaches the term check: an Apple proof carries no grace window.
+        await seed_subscription(_db_transaction, external_id=no_term, user_id=None,
+                                tier_id=PAID_TIER_ID, status="grace_period")
+        await seed_subscription(_db_transaction, external_id=mismatched, user_id=None,
+                                tier_id=PAID_TIER_ID)
+        await _bind_token(_db_transaction, user_id=other.id, identity_value=OTHER_ACCOUNTS_TOKEN)
+
+        answered = []
+        for proof in (_proof(unentitled),
+                      _proof(no_term),
+                      _proof(mismatched, attribution_token=OTHER_ACCOUNTS_TOKEN)):
+            scripted_app_store_notifications.script_restore(proof)
+            answered.append(await _restore(restore_client))
+
+        # Raw bytes and not parsed JSON: a more helpful field on one body fails here.
+        arms = [(answer.status_code, answer.content) for answer in answered]
+        assert arms[0] == arms[1] == arms[2]
+        assert arms[0] == (404, RESTORE_NOT_FOUND_BODY)
+        assert await _row_counts(_db_transaction, user.id) == (0, 0)
+
+    async def test_a_repeat_of_a_proof_whose_term_has_passed_is_refused_and_changes_nothing(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """CR-02: a dead proof may not pin an account into a slot the grant it holds still fills."""
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        external_id = f"e2e-dead-repeat-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=external_id, user_id=user.id,
+                                tier_id=PAID_TIER_ID)
+        scripted_app_store_notifications.script_restore(_proof(external_id))
+        assert (await _restore(restore_client)).status_code == 200
+        granted = (await _grants_of(_db_transaction, user.id))[0]
+        await _spend(_db_transaction, granted.id, 9)
+        before = await _account_snapshot(_db_transaction, user.id)
+
+        # The account keeps its existing grant: the refusal happens before any write, so the old
+        # term stands until a store event ends it.
+        scripted_app_store_notifications.script_restore(
+            _proof(external_id, expires_at=datetime.now(UTC) - TERM_ENDED_AGO))
+        refused = await _restore(restore_client)
+
+        assert refused.status_code == 404
+        assert refused.content == RESTORE_NOT_FOUND_BODY
+        assert await _account_snapshot(_db_transaction, user.id) == before
+        assert [grant.id for grant in await _grants_of(_db_transaction, user.id)] == [granted.id]
+        assert (await _usage_of(_db_transaction, granted.id)).monthly_used == 9
 
 
 @pytest.mark.asyncio(loop_scope="module")
