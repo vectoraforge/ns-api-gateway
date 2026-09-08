@@ -411,6 +411,12 @@ class Unavailable(ProviderLookupError):
     code = "verification_temporarily_unavailable"
 
 
+class RevocationUnconfirmed(ProviderLookupError):
+    """The revocation was not confirmed: no app configured, a rejected subject, or an exhausted budget."""
+    status = 503
+    code = "verification_temporarily_unavailable"
+
+
 class NotLinked(ProviderLookupError):
     """A providerData shape outside the accept set, so no provider account may be claimed for it."""
     status = 403

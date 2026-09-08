@@ -24,3 +24,7 @@ class FirebaseAdminAdapter(Protocol):
     def get_user_provider_data(self, issuer: str, subject: str) -> VerifiedProviderIdentity:
         """The providerData read: the verified identity, or a raise."""
         ...
+
+    def revoke_refresh_tokens(self, issuer: str, subject: str) -> None:
+        """The revocation: a return that confirms it, or a raise."""
+        ...

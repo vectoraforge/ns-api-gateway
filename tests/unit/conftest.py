@@ -198,16 +198,28 @@ class FakeFirebaseAdapter:
     def __init__(self) -> None:
         self.answer: BaseException | VerifiedProviderIdentity = ANONYMOUS_IDENTITY
         self.calls: list[tuple[str, str]] = []
+        # A second answer and a second call list, so each method is scripted and counted on its own.
+        self.revoke_answer: BaseException | None = None
+        self.revoke_calls: list[tuple[str, str]] = []
 
     def script(self, answer: BaseException | VerifiedProviderIdentity) -> None:
         """Raise-or-return: a scripted exception is raised, a scripted identity is returned."""
         self.answer = answer
+
+    def script_revocation(self, answer: BaseException | None) -> None:
+        """Raise-or-confirm: a scripted exception is raised, `None` confirms the revocation."""
+        self.revoke_answer = answer
 
     async def get_user_provider_data(self, issuer: str, subject: str) -> VerifiedProviderIdentity:
         self.calls.append((issuer, subject))
         if isinstance(self.answer, BaseException):
             raise self.answer
         return self.answer
+
+    async def revoke_refresh_tokens(self, issuer: str, subject: str) -> None:
+        self.revoke_calls.append((issuer, subject))
+        if isinstance(self.revoke_answer, BaseException):
+            raise self.revoke_answer
 
 
 @pytest.fixture

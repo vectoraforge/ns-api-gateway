@@ -1,6 +1,6 @@
-"""The seven auth routes: `/auth/challenge` issues a challenge, `/auth/create-user`,
-`/auth/upgrade-anonymous`, `/auth/claim-anonymous-grant` and `/auth/claim-registered-grant` spend one,
-`/auth/restore-subscription` attaches a paid store subscription, and `/auth/sync` reports entitlement."""
+"""The eight auth routes: `/auth/challenge` issues a challenge, `/auth/create-user`, `/auth/upgrade-anonymous`
+and the two `/auth/claim-*-grant` routes spend one, `/auth/restore-subscription` attaches a paid store
+subscription, `/auth/sync` reports entitlement, and `/auth/sign-out-all` revokes the refresh tokens."""
 from datetime import UTC, datetime
 
 import structlog
@@ -12,11 +12,13 @@ from nativespeaker.api.app.dependencies import (
     get_auth_service,
     get_challenge_store,
     get_db,
+    get_firebase_adapter,
     get_identity,
     get_linked_identity,
     get_restore_service,
     get_sync_service,
 )
+from nativespeaker.api.auth.firebase import revoke_with_retry
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import (
     InvalidRequest,
@@ -190,3 +192,18 @@ async def sync(identity: Identity = Depends(get_linked_identity),
     """Report what the caller's account entitles it to at this request's instant."""
     entitlement = await service.read_entitlement(identity.user.id)
     return SyncResponse(entitlement=entitlement, identity_provider=identity.identity.provider)
+
+
+# The route-level dependency narrows this one route to linked callers; the router-level one cannot.
+@router.post("/auth/sign-out-all",
+             status_code=204,
+             summary="Revoke every refresh token the caller's provider account holds",
+             description="Signs the caller out on every device. The account cannot use its current "
+                         "sessions again, and an anonymous account cannot be signed in to again.")
+async def sign_out_all(identity: Identity = Depends(get_linked_identity),
+                       adapter=Depends(get_firebase_adapter)) -> Response:
+    """Revoke the caller's refresh tokens at the provider. It opens no session and writes no row."""
+    await revoke_with_retry(adapter, identity.identity.issuer, identity.identity.subject)
+    # The row id alone: enough to answer "did this account sign out everywhere", and no more.
+    logger.info("sign_out_all_confirmed", identity_row_id=str(identity.identity.id))
+    return Response(status_code=204)

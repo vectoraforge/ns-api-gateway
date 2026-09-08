@@ -1,4 +1,4 @@
-"""The Firebase Admin integration: one named app per issuer, one adapter method, never a [DEFAULT] app.
+"""The Firebase Admin integration: one named app per issuer, two adapter methods, never a [DEFAULT] app.
 Never take the first recognized entry, and never classify non-empty providerData as anonymous.
 Never read `firebase.sign_in_provider`: no declaration match here, and no `required_flow` anywhere."""
 from typing import NoReturn
@@ -12,7 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
 
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
-from nativespeaker.api.errors import NotLinked, Unavailable, UserNotFound
+from nativespeaker.api.errors import NotLinked, RevocationUnconfirmed, Unavailable, UserNotFound
 from nativespeaker.api.tables.identities import IdentityProvider
 
 logger = structlog.get_logger()
@@ -69,6 +69,37 @@ class FirebaseAdminLookup:
             raise Unavailable(stage="issuer_selection")
         # `firebase-admin` is built on `requests` and has no async client, so it runs off the loop.
         return await run_in_threadpool(self._read, app, subject)
+
+    async def revoke_refresh_tokens(self, issuer: str, subject: str) -> None:
+        """Revoke `subject`'s refresh tokens through the app `issuer` selects: a return, or a raise."""
+        app = self._apps.get(issuer)
+        if app is None:
+            # Fails closed with no call made: there is no ambient app to fall back to, by design.
+            raise RevocationUnconfirmed(stage="issuer_selection")
+        # `firebase-admin` is built on `requests` and has no async client, so it runs off the loop.
+        await run_in_threadpool(self._revoke, app, subject)
+
+    @staticmethod
+    def _revoke(app: firebase_admin.App, subject: str) -> None:
+        """The synchronous body, run off the event loop. Everything that can raise happens here."""
+        try:
+            auth.revoke_refresh_tokens(subject, app=app)
+        except auth.UserNotFoundError:
+            # Definitive, spends no retry budget, and listed before the FirebaseError it subclasses.
+            logger.info("firebase_revoke_not_found")
+            raise UserNotFound(stage="token_revocation") from None
+        except ValueError as error:
+            # The SDK checks the uid before it sends the request, so another attempt answers the same.
+            logger.warning("firebase_revoke_subject_malformed", detail=str(error))
+            raise RevocationUnconfirmed(stage="subject_rejected") from error
+        except google.auth.exceptions.GoogleAuthError as error:
+            # Not a FirebaseError and raised before the request is sent, so it needs its own arm.
+            logger.warning("firebase_credential_unavailable", detail=str(error))
+            raise RetryableLookupError(str(error)) from error
+        except exceptions.FirebaseError as error:
+            # Outage or integration-auth failure; the provider's text is for the log, never a body.
+            logger.warning("firebase_revoke_failed", code=error.code, detail=str(error))
+            raise RetryableLookupError(str(error)) from error
 
     @staticmethod
     def _read(app: firebase_admin.App, subject: str) -> VerifiedProviderIdentity:
@@ -145,3 +176,19 @@ async def lookup_with_retry(adapter, issuer: str, subject: str) -> VerifiedProvi
         retry_error_callback=_exhausted,
     )
     return await retrying(adapter.get_user_provider_data, issuer, subject)
+
+
+def _revocation_exhausted(retry_state) -> NoReturn:
+    """Convert an exhausted retry budget into the `RevocationUnconfirmed` rejection the client is owed."""
+    raise RevocationUnconfirmed(stage="token_revocation") from retry_state.outcome.exception()
+
+
+async def revoke_with_retry(adapter, issuer: str, subject: str) -> None:
+    """Call the adapter up to `FIREBASE_LOOKUP_ATTEMPTS` times; return on a confirmation or raise."""
+    retrying = AsyncRetrying(
+        stop=stop_after_attempt(FIREBASE_LOOKUP_ATTEMPTS),
+        # Only the internal marker retries, so `UserNotFound` propagates after one attempt.
+        retry=retry_if_exception_type(RetryableLookupError),
+        retry_error_callback=_revocation_exhausted,
+    )
+    await retrying(adapter.revoke_refresh_tokens, issuer, subject)
