@@ -1,9 +1,10 @@
 """Store-subscription writes over `core.subscriptions`, `audit.subscription_events` and the buyer's grant.
 Lock order: grant rows ascending by id, then their usage rows; the subscription row is never locked."""
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from uuid import UUID
 
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -44,6 +45,20 @@ def _subscription_statement(provider: PurchaseProvider, external_id: str):
                                       col(Subscription.external_id) == external_id)
 
 
+def _claim_owner_statement(subscription_id: UUID, owner_read: UUID | None,
+                           month_read: date | None, values: dict):
+    """The conditional owner update: it writes only where the row still says what the read saw."""
+    return (update(Subscription)
+            .where(col(Subscription.id) == subscription_id,
+                   # Both columns are nullable, so equality would not match the NULL a read saw.
+                   col(Subscription.user_id).is_not_distinct_from(owner_read),
+                   col(Subscription.last_cross_account_transfer_month)
+                   .is_not_distinct_from(month_read))
+            .values(**values)
+            # No synchronization, so this emits one statement and reads nothing back.
+            .execution_options(synchronize_session=False))
+
+
 def _purchase_statement(provider: PurchaseProvider, external_id: str):
     """The `core.store_purchases` row for the lifecycle pair its UNIQUE constraint keys."""
     return select(StorePurchase).where(col(StorePurchase.provider) == provider,
@@ -63,6 +78,15 @@ class SubscriptionsDB:
         marked_active = await self.grants_db.lock_active_grants(user_id)
         effective = await self.grants_db.lock_effective_grants(user_id, evaluated_at)
         for grant in effective:
+            # Second in the lock order, always after the grant rows.
+            await self.grants_db.lock_usage(grant.id)
+        return marked_active
+
+    async def lock_grants_of(self, user_ids: list[UUID]) -> list[AccessGrant]:
+        """Take both lock tiers for two accounts at once and return every grant row marked active."""
+        # One statement for the pair, so the grant tier stays one ascending order and never two.
+        marked_active = await self.grants_db.lock_active_grants_of(user_ids)
+        for grant in marked_active:
             # Second in the lock order, always after the grant rows.
             await self.grants_db.lock_usage(grant.id)
         return marked_active
@@ -103,8 +127,8 @@ class SubscriptionsDB:
                                   updated_at=evaluated_at)
             self.session.add(stored)
         else:
-            # An owner is added, never cleared: a later notification without a token unlinks nobody.
-            owner = stored.user_id if user_id is None else user_id
+            # D-09: the token attributes an unowned row only, and restore alone changes an owner.
+            owner = stored.user_id if stored.user_id is not None else user_id
             if (stored.tier_id, stored.status, stored.user_id) == (tier_id, status, owner):
                 # The lifecycle row already says this, so a repeat event carries no change to record.
                 outcome = WriteOutcome.replayed
@@ -128,6 +152,23 @@ class SubscriptionsDB:
                 raise
             return stored, WriteOutcome.lost_race
         return stored, outcome
+
+    async def claim_subscription_owner(self, *,
+                                       subscription_id: UUID,
+                                       owner_read: UUID | None,
+                                       month_read: date | None,
+                                       destination: UUID,
+                                       transfer_month: date | None,
+                                       evaluated_at: datetime) -> bool:
+        """Set the owner where the row still says what the pre-transaction read saw.
+        Takes no lock on `core.subscriptions`; the row count is the whole answer."""
+        values = {"user_id": destination, "updated_at": evaluated_at}
+        if transfer_month is not None:
+            # A move alone gives one: adoption leaves the column exactly as it found it.
+            values["last_cross_account_transfer_month"] = transfer_month
+        # The caller must re-read the row: this never refreshes a `Subscription` already loaded.
+        statement = _claim_owner_statement(subscription_id, owner_read, month_read, values)
+        return (await self.session.exec(statement)).rowcount == 1
 
     async def insert_purchase(self, *,
                               provider: PurchaseProvider,

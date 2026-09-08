@@ -42,13 +42,20 @@ def _usage_statement(grant_id: UUID):
     return select(UserMonthlyUsage).where(col(UserMonthlyUsage.grant_id) == grant_id)
 
 
-def _active_grants_statement(user_id: UUID):
-    """Every grant of `user_id` marked active, whatever its term, ascending by id."""
+def _active_grants_of_statement(user_ids: list[UUID]):
+    """Every grant of `user_ids` marked active, whatever its term, ascending by id."""
     # No time window: a partial index predicate must be IMMUTABLE, so `now()` cannot appear in
     # `ix_access_grants_one_active_per_user`, and its question is therefore asked on the mark alone.
-    return (select(AccessGrant).where(col(AccessGrant.user_id) == user_id,
+    # One statement over every id, so two accounts are taken in one ascending order and not two.
+    return (select(AccessGrant).where(col(AccessGrant.user_id).in_(user_ids),
                                       col(AccessGrant.status) == AccessGrantStatus.active)
             .order_by(col(AccessGrant.id).asc()))
+
+
+def _active_grants_statement(user_id: UUID):
+    """Every grant of `user_id` marked active, whatever its term, ascending by id."""
+    # The one-id case of the statement above, so the two callers can never drift apart.
+    return _active_grants_of_statement([user_id])
 
 
 def _grants_of_source_statement(user_id: UUID, source: AccessGrantSource):
@@ -99,6 +106,12 @@ class GrantsDB:
         """Lock and return every grant of `user_id` the one-active index sees, ascending by id."""
         # No eager-loading option here: Postgres rejects FOR UPDATE combined with the join those emit.
         statement = _active_grants_statement(user_id).with_for_update()
+        return list((await self.session.exec(statement)).all())
+
+    async def lock_active_grants_of(self, user_ids: list[UUID]) -> list[AccessGrant]:
+        """Lock and return every grant of `user_ids` the one-active index sees, ascending by id."""
+        # No eager-loading option here: Postgres rejects FOR UPDATE combined with the join those emit.
+        statement = _active_grants_of_statement(user_ids).with_for_update()
         return list((await self.session.exec(statement)).all())
 
     async def read_active_grants(self, user_id: UUID) -> list[AccessGrant]:

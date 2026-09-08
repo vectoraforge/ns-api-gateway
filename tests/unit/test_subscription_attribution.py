@@ -114,8 +114,9 @@ class _RecordingSubscriptions:
                                   updated_at=fields["evaluated_at"])
             self.subscriptions[key] = stored
         else:
-            # The same rule the crud holds: an owner is added, never cleared.
-            stored.user_id = stored.user_id if fields["user_id"] is None else fields["user_id"]
+            # The same rule the crud holds: the token attributes an unowned row only.
+            stored.user_id = (stored.user_id if stored.user_id is not None
+                              else fields["user_id"])
             stored.tier_id = fields["tier_id"]
             stored.status = fields["status"]
             # The same rule the crud holds: an absent signing date clears nothing.

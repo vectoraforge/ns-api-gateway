@@ -44,7 +44,8 @@ class SubscriptionsService:
                                                                notification.external_id)
         old_tier_id = None if stored is None else stored.tier_id
         # A plain read, never a lock: a subscription-row lock would sit ahead of the grant locks below.
-        owner = user_id if user_id is not None else (None if stored is None else stored.user_id)
+        # The crud's D-09 rule, restated: the owner the writer will keep is the owner locked here.
+        owner = (stored.user_id if stored is not None and stored.user_id is not None else user_id)
 
         # An unattributed purchase has no buyer, so there is no row to lock and no grant to hold.
         marked_active = ([] if owner is None
