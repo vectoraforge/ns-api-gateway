@@ -14,7 +14,7 @@ progress:
   total_phases: 18
   completed_phases: 16
   total_plans: 124
-  completed_plans: 123
+  completed_plans: 124
   percent: 89
 ---
 
@@ -31,8 +31,8 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 
 Phase: 46 (POST /auth/sign-out-all) — EXECUTING
 Plan: 5 of 5
-Status: Ready to execute
-Progress: [████████████████████] 119/119 plans ([█████████░] 89%)
+Status: Executed, awaiting verification
+Progress: [████████████████████] 124/124 plans ([█████████░] 89%)
 
 **Phase 45 closed 2026-09-08.** Re-verification passed 7/7 after the four gap-closure plans. The
 code review that followed them (`45-REVIEW.md`, second run) found CR-01 was NOT closed — `quote`
@@ -108,6 +108,69 @@ touched, and the `held` comprehension, the replay test, the `ended` choice and t
 byte-unchanged. **Recorded as accepted rather than fixed:** a move still writes no audit row
 (45-REVIEW WR-04, T-45-08-03), so a wrongly-ended grant would leave no trail; CONTEXT's "Carried
 forward" deletes `audit.auth_events`, and a gap-closure plan may not reverse that.
+
+<!-- Counts read against disk rather than incremented, as 41-05, 42-07, 43-06, 44-07 and 45-05 did.
+     Read at 2026-09-08T23:44Z, during plan 46-05's Task 2: 124 PLAN files and 123 SUMMARY files
+     across .planning/phases/, and the frontmatter carried 124 and 123, so nothing needed
+     correcting. This plan's own summary is the hundred-and-twenty-fourth and lands after Task 2,
+     which is why completed_plans is written as 124 here rather than 123. Phase 46 itself: 5 PLAN
+     files and 4 SUMMARY files at the moment this was read, the fifth being this plan's. The phase
+     is executed, not yet verified, so completed_phases stays at 16 and percent stays at 89. These
+     numbers were counted, not advanced. -->
+
+**Phase 46 outcome.** `POST /auth/sign-out-all` ships as the eighth auth route, under a route-level
+`Depends(get_linked_identity)`. It takes no request body. **The handler declares two dependencies:
+the barrier and the Firebase seam accessor.** It declares no database session, so it opens none and
+runs no statement, and one line proves it — `get_db` is absent from the callables FastAPI resolved
+for the route. The body is one awaited call. `revoke_with_retry` calls the seam method
+`revoke_refresh_tokens`, which selects the Admin app by the request-verified issuer and runs
+`firebase_admin.auth.revoke_refresh_tokens` off the event loop. **Confirmation is the call
+returning**: no read-back, no `getUser` call and no stored-provider read. A confirmed revocation
+answers 204 with an empty body. **Every unconfirmed outcome is one leaf**, `RevocationUnconfirmed`,
+503 `verification_temporarily_unavailable`, raised for a Firebase error response, a transport
+failure, a timeout, an exhausted budget, an issuer with no configured app and a malformed subject.
+**One outcome departs from the brief**: a Firebase "no such user" answers 401, recorded as a flagged
+conflict (D-06) under SIGNOUT-01 rather than resolved by editing the brief. **The two mistakes this
+phase knew it could make are both in `_revoke`'s except chain, and both are now pinned by cases.**
+First, `except auth.UserNotFoundError` must sit **before** `except exceptions.FirebaseError`, which
+is its own superclass; reversed, the 401 arm is unreachable and a deleted account gets 503 for up to
+an hour. Second, the `ValueError` arm must raise `RevocationUnconfirmed` and **not**
+`RetryableLookupError`, because the SDK validates the uid before it sends the request, so a second
+attempt answers the same; the read's own arm classes it retryable and copying it would have cost
+three attempts for a definitive refusal. One unit case asserts each class and one retry case
+measures each cost. **Four hand-written literals were re-written to record the new shape**: the
+Protocol method set in `tests/unit/test_adapter_interfaces.py`, now both method names with the case
+name and the class docstring re-written to say two; the auth-package ratchet `CURRENT` in
+`tests/unit/test_auth_package_shape.py`, moved to the measured `(8, 24, 64)` read from the failing
+run's own text rather than guessed; and `EVENT_NAMES` and `CONSTRUCTOR_ARGUMENTS` in
+`tests/unit/test_rejection_vocabulary.py`. **What was measured rather than assumed:** the whole
+recorded call list, so a forgotten `app=` fails on the identity of the app object rather than
+passing on a call count; an empty call list for an unconfigured issuer, which is a stronger fact
+than one call that raised; the attempt count per outcome, with an overrun in the counting fake
+raising its own `AssertionError` so a fourth call fails loudly; the exhaustion leaf asserted **by
+class** and by a negative check against `Unavailable`, which is the only assertion in the repository
+that could see a wrapper reusing `_exhausted`; the outage body and the no-app body compared as raw
+bytes to each other; and the five barrier rejections compared byte for byte against `/auth/sync`'s.
+**Three refusal cases run the real seam over a monkeypatched SDK**, because the fake replaces the
+very classification the case means to prove — a fake scripted with an SDK error escaped unhandled
+and never became a 503, which was verified with a probe before the shape was changed. Suite **1281
+unit / 348 e2e / 229 schema**, `uv run ruff check src tests` clean, all four commands run in plan
+46-05 rather than copied. **The schema count is the control**: this phase touches no migration and
+no schema test, and 229 is what Phase 45 left. **Both forward flags standing under SIGNOUT-01 are
+answered and closed** — the adapter seam by D-01, declared beside its first implementation, and the
+`sign_out_all` operation label by D-08, which adds no label and does not edit the single migration.
+**Recorded as accepted rather than fixed:** the unbounded Firebase revocation write per attempt, the
+sixth such residual this project carries and the first that is a **write** at the provider rather
+than a read; the caller must already hold a valid Firebase ID token for a linked, active account, so
+it is one subject looping on itself, and the v2.1 gateway contract is what closes it. **Recorded as
+a standing fact about the world rather than a gap:** the mapping from the Identity Toolkit's
+`accounts:update` answer for a non-existent account to `USER_NOT_FOUND` is read from the installed
+SDK source and corroborated by an upstream issue report, never probed against a live project; both
+suites pass either way because every case scripts the exception directly, so the exposure is
+production-only and one real-credential call against a deleted uid would settle it. **Knowingly left
+open:** `TestTheLookupArmsCarryStageAndOnlyABoundedCause` in `tests/unit/test_rejection_vocabulary.py`
+is a hand-picked three-arm sample and does not name `RevocationUnconfirmed`. It is green, and
+nothing fails.
 
 <!-- The counter above is read from disk, as this file's convention requires: read at
      2026-09-08T20:52Z, 119 PLAN files and 116 SUMMARY files across .planning/phases/, and
@@ -372,6 +435,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 - Database credentials in .env use the DB_* prefix (read by pogo's database_config and AppConfig.db); POSTGRES_* exists only for the postgres:17 image, and the image's database key is POSTGRES_DB, never POSTGRES_NAME
 - Phase 34 dev database is the developer's local postgres:17 container on localhost:5432 — PostgreSQL 17.11; RESEARCH.md's introspection constants were captured on 16.2 and plan 34-03 must re-capture them (assumption A1 still open)
 - An owner, once set on `core.subscriptions`, is kept by ingestion: a notification's attribution token attributes an **unowned** row only, and restore alone changes an owner (Phase 45 D-09). This amends Phase 43 D-19 and 43-03's "an owner is added, never cleared", which now also reads "and never replaced by ingestion". The rule has three mirrors — `crud/subscriptions.py::upsert_subscription`, the owner line in `services/subscriptions.py::ingest` that decides which account is locked and granted, and the unit suite's fake writer — and a later phase must find it here rather than read the change as a regression
+- A second Firebase Admin call now lives on the same seam: `revoke_refresh_tokens` sits beside `get_user_provider_data` in `auth/firebase.py` and on the `FirebaseAdminAdapter` Protocol (Phase 46 D-01). Each call has **its own retry wrapper and its own exhaustion leaf** — `lookup_with_retry` with `_exhausted`, and `revoke_with_retry` with `_revocation_exhausted` — rather than one generic wrapper taking a callback (D-02). A later phase adding a third Firebase call follows the same shape: one seam method, one wrapper, one leaf. The seam returns nothing on success and raises otherwise; no result value type was re-minted
+- `RevocationUnconfirmed` shares 503 `verification_temporarily_unavailable` with `Unavailable` **on purpose** (Phase 46 D-05). The error-tree totality walk rejects one code at two statuses, not one code at one status. The two leaves are told apart **by class and by log event name, never by the wire**, so any test that means to see the difference must assert the class; a status assertion cannot
+- `POST /auth/sign-out-all` answers **401 `auth_required`** on a Firebase "no such user" (Phase 46 D-06). **This is a departure from `11-sign-out-all.md` and is recorded as a flagged conflict under SIGNOUT-01. A later reader must not read it as a bug.** The ground: the token verified and the identity row is linked, but the IDP has no account behind the uid, so nothing exists to revoke and no token can be minted for it again
+- `/auth/sign-out-all` writes one INFO line, `sign_out_all_confirmed`, carrying `identity_row_id` (Phase 46 D-07). This **narrows** Phase 38 D-02's "no success log line" to `/auth/sync`; it does not reopen it there. The ground: for an anonymous account this route is a one-way door, and the middleware `request` line carries no identity, so without this line no operator can answer "did account X sign out everywhere"
 
 ### Pending Todos
 

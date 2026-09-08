@@ -756,13 +756,13 @@ Plans:
 **Goal:** Revoke the verified subject's Firebase refresh tokens through the issuer-selected Admin client.
 **Requirements:** SIGNOUT-01, SIGNOUT-02
 **Depends on:** 34, 35
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans executed
 **Success criteria:**
 
-1. Success is returned only after Firebase confirms revocation
-2. An indeterminate or failed revocation fails closed — never a success response
-3. **BLOCKED: requires a mechanism Phase 37.1 deleted. Phase 46 must decide.** As written: exactly one `audit.auth_events` row is written per attempt. The table, the writer and every call site were deleted by Phase 37.1 (D-01), 2026-08-24, before this phase was built. **Phase 46 owns the decision** — the same choice Phase 38 faces — but must weigh it on this operation's own terms: criterion 2's fail-closed rule is untouched and still binding, and a sign-out-all that fails closed on an indeterminate revocation leaves *nothing* recording the attempt if the obligation is simply dropped. That is a different exposure from a read-only sync losing its attempt telemetry. Matching requirement: SIGNOUT-02.
-4. No backend token, session, or generation counter is introduced
+1. Success is returned only after Firebase confirms revocation — **met as written, 2026-09-08.** The handler's whole body is one awaited `revoke_with_retry` call, and confirmation is that call returning: the SDK returns nothing on success, so there is no read-back, no `getUser` call and no stored-provider read. A confirmed revocation answers **204 No Content** with an empty body, proved on the wire by `test_a_confirmed_revocation_answers_204_with_an_empty_body`. **The call is pinned as well as the answer:** the recorded call list is asserted whole, `[{"uid": SUBJECT, "app": app}]`, so a forgotten explicit `app=` fails on the identity of the Admin app object rather than passing on a call count — which is what makes "through the issuer-selected client" an assertion and not a claim. Matching requirement: SIGNOUT-01.
+2. An indeterminate or failed revocation fails closed — never a success response — **met as written, 2026-09-08.** Every unconfirmed outcome raises one leaf, `RevocationUnconfirmed`, 503 `verification_temporarily_unavailable`: a Firebase error response, a transport failure, a timeout, an exhausted retry budget, an issuer with no configured Admin app, and a malformed subject. **The exhausted budget is asserted by class**, and by a negative check against `Unavailable`, because the two answer byte-identical 503 bodies and no wire assertion could see the difference — `test_neither_the_retry_error_nor_the_internal_marker_escapes` is the only assertion in the repository that could catch a wrapper reusing `_exhausted`. **At the wire**, the outage answers 503 and explicitly not 204, the unconfigured issuer answers 503 with no SDK call made at all, and the two bodies are compared as raw bytes to each other, so no body names which check refused. **One refusal departs from the brief and is a refusal all the same:** a Firebase "no such user" answers 401 `auth_required`, recorded as flagged conflict D-06 under SIGNOUT-01. Matching requirement: SIGNOUT-02.
+3. Every attempt leaves a record, and no durable row is written — **ANSWERED by Phase 46 (D-05 and D-07), 2026-09-08.** The audit question this criterion used to hand to Phase 46 was settled by removal in Phase 38 (D-03), which struck § "Audit" from `SHARED-INVARIANTS.md` after Phase 37.1 (D-01) deleted the table and its writer. This phase inherited no audit decision and made none. **What was built instead.** Every unconfirmed outcome is one 503 leaf, `RevocationUnconfirmed`, whose class name is its WARNING event name — `revocation_unconfirmed`, written once per refused attempt by the shared error handler, carrying the `stage` alone. One INFO line, `sign_out_all_confirmed`, records a confirmed revocation and carries `identity_row_id` and nothing else; that line is this phase's own choice under D-07, and it narrows Phase 38 D-02's "no success log line" to `/auth/sync` rather than reopening it there. `RequestLoggingMiddleware` writes one `request` line per attempt, as it does on every route. **No durable row is written, and no audit writer is reintroduced.** No record of any outcome carries the subject or the provider uid, asserted over a confirmed, a refused and a rejected call. Matching requirement: SIGNOUT-02.
+4. No backend token, session, or generation counter is introduced — **met as written, and proved by absence rather than asserted in prose, 2026-09-08.** Nothing is issued and nothing is reissued: authentication stays per-request on the Firebase ID token. There is no generation counter and no durable revocation state, because the only thing the request changes is Firebase's own valid-after timestamp for the subject. **The database half is measured**: `get_db` is absent from the callables FastAPI resolved for `/auth/sign-out-all`, which is the whole proof that the handler opens no session and runs no statement after the barrier, and a source-side gate pins the `get_db` count in `routers/auth.py` at two — the count it carried before this phase. Matching requirement: SIGNOUT-01.
 
 Plans:
 
@@ -781,7 +781,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3)*
 
-- [ ] 46-05-PLAN.md — The dated SIGNOUT amendments, the two closed forward flags, the re-derived counts and the phase close (wave 4)
+- [x] 46-05-PLAN.md — The dated SIGNOUT amendments, the two closed forward flags, the re-derived counts and the phase close (wave 4)
 
 ## Progress
 
@@ -832,4 +832,4 @@ Plans:
 | 43. POST /webhooks/app-store | v2.0 | 6/6 | Complete    | 2026-09-04 |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 7/7 | Complete    | 2026-09-06 |
 | 45. POST /auth/restore-subscription | v2.0 | 9/9 | Complete    | 2026-09-08 |
-| 46. POST /auth/sign-out-all | v2.0 | 4/5 | In Progress|  |
+| 46. POST /auth/sign-out-all | v2.0 | 5/5 | In Progress|  |
