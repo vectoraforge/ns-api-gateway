@@ -41,6 +41,7 @@ The analysis pipeline must work reliably — correct LLM invocation, proper resi
 - ✓ YAML-based configuration with Pydantic validation — existing
 - ✓ Mandatory pre-handler auth barrier: single point of JWT acceptance and identity resolution, admitting only active identities — Validated in Phase 35: Foundation
 - ✓ Shared machinery every later phase calls: route registry with startup enumeration assertion, error registry, audit writer, provider-call budget seam, challenge store, adapter interfaces — Validated in Phase 35: Foundation
+- ✓ Store-artifact subscription restore: `POST /auth/restore-subscription` verifies an Apple JWS locally or one Google `purchases.subscriptionsv2.get` call, then attaches entitlement as replay, adoption or a move capped at one per UTC month — Validated in Phase 45 (re-verified 7/7 on 2026-09-08 after gap closure)
 - ✓ Typed exception hierarchy replacing bare `Exception` in database and service layers — v1.1
 - ✓ JWT auth structured for real signature verification (TokenVerifier protocol, pluggable via app.state) — v1.1
 - ✓ Retry logic preserves original exception chain with granular error types (TransientLLMError/PermanentLLMError) — v1.1
@@ -102,7 +103,7 @@ Scoped in `.planning/REQUIREMENTS.md` for v2.0. Summary:
 - [ ] Access-grant entitlement model — exactly one active grant per user, four enumerated sources
 - [ ] Anonymous and registered free-grant claim flows with supersession
 - [ ] Dual-store subscription ingestion (App Store notifications + Google Play RTDN)
-- [ ] Store-artifact subscription restore and Firebase refresh-token revocation
+- [ ] Firebase refresh-token revocation (`POST /auth/sign-out-all`)
 
 ### Out of Scope
 
@@ -221,6 +222,9 @@ Known areas for future work:
 | Schema (34) and foundation (35) stay separate phases | Foundation is already the heaviest phase (8 subsystems); the two have genuinely different acceptance gates — "migration applies, constraints exist" vs "app starts, route assertion passes". Accepts one knowingly-broken intermediate commit | — Pending — v2.0 |
 | Phase numbering continues at 34–45 rather than resetting to 1 | Avoids colliding with the 33 phases already in MILESTONES.md; spec-file number maps to GSD phase by a fixed +34 offset | — Pending — v2.0 |
 | Roadmap built from spec metadata; each phase reads its own spec file at plan time | The spec dir is ~90k tokens — too large for one context, and unnecessary: the roadmapper needs dependency edges, not SQL DDL | — Pending — v2.0 |
+| Restore ships a cross-account **move** capped at one per UTC calendar month, where the brief forbids any transfer (Phase 45 D-10) | A customer who reinstalls under a new account must be able to recover a paid subscription; a monthly cap bounds the abuse the brief was guarding against. Recorded as a flagged conflict under RESTORE-01 | ✓ Good — v2.0, on real PostgreSQL |
+| The grant's term is bound once from the proof and reused verbatim as `ends_at`; an absent or already-past term is refused before any write (45-07, CR-02) | The stored status and the client-presented term were never reconciled, so a `grace_period` row plus an Apple proof minted a paid grant that never expired | ◐ Mixed — v2.0. Closes the over-grant, but an Apple subscriber in billing grace can no longer restore (45-REVIEW WR-01): Apple's proof carries no grace window. Open, needs the grace window persisted server-side |
+| A dot-only Play purchase token is refused at `read_for_restore` rather than escaped (45-06 addendum, CR-01) | `quote` leaves `.` unescaped and httpx removes dot segments, so `..` rewrote the request path; `%2E` was measured to survive httpx but whether Google normalises it back cannot be tested from here | ✓ Good — v2.0, proved over a recording transport |
 
 ## Evolution
 
@@ -240,4 +244,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-09-01 after completing Phase 39*
+*Last updated: 2026-09-08 after completing Phase 45*

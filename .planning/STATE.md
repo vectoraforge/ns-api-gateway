@@ -22,16 +22,27 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-08-19)
+See: .planning/PROJECT.md (updated 2026-09-08)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 45 — POST /auth/restore-subscription
+**Current focus:** Phase 46 — POST /auth/sign-out-all
 
 ## Current Position
 
 Phase: 46 — POST /auth/sign-out-all
 Plan: Not started
 Status: Ready to plan
+Progress: [████████████████████] 119/119 plans (100%)
+
+**Phase 45 closed 2026-09-08.** Re-verification passed 7/7 after the four gap-closure plans. The
+code review that followed them (`45-REVIEW.md`, second run) found CR-01 was NOT closed — `quote`
+leaves `.` unescaped and httpx removes dot segments — and 45-06 was re-entered: a dot-only token is
+refused at `read_for_restore` (f28047a, 513ef70, f4c006c). Left open from that review: WR-01 (an
+Apple subscriber in billing grace can no longer restore), WR-02 (refusals log nothing), WR-03
+(replay/supersede predicates cover different rows — latent), WR-04 (boundary test is `now − 1 ms`).
+`/gsd:secure-phase 45` has not run. The block below is 45-09's execution-time record and predates
+the re-verification it anticipates.
+
 **Truth 7 (CR-01)** — 45-06 escaped both interpolated path segments of the Play read URL inside the
 shared `_get`, so a caller-supplied `restore_proof` names one path segment and can carry no query
 string; the same plan bounded `provider` at 32 and `restore_proof` at 8192 (WR-02). **Truth 1
@@ -429,6 +440,8 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 - ACCEPTED FACT ABOUT THE WORLD, not a gap the phase left (43-06): **no real Apple notification has ever reached this route, and none can until an iOS app exists.** Nothing can produce a genuine `signedPayload` without one. This is the same standing fact recorded above for DeviceCheck (41-05 D-04), and **the difference is large and in this phase's favour.** DeviceCheck's wire shapes are `[ASSUMED]` from secondary sources, because no official Apple page was fetchable. **This route's shapes come from Apple's own installed library**, and the chain walk — the path build, the two OID checks, the ES256 rule and the signature check — **runs for real in the unit suite** against a locally minted payload, with the vendored Apple root refusing it as the control. So the residual here is only whether Apple's **production** notifications match the shapes Apple's own library declares, which is a far smaller thing than a hand-derived wire contract. The one genuinely human deliverable stays open: setting both Server URLs in App Store Connect and confirming a Test Notification returns 200.
 - OPEN (37.5-06): a real coverage loss. `test_foundation_calls_no_adapter_method_anywhere_in_src` was the only enforcement that `get_user_provider_data` is named nowhere in `src/` outside `auth/adapters.py` and `auth/firebase.py`. The property holds today by grep, but nothing fails if a third file starts calling the adapter. ~25 lines to restore, with its allow-list and two controls. Not restored — unlike the two security cases the developer restored in `658895e`.
 
+- OPEN (45-REVIEW WR-01): **an Apple subscriber in a billing grace period cannot restore.** `auth/app_store.py` sets `grace_period_expires_at=None` unconditionally, so a `grace_period` stored row yields no proof term and 45-07's refusal fires. Fail-closed under-grant, the deliberate cost of closing CR-02's paid-grant-that-never-expires; the fix is persisting the grace window server-side, a schema change. Also open from the same review: WR-02 refusals log nothing, WR-03 replay/supersede predicate asymmetry (latent), WR-04 boundary pinned at `now − 1 ms`.
+- RESOLVED (45-06 addendum): CR-01 reopened by the second review — `quote(…, safe="")` never escapes `.` and httpx drops dot segments, so `..` rewrote the Play read path. Closed by refusing a dot-only token before the request is built, proved over a recording transport. The webhook `read()` carries no equivalent guard; nothing untrusted reaches it today.
 ### Quick Tasks Completed
 
 | # | Description | Date | Commit | Directory |
@@ -440,9 +453,9 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-08T21:29:41.757Z
+**Last session:** 2026-09-08T22:06:33.000Z
 
-Last activity: 2026-09-05
+Last activity: 2026-09-08
 Stopped at: Phase 45 complete, ready to plan Phase 46
 Resume file: None
 
