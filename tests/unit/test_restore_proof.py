@@ -286,6 +286,37 @@ class TestThePlayRequestUrlIsConfinedToOneResource:
         # The escaping is the URL's alone: the persisted external id stays the token Google gave.
         assert restored.external_id == PURCHASE_TOKEN
 
+    @pytest.mark.parametrize("token", [".", "..", "...."])
+    async def test_a_dot_only_token_is_refused_and_reaches_no_transport(self, token):
+        """`quote` leaves a dot unescaped and the client deletes a dot segment, so dots name nothing."""
+        sent, reader = _capturing_reader()
+
+        with pytest.raises(ProofRejected) as refusal:
+            await reader.read_for_restore(package_name=PACKAGE_NAME, purchase_token=token)
+
+        assert refusal.value.stage == GONE_STAGE
+        assert sent == []
+
+    async def test_a_dot_only_package_name_is_an_operator_state_and_reaches_no_transport(self):
+        """The application name is operator configuration, so dots alone are a 503 and not a refusal."""
+        sent, reader = _capturing_reader()
+
+        with pytest.raises(Unavailable) as refusal:
+            await reader.read_for_restore(package_name="..", purchase_token=PURCHASE_TOKEN)
+
+        assert refusal.value.stage == READ_STAGE
+        assert sent == []
+
+    async def test_a_token_carrying_dots_among_other_characters_is_still_read_control(self):
+        """The control: a real Play token carries dots, so only a token of dots alone is refused."""
+        sent, reader = _capturing_reader()
+
+        restored = await reader.read_for_restore(package_name=PACKAGE_NAME,
+                                                 purchase_token="a.b..c")
+
+        assert sent[0].url.raw_path.decode() == PLAY_TOKENS_PATH + "a.b..c"
+        assert restored.external_id == "a.b..c"
+
 
 class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
     """D-05: a gone token is a rejected proof, and every other failure is a 503 the app retries."""
