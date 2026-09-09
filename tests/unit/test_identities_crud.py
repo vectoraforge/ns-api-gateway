@@ -1,5 +1,6 @@
 """The four-outcome admission matrix as logic: the branches a real crud cannot produce."""
 import contextlib
+import logging
 from uuid import uuid7
 
 import pytest
@@ -175,6 +176,11 @@ class TestUnresolvableUser:
         rejection, _ = await _rejected(_row(user=None), IdentityUnresolvable,
                                        preauth_callable=True)
         assert not isinstance(rejection, PreAuthIdentityNotAllowed)
+
+    async def test_it_is_recorded_at_error_like_every_other_integrity_break(self):
+        """WR-23: at WARNING this one break carries no stack and answers no error-level query."""
+        rejection, _ = await _rejected(_row(user=None), IdentityUnresolvable)
+        assert rejection.log_level == logging.ERROR
 
     async def test_the_rejection_carries_no_actor_material(self):
         rejection, _ = await _rejected(_row(user=None), IdentityUnresolvable)

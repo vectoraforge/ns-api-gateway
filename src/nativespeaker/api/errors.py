@@ -368,6 +368,9 @@ class IdentityUnresolvable(AppError):
     # Declared rather than inherited, so the walk can tell a deliberate 500 from a leaf that forgot.
     status = 500
     code = "internal_error"
+    # A broken foreign key, recorded like every other integrity break in this module: at ERROR,
+    # which is also what carries the stack that names the read.
+    log_level = logging.ERROR
 
 
 class AccountUnavailable(AppError):
