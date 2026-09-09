@@ -499,19 +499,21 @@ class TestEveryFailedReadAnswersTheShared500:
 class TestNoRecordCarriesASensitiveValue:
     """T-44-26: the push token, the envelope, the attribution token and the purchase token reach no record."""
 
-    async def _drive_every_recording_arm(self, client, seam, factory) -> tuple[str, dict]:
-        """One delivery per arm that writes a record, all through the real seam; return the push and body."""
+    async def _drive_every_recording_arm(self, client, seam, factory) -> tuple[list[str], list[str]]:
+        """One delivery per arm that writes a record, all through the real seam.
+        Returns every credential and every envelope the walk put on the wire."""
         await _seed_store_token(factory, ATTRIBUTION_TOKEN)
         verified = _push_token()
+        foreign = _push_token(private_key=FOREIGN_PRIVATE_KEY_PEM)
         body = _push_body(PURCHASE_TOKEN)
         headers = {"Authorization": f"Bearer {verified}"}
+        sent = [body]
 
         # A refused push, then the two bodies that answer 200 having written nothing.
-        await client.post(PATH, json=body,
-                          headers={"Authorization":
-                                   f"Bearer {_push_token(private_key=FOREIGN_PRIVATE_KEY_PEM)}"})
-        await client.post(PATH, json=_undecodable_push_body(), headers=headers)
-        await client.post(PATH, json=_refund_review_push_body(), headers=headers)
+        await client.post(PATH, json=body, headers={"Authorization": f"Bearer {foreign}"})
+        for pushed in (_undecodable_push_body(), _refund_review_push_body()):
+            sent.append(pushed)
+            await client.post(PATH, json=pushed, headers=headers)
 
         # A product the configured map has no line for.
         expiry = (datetime.now(UTC) + timedelta(days=30)).isoformat()
@@ -525,8 +527,9 @@ class TestNoRecordCarriesASensitiveValue:
             seam.body = play_subscription_body(
                 externalAccountIdentifiers={"obfuscatedExternalAccountId": attribution})
             body = _push_body(PURCHASE_TOKEN, event_time_millis=EVENT_TIME_MILLIS + offset)
+            sent.append(body)
             await client.post(PATH, json=body, headers=headers)
-        return verified, body
+        return [verified, foreign], [pushed["message"]["data"] for pushed in sent]
 
     async def test_the_walk_sees_the_records_the_deliveries_produced(
             self, webhook_client, real_google_play_seam, _db_transaction, captured_records):
@@ -553,11 +556,11 @@ class TestNoRecordCarriesASensitiveValue:
 
     async def test_no_record_carries_a_token_the_envelope_or_the_purchase_token(
             self, webhook_client, real_google_play_seam, _db_transaction, captured_records):
-        verified, body = await self._drive_every_recording_arm(
+        credentials, envelopes = await self._drive_every_recording_arm(
             webhook_client, real_google_play_seam, _db_transaction)
 
         rendered = repr(captured_records.entries)
         # D-10 persists the purchase token as `external_id`; it must still reach no log line.
-        for secret in (verified, body["message"]["data"], PURCHASE_TOKEN,
+        for secret in (*credentials, *envelopes, PURCHASE_TOKEN,
                        ATTRIBUTION_TOKEN, OTHER_ATTRIBUTION_TOKEN):
             assert secret not in rendered, f"a log record carries {secret!r}"
