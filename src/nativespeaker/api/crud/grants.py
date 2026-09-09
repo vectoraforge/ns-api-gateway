@@ -176,11 +176,7 @@ class GrantsDB:
             # The repeat under the lock, and the only branch here whose row is there to be read back.
             return ActivationOutcome.lost_race
         if grants or marked_active or stored.free_grant_consumed_at is not None:
-            # `marked_active` and not `grants` alone: a row the one-active index sees and this
-            # window cannot -- a lapsed manual or subscription term still marked active -- would
-            # take the insert below to `ix_access_grants_one_active_per_user` and come back as a
-            # unique violation this method would then report as a race it lost. It is a refusal:
-            # there is no winner's row to re-read, and the doomed insert poisons the transaction.
+            # `marked_active` and not `grants` alone: a row this window cannot see still refuses the insert below.
             return ActivationOutcome.refused
         if await self.has_prior_free_grant(user_id):
             # No conversion exists on this route, so no loser lands here and nothing is left to re-read.

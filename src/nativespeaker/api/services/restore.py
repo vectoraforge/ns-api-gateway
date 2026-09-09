@@ -102,17 +102,7 @@ class RestoreService:
             # so an entitled status that merely changed spelling carries a window nothing checked.
             raise RestoreSubscriptionNotEntitled
 
-        # The window travels with the status that decided entitlement. Where the canonical row
-        # decided it, the webhook that wrote that status also wrote the grant carrying the window
-        # it wrote it with, and `lock_grants_of` above holds that row. Reading the window off the
-        # proof instead asked a second artifact for it, and an Apple proof states no grace window
-        # at all -- `verify_transaction` sets `grace_period_expires_at=None` unconditionally,
-        # because Apple's grace window lives in the renewal payload a bare signed transaction does
-        # not carry -- so a subscriber the store had actually put in grace was told there was no
-        # subscription to restore. `10-restore-subscription.md:90`: later terms come from
-        # ingestion's renewal and never from restore, so where the grant is, its end is the term.
-        # At most one row answers: `write_subscription_grant` supersedes every active grant of this
-        # subscription before it inserts the next.
+        # At most one row answers: an entitled write supersedes this subscription's active grants first.
         recorded_term = [grant.ends_at for grant in marked_active
                          if stored is not None
                          and grant.source is AccessGrantSource.subscription

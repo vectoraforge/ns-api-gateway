@@ -142,11 +142,7 @@ class ChatService:
         try:
             await self.session.commit()
         except Exception:
-            # Re-raised unchanged, so the failure still reaches the handler: this only makes the
-            # case findable. `charge` committed the credit in its own session and nothing reverses
-            # it, so a dropped connection or a pool timeout here bills a chat that does not exist,
-            # and the 500 the caller receives carries nothing an operator could match it by. Not a
-            # ledger -- this product does not need one -- and no compensating write.
+            # Logged and re-raised unchanged: the credit is committed, so this line is all that finds the case.
             logger.error("charged_write_failed", user_id=str(user_id), branch=branch)
             raise
 

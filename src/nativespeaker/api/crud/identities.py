@@ -85,9 +85,7 @@ class IdentitiesDB:
 
     async def user_by_id(self, user_id: UUID) -> User | None:
         """The user an identity row points at, or `None`."""
-        # Never `UUID | None`: `core.external_identities.user_id` is NOT NULL, and a nullable
-        # parameter would compile to `id IS NULL`, matching no row and answering the caller's
-        # "that user does not exist" for an identity that lost its user.
+        # Never `UUID | None`: a nullable parameter would compile to `id IS NULL` and match no row.
         return (await self.session.exec(select(User).where(col(User.id) == user_id))).first()
 
     async def insert_account(self, *,
@@ -131,8 +129,7 @@ class IdentitiesDB:
             if not is_unique_violation(conflict):
                 # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                 raise
-            # 02 step 12: the provider account is answered by the service's pre-check, so what a
-            # uniqueness loss here means is `(issuer, subject)` -- the race that reconciles at /auth/sync.
+            # The only uniqueness this insert can lose is `(issuer, subject)`.
             raise IdentityAlreadyLinked() from conflict
         return user.id
 

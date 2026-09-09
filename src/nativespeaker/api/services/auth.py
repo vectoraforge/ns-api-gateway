@@ -221,12 +221,7 @@ class AuthService:
         # crash between an earlier write and this commit burns the device's one slot with no grant.
         await self.session.commit()
 
-        # Guarded as its registered sibling is. The race this attempt lost is not always another
-        # anonymous claim: `activate_anonymous_device_grant` also answers `lost_race` from the
-        # insert's unique violation, and `ix_access_grants_one_active_per_user` arbitrates over an
-        # active grant of *any* source, so a subscription or `manual` grant committed during the
-        # DeviceCheck read wins it. Setting bit0 for that winner burns this device's one lifetime
-        # anonymous slot for a grant this product never wrote, and nothing here ever clears a bit.
+        # Guarded by `wrote`: a race lost to a grant of any other source must not burn this device's slot.
         if wrote:
             # Fail-open by design, and it never becomes the answer: the grant above is durable, so a
             # failure here costs the device bit alone. Raised, it made a claim that fully succeeded
@@ -290,10 +285,7 @@ class AuthService:
         # an Apple bit and a crash before this commit would burn the slot with nothing granted.
         await self.session.commit()
 
-        # Both conditions, and not the read alone: the winner of the race this attempt lost may have
-        # converted its own anonymous grant, a path that reaches no vendor and spends no device slot.
-        # Setting bit1 for it burns this device's one registered slot for a grant nothing wrote here,
-        # and no path in this product ever clears an Apple bit.
+        # Both conditions, and not the read alone: a race lost to a conversion spends no device slot.
         if state is not None and wrote:
             # Fail-open by design, and it never becomes the answer: the grant above is durable, so
             # a failure here costs the device bit alone, as on the anonymous claim.

@@ -373,13 +373,7 @@ class SubscriptionsDB:
             return WriteOutcome.applied if superseded else WriteOutcome.replayed
 
         period = monthly_period_for(evaluated_at)
-        # The allowance is a UTC calendar month's, not a store term's, so a supersession inside one
-        # month carries its count across exactly as `activate_registered_account_grant` does. A
-        # fresh zero here handed a second allowance to every account whose term changed mid-month:
-        # a grace bounce (`DID_FAIL_TO_RENEW` then `DID_RENEW`) minted two, a mid-term tier change
-        # one more, and `10-restore-subscription.md:80` forbids a fresh counter outright. A renewal
-        # at a month boundary still starts at zero, because the superseded row names the old month.
-        # No lock and no second read tier: `lock_grants` locked these rows before this method ran.
+        # The allowance is a UTC calendar month's, not a store term's, so a supersession inside one month carries it.
         carried = 0
         for grant in superseded:
             # This account's own rows only: on a move `superseded` also holds the old owner's, and
