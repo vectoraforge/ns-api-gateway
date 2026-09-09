@@ -481,6 +481,24 @@ class TestEveryReachableRefusalIsOneClassWithItsOwnStage:
 
         assert refusal.value.stage == "INVALID_APP_IDENTIFIER"
 
+    @pytest.mark.parametrize("part", ["envelope", "transaction", "renewal"])
+    def test_a_field_of_the_wrong_type_is_refused_rather_than_the_500_apple_retries(self, chain,
+                                                                                   part):
+        """WR-17: the library structures each decoded payload outside its own guard, so a cattrs
+        error escaped onto the generic 500 -- and spec 08 answers 401 for a malformed payload,
+        because 5xx is what makes Apple resend a body that will never structure."""
+        misshapen = {"envelope": {**_envelope(chain, transaction=_transaction()), "data": 5},
+                     "transaction": _envelope(chain,
+                                              transaction={**_transaction(), "expiresDate": "nope"}),
+                     "renewal": _envelope(chain, transaction=_transaction(),
+                                          renewal={**_renewal(),
+                                                   "gracePeriodExpiresDate": "nope"})}
+
+        with pytest.raises(NotificationRejected) as refusal:
+            _notifications(chain).verify(_mint(chain, misshapen[part]))
+
+        assert refusal.value.stage == "payload_unstructurable"
+
     def test_every_reachable_stage_is_a_closed_set_name(self, chain):
         """`VerificationStatus.name` is one of eight strings, which is what makes it a safe log label."""
         from appstoreserverlibrary.signed_data_verifier import VerificationStatus

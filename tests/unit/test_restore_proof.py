@@ -162,6 +162,14 @@ class TestAProofThatDoesNotVerifyIsRefusedWithoutNamingItself:
         with pytest.raises(UnmappedStoreProduct):
             _proof_through(chain, unmapped)
 
+    def test_a_field_of_the_wrong_type_is_refused_rather_than_reaching_the_generic_500(self, chain):
+        """WR-17: the library structures the transaction outside its own guard, so a cattrs error
+        escaped this seam; a proof that will never structure is this caller's refusal to earn."""
+        with pytest.raises(ProofRejected) as refusal:
+            _proof_through(chain, {**_transaction(), "expiresDate": "nope"})
+
+        assert refusal.value.stage == "payload_unstructurable"
+
     def test_the_three_arms_are_three_distinct_names_from_the_closed_set(self, chain):
         """`VerificationStatus.name` is a fixed set of strings, which is what makes it a safe label."""
         short_chain = _mint(chain, _transaction(), x5c=chain.x5c[:2])

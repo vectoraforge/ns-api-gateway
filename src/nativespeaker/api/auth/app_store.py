@@ -101,6 +101,12 @@ class AppStoreNotifications:
             payload = self._verifier.verify_and_decode_notification(signed_payload)
         except VerificationException as failure:
             raise NotificationRejected(stage=failure.status.name) from failure
+        except Exception as failure:
+            # The library structures the decoded object outside its own guard, so a field of the
+            # wrong JSON type leaves a cattrs error rather than a `VerificationException`. Spec 08
+            # calls that a malformed payload -- a 401, never the 500 Apple retries for days. Every
+            # arm below is the same call and needs the same second arm.
+            raise NotificationRejected(stage="payload_unstructurable") from failure
 
         if not payload.notificationUUID or not payload.rawNotificationType:
             # Both are Optional in the library and neither is required by the verification, which
@@ -119,6 +125,8 @@ class AppStoreNotifications:
             transaction = self._verifier.verify_and_decode_signed_transaction(data.signedTransactionInfo)
         except VerificationException as failure:
             raise NotificationRejected(stage=failure.status.name) from failure
+        except Exception as failure:
+            raise NotificationRejected(stage="payload_unstructurable") from failure
 
         if data.rawStatus is None:
             # `status` is the state of an *auto-renewable subscription*, and Apple omits it for the
@@ -143,6 +151,8 @@ class AppStoreNotifications:
             renewal = self._verifier.verify_and_decode_renewal_info(data.signedRenewalInfo)
         except VerificationException as failure:
             raise NotificationRejected(stage=failure.status.name) from failure
+        except Exception as failure:
+            raise NotificationRejected(stage="payload_unstructurable") from failure
 
         return _crossed(payload, transaction, renewal, status=status, tier_id=tier_id)
 
@@ -157,6 +167,8 @@ class AppStoreNotifications:
         except VerificationException as failure:
             # `ProofRejected`, never `NotificationRejected`: this caller's own bearer token was valid.
             raise ProofRejected(stage=failure.status.name) from failure
+        except Exception as failure:
+            raise ProofRejected(stage="payload_unstructurable") from failure
 
         if transaction.originalTransactionId is None:
             # Refused before any read: the lifecycle key this proof is looked up by is absent.
