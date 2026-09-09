@@ -19,19 +19,15 @@ db:
   pool_size: 12
 jwt:
   jwks_cache_ttl_seconds: 3600
-# HMAC key material for the §4.3 / §6.4 keyed subject hashes. Base64 text, decoded to bytes once
-# at configuration load (pinned by the phase 35 checkpoint; changing the encoding after any row
-# exists invalidates every stored hash, and the raw subject was never kept).
-#
-# THIS FILE IS TRACKED IN GIT (D-20, accepted). The keys below are therefore committed, and
-# rotating one leaves its predecessor readable in history for good. These are generated
-# development keys -- provision production material through
-# .planning/todos/pending/secret-manager-integration.md, which exists for this reason.
+# NO SECRET MATERIAL LIVES IN THIS FILE. It is tracked in git (D-20, accepted), so it carries only
+# public reference data: the levels and limits above, and the two store product maps below. Every
+# credential is an environment variable or a path to a file kept outside this repository -- see
+# .env.example. There is no keyed subject hash anywhere in this project either; the verified
+# pre-auth subject is stored in plaintext, as the core.auth_challenges column comment says.
 #
 # The YAML is authoritative for anything it declares: AppConfig is built as AppConfig(**yaml_data,
 # ...) and pydantic-settings ranks init_settings above env_settings, so no environment variable
-# can override a key declared here. The Secret Manager follow-up must REMOVE these entries, not
-# shadow them.
+# can override a key declared here. Add a key below only when it must NOT vary per deployment.
 #
 # An operator edits this map; a verified product id absent from it is a 500 and Apple's next retry succeeds.
 app_store:
