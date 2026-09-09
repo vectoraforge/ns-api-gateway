@@ -207,14 +207,15 @@ class TransientLLMError(AnalysisError):
     """All retries failed on a transient LLM error; `__cause__` holds the last one."""
     status = 503
     code = "service_unavailable"
-    log_level = None
+    # No `log_level`: the parent's ERROR is what puts `__cause__` in the record. Answering 503
+    # silently would leave a whole-product outage recorded as an access line and nothing else.
 
 
 class PermanentLLMError(AnalysisError):
     """The LLM call failed with a non-transient error; `__cause__` holds it."""
     status = 503
     code = "service_unavailable"
-    log_level = None
+    # No `log_level`, for the same reason as its sibling: the cause is the only record of why.
 
 
 class MissingUsageRowError(InternalError):
@@ -309,6 +310,8 @@ class AttributionConflict(InternalError):
 
 class QueueFullError(ServiceUnavailable):
     """The LLM queue is full."""
+    # Declared, not inherited: saturation is an operational event, not the bare framework 503.
+    log_level = logging.WARNING
 
     def __init__(self, retry_after_seconds: int):
         self.retry_after_seconds = retry_after_seconds
@@ -320,6 +323,8 @@ class QueueFullError(ServiceUnavailable):
 
 class CircuitOpenError(ServiceUnavailable):
     """The LLM circuit breaker is open."""
+    # Declared, not inherited: a tripped breaker is an operational event an operator alerts on.
+    log_level = logging.WARNING
 
     def __init__(self, retry_after_seconds: int):
         self.retry_after_seconds = retry_after_seconds

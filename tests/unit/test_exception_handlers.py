@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+from functools import partial
 from pathlib import Path
 from typing import cast
 from uuid import uuid7
@@ -12,7 +13,7 @@ from pydantic import BaseModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from nativespeaker.api.app.error_handlers import register_exception_handlers
+from nativespeaker.api.app.error_handlers import app_error_handler, register_exception_handlers
 from nativespeaker.api.auth.jwt_verifier import BoundedReason
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.errors import (
@@ -550,6 +551,42 @@ class TestTheHeadersEachClassComputesStillReachTheClient:
         assert response.status_code == 503
         assert "retry-after" not in response.headers
         assert "www-authenticate" not in response.headers
+
+
+class TestEveryServiceOutage503LeavesOneLineOfItsOwn:
+    """WR-22: a silent 503 leaves only the access line, which names neither the class nor the cause."""
+
+    @pytest.fixture
+    def levels(self, monkeypatch) -> _WarningSpy:
+        """One spy over both levels, so "which level, once" is a single assertion."""
+        spy = _WarningSpy()
+        for level in ("warning", "error"):
+            monkeypatch.setattr(f"nativespeaker.api.app.error_handlers.logger.{level}",
+                                partial(spy.record, level=level))
+        return spy
+
+    @pytest.mark.parametrize(("exc", "level", "event"), [
+        (QueueFullError(30), "warning", "queue_full_error"),
+        (CircuitOpenError(60), "warning", "circuit_open_error"),
+        (TransientLLMError("upstream timeout"), "error", "transient_llm_error"),
+        (PermanentLLMError("bad response format"), "error", "permanent_llm_error"),
+    ], ids=["queue_full", "circuit_open", "transient_llm", "permanent_llm"])
+    async def test_the_outage_names_itself_once_at_its_own_level(self, exc, level, event, levels):
+        response = await app_error_handler(None, exc)
+
+        assert response.status_code == 503
+        assert [(name, fields["level"]) for name, fields in levels.entries] == [(event, level)]
+
+    @pytest.mark.parametrize(("exc", "carries_cause"), [
+        (QueueFullError(30), False),
+        (TransientLLMError("upstream timeout"), True),
+    ], ids=["queue_full", "transient_llm"])
+    async def test_only_the_analysis_arms_carry_the_providers_own_exception(self, exc,
+                                                                           carries_cause, levels):
+        """`exc_info` is what puts `__cause__` in the record, and an outage is the case for it."""
+        await app_error_handler(None, exc)
+
+        assert levels.entries[0][1]["exc_info"] is carries_cause
 
 
 class TestARejectedBodyValueNeverReachesTheLog:
