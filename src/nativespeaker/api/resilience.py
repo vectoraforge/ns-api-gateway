@@ -59,8 +59,11 @@ class CircuitBreaker:
 
     async def record_success(self) -> None:
         async with self._lock:
+            if self._opened_at is not None:
+                # An attempt in flight when the breaker tripped predates it, so its answer says
+                # nothing about the provider now. Only `before_call`'s elapsed arm closes this.
+                return
             self._failure_count = 0
-            self._opened_at = None
 
     async def record_failure(self) -> None:
         async with self._lock:

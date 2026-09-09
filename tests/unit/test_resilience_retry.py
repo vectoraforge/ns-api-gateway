@@ -10,7 +10,7 @@ from nativespeaker.api.errors import (
     QueueFullError,
     TransientLLMError,
 )
-from nativespeaker.api.resilience import Admitted, ResiliencePolicy
+from nativespeaker.api.resilience import Admitted, CircuitBreaker, ResiliencePolicy
 
 MAX_ATTEMPTS = 3
 BACKOFF_BASE = 0.5
@@ -218,6 +218,28 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         # The answer a fresh request would get, headers and all, rather than a generic wrapped 503.
         assert (caught.value.status, caught.value.code) == (503, "service_unavailable")
         assert int(caught.value.extra_headers()["Retry-After"]) >= 1
+
+    async def test_a_success_landing_after_the_trip_does_not_close_the_breaker(self):
+        """WR-21: one shared breaker serves `pool_size` calls, so a straggler can answer after the trip."""
+        breaker = CircuitBreaker(failure_threshold=2, reset_seconds=60)
+
+        await breaker.record_failure()
+        await breaker.record_failure()
+        # The straggler entered `before_call` before the two failures above and answers now.
+        await breaker.record_success()
+
+        with pytest.raises(CircuitOpenError):
+            await breaker.before_call()
+
+    async def test_a_success_while_the_breaker_is_closed_still_clears_the_tally(self):
+        """The control: the guard above must refuse only while the breaker is open."""
+        breaker = CircuitBreaker(failure_threshold=2, reset_seconds=60)
+
+        await breaker.record_failure()
+        await breaker.record_success()
+        await breaker.record_failure()
+
+        await breaker.before_call()
 
     async def test_the_full_budget_is_still_spent_while_the_breaker_stays_closed(self, policy, spy, sleeps):
         """The control: the case above must pass because the breaker opened, not because retrying broke generally."""
