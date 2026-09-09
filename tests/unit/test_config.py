@@ -1,6 +1,7 @@
 import os
 import shutil
 import tempfile
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,19 +9,27 @@ import google.auth
 import google.auth.exceptions
 import pytest
 import yaml
+from jwt.exceptions import PyJWTError
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
-from nativespeaker.api.app.lifespan import _play_credential, build_app_store_verifier
+from nativespeaker.api.app.lifespan import (
+    _play_credential,
+    build_app_store_verifier,
+    build_jwt_verifier,
+)
+from nativespeaker.api.auth.jwt_verifier import JWTVerifier
 from nativespeaker.api.config import (
     AppConfig,
     AppStoreConfig,
     DatabaseConfig,
     EnvironmentConfig,
+    JWTConfig,
     ModelConfig,
     ResilienceConfig,
     StoreEnvironment,
 )
+from unit.test_jwks_offload import install_counted_transport
 
 # Removed for these cases: the nested delimiter makes pytest-dotenv's CONFIG_DIR ambiguous.
 _DOTENV_KEYS = ["CONFIG_DIR"]
@@ -38,6 +47,9 @@ _ENV_SECRETS = {
 
 # The repository root, so a path the application resolves against its own cwd resolves here too.
 REPOSITORY_ROOT = TRACKED_CONFIG.parents[1]
+
+# A URL no case reaches over the network: the transport under `PyJWKClient` is stubbed in every one.
+UNUSABLE_JWKS_URL = "https://jwks.example.invalid/keys"
 
 # The three variables a deployer supplies; the fourth field defaults to the committed root certificate.
 _APP_STORE_ENV = {"APP_STORE_BUNDLE_ID": "com.nativespeaker.app",
@@ -577,3 +589,40 @@ class TestTheComposeDatabaseIsNotPublishedToTheWholeNetwork:
         assert published
         for port in published:
             assert port.startswith("127.0.0.1:"), f"{port} publishes on every interface"
+
+
+class TestTheIdentityBarrierVerifierFailsFastAndNamesItsEndpoint:
+    """WR-02. `JWTVerifier.__init__` fetches, and the one caller that must not degrade is the one
+    whose failure takes the whole pod down -- so its diagnostic has to name the endpoint that refused."""
+
+    @staticmethod
+    def _jwt_config() -> JWTConfig:
+        return JWTConfig(project_id="test-project", jwks_url=UNUSABLE_JWKS_URL)
+
+    def test_an_unreachable_endpoint_raises_a_runtime_error_naming_the_url(self, monkeypatch):
+        transport = install_counted_transport(monkeypatch)
+        transport.error = urllib.error.URLError("the JWKS endpoint is unreachable")
+
+        with pytest.raises(RuntimeError) as raised:
+            build_jwt_verifier(self._jwt_config())
+
+        # The whole point of the guard: the bare `PyJWKClientError` names no URL at all.
+        assert UNUSABLE_JWKS_URL in str(raised.value)
+        assert not isinstance(raised.value, PyJWTError)
+
+    def test_a_2xx_that_is_not_json_is_named_the_same_way(self, monkeypatch):
+        """The wrapped family too, not just the one PyJWT converts itself: a proxy error page
+        answering 200 leaves a `JSONDecodeError` that the constructor turns into a `PyJWKClientError`."""
+        transport = install_counted_transport(monkeypatch)
+        transport.body = b"<html>502 Bad Gateway</html>"
+
+        with pytest.raises(RuntimeError) as raised:
+            build_jwt_verifier(self._jwt_config())
+
+        assert UNUSABLE_JWKS_URL in str(raised.value)
+
+    def test_a_usable_endpoint_builds_the_verifier(self, monkeypatch):
+        """The control: a builder that raised unconditionally would pass both cases above."""
+        install_counted_transport(monkeypatch)
+
+        assert isinstance(build_jwt_verifier(self._jwt_config()), JWTVerifier)

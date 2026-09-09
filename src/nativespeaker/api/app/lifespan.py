@@ -34,6 +34,7 @@ from nativespeaker.api.config import (
     AppStoreConfig,
     EnvironmentConfig,
     GooglePlayConfig,
+    JWTConfig,
     StoreEnvironment,
 )
 from nativespeaker.api.crud.challenges import ChallengesDB
@@ -87,6 +88,22 @@ def build_google_push_verifier(play: GooglePlayConfig) -> JWTVerifier | None:
     except PyJWTError:
         # The warm-up fetch raises on an unreachable JWKS, and one route's 503 beats a dead pod.
         return None
+
+
+def build_jwt_verifier(jwt: JWTConfig) -> JWTVerifier:
+    """The identity-barrier verifier. Unlike the two builders above, this one has no degraded form."""
+    try:
+        return JWTVerifier(jwks_url=jwt.jwks_url,
+                           audience=jwt.project_id,
+                           issuer=jwt.issuer,
+                           leeway=jwt.leeway_seconds,
+                           cache_ttl_seconds=jwt.jwks_cache_ttl_seconds)
+    except PyJWTError as failure:
+        # Deliberately fatal, where `build_google_push_verifier` answers `None`: every route past
+        # the identity barrier needs this verifier, so a pod without it has nothing to be Ready for.
+        # Re-raised naming the endpoint, because a crashlooping pod's first log line is all an
+        # operator gets and `PyJWKClientError`'s own message names no URL.
+        raise RuntimeError(f"JWKS unusable at {jwt.jwks_url}: {failure}") from failure
 
 
 def _play_credential():
@@ -169,11 +186,7 @@ async def lifespan(app: FastAPI):
         app.state.session_factory = async_sessionmaker(db_engine, class_=SQLModelAsyncSession,
                                                        expire_on_commit=False)
 
-        app.state.jwt_verifier = JWTVerifier(jwks_url=config.jwt.jwks_url,
-                                             audience=config.jwt.project_id,
-                                             issuer=config.jwt.issuer,
-                                             leeway=config.jwt.leeway_seconds,
-                                             cache_ttl_seconds=config.jwt.jwks_cache_ttl_seconds)
+        app.state.jwt_verifier = build_jwt_verifier(config.jwt)
 
         app.state.llm_service = LLMService(model_config=config.model,
                                            resilence_config=config.resilience,

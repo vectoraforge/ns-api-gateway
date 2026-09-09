@@ -132,7 +132,9 @@ class JWTVerifier:
         # `verify` runs on the worker threadpool, so an unsynchronized dict would escape as a 500.
         self._cache_lock = threading.Lock()
         # Warm the JWKS cache, and fail fast at startup if the endpoint is unusable.
-        # Wrapped because every caller guards this constructor on `PyJWTError`, and
+        # Wrapped so that both callers can guard this constructor on one exception class, each with
+        # its own policy: `build_google_push_verifier` answers `None` and costs one route a 503,
+        # `build_jwt_verifier` re-raises naming the endpoint and stops the pod.
         # `PyJWKClient.fetch_data` converts `URLError` and `TimeoutError` alone: a 2xx whose body is
         # not JSON leaves a `json.JSONDecodeError`, and one that parses to a non-object leaves an
         # `AttributeError`, neither of which is a `PyJWTError`. Only the class name travels: the
