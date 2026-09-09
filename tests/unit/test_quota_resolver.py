@@ -304,6 +304,15 @@ class TestTheLockingStatements:
         assert "FOR UPDATE" in sql
         assert "ORDER BY core.access_grants.id ASC" in sql
 
+    async def test_the_effective_grant_statement_is_scoped_and_uncapped(self):
+        """The tenant scope and the absence of a row-count cap: a second effective grant must be
+        visible rather than silently picked over, and neither term shows in a served response."""
+        session = await self._admitted_session()
+        sql = _compiled(session.statements[0])
+        assert "core.access_grants.user_id = " in sql
+        assert "core.access_grants.status = " in sql
+        assert "LIMIT" not in sql
+
     async def test_the_usage_statement_locks(self):
         session = await self._admitted_session()
         assert "FOR UPDATE" in _compiled(session.statements[1])
