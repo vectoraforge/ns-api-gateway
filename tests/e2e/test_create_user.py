@@ -41,17 +41,23 @@ async def _count(factory, statement) -> int:
 
 _CHALLENGES = select(func.count()).select_from(AuthChallenge)
 
-_GRANTS = select(func.count()).select_from(AccessGrant)
-_MONTHLY_USAGE = select(func.count()).select_from(UserMonthlyUsage)
-_USERS_CARRYING_A_NAME = (select(func.count()).select_from(User)
-                          .where(col(User.display_name).is_not(None)))
 
-
-async def _assert_step_10s_global_invariants(factory) -> None:
-    """Two rules hold after every completion here: no entitlement is minted anywhere, display_name stays NULL."""
-    assert await _count(factory, _GRANTS) == 0
-    assert await _count(factory, _MONTHLY_USAGE) == 0
-    assert await _count(factory, _USERS_CARRYING_A_NAME) == 0
+async def _assert_step_10s_invariants(factory, user_id) -> None:
+    """Two rules for the account under test rather than for the whole database: no entitlement is
+    minted for it, and its display_name stays NULL. Unscoped, as these counts were, one row any
+    other writer had committed failed nine call sites with `assert 1 == 0`."""
+    async with factory() as session:
+        grants = (await session.exec(
+            select(func.count()).select_from(AccessGrant)
+            .where(col(AccessGrant.user_id) == user_id))).one()
+        usage = (await session.exec(
+            select(func.count()).select_from(UserMonthlyUsage)
+            .where(col(UserMonthlyUsage.grant_id).in_(
+                select(col(AccessGrant.id)).where(col(AccessGrant.user_id) == user_id))))).one()
+        named = (await session.exec(
+            select(func.count()).select_from(User)
+            .where(col(User.id) == user_id, col(User.display_name).is_not(None)))).one()
+    assert (grants, usage, named) == (0, 0, 0)
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -134,7 +140,7 @@ class TestTheAnonymousHappyPath:
         assert challenge.consumed_at is not None
         assert challenge.preauth_subject is None
 
-        await _assert_step_10s_global_invariants(_db_transaction)
+        await _assert_step_10s_invariants(_db_transaction, identity.user_id)
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -221,7 +227,7 @@ class TestCompletionRejectsAnAlreadyLinkedCaller:
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
         """Nothing is created, and nothing of the attempt survives but the spent challenge."""
         subject = "already-linked-mints-nothing"
-        await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject)
+        seeded, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject)
         scripted_firebase_adapter.script(
             VerifiedProviderIdentity(provider=IdentityProvider.google,
                                      provider_uid=f"g-uid-{subject}"))
@@ -247,7 +253,7 @@ class TestCompletionRejectsAnAlreadyLinkedCaller:
         challenge = await _challenge_for(_db_transaction, handle)
         assert challenge.consumed_at is not None
 
-        await _assert_step_10s_global_invariants(_db_transaction)
+        await _assert_step_10s_invariants(_db_transaction, seeded.id)
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -295,7 +301,6 @@ class TestCompletionRejectionsOnTheWire:
         assert response.status_code == 409
         assert response.json() == {"code": "challenge_required"}
         assert await _count(_db_transaction, _USERS) == users_before
-        await _assert_step_10s_global_invariants(_db_transaction)
 
     async def test_a_password_entry_is_operation_not_allowed_and_consumes_the_challenge(
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
@@ -328,8 +333,6 @@ class TestCompletionRejectionsOnTheWire:
         assert challenge.consumed_at is not None
         assert challenge.preauth_subject is None
 
-        await _assert_step_10s_global_invariants(_db_transaction)
-
     async def test_the_same_handle_replayed_after_a_rejection_mints_nothing(
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
         """No idempotent replay: the second attempt is told to obtain a fresh challenge, not the first's outcome."""
@@ -354,7 +357,6 @@ class TestCompletionRejectionsOnTheWire:
         assert second.status_code == 409
         assert second.json() == {"code": "challenge_required"}
         assert await _count(_db_transaction, _USERS) == users_before
-        await _assert_step_10s_global_invariants(_db_transaction)
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -459,7 +461,7 @@ class TestTheRegisteredFlow:
         assert challenge.consumed_at is not None
         assert challenge.preauth_subject is None
 
-        await _assert_step_10s_global_invariants(_db_transaction)
+        await _assert_step_10s_invariants(_db_transaction, user.id)
 
 
 # The copy rule ANDs a non-empty address with emailVerified; each row below fails at most one of them.
@@ -497,7 +499,7 @@ class TestStep10sEmailCopyRule:
         assert user.display_name is None
         assert user.registered_at is not None
 
-        await _assert_step_10s_global_invariants(_db_transaction)
+        await _assert_step_10s_invariants(_db_transaction, user.id)
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -508,11 +510,11 @@ class TestTheProviderAccountReservation:
                              ids=["owner-active", "owner-historical"])
     async def test_a_reserved_provider_account_refuses_a_second_subject(
             self, create_user_client, _db_transaction, scripted_firebase_adapter, owner_state):
-        _, owner = await seed_identity(_db_transaction,
-                                       issuer=TEST_ISSUER,
-                                       subject=f"provider-account-owner-{owner_state}",
-                                       identity_state=owner_state,
-                                       provider=IdentityProvider.google)
+        owner_user, owner = await seed_identity(_db_transaction,
+                                                issuer=TEST_ISSUER,
+                                                subject=f"provider-account-owner-{owner_state}",
+                                                identity_state=owner_state,
+                                                provider=IdentityProvider.google)
         # Read back rather than rederived: a second derivation would stop colliding the day the helper changes.
         assert owner.provider_uid is not None
         scripted_firebase_adapter.script(
@@ -540,7 +542,7 @@ class TestTheProviderAccountReservation:
         assert challenge.consumed_at is not None
         assert challenge.preauth_subject is None
 
-        await _assert_step_10s_global_invariants(_db_transaction)
+        await _assert_step_10s_invariants(_db_transaction, owner_user.id)
 
 
 @pytest_asyncio.fixture(loop_scope="module")
@@ -594,7 +596,7 @@ class TestTheRealAnonymousCompletion:
         assert challenge.consumed_at is not None
         assert challenge.preauth_subject is None
 
-        await _assert_step_10s_global_invariants(_db_transaction)
+        await _assert_step_10s_invariants(_db_transaction, user.id)
 
     async def test_the_real_sdk_returns_empty_provider_data_for_an_anonymous_user(
             self, _app_lifespan, _app_config, anonymous_firebase_credential):
