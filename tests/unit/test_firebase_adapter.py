@@ -249,15 +249,26 @@ class TestTheRevocation:
         assert raised.value.status == 503
         assert raised.value.code == "verification_temporarily_unavailable"
 
-    async def test_user_not_found_answers_the_401_arm_and_not_the_firebase_error_one(
+    async def test_a_vanished_account_is_unconfirmed_and_never_the_firebase_error_arm(
             self, adapter, revoke_calls):
-        """`UserNotFoundError` subclasses `FirebaseError`; a reordered `except` would misclassify."""
+        """WR-29. `UserNotFoundError` subclasses `FirebaseError`; a reordered `except` would
+        misclassify it as retryable, and spec 11 admits no `auth_required` past the barrier."""
         assert issubclass(auth.UserNotFoundError, exceptions.FirebaseError)
         revoke_calls(auth.UserNotFoundError(PROVIDER_TEXT))
-        with pytest.raises(UserNotFound) as raised:
+        with pytest.raises(RevocationUnconfirmed) as raised:
             await adapter.revoke_refresh_tokens(ISSUER, SUBJECT)
-        assert raised.value.stage == "token_revocation"
-        assert raised.value.status == 401
+        assert raised.value.stage == "subject_absent"
+        # Never a 401: telling a client with a verified token to re-authenticate is a loop.
+        assert (raised.value.status, raised.value.code) == (503,
+                                                            "verification_temporarily_unavailable")
+        assert not isinstance(raised.value, UserNotFound)
+        # Definitive, so it must not be the retry marker either: another call answers the same.
+        assert not isinstance(raised.value, RetryableLookupError)
+
+    async def test_the_provider_lookup_still_answers_the_401_arm_control(self, adapter):
+        """The control: WR-29 narrows the revocation alone, and spec 11 does map the read to 401."""
+        assert UserNotFound.status == 401
+        assert "provider_lookup" == UserNotFound(stage="provider_lookup").stage
 
     async def test_a_malformed_subject_is_definitive_and_never_the_retry_marker(self, adapter,
                                                                                revoke_calls):

@@ -86,8 +86,13 @@ class FirebaseAdminLookup:
             auth.revoke_refresh_tokens(subject, app=app)
         except auth.UserNotFoundError:
             # Definitive, spends no retry budget, and listed before the FirebaseError it subclasses.
-            logger.info("firebase_revoke_not_found")
-            raise UserNotFound(stage="token_revocation") from None
+            # `RevocationUnconfirmed`, never `UserNotFound`: this call is made past the barrier on a
+            # subject whose token already verified, and `auth_required` there tells a client its
+            # credential is bad and to sign in again -- a loop, for an account that no longer exists.
+            # It also hides an integrity break, an active identity row naming a vanished uid, behind
+            # a routine 401. A vanished provider account is a definitive non-confirmation.
+            logger.error("firebase_revoke_not_found")
+            raise RevocationUnconfirmed(stage="subject_absent") from None
         except ValueError:
             # The SDK checks the uid before it sends the request, so another attempt answers the same.
             # The SDK's own message embeds the uid, so it is not admissible here.

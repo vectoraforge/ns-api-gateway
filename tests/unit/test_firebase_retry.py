@@ -80,7 +80,8 @@ class CountingRevoker:
 # Every revocation answer the policy must not retry: a confirmation and three terminal rejections.
 REVOCATION_DEFINITIVE = [
     (None, "a confirmed revocation"),
-    (UserNotFound(stage="token_revocation"), "the provider stated the account does not exist"),
+    # WR-29: a vanished account is a definitive non-confirmation, never a bad credential.
+    (RevocationUnconfirmed(stage="subject_absent"), "the provider stated the account does not exist"),
     (RevocationUnconfirmed(stage="issuer_selection"), "no app is configured for the issuer"),
     (RevocationUnconfirmed(stage="subject_rejected"), "the SDK refused the uid before sending"),
 ]
