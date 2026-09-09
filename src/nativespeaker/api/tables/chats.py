@@ -41,7 +41,13 @@ class Chat(SQLModel, table=True):
     lang: str | None = Field(default=None)
     created_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
 
-    messages: list[Message] = Relationship(cascade_delete=True, passive_deletes=True)
+    # Ordered explicitly: the LLM history is built by iterating this list, and an unordered
+    # SELECT returns physical row order, which a VACUUM or a plan change can shuffle.
+    messages: list[Message] = Relationship(
+        cascade_delete=True,
+        passive_deletes=True,
+        # `Message.id` is uuid7, so ascending id is chronological.
+        sa_relationship_kwargs={"order_by": "Message.id"})
     user: User = Relationship()
 
     @property

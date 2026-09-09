@@ -1,4 +1,4 @@
-from uuid import uuid4
+from uuid import uuid4, uuid7
 
 import pytest
 
@@ -250,3 +250,17 @@ class TestGetExamples:
 
         with pytest.raises(UnsupportedLanguageError):
             service.get_examples("en")
+
+
+class TestTheLlmHistoryIsOrdered:
+    """`ask_llm` iterates `chat.messages`, so the relationship must carry the ORDER BY itself."""
+
+    def test_the_messages_relationship_orders_by_the_time_ordered_id(self):
+        """Without this the loader emits a bare SELECT and PostgreSQL may shuffle the turns."""
+        ordering = Chat.__mapper__.relationships["messages"].order_by
+
+        assert [str(clause) for clause in ordering] == ["messages.id"]
+
+    def test_the_id_it_orders_by_is_the_time_ordered_one(self):
+        """The control: ascending id is chronological only because `Message.id` is uuid7."""
+        assert Message.model_fields["id"].default_factory is uuid7
