@@ -64,13 +64,13 @@ class _Result:
 class _ProbeSession:
     """The one short session the dependency opens: exactly one read, and every write verb raises."""
 
-    instances: list[_ProbeSession] = []
-
-    def __init__(self, row):
+    def __init__(self, row, opened: list[_ProbeSession]):
         self._row = row
         self.statements: list[object] = []
         self.closed = False
-        _ProbeSession.instances.append(self)
+        # The client's own list, never class state: a shared one would carry another request's
+        # session into the two cases that count them, and would survive between tests.
+        opened.append(self)
 
     async def __aenter__(self):
         return self
@@ -98,7 +98,6 @@ class _ProbeSession:
 
 def _client(row=None) -> TestClient:
     """Two accessor-declaring routes over stubbed app state, each declaring its accessor at both levels."""
-    _ProbeSession.instances.clear()
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     register_exception_handlers(app)
 
@@ -118,7 +117,10 @@ def _client(row=None) -> TestClient:
 
     # Read per request by the dependency, exactly as the real lifespan supplies them.
     app.state.jwt_verifier = make_test_verifier()
-    app.state.session_factory = lambda: _ProbeSession(row)
+    # Every session this client opens, in order, readable off the client the case drove.
+    opened: list[_ProbeSession] = []
+    app.state.opened_sessions = opened
+    app.state.session_factory = lambda: _ProbeSession(row, opened)
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -145,8 +147,9 @@ class TestNoCredentialIsRefused:
 
     def test_a_refused_request_never_reaches_the_identity_query(self):
         """Step 3 refuses before step 4, so no session is opened for an unverifiable token."""
-        _client().get("/linked", headers={"Authorization": "Bearer not.a.jwt"})
-        assert _ProbeSession.instances == []
+        client = _client()
+        client.get("/linked", headers={"Authorization": "Bearer not.a.jwt"})
+        assert client.app.state.opened_sessions == []
 
 
 class TestTheNarrowingHoldsInBothDirections:
@@ -268,9 +271,11 @@ class TestAccessorsCannotProvision:
     def test_the_declaration_resolves_once(self, path):
         """One session across both declarations; an accessor calling rather than declaring ran everything twice."""
         user, identity = _rows()
-        _client(row=(identity, user)).get(path, headers=_bearer())
-        assert len(_ProbeSession.instances) == 1, "resolution ran more than once"
-        session = _ProbeSession.instances[0]
+        client = _client(row=(identity, user))
+        client.get(path, headers=_bearer())
+        opened = client.app.state.opened_sessions
+        assert len(opened) == 1, "resolution ran more than once"
+        session = opened[0]
         assert len(session.statements) == 1, "resolution issues exactly one statement per request"
         assert session.closed, "the session closes before the handler runs"
 
