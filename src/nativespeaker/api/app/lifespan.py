@@ -93,7 +93,12 @@ def _play_credential():
     """ADC scoped for the Play Developer API, or `None` if the environment supplies none."""
     try:
         credential, _project = google.auth.default(scopes=[PLAY_SCOPE])
-    except google.auth.exceptions.DefaultCredentialsError:
+    except google.auth.exceptions.GoogleAuthError:
+        # The whole family, not just an absent credential: `google.auth.default()` also raises
+        # `RefreshError` and `TransportError` when the GCE metadata server answers badly, which is
+        # a routine transient at pod start. Every ADC failure is the same outcome here -- one route
+        # answers 503 and the pod still serves -- and it is the policy the push verifier above and
+        # `firebase._application_default_credential` already carry.
         return None
     return credential
 

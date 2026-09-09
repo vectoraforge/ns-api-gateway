@@ -4,12 +4,14 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import google.auth
+import google.auth.exceptions
 import pytest
 import yaml
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
-from nativespeaker.api.app.lifespan import build_app_store_verifier
+from nativespeaker.api.app.lifespan import _play_credential, build_app_store_verifier
 from nativespeaker.api.config import (
     AppConfig,
     AppStoreConfig,
@@ -467,6 +469,27 @@ class TestAnIncompleteConfigurationBootsAndHoldsNoVerifier:
             assert build_app_store_verifier(self._store(root_certificate_path=str(root))) is None
         finally:
             shutil.rmtree(tmp_dir)
+
+
+class TestEveryAdcFailureCostsOneRouteAndNotTheBoot:
+    """37.4 WR-08. `google.auth.default()` raises `RefreshError` and `TransportError` too, when the
+    GCE metadata server answers but answers badly -- a routine transient at pod start. Catching only
+    `DefaultCredentialsError` let those out of `lifespan` and crashlooped the pod."""
+
+    @pytest.mark.parametrize("failure", ["DefaultCredentialsError", "RefreshError",
+                                         "TransportError", "MutualTLSChannelError"])
+    def test_the_credential_reader_answers_none_for_any_of_them(self, monkeypatch, failure):
+        def raising(*_args, **_kwargs):
+            raise getattr(google.auth.exceptions, failure)(f"{failure} in this test")
+
+        monkeypatch.setattr(google.auth, "default", raising)
+        assert _play_credential() is None
+
+    def test_a_supplied_credential_is_returned_control(self, monkeypatch):
+        """The control: a reader that answered None unconditionally would pass every case above."""
+        supplied = object()
+        monkeypatch.setattr(google.auth, "default", lambda *a, **k: (supplied, "a-project"))
+        assert _play_credential() is supplied
 
 
 def _uncommented(path: Path) -> dict[str, str]:
