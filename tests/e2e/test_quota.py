@@ -24,13 +24,15 @@ FOLLOWUP = {"message": "Can you explain more?"}
 QUOTA_ROUTES = [("/chats", PHRASE), ("/chats/{chat_id}", FOLLOWUP)]
 QUOTA_ROUTE_IDS = ["create_chat", "send_message"]
 
-# The other six routes; GET/DELETE on an unknown chat id answer 404, which is irrelevant to the counter.
-UNCHARGED_ROUTES = [("GET", "/"),
-                    ("GET", "/health/ready"),
-                    ("GET", "/examples"),
-                    ("GET", "/chats"),
-                    ("GET", f"/chats/{uuid7()}"),
-                    ("DELETE", f"/chats/{uuid7()}")]
+# The other six routes, each with the status that proves the route itself ran: a request rejected
+# before the handler charges nothing for the wrong reason, and would leave this case green.
+# GET/DELETE on an unknown chat id answer 404, which is irrelevant to the counter.
+UNCHARGED_ROUTES = [("GET", "/", 200),
+                    ("GET", "/health/ready", 200),
+                    ("GET", "/examples?lang=en", 200),
+                    ("GET", "/chats", 200),
+                    ("GET", f"/chats/{uuid7()}", 404),
+                    ("DELETE", f"/chats/{uuid7()}", 404)]
 UNCHARGED_ROUTE_IDS = ["root", "health_ready", "examples", "list_chats", "get_messages",
                        "delete_chat"]
 
@@ -130,13 +132,15 @@ class TestASeededGrantIsAdmitted:
 class TestTheOtherSixRoutesConsumeNothing:
     """Exactly two of the eight routes are gated, so the other six must leave the counter untouched."""
 
-    @pytest.mark.parametrize("method, path", UNCHARGED_ROUTES, ids=UNCHARGED_ROUTE_IDS)
+    @pytest.mark.parametrize("method, path, expected", UNCHARGED_ROUTES, ids=UNCHARGED_ROUTE_IDS)
     async def test_the_route_spends_no_credit(self, async_client, quota_grant, _db_transaction,
-                                              method, path):
+                                              method, path, expected):
         grant, _ = quota_grant
 
-        await async_client.request(method, path)
+        response = await async_client.request(method, path)
 
+        # The handler must have run: a 422 or a 403 spends nothing for a reason this case is not about.
+        assert response.status_code == expected, response.text
         assert [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)] == [0]
 
 
