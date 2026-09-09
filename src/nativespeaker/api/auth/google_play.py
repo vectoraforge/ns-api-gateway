@@ -334,9 +334,17 @@ class PlayDeveloperSubscriptions:
 
     def _product_of(self, subscription: PlaySubscription) -> tuple[str, str, datetime | None]:
         """The line item's product, the tier it maps to, and the end of its term."""
-        line_item = subscription.lineItems[0] if subscription.lineItems else None
-        product_id = None if line_item is None else line_item.productId
-        if product_id is None or line_item is None or product_id not in self._products:
+        if len(subscription.lineItems) != 1:
+            # Refused before any write: both the tier and the term of the grant are read off this
+            # one element, Google documents no ordering for the list, and an upgrade transition or
+            # a second base plan makes element zero a guess. The count is ours; no Play value is
+            # logged. An empty list is the same refusal: there is nothing to read the term from.
+            logger.error("google_play_unexpected_line_item_count",
+                         count=len(subscription.lineItems))
+            raise InternalError
+        line_item = subscription.lineItems[0]
+        product_id = line_item.productId
+        if product_id is None or product_id not in self._products:
             # Refused before any write: `core.subscriptions.tier_id` is NOT NULL and has no default.
             raise UnmappedStoreProduct(PurchaseProvider.google_play, str(product_id))
         return product_id, self._products[product_id], line_item.expiryTime

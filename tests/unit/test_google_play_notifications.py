@@ -415,6 +415,63 @@ class TestBothEntryPointsGuardTheValueTheyPutInThePath:
         assert play_logs.records("error") == []
 
 
+class TestTheLineItemCountIsMadeVisible:
+    """WR-05: both the tier and the term of the grant are read off one element of a list Google
+    documents no ordering for, so a count other than one is a guess and never a silent choice."""
+
+    @pytest.mark.parametrize("line_items", [
+        [],
+        [{"productId": PRODUCT_ID, "expiryTime": UNEXPIRED.isoformat()},
+         {"productId": PRODUCT_ID, "expiryTime": (UNEXPIRED + timedelta(days=30)).isoformat()}],
+    ], ids=["none", "two"])
+    async def test_a_count_other_than_one_is_refused_before_any_value_type(self, line_items,
+                                                                          play_logs):
+        reader = _play_reader(_answering({"subscriptionState": "SUBSCRIPTION_STATE_ACTIVE",
+                                          "startTime": PURCHASED_AT.isoformat(),
+                                          "lineItems": line_items}))
+
+        with pytest.raises(InternalError):
+            await _read_through(reader)
+
+        assert play_logs.records("error") == [("google_play_unexpected_line_item_count",
+                                               {"count": len(line_items)})]
+
+    async def test_the_restore_read_refuses_the_same_shape(self, play_logs):
+        """The second caller of `_product_of`, which did not exist when this was first filed."""
+        reader = _play_reader(_answering({"subscriptionState": "SUBSCRIPTION_STATE_ACTIVE",
+                                          "startTime": PURCHASED_AT.isoformat(),
+                                          "lineItems": []}))
+
+        with pytest.raises(InternalError):
+            await reader.read_for_restore(package_name=PACKAGE_NAME,
+                                          purchase_token=PURCHASE_TOKEN,
+                                          evaluated_at=EVALUATED_AT)
+
+        assert play_logs.records("error") == [("google_play_unexpected_line_item_count",
+                                               {"count": 0})]
+
+    async def test_the_refusal_carries_no_play_value(self, play_logs):
+        """The count is ours; the product id and the expiry are Google's and never travel."""
+        reader = _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_ACTIVE",
+                                                            expiry=UNEXPIRED) | {"lineItems": []}))
+
+        with pytest.raises(InternalError):
+            await _read_through(reader)
+
+        assert PRODUCT_ID not in str(play_logs.records("error"))
+        assert PURCHASE_TOKEN not in str(play_logs.records("error"))
+
+    async def test_exactly_one_line_item_is_read_normally_control(self, play_logs):
+        """The control: the guard refuses the ambiguous count alone, never the ordinary purchase."""
+        reader = _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_ACTIVE",
+                                                            expiry=UNEXPIRED)))
+
+        notification = await _read_through(reader)
+
+        assert (notification.tier_id, notification.expires_at) == (TIER_ID, UNEXPIRED)
+        assert play_logs.records("error") == []
+
+
 class TestThePlayResponseArms:
     """OQ-5: 404 and 410 are definitive, and every other failure is the redelivery D-20 asks for."""
 
