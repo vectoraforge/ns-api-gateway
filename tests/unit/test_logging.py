@@ -12,7 +12,7 @@ from structlog.testing import capture_logs
 
 import nativespeaker.api.logs as logs_module
 from nativespeaker.api.config import LogLevel
-from nativespeaker.api.logs import RequestLoggingMiddleware, setup_logging
+from nativespeaker.api.logs import _QUIETED_LIBRARIES, RequestLoggingMiddleware, setup_logging
 
 _SRC = Path(__file__).resolve().parents[2] / "src"
 
@@ -231,6 +231,27 @@ def test_third_party_loggers_suppressed():
     assert logging.getLogger("httpx").level == logging.WARNING
     assert logging.getLogger("httpcore").level == logging.WARNING
     assert logging.getLogger("sqlalchemy.engine").level == logging.WARNING
+
+
+class TestRaisingTheLevelNeverOpensAContentChannel:
+    """WR-03. `openai` logs the whole chat-completion body at DEBUG -- the system prompt, the user's
+    phrase and the chat's history -- and `DEBUG` is a level an operator may configure."""
+
+    @pytest.mark.parametrize("name", _QUIETED_LIBRARIES)
+    def test_a_quieted_library_stays_quiet_at_debug(self, name):
+        setup_logging(log_level="DEBUG")
+
+        assert logging.getLogger(name).getEffectiveLevel() >= logging.INFO
+
+    def test_openai_is_one_of_them(self):
+        """Named rather than only enumerated: the list is what an edit can silently shorten."""
+        assert "openai" in _QUIETED_LIBRARIES
+
+    def test_the_applications_own_logger_still_follows_the_configured_level(self):
+        """The control: pinning every logger would pass the cases above and log nothing at all."""
+        setup_logging(log_level="DEBUG")
+
+        assert logging.getLogger("nativespeaker.api").getEffectiveLevel() == logging.DEBUG
 
 
 class TestEveryConfigurableLevelBoots:

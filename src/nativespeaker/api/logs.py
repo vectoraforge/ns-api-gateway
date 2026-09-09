@@ -11,6 +11,16 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 _EXCLUDED_PATHS = frozenset({"/health/ready"})
 
+# The third-party loggers pinned below the configured level, and the criterion for the list: a
+# library that logs a request body, a request line or SQL. `openai` is the one that carries the
+# product's own content -- at DEBUG it logs the whole chat-completion body, so the system prompt,
+# the user's phrase and the chat's entire history. `DEBUG` is an admitted `LogLevel`, so without
+# this an operator raising the level for one incident ships every customer's sentences into the
+# aggregated log store, which retains them indefinitely.
+_QUIETED_LIBRARIES = ("httpx", "httpcore", "sqlalchemy.engine",
+                      "openai", "langchain", "langchain_core",
+                      "urllib3", "google.auth")
+
 logger = structlog.get_logger()
 
 
@@ -54,7 +64,7 @@ def setup_logging(log_level: str,
     root.addHandler(console_handler)
     root.setLevel(log_level.upper())
 
-    for name in ("httpx", "httpcore", "sqlalchemy.engine"):
+    for name in _QUIETED_LIBRARIES:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
