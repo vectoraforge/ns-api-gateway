@@ -92,6 +92,14 @@ class AppStoreNotifications:
         except VerificationException as failure:
             raise NotificationRejected(stage=failure.status.name) from failure
 
+        if not payload.notificationUUID or not payload.rawNotificationType:
+            # Both are Optional in the library and neither is required by the verification, which
+            # checks the chain, the bundle id, the app id and the environment and nothing else.
+            # Refused before any write: both reach a NOT NULL column in `audit.subscription_events`,
+            # and a null uuid also silently disarms the replay guard `SubscriptionsService.ingest`
+            # runs on it -- `WHERE notification_uuid = NULL` matches nothing, so it never fires.
+            raise NotificationRejected(stage="notification_without_identity")
+
         data = payload.data
         if data is None or data.signedTransactionInfo is None:
             # A test or summary notification: verified, and carrying nothing a subscription row needs.

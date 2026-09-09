@@ -210,8 +210,8 @@ def _renewal(*, environment: str = "Sandbox", in_billing_retry: bool = True,
             "gracePeriodExpiresDate": _milliseconds(datetime.now(UTC) + grace_period_in)}
 
 
-def _envelope(chain: _Chain, *, notification_type: str = "SUBSCRIBED",
-              notification_uuid: str = "8f0f0f00-0000-4000-8000-00000000000a",
+def _envelope(chain: _Chain, *, notification_type: str | None = "SUBSCRIBED",
+              notification_uuid: str | None = "8f0f0f00-0000-4000-8000-00000000000a",
               bundle_id: str = BUNDLE_ID, environment: str = "Sandbox",
               app_apple_id: int = APP_APPLE_ID,
               transaction: dict | None = None, renewal: dict | None = None,
@@ -225,10 +225,13 @@ def _envelope(chain: _Chain, *, notification_type: str = "SUBSCRIBED",
         data["signedTransactionInfo"] = _mint(chain, transaction)
     if renewal is not None:
         data["signedRenewalInfo"] = _mint(chain, renewal)
-    envelope = {"notificationType": notification_type,
-                "notificationUUID": notification_uuid,
-                "version": "2.0",
-                "data": data}
+    envelope: dict = {"version": "2.0", "data": data}
+    # `None` omits the field, exactly as an absent one arrives: both are Optional in the library
+    # and the verification requires neither, so a verified envelope can carry neither.
+    if notification_type is not None:
+        envelope["notificationType"] = notification_type
+    if notification_uuid is not None:
+        envelope["notificationUUID"] = notification_uuid
     if with_signed_date:
         envelope["signedDate"] = (_milliseconds(datetime.now(UTC)) if signed_date is None
                                   else signed_date)
@@ -478,6 +481,40 @@ class TestEveryReachableRefusalIsOneClassWithItsOwnStage:
 
         assert set(refusals) <= {status.name for status in VerificationStatus}
         assert len(set(refusals)) == 3
+
+
+class TestAVerifiedEnvelopeWithoutItsOwnIdentityIsRefused:
+    """WR-03: `notificationUUID` and `rawNotificationType` are Optional in the library and the
+    verification requires neither, but both reach a NOT NULL column in `audit.subscription_events`."""
+
+    @pytest.mark.parametrize("omitted", [{"notification_uuid": None},
+                                         {"notification_type": None},
+                                         {"notification_uuid": None, "notification_type": None}],
+                             ids=["no-uuid", "no-type", "neither"])
+    def test_it_is_refused_before_the_value_type_is_assembled(self, chain, omitted):
+        with pytest.raises(NotificationRejected) as refusal:
+            _notifications(chain).verify(_full(chain, **omitted))
+
+        assert refusal.value.stage == "notification_without_identity"
+
+    def test_the_library_really_does_verify_the_same_envelope_control(self, chain):
+        """The control: the refusal is this module's, and not the verification refusing the shape."""
+        verifier = SignedDataVerifier(root_certificates=[chain.root_der],
+                                      enable_online_checks=False,
+                                      environment=Environment.SANDBOX,
+                                      bundle_id=BUNDLE_ID, app_apple_id=APP_APPLE_ID)
+
+        payload = verifier.verify_and_decode_notification(_full(chain, notification_uuid=None))
+
+        assert payload.notificationUUID is None
+        assert payload.rawNotificationType == "SUBSCRIBED"
+
+    def test_the_same_envelope_carrying_both_is_accepted_control(self, chain):
+        """The second control: the guard refuses the absent identity alone, never the envelope."""
+        verified = _notifications(chain).verify(_full(chain))
+
+        assert (verified.notification_uuid, verified.event_type) == (
+            "8f0f0f00-0000-4000-8000-00000000000a", "SUBSCRIBED")
 
 
 class TestTheNestedPayloadsAreVerifiedOnTheirOwn:
