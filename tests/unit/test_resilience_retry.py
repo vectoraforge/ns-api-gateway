@@ -218,8 +218,9 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         with pytest.raises(CircuitOpenError) as caught:
             await policy.ainvoke(operation, ADMITTED)
 
-        # Two attempts entered against one provider call: the third is never reached.
-        assert spy.checks == 2
+        # One consultation against one provider call: the first attempt rides the admission
+        # verdict, the second meets the breaker its own failure opened, the third is never reached.
+        assert spy.checks == 1
         assert operation.calls == 1
         # The breaker's own refusal is not a provider failure, so the tally is the one genuine failure.
         assert spy.failures == 1
@@ -256,7 +257,7 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         with pytest.raises(TransientLLMError):
             await policy.ainvoke(operation, ADMITTED)
 
-        assert (spy.checks, operation.calls) == (MAX_ATTEMPTS, MAX_ATTEMPTS)
+        assert (spy.checks, operation.calls) == (MAX_ATTEMPTS - 1, MAX_ATTEMPTS)
 
 
 class TestFailureAccounting:
@@ -290,8 +291,9 @@ class TestFailureAccounting:
 
         assert spy.failures == expected_failures
         assert spy.successes == expected_successes
-        # Every attempt still consults the breaker, whether or not its outcome is recorded on it.
-        assert spy.checks == operation.calls
+        # Every attempt but the first still consults the breaker, whether or not its outcome is
+        # recorded on it. The first rides the verdict `admission()` gave (CR-01).
+        assert spy.checks == operation.calls - 1
 
     async def test_a_permanent_rejection_never_trips_the_breaker(self, sleeps):
         """One user's refused phrase must not answer 503 to everybody else for a minute."""

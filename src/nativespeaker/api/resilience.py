@@ -143,12 +143,20 @@ class ResiliencePolicy:
 
     async def ainvoke(self, operation: Callable[[], Awaitable], admitted: Admitted) -> Any:
         """Run `operation` under one provider permit, the timeout and the retry policy, on the caller's admission."""
+        attempted = False
 
         async def attempt() -> Any:
             """One attempt, already triaged: everything `_should_retry` reads is decided here."""
+            nonlocal attempted
             try:
-                # Per attempt, not once at admission: a provider declared dead mid-flight costs one attempt.
-                await self._circuit_breaker.before_call()
+                # Per attempt, not once at admission: a provider declared dead mid-flight costs one
+                # attempt. Never on the first one, though: the permit above is an unbounded wait, so
+                # re-deciding here what `admission()` already decided refuses a request that has made
+                # no provider call while its caller's quota charge -- committed against the admission
+                # verdict -- stands. A charged request always reaches the provider at least once.
+                if attempted:
+                    await self._circuit_breaker.before_call()
+                attempted = True
                 result = await asyncio.wait_for(operation(), timeout=self._timeout_seconds)
             except (QueueFullError, CircuitOpenError):
                 # First, and it must stay first: the breaker's own refusal is not the provider's failure.

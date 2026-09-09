@@ -532,6 +532,33 @@ class TestNoRequestThatNeverReachedTheProviderIsBilled:
         assert usage.monthly_used == 0
         assert llm.calls == 0
 
+    async def test_a_breaker_opening_while_a_charged_request_waits_still_reaches_the_provider(
+            self, mock_chats_db):
+        """CR-01: the charge commits on admission's verdict, and the wait for a provider permit is
+        unbounded, so a second verdict taken after it must not refuse a request that has already
+        spent a credit and called nothing -- the one case D-14 and D-15 opened between them."""
+        events: list[str] = []
+        grant, usage = _effective_grant_rows()
+        llm = RecordingLLM(events)
+        semaphore = _take_every_permit(llm.policy)
+        service = _service(mock_chats_db, llm=llm,
+                           session_factory=_recording_factory(events, grant, usage))
+
+        request = asyncio.create_task(
+            service.create_chat(phrase=PHRASE, user_id=TEST_USER_ID, lang="en"))
+        await _settle()
+
+        # Charged, and now waiting for a permit. Every other caller trips the breaker meanwhile.
+        assert (usage.monthly_used, llm.calls) == (1, 0)
+        llm.policy._circuit_breaker._opened_at = time.monotonic()
+
+        semaphore.release()
+        await request
+
+        # The spent credit bought a provider call, not a 503 with nothing behind it.
+        assert llm.calls == 1
+        assert usage.monthly_used == 1
+
     async def test_the_charge_is_not_refunded_when_the_provider_call_fails(self, mock_chats_db):
         """`services/quota.py`'s docstring states it: the charge commits in its own session and nothing reverses it."""
         events: list[str] = []
