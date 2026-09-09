@@ -1,5 +1,8 @@
+import ast
 import io
 import logging
+import re
+from pathlib import Path
 
 import pytest
 import structlog
@@ -10,6 +13,8 @@ from structlog.testing import capture_logs
 import nativespeaker.api.logs as logs_module
 from nativespeaker.api.config import LogLevel
 from nativespeaker.api.logs import RequestLoggingMiddleware, setup_logging
+
+_SRC = Path(__file__).resolve().parents[2] / "src"
 
 
 @pytest.fixture(autouse=True)
@@ -188,6 +193,37 @@ class TestTheRenderedLineIsPlainText:
         written = stream.getvalue()
         assert "auth_challenge_operation_not_issuable" in written
         assert "operation=x" in written
+
+
+class TestEveryEventNameIsGreppable:
+    """WR-26. D-02 made the event name the outcome vocabulary, so a name that does not match the
+    shape an alert or dashboard filters on is a record those consumers drop without saying so."""
+
+    _LEVELS = frozenset({"debug", "info", "warning", "error", "critical"})
+    _NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+
+    def _literal_event_names(self):
+        """Every literal first argument to a `logger.<level>(...)` call under `src`."""
+        for path in sorted((_SRC).rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                if node.func.attr not in self._LEVELS or not node.args:
+                    continue
+                first = node.args[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    yield str(path.relative_to(_SRC)), first.value
+
+    def test_no_event_name_departs_from_snake_case(self):
+        offenders = [(where, name) for where, name in self._literal_event_names()
+                     if not self._NAME.match(name)]
+        assert offenders == [], f"event names an `^[a-z_]+$` filter drops: {offenders}"
+
+    def test_the_walk_reaches_the_handler_that_was_wrong(self):
+        """The control: a walk that found nothing would pass the assertion above unconditionally."""
+        found = {name for _where, name in self._literal_event_names()}
+        assert "unhandled_exception" in found
+        assert len(found) > 20
 
 
 def test_third_party_loggers_suppressed():

@@ -71,7 +71,11 @@ async def http_exception_handler(request: Request, exc: Exception) -> JSONRespon
 
 
 async def generic_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.error("Unhandled exception", exc_info=exc)
+    """The last resort, named the way every other event is named."""
+    # snake_case like the other thirty-nine, and like the class-derived names D-02 made the
+    # vocabulary: this is the highest-severity event the service emits, and a dashboard or alert
+    # joining on the event name would have been the one to drop it silently.
+    logger.error("unhandled_exception", exc_info=exc)
     return await app_error_handler(request, InternalError())
 
 
