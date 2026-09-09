@@ -18,6 +18,14 @@ spec:
   # and "No claim-header authentication or header-derived identity". The backend reads no such
   # header, and Envoy's JWT filter is defense-in-depth only: identity happens in the barrier.
   jwt:
+    # A request carrying no `Authorization` falls through to the backend, which answers
+    # `401 {"code":"auth_required"}` -- the shared error body the client's decoder is written
+    # against. Without this the filter answers first, with Envoy's plain-text `Jwt is missing`,
+    # and SHARED-INVARIANTS' "defense-in-depth only; no backend correctness depends on it" is
+    # false of the one answer the client sees most. A token that is present and invalid is still
+    # refused here: `optional` covers the absent one alone.
+    # Requires Envoy Gateway >= v1.2, which is where `spec.jwt.optional` was added.
+    optional: true
     providers:
     - name: firebase
       # `required`, because Envoy treats an empty `issuer` as "do not check the issuer": an unset

@@ -3,7 +3,11 @@ NativeSpeaker API Gateway deployed.
 Service: {{ include "ns-api-gateway.fullname" . }}.{{ .Values.namespace }}:{{ .Values.service.port }}
 
 Envoy Gateway policies:
-  - SecurityPolicy: JWT validation only, no claim headers (targets app-routes and auth-routes)
+  - SecurityPolicy: JWT validation only, no claim headers (targets app-routes and auth-routes),
+    and optional, so a request with no Authorization header reaches the backend and gets the
+    shared {"code": "auth_required"} body instead of Envoy's plain-text "Jwt is missing".
+    A token that is present but invalid or expired is still refused at the gateway, with that
+    plain-text body: Envoy Gateway exposes no setting that lets a failed token fall through.
   - HTTPRoutes: app-routes (authenticated: /chats, /users, /examples, every method),
     auth-routes (authenticated: /auth/* and /), webhook-routes (public), health-routes (public)
 
