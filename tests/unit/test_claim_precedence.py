@@ -680,15 +680,20 @@ class TestNoVendorCallHappensUnderALockOrInsideTheTransaction:
         assert timeline.index("commit") < timeline.index("read_bits")
         assert devicecheck.transaction_open_during == [False]
 
-    def test_the_activation_opens_its_transaction_only_after_both_seam_calls(
+    def test_the_activation_sits_between_the_two_seam_calls_and_commits_before_the_write(
             self, client, store, account, grants, devicecheck, timeline):
+        """The read runs before the transaction opens; the write runs after it commits."""
         identity_row, _ = account
         store.row = _issued_row(bound_to=identity_row.id)
 
         response = _claim(client)
 
         assert response.status_code == 200
-        assert timeline.index("read_bits") < timeline.index("activate")
-        assert timeline.index("write_bits") < timeline.index("activate")
+        activated = timeline.index("activate")
+        written = timeline.index("write_bits")
+        assert timeline.index("read_bits") < activated < written
+        # The grant is durable before Apple is told, so no crash can burn the bit with nothing
+        # granted. `index` alone would find the challenge claim's own commit, which precedes both.
+        assert "commit" in timeline[activated:written]
         # Neither seam call saw an open transaction, which is the claim in prose stated as a check.
         assert devicecheck.transaction_open_during == [False, False]

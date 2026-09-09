@@ -1,5 +1,5 @@
 """ANONGRANT-02 and REGGRANT-02's no-network-under-a-lock claims, as checks rather than prose.
-Both vendor calls run strictly before the activation transaction opens, neither crud writer
+The read runs before the transaction opens and the write after it commits, neither crud writer
 names a seam member at all, and importing that module pulls in no HTTP client.
 """
 import ast
@@ -23,6 +23,9 @@ CLAIM_REGISTERED = "_claim_registered_grant"
 
 # The registered claim's one arm that reaches Apple: the block guarded by `if not held:`.
 NEW_GRANT_ARM_GUARD = "held"
+
+# The local that arm binds, and that the post-commit write is guarded on: `None` means no bit to set.
+STATE_NAME = "state"
 
 # Every name the device-gate seam exposes. None of them may appear inside the crud writer.
 SEAM_NAMES = frozenset({"devicecheck", "read_bits", "write_bits",
@@ -92,6 +95,19 @@ def _call_line(node: ast.AST, name: str) -> int:
     raise AssertionError(f"{name} is not called at all")
 
 
+def _guard_of_the_write(claim: ast.AST) -> str | None:
+    """The name the `if` around the vendor write tests, or `None` when the write is unguarded."""
+    for node in ast.walk(claim):
+        if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
+            continue
+        if "write_bits_with_retry" not in _called_names(ast.Module(body=node.body,
+                                                                   type_ignores=[])):
+            continue
+        left = node.test.left
+        return left.id if isinstance(left, ast.Name) else None
+    return None
+
+
 def _mentioned_names(node: ast.AST) -> set[str]:
     """Every identifier `node` names, whether as a bare name or as an attribute."""
     found = set()
@@ -135,15 +151,14 @@ class TestTheCrudWriterCannotReachTheVendor:
         assert result.stdout.strip() == "[]"
 
 
-class TestBothVendorCallsPrecedeTheActivation:
+class TestTheActivationSitsBetweenTheTwoVendorCalls:
     """The sequence is the rule, so an order assertion over the body is a fair check of it."""
 
-    def test_the_read_and_the_write_both_appear_before_the_activation_call(self):
-        claim = _function(SERVICE_SOURCE, CLAIM)
-        read, write, activate = _order(claim, ("read_bits_with_retry",
-                                                "write_bits_with_retry",
-                                                WRITER))
-        assert read < write < activate
+    def test_the_read_precedes_the_activation_and_the_write_follows_its_commit(self):
+        read, activate, commit, write = _order(_function(SERVICE_SOURCE, CLAIM),
+                                               ("read_bits_with_retry", WRITER,
+                                                "commit", "write_bits_with_retry"))
+        assert read < activate < commit < write
 
     def test_the_claim_takes_no_lock_of_its_own_before_reaching_the_seam(self):
         """Locking is the crud writer's job alone, and it runs last; a lock here would straddle the call."""
@@ -155,21 +170,34 @@ class TestBothVendorCallsPrecedeTheActivation:
 class TestBothVendorCallsPrecedeTheRegisteredActivation:
     """The registered claim has five arms and one reaches Apple, so the order is asserted there."""
 
-    def test_the_read_and_the_write_both_precede_the_writer_on_the_new_grant_arm(self):
-        """Inside the new-grant arm the read precedes the write, and the writer runs past the arm."""
+    def test_the_read_sits_in_the_new_grant_arm_and_the_write_follows_the_commit(self):
+        """The read is the arm's own; the writer, the commit and the write all run past the arm."""
         claim = _function(SERVICE_SOURCE, CLAIM_REGISTERED)
         arm = _new_grant_arm(claim)
-        read, write = _order(arm, ("read_bits_with_retry", "write_bits_with_retry"))
-        assert read < write
+        arm_calls = _called_names(arm)
+        assert "read_bits_with_retry" in arm_calls
+        assert "write_bits_with_retry" not in arm_calls
         assert arm.end_lineno < _call_line(claim, WRITER_REGISTERED)
+        activate, commit, write = _order(claim, (WRITER_REGISTERED, "commit",
+                                                 "write_bits_with_retry"))
+        assert activate < commit < write
 
-    def test_the_conversion_arm_reaches_neither_seam_function(self):
-        """D-02 as a check: the conversion falls past the new-grant arm, so it calls no vendor."""
+    def test_the_conversion_arm_reads_no_bits_and_the_write_it_skips_is_guarded_on_that_read(self):
+        """D-02 as a check: the conversion never reads, so the guard below skips its write too."""
         claim = _function(SERVICE_SOURCE, CLAIM_REGISTERED)
         outside = set(_calls_outside(claim, _new_grant_arm(claim)))
-        assert {"read_bits_with_retry", "write_bits_with_retry"} & outside == set()
+        # Only the read is arm-local now; the write moved past the commit and so is outside it.
+        assert "read_bits_with_retry" not in outside
         # The control: the conversion still reaches the writer, so the set above is not empty by accident.
         assert WRITER_REGISTERED in outside
+        assert _guard_of_the_write(claim) == STATE_NAME
+
+    def test_the_state_the_write_is_guarded_on_is_the_one_the_arm_binds(self):
+        """The guard is only honest if the arm is what sets it: a rename on one side fails here."""
+        arm = _new_grant_arm(_function(SERVICE_SOURCE, CLAIM_REGISTERED))
+        bound = {target.id for node in ast.walk(arm) if isinstance(node, ast.Assign)
+                 for target in node.targets if isinstance(target, ast.Name)}
+        assert STATE_NAME in bound
 
     def test_the_claim_takes_no_lock_of_its_own_before_reaching_the_seam(self):
         """Locking is the crud writer's job alone, and it runs last; a lock here would straddle the call."""
@@ -181,15 +209,18 @@ class TestBothVendorCallsPrecedeTheRegisteredActivation:
 class TestTheOrderAssertionFires:
     """The control: a body with the calls in the wrong order must fail the same assertion."""
 
-    def test_a_reversed_synthetic_body_reports_the_reversed_positions(self):
+    def test_a_body_writing_before_its_commit_reports_the_reversed_positions(self):
+        """The regression this ordering exists to prevent: Apple told before the grant is durable."""
         source = ("async def _claim_anonymous_grant(self):\n"
-                  "    await self.grants_db.activate_anonymous_device_grant()\n"
                   "    state = await read_bits_with_retry(self.devicecheck, token)\n"
-                  "    await write_bits_with_retry(self.devicecheck, token)\n")
-        read, write, activate = _order(_function(source, CLAIM),
-                                       ("read_bits_with_retry", "write_bits_with_retry", WRITER))
+                  "    await write_bits_with_retry(self.devicecheck, token)\n"
+                  "    await self.grants_db.activate_anonymous_device_grant()\n"
+                  "    await self.session.commit()\n")
+        read, activate, commit, write = _order(_function(source, CLAIM),
+                                               ("read_bits_with_retry", WRITER,
+                                                "commit", "write_bits_with_retry"))
         # The same expression the real case asserts, which this ordering makes false.
-        assert not (read < write < activate)
+        assert not (read < activate < commit < write)
 
     def test_a_synthetic_writer_naming_the_seam_is_caught(self):
         source = ("async def activate_anonymous_device_grant(self):\n"
@@ -197,15 +228,24 @@ class TestTheOrderAssertionFires:
         writer = _function(source, WRITER)
         assert _mentioned_names(writer) & SEAM_NAMES == {"devicecheck", "write_bits"}
 
-    def test_a_synthetic_write_escaping_the_arm_is_caught(self):
-        """The control on the registered pair: a write below the writer leaves the arm and is seen."""
+    def test_a_synthetic_read_escaping_the_arm_is_caught(self):
+        """The control on the registered pair: a read below the arm reaches the conversion and is seen."""
+        source = ("async def _claim_registered_grant(self):\n"
+                  "    if not held:\n"
+                  "        pass\n"
+                  "    state = await read_bits_with_retry(self.devicecheck, token)\n"
+                  "    await self.grants_db.activate_registered_account_grant()\n")
+        claim = _function(source, CLAIM_REGISTERED)
+        assert "read_bits_with_retry" in _calls_outside(claim, _new_grant_arm(claim))
+
+    def test_an_unguarded_synthetic_write_is_caught(self):
+        """The control on the guard: a write the conversion arm also runs names no guard at all."""
         source = ("async def _claim_registered_grant(self):\n"
                   "    if not held:\n"
                   "        state = await read_bits_with_retry(self.devicecheck, token)\n"
-                  "    await self.grants_db.activate_registered_account_grant()\n"
+                  "    await self.session.commit()\n"
                   "    await write_bits_with_retry(self.devicecheck, token)\n")
-        claim = _function(source, CLAIM_REGISTERED)
-        assert "write_bits_with_retry" in _calls_outside(claim, _new_grant_arm(claim))
+        assert _guard_of_the_write(_function(source, CLAIM_REGISTERED)) is None
 
     def test_a_body_without_the_new_grant_arm_is_reported_rather_than_passed(self):
         """A renamed guard would silently empty the arm; it is named instead, so the failure reads."""

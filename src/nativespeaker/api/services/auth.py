@@ -185,13 +185,10 @@ class AuthService:
         if await self.grants_db.read_active_grants(identity.user.id):
             raise ActiveGrantOutsideItsTerm
 
-        # One token for both calls: the bit the read decided on is the bit the write then sets.
+        # One token for both calls: the bit the read decided on is the bit the write below sets.
         state = await read_bits_with_retry(self.devicecheck, device_token)
         if state.bit0:
             raise DeviceGrantExhausted(stage="devicecheck_read", cause="already_set")
-
-        # bit1 is carried forward, never fabricated: Apple writes both bits in this one call.
-        await write_bits_with_retry(self.devicecheck, device_token, bit0=True, bit1=state.bit1)
 
         outcome = await self.grants_db.activate_anonymous_device_grant(
             user_id=identity.user.id,
@@ -199,6 +196,14 @@ class AuthService:
             tier_id=ANONYMOUS_TIER_ID,
             evaluated_at=self.evaluated_at)
         await self._settle(identity, outcome)
+        # The invariants place remote work strictly before the transaction opens or after it commits,
+        # and only the second is safe for the write: nothing in this product clears an Apple bit, so a
+        # crash between an earlier write and this commit burns the device's one slot with no grant.
+        await self.session.commit()
+
+        # Fail-open by design: a failure below costs the device bit, never the grant already durable.
+        # bit1 is carried forward, never fabricated: Apple writes both bits in this one call.
+        await write_bits_with_retry(self.devicecheck, device_token, bit0=True, bit1=state.bit1)
 
     async def _claim_registered_grant(self, identity: Identity, *, device_token: str) -> None:
         """Refuse, or convert the caller's anonymous grant, or verify the device and activate a new one."""
@@ -225,18 +230,17 @@ class AuthService:
         if [grant for grant in marked if grant.id not in {row.id for row in held}]:
             raise ActiveGrantOutsideItsTerm
 
+        # Stays `None` on the conversion arm, which reaches no vendor and so has no bit to set.
+        state = None
         if not held:
             # History by source and status: `free_grant_consumed_at` is already set on the conversion path.
             if await self.grants_db.has_prior_free_grant(identity.user.id):
                 raise FreeGrantAlreadyConsumed
 
-            # One token for both calls: the bit the read decided on is the bit the write then sets.
+            # One token for both calls: the bit the read decided on is the bit the write below sets.
             state = await read_bits_with_retry(self.devicecheck, device_token)
             if state.bit1:
                 raise DeviceGrantExhausted(stage="devicecheck_read", cause="already_set")
-
-            # bit0 is carried forward, never fabricated: Apple writes both bits in this one call.
-            await write_bits_with_retry(self.devicecheck, device_token, bit0=state.bit0, bit1=True)
 
         outcome = await self.grants_db.activate_registered_account_grant(
             user_id=identity.user.id,
@@ -244,6 +248,14 @@ class AuthService:
             tier_id=REGISTERED_TIER_ID,
             evaluated_at=self.evaluated_at)
         await self._settle(identity, outcome)
+        # As on the anonymous claim: the grant is durable before Apple is told, because nothing clears
+        # an Apple bit and a crash before this commit would burn the slot with nothing granted.
+        await self.session.commit()
+
+        if state is not None:
+            # Fail-open by design: a failure here costs the device bit, never the durable grant.
+            # bit0 is carried forward, never fabricated: Apple writes both bits in this one call.
+            await write_bits_with_retry(self.devicecheck, device_token, bit0=state.bit0, bit1=True)
 
     async def _settle(self, identity: Identity, outcome: ActivationOutcome) -> None:
         """Answer for what the writer did: a race re-reads the winner's row, and a refusal raises."""
