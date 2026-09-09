@@ -181,10 +181,20 @@ async def _seed_store_token(factory, value: str) -> None:
         await session.commit()
 
 
+class _RawBearer(str):
+    """A credential sent exactly as written, for the arm whose bearer is not a JWT at all."""
+
+
+def _bearer_for(overrides) -> str:
+    """The credential one refusal row sends: the raw string itself, or a token minted from a dict."""
+    return overrides if isinstance(overrides, _RawBearer) else _push_token(**overrides)
+
+
 # Each way this route refuses, as the push it refuses and the stage that refusal logs.
 # A `None` token means no Authorization header at all, which is its own arm.
 REFUSALS = (
     (None, GOOGLE_PACKAGE_NAME, "push_credential_absent"),
+    (_RawBearer("not-a-jwt"), GOOGLE_PACKAGE_NAME, "malformed"),
     ({"private_key": FOREIGN_PRIVATE_KEY_PEM}, GOOGLE_PACKAGE_NAME, "bad_signature"),
     ({"extra_claims": {"email": OTHER_SERVICE_ACCOUNT}}, GOOGLE_PACKAGE_NAME, "bad_signature"),
     ({"email_verified": False}, GOOGLE_PACKAGE_NAME, "bad_signature"),
@@ -194,8 +204,16 @@ REFUSALS = (
     ({"sub": ""}, GOOGLE_PACKAGE_NAME, "empty_subject"),
     ({}, FOREIGN_PACKAGE_NAME, "package_name_mismatch"),
 )
-REFUSAL_IDS = ["no-credential", "signature", "email", "email-verified", "aud", "iss",
+REFUSAL_IDS = ["no-credential", "not-a-jwt", "signature", "email", "email-verified", "aud", "iss",
                "expired", "empty-sub", "package-name"]
+
+# The bounded reasons this route's verifier can emit. `missing_token` and `duplicate_authorization`
+# are unreachable here: the credential comes from FastAPI's `HTTPBearer` and never `extract_bearer`,
+# an absent one is answered by `push_credential_absent` before the verifier runs, and no
+# duplicate-header rule runs on this path at all.
+_PUSH_REASONS = frozenset({BoundedReason.bad_signature, BoundedReason.malformed,
+                           BoundedReason.issuer_mismatch, BoundedReason.audience_mismatch,
+                           BoundedReason.expired, BoundedReason.empty_subject})
 
 # The two places on this path that raise the refusal, read as source so a third one arrives here.
 _REFUSAL_SOURCES = (inspect.getsource(verify_google_play_notification),
@@ -348,7 +366,7 @@ class TestEveryRefusalAnswersTheOneBody:
             self, webhook_client, real_google_play_seam, refusal_records,
             overrides, package_name, stage):
         headers = ({} if overrides is None
-                   else {"Authorization": f"Bearer {_push_token(**overrides)}"})
+                   else {"Authorization": f"Bearer {_bearer_for(overrides)}"})
 
         response = await webhook_client.post(
             PATH, json=_push_body(PURCHASE_TOKEN, package_name=package_name), headers=headers)
@@ -365,9 +383,11 @@ class TestEveryRefusalAnswersTheOneBody:
     async def test_every_reachable_arm_is_covered_by_one_parameter(self):
         """The control: a narrowed tuple would leave an arm untested while every case above passed."""
         raised = _raised_refusal_stages()
-        # The one computed stage is the verifier's bounded reason, so it stands for all five members.
+        # The one computed stage is the verifier's bounded reason, so it stands for every member
+        # of that set this route can reach -- named in `_PUSH_REASONS`, never the whole enum, two
+        # of whose members no credential taken from `HTTPBearer` can produce.
         assert _COMPUTED in raised
-        reachable = (raised - {_COMPUTED}) | {str(reason) for reason in BoundedReason}
+        reachable = (raised - {_COMPUTED}) | {str(reason) for reason in _PUSH_REASONS}
         assert {stage for _overrides, _package, stage in REFUSALS} == reachable
 
     async def test_a_refused_push_writes_nothing(
