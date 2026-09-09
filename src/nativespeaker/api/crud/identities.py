@@ -147,7 +147,10 @@ class IdentitiesDB:
         identity_row.provider = provider
         identity_row.provider_uid = provider_uid
         identity_row.updated_at = evaluated_at
-        user.registered_at = evaluated_at
+        if user.registered_at is None:
+            # 02 step 07 sets it where it is NULL: a stored instant is the record, and the repair
+            # path this flip doubles as never restamps it.
+            user.registered_at = evaluated_at
         user.updated_at = evaluated_at
         if user.email is None:
             # A stored address is never overwritten, and a divergent live one is simply not copied.

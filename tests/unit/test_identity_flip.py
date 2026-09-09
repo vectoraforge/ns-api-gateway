@@ -101,3 +101,39 @@ class TestTheRefusedFlipIsClassified:
         written = await _flip(_StubSession(), identity_row, user)
 
         assert (written, identity_row.provider_uid) == (IdentityProvider.google, PROVIDER_UID)
+
+
+@pytest.mark.asyncio
+class TestTheFlipSetsWhereUnsetAndNeverOverwrites:
+    """WR-42: `req~users-upgrade-step-07~1` sets `registered_at` if it is NULL, as `email` already is."""
+
+    async def test_an_unset_registration_instant_is_stamped(self):
+        identity_row, user = _account()
+
+        await _flip(_StubSession(), identity_row, user)
+
+        assert user.registered_at == NOW
+
+    async def test_a_stored_registration_instant_survives_the_repair(self):
+        """The flip doubles as the idempotent repair for a crash-stranded upgrade; it re-registers nobody."""
+        identity_row, user = _account(registered_at=REGISTERED_AT)
+
+        await _flip(_StubSession(), identity_row, user)
+
+        assert user.registered_at == REGISTERED_AT
+
+    async def test_the_repair_still_records_that_it_ran(self):
+        """The control: `updated_at` moves either way, so the case above is not measuring a no-op."""
+        identity_row, user = _account(registered_at=REGISTERED_AT)
+
+        await _flip(_StubSession(), identity_row, user)
+
+        assert user.updated_at == NOW
+
+    async def test_a_stored_email_survives_beside_it_control(self):
+        """The half that was already correct, kept beside the half this case fixed."""
+        identity_row, user = _account(registered_at=REGISTERED_AT, email="stored@example.test")
+
+        await _flip(_StubSession(), identity_row, user)
+
+        assert (user.email, user.registered_at) == ("stored@example.test", REGISTERED_AT)
