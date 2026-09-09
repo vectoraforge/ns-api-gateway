@@ -201,7 +201,10 @@ class SubscriptionsDB:
                                        evaluated_at: datetime) -> bool:
         """Set the owner where the row still says what the pre-transaction read saw.
         Takes no lock on `core.subscriptions`; the row count is the whole answer."""
-        values = {"user_id": destination, "updated_at": evaluated_at}
+        # Annotated, never inferred from the two seed entries: the mapping carries three column
+        # types, and a `DATE` column taking the `datetime` the inference allows would silently
+        # change what the D-10 month cap compares.
+        values: dict[str, object] = {"user_id": destination, "updated_at": evaluated_at}
         if transfer_month is not None:
             # A move alone gives one: adoption leaves the column exactly as it found it.
             values["last_cross_account_transfer_month"] = transfer_month

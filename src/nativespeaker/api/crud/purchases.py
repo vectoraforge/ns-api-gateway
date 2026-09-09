@@ -17,7 +17,11 @@ class PurchasesDB:
         """Return `user_id`'s token per store, taking no lock, or raise if any store is unrepresented."""
         statement = (select(StorePurchaseToken.provider, StorePurchaseToken.identity_value)
                      .where(col(StorePurchaseToken.user_id) == user_id))
-        tokens = {provider: value for provider, value in (await self.session.exec(statement)).all()}
+        rows = (await self.session.exec(statement)).all()
+        # The key is named as the enum the column stores: a two-column select over a `StrEnum`
+        # column types its first element as a plain string, and the mapping this returns is keyed
+        # by members. Idempotent on a member, so the row's own value is what every key is.
+        tokens = {PurchaseProvider(provider): value for provider, value in rows}
 
         missing = set(PurchaseProvider) - set(tokens)
         if missing:
