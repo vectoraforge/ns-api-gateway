@@ -215,23 +215,29 @@ class AuthService:
             claim_platform=NativeClaimProvider.ios_devicecheck,
             tier_id=ANONYMOUS_TIER_ID,
             evaluated_at=self.evaluated_at)
-        # Unguarded on this route, unlike its registered sibling: the only attempt that can win this
-        # race is another anonymous claim, which spends the same bit0 on the same device.
-        await self._settle(identity, outcome)
+        wrote = await self._settle(identity, outcome)
         # The invariants place remote work strictly before the transaction opens or after it commits,
         # and only the second is safe for the write: nothing in this product clears an Apple bit, so a
         # crash between an earlier write and this commit burns the device's one slot with no grant.
         await self.session.commit()
 
-        # Fail-open by design, and it never becomes the answer: the grant above is durable, so a
-        # failure here costs the device bit alone. Raised, it made a claim that fully succeeded
-        # answer 503, and the retry it invites takes the repeat arm and never reaches this call.
-        # bit1 is carried forward, never fabricated: Apple writes both bits in this one call.
-        try:
-            await write_bits_with_retry(self.devicecheck, device_token, bit0=True, bit1=state.bit1)
-        except AppError as failure:
-            # A closed-set label only: the class name, never the token and never Apple's body.
-            logger.error("devicecheck_bit_write_failed", failure=type(failure).__name__)
+        # Guarded as its registered sibling is. The race this attempt lost is not always another
+        # anonymous claim: `activate_anonymous_device_grant` also answers `lost_race` from the
+        # insert's unique violation, and `ix_access_grants_one_active_per_user` arbitrates over an
+        # active grant of *any* source, so a subscription or `manual` grant committed during the
+        # DeviceCheck read wins it. Setting bit0 for that winner burns this device's one lifetime
+        # anonymous slot for a grant this product never wrote, and nothing here ever clears a bit.
+        if wrote:
+            # Fail-open by design, and it never becomes the answer: the grant above is durable, so a
+            # failure here costs the device bit alone. Raised, it made a claim that fully succeeded
+            # answer 503, and the retry it invites takes the repeat arm and never reaches this call.
+            # bit1 is carried forward, never fabricated: Apple writes both bits in this one call.
+            try:
+                await write_bits_with_retry(self.devicecheck, device_token,
+                                            bit0=True, bit1=state.bit1)
+            except AppError as failure:
+                # A closed-set label only: the class name, never the token and never Apple's body.
+                logger.error("devicecheck_bit_write_failed", failure=type(failure).__name__)
 
     async def _claim_registered_grant(self, identity: LinkedIdentity, *, device_token: str) -> None:
         """Refuse, or convert the caller's anonymous grant, or verify the device and activate a new one."""

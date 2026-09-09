@@ -170,6 +170,19 @@ class TestTheActivationSitsBetweenTheTwoVendorCalls:
         assert {"lock_effective_grants", "lock_active_grants", "lock_usage",
                 "lock_identity_and_user"} & set(_called_names(claim)) == set()
 
+    def test_the_write_is_guarded_on_this_attempt_having_written_the_grant(self):
+        """WR-46: the writer also answers `lost_race` from the insert's unique violation, whose
+        arbiter is any active grant of any source, so the winner is not always another anonymous
+        claim and setting bit0 for it spends this device's slot on a grant nothing here wrote."""
+        assert _guard_of_the_write(_function(SERVICE_SOURCE, CLAIM)) == {WROTE_NAME}
+
+    def test_the_wrote_the_write_is_guarded_on_is_what_the_settlement_answered(self):
+        """The guard is honest only if the settlement binds it: a second read would fail here."""
+        claim = _function(SERVICE_SOURCE, CLAIM)
+        settled = [node for node in ast.walk(claim)
+                   if isinstance(node, ast.Assign) and "_settle" in _called_names(node)]
+        assert [target.id for node in settled for target in node.targets] == [WROTE_NAME]
+
 
 class TestBothVendorCallsPrecedeTheRegisteredActivation:
     """The registered claim has five arms and one reaches Apple, so the order is asserted there."""
