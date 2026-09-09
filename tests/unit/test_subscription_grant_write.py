@@ -1,6 +1,6 @@
 """Which of the locked grant rows one subscription write is entitled to end, over a stub session.
 
-The writer receives more rows than it may change, so each case asserts what it did to each row.
+T-45-08-01 and T-45-08-02 at the unit level: the writer receives more rows than it may change.
 """
 from datetime import UTC, datetime, timedelta
 from uuid import uuid7
@@ -8,7 +8,6 @@ from uuid import uuid7
 import pytest
 
 from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
-from nativespeaker.api.errors import MultipleEffectiveGrantsError
 from nativespeaker.api.tables import (
     AccessGrant,
     AccessGrantSource,
@@ -72,37 +71,21 @@ async def _write(session: _StubSession, marked_active: list[AccessGrant], *,
 
 
 @pytest.mark.asyncio
-class TestASecondLiveSubscriptionIsNotSuperseded:
-    """WR-43: expiring it would leave that subscription entitled with no grant row."""
+class TestTheDestinationLosesEverythingItHolds:
+    """T-45-08-02: the `grant.user_id == user_id` clause keeps the destination's whole set, so
+    `ix_access_grants_one_active_per_user` is satisfied by construction rather than by a caught 23505."""
 
-    async def test_a_live_term_of_another_subscription_refuses_the_write(self):
-        rival = _grant(subscription_id=SUBSCRIPTION_A)
-
-        with pytest.raises(MultipleEffectiveGrantsError):
-            await _write(_StubSession(), [rival])
-
-    async def test_the_refused_write_leaves_the_other_term_active(self):
+    async def test_a_live_term_of_another_subscription_is_superseded_too(self):
+        """One account holds one active grant, so a second store subscription's term ends here."""
         session = _StubSession()
-        rival = _grant(subscription_id=SUBSCRIPTION_A)
+        other = _grant(subscription_id=SUBSCRIPTION_A)
 
-        with pytest.raises(MultipleEffectiveGrantsError):
-            await _write(session, [rival])
-
-        assert (rival.status, rival.ends_at) == (AccessGrantStatus.active, TERM_END)
-        assert (session.added, session.flushes) == ([], 0)
-
-    async def test_a_term_that_has_already_ended_is_superseded_as_before(self):
-        """An ended term strands no entitlement, so the write takes it rather than refusing."""
-        session = _StubSession()
-        stale = _grant(subscription_id=SUBSCRIPTION_A, ends_at=NOW - timedelta(days=2))
-
-        outcome = await _write(session, [stale])
+        outcome = await _write(session, [other])
 
         assert outcome is WriteOutcome.applied
-        assert (stale.status, stale.ends_at) == (AccessGrantStatus.expired, NOW)
+        assert (other.status, other.ends_at) == (AccessGrantStatus.expired, NOW)
 
-    async def test_a_free_grant_is_superseded_as_before_control(self):
-        """The control: the supersession this write is entitled to make is untouched."""
+    async def test_a_free_grant_is_superseded_too(self):
         session = _StubSession()
         free = _grant(source=AccessGrantSource.anonymous_device_grant, subscription_id=None,
                       ends_at=None, tier_id=FREE_TIER_ID)
@@ -112,8 +95,8 @@ class TestASecondLiveSubscriptionIsNotSuperseded:
         assert outcome is WriteOutcome.applied
         assert free.status is AccessGrantStatus.expired
 
-    async def test_this_subscriptions_own_earlier_term_is_superseded_control(self):
-        """The second control: a mid-term tier change still takes the expire-then-insert path."""
+    async def test_this_subscriptions_own_earlier_term_is_superseded(self):
+        """A mid-term tier change takes the same expire-then-insert path as every other write."""
         session = _StubSession()
         own = _grant(subscription_id=SUBSCRIPTION_B, tier_id=FREE_TIER_ID)
 
@@ -122,22 +105,60 @@ class TestASecondLiveSubscriptionIsNotSuperseded:
         assert outcome is WriteOutcome.applied
         assert own.status is AccessGrantStatus.expired
 
-    async def test_the_old_owners_live_term_is_not_read_as_a_rival(self):
-        """On a move the caller locks two accounts; only the destination's own rows can be rivals."""
+    async def test_the_new_term_is_inserted_with_its_usage_row_control(self):
+        """The control: the supersessions above are followed by the insert, not by an empty write."""
         session = _StubSession()
-        theirs = _grant(user_id=OLD_OWNER, subscription_id=SUBSCRIPTION_B)
 
-        outcome = await _write(session, [theirs])
+        await _write(session, [_grant(subscription_id=SUBSCRIPTION_A)])
+
+        inserted = [row for row in session.added if isinstance(row, AccessGrant)]
+        assert len(inserted) == 1
+        assert (inserted[0].subscription_id, inserted[0].ends_at) == (SUBSCRIPTION_B, TERM_END)
+
+
+@pytest.mark.asyncio
+class TestTheOldOwnerKeepsWhatThisWriteDoesNotName:
+    """T-45-08-01: on a move the caller locks two accounts, and the source keeps every other row."""
+
+    async def test_the_old_owners_term_for_the_moved_subscription_is_ended(self):
+        session = _StubSession()
+        moving = _grant(user_id=OLD_OWNER, subscription_id=SUBSCRIPTION_B)
+
+        outcome = await _write(session, [moving])
 
         assert outcome is WriteOutcome.applied
-        assert theirs.status is AccessGrantStatus.expired
+        assert moving.status is AccessGrantStatus.expired
 
-    async def test_a_status_outside_the_entitled_set_ends_its_own_term_only(self):
-        """A withdrawal writes no term, so it has no slot to contend for and never refuses."""
+    async def test_the_old_owners_term_for_another_subscription_is_left_alone(self):
+        """The proof named neither that subscription nor that account's other entitlement."""
         session = _StubSession()
-        rival = _grant(subscription_id=SUBSCRIPTION_A)
+        unrelated = _grant(user_id=OLD_OWNER, subscription_id=SUBSCRIPTION_A)
 
-        outcome = await _write(session, [rival], status=SubscriptionStatus.expired)
+        outcome = await _write(session, [unrelated])
+
+        assert outcome is WriteOutcome.applied
+        assert (unrelated.status, unrelated.ends_at) == (AccessGrantStatus.active, TERM_END)
+
+
+@pytest.mark.asyncio
+class TestAWithdrawalEndsItsOwnTermOnly:
+    """A status outside the entitled set writes no term, so it supersedes only its own rows."""
+
+    async def test_another_subscriptions_term_survives_a_withdrawal(self):
+        session = _StubSession()
+        other = _grant(subscription_id=SUBSCRIPTION_A)
+
+        outcome = await _write(session, [other], status=SubscriptionStatus.expired)
 
         assert outcome is WriteOutcome.replayed
-        assert rival.status is AccessGrantStatus.active
+        assert other.status is AccessGrantStatus.active
+
+    async def test_its_own_term_is_revoked_where_the_store_withdrew_it_control(self):
+        """The control: the withdrawal arm does end a row, so the case above is not a no-op."""
+        session = _StubSession()
+        own = _grant(subscription_id=SUBSCRIPTION_B)
+
+        outcome = await _write(session, [own], status=SubscriptionStatus.revoked)
+
+        assert outcome is WriteOutcome.applied
+        assert own.status is AccessGrantStatus.revoked
