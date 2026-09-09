@@ -21,6 +21,10 @@ spec:
       - limit:
           requests: {{ .Values.rateLimits.burst.requests }}
           unit: {{ .Values.rateLimits.burst.unit }}
+  # `rate_limited`, the foundation-registered 429 class, and never `quota_exceeded`.
+  # `quota_exceeded` is the registered specialization for the monthly allowance, which only
+  # `QuotaService.charge` raises; it tells the client the month is spent and must not be retried.
+  # A burst rejection is the opposite answer: retry in a moment.
   responseOverride:
   - match:
       statusCodes:
@@ -30,4 +34,4 @@ spec:
       contentType: application/json
       body:
         type: Inline
-        inline: '{"code":"quota_exceeded"}'
+        inline: '{"code":"rate_limited"}'
