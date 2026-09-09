@@ -17,7 +17,7 @@ from nativespeaker.api.tables import monthly_period_for
 class SyncService:
 
     def __init__(self, db: AsyncSession, evaluated_at: datetime) -> None:
-        self.session = db
+        # Only the reads: `get_db` commits on teardown, so a session kept here is a way to write.
         self.grants_db = GrantsDB(db)
         # One instant for this request; nothing below it reads the clock again.
         self.evaluated_at = evaluated_at

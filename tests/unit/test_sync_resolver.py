@@ -361,3 +361,11 @@ class TestTheTierHasNoRow:
         with pytest.raises(UnknownTierError) as caught:
             await _read(session)
         assert (caught.value.status, caught.value.code) == (500, "internal_error")
+
+
+class TestTheServiceKeepsNoSessionHandle:
+    """WR-30: SYNC-02 is read-only, and `get_db` commits on teardown, so a kept session is a writer."""
+
+    def test_the_service_holds_only_the_reads_and_the_instant(self):
+        service = SyncService(db=_StubSession(grants=()), evaluated_at=EVALUATED_AT)
+        assert set(vars(service)) == {"grants_db", "evaluated_at"}
