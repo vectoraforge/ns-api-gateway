@@ -133,7 +133,10 @@ CREATE TABLE core.subscriptions (
     external_id TEXT NOT NULL,
     tier_id TEXT NOT NULL REFERENCES core.access_tiers (id),
     status core.subscription_status NOT NULL,
-    -- Written by nothing: cross-account restore transfer is never performed, so this stays NULL.
+    -- Set by RestoreService when a restore MOVES this subscription between accounts (D-10);
+    -- adoption leaves it exactly as it found it. claim_subscription_owner writes it, and carries
+    -- the pre-transaction read of it in the CAS predicate. Its one reader is the cap that raises
+    -- restore_transfer_rejected, so dropping this column removes the only limit on sharing.
     last_cross_account_transfer_month DATE,
     -- Lifetime restore binding: NULL until the first successful restore, then never changed.
     restore_bound_user_id UUID REFERENCES core.users (id),
