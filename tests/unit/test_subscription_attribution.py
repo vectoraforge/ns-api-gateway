@@ -71,6 +71,9 @@ class _RecordingSubscriptions:
     """Stands in for the subscription crud calls, keyed as the two tables' unique indexes key them."""
 
     def __init__(self) -> None:
+        # Shared with `_RecordingPurchases`, so the order of the two stands-in's calls is measurable
+        # rather than only their arguments: per-method lists carry no sequence between them.
+        self.timeline: list[str] = []
         self.events: dict[str, dict] = {}
         self.purchases: dict[tuple[PurchaseProvider, str], StorePurchase] = {}
         self.subscriptions: dict[tuple[PurchaseProvider, str], Subscription] = {}
@@ -84,6 +87,7 @@ class _RecordingSubscriptions:
         self.settled_owner: UUID | None = None
 
     async def lock_grants(self, user_id: UUID, evaluated_at: datetime) -> list:  # noqa: ARG002
+        self.timeline.append("lock_grants")
         self.locked.append(user_id)
         return []
 
@@ -94,6 +98,7 @@ class _RecordingSubscriptions:
         return None if stored is None else stored.user_id
 
     async def write_subscription_grant(self, **fields) -> WriteOutcome:
+        self.timeline.append("write_subscription_grant")
         self.granted.append(fields)
         return WriteOutcome.applied
 
@@ -109,6 +114,7 @@ class _RecordingSubscriptions:
         return self.subscriptions.get((provider, external_id))
 
     async def upsert_subscription(self, **fields) -> tuple[Subscription, WriteOutcome]:
+        self.timeline.append("upsert_subscription")
         self.upserts.append(fields)
         key = (fields["provider"], fields["external_id"])
         stored = self.subscriptions.get(key)
@@ -134,6 +140,7 @@ class _RecordingSubscriptions:
         return stored, WriteOutcome.applied
 
     async def insert_purchase(self, **fields) -> WriteOutcome:
+        self.timeline.append("insert_purchase")
         self.inserted.append(fields)
         self.purchases[(fields["provider"], fields["external_id"])] = StorePurchase(
             provider=fields["provider"],
@@ -147,6 +154,7 @@ class _RecordingSubscriptions:
         return WriteOutcome.applied
 
     async def append_event(self, **fields) -> WriteOutcome:
+        self.timeline.append("append_event")
         self.appended.append(fields)
         self.events[fields["notification_uuid"]] = fields
         return WriteOutcome.applied
@@ -155,11 +163,14 @@ class _RecordingSubscriptions:
 class _RecordingPurchases:
     """Stands in for the inverse token read, answering with one binding or with none."""
 
-    def __init__(self, bound: UUID | None = None) -> None:
+    def __init__(self, timeline: list[str], bound: UUID | None = None) -> None:
+        # The writer's list, not its own: the ordering claim is about these two relative to each other.
+        self.timeline = timeline
         self.bound = bound
         self.calls: list[tuple[PurchaseProvider, str]] = []
 
     async def resolve_user(self, provider: PurchaseProvider, identity_value: str) -> UUID | None:
+        self.timeline.append("resolve_user")
         self.calls.append((provider, identity_value))
         return self.bound
 
@@ -192,7 +203,7 @@ def _service(session, writer, bound: UUID | None) -> SubscriptionsService:
     """The real service over the two recording crud stands-in, so its own arms are what runs."""
     service = SubscriptionsService(db=session, evaluated_at=NOW)
     service.subscriptions_db = writer
-    service.purchases_db = _RecordingPurchases(bound)
+    service.purchases_db = _RecordingPurchases(writer.timeline, bound)
     return service
 
 
@@ -268,6 +279,11 @@ class TestTheSinglePurchaseArms:
         await service.ingest(_notification(attribution_token=TOKEN))
 
         assert service.purchases_db.calls == [(PurchaseProvider.apple, TOKEN)]
+        # The ordering the name claims, measured on one shared sequence: arguments alone would
+        # stay green with `resolve_user` moved under the grant locks, which is the defect.
+        assert "lock_grants" in writer.timeline, "the lock this read must precede never ran"
+        assert writer.timeline[0] == "resolve_user", writer.timeline
+        assert writer.timeline.index("resolve_user") < writer.timeline.index("lock_grants")
 
 
 @pytest.mark.asyncio
