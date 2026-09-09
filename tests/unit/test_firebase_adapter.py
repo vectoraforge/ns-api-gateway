@@ -564,19 +564,9 @@ class TestTheRejectSet:
             await adapter.get_user_provider_data(ISSUER, SUBJECT)
 
 
-class TestTheClassifierRecordsItsProhibitions:
-    """The prohibitions recorded where the next reader is."""
-
-    @pytest.mark.parametrize("phrase", [
-        "never take the first recognized entry",
-        "never classify non-empty providerdata as anonymous",
-        "never read `firebase.sign_in_provider`",
-        "no declaration match",
-        "no `required_flow`",
-    ])
-    def test_the_module_docstring_records_the_prohibitions(self, phrase):
-        from nativespeaker.api.auth import firebase
-        assert phrase in firebase.__doc__.lower()
+class TestNeitherDeletedConceptSurvivesInTheCode:
+    """A-13: the five cases that asserted the module docstring's own phrases are deleted -- the
+    rules they quoted are `SHARED-INVARIANTS.md`'s, and pinning prose pins no behaviour."""
 
     @pytest.mark.parametrize("name", ["sign_in_provider", "required_flow"])
     def test_neither_deleted_concept_appears_outside_the_docstring(self, name):
@@ -586,7 +576,10 @@ class TestTheClassifierRecordsItsProhibitions:
 
         from nativespeaker.api.auth import firebase
         source = Path(firebase.__file__).read_text()
-        code = source.replace(ast.get_docstring(ast.parse(source), clean=False), "", 1)
+        docstring = ast.get_docstring(ast.parse(source), clean=False)
+        # A removed docstring is a source with nothing to strip, not a `TypeError` that reports
+        # neither the condition this case tests nor the one that actually held.
+        code = source if docstring is None else source.replace(docstring, "", 1)
         assert name not in code
 
 
