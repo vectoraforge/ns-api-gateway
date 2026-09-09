@@ -501,7 +501,9 @@ class TestTheRegisteredWriterAddsNoThirdLockTier:
         assert [relation_of(statement) for statement in taken] == ["core.access_grants",
                                                                    "core.access_grants",
                                                                    "core.user_monthly_usage"]
-        assert "ORDER BY core.access_grants.id ASC" in taken[0]
+        # Every grant-tier read, not the first alone: an unordered second one is a second order.
+        for statement in taken[:2]:
+            assert "ORDER BY core.access_grants.id ASC" in statement
 
     async def test_exactly_two_distinct_lock_tiers_are_taken_on_the_conversion(self,
                                                                                conversion_statements):
@@ -514,10 +516,14 @@ class TestTheRegisteredWriterAddsNoThirdLockTier:
     async def test_the_new_grant_locks_the_grant_tier_alone_because_it_holds_no_row(
             self, new_grant_statements):
         """A clean account has nothing in either tier, so `FOR UPDATE` locks nothing and the indexes arbitrate."""
-        taken = [relation_of(statement) for statement in locking(new_grant_statements["statements"])]
+        locked = locking(new_grant_statements["statements"])
+        taken = [relation_of(statement) for statement in locked]
         assert taken == ["core.access_grants", "core.access_grants"]
         assert "core.external_identities" not in taken
         assert "core.users" not in taken
+        # Every grant-tier read, not the first alone: an unordered second one is a second order.
+        for statement in locked[:2]:
+            assert "ORDER BY core.access_grants.id ASC" in statement
 
     async def test_the_conversion_revalidates_the_identity_row_by_a_plain_re_read(
             self, conversion_statements):
