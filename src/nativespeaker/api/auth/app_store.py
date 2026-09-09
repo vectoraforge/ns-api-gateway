@@ -102,10 +102,19 @@ class AppStoreNotifications:
         except VerificationException as failure:
             raise NotificationRejected(stage=failure.status.name) from failure
 
+        if data.rawStatus is None:
+            # `status` is the state of an *auto-renewable subscription*, and Apple omits it for the
+            # types that carry a transaction but name no subscription: CONSUMPTION_REQUEST,
+            # ONE_TIME_CHARGE, EXTERNAL_PURCHASE_TOKEN, RESCIND_CONSENT. The transaction is dropped
+            # with it: `core.subscriptions.status` is NOT NULL, and inventing `expired` here would
+            # end a live subscriber's grant. Verified and unwritable, exactly as line 98 above.
+            # The raw int, never `status`: the typed attribute is also None for an unknown value.
+            return _crossed(payload, None, None, status=SubscriptionStatus.expired, tier_id=None)
+
         status = _APPLE_STATUSES.get(data.status)
         if status is None:
-            # A subscription payload with no status Apple's own enum names. The named class carries
-            # the log line this module cannot write itself, so Apple's retries are visible.
+            # A status value present but outside Apple's own enum. The named class carries the log
+            # line this module cannot write itself, so Apple's retries are visible.
             raise UnknownStoreSubscriptionStatus(PurchaseProvider.apple)
         tier_id = self._tier_for(transaction.productId)
 

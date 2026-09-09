@@ -365,17 +365,37 @@ class TestApplesFiveStatusesStillMapOneToOne:
         # A later edit that collapses two Apple states onto one word fails on the line above.
         assert set(words) == set(SubscriptionStatus)
 
-    def test_a_subscription_payload_with_no_status_raises_rather_than_deriving_one(self, chain):
-        """OQ-2 stands unverified, so this arm is executed rather than assumed unreachable."""
+    def test_a_payload_carrying_no_status_at_all_is_verified_and_unwritable(self, chain):
+        """WR-20. OQ-2 is answered: `status` is an auto-renewable subscription's state, which the
+        types below carry no instance of, so an absent one is a shape and never a bad value."""
+        verified = _notifications(chain).verify(
+            _mint(chain, _envelope(chain, notification_type="CONSUMPTION_REQUEST",
+                                   transaction=_transaction(), status=None)))
+
+        # The `ingest` no-op path verbatim: nothing a subscription row needs crosses the seam.
+        assert (verified.external_id, verified.product_id, verified.tier_id) == (None, None, None)
+        assert verified.event_type == "CONSUMPTION_REQUEST"
+
+    @pytest.mark.parametrize("statusless_type",
+                             ["CONSUMPTION_REQUEST", "ONE_TIME_CHARGE", "EXTERNAL_PURCHASE_TOKEN"])
+    def test_no_statusless_apple_type_answers_the_500_that_apple_retries_forever(self, chain,
+                                                                                statusless_type):
+        """The defect this replaced: Apple acknowledges 200 only, so a 500 here never clears."""
+        assert isinstance(_notifications(chain).verify(
+            _mint(chain, _envelope(chain, notification_type=statusless_type,
+                                   transaction=_transaction(), status=None))), VerifiedNotification)
+
+    def test_a_status_outside_apples_own_enum_still_raises_rather_than_deriving_one(self, chain):
+        """The measurement fires: the loud arm is kept for a value present and unrecognized."""
         with pytest.raises(InternalError):
             _notifications(chain).verify(
-                _mint(chain, _envelope(chain, transaction=_transaction(), status=None)))
+                _mint(chain, _envelope(chain, transaction=_transaction(), status=99)))
 
     def test_the_raise_is_the_named_class_that_carries_its_own_log_line(self, chain):
         """WR-03. A bare `InternalError` logs nothing, so this arm answered 500 naming no cause."""
         with pytest.raises(UnknownStoreSubscriptionStatus) as refusal:
             _notifications(chain).verify(
-                _mint(chain, _envelope(chain, transaction=_transaction(), status=None)))
+                _mint(chain, _envelope(chain, transaction=_transaction(), status=99)))
 
         assert refusal.value.log_level == logging.ERROR
         assert refusal.value.log_fields() == {"provider": str(PurchaseProvider.apple)}
