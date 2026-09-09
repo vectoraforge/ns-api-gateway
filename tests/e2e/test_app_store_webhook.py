@@ -250,15 +250,18 @@ class TestEveryVerificationFailureAnswersTheOneBody:
 
     async def test_a_refused_payload_writes_nothing(
             self, webhook_client, scripted_app_store_notifications, _db_transaction):
-        notification = _notification()
+        # The seam raises instead of returning a notification, so this case names no key: the two
+        # keys a minted `_notification()` would carry reach no code path, and querying them proves
+        # only that a random uuid4 was never written. Count the three tables instead, as the Google
+        # twin does, so a delivery that ingested despite the refusal fails here.
+        before = await _counts(_db_transaction)
         scripted_app_store_notifications.script(
             NotificationRejected(stage="VERIFICATION_FAILURE"))
 
         response = await webhook_client.post(PATH, json={"signedPayload": ENVELOPE})
 
         assert response.status_code == 401
-        assert await _subscriptions_of(_db_transaction, notification.external_id) == []
-        assert await _events_of(_db_transaction, notification.notification_uuid) == []
+        assert await _counts(_db_transaction) == before
 
     async def test_a_valid_firebase_token_does_not_change_the_refusal(
             self, webhook_client, scripted_app_store_notifications, stub_verifier):
