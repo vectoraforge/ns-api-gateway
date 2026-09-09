@@ -113,6 +113,21 @@ class TestOpenAPISchema:
                     responses = op.get("responses", {})
                     assert "422" in responses, (f"422 missing in {method.upper()} {path}")
 
+    def test_every_operation_documents_every_contract_status(self):
+        """WR-05. The schema is the client contract, and 403 and 409 were absent from it -- so a
+        generated client had no branch for the two statuses the create-user and claim flows turn on.
+        `CONTRACT_STATUSES` was declared for this and never read."""
+        schema = real_app.openapi()
+        operations = [(path, method, op)
+                      for path, methods in schema.get("paths", {}).items()
+                      for method, op in methods.items() if isinstance(op, dict)]
+
+        # The control: an empty schema would pass the loop below having checked nothing.
+        assert operations
+        for path, method, op in operations:
+            documented = {int(status) for status in op["responses"]} - {200, 201, 204}
+            assert documented == CONTRACT_STATUSES, f"{method.upper()} {path}"
+
     def test_openapi_error_response_code_is_enum(self):
         """ErrorResponse.code must enumerate exactly the registered codes."""
         schema = real_app.openapi()
