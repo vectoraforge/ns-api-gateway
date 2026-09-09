@@ -2,6 +2,7 @@
 import ast
 import inspect
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,6 +13,7 @@ from sqlalchemy import func
 from sqlmodel import col, select
 from unit.conftest import make_token
 
+import nativespeaker.api
 from nativespeaker.api.app.dependencies import verify_app_store_notification
 from nativespeaker.api.auth import app_store
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
@@ -59,18 +61,40 @@ KNOWN_STATUSES = frozenset({"OK", "VERIFICATION_FAILURE", "INVALID_APP_IDENTIFIE
 _REFUSAL_SOURCES = (inspect.getsource(verify_app_store_notification),
                     inspect.getsource(app_store))
 
+# The application package on disk, read as text so the scan below imports nothing.
+_PACKAGE = Path(nativespeaker.api.__file__).parent
+
+# Every file of the package that raises the refusal, so one appearing elsewhere fails the control
+# below rather than shrinking both sides of the equality it guards.
+_REFUSAL_FILES = frozenset({"app/dependencies.py", "auth/app_store.py", "auth/google_play.py"})
+
 # What a `stage=` that is not a literal leaves behind: the library's own `VerificationStatus.name`.
 _COMPUTED = "<computed at the raise site>"
+
+
+def _called_name(node: ast.Call) -> str | None:
+    """The callee's own name, whether it was called bare or through its module."""
+    func = node.func
+    return func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+
+
+def _refusal_calls(source: str) -> list[ast.Call]:
+    """Every `NotificationRejected(...)` call one module's source makes."""
+    return [node for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call) and _called_name(node) == "NotificationRejected"]
+
+
+def _files_raising_the_refusal() -> set[str]:
+    """Every file of the application package carrying a `NotificationRejected(...)` call."""
+    return {path.relative_to(_PACKAGE).as_posix() for path in _PACKAGE.rglob("*.py")
+            if _refusal_calls(path.read_text())}
 
 
 def _raised_refusal_stages() -> set[str]:
     """Every `NotificationRejected(stage=...)` the Apple path raises, read from its own source."""
     stages = set()
     for source in _REFUSAL_SOURCES:
-        for node in ast.walk(ast.parse(source)):
-            if not (isinstance(node, ast.Call)
-                    and getattr(node.func, "id", None) == "NotificationRejected"):
-                continue
+        for node in _refusal_calls(source):
             for keyword in node.keywords:
                 if keyword.arg == "stage":
                     stages.add(keyword.value.value
@@ -299,6 +323,11 @@ class TestEveryVerificationFailureAnswersTheOneBody:
         # library's enum but `OK`; the literal ones stand only for themselves.
         assert _COMPUTED in raised
         assert set(REFUSAL_STAGES) == (raised - {_COMPUTED}) | (KNOWN_STATUSES - {"OK"})
+
+    async def test_no_raise_site_lives_where_neither_route_control_reads_it(self):
+        """The second control: a refusal raised in a file `_REFUSAL_SOURCES` misses would shrink
+        both sides of the equality above instead of failing it."""
+        assert _files_raising_the_refusal() == _REFUSAL_FILES
 
     async def test_a_refused_payload_writes_nothing(
             self, webhook_client, scripted_app_store_notifications, _db_transaction):
