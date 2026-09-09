@@ -19,21 +19,10 @@ db:
   pool_size: 12
 jwt:
   jwks_cache_ttl_seconds: 3600
-# NO SECRET MATERIAL LIVES IN THIS FILE. It is tracked in git (D-20, accepted), so it carries only
-# public reference data: the levels and limits above, and the two store product maps below. Every
-# credential is an environment variable or a path to a file kept outside this repository -- see
-# .env.example. There is no keyed subject hash anywhere in this project either; the verified
-# pre-auth subject is stored in plaintext, as the core.auth_challenges column comment says.
-#
-# The YAML is authoritative for every key it declares, at any depth: AppConfig is built as
-# AppConfig(**yaml_data, ...) and pydantic-settings ranks init_settings above env_settings, so no
-# environment variable replaces a value declared here -- not a scalar, and not one entry of a map
-# below. The ranking is per key, not per table, because the two sources are deep-merged: a variable
-# naming a nested table (APP_STORE_PRODUCTS, GOOGLE_PLAY_PRODUCTS) cannot change an entry declared
-# here, but it can ADD one this file does not declare, which for the two product maps means an extra
-# entitled store product. Nothing sets those variables; .env.example does not name them. Add a key
-# below only when it must NOT vary per deployment.
-#
+# NO SECRET MATERIAL: this file is tracked in git, so it carries public reference data only. Every
+# credential is an environment variable or a path to a file outside this repository -- see .env.example.
+# A value declared here outranks the environment, but a variable naming a nested table can still ADD
+# an entry to a map below. Add a key here only when it must NOT vary per deployment.
 # An operator edits this map; a verified product id absent from it is a 500 and Apple's next retry succeeds.
 app_store:
   products:

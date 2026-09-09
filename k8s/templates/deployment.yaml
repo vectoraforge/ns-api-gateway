@@ -16,20 +16,16 @@ spec:
         {{- include "ns-api-gateway.selectorLabels" . | nindent 8 }}
     spec:
       {{- with .Values.serviceAccountName }}
-      # The Workload-Identity route to Application Default Credentials, which Firebase Admin and
-      # the Play Developer API both authenticate through. The namespace `default` account is not
-      # annotated for it, so an unset value leaves the pod with no Google identity at all.
+      # The Workload-Identity route to Application Default Credentials: an unset value leaves the
+      # pod with no Google identity at all.
       serviceAccountName: {{ . }}
       {{- end }}
-      # The four settings the Restricted Pod Security Standard treats as its baseline. Without
-      # them the container keeps every default capability, a writable root filesystem, and
-      # whatever uid the image happens to declare.
+      # The Restricted Pod Security Standard's baseline.
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
-        # The mounted DeviceCheck key is owned by root; `fsGroup` gives the group that owns it to
-        # the uid above, so mode 0440 below is readable by the process and by nobody else. Without
-        # it the key mounts unreadable and the claim fails closed exactly as if it were absent.
+        # The mounted DeviceCheck key is owned by root, so without this it mounts unreadable to
+        # the uid above and the claim fails closed as if the key were absent.
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
@@ -37,15 +33,13 @@ spec:
       - name: {{ .Chart.Name }}
         securityContext:
           allowPrivilegeEscalation: false
-          # Nothing the process writes lives on the root filesystem: `json_log_path` is unset
-          # (`config.py`), logs go to stdout, and the scratch mount below covers the temporary
-          # files the provider libraries expect.
+          # Nothing the process writes lives on the root filesystem: the scratch mount below
+          # covers the temporary files the provider libraries expect.
           readOnlyRootFilesystem: true
           capabilities:
             drop: ["ALL"]
-        # `required` on both halves, as `security-policy.yaml` does for the issuer: neither has a
-        # default, and an unset one renders `image: ":"`, which the API server refuses with a
-        # message naming nothing. An install that forgets `--set` fails at render instead.
+        # `required` on both halves: an unset one renders `image: ":"`, which the API server
+        # refuses with a message naming nothing.
         image: "{{ required "image.repository must be set" .Values.image.repository }}:{{ required "image.tag must be set" .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         ports:
@@ -68,8 +62,7 @@ spec:
           periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
         resources:
           {{- toYaml .Values.resources | nindent 10 }}
-        # `required` for the same reason as `image.tag` above: `db.*` and `jwt.project_id` have no
-        # default (`config.py`), so an install that omits the Secret renders a pod that
+        # `required` for the same reason as `image.tag` above: without this Secret the pod
         # CrashLoopBackOffs on a pydantic ValidationError rather than failing at render.
         envFrom:
         - secretRef:

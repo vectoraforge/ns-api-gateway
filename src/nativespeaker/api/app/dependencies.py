@@ -68,12 +68,8 @@ async def get_identity(request: Request,
         raise InvalidExternalJwt(bounded_reason=BoundedReason.duplicate_authorization)
 
     if credential is None:
-        # `HTTPBearer` answers `None` for four inputs: no field, a non-Bearer scheme, an empty
-        # credential and an unparsable value. Only the first is an absent credential, so the raw
-        # field is read to tell them apart -- spec 01 §1.1 gives a non-Bearer scheme and an empty
-        # token the reason `malformed`, and `missing_token` only zero field values. The label is
-        # also what picks the challenge: `missing_token` earns the bare RFC 6750 §3.1 `Bearer`,
-        # and a garbage field earns `error="invalid_token"` like any other presented credential.
+        # `HTTPBearer` also answers `None` for a non-Bearer scheme and an empty token, which spec 01
+        # §1.1 calls `malformed`; only zero field values are `missing_token`.
         presented = request.headers.get("authorization") is not None
         raise InvalidExternalJwt(bounded_reason=BoundedReason.malformed if presented
                                  else BoundedReason.missing_token)
@@ -82,9 +78,8 @@ async def get_identity(request: Request,
     claims, reason = await run_in_threadpool(request.app.state.jwt_verifier.verify,
                                              credential.credentials)
     if claims is None:
-        # `verify` is typed to allow `(None, None)`, and the reason set is closed: a null label is
-        # not one of its members, and it would reach the log as the string "None" -- a population
-        # the spike alert cannot name. An unlabelled refusal is a forgery for logging purposes.
+        # `verify` is typed to allow `(None, None)`, and a null label would reach the log as the
+        # string "None" -- a population the spike alert cannot name.
         raise InvalidExternalJwt(bounded_reason=reason or BoundedReason.bad_signature)
 
     # Its own short session, closed before the handler: Depends(get_db) would hold it across the provider call.
@@ -97,9 +92,8 @@ async def get_identity(request: Request,
 # Declared, never called directly: FastAPI's cache only sees solver-resolved deps, so a direct call re-verifies.
 async def get_linked_identity(identity: Identity = Depends(get_identity)) -> LinkedIdentity:
     """The resolved user and identity row; rejects an unlinked caller with 403."""
-    # Both rows, not just the user: `resolve` sets them together, and the narrowed type is what carries
-    # that to every caller. A user-only pair is the unresolvable state, and it fails closed here rather
-    # than as an `AttributeError` eight handlers deep.
+    # Both rows, not just the user: a user-only pair is the unresolvable state, and it fails closed
+    # here rather than as an `AttributeError` eight handlers deep.
     if identity.user is None or identity.identity is None:
         raise PreAuthIdentityNotAllowed
     return LinkedIdentity(issuer=identity.issuer, subject=identity.subject,
@@ -133,9 +127,8 @@ def get_chat_service(request: Request,
                        chats_limit=config.chats_limit,
                        messages_limit=config.messages_limit,
                        quota_service=quota_service,
-                       # The solver-resolved instant, never a second `now()`: a route taking this
-                       # factory beside any other clock-bearing one would otherwise get two
-                       # instants for one request, and the quota charge is a time-dependent write.
+                       # The solver-resolved instant, never a second `now()`: the quota charge
+                       # below it is a time-dependent write.
                        evaluated_at=evaluated_at)
 
 

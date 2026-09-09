@@ -11,12 +11,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 _EXCLUDED_PATHS = frozenset({"/health/ready"})
 
-# The third-party loggers pinned below the configured level, and the criterion for the list: a
-# library that logs a request body, a request line or SQL. `openai` is the one that carries the
-# product's own content -- at DEBUG it logs the whole chat-completion body, so the system prompt,
-# the user's phrase and the chat's entire history. `DEBUG` is an admitted `LogLevel`, so without
-# this an operator raising the level for one incident ships every customer's sentences into the
-# aggregated log store, which retains them indefinitely.
+# Pinned below the configured level, on one criterion: a library that logs a request body, a
+# request line or SQL. `openai` logs the whole chat-completion body at DEBUG, an admitted level.
 # `uvicorn.access` is the duplicate of the line `RequestLoggingMiddleware` writes below, and it
 # honours neither `_EXCLUDED_PATHS` nor the structured format.
 _QUIETED_LIBRARIES = ("httpx", "httpcore", "sqlalchemy.engine",
@@ -51,10 +47,8 @@ def setup_logging(log_level: str,
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
                 structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S", utc=True),
-                # `colors` defaults to "not Windows", never to `isatty`, so on Linux every line
-                # carries escape codes whatever the stream is. Nothing this service writes to is a
-                # terminal -- stderr is a pipe into the aggregated log store -- and every grep,
-                # alert regex and field extractor over these events would have to tolerate them.
+                # `colors` defaults to "not Windows" rather than to `isatty`, so without this every
+                # line carries escape codes into a stderr that is never a terminal.
                 structlog.dev.ConsoleRenderer(colors=False,
                                               exception_formatter=structlog.dev.plain_traceback),
             ],
@@ -96,9 +90,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         """One access-log line per request, written on the raising exit as well as the ordinary one."""
         if request.url.path in _EXCLUDED_PATHS:
             return
-        # Split at the 5xx boundary, not at 400: `errors.py` marks every client-caused rejection
-        # silent so ERROR stays the level a whole-product outage is paged on, and an access line
-        # at ERROR for a 401 probe or a 404 typo undoes exactly that.
+        # Split at 500, not at 400: an access line at ERROR for a 401 probe or a 404 typo would
+        # page on a client's mistake.
         if status_code >= 500:
             log_method = logger.error
         elif status_code >= 400:

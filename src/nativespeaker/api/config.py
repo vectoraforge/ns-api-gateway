@@ -6,10 +6,8 @@ from pydantic import BaseModel, Field, SecretStr, field_validator, model_validat
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
 
-# The levels both libraries share. `logging.getLevelNamesMapping()` alone would also admit FATAL,
-# which `structlog.make_filtering_bound_logger` has no entry for: `setup_logging` runs at startup
-# before any handler exists, so that name crashloops the pod with a bare KeyError. WARN and NOTSET
-# are dropped with it -- an alias and a non-threshold, neither worth a config surface.
+# The levels both libraries share: `logging` also admits FATAL, WARN and NOTSET, which
+# `structlog.make_filtering_bound_logger` has no entry for and crashloops the pod at startup.
 _SUPPORTED_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
 LogLevel = StrEnum("LogLevel", {name: name for name in _SUPPORTED_LEVELS})
 
@@ -135,10 +133,8 @@ class AppConfig(BaseConfig):
 
     model: ModelConfig = Field(default_factory=ModelConfig)
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
-    # Required, not `default_factory`: both name models whose own fields are required, so a factory
-    # call on a wholly absent block raises from inside `DatabaseConfig()` and reports the leaf names
-    # with no path -- five `Field required` lines, none of which says "db". Declaring the block
-    # required moves the same absence onto `db.host` / `jwt.project_id`, which names the block.
+    # Required, not `default_factory`: a factory call on a wholly absent block reports the leaf
+    # names with no path -- five `Field required` lines, none of which says "db".
     db: DatabaseConfig
     jwt: JWTConfig
     devicecheck: DeviceCheckConfig = Field(default_factory=DeviceCheckConfig)
@@ -155,9 +151,8 @@ def _mapping(path: Path) -> dict:
     """One YAML document as a mapping, or a failure naming the file that is not one."""
     loaded = yaml.safe_load(path.read_text())
     if not isinstance(loaded, dict):
-        # An empty file, an all-comments file, or a list at the top level is a routine ConfigMap
-        # or volume-mount failure. Unchecked it reaches pydantic as `None` and crashloops the pod
-        # with an interpreter error naming neither the file nor the problem.
+        # Unchecked, an empty or all-comments file reaches pydantic as `None` and crashloops the
+        # pod with an error naming neither the file nor the problem.
         raise ValueError(f"{path} does not contain a YAML mapping")
     return loaded
 
@@ -176,11 +171,8 @@ class EnvironmentConfig(BaseConfig):
         prompt_path = self.config_dir / self.prompt_filename
         examples_path = self.config_dir / self.examples_filename
         mapping = _mapping(config_path)
-        # `prompt` and `examples` are `AppConfig` fields like any other, but they alone come from
-        # the two sibling files rather than from `config.yaml`, and nothing in `config.yaml` says
-        # so. Declaring either there is the obvious mistake, and unchecked it reaches the call
-        # below as a duplicate keyword: a bare `TypeError` that names neither file nor the
-        # collision, and a pod that crashloops on it.
+        # `prompt` and `examples` come from the two sibling files: declaring either in
+        # `config.yaml` reaches the call below as a duplicate keyword and a bare `TypeError`.
         collided = mapping.keys() & {"prompt", "examples"}
         if collided:
             raise ValueError(f"{config_path} declares {sorted(collided)}, which come from "

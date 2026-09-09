@@ -57,11 +57,8 @@ def build_app_store_verifier(store: AppStoreConfig) -> SignedDataVerifier | None
         return None
     try:
         root_bytes = root.read_bytes()
-        # Parsed here because `SignedDataVerifier` parses its root lazily: a PEM mounted where the
-        # DER form belongs, or a truncated ConfigMap value, would otherwise build a verifier that
-        # answers 401 to every genuine Apple notification and reads in the log as a forgery. The
-        # read is inside the guard too -- a present-but-unreadable projected secret raises
-        # `PermissionError`, which is the boot this function exists to prevent.
+        # Parsed and discarded: `SignedDataVerifier` parses its root lazily, so a PEM or a
+        # truncated value would surface only as a 401 on a genuine notification.
         x509.load_der_x509_certificate(root_bytes)
     except (OSError, ValueError):
         # An unreadable or non-DER root is an unconfigured deployment, not a forged notification.
@@ -99,10 +96,8 @@ def build_jwt_verifier(jwt: JWTConfig) -> JWTVerifier:
                            leeway=jwt.leeway_seconds,
                            cache_ttl_seconds=jwt.jwks_cache_ttl_seconds)
     except PyJWTError as failure:
-        # Deliberately fatal, where `build_google_push_verifier` answers `None`: every route past
-        # the identity barrier needs this verifier, so a pod without it has nothing to be Ready for.
-        # Re-raised naming the endpoint, because a crashlooping pod's first log line is all an
-        # operator gets and `PyJWKClientError`'s own message names no URL.
+        # Fatal, where the two builders above answer `None`: a pod without this verifier has
+        # nothing to be Ready for. The URL is named because `PyJWKClientError` names none.
         raise RuntimeError(f"JWKS unusable at {jwt.jwks_url}: {failure}") from failure
 
 
@@ -112,10 +107,7 @@ def _play_credential():
         credential, _project = google.auth.default(scopes=[PLAY_SCOPE])
     except google.auth.exceptions.GoogleAuthError:
         # The whole family, not just an absent credential: `google.auth.default()` also raises
-        # `RefreshError` and `TransportError` when the GCE metadata server answers badly, which is
-        # a routine transient at pod start. Every ADC failure is the same outcome here -- one route
-        # answers 503 and the pod still serves -- and it is the policy the push verifier above and
-        # `firebase._application_default_credential` already carry.
+        # `RefreshError` and `TransportError` when the metadata server answers badly at pod start.
         return None
     return credential
 
@@ -198,9 +190,8 @@ async def lifespan(app: FastAPI):
 
         yield
     finally:
-        # Every step is guarded on its own, because a step that raises must not skip the ones after
-        # it: `dispose()` on a pool in a bad state and `aclose()` on a client mid-flight both raise,
-        # and the step they would strand is the one whose failure outlives the process.
+        # Guarded per step: `dispose()` and `aclose()` both raise on a handle in a bad state, and a
+        # raise here would skip every step below it.
         if db_engine is not None:
             try:
                 await db_engine.dispose()
@@ -213,9 +204,8 @@ async def lifespan(app: FastAPI):
                 except Exception:
                     logger.error("shutdown_step_failed", step="http_client_close", exc_info=True)
 
-        # firebase_admin registers named apps process-globally and raises on a repeat, so a
-        # second boot needs these gone -- a failed startup that kept them poisons every later one.
-        # Guarded per app as well: one app that refuses to go must not strand the rest.
+        # `firebase_admin` registers named apps process-globally and raises on a repeat, so a
+        # second boot needs these gone.
         for firebase_app in firebase_apps.values():
             try:
                 firebase_admin.delete_app(firebase_app)
