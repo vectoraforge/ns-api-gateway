@@ -9,18 +9,25 @@ from typing import Protocol
 import jwt
 from jwt import PyJWKClient
 from jwt.exceptions import (
+    DecodeError,
     ExpiredSignatureError,
     ImmatureSignatureError,
     InvalidAudienceError,
     InvalidIssuerError,
+    InvalidSignatureError,
     MissingRequiredClaimError,
     PyJWKClientError,
     PyJWTError,
 )
 
 
+# Exactly the closed set spec 11 names, and never a null. The first three separate the three
+# populations the invalid_external_jwt spike alert is labelled by -- clients that send nothing,
+# clients that send garbage, and an actor forging signatures -- so collapsing them blinds it.
 class BoundedReason(StrEnum):
     """Rejection reasons for logs and metric labels; all of them surface the same copy to the client."""
+    missing_token = "missing_token"
+    malformed = "malformed"
     bad_signature = "bad_signature"
     duplicate_authorization = "duplicate_authorization"
     issuer_mismatch = "issuer_mismatch"
@@ -66,7 +73,12 @@ def bounded_reason_for(exc: PyJWTError) -> BoundedReason:
     # An absent `sub` is caught by `require`; a present-but-empty one after decode. Same condition.
     if isinstance(exc, MissingRequiredClaimError) and exc.claim == "sub":
         return BoundedReason.empty_subject
-    # Everything else: signature failure, algorithm confusion, malformed form, unknown key id.
+    # A token that is not a token: too few segments, an unreadable header or body, bad padding.
+    # `InvalidSignatureError` is excluded because it subclasses `DecodeError` and is a real forgery,
+    # and `PyJWKClientError` because an unknown key id is not a `DecodeError` at all.
+    if isinstance(exc, DecodeError) and not isinstance(exc, InvalidSignatureError):
+        return BoundedReason.malformed
+    # Everything else: signature failure, algorithm confusion, unknown key id.
     return BoundedReason.bad_signature
 
 

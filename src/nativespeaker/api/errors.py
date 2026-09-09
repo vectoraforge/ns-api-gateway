@@ -352,19 +352,23 @@ class InvalidExternalJwt(AppError):
     status = 401
     code = "auth_required"
 
-    def __init__(self, *, bounded_reason: BoundedReason | None) -> None:
+    def __init__(self, *, bounded_reason: BoundedReason) -> None:
+        # Never `None`: spec 11 closes the reason set at eight named values, and a null label is
+        # not one of them -- it would be a population the spike alert cannot name.
         self.bounded_reason = bounded_reason
         super().__init__(f"invalid external jwt: {bounded_reason}")
 
     def extra_headers(self) -> dict[str, str]:
         # RFC 6750 §3.1: a request carrying no credential gets the bare challenge, no error code.
-        if self.bounded_reason is None:
+        # Keyed on the one reason that means no credential was presented; a duplicated or garbage
+        # Authorization field did present one, so it earns `invalid_token` like a failed signature.
+        if self.bounded_reason is BoundedReason.missing_token:
             return {"WWW-Authenticate": "Bearer"}
         return {"WWW-Authenticate": 'Bearer error="invalid_token"'}
 
     def log_fields(self) -> dict[str, str | None]:
         # A `StrEnum` member, stringified so the field's type in the log pipeline stays a plain str.
-        return {"bounded_reason": None if self.bounded_reason is None else str(self.bounded_reason)}
+        return {"bounded_reason": str(self.bounded_reason)}
 
 
 class PreAuthIdentityNotAllowed(AppError):

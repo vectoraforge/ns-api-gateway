@@ -190,10 +190,11 @@ class TestTheWireArmsRaiseAndTheHandlerRecordsThemOnce:
         return entries
 
     @pytest.mark.parametrize("headers,expected_reason", [
-        # No member describes this any more: the extractor owned the three the framework replaced.
-        ({}, None),
+        # WR-22: the reason the spec names for a request that presented no credential at all.
+        ({}, "missing_token"),
         # Well-formed on the wire -- one Bearer credential -- so this is the verifier's own reason.
-        ({"Authorization": "Bearer not.a.jwt"}, "bad_signature"),
+        # WR-22: three segments that do not decode is a token's shape, not a forged signature.
+        ({"Authorization": "Bearer not.a.jwt"}, "malformed"),
     ], ids=["absent-token", "failed-verify"])
     def test_each_arm_logs_one_record_naming_its_class_and_its_bounded_reason(
             self, headers, expected_reason, warnings):

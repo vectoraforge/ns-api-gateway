@@ -38,7 +38,7 @@ ISSUER = "https://securetoken.google.com/test-project"
 SUBJECT = "subject-under-test"
 
 CASES = [
-    ("missing_token", InvalidExternalJwt(bounded_reason=None), 401),
+    ("missing_token", InvalidExternalJwt(bounded_reason=BoundedReason.missing_token), 401),
     ("invalid_token", InvalidExternalJwt(bounded_reason=BoundedReason.bad_signature), 401),
     ("expired_token", InvalidExternalJwt(bounded_reason=BoundedReason.expired), 401),
     ("unsupported_lang", UnsupportedLanguageError("fr", ["en"]), 400),

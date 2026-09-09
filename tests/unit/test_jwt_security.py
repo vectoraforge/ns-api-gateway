@@ -159,7 +159,8 @@ class TestClaimValidation:
 
 class TestMalformedTokens:
     def test_rejects_empty_string(self, verifier):
-        assert rejected(verifier, "") is BoundedReason.bad_signature
+        """WR-22: not a token at all, so it is `malformed` and never a signature that failed."""
+        assert rejected(verifier, "") is BoundedReason.malformed
 
 
 class TestCrossUserIsolation:

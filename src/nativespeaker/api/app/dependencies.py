@@ -68,7 +68,9 @@ async def get_identity(request: Request,
         raise InvalidExternalJwt(bounded_reason=BoundedReason.duplicate_authorization)
 
     if credential is None:
-        raise InvalidExternalJwt(bounded_reason=None)
+        # A reason of its own, never a null: the spike alert separates clients that send nothing
+        # from clients that send garbage, and it can only do that if the label distinguishes them.
+        raise InvalidExternalJwt(bounded_reason=BoundedReason.missing_token)
 
     # `verify` is synchronous and can block on a JWKS fetch, so it never runs on the event loop.
     claims, reason = await run_in_threadpool(request.app.state.jwt_verifier.verify,
