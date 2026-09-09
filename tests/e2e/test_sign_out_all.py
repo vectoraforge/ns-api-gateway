@@ -194,9 +194,11 @@ class TestTheThreeRefusals:
         assert answered.status_code != 204
         assert answered.json() == {"code": "verification_temporarily_unavailable"}
 
-    async def test_an_account_the_provider_does_not_have_answers_401(
+    async def test_an_account_the_provider_does_not_have_answers_the_unconfirmed_503(
             self, sign_out_client, _db_transaction, real_seam, sdk_revocations):
-        """D-06: the token verified but names no live principal, so the credential is invalid in substance."""
+        """WR-29. Spec 11 admits `auth_required` for a barrier token-acceptance failure alone, and
+        this call is past the barrier: telling a client with a verified token to re-authenticate is
+        a loop, and it hides an active identity row naming a vanished uid behind a routine 401."""
         await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
                             provider=IdentityProvider.google)
         _configured(real_seam)
@@ -204,9 +206,10 @@ class TestTheThreeRefusals:
 
         answered = await sign_out_client.post("/auth/sign-out-all", headers=_auth())
 
-        assert answered.status_code == 401, answered.text
-        assert answered.json() == {"code": "auth_required"}
-        assert answered.headers["WWW-Authenticate"] == 'Bearer error="invalid_token"'
+        assert answered.status_code == 503, answered.text
+        # Never 204: SIGNOUT-02's fail-closed half still binds, and this is not a confirmation.
+        assert answered.json() == {"code": "verification_temporarily_unavailable"}
+        assert "WWW-Authenticate" not in answered.headers
         # Definitive, so it spends one attempt and no more; a retryable classification would show three.
         assert len(calls) == 1
 
