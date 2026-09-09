@@ -11,6 +11,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.crud.grants import GrantsDB
 from nativespeaker.api.crud.violations import is_unique_violation
+from nativespeaker.api.errors import MultipleEffectiveGrantsError
 from nativespeaker.api.tables import (
     AccessGrant,
     AccessGrantSource,
@@ -286,6 +287,18 @@ class SubscriptionsDB:
         if entitled and [grant for grant in held
                          if grant.ends_at == ends_at and grant.tier_id == tier_id]:
             return WriteOutcome.replayed
+
+        # A second subscription's own live term is not a free grant to supersede: expiring it would
+        # leave that subscription entitled with no grant row, which the settle-grant-status fold
+        # point calls data corruption. One account cannot hold two paid terms, so refuse instead.
+        rival = [grant for grant in marked_active
+                 if grant.user_id == user_id
+                 and grant.source is AccessGrantSource.subscription
+                 and grant.subscription_id != subscription_id
+                 # Open term only: an already-ended one strands nothing when this write expires it.
+                 and (grant.ends_at is None or grant.ends_at > evaluated_at)]
+        if entitled and rival:
+            raise MultipleEffectiveGrantsError(len(rival) + 1, user_id)
 
         # Every grant the destination holds goes, the free one too: `ix_access_grants_one_active_per_user` allows one.
         # The old owner's grant for another subscription is not this write's to end.
