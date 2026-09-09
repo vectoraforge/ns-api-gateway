@@ -3,6 +3,7 @@ The shapes are [ASSUMED] from secondary sources -- see 41-RESEARCH.md § Assumpt
 from Apple is evidence about these literals rather than a regression."""
 import inspect
 import json
+import time
 import typing
 
 import httpx
@@ -286,6 +287,42 @@ class TestTheParseArms:
                                         bit0=True, bit1=False)
 
         assert len(recorder.requests) == 1
+
+
+class TestTheAttemptsAreSeparatedInTime:
+    """WR-21: the budget was spent inside a few milliseconds, so it bought nothing against a blip."""
+
+    # `wait_exponential(0.1, exp_base=2, max=0.5)` sleeps 0.2s then 0.4s. The floor is well under
+    # that and well over the microseconds `wait_none()` costs, so it neither flakes nor passes unfixed.
+    FLOOR_SECONDS = 0.3
+
+    async def test_an_exhausted_read_budget_waits_between_its_attempts(self, private_key):
+        recorder = Recorder(*[httpx.Response(503) for _ in range(DEVICECHECK_ATTEMPTS)])
+
+        started = time.monotonic()
+        with pytest.raises(Unavailable):
+            await read_bits_with_retry(_adapter(recorder, private_key), QUERY_TOKEN)
+
+        assert time.monotonic() - started >= self.FLOOR_SECONDS
+
+    async def test_an_exhausted_write_budget_waits_between_its_attempts(self, private_key):
+        recorder = Recorder(*[httpx.Response(503) for _ in range(DEVICECHECK_ATTEMPTS)])
+
+        started = time.monotonic()
+        with pytest.raises(Unavailable):
+            await write_bits_with_retry(_adapter(recorder, private_key), UPDATE_TOKEN,
+                                        bit0=True, bit1=False)
+
+        assert time.monotonic() - started >= self.FLOOR_SECONDS
+
+    async def test_a_budget_that_was_not_exhausted_pays_no_wait_control(self, private_key):
+        """The control: a floor that a single completed call also cleared would measure nothing."""
+        recorder = Recorder(_ok({"bit0": False, "bit1": False}))
+        started = time.monotonic()
+
+        assert await read_bits_with_retry(_adapter(recorder, private_key), QUERY_TOKEN) == BitState(
+            bit0=False, bit1=False)
+        assert time.monotonic() - started < self.FLOOR_SECONDS
 
 
 class TestAnAbsentCredentialFailsClosed:

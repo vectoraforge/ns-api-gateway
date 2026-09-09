@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import httpx
 import jwt
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
+from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from nativespeaker.api.errors import ProofRejected, Unavailable
 
@@ -22,6 +22,15 @@ DEVICECHECK_HTTP_TIMEOUT_SECONDS = 8
 
 # The whole budget for one call: the initial request plus up to two more, spent on retryable outcomes only.
 DEVICECHECK_ATTEMPTS = 3
+
+# The gap between attempts, in `resilience.py`'s own shape: `multiplier * 2 ** (attempt
+# - 1)`, clamped. Without it tenacity waits `wait_none()` and spends the whole budget inside a few
+# milliseconds -- three requests into the same instant of an Apple blip, which buys nothing and
+# triples this service's call rate exactly while the provider is degraded. Sub-second, and far
+# below the LLM path's seconds, because the budget here is already three 8-second timeouts deep:
+# past that the caller is gone, so an idle wait spends what is left of its patience on nothing.
+DEVICECHECK_BACKOFF_BASE_SECONDS = 0.1
+DEVICECHECK_BACKOFF_MAX_SECONDS = 0.5
 
 # Apple answers HTTP 200 with one of these plain-text bodies when the device's bits were never set.
 _NEVER_SET_BODIES = frozenset({"Failed to find bit state", "Bit State Not Found"})
@@ -194,6 +203,9 @@ def _retrying(exhausted) -> AsyncRetrying:
     """The three-attempt policy both calls share; only the internal marker is retried."""
     return AsyncRetrying(
         stop=stop_after_attempt(DEVICECHECK_ATTEMPTS),
+        wait=wait_exponential(multiplier=DEVICECHECK_BACKOFF_BASE_SECONDS,
+                              exp_base=2,
+                              max=DEVICECHECK_BACKOFF_MAX_SECONDS),
         # Only the internal marker retries, so `ProofRejected` propagates after one attempt.
         retry=retry_if_exception_type(RetryableDeviceCheckError),
         retry_error_callback=exhausted,

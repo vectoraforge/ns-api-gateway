@@ -9,7 +9,7 @@ import google.auth.exceptions
 import structlog
 from firebase_admin import auth, credentials, exceptions
 from starlette.concurrency import run_in_threadpool
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
+from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from nativespeaker.api.auth.adapters import FirebaseAdminAdapter, VerifiedProviderIdentity
 from nativespeaker.api.errors import NotLinked, RevocationUnconfirmed, Unavailable, UserNotFound
@@ -22,6 +22,15 @@ FIREBASE_HTTP_TIMEOUT_SECONDS = 8
 
 # The whole budget for one lookup: the initial call plus up to two more, spent on retryable outcomes only.
 FIREBASE_LOOKUP_ATTEMPTS = 3
+
+# The gap between attempts, in `resilience.py`'s own shape: `multiplier * 2 ** (attempt
+# - 1)`, clamped. Without it tenacity waits `wait_none()` and both budgets are spent inside a few
+# milliseconds -- three calls into the same instant of a Firebase blip, which buys nothing and
+# triples this service's call rate exactly while the provider is degraded. Sub-second, and far
+# below the LLM path's seconds, because the budget here is already three 8-second timeouts deep:
+# past that the caller is gone, so an idle wait spends what is left of its patience on nothing.
+FIREBASE_BACKOFF_BASE_SECONDS = 0.1
+FIREBASE_BACKOFF_MAX_SECONDS = 0.5
 
 
 class RetryableLookupError(Exception):
@@ -190,6 +199,9 @@ async def lookup_with_retry(adapter: FirebaseAdminAdapter, issuer: str,
     """Call the adapter up to `FIREBASE_LOOKUP_ATTEMPTS` times; return the identity or raise."""
     retrying = AsyncRetrying(
         stop=stop_after_attempt(FIREBASE_LOOKUP_ATTEMPTS),
+        wait=wait_exponential(multiplier=FIREBASE_BACKOFF_BASE_SECONDS,
+                              exp_base=2,
+                              max=FIREBASE_BACKOFF_MAX_SECONDS),
         # Only the internal marker retries, so `UserNotFound` and `NotLinked` propagate after one attempt.
         retry=retry_if_exception_type(RetryableLookupError),
         retry_error_callback=_exhausted,
@@ -206,6 +218,9 @@ async def revoke_with_retry(adapter: FirebaseAdminAdapter, issuer: str, subject:
     """Call the adapter up to `FIREBASE_LOOKUP_ATTEMPTS` times; return on a confirmation or raise."""
     retrying = AsyncRetrying(
         stop=stop_after_attempt(FIREBASE_LOOKUP_ATTEMPTS),
+        wait=wait_exponential(multiplier=FIREBASE_BACKOFF_BASE_SECONDS,
+                              exp_base=2,
+                              max=FIREBASE_BACKOFF_MAX_SECONDS),
         # Only the internal marker retries, so `UserNotFound` propagates after one attempt.
         retry=retry_if_exception_type(RetryableLookupError),
         retry_error_callback=_revocation_exhausted,

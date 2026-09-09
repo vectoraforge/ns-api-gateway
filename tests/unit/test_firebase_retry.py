@@ -1,4 +1,6 @@
 """Exact attempt counts per outcome: the adapter raises now, so only an exception predicate fires."""
+import time
+
 import pytest
 import tenacity
 
@@ -149,6 +151,39 @@ class TestAttemptCountsPerOutcome:
 
         assert len(adapter.calls) == 2
         assert identity is ANONYMOUS
+
+
+class TestTheAttemptsAreSeparatedInTime:
+    """WR-21: the budget was spent inside a few milliseconds, so it bought nothing against a blip."""
+
+    # `wait_exponential(0.1, exp_base=2, max=0.5)` sleeps 0.2s then 0.4s. The floor is well under
+    # that and well over the microseconds `wait_none()` costs, so it neither flakes nor passes unfixed.
+    FLOOR_SECONDS = 0.3
+
+    async def test_an_exhausted_lookup_budget_waits_between_its_attempts(self):
+        adapter = CountingAdapter(*[_retryable() for _ in range(FIREBASE_LOOKUP_ATTEMPTS)])
+
+        started = time.monotonic()
+        with pytest.raises(Unavailable):
+            await lookup_with_retry(adapter, ISSUER, SUBJECT)
+
+        assert time.monotonic() - started >= self.FLOOR_SECONDS
+
+    async def test_an_exhausted_revocation_budget_waits_between_its_attempts(self):
+        revoker = CountingRevoker(*[_retryable() for _ in range(FIREBASE_LOOKUP_ATTEMPTS)])
+
+        started = time.monotonic()
+        with pytest.raises(RevocationUnconfirmed):
+            await revoke_with_retry(revoker, ISSUER, SUBJECT)
+
+        assert time.monotonic() - started >= self.FLOOR_SECONDS
+
+    async def test_a_budget_that_was_not_exhausted_pays_no_wait_control(self):
+        """The control: a floor that a single completed call also cleared would measure nothing."""
+        started = time.monotonic()
+
+        assert await lookup_with_retry(CountingAdapter(ANONYMOUS), ISSUER, SUBJECT) is ANONYMOUS
+        assert time.monotonic() - started < self.FLOOR_SECONDS
 
 
 class TestTheExhaustionConversion:
