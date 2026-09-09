@@ -407,6 +407,10 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert session.rollbacks >= 1
         # The caller's rows came from a closed session, so a refresh on this arm is the 500 this pins.
         assert session.refresh_calls == []
+        # WR-64: the winner may have converted its own anonymous grant, which spends no device slot.
+        # Setting bit1 here burns this device's one registered slot for a grant this attempt did not
+        # write, and nothing in this product ever clears an Apple bit.
+        assert devicecheck.write_calls == []
 
     def test_a_refused_write_rolls_back_answers_four_hundred_and_three_and_refreshes_nothing(
             self, client, store, account, grants, devicecheck, session):

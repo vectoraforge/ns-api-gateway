@@ -27,6 +27,9 @@ NEW_GRANT_ARM_GUARD = "held"
 # The local that arm binds, and that the post-commit write is guarded on: `None` means no bit to set.
 STATE_NAME = "state"
 
+# The other name that guard tests: `False` means the race was lost and this attempt wrote no grant.
+WROTE_NAME = "wrote"
+
 # Every name the device-gate seam exposes. None of them may appear inside the crud writer.
 SEAM_NAMES = frozenset({"devicecheck", "read_bits", "write_bits",
                         "read_bits_with_retry", "write_bits_with_retry",
@@ -95,17 +98,18 @@ def _call_line(node: ast.AST, name: str) -> int:
     raise AssertionError(f"{name} is not called at all")
 
 
-def _guard_of_the_write(claim: ast.AST) -> str | None:
-    """The name the `if` around the vendor write tests, or `None` when the write is unguarded."""
+def _guard_of_the_write(claim: ast.AST) -> frozenset[str]:
+    """The names the `if` around the vendor write tests, empty when the write is unguarded."""
     for node in ast.walk(claim):
-        if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
+        if not isinstance(node, ast.If):
             continue
         if "write_bits_with_retry" not in _called_names(ast.Module(body=node.body,
                                                                    type_ignores=[])):
             continue
-        left = node.test.left
-        return left.id if isinstance(left, ast.Name) else None
-    return None
+        # Every name the test reads, so a guard of two conditions is reported as both rather than
+        # as the first one: the write is only correct when each of them holds.
+        return frozenset(child.id for child in ast.walk(node.test) if isinstance(child, ast.Name))
+    return frozenset()
 
 
 def _mentioned_names(node: ast.AST) -> set[str]:
@@ -190,7 +194,9 @@ class TestBothVendorCallsPrecedeTheRegisteredActivation:
         assert "read_bits_with_retry" not in outside
         # The control: the conversion still reaches the writer, so the set above is not empty by accident.
         assert WRITER_REGISTERED in outside
-        assert _guard_of_the_write(claim) == STATE_NAME
+        # WR-64: the read alone is not enough. The race this attempt lost may have been won by a
+        # conversion, which reaches no vendor, so the write also waits on having written the grant.
+        assert _guard_of_the_write(claim) == {STATE_NAME, WROTE_NAME}
 
     def test_the_state_the_write_is_guarded_on_is_the_one_the_arm_binds(self):
         """The guard is only honest if the arm is what sets it: a rename on one side fails here."""
@@ -198,6 +204,13 @@ class TestBothVendorCallsPrecedeTheRegisteredActivation:
         bound = {target.id for node in ast.walk(arm) if isinstance(node, ast.Assign)
                  for target in node.targets if isinstance(target, ast.Name)}
         assert STATE_NAME in bound
+
+    def test_the_wrote_the_write_is_guarded_on_is_what_the_settlement_answered(self):
+        """The other half of the guard: it names the settlement's own answer, not a second read."""
+        claim = _function(SERVICE_SOURCE, CLAIM_REGISTERED)
+        settled = [node for node in ast.walk(claim)
+                   if isinstance(node, ast.Assign) and "_settle" in _called_names(node)]
+        assert [target.id for node in settled for target in node.targets] == [WROTE_NAME]
 
     def test_the_claim_takes_no_lock_of_its_own_before_reaching_the_seam(self):
         """Locking is the crud writer's job alone, and it runs last; a lock here would straddle the call."""
@@ -245,7 +258,7 @@ class TestTheOrderAssertionFires:
                   "        state = await read_bits_with_retry(self.devicecheck, token)\n"
                   "    await self.session.commit()\n"
                   "    await write_bits_with_retry(self.devicecheck, token)\n")
-        assert _guard_of_the_write(_function(source, CLAIM_REGISTERED)) is None
+        assert _guard_of_the_write(_function(source, CLAIM_REGISTERED)) == frozenset()
 
     def test_a_body_without_the_new_grant_arm_is_reported_rather_than_passed(self):
         """A renamed guard would silently empty the arm; it is named instead, so the failure reads."""
