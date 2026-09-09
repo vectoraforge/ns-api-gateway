@@ -42,7 +42,9 @@ class ChatsDB:
             select(Message)
             .join(Chat, col(Message.chat_id) == col(Chat.id))
             .where(col(Chat.id) == chat_id, col(Chat.user_id) == user_id)
-            .order_by(col(Message.id).desc())
+            # Ascending, matching the route's documented "ordered chronologically": `Message.id`
+            # is uuid7, so descending id was newest-first and rendered the chat backwards.
+            .order_by(col(Message.id).asc())
         )
         return list((await self.session.exec(statement)).all())
 
