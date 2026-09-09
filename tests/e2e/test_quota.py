@@ -164,8 +164,12 @@ class TestTheAllowanceIsSpent:
         user, _ = linked_firebase_identity
         grant, _ = await seed_grant(_db_transaction, user_id=user.id, monthly_used=ALLOWANCE)
 
-        await async_client.post("/chats", json=PHRASE)
+        response = await async_client.post("/chats", json=PHRASE)
 
+        # WR-90: the status the case is about. Any non-charging failure -- a 401 at the barrier, a
+        # 500 from the fail-closed usage branch -- leaves the counter here too.
+        assert response.status_code == 429, response.text
+        assert response.json()["code"] == "quota_exceeded"
         rows = await usage_rows(_db_transaction, grant.id)
         assert [row.monthly_used for row in rows] == [ALLOWANCE]
 
@@ -218,8 +222,10 @@ class TestAGrantWithNoUsageRow:
         user, _ = linked_firebase_identity
         grant, _ = await seed_grant(_db_transaction, user_id=user.id, with_usage=False)
 
-        await async_client.post("/chats", json=PHRASE)
+        response = await async_client.post("/chats", json=PHRASE)
 
+        # WR-90: as above -- an empty usage table is also what a 401 or a 422 leaves behind.
+        assert response.status_code == 500, response.text
         assert await usage_rows(_db_transaction, grant.id) == []
 
 
