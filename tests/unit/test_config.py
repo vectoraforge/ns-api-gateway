@@ -15,8 +15,10 @@ from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
 from nativespeaker.api.app.lifespan import (
+    _DB_POOL_RECYCLE_SECONDS,
     _play_credential,
     build_app_store_verifier,
+    build_db_engine,
     build_jwt_verifier,
 )
 from nativespeaker.api.auth.jwt_verifier import JWTVerifier
@@ -400,6 +402,28 @@ class TestTheProviderKeyIsADeclaredSetting:
         assert openai.api_key.get_secret_value() == "sk-test-openai-key"
         assert "sk-test-openai-key" not in repr(openai)
         assert "sk-test-openai-key" not in str(openai.model_dump())
+
+
+class TestThePoolChecksAConnectionBeforeHandingItOut:
+    """WR-05. A pod is long-lived and almost idle, so a pooled connection outlives the far end's
+    idle timeout. Undetected, the next request raises out of the CRUD layer as an opaque 500 --
+    and on a chat route, after the credit is already spent."""
+
+    def _engine(self):
+        # No connection is opened by construction, so this reads the pool the lifespan would build.
+        return build_db_engine(DatabaseConfig(host="db.internal", port=5432, user="u",
+                                              password="p", name="n"))  # ty: ignore[invalid-argument-type]
+
+    def test_a_connection_is_pinged_before_it_is_reused(self):
+        assert self._engine().pool._pre_ping is True
+
+    def test_a_connection_is_retired_before_the_far_end_drops_it(self):
+        assert self._engine().pool._recycle == _DB_POOL_RECYCLE_SECONDS
+        assert 0 < _DB_POOL_RECYCLE_SECONDS <= 3600
+
+    def test_the_pool_still_has_no_overflow_control(self):
+        """The control: a builder that ignored its arguments would pass both cases above."""
+        assert (self._engine().pool.size(), self._engine().pool._max_overflow) == (5, 0)
 
 
 class TestTheLoggingLevelIsAPerDeploymentLever:

@@ -32,6 +32,7 @@ from nativespeaker.api.auth.google_play import (
 from nativespeaker.api.auth.jwt_verifier import JWTVerifier
 from nativespeaker.api.config import (
     AppStoreConfig,
+    DatabaseConfig,
     EnvironmentConfig,
     GooglePlayConfig,
     JWTConfig,
@@ -42,6 +43,10 @@ from nativespeaker.api.logs import setup_logging
 from nativespeaker.api.services import LLMService
 
 logger = structlog.get_logger()
+
+#: Well inside every managed-Postgres and NAT idle timeout this service could sit behind, so a
+#: connection is retired before the far end drops it rather than after.
+_DB_POOL_RECYCLE_SECONDS = 1800
 
 # Two arms and no case transform, so the two library members that skip verification stay unreachable.
 _STORE_ENVIRONMENTS = {StoreEnvironment.sandbox: Environment.SANDBOX,
@@ -99,6 +104,21 @@ def build_jwt_verifier(jwt: JWTConfig) -> JWTVerifier:
         # Fatal, where the two builders above answer `None`: a pod without this verifier has
         # nothing to be Ready for. The URL is named because `PyJWKClientError` names none.
         raise RuntimeError(f"JWKS unusable at {jwt.jwks_url}: {failure}") from failure
+
+
+def build_db_engine(db: DatabaseConfig) -> AsyncEngine:
+    """The one engine. Named like its three sibling builders so its pool settings are assertable."""
+    # `pool_pre_ping` and `pool_recycle` are not the library's defaults. A pod is long-lived and
+    # this service is almost idle, so a pooled connection sits for hours -- exactly what a managed
+    # Postgres idle timeout, a failover or a NAT expiry kills server-side. Without the ping, the
+    # next request to draw that connection raises out of the CRUD layer as an opaque 500, and on a
+    # chat route it does so after `QuotaService.charge` has already committed a spent credit. With
+    # `max_overflow=0`, up to `pool_size` requests in a row can hit it, and nothing retries.
+    return create_async_engine(db.url,
+                               pool_size=db.pool_size,
+                               max_overflow=0,
+                               pool_pre_ping=True,
+                               pool_recycle=_DB_POOL_RECYCLE_SECONDS)
 
 
 def _play_credential():
@@ -175,7 +195,7 @@ async def lifespan(app: FastAPI):
             client=play_client,
             products=config.google_play.products)
 
-        db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)
+        db_engine = build_db_engine(config.db)
         app.state.session_factory = async_sessionmaker(db_engine, class_=SQLModelAsyncSession,
                                                        expire_on_commit=False)
 
