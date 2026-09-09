@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-09-08)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 46 — POST /auth/sign-out-all
+**Current focus:** v2.0 milestone close — all 18 phases complete; next `/gsd:complete-milestone v2.0`
 
 ## Current Position
 
 Phase: 46
 Plan: Not started
 Status: All phases complete
-Progress: [████████████████████] 124/124 plans ([█████████░] 89%)
+Progress: [████████████████████] 124/124 plans (100%)
 
 **Phase 45 closed 2026-09-08.** Re-verification passed 7/7 after the four gap-closure plans. The
 code review that followed them (`45-REVIEW.md`, second run) found CR-01 was NOT closed — `quote`
@@ -508,6 +508,9 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 - OPEN (45-REVIEW WR-01): **an Apple subscriber in a billing grace period cannot restore.** `auth/app_store.py` sets `grace_period_expires_at=None` unconditionally, so a `grace_period` stored row yields no proof term and 45-07's refusal fires. Fail-closed under-grant, the deliberate cost of closing CR-02's paid-grant-that-never-expires; the fix is persisting the grace window server-side, a schema change. Also open from the same review: WR-02 refusals log nothing, WR-03 replay/supersede predicate asymmetry (latent), WR-04 boundary pinned at `now − 1 ms`.
 - RESOLVED (45-06 addendum): CR-01 reopened by the second review — `quote(…, safe="")` never escapes `.` and httpx drops dot segments, so `..` rewrote the Play read path. Closed by refusing a dot-only token before the request is built, proved over a recording transport. The webhook `read()` carries no equivalent guard; nothing untrusted reaches it today.
+- OPEN (46, assumption A1): the Identity Toolkit `accounts:update` → `USER_NOT_FOUND` mapping behind D-06's 401 arm is verified from the installed SDK source and an upstream issue report, never probed against a live project; both suites script the exception directly, so the exposure is production-only. One real-credential `revoke_refresh_tokens` call against a deleted uid settles it.
+- NOTED (46): `TestTheLookupArmsCarryStageAndOnlyABoundedCause` in `tests/unit/test_rejection_vocabulary.py` is a hand-picked three-arm sample and does not name `RevocationUnconfirmed`; nothing fails, and adding the fourth row is a one-line edit.
+- ACCEPTED (46, T-46-06): one unbounded Firebase revocation write per attempt on `POST /auth/sign-out-all`, on the Phase 40 D-22 precedent; the caller must hold a valid ID token for a linked, active account, and the write is idempotent. Closes with the v2.1 gateway contract.
 
 ### Quick Tasks Completed
 
@@ -520,7 +523,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-08T23:48:50.074Z
+**Last session:** 2026-09-09T00:04:17.000Z
 
 Last activity: 2026-09-08
 Stopped at: Phase 46 complete — all phases complete

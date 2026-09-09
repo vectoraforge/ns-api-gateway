@@ -88,6 +88,7 @@ The analysis pipeline must work reliably — correct LLM invocation, proper resi
 - ✓ `Message.content` stored as plain `dict` with `sa_type=JSONB` (no Pydantic model wrapping at persistence layer) — v1.6
 - ✓ `OutOfScopeError` exception for LLM reject responses with `resolved_mode` dispatch — v1.6
 - ✓ Error contract fully consistent: `quota_exceeded` propagated across handler, tests, and k8s config — v1.6
+- ✓ Firebase refresh-token revocation (`POST /auth/sign-out-all`): the verified subject's tokens are revoked through the issuer-selected Admin app, and any unconfirmed outcome fails closed — v2.0, Phase 46
 
 ### Active
 
@@ -103,7 +104,6 @@ Scoped in `.planning/REQUIREMENTS.md` for v2.0. Summary:
 - [ ] Access-grant entitlement model — exactly one active grant per user, four enumerated sources
 - [ ] Anonymous and registered free-grant claim flows with supersession
 - [ ] Dual-store subscription ingestion (App Store notifications + Google Play RTDN)
-- [ ] Firebase refresh-token revocation (`POST /auth/sign-out-all`)
 
 ### Out of Scope
 
@@ -145,6 +145,8 @@ Phase 37.3 completed the auth module's move away from machine-generated shape: f
 Phase 38 shipped `POST /auth/sync` and closed SYNC-01, SYNC-02 and SYNC-03 — the last of which had been blocked since Phase 37.1 deleted the mechanism it assumed. Sync reads the effective grant, the period's usage and the stored registration state, takes no lock and writes nothing. That no-lock claim is now observed live rather than inferred from compiled SQL: `tests/schema/test_sync_lock_freedom.py` races sync against a real `QuotaService.charge` on two independent connections against a committed database, which closed WINDOWS entry 9. One known limit is carried forward, not fixed — 38-REVIEW.md WR-06: the response is assembled from up to four separate READ COMMITTED snapshots, so `evaluated_at` pins the predicate rather than the snapshot, and a concurrent revoke-and-reissue can yield a tier/usage pairing that never coexisted. Bounded: the charge path is authoritative and locks, and the client self-corrects on the next sync. Next: Phase 40 (`POST /auth/upgrade-anonymous`).
 
 Phase 39 shipped `GET /users/me` and closed PROF-01 and PROF-02. The route returns a closed `{profile, identity_provider, purchase_tokens}` body, unconditional across every client-supplied signal, with `identity_provider` read from the stored column rather than derived from a store key. It takes no lock, writes nothing — proven by byte-identical table state across a 200 — and fails closed with an opaque 500 when any store's purchase-token row is absent, treating a one-row account as the same broken invariant as a zero-row one rather than returning a partial body. A router may now call `crud/` directly (AGENTS.md § Package layout, D-05); the `Depends()`-only rule for routers is unchanged. One known gap is carried forward, not fixed — 39-REVIEW.md WR-03: `read_tokens` scopes its statement by `user_id`, but no test guards that clause, so deleting it would leave the whole suite green while exposing other users' purchase tokens. Worth closing before Phase 40 reuses the pattern.
+
+Phase 46 shipped `POST /auth/sign-out-all` and closed SIGNOUT-01 and SIGNOUT-02, the last two requirements of v2.0. The handler declares the linked-identity dependency and the Firebase adapter only, opens no database session and writes no row. The adapter gained a second method beside `get_user_provider_data`: `revoke_refresh_tokens` selects the Admin app by the request-verified issuer, passes `app=` explicitly, and has its own retry wrapper whose exhaustion raises `RevocationUnconfirmed` (503, sharing `verification_temporarily_unavailable` with `Unavailable` on purpose). A Firebase "no such user" answers 401 `auth_required`, a recorded departure from the brief. Success is one INFO line carrying `identity_row_id` only. The audit-row obligation the brief stated was settled by removal in Phase 37.1 and is now recorded as such in ROADMAP.md. Suites at close: unit 1281, e2e 348, schema 229. Two things are carried forward, not fixed: the `USER_NOT_FOUND` mapping is verified from SDK source, never probed against a live project; and the unbounded revocation write per attempt is accepted until the v2.1 gateway contract. All eighteen v2.0 phases are complete; next is `/gsd:complete-milestone v2.0`.
 
 ## Context
 
@@ -225,6 +227,8 @@ Known areas for future work:
 | Restore ships a cross-account **move** capped at one per UTC calendar month, where the brief forbids any transfer (Phase 45 D-10) | A customer who reinstalls under a new account must be able to recover a paid subscription; a monthly cap bounds the abuse the brief was guarding against. Recorded as a flagged conflict under RESTORE-01 | ✓ Good — v2.0, on real PostgreSQL |
 | The grant's term is bound once from the proof and reused verbatim as `ends_at`; an absent or already-past term is refused before any write (45-07, CR-02) | The stored status and the client-presented term were never reconciled, so a `grace_period` row plus an Apple proof minted a paid grant that never expired | ◐ Mixed — v2.0. Closes the over-grant, but an Apple subscriber in billing grace can no longer restore (45-REVIEW WR-01): Apple's proof carries no grace window. Open, needs the grace window persisted server-side |
 | A dot-only Play purchase token is refused at `read_for_restore` rather than escaped (45-06 addendum, CR-01) | `quote` leaves `.` unescaped and httpx removes dot segments, so `..` rewrote the request path; `%2E` was measured to survive httpx but whether Google normalises it back cannot be tested from here | ✓ Good — v2.0, proved over a recording transport |
+| `POST /auth/sign-out-all` answers 401 `auth_required` on a Firebase "no such user", where the brief puts every non-confirmed revocation on the 503 surface (Phase 46 D-06) | The token verified and the identity row is linked, but no account exists behind the uid, so nothing can be revoked and no token can be minted for it again; a 503 would repeat for up to an hour until the ID token expired. Recorded as a flagged conflict under SIGNOUT-01 | ✓ Good — v2.0, demonstrated on the wire |
+| `RevocationUnconfirmed` gets its own retry wrapper and exhaustion leaf beside `lookup_with_retry`, and shares 503 `verification_temporarily_unavailable` with `Unavailable` (Phase 46 D-01, D-05) | One code at one status keeps the wire anti-oracle; the two leaves are told apart by class and by log event, which the unit twins pin so a swallowed exhaustion cannot answer 204 | ✓ Good — v2.0 |
 
 ## Evolution
 
@@ -244,4 +248,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-09-08 after completing Phase 45*
+*Last updated: 2026-09-08 after completing Phase 46*
