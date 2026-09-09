@@ -12,7 +12,7 @@ import structlog
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
-from nativespeaker.api.auth.jwt_verifier import JWTVerifier
+from nativespeaker.api.auth.jwt_verifier import TokenVerifier
 from nativespeaker.api.auth.store_notifications import RestoredSubscription, VerifiedNotification
 from nativespeaker.api.errors import (
     InternalError,
@@ -209,7 +209,9 @@ def _status_for(state: str, expiry: datetime | None,
 class PubSubPushTokens:
     """The Cloud Pub/Sub push token, verified against Google's keys and pinned to one push identity."""
 
-    def __init__(self, *, verifier: JWTVerifier | None) -> None:
+    # The declared seam, never the concrete class: this class reads nothing of the verifier but
+    # `verify`, and a Protocol nothing is typed against catches no wrong-shaped double at all.
+    def __init__(self, *, verifier: TokenVerifier | None) -> None:
         self._verifier = verifier
 
     async def verify(self, bearer: str) -> None:

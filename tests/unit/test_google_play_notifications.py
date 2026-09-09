@@ -5,6 +5,7 @@ import ast
 import base64
 import inspect
 import json
+import typing
 import urllib.error
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -29,7 +30,12 @@ from nativespeaker.api.auth.google_play import (
     developer_notification_from,
     instant_from_millis,
 )
-from nativespeaker.api.auth.jwt_verifier import DECODE_OPTIONS, BoundedReason, JWTVerifier
+from nativespeaker.api.auth.jwt_verifier import (
+    DECODE_OPTIONS,
+    BoundedReason,
+    JWTVerifier,
+    TokenVerifier,
+)
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.config import GooglePlayConfig
 from nativespeaker.api.errors import InternalError, NotificationRejected, Unavailable
@@ -775,6 +781,19 @@ class TestTheClaimPinsArePostDecodeComparisons:
         """In `require`, a Google token shape without `email` would fail like a forgery (P-03)."""
         assert "email" not in _require_list()
         assert _require_list() == ["exp", "iat", "aud", "iss", "sub"]
+
+
+class TestThePushTokenSeamIsTheAnnotation:
+    """WR-24: `TokenVerifier` was declared and named nowhere, while its one consumer took the
+    concrete `JWTVerifier`. A seam nothing is typed against catches no wrong-shaped double."""
+
+    def test_the_push_token_class_takes_the_declared_seam(self):
+        annotations = inspect.get_annotations(PubSubPushTokens.__init__, eval_str=True)
+        assert annotations["verifier"] == TokenVerifier | None
+
+    def test_the_verifier_lifespan_supplies_carries_every_member_it_declares_control(self):
+        """The control: a seam the production verifier does not satisfy would be worse than none."""
+        assert typing.get_protocol_members(TokenVerifier) <= set(dir(JWTVerifier))
 
 
 class TestTheJwksWarmUpGuard:
