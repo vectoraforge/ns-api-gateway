@@ -18,8 +18,12 @@ class AppStoreNotificationRequest(BaseModel):
 
 
 class PubSubPushMessage(BaseModel):
-    """The Pub/Sub message this push carries: its own id, and the RTDN as base64 text."""
-    messageId: str
+    """The Pub/Sub message this push carries: the RTDN as base64 text, and nothing else."""
+    # No `messageId`: nothing read it -- `notification_key_for` derives the replay key from the
+    # purchase token, event time and event type instead -- so requiring it made an envelope shape
+    # change a permanent 422 in exchange for validating a value the service never used, the same
+    # rule `data` is bounded under. A delivery still carrying it is unaffected: pydantic ignores
+    # what is not declared.
     # The transport envelope only: the base64 and JSON decoding happen after the token check.
     # Deliberately unbounded HERE and bounded in `developer_notification_from` instead: Pub/Sub
     # acknowledges 2xx alone and redelivers every other status, so a body pydantic refuses is a 422

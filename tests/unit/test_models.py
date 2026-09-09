@@ -28,6 +28,7 @@ from nativespeaker.api.schemas.webhooks import (
     PUBSUB_DATA_LIMIT,
     AppStoreNotificationRequest,
     PubSubPushMessage,
+    PubSubPushRequest,
 )
 from nativespeaker.api.tables import PurchaseProvider, StorePurchaseToken
 
@@ -343,10 +344,22 @@ class TestTheUnauthenticatedWebhookBodiesAreBounded:
 
     def test_the_pubsub_body_carries_no_bound_of_its_own_any_more(self):
         """WR-25: the bound is the decoder's, so an out-of-range body is acknowledged, not retried."""
-        oversized = PubSubPushMessage(messageId="m", data="a" * (PUBSUB_DATA_LIMIT + 1))
+        oversized = PubSubPushMessage(data="a" * (PUBSUB_DATA_LIMIT + 1))
 
         assert len(oversized.data) == PUBSUB_DATA_LIMIT + 1
-        assert PubSubPushMessage(messageId="m", data="").data == ""
+        assert PubSubPushMessage(data="").data == ""
+
+    def test_the_body_needs_nothing_but_the_data_field(self):
+        """WR-25: `messageId` was required and unread, so an envelope shape change that dropped or
+        renamed it was a 422 Pub/Sub retries forever -- in exchange for validating nothing."""
+        assert PubSubPushMessage(data="ZQ==").data == "ZQ=="
+
+    def test_a_delivery_still_carrying_the_message_id_validates_unchanged(self):
+        """The control: real Pub/Sub sends `messageId` on every push, so dropping the declaration
+        must leave those bodies accepted rather than merely stop requiring the field."""
+        body = PubSubPushRequest(message={"messageId": "2280000000000001", "data": "ZQ=="})
+
+        assert body.message.data == "ZQ=="
 
     @pytest.mark.parametrize("data", ["", "a" * (PUBSUB_DATA_LIMIT + 1)])
     def test_the_decoder_drops_an_out_of_range_body_rather_than_refusing_it(self, data):
