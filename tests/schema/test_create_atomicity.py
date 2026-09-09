@@ -179,7 +179,7 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
         session = _RacingSession(real_session, after_re_resolution)
         service = AuthService(db=session, challenge_store=store,
                               adapter=_ScriptedAdapter(provider, provider_uid),
-                              evaluated_at=NOW)
+                              devicecheck=None, evaluated_at=NOW)
         try:
             result = await service.complete(identity=identity, challenge_id=challenge_id_value)
         except AppError as rejection:

@@ -1,7 +1,9 @@
 """The Apple wire contract: the signing, both request bodies, the bit1 carry-forward and every parse arm.
 The shapes are [ASSUMED] from secondary sources -- see 41-RESEARCH.md § Assumptions Log, so a real 400
 from Apple is evidence about these literals rather than a regression."""
+import inspect
 import json
+import typing
 
 import httpx
 import jwt as pyjwt
@@ -16,6 +18,7 @@ from nativespeaker.api.auth.devicecheck import (
     UPDATE_PATH,
     AppleDeviceCheck,
     BitState,
+    DeviceCheckAdapter,
     read_bits_with_retry,
     read_private_key,
     write_bits_with_retry,
@@ -290,6 +293,20 @@ class TestAnAbsentCredentialFailsClosed:
         assert read_private_key(str(pem)) == private_key
         assert read_private_key(str(tmp_path / "no-such-file.p8")) is None
         assert read_private_key(None) is None
+
+
+class TestTheSeamIsTheAnnotation:
+    """WR-23: a Protocol nothing is typed against catches nothing -- the e2e double and every
+    renamed method passed unchecked. Both consumers of the seam name it, which is why it exists."""
+
+    @pytest.mark.parametrize("helper", [read_bits_with_retry, write_bits_with_retry],
+                             ids=["read", "write"])
+    def test_both_retry_helpers_take_the_declared_seam(self, helper):
+        assert inspect.get_annotations(helper, eval_str=True)["adapter"] is DeviceCheckAdapter
+
+    def test_the_production_class_carries_every_member_it_declares_control(self):
+        """The control: an annotation naming a shape the production class lacks would be worse."""
+        assert typing.get_protocol_members(DeviceCheckAdapter) <= set(dir(AppleDeviceCheck))
 
 
 class TestTheTransportIsReallyReached:

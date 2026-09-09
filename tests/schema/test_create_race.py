@@ -168,7 +168,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_re_resolution=
         session = _HookedSession(real_session, after_re_resolution)
         service = AuthService(db=session, challenge_store=store,
                               adapter=_ScriptedAdapter(attempt.provider, attempt.provider_uid),
-                              evaluated_at=NOW)
+                              devicecheck=None, evaluated_at=NOW)
         try:
             attempt.result = await service.complete(identity=attempt.identity,
                                                     challenge_id=attempt.challenge_id)

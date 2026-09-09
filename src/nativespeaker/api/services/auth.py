@@ -64,7 +64,7 @@ class AuthService:
                  challenge_store: ChallengesDB,
                  adapter,
                  evaluated_at: datetime,
-                 devicecheck=None) -> None:
+                 devicecheck) -> None:
         self.session = db
         self.identities_db = IdentitiesDB(db)
         self.grants_db = GrantsDB(db)

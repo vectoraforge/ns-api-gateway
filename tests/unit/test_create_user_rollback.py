@@ -76,7 +76,7 @@ def _identity() -> Identity:
 
 async def _create(session) -> UUID:
     service = AuthService(db=session, challenge_store=ChallengesDB(), adapter=None,
-                          evaluated_at=NOW)
+                          devicecheck=None, evaluated_at=NOW)
     return await service.create_user(identity=_identity(),
                                      provider=IdentityProvider.anonymous,
                                      provider_uid=None,

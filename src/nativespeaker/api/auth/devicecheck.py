@@ -178,11 +178,14 @@ def _retrying(exhausted) -> AsyncRetrying:
     )
 
 
-async def read_bits_with_retry(adapter, device_token: str) -> BitState:
+# Annotated with the Protocol both consume: unannotated, the one declaration that would catch a
+# wrong-shaped double or a renamed method caught nothing at all.
+async def read_bits_with_retry(adapter: DeviceCheckAdapter, device_token: str) -> BitState:
     """Call the adapter's query up to `DEVICECHECK_ATTEMPTS` times; return the state or raise."""
     return await _retrying(_read_exhausted)(adapter.read_bits, device_token)
 
 
-async def write_bits_with_retry(adapter, device_token: str, *, bit0: bool, bit1: bool) -> None:
+async def write_bits_with_retry(adapter: DeviceCheckAdapter, device_token: str, *,
+                                bit0: bool, bit1: bool) -> None:
     """Call the adapter's update up to `DEVICECHECK_ATTEMPTS` times; return on confirmation or raise."""
     await _retrying(_write_exhausted)(adapter.write_bits, device_token, bit0=bit0, bit1=bit1)
