@@ -51,12 +51,12 @@ gateway:
   namespace: ""
 
 credentials:
-  # The Secret carrying the six settings the process cannot boot without: DB_HOST, DB_PORT,
-  # DB_USER, DB_PASSWORD, DB_NAME and JWT_PROJECT_ID. `config.py` gives none of them a default, so
-  # an install without this Secret renders a pod that CrashLoopBackOffs on a pydantic
-  # ValidationError. The template declares it `required`, as it does `image.tag`, so the omission
-  # fails at render instead. Any other setting the deployment needs (OPENAI_API_KEY, the store and
-  # DeviceCheck ids) belongs in the same Secret.
+  # The Secret carrying the seven settings the process cannot boot without: DB_HOST, DB_PORT,
+  # DB_USER, DB_PASSWORD, DB_NAME, JWT_PROJECT_ID and OPENAI_API_KEY. `config.py` gives none of
+  # them a default, so an install without this Secret renders a pod that CrashLoopBackOffs on a
+  # pydantic ValidationError. The template declares it `required`, as it does `image.tag`, so the
+  # omission fails at render instead. Any other setting the deployment needs (the store and
+  # DeviceCheck ids) belongs in the same Secret; those are genuinely optional and fail closed at 503.
   secretName: ""
   # The Secret carrying the Apple DeviceCheck .p8. An environment variable cannot carry a file --
   # `DEVICECHECK_PRIVATE_KEY_PATH` is a path (`config.py:81`) and the adapter reads it from disk --

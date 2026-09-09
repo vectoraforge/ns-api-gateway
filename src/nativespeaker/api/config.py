@@ -121,6 +121,14 @@ class GooglePlayConfig(BaseModel):
                                      description="Play product ID to core.access_tiers.id")
 
 
+class OpenAIConfig(BaseModel):
+    """The chat provider's credential, named as a field so its absence is this application's error."""
+    # Required and secret, like `DatabaseConfig.password`. Unlike every other credential here it was
+    # ambient: `init_chat_model` read `OPENAI_API_KEY` from the environment itself, so an unset value
+    # crashlooped the pod with an `OpenAIError` naming no setting of this service.
+    api_key: SecretStr = Field(description="OpenAI API key")
+
+
 class ModelConfig(BaseModel):
     name: str = Field(default="gpt-4o-mini")
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
@@ -131,6 +139,9 @@ class AppConfig(BaseConfig):
     log_level: LogLevel = Field(default=LogLevel.INFO)  # type: ignore
 
     model: ModelConfig = Field(default_factory=ModelConfig)
+    # Required, for the same reason as `db` and `jwt` below: the process cannot serve a chat
+    # without it, so an absent `OPENAI_API_KEY` must stop boot with a line naming this block.
+    openai: OpenAIConfig
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     # Required, not `default_factory`: a factory call on a wholly absent block reports the leaf
     # names with no path -- five `Field required` lines, none of which says "db".

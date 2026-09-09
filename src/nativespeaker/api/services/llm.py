@@ -4,6 +4,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnableSerializable
+from pydantic import SecretStr
 
 from nativespeaker.api.config import ModelConfig, ResilienceConfig
 from nativespeaker.api.resilience import Admitted, ResiliencePolicy
@@ -13,9 +14,13 @@ from nativespeaker.api.schemas.llm import ChatModelResponse
 class LLMService:
     def __init__(self,
                  model_config: ModelConfig,
+                 api_key: SecretStr,
                  resilence_config: ResilienceConfig,
                  system_prompt: str):
+        # Passed, never left ambient: the library would otherwise read `OPENAI_API_KEY` itself and
+        # raise its own error for an absent one, after `AppConfig` had already reported boot healthy.
         self.llm = init_chat_model(model=model_config.name,
+                                   api_key=api_key.get_secret_value(),
                                    temperature=model_config.temperature,
                                    max_tokens=model_config.max_tokens)
         self.policy = ResiliencePolicy(resilence_config)

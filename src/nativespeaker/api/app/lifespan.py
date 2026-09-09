@@ -182,6 +182,7 @@ async def lifespan(app: FastAPI):
         app.state.jwt_verifier = build_jwt_verifier(config.jwt)
 
         app.state.llm_service = LLMService(model_config=config.model,
+                                           api_key=config.openai.api_key,
                                            resilence_config=config.resilience,
                                            system_prompt=config.prompt)
 

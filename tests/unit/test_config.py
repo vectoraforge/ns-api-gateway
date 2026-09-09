@@ -44,6 +44,7 @@ _ENV_SECRETS = {
     "DB_HOST": "localhost", "DB_PORT": "5432", "DB_USER": "u",
     "DB_PASSWORD": "p", "DB_NAME": "d",
     "JWT_PROJECT_ID": "test-project", "JWT_API_KEY": "test-api-key",
+    "OPENAI_API_KEY": "sk-test-openai-key",
 }
 
 
@@ -133,6 +134,9 @@ en:
         Path(tmp_dir, "examples.yaml").write_text(examples_content)
 
         env_clean = {k: v for k, v in os.environ.items() if k not in _DOTENV_KEYS}
+        # Stated rather than inherited: `openai.api_key` is required, and a case that read it from
+        # the developer's own environment would pass here and fail in a checkout without one.
+        env_clean["OPENAI_API_KEY"] = "sk-test-openai-key"
         with patch.dict(os.environ, env_clean, clear=True):
             # _env_file is on BaseSettings.__init__, but ty sees only the synthesised one.
             config = EnvironmentConfig(config_dir=Path(tmp_dir),
@@ -367,6 +371,35 @@ class TestTheTrackedPoolSizeMergesWithTheEnvironmentCredentials:
                 assert db.password.get_secret_value() == "p"
         finally:
             shutil.rmtree(tmp_dir)
+
+
+class TestTheProviderKeyIsADeclaredSetting:
+    """WR-04. `init_chat_model` read OPENAI_API_KEY from the ambient environment, so the seventh
+    boot-blocking credential failed as a library `OpenAIError` naming no setting of this service --
+    and both chart lists documented it as optional."""
+
+    def test_an_absent_key_is_a_validation_error_naming_this_blocks_field(self):
+        without = {key: value for key, value in _ENV_SECRETS.items() if key != "OPENAI_API_KEY"}
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            Path(tmp_dir, "config.yaml").write_text(TRACKED_CONFIG.read_text())
+            Path(tmp_dir, "prompt.txt").write_text("Analyze {lang} phrase: {phrase}")
+            Path(tmp_dir, "examples.yaml").write_text('en:\n  - "Example 1"\n')
+
+            with patch.dict(os.environ, without, clear=True):
+                with pytest.raises(ValidationError, match="openai"):
+                    EnvironmentConfig(config_dir=Path(tmp_dir),
+                                      _env_file=None)  # ty: ignore[unknown-argument]
+        finally:
+            shutil.rmtree(tmp_dir)
+
+    def test_the_key_loads_and_never_renders_in_a_dump_or_a_repr(self):
+        """The control, and the secrecy the other six credentials already have."""
+        openai = load_tracked_config({}).openai
+
+        assert openai.api_key.get_secret_value() == "sk-test-openai-key"
+        assert "sk-test-openai-key" not in repr(openai)
+        assert "sk-test-openai-key" not in str(openai.model_dump())
 
 
 class TestTheLoggingLevelIsAPerDeploymentLever:

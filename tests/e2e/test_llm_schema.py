@@ -29,9 +29,12 @@ def provider_key() -> str:
 
 
 @pytest.fixture(scope="module")
-def llm_service(_app_config, provider_key) -> LLMService:
+def llm_service(provider_key, _app_config) -> LLMService:
     """The shipped service on the configured model."""
+    # `provider_key` first: `openai.api_key` is a required field now, so without it `_app_config`
+    # raises where this module means to skip.
     return LLMService(model_config=_app_config.model,
+                      api_key=_app_config.openai.api_key,
                       resilence_config=_app_config.resilience,
                       system_prompt=_app_config.prompt)
 
