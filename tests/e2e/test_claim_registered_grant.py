@@ -166,7 +166,9 @@ class TestTheNewRegisteredGrantHappyPath:
         assert body["entitlement"]["current_period"]
 
         assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
-        # The update carried the query's bit0 forward, set only bit1, and named the device that was read.
+        # Sets bit1, names the device that was read, and leaves the never-set bit0 as it found it.
+        # A never-set device cannot tell a carried bit0 from a hard-coded False, so the case below
+        # is where the carry-forward itself is proved.
         assert scripted_devicecheck_adapter.write_calls == [(DEVICE_TOKEN, False, True)]
 
         grants = await _grants_of(_db_transaction, user.id)
@@ -187,6 +189,25 @@ class TestTheNewRegisteredGrantHappyPath:
         # The one instant: the grant, the marker and the usage period all came from it.
         assert identity.free_grant_consumed_at == grants[0].starts_at
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
+
+    async def test_a_set_anonymous_bit_survives_the_registered_claim(
+            self, claim_client, _db_transaction, scripted_devicecheck_adapter):
+        """bit0 is the anonymous slot, which this path never spends: it must be carried forward,
+        never cleared, or the device could claim a second free grant on the anonymous path."""
+        subject = "e2e-claim-registered-carries-bit0"
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                                      provider=IdentityProvider.google)
+        # A device that already spent its anonymous slot; bit1 is what this path gates on.
+        scripted_devicecheck_adapter.script(BitState(bit0=True, bit1=False))
+
+        handle = await _issue(claim_client, subject)
+        claim = await _claim(claim_client, subject, handle)
+
+        assert claim.status_code == 200, claim.text
+        assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
+        # The read's own bit0 reaches the write; a writer hard-coding False would fail here.
+        assert scripted_devicecheck_adapter.write_calls == [(DEVICE_TOKEN, True, True)]
+        assert await _row_counts(_db_transaction, user.id) == (1, 1)
 
 
 @pytest.mark.asyncio(loop_scope="module")

@@ -80,7 +80,9 @@ class TestTheAnonymousDeviceGrantHappyPath:
         assert body["entitlement"]["current_period"]
 
         assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
-        # The update carried the query's bit1 forward, set only bit0, and named the device that was read.
+        # Sets bit0, names the device that was read, and leaves the never-set bit1 as it found it.
+        # A never-set device cannot tell a carried bit1 from a hard-coded False, so the case below
+        # is where the carry-forward itself is proved.
         assert scripted_devicecheck_adapter.write_calls == [(DEVICE_TOKEN, True, False)]
 
         async with _db_transaction() as session:
@@ -111,6 +113,25 @@ class TestTheAnonymousDeviceGrantHappyPath:
                 select(AuthChallenge)
                 .where(col(AuthChallenge.challenge_id) == handle))).one()
             assert challenge.consumed_at is not None
+
+    async def test_a_set_registered_bit_survives_the_anonymous_claim(
+            self, claim_client, _db_transaction, scripted_devicecheck_adapter):
+        """bit1 is the registered slot, which this path never spends: it must be carried forward,
+        never cleared, or the device could claim a second free grant on the registered path."""
+        subject = "e2e-claim-carries-bit1"
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                                      provider=IdentityProvider.anonymous)
+        # A device that already spent its registered slot; bit0 is what this path gates on.
+        scripted_devicecheck_adapter.script(BitState(bit0=False, bit1=True))
+
+        handle = await _issue(claim_client, subject)
+        claim = await _claim(claim_client, subject, handle)
+
+        assert claim.status_code == 200, claim.text
+        assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
+        # The read's own bit1 reaches the write; a writer hard-coding False would fail here.
+        assert scripted_devicecheck_adapter.write_calls == [(DEVICE_TOKEN, True, True)]
+        assert await _row_counts(_db_transaction, user.id) == (1, 1)
 
 
 # The one body every refusal answers with, compared by equality so a more helpful field fails here.
