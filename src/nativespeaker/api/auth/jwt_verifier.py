@@ -40,6 +40,13 @@ class BoundedReason(StrEnum):
     empty_subject = "empty_subject"
 
 
+#: The decode rules, module-level so a test double substituting only the key lookup imports them
+#: rather than restating them: a copy is what lets production widen while the suite stays green.
+#: RS256 alone, so `alg: none` and HS256-over-the-public-key fail before any check runs.
+DECODE_ALGORITHMS = ["RS256"]
+DEFAULT_LEEWAY = 30
+DECODE_OPTIONS = {"require": ["exp", "iat", "aud", "iss", "sub"]}
+
 #: The negative-cache key an absent, empty, or non-string `kid` is recorded under.
 _ABSENT_KID_SENTINEL = ""
 
@@ -101,7 +108,7 @@ class JWTVerifier:
                  jwks_url: str,
                  audience: str,
                  issuer: str,
-                 leeway: int = 30,
+                 leeway: int = DEFAULT_LEEWAY,
                  cache_ttl_seconds: float = 3600,
                  fetch_timeout_seconds: float = 3.0,
                  unknown_kid_ttl_seconds: float = 60.0,
@@ -167,14 +174,13 @@ class JWTVerifier:
 
         try:
             signing_key = self._jwks_client.get_signing_key_from_jwt(token)
-            # RS256 alone, so `alg: none` and HS256-over-the-public-key fail before any check runs.
             payload = jwt.decode(token,
                                  signing_key,
-                                 algorithms=["RS256"],
+                                 algorithms=DECODE_ALGORITHMS,
                                  audience=self._audience,
                                  issuer=self._issuer,
                                  leeway=self._leeway,
-                                 options={"require": ["exp", "iat", "aud", "iss", "sub"]})
+                                 options=DECODE_OPTIONS)
         except PyJWKClientError as exc:
             if isinstance(exc, PyJWKClientConnectionError):
                 # Named here because nothing else can: the bounded reason set is closed at eight

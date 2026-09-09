@@ -18,7 +18,15 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
-from nativespeaker.api.auth.jwt_verifier import VerificationResult, bounded_reason_for, claims_from_payload
+from nativespeaker.api.auth.jwt_verifier import (
+    DECODE_ALGORITHMS,
+    DECODE_OPTIONS,
+    DEFAULT_LEEWAY,
+    BoundedReason,
+    VerificationResult,
+    bounded_reason_for,
+    claims_from_payload,
+)
 from nativespeaker.api.crud import ChatsDB
 from nativespeaker.api.resilience import Admitted
 from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router
@@ -74,20 +82,26 @@ class _FixedKeyVerifier:
     def __init__(self):
         self._audience = TEST_PROJECT_ID
         self._issuer = TEST_ISSUER
-        self._leeway = 30
+        # Imported, never restated: widening production's algorithms, leeway or required claims
+        # must reach this double too, or the cases running against it would stay green through it.
+        self._leeway = DEFAULT_LEEWAY
         self._public_key = PUBLIC_KEY_PEM
 
     def verify(self, token: str) -> VerificationResult:
         try:
             payload = pyjwt.decode(token,
                                    self._public_key,
-                                   algorithms=["RS256"],
+                                   algorithms=DECODE_ALGORITHMS,
                                    audience=self._audience,
                                    issuer=self._issuer,
                                    leeway=self._leeway,
-                                   options={"require": ["exp", "iat", "aud", "iss", "sub"]})
+                                   options=DECODE_OPTIONS)
         except pyjwt.PyJWTError as exc:
             return None, bounded_reason_for(exc)
+        except Exception:
+            # The same structural "never raises" clause production carries: an escape here would
+            # 500 a caller owed a 401, and a double that can raise proves a weaker property.
+            return None, BoundedReason.bad_signature
 
         return claims_from_payload(payload)
 

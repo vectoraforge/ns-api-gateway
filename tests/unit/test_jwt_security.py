@@ -10,7 +10,13 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from nativespeaker.api.auth.jwt_verifier import _ABSENT_KID_SENTINEL, BoundedReason, JWTVerifier, VerifiedClaims
+from nativespeaker.api.auth.jwt_verifier import (
+    _ABSENT_KID_SENTINEL,
+    DECODE_ALGORITHMS,
+    BoundedReason,
+    JWTVerifier,
+    VerifiedClaims,
+)
 from unit.conftest import (
     PRIVATE_KEY_PEM,
     PUBLIC_KEY_PEM,
@@ -30,6 +36,26 @@ from unit.test_jwks_offload import (
 @pytest.fixture
 def verifier():
     return make_test_verifier()
+
+
+@pytest.fixture
+def jwks_client():
+    with patch("nativespeaker.api.auth.jwt_verifier.PyJWKClient") as mock_cls:
+        instance = mock_cls.return_value
+        instance.get_signing_keys.return_value = []
+        instance.get_signing_key_from_jwt.return_value = PUBLIC_KEY_PEM
+        yield mock_cls, instance
+
+
+@pytest.fixture
+def real_verifier(jwks_client):
+    """The production class with only its JWKS lookup substituted, so every decode rule is its own."""
+    _, instance = jwks_client
+    verifier = JWTVerifier(jwks_url="https://jwks.invalid/keys",
+                           audience=TEST_PROJECT_ID,
+                           issuer=TEST_ISSUER)
+    instance.get_signing_keys.reset_mock()
+    return verifier
 
 
 def hs256_over(secret: bytes, payload: dict) -> str:
@@ -228,23 +254,6 @@ class TestAntiOracle:
 class TestProductionVerifier:
     """The claim rules against the real verifier; substituting the JWKS client isolates them, not fetch counts."""
 
-    @pytest.fixture
-    def jwks_client(self):
-        with patch("nativespeaker.api.auth.jwt_verifier.PyJWKClient") as mock_cls:
-            instance = mock_cls.return_value
-            instance.get_signing_keys.return_value = []
-            instance.get_signing_key_from_jwt.return_value = PUBLIC_KEY_PEM
-            yield mock_cls, instance
-
-    @pytest.fixture
-    def real_verifier(self, jwks_client):
-        _, instance = jwks_client
-        verifier = JWTVerifier(jwks_url="https://jwks.invalid/keys",
-                               audience=TEST_PROJECT_ID,
-                               issuer=TEST_ISSUER)
-        instance.get_signing_keys.reset_mock()
-        return verifier
-
     def test_constructs_a_caching_client_and_warms_it_up(self, jwks_client):
         mock_cls, instance = jwks_client
         JWTVerifier(jwks_url="https://jwks.invalid/keys",
@@ -285,6 +294,31 @@ class TestProductionVerifier:
 
     def test_requires_a_non_empty_subject(self, real_verifier):
         assert rejected(real_verifier, make_token("")) is BoundedReason.empty_subject
+
+    def test_the_algorithm_list_is_exactly_rs256(self):
+        """PyJWT refuses a PEM as an HMAC secret, so only this pins the list itself (`01-foundation.md §1`)."""
+        assert DECODE_ALGORITHMS == ["RS256"]
+
+    def test_rejects_alg_none(self, real_verifier):
+        """AUTH-07 against production itself: widening its `algorithms` list must fail a case."""
+        payload = {"sub": "u", "aud": TEST_PROJECT_ID, "iss": TEST_ISSUER,
+                   "exp": time.time() + 3600, "iat": time.time()}
+        token = pyjwt.encode(payload, None, algorithm="none")  # type: ignore[invalid-argument-type]
+        assert rejected(real_verifier, token) is BoundedReason.bad_signature
+
+    def test_accepts_a_token_expired_inside_production_leeway(self, real_verifier):
+        """The leeway production actually configures, not a copy of the number."""
+        assert accepted(real_verifier, make_token("u", exp=time.time() - 10)).subject == "u"
+
+    def test_rejects_a_token_expired_past_production_leeway(self, real_verifier):
+        assert rejected(real_verifier, make_token("u", exp=time.time() - 60)) is BoundedReason.expired
+
+    def test_requires_the_exp_claim(self, real_verifier):
+        """`require` is production's, so dropping a claim from it must fail here."""
+        now = time.time()
+        payload = {"sub": "u", "aud": TEST_PROJECT_ID, "iss": TEST_ISSUER, "iat": now}
+        token = pyjwt.encode(payload, PRIVATE_KEY_PEM, algorithm="RS256")
+        assert rejected(real_verifier, token) is BoundedReason.bad_signature
 
 
 class TestTheJwksTransportIsNotHitPerRequest:

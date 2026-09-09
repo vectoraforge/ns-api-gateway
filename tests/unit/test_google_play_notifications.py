@@ -27,7 +27,7 @@ from nativespeaker.api.auth.google_play import (
     PubSubPushTokens,
     developer_notification_from,
 )
-from nativespeaker.api.auth.jwt_verifier import BoundedReason, JWTVerifier
+from nativespeaker.api.auth.jwt_verifier import DECODE_OPTIONS, BoundedReason, JWTVerifier
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.config import GooglePlayConfig
 from nativespeaker.api.errors import InternalError, NotificationRejected, Unavailable
@@ -558,18 +558,18 @@ def _push_token(*, aud: str = PUSH_AUDIENCE, iss: str = GOOGLE_ISSUER,
 
 
 def _require_list() -> list[str]:
-    """The claims `jwt.decode` is told to require, read off the verifier's own source."""
-    for node in ast.walk(ast.parse(VERIFIER_MODULE.read_text())):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "decode"):
-            continue
-        for keyword in node.keywords:
-            if keyword.arg != "options" or not isinstance(keyword.value, ast.Dict):
-                continue
-            for key, value in zip(keyword.value.keys, keyword.value.values, strict=True):
-                if isinstance(key, ast.Constant) and key.value == "require":
-                    return [element.value for element in value.elts]
-    raise AssertionError("the verifier makes no jwt.decode(options={'require': ...}) call")
+    """The claims `jwt.decode` is told to require: the verifier's own value, never a copy of it."""
+    required = DECODE_OPTIONS.get("require")
+    assert isinstance(required, list), "the verifier declares no `require` list at all"
+    # Verified to be the value the call actually passes, not merely a constant beside it.
+    assert any(keyword.arg == "options" and isinstance(keyword.value, ast.Name)
+               and keyword.value.id == "DECODE_OPTIONS"
+               for node in ast.walk(ast.parse(VERIFIER_MODULE.read_text()))
+               if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+               and node.func.attr == "decode"
+               for keyword in node.keywords), \
+        "the verifier's `jwt.decode` call is not the one carrying DECODE_OPTIONS"
+    return required
 
 
 # Each arm of the push-token check, with the bounded reason the refusal carries as its `stage`.
