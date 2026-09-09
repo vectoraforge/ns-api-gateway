@@ -282,15 +282,22 @@ class TestThePredicateBoundaries:
 class TestACorrectPhraseIsServedAndCharged:
     """A grammatically correct phrase is served and charged; it is the input that used to answer 500."""
 
-    async def test_a_correct_phrase_returns_200_with_empty_issue_and_suggestion_lists(
-            self, async_client, quota_grant):
+    async def test_a_correct_phrase_is_served_and_charged(
+            self, async_client, quota_grant, _db_transaction):
+        grant, _ = quota_grant
+
         response = await async_client.post(
             "/chats", json={"phrase": "I am going home.", "lang": "en"})
 
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         content = response.json()["content"]
-        assert content["issues"] == []
-        assert content["suggestions"] == []
+        # The two keys and their type, never the verdict: whether the model reports an issue for a
+        # correct sentence is the provider's decision at temperature 0.3, and the 500 this case is
+        # named for was a missing key, not a non-empty list.
+        assert isinstance(content["issues"], list)
+        assert isinstance(content["suggestions"], list)
+        # Charged, as the class says: that half is this repository's, not the provider's.
+        assert [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)] == [1]
 
 
 @pytest.mark.asyncio(loop_scope="module")
