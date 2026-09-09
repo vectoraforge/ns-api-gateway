@@ -21,10 +21,10 @@ class VerifiedProviderIdentity:
 class FirebaseAdminAdapter(Protocol):
     """One configured integration, one client selected by issuer match, and no ambient fallback."""
 
-    def get_user_provider_data(self, issuer: str, subject: str) -> VerifiedProviderIdentity:
+    async def get_user_provider_data(self, issuer: str, subject: str) -> VerifiedProviderIdentity:
         """The providerData read: the verified identity, or a raise."""
         ...
 
-    def revoke_refresh_tokens(self, issuer: str, subject: str) -> None:
+    async def revoke_refresh_tokens(self, issuer: str, subject: str) -> None:
         """The revocation: a return that confirms it, or a raise."""
         ...

@@ -111,8 +111,13 @@ class TestFirebaseAdminAdapter:
         assert self._methods(FirebaseAdminAdapter) == {"get_user_provider_data",
                                                        "revoke_refresh_tokens"}
 
+    @pytest.mark.parametrize("name", ("get_user_provider_data", "revoke_refresh_tokens"))
+    def test_every_method_is_declared_async(self, name):
+        """Every implementation is `async def`, so a synchronous declaration is one nothing satisfies."""
+        assert inspect.iscoroutinefunction(getattr(FirebaseAdminAdapter, name))
+
     def test_get_user_provider_data_returns_the_verified_identity(self):
-        """The seam's whole return surface: the verified identity, or a raise."""
+        """The seam's whole return surface: what the coroutine resolves to, or a raise."""
         assert self._returns(FirebaseAdminAdapter.get_user_provider_data) is VerifiedProviderIdentity
 
     def test_the_lookup_method_takes_the_issuer_so_selection_is_per_call(self):
@@ -120,7 +125,7 @@ class TestFirebaseAdminAdapter:
         assert "issuer" in parameters
 
     def test_revoke_refresh_tokens_returns_nothing_at_all(self):
-        """The revocation reports no value: the call returns to confirm it, or it raises."""
+        """The revocation reports no value: the coroutine resolves to `None`, or it raises."""
         assert self._returns(FirebaseAdminAdapter.revoke_refresh_tokens) is None
 
     def test_the_revocation_method_takes_the_issuer_so_selection_is_per_call(self):

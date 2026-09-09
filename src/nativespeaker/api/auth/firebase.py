@@ -11,7 +11,7 @@ from firebase_admin import auth, credentials, exceptions
 from starlette.concurrency import run_in_threadpool
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
 
-from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
+from nativespeaker.api.auth.adapters import FirebaseAdminAdapter, VerifiedProviderIdentity
 from nativespeaker.api.errors import NotLinked, RevocationUnconfirmed, Unavailable, UserNotFound
 from nativespeaker.api.tables.identities import IdentityProvider
 
@@ -168,7 +168,8 @@ def _exhausted(retry_state) -> NoReturn:
     raise Unavailable(stage="provider_lookup") from retry_state.outcome.exception()
 
 
-async def lookup_with_retry(adapter, issuer: str, subject: str) -> VerifiedProviderIdentity:
+async def lookup_with_retry(adapter: FirebaseAdminAdapter, issuer: str,
+                            subject: str) -> VerifiedProviderIdentity:
     """Call the adapter up to `FIREBASE_LOOKUP_ATTEMPTS` times; return the identity or raise."""
     retrying = AsyncRetrying(
         stop=stop_after_attempt(FIREBASE_LOOKUP_ATTEMPTS),
@@ -184,7 +185,7 @@ def _revocation_exhausted(retry_state) -> NoReturn:
     raise RevocationUnconfirmed(stage="token_revocation") from retry_state.outcome.exception()
 
 
-async def revoke_with_retry(adapter, issuer: str, subject: str) -> None:
+async def revoke_with_retry(adapter: FirebaseAdminAdapter, issuer: str, subject: str) -> None:
     """Call the adapter up to `FIREBASE_LOOKUP_ATTEMPTS` times; return on a confirmation or raise."""
     retrying = AsyncRetrying(
         stop=stop_after_attempt(FIREBASE_LOOKUP_ATTEMPTS),

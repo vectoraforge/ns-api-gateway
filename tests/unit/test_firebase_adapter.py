@@ -525,9 +525,9 @@ class TestTheClassifierRecordsItsProhibitions:
 
 
 class TestTheDeliberateNonImplementations:
-    """The concrete lookup is not the seam: it implements the one method and claims nothing more."""
+    """The concrete lookup is not the seam: it conforms structurally and claims nothing more."""
 
     def test_the_class_is_not_annotated_as_the_full_protocol(self):
-        """It does not satisfy `FirebaseAdminAdapter`, so it must not claim to."""
+        """A Protocol is satisfied structurally, so conforming to it is never a reason to inherit it."""
         from nativespeaker.api.auth.adapters import FirebaseAdminAdapter
         assert FirebaseAdminAdapter not in FirebaseAdminLookup.__mro__
