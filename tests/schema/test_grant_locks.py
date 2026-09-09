@@ -86,9 +86,6 @@ _NO_WAIT = "500ms"
 # How long A keeps the fixed-order locks before releasing them, in the no-deadlock control.
 _A_HOLDS_FOR_SECONDS = 0.2
 
-# The wait B must have measured to prove it blocked. Below A's hold, so scheduling jitter is not a failure.
-_BLOCKED_FOR_SECONDS = 0.15
-
 
 @dataclass(frozen=True)
 class _Seeded:
@@ -212,24 +209,28 @@ class TestTheLockOrderIsLoadBearing:
             await _rollback(tx_b)
             await _rollback(tx_a)
 
+    @pytest.mark.timing
     async def test_the_fixed_order_does_not_deadlock(self, committed_grant, contenders):
         """The control: both transactions take the fixed order, the second waits, and nothing is aborted."""
         conn_a, conn_b = contenders
         tx_a = await _begin(conn_a, lock_timeout=_WAIT)
         tx_b = await _begin(conn_b, lock_timeout=_WAIT)
+        released_at = None
         try:
             await conn_a.fetch(_LOCK_GRANTS, committed_grant.user_id)
             await conn_a.fetch(_LOCK_USAGE, committed_grant.grant_id)
 
             async def b_takes_the_same_order_and_waits():
-                started = time.monotonic()
+                asked_at = time.monotonic()
                 await conn_b.fetch(_LOCK_GRANTS, committed_grant.user_id)
-                # Measured, not assumed: how long B sat on A's grant lock is the evidence of contention.
-                waited = time.monotonic() - started
-                return waited, await conn_b.fetch(_LOCK_USAGE, committed_grant.grant_id)
+                acquired_at = time.monotonic()
+                return asked_at, acquired_at, await conn_b.fetch(_LOCK_USAGE,
+                                                                 committed_grant.grant_id)
 
             async def a_finishes_shortly():
+                nonlocal released_at
                 await asyncio.sleep(_A_HOLDS_FOR_SECONDS)
+                released_at = time.monotonic()
                 await tx_a.rollback()
 
             outcomes = await asyncio.gather(b_takes_the_same_order_and_waits(),
@@ -238,11 +239,13 @@ class TestTheLockOrderIsLoadBearing:
 
             assert not [outcome for outcome in outcomes if isinstance(outcome, BaseException)], \
                 f"the fixed order must not deadlock or time out, got {outcomes}"
-            waited, rows = outcomes[0]
-            # Without contention B takes the grant lock at once, and this case would be two serialized
-            # transactions rather than the control the deadlock case above is measured against.
-            assert waited >= _BLOCKED_FOR_SECONDS, \
-                f"B never blocked on A's grant lock: it took the lock in {waited:.3f}s"
+            asked_at, acquired_at, rows = outcomes[0]
+            assert released_at is not None, "A never reached its release, so B waited on nothing"
+            # Measured against A's own release rather than a fixed margin: B asked while A still
+            # held the row and got it only afterwards, however late the loop got round to either.
+            assert asked_at < released_at < acquired_at, \
+                (f"B did not block on A's grant lock: asked at {asked_at:.3f}, "
+                 f"A released at {released_at:.3f}, B acquired at {acquired_at:.3f}")
             assert [row["grant_id"] for row in rows] == [committed_grant.grant_id]
         finally:
             await _rollback(tx_b)
