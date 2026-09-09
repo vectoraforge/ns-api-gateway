@@ -113,12 +113,13 @@ class PlaySubscriptionSource(Protocol):
     """The Play read seam: one live subscription as this project's value type, or a raise."""
 
     async def read(self, *, package_name: str, purchase_token: str, event_type: str,
-                   notification_uuid: str, signed_at: datetime | None) -> VerifiedNotification | None:
+                   notification_uuid: str, signed_at: datetime | None,
+                   evaluated_at: datetime) -> VerifiedNotification | None:
         """The `subscriptionsv2.get` call: the value type, `None` for a gone token, or a raise."""
         ...
 
-    async def read_for_restore(self, *, package_name: str,
-                               purchase_token: str) -> RestoredSubscription:
+    async def read_for_restore(self, *, package_name: str, purchase_token: str,
+                               evaluated_at: datetime) -> RestoredSubscription:
         """The same call for a client-presented token: the value type, or the refusal it earned."""
         ...
 
@@ -211,16 +212,20 @@ class PubSubPushTokens:
 class PlayDeveloperSubscriptions:
     """The `purchases.subscriptionsv2.get` read, signed per call with this deployment's credential."""
 
-    def __init__(self, *, credential, client: httpx.AsyncClient, products: dict[str, str],
-                 evaluated_at_source) -> None:
+    def __init__(self, *, credential, client: httpx.AsyncClient,
+                 products: dict[str, str]) -> None:
         self._credential = credential
         self._client = client
         # Server-controlled reference data, never a value the store supplied.
         self._products = products
-        self._evaluated_at_source = evaluated_at_source
 
+    # `evaluated_at` is passed, never read from a clock here: FastAPI's per-request dependency
+    # cache only sees solver-resolved dependencies, so a clock called from inside this class would
+    # give `_status_for` a different instant from the one the grant writer computes `ends_at`
+    # against, and a term crossing between the two commits an active grant outside its own term.
     async def read(self, *, package_name: str, purchase_token: str, event_type: str,
-                   notification_uuid: str, signed_at: datetime | None) -> VerifiedNotification | None:
+                   notification_uuid: str, signed_at: datetime | None,
+                   evaluated_at: datetime) -> VerifiedNotification | None:
         """Read this subscription's live state from Play, or answer `None` for a gone token."""
         if self._credential is None:
             raise Unavailable(stage="play_subscriptions_read")
@@ -267,16 +272,15 @@ class PlayDeveloperSubscriptions:
             tier_id=tier_id,
             attribution_token=(None if identifiers is None
                                else identifiers.obfuscatedExternalAccountId),
-            status=_status_for(subscription.subscriptionState, expiry,
-                               self._evaluated_at_source()),
+            status=_status_for(subscription.subscriptionState, expiry, evaluated_at),
             signed_at=signed_at,
             purchased_at=subscription.startTime,
             expires_at=expiry,
             grace_period_expires_at=expiry if in_grace else None,
         )
 
-    async def read_for_restore(self, *, package_name: str,
-                               purchase_token: str) -> RestoredSubscription:
+    async def read_for_restore(self, *, package_name: str, purchase_token: str,
+                               evaluated_at: datetime) -> RestoredSubscription:
         """Read the state of one client-presented purchase token, or raise the refusal it earned."""
         # The answer is classified here and never by a caught base class, because
         # `UnmappedStoreProduct` is an `InternalError` and a caught base would turn an
@@ -322,8 +326,7 @@ class PlayDeveloperSubscriptions:
             tier_id=tier_id,
             attribution_token=(None if identifiers is None
                                else identifiers.obfuscatedExternalAccountId),
-            status=_status_for(subscription.subscriptionState, expiry,
-                               self._evaluated_at_source()),
+            status=_status_for(subscription.subscriptionState, expiry, evaluated_at),
             purchased_at=subscription.startTime,
             expires_at=expiry,
             grace_period_expires_at=expiry if in_grace else None,

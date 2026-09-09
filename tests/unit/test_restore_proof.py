@@ -189,13 +189,14 @@ def _play_reader(handler, *, products: dict[str, str] | None = None,
     return PlayDeveloperSubscriptions(
         credential=_FakeCredential() if credential is None else credential,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-        products={PLAY_PRODUCT_ID: PLAY_TIER_ID} if products is None else products,
-        evaluated_at_source=lambda: EVALUATED_AT)
+        products={PLAY_PRODUCT_ID: PLAY_TIER_ID} if products is None else products)
 
 
 async def _restore_through(reader: PlayDeveloperSubscriptions) -> RestoredSubscription:
     """One restore read on this reader, with the arguments the service passes in production."""
-    return await reader.read_for_restore(package_name=PACKAGE_NAME, purchase_token=PURCHASE_TOKEN)
+    return await reader.read_for_restore(package_name=PACKAGE_NAME,
+                                         purchase_token=PURCHASE_TOKEN,
+                                         evaluated_at=EVALUATED_AT)
 
 
 async def _play_restore(state: str, *, expiry: datetime | None = UNEXPIRED) -> RestoredSubscription:
@@ -255,7 +256,8 @@ class TestThePlayRequestUrlIsConfinedToOneResource:
         sent, reader = _capturing_reader()
 
         await reader.read_for_restore(package_name=PACKAGE_NAME,
-                                      purchase_token="a/../../../../v3/applications/evil/edits")
+                                      purchase_token="a/../../../../v3/applications/evil/edits",
+                                      evaluated_at=EVALUATED_AT)
 
         # The wire form, because `url.path` percent-decodes and would hide the escaping this asserts.
         path = sent[0].url.raw_path.decode()
@@ -265,7 +267,8 @@ class TestThePlayRequestUrlIsConfinedToOneResource:
     async def test_a_token_carrying_a_query_string_leaves_the_query_empty(self):
         sent, reader = _capturing_reader()
 
-        await reader.read_for_restore(package_name=PACKAGE_NAME, purchase_token="x?alt=media")
+        await reader.read_for_restore(package_name=PACKAGE_NAME, purchase_token="x?alt=media",
+                                      evaluated_at=EVALUATED_AT)
 
         assert sent[0].url.query == b""
 
@@ -274,7 +277,7 @@ class TestThePlayRequestUrlIsConfinedToOneResource:
         sent, reader = _capturing_reader()
 
         await reader.read_for_restore(package_name=f"{PACKAGE_NAME}/evil",
-                                      purchase_token=PURCHASE_TOKEN)
+                                      purchase_token=PURCHASE_TOKEN, evaluated_at=EVALUATED_AT)
 
         path = sent[0].url.raw_path.decode()
         assert "/" not in path.split("/applications/")[1].split("/purchases")[0]
@@ -284,7 +287,8 @@ class TestThePlayRequestUrlIsConfinedToOneResource:
         sent, reader = _capturing_reader()
 
         restored = await reader.read_for_restore(package_name=PACKAGE_NAME,
-                                                 purchase_token=PURCHASE_TOKEN)
+                                                 purchase_token=PURCHASE_TOKEN,
+                                                 evaluated_at=EVALUATED_AT)
 
         assert sent[0].url.raw_path.decode() == PLAY_TOKENS_PATH + PURCHASE_TOKEN
         assert isinstance(restored, RestoredSubscription)
@@ -297,7 +301,8 @@ class TestThePlayRequestUrlIsConfinedToOneResource:
         sent, reader = _capturing_reader()
 
         with pytest.raises(ProofRejected) as refusal:
-            await reader.read_for_restore(package_name=PACKAGE_NAME, purchase_token=token)
+            await reader.read_for_restore(package_name=PACKAGE_NAME, purchase_token=token,
+                                          evaluated_at=EVALUATED_AT)
 
         assert refusal.value.stage == GONE_STAGE
         assert sent == []
@@ -307,7 +312,8 @@ class TestThePlayRequestUrlIsConfinedToOneResource:
         sent, reader = _capturing_reader()
 
         with pytest.raises(Unavailable) as refusal:
-            await reader.read_for_restore(package_name="..", purchase_token=PURCHASE_TOKEN)
+            await reader.read_for_restore(package_name="..", purchase_token=PURCHASE_TOKEN,
+                                          evaluated_at=EVALUATED_AT)
 
         assert refusal.value.stage == READ_STAGE
         assert sent == []
@@ -317,7 +323,7 @@ class TestThePlayRequestUrlIsConfinedToOneResource:
         sent, reader = _capturing_reader()
 
         restored = await reader.read_for_restore(package_name=PACKAGE_NAME,
-                                                 purchase_token="a.b..c")
+                                                 purchase_token="a.b..c", evaluated_at=EVALUATED_AT)
 
         assert sent[0].url.raw_path.decode() == PLAY_TOKENS_PATH + "a.b..c"
         assert restored.external_id == "a.b..c"
@@ -393,8 +399,7 @@ class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
         reader = PlayDeveloperSubscriptions(
             credential=None,
             client=httpx.AsyncClient(transport=httpx.MockTransport(_never)),
-            products={},
-            evaluated_at_source=lambda: EVALUATED_AT)
+            products={})
 
         with pytest.raises(Unavailable) as refusal:
             await _restore_through(reader)
@@ -475,7 +480,8 @@ class _ScriptedPlay:
         self._answer = answer
         self.statements_at_call: int | None = None
 
-    async def read_for_restore(self, *, package_name: str, purchase_token: str):
+    async def read_for_restore(self, *, package_name: str, purchase_token: str,
+                               evaluated_at):
         self.statements_at_call = self._session.statements
         if isinstance(self._answer, BaseException):
             raise self._answer

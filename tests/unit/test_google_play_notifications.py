@@ -3,6 +3,7 @@ A throwaway keypair mints the push tokens and an `httpx.MockTransport` answers t
 Untested by construction: only whether Google's live tokens and answers match Google's own shapes."""
 import ast
 import base64
+import inspect
 import json
 import urllib.error
 from datetime import UTC, datetime, timedelta
@@ -116,15 +117,14 @@ def _play_reader(handler, *, products: dict[str, str] | None = None,
     return PlayDeveloperSubscriptions(
         credential=_FakeCredential() if credential is None else credential,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-        products={PRODUCT_ID: TIER_ID} if products is None else products,
-        evaluated_at_source=lambda: EVALUATED_AT)
+        products={PRODUCT_ID: TIER_ID} if products is None else products)
 
 
 async def _read_through(reader: PlayDeveloperSubscriptions) -> VerifiedNotification | None:
     """One read on this reader, with the arguments the dependency passes in production."""
     return await reader.read(package_name=PACKAGE_NAME, purchase_token=PURCHASE_TOKEN,
                              event_type=EVENT_TYPE, notification_uuid=NOTIFICATION_KEY,
-                             signed_at=SIGNED_AT)
+                             signed_at=SIGNED_AT, evaluated_at=EVALUATED_AT)
 
 
 async def _read(state: str, *, expiry: datetime | None = None) -> VerifiedNotification:
@@ -361,6 +361,33 @@ class TestThePackageNameCheck:
         assert play.calls[0]["notification_uuid"] == f"google_play:{PURCHASE_TOKEN}:{EVENT_TIME_MILLIS}:4"
 
 
+class TestTheEntitlementDecisionUsesTheInstantTheRequestCaptured:
+    """WR-27: the adapter read a clock of its own, so it decided at a different instant from the
+    grant writer, and a term crossing between the two commits a grant outside its own term."""
+
+    @pytest.mark.parametrize(("evaluated_at", "expected"), [
+        (UNEXPIRED - timedelta(days=1), SubscriptionStatus.active),
+        (UNEXPIRED + timedelta(days=1), SubscriptionStatus.expired),
+    ], ids=["inside-the-term", "past-the-term"])
+    async def test_a_canceled_term_is_judged_against_the_instant_passed_in(self, evaluated_at,
+                                                                          expected):
+        """The one state whose answer depends on a date, read on both sides of its own expiry."""
+        reader = _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_CANCELED",
+                                                            expiry=UNEXPIRED)))
+
+        notification = await reader.read(package_name=PACKAGE_NAME,
+                                         purchase_token=PURCHASE_TOKEN, event_type=EVENT_TYPE,
+                                         notification_uuid=NOTIFICATION_KEY, signed_at=SIGNED_AT,
+                                         evaluated_at=evaluated_at)
+
+        assert notification.status is expected
+
+    def test_the_class_holds_no_clock_of_its_own_to_fall_back_to(self):
+        """Read off the signature: a surviving source would let a later edit silently use it again."""
+        parameters = set(inspect.signature(PlayDeveloperSubscriptions.__init__).parameters)
+        assert parameters == {"self", "credential", "client", "products"}
+
+
 class TestBothEntryPointsGuardTheValueTheyPutInThePath:
     """WR-26: `read` reached the same `_get` as `read_for_restore` with neither of its guards."""
 
@@ -376,7 +403,7 @@ class TestBothEntryPointsGuardTheValueTheyPutInThePath:
 
         assert await reader.read(package_name=PACKAGE_NAME, purchase_token=purchase_token,
                                  event_type=EVENT_TYPE, notification_uuid=NOTIFICATION_KEY,
-                                 signed_at=SIGNED_AT) is None
+                                 signed_at=SIGNED_AT, evaluated_at=EVALUATED_AT) is None
         assert play_logs.records("error") == [("google_play_unusable_purchase_token", {})]
 
     async def test_a_real_token_still_reaches_play(self, play_logs):

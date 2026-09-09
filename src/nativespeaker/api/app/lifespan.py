@@ -13,7 +13,6 @@ from jwt.exceptions import PyJWTError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.app.dependencies import get_evaluated_at
 from nativespeaker.api.auth.app_store import AppStoreNotifications
 from nativespeaker.api.auth.devicecheck import (
     DEVICECHECK_HTTP_TIMEOUT_SECONDS,
@@ -147,8 +146,7 @@ async def lifespan(app: FastAPI):
         app.state.play_subscriptions = PlayDeveloperSubscriptions(
             credential=play_credential,
             client=play_client,
-            products=config.google_play.products,
-            evaluated_at_source=get_evaluated_at)
+            products=config.google_play.products)
 
         db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)
         app.state.session_factory = async_sessionmaker(db_engine, class_=SQLModelAsyncSession,

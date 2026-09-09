@@ -179,7 +179,8 @@ class RestoreService:
         if provider is PurchaseProvider.google_play:
             # The purchase token is the proof, and the one live read is both checks (D-05).
             return await self.play.read_for_restore(package_name=self.package_name,
-                                                    purchase_token=restore_proof)
+                                                    purchase_token=restore_proof,
+                                                    evaluated_at=self.evaluated_at)
         # Unreachable: the route refuses a store name outside the enum before the service runs.
         raise RestoreProviderUnknown
 
