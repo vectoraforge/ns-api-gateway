@@ -108,15 +108,22 @@ class TestSyncWaitsOnNoLock:
     """The read path holds no lock and is stopped by none."""
 
     async def test_sync_reads_through_the_locks_a_charge_is_holding(self, harness):
-        """A charge holds both rows FOR UPDATE, uncommitted; sync must still answer, with the pre-charge state."""
+        """A charge holds both rows FOR UPDATE and has spent one credit, uncommitted; sync must still
+        answer, and with the pre-charge state."""
         async with harness.factory() as holder:
             grants_db = GrantsDB(holder)
 
             held = await grants_db.lock_effective_grants(harness.user_id, harness.evaluated_at)
             assert [grant.id for grant in held] == [harness.grant_id], \
                 "control: the holder must really hold the grant row, or sync has nothing to read through"
-            assert await grants_db.lock_usage(harness.grant_id) is not None, \
+            usage = await grants_db.lock_usage(harness.grant_id)
+            assert usage is not None, \
                 "control: the holder must also hold the usage row, second in the lock order"
+
+            # The charge itself, uncommitted: without this write the count sync reports is the seeded
+            # one either way, and the assertion below cannot tell READ COMMITTED from a dirty read.
+            usage.monthly_used += 1
+            await holder.flush()
 
             entitlement = await asyncio.wait_for(sync_with_a_bounded_lock_wait(harness),
                                                  _DEADLINE_SECONDS)
@@ -127,6 +134,8 @@ class TestSyncWaitsOnNoLock:
         assert entitlement.monthly_credits == MONTHLY_CREDITS
         # The holder's work is uncommitted, and READ COMMITTED cannot see it: the pre-charge count is the only answer.
         assert entitlement.monthly_used == SEEDED_USED
+        # And the rolled-back charge never landed, so the count above was not simply the committed one.
+        assert await stored_usage(harness) == SEEDED_USED
 
     async def test_a_charge_is_not_blocked_by_an_open_sync_read(self, harness):
         """The converse, and the one that matters in production: a read taking no lock cannot stall the writer."""
