@@ -188,14 +188,35 @@ class TestTheBit1CarryForward:
 class TestTheParseArms:
     """The five ordered arms, with nothing falling through to a default."""
 
-    async def test_arm_one_a_400_is_a_definitive_refusal_after_exactly_one_attempt(self,
-                                                                                   private_key):
-        recorder = Recorder(httpx.Response(400, text="Missing or badly formatted authorization"))
+    @pytest.mark.parametrize("body", ["Missing or incorrectly formatted device token payload",
+                                      "Unable to verify device token"],
+                             ids=["malformed payload", "unverifiable"])
+    async def test_arm_one_a_400_naming_the_device_token_is_definitive_after_one_attempt(
+            self, body, private_key):
+        recorder = Recorder(httpx.Response(400, text=body))
 
         with pytest.raises(ProofRejected):
             await read_bits_with_retry(_adapter(recorder, private_key), QUERY_TOKEN)
 
         assert len(recorder.requests) == 1
+
+    @pytest.mark.parametrize("body", ["Invalid or missing timestamp",
+                                      "Invalid or missing transaction id",
+                                      "Missing or badly formatted authorization",
+                                      "something nobody documented"],
+                             ids=["clock skew", "transaction id", "our bearer", "unrecognised"])
+    async def test_arm_one_a_400_faulting_our_own_request_retries_to_the_budget_and_then_503s(
+            self, body, private_key):
+        """WR-20: a drifted pod clock alone earns the first of these on every call, and spec 06:83
+        reserves `proof_rejected` for vendor *material* failures."""
+        # The undocumented body lands here too: the literals are assumptions, so this is the arm
+        # an unrecognised 400 must fall to rather than a 403 accusing the caller's device.
+        recorder = Recorder(*[httpx.Response(400, text=body) for _ in range(DEVICECHECK_ATTEMPTS)])
+
+        with pytest.raises(Unavailable):
+            await read_bits_with_retry(_adapter(recorder, private_key), QUERY_TOKEN)
+
+        assert len(recorder.requests) == DEVICECHECK_ATTEMPTS
 
     async def test_arm_two_a_503_is_retried_to_the_budget_and_then_unavailable(self, private_key):
         recorder = Recorder(*[httpx.Response(503) for _ in range(DEVICECHECK_ATTEMPTS)])
@@ -214,6 +235,27 @@ class TestTheParseArms:
         state = await _adapter(recorder, private_key).read_bits(QUERY_TOKEN)
 
         assert state == BitState(bit0=False, bit1=False)
+
+    @pytest.mark.parametrize("body", NEVER_SET_BODIES)
+    async def test_arm_three_holds_when_apple_carries_that_body_on_a_400(self, body, private_key):
+        """WR-20: the body is read ahead of the status. Apple is widely observed answering 400 with
+        this text, and classified by status first the only case the free grant exists for -- the
+        eligible first-ever claim -- was a 403 `proof_rejected`, so nobody could ever be granted."""
+        recorder = Recorder(httpx.Response(400, text=body))
+
+        state = await _adapter(recorder, private_key).read_bits(QUERY_TOKEN)
+
+        assert state == BitState(bit0=False, bit1=False)
+
+    @pytest.mark.parametrize("body", NEVER_SET_BODIES)
+    async def test_a_5xx_echoing_the_never_set_body_is_still_an_outage_control(self, body,
+                                                                              private_key):
+        """The control on the arm above: reading the body ahead of the status must not let an
+        outage page that quotes this text mint the grant it is there to deny."""
+        recorder = Recorder(*[httpx.Response(503, text=body) for _ in range(DEVICECHECK_ATTEMPTS)])
+
+        with pytest.raises(Unavailable):
+            await read_bits_with_retry(_adapter(recorder, private_key), QUERY_TOKEN)
 
     async def test_arm_four_a_json_object_carrying_both_bits_is_that_state(self, private_key):
         recorder = Recorder(_ok({"bit0": True, "bit1": False}))
@@ -237,7 +279,7 @@ class TestTheParseArms:
             await read_bits_with_retry(_adapter(recorder, private_key), QUERY_TOKEN)
 
     async def test_the_write_accepts_only_an_explicit_confirmation(self, private_key):
-        recorder = Recorder(httpx.Response(400, text="Bad device token"))
+        recorder = Recorder(httpx.Response(400, text="Unable to verify device token"))
 
         with pytest.raises(ProofRejected):
             await write_bits_with_retry(_adapter(recorder, private_key), UPDATE_TOKEN,

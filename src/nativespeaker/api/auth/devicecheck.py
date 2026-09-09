@@ -26,6 +26,14 @@ DEVICECHECK_ATTEMPTS = 3
 # Apple answers HTTP 200 with one of these plain-text bodies when the device's bits were never set.
 _NEVER_SET_BODIES = frozenset({"Failed to find bit state", "Bit State Not Found"})
 
+# The phrase Apple's 400 bodies carry when the fault is in the caller's device token ("Missing or
+# incorrectly formatted device token payload", "Unable to verify device token") and never when it is
+# in the request this service built ("Invalid or missing timestamp", "Invalid or missing transaction
+# id", "Missing or badly formatted authorization"). A phrase rather than a table of exact bodies,
+# because these literals are [ASSUMED] from secondary sources (41-RESEARCH.md A3): an unrecognised
+# 400 has to fall to the retry arm below, never to a 403 that accuses the caller's device.
+_DEVICE_TOKEN_FAULT = "device token"
+
 
 class RetryableDeviceCheckError(Exception):
     """The retry predicate's only target, always converted before it can escape."""
@@ -104,22 +112,31 @@ def _decoded(response: httpx.Response) -> object | None:
 
 
 def _reject_or_retry(response: httpx.Response, *, stage: str) -> None:
-    """Raise on the two non-success arms: a definitive 400, then everything else retryable."""
+    """Raise on the two non-success arms: a 400 naming the token, then everything else retryable."""
     if response.status_code == 400:
-        # Definitive: Apple refused the token itself, so no further attempt can change the answer.
-        raise ProofRejected(stage=stage, cause="rejected")
+        if _DEVICE_TOKEN_FAULT in response.text.casefold():
+            # Definitive: Apple refused the token itself, so no further attempt can change the answer.
+            raise ProofRejected(stage=stage, cause="rejected")
+        # Apple faults the request this service built, not the caller's proof: a skewed pod clock
+        # alone earns "Invalid or missing timestamp" on every call. Spec 06:83 reserves
+        # `proof_rejected` for vendor *material* failures, so this arm retries and then answers the
+        # 503 -- a fault of ours never tells a client its device is bad.
+        raise RetryableDeviceCheckError("status 400")
     if response.status_code // 100 != 2:
         raise RetryableDeviceCheckError(f"status {response.status_code}")
 
 
 def _parse_bit_state(response: httpx.Response, *, stage: str) -> BitState:
     """Classify a query response in the one order that lets nothing fall through to a default."""
-    _reject_or_retry(response, stage=stage)
-
     body = response.text.strip()
-    if body in _NEVER_SET_BODIES:
-        # The eligible first-ever claim, read before any JSON call because the body is plain text.
+    if body in _NEVER_SET_BODIES and response.status_code // 100 != 5:
+        # The eligible first-ever claim, read before any JSON call because the body is plain text --
+        # and ahead of the status, because Apple is widely observed carrying this body on 400 as
+        # well as on the documented 200. Classified by status first, the one case the free grant
+        # exists for was answered `proof_rejected` and the feature granted nothing to anybody.
+        # A 5xx is excluded so an outage page that happens to echo this text cannot mint a grant.
         return BitState(bit0=False, bit1=False)
+    _reject_or_retry(response, stage=stage)
 
     payload = _decoded(response)
     if not isinstance(payload, dict):
