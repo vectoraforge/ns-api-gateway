@@ -611,9 +611,9 @@ class TestTheDeviceReadAndTheDeviceWriteNameOneDevice:
         assert devicecheck.read_calls == [DEVICE_TOKEN]
         assert [token for token, _, _ in devicecheck.write_calls] == devicecheck.read_calls
 
-    def test_a_body_offering_a_second_token_is_rejected_before_the_gate(self, client, store,
-                                                                        account, devicecheck):
-        """The split body is gone from the wire, so there is no second token left to substitute."""
+    def test_a_body_naming_no_device_is_rejected_before_the_gate(self, client, store,
+                                                                 account, devicecheck):
+        """The one token is required, so a body without it is the framework's 422 and spends nothing."""
         identity_row, _ = account
         store.row = _issued_row(bound_to=identity_row.id)
 
@@ -625,6 +625,23 @@ class TestTheDeviceReadAndTheDeviceWriteNameOneDevice:
         assert response.status_code == 422
         assert devicecheck.read_calls == []
         assert store.consume_calls == 0
+
+    def test_a_body_offering_a_second_token_never_reaches_the_gate_with_it(self, client, store,
+                                                                           account, devicecheck):
+        """WR-70: the split body is gone from the wire, so the extra keys are dropped rather than
+        substituted, and one device is named on both calls."""
+        identity_row, _ = account
+        store.row = _issued_row(bound_to=identity_row.id)
+
+        response = client.post("/auth/claim-anonymous-grant",
+                               json={"challenge_id": HANDLE,
+                                     "device_token": DEVICE_TOKEN,
+                                     "query_token": "device-a-never-written-to",
+                                     "update_token": "device-b-already-set"})
+
+        assert response.status_code == 200
+        assert devicecheck.read_calls == [DEVICE_TOKEN]
+        assert [token for token, _, _ in devicecheck.write_calls] == [DEVICE_TOKEN]
 
 
 def _registered(identity_row, grants, devicecheck) -> None:
