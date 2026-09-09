@@ -121,8 +121,13 @@ class FirebaseAdminLookup:
             logger.info("firebase_get_user_not_found")
             raise UserNotFound(stage="provider_lookup") from None
         except ValueError as error:
+            # Definitive, exactly as in `_revoke`: the SDK validates the uid before it sends the
+            # request, and a providerData shape materialized off a response already in hand
+            # re-derives the same way next time. Retrying it spends the whole budget on three
+            # identical guaranteed failures. The client-visible answer is the same 503 the
+            # exhausted budget would have reached, so only the wasted calls are gone.
             logger.warning("firebase_provider_data_malformed", detail=str(error))
-            raise RetryableLookupError(str(error)) from error
+            raise Unavailable(stage="provider_lookup") from None
         except google.auth.exceptions.GoogleAuthError as error:
             # Not a FirebaseError and raised before the request is sent, so it needs its own arm.
             logger.warning("firebase_credential_unavailable", detail=str(error))

@@ -383,12 +383,18 @@ class TestFailureMapping:
         assert raised.value.stage == "provider_lookup"
         assert len(calls) == FIREBASE_LOOKUP_ATTEMPTS
 
-    async def test_a_lazy_provider_data_value_error_is_retryable_and_never_escapes(self, adapter,
-                                                                                  get_user_calls):
-        """The empty-`rawId` shape, materialized inside the threadpool call rather than after it returns."""
-        get_user_calls(StubUserRecord(raises=ValueError("User ID must not be None or empty.")))
-        with pytest.raises(RetryableLookupError):
-            await adapter.get_user_provider_data(ISSUER, SUBJECT)
+    async def test_a_lazy_provider_data_value_error_is_definitive_and_spends_no_budget(
+            self, adapter, get_user_calls):
+        """WR-01: the empty-`rawId` shape is materialized off a response already in hand, so a
+        second attempt re-derives it. Definitive, exactly as `_revoke` classifies the same type."""
+        calls = get_user_calls(StubUserRecord(raises=ValueError("User ID must not be None or empty.")))
+
+        with pytest.raises(Unavailable) as raised:
+            await lookup_with_retry(adapter, ISSUER, SUBJECT)
+
+        assert raised.value.stage == "provider_lookup"
+        # The point of the change: one call, never the three a retryable classification would spend.
+        assert len(calls) == 1
 
     async def test_user_not_found_is_not_swallowed_by_the_firebase_error_arm(self, adapter,
                                                                             get_user_calls):
