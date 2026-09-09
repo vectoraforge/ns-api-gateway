@@ -154,8 +154,11 @@ class ResiliencePolicy:
                 raise
             except Exception as e:
                 # Everything reaching here came out of `operation` itself, so every classification is the provider's.
-                await self._circuit_breaker.record_failure()
                 if _is_transient_error(e):
+                    # Counted only on this arm: the classification is the provider's, but the cause
+                    # of a permanent rejection is the request -- one user's phrase refused by the
+                    # content policy would otherwise open the breaker on everybody.
+                    await self._circuit_breaker.record_failure()
                     raise TransientLLMError(str(e)) from e
                 raise PermanentLLMError(str(e)) from e
             await self._circuit_breaker.record_success()

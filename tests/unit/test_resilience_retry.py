@@ -143,7 +143,8 @@ class TestErrorClassification:
             await policy.ainvoke(operation, ADMITTED)
 
         assert operation.calls == 2
-        assert spy.failures == 2
+        # One, not two: only the transient attempt said anything about the provider's health.
+        assert spy.failures == 1
 
     async def test_an_operation_timeout_is_transient(self, spy, sleeps):
         # The timeout is the one transient case the policy produces itself rather than receiving.
@@ -185,11 +186,12 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         assert sleeps == []
 
     async def test_circuit_open_propagates_unwrapped_and_is_not_retried(self, sleeps):
-        # A real open transition: one permanent failure trips a threshold of one.
+        # A real open transition: one transient failure trips a threshold of one, and the retry
+        # then meets the breaker it just opened.
         policy = ResiliencePolicy(make_config(circuit_breaker_failure_threshold=1))
         spy = BreakerSpy(policy)
-        with pytest.raises(PermanentLLMError):
-            await policy.ainvoke(ScriptedOperation(PERMANENT), ADMITTED)
+        with pytest.raises(CircuitOpenError):
+            await policy.ainvoke(ScriptedOperation(TRANSIENT), ADMITTED)
         assert spy.failures == 1
 
         entered = False
@@ -268,9 +270,10 @@ class TestFailureAccounting:
         ((TRANSIENT, "ok"), 1, 1),
         ((TRANSIENT, TRANSIENT, "ok"), 2, 1),
         ((TRANSIENT,), MAX_ATTEMPTS, 0),
-        ((PERMANENT,), 1, 0),
+        # A permanent rejection is the request's fault, so it is neither a failure nor a success.
+        ((PERMANENT,), 0, 0),
     ])
-    async def test_record_failure_fires_once_per_failed_provider_attempt(
+    async def test_record_failure_fires_once_per_attempt_the_provider_answered_for(
             self, policy, spy, sleeps, steps, expected_failures, expected_successes):
         operation = ScriptedOperation(*steps)
 
@@ -281,7 +284,25 @@ class TestFailureAccounting:
 
         assert spy.failures == expected_failures
         assert spy.successes == expected_successes
-        assert spy.failures + spy.successes == operation.calls
+        # Every attempt still consults the breaker, whether or not its outcome is recorded on it.
+        assert spy.checks == operation.calls
+
+    async def test_a_permanent_rejection_never_trips_the_breaker(self, sleeps):
+        """One user's refused phrase must not answer 503 to everybody else for a minute."""
+        policy = ResiliencePolicy(make_config(circuit_breaker_failure_threshold=2))
+        spy = BreakerSpy(policy)
+
+        for _ in range(5):
+            with pytest.raises(PermanentLLMError):
+                await policy.ainvoke(ScriptedOperation(PERMANENT), ADMITTED)
+
+        assert spy.failures == 0
+
+        # The measurement fires: two transient failures on the same policy do open it, and the
+        # third attempt then meets the open breaker instead of the provider.
+        with pytest.raises(CircuitOpenError):
+            await policy.ainvoke(ScriptedOperation(TRANSIENT), ADMITTED)
+        assert spy.failures == 2
 
 
 class TestBackoffSchedule:
