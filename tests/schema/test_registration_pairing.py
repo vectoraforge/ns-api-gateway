@@ -38,19 +38,17 @@ _REGISTERED_IDENTITY_ON_AN_UNREGISTERED_USER = (
 )
 
 # Both scans alias the identity table as `i`, so one suffix keys either of them to a single issuer.
-# The scoped form is what a case owning its rows asks; the bare form is the whole-database probe.
+# Every case appends one: sibling modules COMMIT into this shared scratch database, so an unscoped
+# scan answers for their rows and for collection order rather than for the writer under test.
 _FOR_ONE_ISSUER = " AND i.issuer = :issuer"
 
 _IDENTITIES_OF_ONE_ISSUER = (
     "SELECT count(*) FROM core.external_identities i WHERE i.issuer = :issuer"
 )
 
-# The same two, in asyncpg's positional form: the `conn` fixture is a raw connection and the
+# The same suffix in asyncpg's positional form: the `conn` fixture is a raw connection and the
 # `:issuer` spelling above is SQLAlchemy's, which `scalar` binds for the production-writer class.
 _FOR_ONE_ISSUER_POSITIONAL = " AND i.issuer = $1"
-_IDENTITIES_OF_ONE_ISSUER_POSITIONAL = (
-    "SELECT count(*) FROM core.external_identities i WHERE i.issuer = $1"
-)
 
 
 def _an_issuer() -> str:
@@ -87,25 +85,13 @@ async def _insert_identity(conn: asyncpg.Connection, *, user_id: uuid.UUID, prov
     return identity_id
 
 
-class TestTheRegistrationPairing:
-    """Neither half of the pairing stands without the other. Each case seeds a conforming pair under
-    an issuer of its own and scans that issuer alone: sibling modules COMMIT into this shared
-    scratch database, so an unscoped scan answers for their rows and for collection order."""
-
-    async def test_no_registered_user_carries_an_anonymous_identity(self, conn):
-        """One half of the third state: a timestamp set while the identity row still says anonymous."""
-        issuer = _an_issuer()
-        user_id = await _insert_user(conn, registered_at=datetime.now(UTC))
-        await _insert_identity(conn, user_id=user_id, provider="google", issuer=issuer)
-        # The premise: a conforming pair of this issuer exists, so the zero below is conformance
-        # and never an empty scope.
-        assert await conn.fetchval(_IDENTITIES_OF_ONE_ISSUER_POSITIONAL, issuer) == 1
-
-        assert await conn.fetchval(
-            _REGISTERED_USER_ON_AN_ANONYMOUS_IDENTITY + _FOR_ONE_ISSUER_POSITIONAL, issuer) == 0
+class TestTheScansSeeTheThirdState:
+    """WR-34. The controls for the class below: each scan is shown counting the offending row the
+    database accepts, under an issuer of its own. A case that inserts a conforming pair and then
+    scans its own issuer asserts what it just wrote, and no production writer can turn it red."""
 
     async def test_the_first_scan_counts_a_deliberately_offending_row(self, conn):
-        """The control: the database accepts the third state, so the scan above must be able to see it."""
+        """The database accepts the third state, so the scan the class below trusts must see it."""
         issuer = _an_issuer()
         scan = _REGISTERED_USER_ON_AN_ANONYMOUS_IDENTITY + _FOR_ONE_ISSUER_POSITIONAL
         async with _rolled_back(conn):
@@ -113,17 +99,6 @@ class TestTheRegistrationPairing:
             await _insert_identity(conn, user_id=user_id, provider="anonymous", issuer=issuer)
             assert await conn.fetchval(scan, issuer) == 1
         assert await conn.fetchval(scan, issuer) == 0
-
-    async def test_no_registered_identity_belongs_to_a_user_without_a_timestamp(self, conn):
-        """The other half: a google/apple identity row whose user was never marked registered."""
-        issuer = _an_issuer()
-        user_id = await _insert_user(conn, registered_at=datetime.now(UTC))
-        await _insert_identity(conn, user_id=user_id, provider="google", issuer=issuer)
-        # The same premise as the first half: this scan has a row of its own to answer for.
-        assert await conn.fetchval(_IDENTITIES_OF_ONE_ISSUER_POSITIONAL, issuer) == 1
-
-        assert await conn.fetchval(
-            _REGISTERED_IDENTITY_ON_AN_UNREGISTERED_USER + _FOR_ONE_ISSUER_POSITIONAL, issuer) == 0
 
     async def test_the_second_scan_counts_a_deliberately_offending_row(self, conn):
         """The control for the other direction, inserted, counted, and rolled back to the savepoint."""
