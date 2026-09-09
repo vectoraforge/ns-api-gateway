@@ -185,7 +185,7 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
         from fastapi.testclient import TestClient
 
         from nativespeaker.api.app.error_handlers import register_exception_handlers
-        from nativespeaker.api.schemas.auth import Identity
+        from nativespeaker.api.schemas.auth import Identity, LinkedIdentity
         from nativespeaker.api.tables.identities import (
             ExternalIdentity,
             IdentityProvider,
@@ -231,9 +231,12 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
 
         @router.get("/chats/{chat_id}")
         async def _handler(chat_id: str,
-                           who: Identity = Depends(get_linked_identity),
+                           who: LinkedIdentity = Depends(get_linked_identity),
                            admitted: Identity = Depends(get_identity)):
-            return {"same": who is admitted, "user": str(who.user.id)}
+            # `get_linked_identity` narrows rather than passes through, so the two are not one
+            # object; sharing both resolved rows is what says the resolution happened once.
+            same = who.user is admitted.user and who.identity is admitted.identity
+            return {"same": same, "user": str(who.user.id)}
 
         app.include_router(router)
         app.state.jwt_verifier = _CountingVerifier()
@@ -246,5 +249,5 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
         assert response.status_code == 200, response.json()
         assert counts["verify"] == 1, f"the JWT was verified {counts['verify']} times"
         assert counts["query"] == 1, f"identity was resolved {counts['query']} times"
-        # Both declarations received the one cached object, not two equal resolutions.
+        # Both declarations were served by the one cached resolution, not by two equal ones.
         assert response.json()["same"] is True

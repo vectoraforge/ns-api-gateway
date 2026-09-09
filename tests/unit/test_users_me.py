@@ -11,7 +11,7 @@ from nativespeaker.api.app.dependencies import get_linked_identity, get_purchase
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.crud.purchases import PurchasesDB
 from nativespeaker.api.routers import users_router
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import LinkedIdentity
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.purchases import PurchaseProvider
 from nativespeaker.api.tables.users import User
@@ -67,10 +67,10 @@ def _compiled(statement) -> str:
     return str(statement.compile(dialect=postgresql.dialect()))
 
 
-def _linked_identity(*, email=EMAIL, display_name=DISPLAY_NAME) -> Identity:
+def _linked_identity(*, email=EMAIL, display_name=DISPLAY_NAME) -> LinkedIdentity:
     """A linked caller carrying the profile fields the shared `TEST_IDENTITY` leaves unset."""
     user_id = uuid7()
-    return Identity(issuer=TEST_ISSUER, subject=SUBJECT,
+    return LinkedIdentity(issuer=TEST_ISSUER, subject=SUBJECT,
                     user=User(id=user_id, active=True, email=email, display_name=display_name),
                     identity=ExternalIdentity(id=uuid7(), user_id=user_id, issuer=TEST_ISSUER,
                                               subject=SUBJECT, provider=IdentityProvider.google,
@@ -79,7 +79,7 @@ def _linked_identity(*, email=EMAIL, display_name=DISPLAY_NAME) -> Identity:
 
 
 @contextlib.contextmanager
-def _client_for(identity: Identity, session: _RecordingSession):
+def _client_for(identity: LinkedIdentity, session: _RecordingSession):
     """The real users router, with the barrier's context supplied and the token store substituted."""
     app = FastAPI()
     app.include_router(users_router)
@@ -99,7 +99,7 @@ def session() -> _RecordingSession:
 
 
 @pytest.fixture
-def identity() -> Identity:
+def identity() -> LinkedIdentity:
     return _linked_identity()
 
 

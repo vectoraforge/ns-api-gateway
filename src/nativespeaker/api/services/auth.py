@@ -35,7 +35,7 @@ from nativespeaker.api.errors import (
     ProviderAccountAlreadyLinked,
     ProviderTransitionNotAllowed,
 )
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import Identity, LinkedIdentity
 from nativespeaker.api.tables.auth import AuthOperation
 from nativespeaker.api.tables.grants import AccessGrantSource
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
@@ -46,7 +46,9 @@ logger = structlog.get_logger()
 Write = Callable[[Identity, VerifiedProviderIdentity], Awaitable[IdentityProvider]]
 
 # The post-claim seam of the shared sequence: whatever it returns is what the completion returns.
-type PostClaim[T] = Callable[[Identity], Awaitable[T]]
+# Generic in the identity too, so a linked-only seam keeps `LinkedIdentity` through the shared
+# sequence rather than widening back to `Identity` and losing the two rows it proved.
+type PostClaim[I, T] = Callable[[I], Awaitable[T]]
 
 # The seeded `core.access_tiers` row an anonymous device grant points at.
 ANONYMOUS_TIER_ID = "anonymous"
@@ -81,7 +83,7 @@ class AuthService:
                                     post_claim=partial(self._read_then_write,
                                                        write=self._apply_create_user))
 
-    async def complete_upgrade(self, *, identity: Identity, challenge_id: str) -> IdentityProvider:
+    async def complete_upgrade(self, *, identity: LinkedIdentity, challenge_id: str) -> IdentityProvider:
         """Record the caller's identity row as registered, and return the provider it now carries."""
         return await self._complete(identity=identity,
                                     challenge_id=challenge_id,
@@ -90,7 +92,7 @@ class AuthService:
                                                        write=self._apply_upgrade))
 
     async def complete_claim_anonymous_grant(self, *,
-                                             identity: Identity,
+                                             identity: LinkedIdentity,
                                              challenge_id: str,
                                              device_token: str) -> None:
         """Claim the caller's one anonymous device grant; the entitlement is read back after commit."""
@@ -101,7 +103,7 @@ class AuthService:
                                                 device_token=device_token))
 
     async def complete_claim_registered_grant(self, *,
-                                              identity: Identity,
+                                              identity: LinkedIdentity,
                                               challenge_id: str,
                                               device_token: str) -> None:
         """Claim the caller's one registered account grant; the entitlement is read back after commit."""
@@ -111,11 +113,11 @@ class AuthService:
                              post_claim=partial(self._claim_registered_grant,
                                                 device_token=device_token))
 
-    async def _complete[T](self, *,
-                           identity: Identity,
-                           challenge_id: str,
-                           operation: AuthOperation,
-                           post_claim: PostClaim[T]) -> T:
+    async def _complete[I: Identity, T](self, *,
+                                       identity: I,
+                                       challenge_id: str,
+                                       operation: AuthOperation,
+                                       post_claim: PostClaim[I, T]) -> T:
         """The one completion sequence every route runs: locate, claim, commit, post-claim work, spend.
         The order of the rejections below is the precedence, and none of them carries a field."""
         # No rejection before the claim consumes anything, so a wrong presenter cannot burn a live challenge.
@@ -164,7 +166,7 @@ class AuthService:
         # The provider the transaction settled on, which a divergence makes different from the read's.
         return await write(identity, facts)
 
-    async def _claim_anonymous_grant(self, identity: Identity, *, device_token: str) -> None:
+    async def _claim_anonymous_grant(self, identity: LinkedIdentity, *, device_token: str) -> None:
         """Refuse, or verify the device with Apple and activate the grant inside one transaction."""
         # D-08: the stored provider column is the sole classifier, and it is tested positively.
         if identity.identity.provider is not IdentityProvider.anonymous:
@@ -211,7 +213,7 @@ class AuthService:
         # bit1 is carried forward, never fabricated: Apple writes both bits in this one call.
         await write_bits_with_retry(self.devicecheck, device_token, bit0=True, bit1=state.bit1)
 
-    async def _claim_registered_grant(self, identity: Identity, *, device_token: str) -> None:
+    async def _claim_registered_grant(self, identity: LinkedIdentity, *, device_token: str) -> None:
         """Refuse, or convert the caller's anonymous grant, or verify the device and activate a new one."""
         # D-05: the stored provider column is the sole classifier, and it is tested positively.
         if identity.identity.provider not in (IdentityProvider.google, IdentityProvider.apple):
@@ -267,7 +269,7 @@ class AuthService:
             # bit0 is carried forward, never fabricated: Apple writes both bits in this one call.
             await write_bits_with_retry(self.devicecheck, device_token, bit0=state.bit0, bit1=True)
 
-    async def _settle(self, identity: Identity, outcome: ActivationOutcome) -> None:
+    async def _settle(self, identity: LinkedIdentity, outcome: ActivationOutcome) -> None:
         """Answer for what the writer did: a race re-reads the winner's row, and a refusal raises."""
         if outcome is ActivationOutcome.activated:
             return

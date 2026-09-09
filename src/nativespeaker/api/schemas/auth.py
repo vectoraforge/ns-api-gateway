@@ -103,3 +103,14 @@ class Identity:
     subject: str
     user: User | None = None
     identity: ExternalIdentity | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LinkedIdentity(Identity):
+    """The same pair once the linked check has run: both rows are present by construction."""
+    # `resolve` sets the two together or neither, so the invariant already held -- but only as prose,
+    # which the checker cannot carry. Stated as a type, a linked-only path dereferences both rows
+    # without an `assert` that `python -O` strips, and a user-only pair is a checker error rather
+    # than an `AttributeError` rendered as the generic 500.
+    user: User
+    identity: ExternalIdentity

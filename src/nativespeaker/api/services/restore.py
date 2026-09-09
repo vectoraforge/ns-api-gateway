@@ -22,7 +22,7 @@ from nativespeaker.api.errors import (
     RestoreSubscriptionNotEntitled,
     RestoreTransferRejected,
 )
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import LinkedIdentity
 from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
 
 logger = structlog.get_logger()
@@ -43,7 +43,7 @@ class RestoreService:
         # One instant for this request; nothing below it reads the clock again.
         self.evaluated_at = evaluated_at
 
-    async def restore(self, identity: Identity, provider: PurchaseProvider,
+    async def restore(self, identity: LinkedIdentity, provider: PurchaseProvider,
                       restore_proof: str) -> None:
         """Verify the store proof and attach the entitlement the subscription it names carries."""
         proof = await self._verify(provider, restore_proof)

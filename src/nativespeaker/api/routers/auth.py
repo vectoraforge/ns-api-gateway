@@ -31,6 +31,7 @@ from nativespeaker.api.schemas.auth import (
     CompletionResponse,
     GrantClaimRequest,
     Identity,
+    LinkedIdentity,
     PrepareResponse,
     RestoreRequest,
     SyncResponse,
@@ -99,7 +100,7 @@ async def create_user(body: CompletionRequest,
                          "supplied as `challenge_id` in the body, and records the provider the "
                          "Firebase read reports onto the caller's existing identity row.")
 async def upgrade_anonymous(body: CompletionRequest,
-                            identity: Identity = Depends(get_linked_identity),
+                            identity: LinkedIdentity = Depends(get_linked_identity),
                             service: AuthService = Depends(get_auth_service)) -> CompletionResponse:
     """Complete the operation the body's handle stands for."""
     # Forwarded untouched and never logged: the handle is a secret.
@@ -116,7 +117,7 @@ async def upgrade_anonymous(body: CompletionRequest,
                          "Apple DeviceCheck and activates the grant.")
 async def claim_anonymous_grant(body: GrantClaimRequest,
                                 response: Response,
-                                identity: Identity = Depends(get_linked_identity),
+                                identity: LinkedIdentity = Depends(get_linked_identity),
                                 service: AuthService = Depends(get_auth_service),
                                 sync_service: SyncService = Depends(get_sync_service)) -> SyncResponse:
     """Complete the operation the body's handle stands for, and report the entitlement it left."""
@@ -140,7 +141,7 @@ async def claim_anonymous_grant(body: GrantClaimRequest,
                          "converting an anonymous device grant the caller already holds.")
 async def claim_registered_grant(body: GrantClaimRequest,
                                  response: Response,
-                                 identity: Identity = Depends(get_linked_identity),
+                                 identity: LinkedIdentity = Depends(get_linked_identity),
                                  service: AuthService = Depends(get_auth_service),
                                  sync_service: SyncService = Depends(get_sync_service)) -> SyncResponse:
     """Complete the operation the body's handle stands for, and report the entitlement it left."""
@@ -164,7 +165,7 @@ async def claim_registered_grant(body: GrantClaimRequest,
                          "entitlement the subscription it names carries.")
 async def restore_subscription(body: RestoreRequest,
                                response: Response,
-                               identity: Identity = Depends(get_linked_identity),
+                               identity: LinkedIdentity = Depends(get_linked_identity),
                                service: RestoreService = Depends(get_restore_service),
                                sync_service: SyncService = Depends(get_sync_service)) -> SyncResponse:
     """Verify the store artifact and report the entitlement the caller's account now holds."""
@@ -190,7 +191,7 @@ async def restore_subscription(body: RestoreRequest,
              summary="Report the caller's entitlement and registration state",
              description="Reads the caller's effective grant, the current period's usage and the "
                          "stored registration state. Nothing is written.")
-async def sync(identity: Identity = Depends(get_linked_identity),
+async def sync(identity: LinkedIdentity = Depends(get_linked_identity),
                service: SyncService = Depends(get_sync_service)) -> SyncResponse:
     """Report what the caller's account entitles it to at this request's instant."""
     entitlement = await service.read_entitlement(identity.user.id)
@@ -204,14 +205,12 @@ async def sync(identity: Identity = Depends(get_linked_identity),
              description="Revokes every refresh token the account holds, so no new session can be "
                          "minted for it. An ID token already issued stays valid until it expires "
                          "(up to one hour). An anonymous account cannot be signed in to again.")
-async def sign_out_all(identity: Identity = Depends(get_linked_identity),
+async def sign_out_all(identity: LinkedIdentity = Depends(get_linked_identity),
                        adapter=Depends(get_firebase_adapter)) -> Response:
     """Revoke the caller's refresh tokens at the provider. It opens no session and writes no row."""
     # The request-verified pair, never the stored row: the provider is told what this request proved.
     await revoke_with_retry(adapter, identity.issuer, identity.subject)
-    row = identity.identity
-    # `resolve` sets the row and the user together, and `get_linked_identity` admits only a linked caller.
-    assert row is not None
     # The row id alone: enough to answer "did this account sign out everywhere", and no more.
-    logger.info("sign_out_all_confirmed", identity_row_id=str(row.id))
+    # No `assert` guarding the row: `LinkedIdentity` carries it, and `python -O` strips an assert.
+    logger.info("sign_out_all_confirmed", identity_row_id=str(identity.identity.id))
     return Response(status_code=204)

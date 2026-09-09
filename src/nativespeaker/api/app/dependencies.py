@@ -24,7 +24,7 @@ from nativespeaker.api.errors import (
     NotificationRejected,
     PreAuthIdentityNotAllowed,
 )
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import Identity, LinkedIdentity
 from nativespeaker.api.schemas.webhooks import AppStoreNotificationRequest, PubSubPushRequest
 from nativespeaker.api.services import (
     AuthService,
@@ -75,11 +75,15 @@ async def get_identity(request: Request,
 
 
 # Declared, never called directly: FastAPI's cache only sees solver-resolved deps, so a direct call re-verifies.
-async def get_linked_identity(identity: Identity = Depends(get_identity)) -> Identity:
+async def get_linked_identity(identity: Identity = Depends(get_identity)) -> LinkedIdentity:
     """The resolved user and identity row; rejects an unlinked caller with 403."""
-    if identity.user is None:
+    # Both rows, not just the user: `resolve` sets them together, and the narrowed type is what carries
+    # that to every caller. A user-only pair is the unresolvable state, and it fails closed here rather
+    # than as an `AttributeError` eight handlers deep.
+    if identity.user is None or identity.identity is None:
         raise PreAuthIdentityNotAllowed
-    return identity
+    return LinkedIdentity(issuer=identity.issuer, subject=identity.subject,
+                          user=identity.user, identity=identity.identity)
 
 
 def get_session_factory(request: Request) -> async_sessionmaker:

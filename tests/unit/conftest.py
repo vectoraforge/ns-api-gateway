@@ -22,7 +22,7 @@ from nativespeaker.api.auth.jwt_verifier import VerificationResult, bounded_reas
 from nativespeaker.api.crud import ChatsDB
 from nativespeaker.api.resilience import Admitted
 from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import LinkedIdentity
 from nativespeaker.api.services import ChatService, QuotaService
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.users import User
@@ -100,7 +100,9 @@ def make_test_verifier() -> _FixedKeyVerifier:
 # Handlers read identity.user.id and nothing else, so the id is the whole contract.
 TEST_SUBJECT = "test-user"
 TEST_USER_ID = uuid7()
-TEST_IDENTITY = Identity(
+# `LinkedIdentity`, because this is what `get_linked_identity` is overridden with: a plain
+# `Identity` here would stand in for a narrowing the production dependency cannot return.
+TEST_IDENTITY = LinkedIdentity(
     user=User(id=TEST_USER_ID, active=True),
     identity=ExternalIdentity(id=uuid7(),
                               user_id=TEST_USER_ID,
