@@ -112,8 +112,8 @@ class TestTheSignOutRouteOpensNoSession:
     """D-04. The revocation writes no row and reads no table, so the handler declares no session."""
 
     def test_sign_out_all_declares_no_database_session(self):
-        # `_declared` names the callables the route itself resolves, so a session here would be its own.
-        assert get_db not in _declared(_route_at("/auth/sign-out-all"))
+        # `_flattened` walks sub-dependencies, so a session taken through a service is visible here.
+        assert get_db not in _flattened(_route_at("/auth/sign-out-all"))
 
 
 class TestTheProviderCallbackPartition:
