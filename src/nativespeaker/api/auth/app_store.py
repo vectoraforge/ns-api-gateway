@@ -35,8 +35,18 @@ class StoreNotificationVerifier(Protocol):
 
 
 def _instant(milliseconds: int | None) -> datetime | None:
-    """Convert one of Apple's UNIX-millisecond stamps, keeping an absent one absent."""
-    return None if milliseconds is None else datetime.fromtimestamp(milliseconds / 1000, UTC)
+    """Convert one of Apple's UNIX-millisecond stamps, keeping an absent or unusable one absent."""
+    if milliseconds is None:
+        return None
+    try:
+        return datetime.fromtimestamp(milliseconds / 1000, UTC)
+    except (ValueError, OverflowError, OSError):
+        # Every Apple stamp is an unbounded int in the library, and a value past year 9999 raised
+        # out of the dependency onto the generic 500 -- the answer that makes Apple resend this same
+        # body on its whole retry schedule. Out of range is as unusable as absent, and every field
+        # this feeds is optional; an entitled status left with no term is still refused by
+        # `SubscriptionsService.ingest`, so dropping the stamp fails closed.
+        return None
 
 
 def _transaction_status(transaction: JWSTransactionDecodedPayload,

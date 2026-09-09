@@ -302,6 +302,20 @@ class TestTheValueTypeCarriesThisProjectsFieldNames:
         assert verified.purchased_at.tzinfo is not None
         assert verified.expires_at > verified.purchased_at
 
+    @pytest.mark.parametrize("stamp", [10 ** 18, 253402300800000, -10 ** 18],
+                             ids=["far-future", "year-10000", "far-past"])
+    def test_a_stamp_outside_the_calendar_is_absent_rather_than_the_500_apple_retries(self, chain,
+                                                                                     stamp):
+        """WR-16: the library models every stamp as an unbounded int, so `fromtimestamp` raised out
+        of the dependency onto the generic 500 -- the answer that makes Apple resend this same body
+        on its whole retry schedule. `SubscriptionsService.ingest` refuses the termless grant."""
+        verified = _notifications(chain).verify(
+            _mint(chain, _envelope(chain, transaction={**_transaction(), "expiresDate": stamp},
+                                   renewal=_renewal())))
+
+        assert verified.expires_at is None
+        assert verified.purchased_at is not None
+
     def test_the_status_and_the_tier_are_resolved_in_this_seam(self, verified):
         """D-11, D-16: the service writes both, and neither is derived from a date any more."""
         assert verified.status is SubscriptionStatus.active
