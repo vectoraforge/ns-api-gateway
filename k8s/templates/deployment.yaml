@@ -29,13 +29,15 @@ spec:
         readinessProbe:
           httpGet:
             path: {{ .Values.probes.readiness.path }}
-            port: {{ .Values.probes.readiness.port }}
+            # By name, as `service.yaml` targets it: a literal duplicated `container.port`, and an
+            # install that moved the port left both probes dialling the old one.
+            port: http
           initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
           periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
         livenessProbe:
           httpGet:
             path: {{ .Values.probes.liveness.path }}
-            port: {{ .Values.probes.liveness.port }}
+            port: http
           initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
           periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
         resources:

@@ -24,14 +24,14 @@ resources:
     memory: 512Mi
 
 probes:
+  # No `port`: both probes dial the container port by its name `http`, so `container.port` is the
+  # one place the port is set and moving it cannot leave a probe on the old number.
   readiness:
     path: /health/ready
-    port: 8000
     initialDelaySeconds: 5
     periodSeconds: 10
   liveness:
     path: /health/ready
-    port: 8000
     initialDelaySeconds: 10
     periodSeconds: 30
 
