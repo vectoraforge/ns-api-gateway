@@ -336,6 +336,20 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         # bit0 carried forward from the query, never fabricated.
         assert devicecheck.write_calls == [(DEVICE_TOKEN, False, True)]
 
+    def test_the_other_bit_is_carried_forward_rather_than_fabricated(self, client, store, account,
+                                                                     grants, devicecheck):
+        """WR-69: bit0 is this device's anonymous slot, and Apple writes both bits in one call,
+        so a fabricated `False` here hands back a slot nothing in this product ever clears."""
+        identity_row, _ = account
+        store.row = _issued(bound_to=identity_row.id)
+        devicecheck.script(BitState(bit0=True, bit1=False))
+
+        response = _claim(client)
+
+        assert response.status_code == 200
+        assert grants.activates == 1
+        assert devicecheck.write_calls == [(DEVICE_TOKEN, True, True)]
+
     def test_a_failed_bit_write_after_the_commit_is_logged_rather_than_answered(
             self, client, store, account, grants, devicecheck):
         """CR-60: the grant committed before Apple was told, so the vendor failure is not the answer."""
