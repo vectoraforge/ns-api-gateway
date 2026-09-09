@@ -7,10 +7,27 @@ __pycache__/
 *.egg-info/
 
 .venv/
+
+# The shapes, not one name: `.env.example` tells the developer to create a gitignored `.env`, and
+# a second project is kept in a copy of it (`.env.staging`, `.env.local`) that `.env` alone misses.
 .env
+.env.*
+!.env.example
+
+# The credential files `.env.example` points at by path. Apple lets the DeviceCheck `.p8` be
+# downloaded exactly once, and an ADC JSON is the same shape: a key committed here is a key
+# revoked in a console, never one taken back.
+*.p8
+*.pem
+*.key
+application_default_credentials.json
 
 .idea/
 .vscode/
 /.planning/research/.cache/
 /.planning/state.json
 /.planning/milestone.lock
+
+# `pytest-cov` writes both into the repository root.
+.coverage
+htmlcov/
