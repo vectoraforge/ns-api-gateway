@@ -16,7 +16,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.security import HTTPAuthorizationCredentials
-from jwt.exceptions import PyJWKClientConnectionError
+from jwt.exceptions import PyJWKClientConnectionError, PyJWKClientError, PyJWTError
 
 from nativespeaker.api.app.dependencies import verify_google_play_notification
 from nativespeaker.api.app.lifespan import build_google_push_verifier
@@ -582,6 +582,9 @@ TOKEN_REFUSALS = [
 ]
 TOKEN_REFUSAL_IDS = ["signature", "email", "email-verified", "aud", "iss"]
 
+# The 2xx body a captive portal or a proxy error page answers with, which is not JSON at all.
+NOT_JSON = b"<html>502 Bad Gateway</html>"
+
 
 @pytest.fixture
 def jwks(monkeypatch) -> CountedJwksTransport:
@@ -657,6 +660,41 @@ class TestTheJwksWarmUpGuard:
         jwks.error = urllib.error.URLError("the JWKS endpoint is unreachable")
 
         assert build_google_push_verifier(_play_config()) is None
+
+    def test_a_2xx_that_is_not_json_raises_inside_the_guarded_family(self, jwks):
+        """WR-04/WR-20: `fetch_data` converts `URLError` and `TimeoutError` alone, so a captive
+        portal or proxy error page answering 200 leaves `json.load`'s `JSONDecodeError`, which is a
+        `ValueError` and not a `PyJWTError` -- it escaped the guard and took the whole pod down."""
+        jwks.body = NOT_JSON
+
+        with pytest.raises(PyJWTError):
+            JWTVerifier(jwks_url=GOOGLE_JWKS_URL, audience=PUSH_AUDIENCE, issuer=GOOGLE_ISSUER)
+
+    def test_a_2xx_that_is_not_json_lets_the_pod_boot_too(self, jwks):
+        """The whole point: one route's 503 beats a dead `/chats`, which is what the guard promised."""
+        jwks.body = NOT_JSON
+
+        assert build_google_push_verifier(_play_config()) is None
+
+    def test_the_wrapped_failure_carries_neither_the_url_nor_the_body(self, jwks):
+        """`JSONDecodeError`'s message quotes what it was reading, and PyJWT's embeds the URL."""
+        jwks.body = NOT_JSON
+
+        with pytest.raises(PyJWTError) as raised:
+            JWTVerifier(jwks_url=GOOGLE_JWKS_URL, audience=PUSH_AUDIENCE, issuer=GOOGLE_ISSUER)
+
+        assert GOOGLE_JWKS_URL not in str(raised.value)
+        assert NOT_JSON.decode() not in str(raised.value)
+
+    def test_a_body_that_is_json_but_no_key_set_was_already_covered_control(self, jwks):
+        """The control on the wrapper's scope: PyJWT converts this one itself, so the case above
+        measures the conversion this constructor adds and not one the library already made."""
+        jwks.body = b"[]"
+
+        with pytest.raises(PyJWKClientError) as raised:
+            JWTVerifier(jwks_url=GOOGLE_JWKS_URL, audience=PUSH_AUDIENCE, issuer=GOOGLE_ISSUER)
+
+        assert "JWKS warm-up failed" not in str(raised.value)
 
     @pytest.mark.parametrize("absent", ["push_audience", "push_service_account_email"])
     def test_an_unconfigured_value_answers_none_without_a_fetch(self, absent, jwks):

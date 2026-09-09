@@ -131,8 +131,18 @@ class JWTVerifier:
         self._unknown_kids: OrderedDict[str, float] = OrderedDict()
         # `verify` runs on the worker threadpool, so an unsynchronized dict would escape as a 500.
         self._cache_lock = threading.Lock()
-        # Warm the JWKS cache, and fail fast at startup if the endpoint is unreachable.
-        self._jwks_client.get_signing_keys()
+        # Warm the JWKS cache, and fail fast at startup if the endpoint is unusable.
+        # Wrapped because every caller guards this constructor on `PyJWTError`, and
+        # `PyJWKClient.fetch_data` converts `URLError` and `TimeoutError` alone: a 2xx whose body is
+        # not JSON leaves a `json.JSONDecodeError`, and one that parses to a non-object leaves an
+        # `AttributeError`, neither of which is a `PyJWTError`. Only the class name travels: the
+        # message of either embeds the JWKS URL or the body the endpoint answered with.
+        try:
+            self._jwks_client.get_signing_keys()
+        except PyJWTError:
+            raise
+        except Exception as failure:
+            raise PyJWKClientError(f"JWKS warm-up failed: {type(failure).__name__}") from failure
 
     def _cache_key_for(self, token: str) -> str | None:
         """The negative-cache key for this token's unverified `kid`, or `None` if it is unreadable."""
