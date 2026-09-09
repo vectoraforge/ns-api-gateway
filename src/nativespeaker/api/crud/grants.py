@@ -254,8 +254,16 @@ class GrantsDB:
             return ActivationOutcome.refused
         # History by source and status, never `free_grant_consumed_at`, which the conversion already carries.
         if superseded is None and await self.has_prior_free_grant(user_id):
-            # The conversion race loser and nothing else: only a concurrent commit takes its locked row away.
-            return ActivationOutcome.lost_race
+            # `_prior_free_grant_statement` carries no status predicate, so this state is reached
+            # with no concurrency at all: an anonymous grant a subscription expired, whose own term
+            # then lapsed, leaves the account holding nothing and its lifetime slot spent.
+            if await self.holds_grant_of_source(user_id,
+                                                AccessGrantSource.registered_account_grant):
+                # The conversion race loser: a row this window did not see, and the one row the
+                # caller's re-read can answer with.
+                return ActivationOutcome.lost_race
+            # The spent slot: nothing took a locked row away, so there is no winner's row to re-read.
+            return ActivationOutcome.refused
         # The lifetime index's own question, which one revoked registered row is enough to answer.
         if await self.holds_grant_of_source(user_id, AccessGrantSource.registered_account_grant):
             return ActivationOutcome.refused
