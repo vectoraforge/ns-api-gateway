@@ -21,8 +21,11 @@ class PubSubPushMessage(BaseModel):
     """The Pub/Sub message this push carries: its own id, and the RTDN as base64 text."""
     messageId: str
     # The transport envelope only: the base64 and JSON decoding happen after the token check.
-    # Bounded well above an RTDN, so an oversized body is refused before the decoder runs.
-    data: str = Field(..., min_length=1, max_length=PUBSUB_DATA_LIMIT)
+    # Deliberately unbounded HERE and bounded in `developer_notification_from` instead: Pub/Sub
+    # acknowledges 2xx alone and redelivers every other status, so a body pydantic refuses is a 422
+    # this subscription retries forever. The decoder answers 200 and drops it, as it already does
+    # for a body that does not decode. The bound itself is unchanged.
+    data: str
 
 
 class PubSubPushRequest(BaseModel):

@@ -21,6 +21,7 @@ from nativespeaker.api.errors import (
     Unavailable,
     UnmappedStoreProduct,
 )
+from nativespeaker.api.schemas.webhooks import PUBSUB_DATA_LIMIT
 from nativespeaker.api.tables.purchases import PurchaseProvider, SubscriptionStatus
 
 logger = structlog.get_logger()
@@ -124,6 +125,12 @@ class PlaySubscriptionSource(Protocol):
 
 def developer_notification_from(data: str) -> DeveloperNotification | None:
     """The decoded RTDN, or `None` when this verified message carries an unusable body."""
+    if not data or len(data) > PUBSUB_DATA_LIMIT:
+        # Out of range is as unusable as undecodable, and it answers the same way: an empty body
+        # carries no notification, and one past the bound is not an RTDN. The length alone reaches
+        # the log; the body is Google's and this module logs no value of theirs.
+        logger.error("google_play_message_out_of_range", length=len(data))
+        return None
     try:
         return DeveloperNotification.model_validate_json(base64.b64decode(data, validate=True))
     except ValueError:

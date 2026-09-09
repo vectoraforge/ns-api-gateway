@@ -1,9 +1,12 @@
+import json
+from base64 import b64encode
 from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
+from nativespeaker.api.auth.google_play import developer_notification_from
 from nativespeaker.api.errors import AnalysisError, AppError, InvalidChatError, UnsupportedLanguageError
 from nativespeaker.api.schemas.api import (
     ChatRequest,
@@ -294,10 +297,10 @@ class TestStorePurchaseTokenMapping:
         assert sorted(provider_type.enums) == ["apple", "google_play"]
 
 
-# The two unauthenticated bodies, each with its own bound and whatever else its model requires.
+# Apple's body alone. WR-25 moved Google's bound into `developer_notification_from`, because
+# Pub/Sub redelivers every non-2xx and a 422 here is a message the subscription never clears.
 _BOUNDED_WEBHOOK_FIELDS = [
     (AppStoreNotificationRequest, "signedPayload", {}, APP_STORE_ENVELOPE_LIMIT),
-    (PubSubPushMessage, "data", {"messageId": "m"}, PUBSUB_DATA_LIMIT),
 ]
 
 # The upper end of the range a real V2 notification occupies, certificate chain included.
@@ -325,6 +328,25 @@ class TestTheUnauthenticatedWebhookBodiesAreBounded:
     def test_an_empty_body_is_still_refused(self, model, field, other, limit):
         with pytest.raises(ValidationError):
             model(**other, **{field: ""})
+
+    def test_the_pubsub_body_carries_no_bound_of_its_own_any_more(self):
+        """WR-25: the bound is the decoder's, so an out-of-range body is acknowledged, not retried."""
+        oversized = PubSubPushMessage(messageId="m", data="a" * (PUBSUB_DATA_LIMIT + 1))
+
+        assert len(oversized.data) == PUBSUB_DATA_LIMIT + 1
+        assert PubSubPushMessage(messageId="m", data="").data == ""
+
+    @pytest.mark.parametrize("data", ["", "a" * (PUBSUB_DATA_LIMIT + 1)])
+    def test_the_decoder_drops_an_out_of_range_body_rather_than_refusing_it(self, data):
+        """The bound still fires; it just answers the way the undecodable case already answered."""
+        assert developer_notification_from(data) is None
+
+    def test_a_body_at_the_bound_still_reaches_the_decoder(self):
+        """The control: a bound off by one here would drop every genuine RTDN at the ceiling."""
+        payload = b64encode(json.dumps({"packageName": "com.example",
+                                        "eventTimeMillis": 1}).encode()).decode()
+        assert len(payload) <= PUBSUB_DATA_LIMIT
+        assert developer_notification_from(payload) is not None
 
     def test_an_envelope_the_size_apple_really_sends_is_accepted(self):
         """CR-01. Apple carries the certificate chain three times, so a 16 KB bound refused every genuine delivery."""
