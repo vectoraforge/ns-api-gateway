@@ -26,6 +26,15 @@ class VerifiedNotification:
     expires_at: datetime | None
     grace_period_expires_at: datetime | None
 
+    def __post_init__(self) -> None:
+        # The declared type made true. Readers ask this field two ways -- by identity
+        # (`crud/subscriptions.py:300`, `term_end_for` below) and by value
+        # (`ENTITLED_STATUSES`) -- and a raw store string answers those two questions
+        # differently: it is correctly not entitled and silently not revoked. Coerced once here,
+        # so both spellings agree, and a value outside the five raises rather than recording a
+        # store withdrawal as an ordinary expiry.
+        object.__setattr__(self, "status", SubscriptionStatus(self.status))
+
 
 @dataclass(frozen=True, slots=True)
 class RestoredSubscription:
@@ -43,6 +52,11 @@ class RestoredSubscription:
     purchased_at: datetime | None
     expires_at: datetime | None
     grace_period_expires_at: datetime | None
+
+    def __post_init__(self) -> None:
+        # The same coercion `VerifiedNotification` documents: the restore path reaches the same
+        # two comparison semantics through `write_subscription_grant`.
+        object.__setattr__(self, "status", SubscriptionStatus(self.status))
 
 
 def term_end_for(status: SubscriptionStatus,

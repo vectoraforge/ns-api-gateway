@@ -297,6 +297,9 @@ class SubscriptionsDB:
                        if grant.user_id == user_id or grant.subscription_id == subscription_id]
                       if entitled else held)
         # Revoked only where the store withdrew this subscription; every other end of a term is an expiry.
+        # Identity here and value in `ENTITLED_STATUSES` above, which agree because both value types
+        # coerce `status` in `__post_init__`; without that a raw store string would be read as
+        # not entitled by one line and not revoked by this one.
         ended = (AccessGrantStatus.revoked if status is SubscriptionStatus.revoked
                  else AccessGrantStatus.expired)
         for grant in superseded:

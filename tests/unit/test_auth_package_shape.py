@@ -11,7 +11,9 @@ AUTH_PACKAGE = Path(auth_package.__file__).parent
 
 # What it measures now: modules, classes, functions.
 # 65: `store_notifications.term_end_for`, the one spelling of the term both write paths read.
-CURRENT = (8, 24, 65)
+# 66, 67: the two `__post_init__` coercions that make the declared `status` type true, so the
+# identity and value comparisons its readers use cannot answer one field two ways.
+CURRENT = (8, 24, 67)
 
 
 def _measure(directory: Path) -> tuple[int, int, int]:

@@ -649,3 +649,19 @@ class TestAnEntitledNotificationWithNoOpenTermIsRefusedBeforeAnyWrite:
                                            status=SubscriptionStatus.expired, expires_at=None))
 
         assert writer.granted[0]["ends_at"] is None
+
+
+class TestTheStatusOneFieldCarriesIsAlwaysTheEnumMember:
+    """WR-44. `write_subscription_grant` asks this field by value on one line and by identity three
+    lines later, so the two answer differently for anything but a real member."""
+
+    def test_a_raw_store_string_becomes_the_member_both_comparisons_agree_on(self):
+        """Coerced in `__post_init__`, so a withdrawal is never recorded as an ordinary expiry."""
+        notification = _notification(status="revoked")
+
+        assert notification.status is SubscriptionStatus.revoked
+
+    def test_a_value_outside_the_five_is_refused_rather_than_carried_control(self):
+        """The control: the coercion is a check as well, so an unknown state never reaches a grant."""
+        with pytest.raises(ValueError):
+            _notification(status="cancelled")
