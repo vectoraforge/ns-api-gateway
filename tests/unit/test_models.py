@@ -369,10 +369,15 @@ class TestTheUnauthenticatedWebhookBodiesAreBounded:
 
         assert body.message.data == "ZQ=="
 
-    @pytest.mark.parametrize("data", ["", "a" * (PUBSUB_DATA_LIMIT + 1)])
-    def test_the_decoder_drops_an_out_of_range_body_rather_than_refusing_it(self, data):
+    def test_the_decoder_drops_an_out_of_range_body_rather_than_refusing_it(self):
         """The bound still fires; it just answers the way the undecodable case already answered."""
-        assert developer_notification_from(data) is None
+        assert developer_notification_from("a" * (PUBSUB_DATA_LIMIT + 1)) is None
+
+    def test_the_decoder_drops_an_attributes_only_body_the_same_way(self):
+        """WR-01: the same answer, but not the same event -- an empty body breached no bound.
+        The two records are told apart in
+        `test_google_play_notifications.py::TestTheEmptyBodyAndTheBreachedBoundAreRecordedApart`."""
+        assert developer_notification_from("") is None
 
     def test_a_body_at_the_bound_still_reaches_the_decoder(self):
         """The control: a bound off by one here would drop every genuine RTDN at the ceiling."""

@@ -39,7 +39,7 @@ from nativespeaker.api.auth.jwt_verifier import (
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.config import GooglePlayConfig
 from nativespeaker.api.errors import InternalError, NotificationRejected, Unavailable
-from nativespeaker.api.schemas.webhooks import PubSubPushRequest
+from nativespeaker.api.schemas.webhooks import PUBSUB_DATA_LIMIT, PubSubPushRequest
 from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
 from unit.conftest import PRIVATE_KEY_PEM, make_token
 from unit.test_jwks_offload import CountedJwksTransport, install_counted_transport, jwks_body
@@ -314,6 +314,24 @@ class TestTheUndecodableBody:
 
     def test_the_decoder_itself_answers_none_rather_than_raising(self, play_logs):
         assert developer_notification_from("this is not base64 at all!!") is None
+
+
+class TestTheEmptyBodyAndTheBreachedBoundAreRecordedApart:
+    """WR-01: an attributes-only push is a shape Pub/Sub permits, so recording it at ERROR under
+    the bound's name pages an operator for a routine console publish. Both still answer `None`."""
+
+    def test_an_attributes_only_body_is_recorded_at_info_naming_no_bound(self, play_logs):
+        assert developer_notification_from("") is None
+
+        assert play_logs.records("info") == [("google_play_message_without_data", {})]
+        assert play_logs.records("error") == []
+
+    def test_a_body_past_the_bound_is_still_recorded_at_error_with_its_length(self, play_logs):
+        assert developer_notification_from("a" * (PUBSUB_DATA_LIMIT + 1)) is None
+
+        assert play_logs.records("error") == [("google_play_message_out_of_range",
+                                               {"length": PUBSUB_DATA_LIMIT + 1})]
+        assert play_logs.records("info") == []
 
 
 class TestAnEventTimeThatNamesNoInstant:
