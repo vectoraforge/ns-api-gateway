@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
@@ -410,3 +411,17 @@ class TestTheDsnSurvivesAPasswordCarryingUrlDelimiters:
                                 password="p", name="ns")  # ty: ignore[invalid-argument-type]
 
         assert make_url(config.url).username == "ns@tenant"
+
+
+class TestTheComposeDatabaseIsNotPublishedToTheWholeNetwork:
+    """WR-05. `"5432:5432"` binds every interface, leaving the `.env` password as the only barrier."""
+
+    def test_every_published_port_names_the_loopback_address(self):
+        compose = yaml.safe_load((REPOSITORY_ROOT / "docker-compose.yml").read_text())
+        published = [str(port) for service in compose["services"].values()
+                     for port in service.get("ports", [])]
+
+        # The control: an empty list would pass the loop below without checking anything.
+        assert published
+        for port in published:
+            assert port.startswith("127.0.0.1:"), f"{port} publishes on every interface"
