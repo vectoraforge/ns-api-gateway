@@ -19,7 +19,7 @@ from nativespeaker.api.app.dependencies import (
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.devicecheck import BitState, RetryableDeviceCheckError
 from nativespeaker.api.crud.grants import ActivationOutcome, GrantsDB
-from nativespeaker.api.errors import ProofRejected
+from nativespeaker.api.errors import ProofRejected, Unavailable
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.schemas.auth import (
     Entitlement,
@@ -334,6 +334,21 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert grants.activates == 1
         assert devicecheck.read_calls == [DEVICE_TOKEN]
         # bit0 carried forward from the query, never fabricated.
+        assert devicecheck.write_calls == [(DEVICE_TOKEN, False, True)]
+
+    def test_a_failed_bit_write_after_the_commit_is_logged_rather_than_answered(
+            self, client, store, account, grants, devicecheck):
+        """CR-60: the grant committed before Apple was told, so the vendor failure is not the answer."""
+        identity_row, _ = account
+        store.row = _issued(bound_to=identity_row.id)
+        devicecheck.write_answer = Unavailable(stage="devicecheck_write")
+
+        response = _claim(client)
+
+        assert response.status_code == 200
+        assert response.json()["entitlement"]["type"] == "registered_account_grant"
+        assert store.consume_calls == 1
+        assert grants.activates == 1
         assert devicecheck.write_calls == [(DEVICE_TOKEN, False, True)]
 
     def test_a_spent_device_slot_is_exhausted_and_still_consumes(self, client, store, account,

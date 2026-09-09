@@ -221,9 +221,15 @@ class AuthService:
         # crash between an earlier write and this commit burns the device's one slot with no grant.
         await self.session.commit()
 
-        # Fail-open by design: a failure below costs the device bit, never the grant already durable.
+        # Fail-open by design, and it never becomes the answer: the grant above is durable, so a
+        # failure here costs the device bit alone. Raised, it made a claim that fully succeeded
+        # answer 503, and the retry it invites takes the repeat arm and never reaches this call.
         # bit1 is carried forward, never fabricated: Apple writes both bits in this one call.
-        await write_bits_with_retry(self.devicecheck, device_token, bit0=True, bit1=state.bit1)
+        try:
+            await write_bits_with_retry(self.devicecheck, device_token, bit0=True, bit1=state.bit1)
+        except AppError as failure:
+            # A closed-set label only: the class name, never the token and never Apple's body.
+            logger.error("devicecheck_bit_write_failed", failure=type(failure).__name__)
 
     async def _claim_registered_grant(self, identity: LinkedIdentity, *, device_token: str) -> None:
         """Refuse, or convert the caller's anonymous grant, or verify the device and activate a new one."""
@@ -277,9 +283,15 @@ class AuthService:
         await self.session.commit()
 
         if state is not None:
-            # Fail-open by design: a failure here costs the device bit, never the durable grant.
+            # Fail-open by design, and it never becomes the answer: the grant above is durable, so
+            # a failure here costs the device bit alone, as on the anonymous claim.
             # bit0 is carried forward, never fabricated: Apple writes both bits in this one call.
-            await write_bits_with_retry(self.devicecheck, device_token, bit0=state.bit0, bit1=True)
+            try:
+                await write_bits_with_retry(self.devicecheck, device_token,
+                                            bit0=state.bit0, bit1=True)
+            except AppError as failure:
+                # A closed-set label only: the class name, never the token and never Apple's body.
+                logger.error("devicecheck_bit_write_failed", failure=type(failure).__name__)
 
     async def _settle(self, identity: LinkedIdentity, outcome: ActivationOutcome) -> None:
         """Answer for what the writer did: a race re-reads the winner's row, and a refusal raises."""
