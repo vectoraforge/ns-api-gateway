@@ -1,5 +1,6 @@
 import inspect
 import os
+import re
 import shutil
 import tempfile
 import urllib.error
@@ -656,11 +657,15 @@ class TestEveryAdcFailureCostsOneRouteAndNotTheBoot:
         assert _play_credential() is supplied
 
 
-def _uncommented(path: Path) -> dict[str, str]:
-    """Every assignment a file ships uncommented, which is what a copied .env carries to boot."""
-    pairs = (line.split("=", 1) for line in path.read_text().splitlines()
-             if "=" in line and not line.lstrip().startswith("#"))
-    return {key.strip(): value.strip() for key, value in pairs}
+_ASSIGNMENT = re.compile(r"^#?\s*([A-Z][A-Z0-9_]*)=(.*)$")
+
+
+def _assignments(path: Path) -> dict[str, str]:
+    """Every assignment a file ships, commented or not. A deployer copies this file and uncomments
+    the block they need, so a commented placeholder is read at boot exactly as a live one is --
+    which is the whole of CR-04. Prose lines carrying an `=` do not match the key shape."""
+    matches = (_ASSIGNMENT.match(line) for line in path.read_text().splitlines())
+    return {match[1]: match[2].strip() for match in matches if match}
 
 
 class TestAMalformedAppStoreValueCostsTheRouteAndNotTheBoot:
@@ -697,15 +702,33 @@ class TestTheCommittedEnvExampleCannotCrashABoot:
     """CR-04. The shipped placeholders parsed as an int and an enum, so a copied file killed the pod."""
 
     def test_the_app_store_lines_it_ships_are_constructible(self):
-        shipped = _uncommented(REPOSITORY_ROOT / ".env.example")
+        shipped = _assignments(REPOSITORY_ROOT / ".env.example")
         fields = {key.removeprefix("APP_STORE_").lower(): value
                   for key, value in shipped.items() if key.startswith("APP_STORE_")}
 
-        assert isinstance(AppStoreConfig(**fields), AppStoreConfig)
+        # The control, inline: with no field the lines below read no shipped value at all, which
+        # is what they silently did while the whole block stayed commented.
+        assert fields, ".env.example ships no APP_STORE_ assignment: this checked nothing"
+        store = AppStoreConfig(**fields)
 
-    def test_the_reader_finds_the_assignments_that_file_does_ship_control(self):
-        """The control: a reader that quietly returned nothing would pass the case above."""
-        assert "DB_HOST" in _uncommented(REPOSITORY_ROOT / ".env.example")
+        # Parsed, not merely constructed. Both validators degrade an unusable placeholder to
+        # `None` instead of raising, so a bare `isinstance` stays green for the very values
+        # CR-04 is about; the file promises these three parse when a deployer uncomments them.
+        assert (store.bundle_id,
+                store.app_apple_id,
+                store.environment) == (fields["bundle_id"],
+                                       int(fields["app_apple_id"]),
+                                       StoreEnvironment(fields["environment"]))
+
+    def test_the_reader_finds_the_commented_block_and_not_the_prose_around_it_control(self):
+        """The control: the three lines under test ship commented, and the prose between them
+        carries `=` too. A reader that took either the wrong set would pass the case above."""
+        shipped = _assignments(REPOSITORY_ROOT / ".env.example")
+
+        assert {key for key in shipped if key.startswith("APP_STORE_")} == {
+            "APP_STORE_BUNDLE_ID", "APP_STORE_APP_APPLE_ID", "APP_STORE_ENVIRONMENT"}
+        assert "DB_HOST" in shipped
+        assert all(key.isupper() for key in shipped)
 
 
 class TestTheDsnSurvivesAPasswordCarryingUrlDelimiters:
