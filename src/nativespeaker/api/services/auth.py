@@ -230,8 +230,11 @@ class AuthService:
             try:
                 await write_bits_with_retry(self.devicecheck, device_token,
                                             bit0=True, bit1=state.bit1)
-            except AppError as failure:
+            except Exception as failure:
                 # A closed-set label only: the class name, never the token and never Apple's body.
+                # Total, and not `AppError`: the seam classifies only `httpx.HTTPError` and a missing
+                # key, so a signing failure or a closed client would otherwise escape to a 500 and
+                # make the answer exactly what the comment above says it can never be.
                 logger.error("devicecheck_bit_write_failed", failure=type(failure).__name__)
 
     async def _claim_registered_grant(self, identity: LinkedIdentity, *, device_token: str) -> None:
@@ -293,8 +296,9 @@ class AuthService:
             try:
                 await write_bits_with_retry(self.devicecheck, device_token,
                                             bit0=state.bit0, bit1=True)
-            except AppError as failure:
+            except Exception as failure:
                 # A closed-set label only: the class name, never the token and never Apple's body.
+                # Total, and not `AppError`, for the reason the anonymous claim above gives.
                 logger.error("devicecheck_bit_write_failed", failure=type(failure).__name__)
 
     async def _settle(self, identity: LinkedIdentity, outcome: ActivationOutcome) -> bool:
