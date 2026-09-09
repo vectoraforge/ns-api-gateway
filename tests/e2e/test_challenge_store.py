@@ -75,23 +75,26 @@ async def _contended_challenge(_app_lifespan, store):
     config = _app_lifespan.state.config
     engine = create_async_engine(config.db.url, pool_size=CONTENDERS + 2, max_overflow=0)
     factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
-    now = datetime.now(UTC)
-    handle, _ = await issue(factory, store, now=now)
-
-    # Each contender checks a connection out and then waits, so the barrier releases eight live transactions.
-    barrier = asyncio.Barrier(CONTENDERS)
-
-    async def contend() -> bool:
-        async with factory() as session:
-            await session.connection()
-            await barrier.wait()
-            won = await store.claim(session, challenge_id=handle, now=now)
-            await session.commit()
-            return won
-
-    results = await asyncio.gather(*(contend() for _ in range(CONTENDERS)),
-                                   return_exceptions=True)
+    # WR-91: the `try` opens where the engine starts existing, not at the `yield`. `issue` commits a
+    # row and the gather holds ten connections against `max_overflow=0`, so a raise before the
+    # `yield` used to leave both behind -- and the undisposed pool then fails unrelated modules.
     try:
+        now = datetime.now(UTC)
+        handle, _ = await issue(factory, store, now=now)
+
+        # Each contender checks a connection out and then waits, so the barrier releases eight live transactions.
+        barrier = asyncio.Barrier(CONTENDERS)
+
+        async def contend() -> bool:
+            async with factory() as session:
+                await session.connection()
+                await barrier.wait()
+                won = await store.claim(session, challenge_id=handle, now=now)
+                await session.commit()
+                return won
+
+        results = await asyncio.gather(*(contend() for _ in range(CONTENDERS)),
+                                       return_exceptions=True)
         yield handle, results, factory
     finally:
         # These rows are committed, so they outlive the per-test transaction and must be removed
