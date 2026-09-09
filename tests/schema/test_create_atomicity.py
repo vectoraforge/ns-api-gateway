@@ -218,7 +218,8 @@ class TestAConflictOnTheIdentityInsertLeavesNoPartialAccount:
                 "tokens_before": tokens_before, "observed": observed}
 
     async def test_the_attempt_genuinely_observed_an_unlinked_subject_first(self, collided):
-        """The premise, checked: had the contested row existed at re-resolution, no savepoint would be used."""
+        """The premise, checked: had the contested row existed at re-resolution, `create_user` would
+        have rejected before its first insert and the unique index below would never have arbitrated."""
         assert collided["observed"]["identities_at_hook_time"] == 0
 
     async def test_the_conflict_earns_its_client_class_rather_than_escaping(self, collided):
@@ -254,7 +255,9 @@ class TestAConflictOnTheIdentityInsertLeavesNoPartialAccount:
         assert found[2] == f"winner-{collided['subject']}"
 
     async def test_the_challenge_consumption_committed_despite_the_rollback(self, harness, collided):
-        """The savepoint's reason for existing: without it this row would still be claimed, and replayable."""
+        """The rollback's reason for existing: `_complete` rolls the whole transaction back and then
+        consumes in a fresh one, so the handle is spent even though the inserts are gone. Without that
+        second transaction the row would still be claimed, and therefore replayable."""
         found = await row(
             harness,
             "SELECT consumed_at, preauth_subject FROM core.auth_challenges WHERE id = :id",
@@ -297,7 +300,8 @@ class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
             token_collision["users_before"]
 
     async def test_no_identity_row_survives_a_third_insert_failure(self, harness, token_collision):
-        """The identity row went in before the token that failed, so a narrower savepoint would leave it."""
+        """The identity row went in before the token that failed, so an undo scoped to the failing
+        statement rather than to the whole transaction would leave it behind."""
         assert await scalar(harness, "SELECT count(*) FROM core.external_identities") == \
             token_collision["identities_before"]
 
