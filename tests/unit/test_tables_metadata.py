@@ -69,11 +69,9 @@ class TestTheEntitlementTablesHoldNoSecondClock:
 
 
 class TestEveryUuidPrimaryKeyMintsItsOwnValue:
-    """WR-20: `Chat.id` alone declared no factory. `table=True` skips validation, so the omission
-    was not a `ValidationError` but a NULL sent to the primary key -- sqlstate 23502, which
-    `is_unique_violation` reads as False, so every writer re-raised it as an opaque 500 rather
-    than as the race the arm was written for. `AccessTier.id` is out of the walk by annotation:
-    its key is the seeded tier name, not a minted id."""
+    """WR-20: `Chat.id` alone declared no factory, and `table=True` skips validation, so the
+    omission was a NULL sent to the primary key -- sqlstate 23502, which `is_unique_violation`
+    reads as False, so every writer re-raised it as an opaque 500 instead of as a race."""
 
     def test_no_uuid_keyed_table_leaves_its_id_unminted(self):
         unminted = sorted(model.__name__ for model in _UUID_KEYED_TABLES
