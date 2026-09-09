@@ -21,6 +21,14 @@ FK_GRANT_SUBSCRIPTION_ENTITLED = "access_grants_active_subscription_grant_subscr
 # Truncated at 63 characters, so "_ac" is all that survives of the second column; still column-derived.
 FK_GRANT_SUBSCRIPTION_OWNER = "access_grants_active_subscription_grant_subscription_id_ac_fkey"
 
+# The two entitlement keys, asked of the catalogue rather than of a rejection: a rejection says
+# only that something refused, never whether it refused at the statement or at COMMIT.
+_DEFERRED_GRANT_FKS = (
+    "SELECT conname FROM pg_constraint "
+    "WHERE conrelid = 'core.access_grants'::regclass AND contype = 'f' "
+    "  AND condeferrable AND condeferred"
+)
+
 ISSUER = "https://securetoken.google.com/native-speaker-test"
 _PREAUTH_SUBJECT = "Xy7Q1s0K2mNb3fV4"
 
@@ -281,6 +289,15 @@ class TestAccessGrantConstraints:
 class TestSubscriptionConstraints:
     """The STORED generated column and the two deferred entitlement foreign keys."""
 
+    async def test_both_entitlement_foreign_keys_are_deferrable_initially_deferred(self, conn):
+        """The three cases below prove that something rejected, never that it rejected at COMMIT.
+        The deferral itself is load-bearing: migration :241 states it so ingestion and restore can
+        write both rows in one transaction, and `RestoreService.restore` moves the owner while the
+        old owner's grant still points at the old pair."""
+        names = {row["conname"] for row in await conn.fetch(_DEFERRED_GRANT_FKS)}
+
+        assert names == {FK_GRANT_SUBSCRIPTION_ENTITLED, FK_GRANT_SUBSCRIPTION_OWNER}
+
     async def test_subscription_explicit_write_to_generated_column_rejected(self, conn, tier):
         """Case GEN -- product_entitled_subscription_id is GENERATED ALWAYS and refuses a direct write."""
         user_id = await insert_user(conn)
@@ -308,12 +325,13 @@ class TestSubscriptionConstraints:
         assert await conn.fetchval(
             "SELECT product_entitled_subscription_id FROM core.subscriptions WHERE id = $1", subscription_id
         ) is None
+        # Outside the rejection block: the deferral is what lets this INSERT succeed, so a
+        # constraint that lost DEFERRABLE INITIALLY DEFERRED raises here instead of inside the
+        # block, where it would be read as the rejection this case is looking for.
+        await insert_grant(
+            conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
+        )
         async with _rejects(conn, asyncpg.ForeignKeyViolationError) as exc_info:
-            await insert_grant(
-                conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
-            )
-            # The FK is checked here rather than at COMMIT: committing would end the fixture's own
-            # transaction, and the day this constraint is dropped the row would be written for good.
             await conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
         assert FK_GRANT_SUBSCRIPTION_ENTITLED in str(exc_info.value)
 
@@ -324,11 +342,12 @@ class TestSubscriptionConstraints:
         assert await conn.fetchval(
             "SELECT product_entitled_subscription_id FROM core.subscriptions WHERE id = $1", subscription_id
         ) is None
+        # Not a duplicate of E1: a later reader is most likely to widen this one for a card retry.
+        # Outside the block for the reason E1 states: the deferral is what lets this INSERT succeed.
+        await insert_grant(
+            conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
+        )
         async with _rejects(conn, asyncpg.ForeignKeyViolationError) as exc_info:
-            # Not a duplicate of E1: a later reader is most likely to widen this one for a card retry.
-            await insert_grant(
-                conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
-            )
             await conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
         assert FK_GRANT_SUBSCRIPTION_ENTITLED in str(exc_info.value)
 
@@ -338,10 +357,11 @@ class TestSubscriptionConstraints:
         thief = await insert_user(conn)
         # The subscription stays entitled, so the only constraint left to reject is the ownership FK.
         subscription_id = await _insert_subscription(conn, user_id=owner, tier_id=tier, status="active")
+        # Outside the block for the reason E1 states: the deferral is what lets this INSERT succeed.
+        await insert_grant(
+            conn, user_id=thief, tier_id=tier, source="subscription", subscription_id=subscription_id
+        )
         async with _rejects(conn, asyncpg.ForeignKeyViolationError) as exc_info:
-            await insert_grant(
-                conn, user_id=thief, tier_id=tier, source="subscription", subscription_id=subscription_id
-            )
             await conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
         assert FK_GRANT_SUBSCRIPTION_OWNER in str(exc_info.value)
 
