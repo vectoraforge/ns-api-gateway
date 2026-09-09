@@ -68,7 +68,8 @@ class QuotaService:
 
                 if len(grants) > 1:
                     # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
-                    logger.error("quota_integrity_failure", branch="multiple_effective_grants")
+                    # No line of its own: the class declares `log_level = ERROR`, so the shared
+                    # handler records it once under its own name, as `services/sync.py` already relies on.
                     raise MultipleEffectiveGrantsError(len(grants), user_id)
 
                 grant = grants[0]
@@ -77,7 +78,6 @@ class QuotaService:
                 usage = await grants_db.lock_usage(grant.id)
                 if usage is None:
                     # Fail closed, never mint: a grant without a usage row is a failed write, not a fresh allowance.
-                    logger.error("quota_integrity_failure", branch="missing_usage_row")
                     raise MissingUsageRowError(grant.id)
 
                 period = monthly_period_for(evaluated_at)
@@ -91,7 +91,6 @@ class QuotaService:
                 allowance = await grants_db.monthly_credits(grant.tier_id)
                 if allowance is None:
                     # Fail closed: a missing tier row is neither a zero allowance nor an unbounded one.
-                    logger.error("quota_integrity_failure", branch="unknown_tier")
                     raise UnknownTierError(grant.tier_id, grant.id)
 
                 # Floored at zero: a stored count above the allowance is ordinary exhaustion.
