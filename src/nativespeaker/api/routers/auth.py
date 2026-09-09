@@ -43,7 +43,6 @@ from nativespeaker.api.tables.purchases import PurchaseProvider
 
 logger = structlog.get_logger()
 
-# Auth is default-on, and deliberately unnarrowed: an already-linked caller is a 409 here, not a 401.
 router = APIRouter(tags=["auth"], dependencies=[Depends(get_identity)])
 
 
@@ -56,7 +55,7 @@ async def issue_challenge(body: ChallengeRequest,
                           session: AsyncSession = Depends(get_db),
                           challenge_store: ChallengesDB = Depends(get_challenge_store),
                           evaluated_at: datetime = Depends(get_evaluated_at)) -> PrepareResponse:
-    """Issue one challenge for an operation this route serves. It reads no provider and mutates no account."""
+    """Issue one challenge for an operation this route serves."""
     if body.operation not in AuthOperation:
         # The rejected string is caller-supplied and bounded, so logging it is safe; a handle never is.
         logger.warning("auth_challenge_operation_not_issuable", operation=body.operation)
@@ -92,7 +91,6 @@ async def create_user(body: CompletionRequest,
     return CompletionResponse(identity_provider=provider)
 
 
-# The route-level dependency narrows this one route to linked callers; the router-level one cannot.
 @router.post("/auth/upgrade-anonymous",
              response_model=CompletionResponse,
              summary="Record the caller's identity row as registered with its real provider",
@@ -108,7 +106,6 @@ async def upgrade_anonymous(body: CompletionRequest,
     return CompletionResponse(identity_provider=provider)
 
 
-# The route-level dependency narrows this one route to linked callers; the router-level one cannot.
 @router.post("/auth/claim-anonymous-grant",
              response_model=SyncResponse,
              summary="Claim the caller's one anonymous device grant",
@@ -132,7 +129,6 @@ async def claim_anonymous_grant(body: GrantClaimRequest,
     return SyncResponse(entitlement=entitlement, identity_provider=identity.identity.provider)
 
 
-# The route-level dependency narrows this one route to linked callers; the router-level one cannot.
 @router.post("/auth/claim-registered-grant",
              response_model=SyncResponse,
              summary="Claim the caller's one registered account grant",
@@ -156,7 +152,6 @@ async def claim_registered_grant(body: GrantClaimRequest,
     return SyncResponse(entitlement=entitlement, identity_provider=identity.identity.provider)
 
 
-# The route-level dependency narrows this one route to linked callers; the router-level one cannot.
 @router.post("/auth/restore-subscription",
              response_model=SyncResponse,
              summary="Attach a verified paid store subscription to the caller's account",
@@ -185,7 +180,6 @@ async def restore_subscription(body: RestoreRequest,
     return SyncResponse(entitlement=entitlement, identity_provider=identity.identity.provider)
 
 
-# The route-level dependency narrows this one route to linked callers; the router-level one cannot.
 @router.post("/auth/sync",
              response_model=SyncResponse,
              summary="Report the caller's entitlement and registration state",
@@ -198,7 +192,6 @@ async def sync(identity: LinkedIdentity = Depends(get_linked_identity),
     return SyncResponse(entitlement=entitlement, identity_provider=identity.identity.provider)
 
 
-# The route-level dependency narrows this one route to linked callers; the router-level one cannot.
 @router.post("/auth/sign-out-all",
              status_code=204,
              summary="Revoke every refresh token the caller's provider account holds",
@@ -207,7 +200,7 @@ async def sync(identity: LinkedIdentity = Depends(get_linked_identity),
                          "(up to one hour). An anonymous account cannot be signed in to again.")
 async def sign_out_all(identity: LinkedIdentity = Depends(get_linked_identity),
                        adapter=Depends(get_firebase_adapter)) -> Response:
-    """Revoke the caller's refresh tokens at the provider. It opens no session and writes no row."""
+    """Revoke the caller's refresh tokens at the provider."""
     # The request-verified pair, never the stored row: the provider is told what this request proved.
     await revoke_with_retry(adapter, identity.issuer, identity.subject)
     # The row id alone: enough to answer "did this account sign out everywhere", and no more.
