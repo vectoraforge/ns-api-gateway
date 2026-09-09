@@ -266,6 +266,30 @@ class TestLazyRollover:
         await _consume(grants=(grant,), usage=usage)
         assert (usage.monthly_period, usage.monthly_used) == (PERIOD, 8)
 
+    async def test_an_instant_behind_the_stored_period_charges_the_stored_one(self):
+        """WR-47: `!=` ran the reset backwards, so a request admitted before the UTC month boundary
+        that reached this lock after a later one had rolled the row over erased that charge and
+        wrote the row back to its own month, handing the account a second allowance."""
+        grant = _grant(starts_at=EVALUATED_AT - timedelta(days=90))
+        usage = _usage(grant, monthly_period=PERIOD, monthly_used=7)
+        session = _StubSession(grants=(grant,), usage=usage)
+
+        await _charge(session, evaluated_at=EVALUATED_AT - timedelta(days=30))
+
+        assert (usage.monthly_period, usage.monthly_used) == (PERIOD, 8)
+
+    async def test_an_instant_behind_an_exhausted_stored_period_is_still_refused(self):
+        """The other half: the stale instant reads the stored month's count, so it cannot buy its
+        way past an allowance the later requests of that month already spent."""
+        grant = _grant(starts_at=EVALUATED_AT - timedelta(days=90))
+        usage = _usage(grant, monthly_period=PERIOD, monthly_used=ALLOWANCE)
+        session = _StubSession(grants=(grant,), usage=usage)
+
+        with pytest.raises(QuotaExceededError):
+            await _charge(session, evaluated_at=EVALUATED_AT - timedelta(days=30))
+
+        assert (usage.monthly_period, usage.monthly_used) == (PERIOD, ALLOWANCE)
+
 
 class TestTheLockingStatements:
     """The lock, the order and the two predicate boundaries, none of which a response can show."""
@@ -339,13 +363,15 @@ class TestTheResolverReadsNoClock:
         assert usage.monthly_period == "2026-08"
 
     async def test_a_different_instant_produces_a_different_period(self):
-        """The period tracks the argument, which is the only thing that makes the captured instant checkable."""
-        grant = _grant()
+        """The period tracks the argument, which is the only thing that makes the captured instant
+        checkable. Ahead of the stored period rather than behind it, because the rollover runs
+        forward only -- the case below the stale one in `TestLazyRollover` is the other direction."""
+        grant = _grant(ends_at=EVALUATED_AT + timedelta(days=90))
         usage = _usage(grant, monthly_period=STALE_PERIOD)
         session = _StubSession(grants=(grant,), usage=usage)
-        earlier = EVALUATED_AT - timedelta(days=60)
-        await _charge(session, evaluated_at=earlier)
-        assert usage.monthly_period == earlier.strftime("%Y-%m") == "2026-06"
+        later = EVALUATED_AT + timedelta(days=60)
+        await _charge(session, evaluated_at=later)
+        assert usage.monthly_period == later.strftime("%Y-%m") == "2026-10"
 
     async def test_the_updated_at_stamp_is_the_captured_instant(self):
         grant, usage = _one_effective_grant()

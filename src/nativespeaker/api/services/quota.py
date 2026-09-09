@@ -72,7 +72,15 @@ class QuotaService:
 
                 period = monthly_period_for(evaluated_at)
 
-                if usage.monthly_period != period:
+                # Ordered, never `!=`: `monthly_period_for` writes zero-padded `YYYY-MM`, which
+                # sorts chronologically. A request whose captured instant predates the stored
+                # period -- one admitted before a UTC month boundary that reaches this lock after a
+                # later request already rolled the row over -- ran the reset backwards under `!=`:
+                # it erased that request's committed charge, wrote the row back to its own month,
+                # and left the next request of the new month to roll over a second time, handing
+                # the account an allowance it never bought. Behind the stored period it charges the
+                # stored one instead, which is the month the row is actually counting.
+                if usage.monthly_period < period:
                     # Rollover runs before the comparison and in the same transaction: no reset commits uncharged.
                     usage.monthly_used = 0
                     usage.monthly_period = period

@@ -1,5 +1,5 @@
 """The sync service's statements: no lock, the shared predicate, the boundaries and the read order."""
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid7
 
 import pytest
@@ -114,9 +114,9 @@ def _without_the_lock(sql: str) -> str:
     return sql[:-len(LOCK_CLAUSE)]
 
 
-async def _read(session: _StubSession) -> Entitlement:
-    """The entitlement the service reports over `session` at the fixed instant."""
-    return await SyncService(db=session, evaluated_at=EVALUATED_AT).read_entitlement(USER_ID)
+async def _read(session: _StubSession, *, evaluated_at=EVALUATED_AT) -> Entitlement:
+    """The entitlement the service reports over `session` at the module's instant, or a given one."""
+    return await SyncService(db=session, evaluated_at=evaluated_at).read_entitlement(USER_ID)
 
 
 async def _happy_path() -> _StubSession:
@@ -269,6 +269,17 @@ class TestTheRolloverIsComputedNeverWritten:
         assert (usage.monthly_period, usage.monthly_used) == (PERIOD, 7)
         assert session.added == []
         assert (session.committed, session.rolled_back) == (False, False)
+
+    async def test_a_period_ahead_of_this_request_reports_the_stored_count(self):
+        """WR-47: the charge rolls forward only, so a stored period ahead of this request's own is
+        the month the row counts; `!=` reported zero used against a counter the charge will spend."""
+        grant = _grant(starts_at=EVALUATED_AT - timedelta(days=90))
+        usage = _usage(grant, monthly_period=PERIOD, monthly_used=7)
+        session = _StubSession(grants=(grant,), usage=usage)
+
+        entitlement = await _read(session, evaluated_at=EVALUATED_AT - timedelta(days=30))
+
+        assert (entitlement.current_period, entitlement.monthly_used) == ("2026-07", 7)
 
 
 class TestMultipleEffectiveGrants:
