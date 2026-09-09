@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 from urllib.parse import quote
 
+import google.auth.exceptions
 import google.auth.transport.requests
 import httpx
 import structlog
@@ -219,14 +220,22 @@ class PlayDeveloperSubscriptions:
 
         try:
             response = await self._get(package_name, purchase_token)
-        except httpx.HTTPError as failure:
+        except (httpx.HTTPError, google.auth.exceptions.GoogleAuthError) as failure:
+            # A refused credential refresh is no more the caller's fault than a reset connection.
             # The exception's class name, never its text: a URL carrying the purchase token is in there.
             logger.error("google_play_read_transport_failed", failure=type(failure).__name__)
             # A transport failure is the 500 that makes Pub/Sub redeliver this notification.
             raise InternalError from failure
         if not _play_answer_is_usable(response):
             return None
-        subscription = PlaySubscription.model_validate(response.json())
+        try:
+            subscription = PlaySubscription.model_validate(response.json())
+        except ValueError as failure:
+            # Both a non-JSON 2xx and a body this build cannot read arrive as `ValueError`.
+            # The class name alone: the body, and pydantic's echo of it, carry Play's own values,
+            # so the cause is dropped rather than chained into the handler's traceback.
+            logger.error("google_play_read_unparseable", failure=type(failure).__name__)
+            raise InternalError from None
 
         product_id, tier_id, expiry = self._product_of(subscription)
         # Google carries no separate grace field, so in grace this expiry is the end of the window.
@@ -269,8 +278,9 @@ class PlayDeveloperSubscriptions:
 
         try:
             response = await self._get(package_name, purchase_token)
-        except httpx.HTTPError as failure:
+        except (httpx.HTTPError, google.auth.exceptions.GoogleAuthError) as failure:
             # The app retries later, so a transport failure is a 503 and never the webhook's 500.
+            # A refused credential refresh is the same outcome, reached without any httpx error.
             raise Unavailable(stage=RESTORE_READ_STAGE) from failure
 
         if response.status_code in _GONE_STATUSES:
@@ -280,7 +290,12 @@ class PlayDeveloperSubscriptions:
         if response.status_code // 100 != 2:
             raise Unavailable(stage=RESTORE_READ_STAGE)
 
-        subscription = PlaySubscription.model_validate(response.json())
+        try:
+            subscription = PlaySubscription.model_validate(response.json())
+        except ValueError:
+            # A 2xx this build cannot read is as unusable as no answer at all. The cause is
+            # dropped rather than chained: its text carries the Play values this module excludes.
+            raise Unavailable(stage=RESTORE_READ_STAGE) from None
         product_id, tier_id, expiry = self._product_of(subscription)
         # Google carries no separate grace field, so in grace this expiry is the end of the window.
         in_grace = subscription.subscriptionState == GRACE_STATE
@@ -310,7 +325,8 @@ class PlayDeveloperSubscriptions:
         return product_id, self._products[product_id], line_item.expiryTime
 
     async def _get(self, package_name: str, purchase_token: str) -> httpx.Response:
-        """Send one signed read; each entry point classifies a transport failure its own way."""
+        """Send one signed read; each entry point classifies a failed read its own way.
+        A refused refresh leaves as `GoogleAuthError`, which both entry points catch."""
         if not self._credential.valid:
             # `refresh` is synchronous and can block on a token fetch, so it never runs on the loop.
             await run_in_threadpool(self._credential.refresh,

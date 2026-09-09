@@ -45,6 +45,7 @@ from unit.test_google_play_notifications import (
     UNEXPIRED,
     _answering,
     _FakeCredential,
+    _StaleCredential,
     _subscription_body,
 )
 from unit.test_google_play_notifications import (
@@ -182,10 +183,11 @@ class TestAProofThatDoesNotVerifyIsRefusedWithoutNamingItself:
             assert segment not in str(refusal.value)
 
 
-def _play_reader(handler, *, products: dict[str, str] | None = None) -> PlayDeveloperSubscriptions:
+def _play_reader(handler, *, products: dict[str, str] | None = None,
+                 credential=None) -> PlayDeveloperSubscriptions:
     """The real Play read class over a stubbed transport and this module's captured instant."""
     return PlayDeveloperSubscriptions(
-        credential=_FakeCredential(),
+        credential=_FakeCredential() if credential is None else credential,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         products={PLAY_PRODUCT_ID: PLAY_TIER_ID} if products is None else products,
         evaluated_at_source=lambda: EVALUATED_AT)
@@ -352,6 +354,36 @@ class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
             await _restore_through(_play_reader(_unreachable))
 
         assert refusal.value.stage == READ_STAGE
+
+    async def test_a_refused_credential_refresh_is_temporarily_unavailable(self):
+        """WR-11: a `GoogleAuthError` is no `httpx` failure, so the transport arm alone misses it."""
+        reader = _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_ACTIVE",
+                                                            expiry=UNEXPIRED)),
+                              credential=_StaleCredential())
+
+        with pytest.raises(Unavailable) as refusal:
+            await _restore_through(reader)
+
+        assert refusal.value.stage == READ_STAGE
+
+    async def test_a_2xx_carrying_no_json_is_temporarily_unavailable(self):
+        """WR-11: an intermediary's HTML page reaches this read as a `200` the app must retry."""
+        reader = _play_reader(lambda _request: httpx.Response(200, text="<html>502</html>"))
+
+        with pytest.raises(Unavailable) as refusal:
+            await _restore_through(reader)
+
+        assert refusal.value.stage == READ_STAGE
+
+    async def test_a_2xx_this_build_cannot_read_carries_no_play_value_into_its_refusal(self):
+        """WR-11: pydantic echoes the rejected input, so the cause is dropped and not chained."""
+        reader = _play_reader(_answering({"lineItems": [{"productId": PLAY_PRODUCT_ID}]}))
+
+        with pytest.raises(Unavailable) as refusal:
+            await _restore_through(reader)
+
+        assert refusal.value.stage == READ_STAGE
+        assert refusal.value.__cause__ is None
 
     async def test_an_absent_credential_is_unavailable_and_reaches_no_transport(self):
         """No credential is an operator state, not a refusal the caller earned, so it is a 503."""

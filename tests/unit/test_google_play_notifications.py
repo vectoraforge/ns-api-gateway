@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import google.auth.exceptions
 import httpx
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -81,6 +82,16 @@ class _FakeCredential:
         raise AssertionError("a valid credential must not be refreshed")
 
 
+class _StaleCredential:
+    """ADC whose refresh is refused: the ordinary GCP failure, and not an `httpx` one."""
+
+    valid = False
+    token = None
+
+    def refresh(self, request):
+        raise google.auth.exceptions.RefreshError("the metadata server refused")
+
+
 def _subscription_body(state: str, *, expiry: datetime | None = None,
                        product_id: str | None = PRODUCT_ID) -> dict:
     """One `subscriptionsv2.get` answer in Google's own field names."""
@@ -99,10 +110,11 @@ def _answering(body: dict, status_code: int = 200):
     return lambda _request: httpx.Response(status_code, json=body)
 
 
-def _play_reader(handler, *, products: dict[str, str] | None = None) -> PlayDeveloperSubscriptions:
+def _play_reader(handler, *, products: dict[str, str] | None = None,
+                 credential=None) -> PlayDeveloperSubscriptions:
     """The real Play read class over a stubbed transport and a captured instant."""
     return PlayDeveloperSubscriptions(
-        credential=_FakeCredential(),
+        credential=_FakeCredential() if credential is None else credential,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         products={PRODUCT_ID: TIER_ID} if products is None else products,
         evaluated_at_source=lambda: EVALUATED_AT)
@@ -390,6 +402,42 @@ class TestThePlayResponseArms:
 
         assert play_logs.records("error") == [("google_play_read_transport_failed",
                                                {"failure": "ConnectError"})]
+
+    async def test_a_refused_credential_refresh_is_redelivered_too(self, play_logs):
+        """WR-11: a `GoogleAuthError` is no `httpx` failure, so the transport arm alone misses it."""
+        reader = _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_ACTIVE")),
+                              credential=_StaleCredential())
+
+        with pytest.raises(InternalError):
+            await _read_through(reader)
+
+        assert play_logs.records("error") == [("google_play_read_transport_failed",
+                                               {"failure": "RefreshError"})]
+
+    async def test_a_2xx_carrying_no_json_is_redelivered_naming_its_class_alone(self, play_logs):
+        """WR-11: an intermediary's HTML page reaches the same read as a `200`."""
+        reader = _play_reader(
+            lambda _request: httpx.Response(200, text="<html>502 Bad Gateway</html>"))
+
+        with pytest.raises(InternalError):
+            await _read_through(reader)
+
+        assert play_logs.records("error") == [("google_play_read_unparseable",
+                                               {"failure": "JSONDecodeError"})]
+
+    async def test_a_2xx_this_build_cannot_read_is_redelivered_carrying_no_play_value(self,
+                                                                                      play_logs):
+        """WR-11: pydantic echoes the rejected input, so only the class name may travel."""
+        reader = _play_reader(_answering({"lineItems": [{"productId": PRODUCT_ID}],
+                                          "externalAccountIdentifiers": {
+                                              "obfuscatedExternalAccountId": ATTRIBUTION_TOKEN}}))
+
+        with pytest.raises(InternalError):
+            await _read_through(reader)
+
+        assert play_logs.records("error") == [("google_play_read_unparseable",
+                                               {"failure": "ValidationError"})]
+        assert ATTRIBUTION_TOKEN not in str(play_logs.records("error"))
 
 
 class TestTheRefusalsDifferOnlyInStage:
