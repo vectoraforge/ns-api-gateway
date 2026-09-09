@@ -17,7 +17,6 @@ from jwt.exceptions import (
     InvalidIssuerError,
     InvalidSignatureError,
     MissingRequiredClaimError,
-    PyJWKClientConnectionError,
     PyJWKClientError,
     PyJWTError,
 )
@@ -207,20 +206,29 @@ class JWTVerifier:
                                  leeway=self._leeway,
                                  options=DECODE_OPTIONS)
         except PyJWKClientError as exc:
-            if isinstance(exc, PyJWKClientConnectionError):
-                # Named here because nothing else can: the bounded reason set is closed at eight
-                # values and carries no `jwks_unavailable`, so an outage rejects the whole fleet
-                # labelled `bad_signature` and the spike alert reads it as mass forgery.
-                # The event name alone, never the exception text: it embeds the JWKS URL.
-                logger.error("jwks_endpoint_unreachable")
-            # A connection error records no `kid`: caching an outage would prolong it fleet-wide.
-            elif cache_key is not None and _DEFINITIVE_KID_MISS in str(exc):
+            # Named here because nothing else can: the bounded reason set is closed at eight values
+            # and carries no `jwks_unavailable`, so an outage rejects the whole fleet labelled
+            # `bad_signature` and the spike alert reads it as mass forgery. Every `PyJWKClientError`
+            # but the key-id miss earns the line, not the connection subclass alone: PyJWT raises
+            # the plain class for a reachable endpoint that answered a non-object ("did not return a
+            # JSON object") and for one whose set holds no signing key ("did not contain any signing
+            # keys") -- a botched rotation and a proxy in the way, and both are the same fleet-wide
+            # outage. Only the class name, never the exception text: it embeds the JWKS URL.
+            if _DEFINITIVE_KID_MISS not in str(exc):
+                logger.error("jwks_endpoint_unusable", failure=type(exc).__name__)
+            # A key id this endpoint does not serve is the token's fault, not the endpoint's, so it
+            # is the one arm that caches. An outage records no `kid`: caching it would prolong it.
+            elif cache_key is not None:
                 self._record_unknown(cache_key)
             return None, bounded_reason_for(exc)
         except PyJWTError as exc:
             return None, bounded_reason_for(exc)
-        except Exception:
+        except Exception as failure:
             # What makes "never raises" structural -- an escape would 500 a caller owed a 401.
+            # Logged as the same outage, because that is what reaches here: `fetch_data` converts
+            # `URLError` and `TimeoutError` alone, so an HTML error page served at 200 arrives as a
+            # bare `json.JSONDecodeError` -- the constructor's warm-up wrapper already names it.
+            logger.error("jwks_endpoint_unusable", failure=type(failure).__name__)
             return None, BoundedReason.bad_signature
 
         if self._required_claims is None:

@@ -208,8 +208,19 @@ async def test_a_credential_less_request_never_reaches_the_jwks_transport(probe_
     assert len(transport) == before, "step 2 refused the request, so step 3 never ran"
 
 
+def unusable_jwks_bodies() -> dict[str, bytes]:
+    """The three reachable-endpoint failures, each measured against PyJWT rather than assumed."""
+    # `PyJWKClientError` for the middle two; the first is a bare `json.JSONDecodeError`, because
+    # `fetch_data` converts `URLError` and `TimeoutError` alone. All three are one outage to a fleet.
+    key = RSAAlgorithm(RSAAlgorithm.SHA256).prepare_key(PUBLIC_KEY_PEM)
+    encryption_only = dict(json.loads(RSAAlgorithm.to_jwk(key)), kid=KNOWN_KID, use="enc", alg="RS256")
+    return {"an error page served at 200": b"<html>502 Bad Gateway</html>",
+            "a body that is not an object": b'"not an object"',
+            "a set holding no signing key": json.dumps({"keys": [encryption_only]}).encode()}
+
+
 class TestAnOutageNamesItselfInTheOperatorLog:
-    """WR-23: the reason set is closed at eight, so the outage has to be named somewhere else."""
+    """WR-23, WR-22: the reason set is closed at eight, so the outage is named somewhere else."""
 
     @pytest.fixture
     def errors(self, monkeypatch) -> list[str]:
@@ -227,7 +238,20 @@ class TestAnOutageNamesItselfInTheOperatorLog:
 
         # The label and the body must not move: an outage is not a client-visible condition.
         assert claims is None and reason is BoundedReason.bad_signature
-        assert errors == ["jwks_endpoint_unreachable"]
+        assert errors == ["jwks_endpoint_unusable"]
+
+    @pytest.mark.parametrize("body", unusable_jwks_bodies().values(),
+                             ids=list(unusable_jwks_bodies()))
+    def test_a_reachable_endpoint_serving_an_unusable_key_set_is_logged_too(
+            self, verifier, transport, errors, body):
+        """WR-22: gated on the connection subclass alone, these three rejected the whole fleet as
+        `bad_signature` with no line naming the cause -- the storm the log above exists to name."""
+        transport.body = body
+
+        claims, reason = verifier.verify(make_token("u", headers={"kid": "unrecognised-outage"}))
+
+        assert claims is None and reason is BoundedReason.bad_signature
+        assert errors == ["jwks_endpoint_unusable"]
 
     def test_a_bogus_key_id_over_a_healthy_endpoint_logs_nothing(self, verifier, transport, errors):
         """The control: without it the case above would pass on a line written for every refusal."""
