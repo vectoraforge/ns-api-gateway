@@ -111,3 +111,26 @@ class TestSubscriptionModelLayerIsGone:
             if hits:
                 offenders[str(path.relative_to(_REPO_ROOT))] = hits
         assert not offenders, f"stale model imports: {offenders}"
+
+
+class TestTheTablesPackageDependsOnNoSchema:
+    """WR-04, AGENTS.md § Package layout: `tables/` holds SQLModel tables and the enums mirroring
+    database types. Importing `schemas/` there inverts the layering the package split fixes."""
+
+    def test_no_module_under_tables_imports_the_schemas_package(self):
+        offenders = {}
+        for path in sorted((_REPO_ROOT / "src/nativespeaker/api/tables").rglob("*.py")):
+            hits = sorted(name for name in _imported_names(path)
+                          if name.startswith("nativespeaker.api.schemas"))
+            if hits:
+                offenders[str(path.relative_to(_REPO_ROOT))] = hits
+        assert not offenders, f"tables/ imports schemas/: {offenders}"
+
+    def test_the_barrel_exports_no_schema_type(self):
+        """The eleven re-exports nobody imported from here, named so they cannot come back unnoticed."""
+        schema_names = {"AnalyzeInput", "AnalyzeResponse", "ChatRequest", "ChatResponse",
+                        "ExamplesResponse", "FollowUpInput", "FollowUpResponse", "Issue",
+                        "MessageRequest", "MessageResponse", "RejectResponse"}
+
+        assert schema_names.isdisjoint(tables.__all__)
+        assert not [name for name in schema_names if hasattr(tables, name)]
