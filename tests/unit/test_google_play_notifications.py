@@ -361,6 +361,33 @@ class TestThePackageNameCheck:
         assert play.calls[0]["notification_uuid"] == f"google_play:{PURCHASE_TOKEN}:{EVENT_TIME_MILLIS}:4"
 
 
+class TestBothEntryPointsGuardTheValueTheyPutInThePath:
+    """WR-26: `read` reached the same `_get` as `read_for_restore` with neither of its guards."""
+
+    @pytest.mark.parametrize("purchase_token", ["", ".", "..", "..."])
+    async def test_a_token_that_names_no_path_segment_is_never_sent(self, purchase_token,
+                                                                    play_logs):
+        """`quote` leaves a dot unescaped and httpx removes a dot segment, so these address
+        another Play URL. The answer is the acknowledged `None`, and no request is made."""
+        def _never(_request):
+            raise AssertionError("an unusable purchase token must not reach Play")
+
+        reader = _play_reader(_never)
+
+        assert await reader.read(package_name=PACKAGE_NAME, purchase_token=purchase_token,
+                                 event_type=EVENT_TYPE, notification_uuid=NOTIFICATION_KEY,
+                                 signed_at=SIGNED_AT) is None
+        assert play_logs.records("error") == [("google_play_unusable_purchase_token", {})]
+
+    async def test_a_real_token_still_reaches_play(self, play_logs):
+        """The control: a guard that refused everything would pass every case above."""
+        reader = _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_ACTIVE",
+                                                            expiry=UNEXPIRED)))
+
+        assert await _read_through(reader) is not None
+        assert play_logs.records("error") == []
+
+
 class TestThePlayResponseArms:
     """OQ-5: 404 and 410 are definitive, and every other failure is the redelivery D-20 asks for."""
 

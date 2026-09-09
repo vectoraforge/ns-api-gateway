@@ -224,6 +224,13 @@ class PlayDeveloperSubscriptions:
         """Read this subscription's live state from Play, or answer `None` for a gone token."""
         if self._credential is None:
             raise Unavailable(stage="play_subscriptions_read")
+        if not _names_one_path_segment(purchase_token):
+            # The same guard `read_for_restore` applies to the same value, hoisted because both
+            # entry points reach the same `_get`. `quote` leaves a dot unescaped and httpx removes
+            # a dot segment, so `..` addresses a different Play URL and `` addresses the collection.
+            # `None`, never a raise: this route acknowledges, and there is nothing here to read.
+            logger.error("google_play_unusable_purchase_token")
+            return None
 
         try:
             response = await self._get(package_name, purchase_token)
