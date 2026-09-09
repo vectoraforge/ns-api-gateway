@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.crud.challenges import ChallengesDB
+from nativespeaker.api.crud.violations import UNIQUE_VIOLATION
 from nativespeaker.api.errors import IdentityAlreadyLinked
 from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.services.auth import AuthService
@@ -21,9 +22,15 @@ NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
 SECOND_FLUSH = 2
 
 
-def integrity_error() -> IntegrityError:
-    return IntegrityError("INSERT INTO core.external_identities ...", {},
-                          Exception("synthetic uniqueness violation"))
+class _Orig(Exception):
+    """The DBAPI exception SQLAlchemy wraps, carrying the one attribute the writer reads."""
+
+    def __init__(self, sqlstate: str) -> None:
+        self.sqlstate = sqlstate
+
+
+def integrity_error(sqlstate: str = UNIQUE_VIOLATION) -> IntegrityError:
+    return IntegrityError("INSERT INTO core.external_identities ...", {}, _Orig(sqlstate))
 
 
 class _EmptyResult:
@@ -110,10 +117,17 @@ class TestAFailedInsertStopsInserting:
 
         assert session.added == session.added_at_failure
 
-    async def test_a_failure_on_the_very_first_insert_raises_the_same_rejection(self):
-        """The user row goes in on the first flush; a conflict there earns the same answer as any other."""
+    async def test_a_failure_on_the_very_first_insert_is_not_read_as_a_lost_race(self):
+        """`core.users` carries no uniqueness this insert can lose, so a violation there is a broken
+        invariant: it propagates to the internal-error path rather than answering `already linked`."""
         session = _harness(integrity_error(), fail_on_flush=1)
-        rejection = await _rejected(session)
+        rejection = await _rejected(session, expect=IntegrityError)
 
-        assert isinstance(rejection, IdentityAlreadyLinked)
+        assert not isinstance(rejection, IdentityAlreadyLinked)
         assert [type(instance) for instance in session.added_at_failure] == [User]
+
+    async def test_an_integrity_failure_that_is_not_a_unique_violation_propagates(self):
+        """A CHECK or a foreign key is a broken invariant, and answering 409 would hide it."""
+        rejection = await _rejected(_harness(integrity_error("23514")), expect=IntegrityError)
+
+        assert not isinstance(rejection, IdentityAlreadyLinked)

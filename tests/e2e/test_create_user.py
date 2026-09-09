@@ -522,8 +522,10 @@ class TestTheProviderAccountReservation:
 
         handle, completion = await _issue_and_complete(create_user_client, subject)
 
-        assert completion.status_code == 409, completion.text
-        assert completion.json() == {"code": "identity_already_linked"}
+        # 02 step 11: the provider-account conflict earns its own answer. `identity_already_linked`
+        # would point the caller at /auth/sync, which resolves nothing for a never-linked subject.
+        assert completion.status_code == 403, completion.text
+        assert completion.json() == {"code": "operation_not_allowed"}
 
         assert await _count(_db_transaction, _USERS) == users_before
         async with _db_transaction() as session:

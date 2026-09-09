@@ -9,12 +9,14 @@ from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.crud import identities as identities_crud
 from nativespeaker.api.crud.challenges import ChallengesDB
+from nativespeaker.api.crud.violations import UNIQUE_VIOLATION
 from nativespeaker.api.errors import (
     AccountUnavailable,
     AppError,
     BlockedUser,
     HistoricalIdentity,
     IdentityAlreadyLinked,
+    ProviderAccountAlreadyLinked,
 )
 from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.services import auth as auth_service
@@ -27,10 +29,16 @@ SUBJECT = "conflict-classification-subject"
 NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
 
 
-def _integrity_error() -> IntegrityError:
+class _Orig(Exception):
+    """The DBAPI exception SQLAlchemy wraps, carrying the one attribute the classifier reads."""
+
+    def __init__(self, sqlstate: str) -> None:
+        self.sqlstate = sqlstate
+
+
+def _integrity_error(sqlstate: str = UNIQUE_VIOLATION) -> IntegrityError:
     """A SQLAlchemy `IntegrityError` shaped like the real one: a dialect wrapper around a driver error."""
-    return IntegrityError("INSERT INTO core.external_identities ...", {},
-                          Exception("dialect-level wrapper"))
+    return IntegrityError("INSERT INTO core.external_identities ...", {}, _Orig(sqlstate))
 
 
 class _Result:
@@ -75,11 +83,13 @@ class _ConflictingSession:
     def __init__(self, conflict: BaseException) -> None:
         self._conflict = conflict
         self.added: list[object] = []
+        self.reads = 0
         self.flushes = 0
         self.commits = 0
         self.rollbacks = 0
 
     async def exec(self, statement):
+        self.reads += 1
         return _Result(None)
 
     def add(self, instance) -> None:
@@ -113,13 +123,13 @@ def _identity_row(*, state: IdentityState, user_id=None) -> ExternalIdentity:
                             updated_at=NOW)
 
 
-async def _create(session):
+async def _create(session, *, provider=IdentityProvider.anonymous, provider_uid=None):
     """Drive `AuthService.create_user` over whichever session the case scripted."""
     service = AuthService(db=session, challenge_store=ChallengesDB(), adapter=None,
                           evaluated_at=NOW)
     return await service.create_user(identity=_identity(),
-                                     provider=IdentityProvider.anonymous,
-                                     provider_uid=None,
+                                     provider=provider,
+                                     provider_uid=provider_uid,
                                      email=None)
 
 
@@ -140,13 +150,22 @@ async def _insert(*, expect: type[BaseException] = AppError,
     return raised.value, conflict, session
 
 
-class TestEveryConflictCollapsesToOneAlreadyLinkedAnswer:
-    """D-06: the constraint-name classification is gone, so one answer covers every integrity violation."""
+class TestTheInsertsUniqueViolationIsTheSubjectRace:
+    """D-06: no constraint name is read. The provider account is decided before the insert, so the
+    one uniqueness rule left for this flush to lose is `UNIQUE (issuer, subject)`."""
 
-    async def test_an_integrity_error_raises_already_linked(self):
+    async def test_a_unique_violation_raises_already_linked(self):
         """An account exists for this pair: reconcile it, do not create a second."""
         rejection, _, _ = await _insert(expect=IdentityAlreadyLinked)
         assert (rejection.status, rejection.code) == (409, "identity_already_linked")
+
+    @pytest.mark.parametrize("sqlstate", ["23503", "23514", "23502"], ids=["fk", "check", "not-null"])
+    async def test_an_integrity_failure_that_is_not_a_unique_violation_propagates(self, sqlstate):
+        """A foreign key or a CHECK is a broken invariant, never a race this lost: 500, not 409."""
+        raised, conflict, _ = await _insert(expect=IntegrityError,
+                                            conflict=_integrity_error(sqlstate))
+        assert raised is conflict
+        assert not isinstance(raised, AppError)
 
     async def test_the_violation_survives_as_the_rejections_cause(self):
         """The rejection is the client's answer; the violation is the reason, and the traceback keeps it."""
@@ -170,6 +189,50 @@ class TestEveryConflictCollapsesToOneAlreadyLinkedAnswer:
         assert raised is error
         assert not isinstance(raised, AppError)
         assert session.commits == 0
+
+
+class TestTheProviderAccountEarnsItsOwnAnswer:
+    """02 step 11: a provider account another subject already holds is `operation_not_allowed`,
+    not `identity_already_linked` -- whose remediation, `/auth/sync`, resolves nothing here."""
+
+    async def test_a_held_provider_account_refuses_before_any_insert(self):
+        """The holder's own row is found by the pre-check, so nothing is added and no flush is issued."""
+        holder = _identity_row(state=IdentityState.active)
+        session = _NoMutationSession([None, holder])
+
+        with pytest.raises(ProviderAccountAlreadyLinked) as raised:
+            await _create(session, provider=IdentityProvider.google,
+                          provider_uid="provider-uid")
+
+        assert (raised.value.status, raised.value.code) == (403, "operation_not_allowed")
+        assert raised.value.log_fields()["identity_row_id"] == str(holder.id)
+
+    async def test_a_historical_holder_still_holds_the_account(self):
+        """The partial unique index carries no state predicate: retirement never frees the account."""
+        session = _NoMutationSession([None, _identity_row(state=IdentityState.historical)])
+
+        with pytest.raises(ProviderAccountAlreadyLinked):
+            await _create(session, provider=IdentityProvider.google,
+                          provider_uid="provider-uid")
+
+    async def test_a_free_provider_account_reaches_the_insert(self):
+        """The read answers nothing, so the creation arm runs and the flush is the only arbiter left."""
+        session = _ConflictingSession(_integrity_error())
+
+        with pytest.raises(IdentityAlreadyLinked):
+            await _create(session, provider=IdentityProvider.google,
+                          provider_uid="provider-uid")
+
+        assert session.flushes == 2
+
+    async def test_an_anonymous_creation_reads_no_provider_account(self):
+        """`provider_uid` is NULL for anonymous, so the row falls outside the reservation entirely."""
+        session = _ConflictingSession(_integrity_error())
+
+        with pytest.raises(IdentityAlreadyLinked):
+            await _create(session)
+
+        assert session.reads == 1
 
 
 class TestTheReResolutionsThreeNoMutationArms:

@@ -32,6 +32,7 @@ from nativespeaker.api.errors import (
     MultipleEffectiveGrantsError,
     NotLinked,
     OtherActiveGrantHeld,
+    ProviderAccountAlreadyLinked,
     ProviderTransitionNotAllowed,
 )
 from nativespeaker.api.schemas.auth import Identity
@@ -325,6 +326,20 @@ class AuthService:
         if existing is not None:
             # The prepare-time pre-check is racy, so this resolution is the one that decides.
             await self._reject_existing_identity(existing)
+
+        if provider_uid is not None:
+            # 02 step 11: the provider account is a second reservation, and it earns its own answer.
+            # Without this read the routine case -- a new subject for a provider account another
+            # subject already holds -- would take the insert's `(issuer, subject)` arm and send the
+            # caller to /auth/sync, which resolves nothing for a subject that was never linked.
+            holder = await self.identities_db.resolve_provider_account(issuer=identity.issuer,
+                                                                       provider=provider,
+                                                                       provider_uid=provider_uid)
+            if holder is not None:
+                # The two providers agree by construction here; the row id is what routes it to support.
+                raise ProviderAccountAlreadyLinked(identity_row_id=holder.id,
+                                                   stored_provider=holder.provider,
+                                                   live_provider=provider)
 
         return await self.identities_db.insert_account(evaluated_at=self.evaluated_at,
                                                        identity=identity,

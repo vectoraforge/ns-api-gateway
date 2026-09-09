@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from nativespeaker.api.crud.violations import is_unique_violation
 from nativespeaker.api.errors import (
     BlockedUser,
     HistoricalIdentity,
@@ -58,6 +59,15 @@ class IdentitiesDB:
                                                    col(ExternalIdentity.subject) == subject)
         return (await self.session.exec(statement)).first()
 
+    async def resolve_provider_account(self, *, issuer: str, provider: IdentityProvider,
+                                       provider_uid: str) -> ExternalIdentity | None:
+        """The row holding the provider account, or `None`. Not the race arbiter, and never to be one."""
+        # The reservation spans historical rows too, exactly as the partial unique index does.
+        statement = select(ExternalIdentity).where(col(ExternalIdentity.issuer) == issuer,
+                                                   col(ExternalIdentity.provider) == provider,
+                                                   col(ExternalIdentity.provider_uid) == provider_uid)
+        return (await self.session.exec(statement)).first()
+
     async def lock_identity_and_user(self, *, issuer: str,
                                      subject: str) -> tuple[ExternalIdentity, User] | None:
         """Lock and return the identity row and its user, or `None`. Revalidation, never a race arbiter."""
@@ -84,35 +94,44 @@ class IdentitiesDB:
                              provider_uid: str | None,
                              email: str | None) -> UUID:
         """Insert the user, its identity row and its purchase tokens, and return the new user's id."""
+        user = User(email=email,
+                    registered_at=None if provider is IdentityProvider.anonymous else evaluated_at,
+                    created_at=evaluated_at,
+                    updated_at=evaluated_at)
+        self.session.add(user)
+        # Outside the arm below: `core.users` carries no uniqueness this insert can lose, so a
+        # violation here is a broken invariant and belongs on the internal-error path.
+        await self.session.flush()
+
+        self.session.add(ExternalIdentity(user_id=user.id,
+                                          issuer=identity.issuer,
+                                          subject=identity.subject,
+                                          provider=provider,
+                                          # NULL for anonymous, never a sentinel: the CHECK requires it.
+                                          provider_uid=provider_uid,
+                                          identity_state=IdentityState.active,
+                                          created_at=evaluated_at,
+                                          updated_at=evaluated_at))
+
+        # One per store, minted eagerly. A fresh `uuid4()` derived from nothing, so it correlates nothing.
+        for store in PurchaseProvider:
+            self.session.add(StorePurchaseToken(user_id=user.id,
+                                                provider=store,
+                                                identity_value=str(uuid4()),
+                                                created_at=evaluated_at))
+
+        # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
         try:
-            user = User(email=email,
-                        registered_at=None if provider is IdentityProvider.anonymous else evaluated_at,
-                        created_at=evaluated_at,
-                        updated_at=evaluated_at)
-            self.session.add(user)
             await self.session.flush()
-
-            self.session.add(ExternalIdentity(user_id=user.id,
-                                              issuer=identity.issuer,
-                                              subject=identity.subject,
-                                              provider=provider,
-                                              # NULL for anonymous, never a sentinel: the CHECK requires it.
-                                              provider_uid=provider_uid,
-                                              identity_state=IdentityState.active,
-                                              created_at=evaluated_at,
-                                              updated_at=evaluated_at))
-
-            # One per store, minted eagerly. A fresh `uuid4()` derived from nothing, so it correlates nothing.
-            for store in PurchaseProvider:
-                self.session.add(StorePurchaseToken(user_id=user.id,
-                                                    provider=store,
-                                                    identity_value=str(uuid4()),
-                                                    created_at=evaluated_at))
-
-            await self.session.flush()
-            return user.id
         except IntegrityError as conflict:
+            # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
+            if not is_unique_violation(conflict):
+                # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
+                raise
+            # 02 step 12: the provider account is answered by the service's pre-check, so what a
+            # uniqueness loss here means is `(issuer, subject)` -- the race that reconciles at /auth/sync.
             raise IdentityAlreadyLinked() from conflict
+        return user.id
 
     async def flip_provider(self, *,
                             evaluated_at: datetime,
