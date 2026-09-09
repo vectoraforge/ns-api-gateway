@@ -13,6 +13,7 @@ from nativespeaker.api.tables import (
     AccessGrantSource,
     AccessGrantStatus,
     SubscriptionStatus,
+    UserMonthlyUsage,
 )
 
 PAID_TIER_ID = "paid"
@@ -27,18 +28,48 @@ SUBSCRIPTION_A = uuid7()
 SUBSCRIPTION_B = uuid7()
 
 
-class _StubSession:
-    """Collects what the writer added and counts the flushes it asked for; nothing raises."""
+class _StubResult:
+    """One row or none, on the shape `session.exec(...)` answers with."""
 
-    def __init__(self) -> None:
+    def __init__(self, row) -> None:
+        self._row = row
+
+    def first(self):
+        return self._row
+
+
+class _StubSession:
+    """Collects what the writer added, answers the one usage read, and counts flushes and reads."""
+
+    def __init__(self, usage: UserMonthlyUsage | None = None) -> None:
         self.added: list = []
         self.flushes = 0
+        self.reads = 0
+        # The usage row `lock_grants` already locked, read back to carry the month's count across.
+        self._usage = usage
+
+    async def exec(self, statement):  # noqa: ARG002
+        self.reads += 1
+        return _StubResult(self._usage)
 
     def add(self, instance) -> None:
         self.added.append(instance)
 
     async def flush(self) -> None:
         self.flushes += 1
+
+
+def _usage(grant: AccessGrant, *, monthly_period: str, monthly_used: int) -> UserMonthlyUsage:
+    return UserMonthlyUsage(grant_id=grant.id,
+                            monthly_period=monthly_period,
+                            monthly_used=monthly_used,
+                            created_at=NOW,
+                            updated_at=NOW)
+
+
+def _minted(session: _StubSession) -> list[int]:
+    """The count on every usage row the writer inserted, which is the allowance it handed out."""
+    return [row.monthly_used for row in session.added if isinstance(row, UserMonthlyUsage)]
 
 
 def _grant(*, user_id=DESTINATION, source=AccessGrantSource.subscription,
@@ -162,3 +193,52 @@ class TestAWithdrawalEndsItsOwnTermOnly:
 
         assert outcome is WriteOutcome.applied
         assert own.status is AccessGrantStatus.revoked
+
+
+# The month `NOW` falls in, and the one before it: the rule is the calendar month, not the term.
+THIS_MONTH = "2026-09"
+LAST_MONTH = "2026-08"
+
+
+@pytest.mark.asyncio
+class TestTheMonthsCountSurvivesATermChangeInsideIt:
+    """WR-48: the allowance is a UTC calendar month's, so a supersession inside one month carries
+    its count. A fresh zero gave a grace bounce two allowances and a mid-term tier change a third,
+    and `10-restore-subscription.md:80` forbids a fresh counter for the same paid entitlement."""
+
+    async def test_a_term_change_inside_the_month_carries_the_count(self):
+        own = _grant(subscription_id=SUBSCRIPTION_B, ends_at=TERM_END + timedelta(days=1))
+        session = _StubSession(_usage(own, monthly_period=THIS_MONTH, monthly_used=45))
+
+        await _write(session, [own])
+
+        assert _minted(session) == [45]
+
+    async def test_a_supersession_from_an_earlier_month_still_starts_at_zero_control(self):
+        """The control: the rule is the calendar month, so a renewal across the boundary is fresh
+        and 43-04's ratified `its fresh usage row` still describes what a renewal does."""
+        own = _grant(subscription_id=SUBSCRIPTION_B, ends_at=TERM_END + timedelta(days=1))
+        session = _StubSession(_usage(own, monthly_period=LAST_MONTH, monthly_used=45))
+
+        await _write(session, [own])
+
+        assert _minted(session) == [0]
+
+    async def test_the_old_owners_count_is_never_inherited_on_a_move(self):
+        """On a move `superseded` also holds the old owner's row, and the month they spent is not
+        this account's to inherit -- so that row is not even read."""
+        theirs = _grant(user_id=OLD_OWNER, subscription_id=SUBSCRIPTION_B)
+        session = _StubSession(_usage(theirs, monthly_period=THIS_MONTH, monthly_used=45))
+
+        await _write(session, [theirs])
+
+        assert (_minted(session), session.reads) == ([0], 0)
+
+    async def test_a_superseded_grant_with_no_usage_row_starts_at_zero(self):
+        """Absent, not fail-closed: this writer mints the row, so there is nothing to refuse."""
+        own = _grant(subscription_id=SUBSCRIPTION_B, ends_at=TERM_END + timedelta(days=1))
+        session = _StubSession(None)
+
+        await _write(session, [own])
+
+        assert (_minted(session), session.reads) == ([0], 1)

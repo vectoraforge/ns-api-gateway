@@ -371,6 +371,24 @@ class SubscriptionsDB:
             # The buyer holds no grant outside the entitled set, and only restore is a path back to one.
             return WriteOutcome.applied if superseded else WriteOutcome.replayed
 
+        period = monthly_period_for(evaluated_at)
+        # The allowance is a UTC calendar month's, not a store term's, so a supersession inside one
+        # month carries its count across exactly as `activate_registered_account_grant` does. A
+        # fresh zero here handed a second allowance to every account whose term changed mid-month:
+        # a grace bounce (`DID_FAIL_TO_RENEW` then `DID_RENEW`) minted two, a mid-term tier change
+        # one more, and `10-restore-subscription.md:80` forbids a fresh counter outright. A renewal
+        # at a month boundary still starts at zero, because the superseded row names the old month.
+        # No lock and no second read tier: `lock_grants` locked these rows before this method ran.
+        carried = 0
+        for grant in superseded:
+            # This account's own rows only: on a move `superseded` also holds the old owner's, and
+            # `ix_access_grants_one_active_per_user` leaves at most one of them for this user.
+            if grant.user_id != user_id:
+                continue
+            usage = await self.grants_db.read_usage(grant.id)
+            if usage is not None and usage.monthly_period == period:
+                carried = usage.monthly_used
+
         activated = AccessGrant(user_id=user_id,
                                 tier_id=tier_id,
                                 source=AccessGrantSource.subscription,
@@ -382,8 +400,8 @@ class SubscriptionsDB:
         self.session.add(activated)
         # Minted with its grant and never for an existing one: a missing usage row is a broken invariant.
         self.session.add(UserMonthlyUsage(grant_id=activated.id,
-                                          monthly_period=monthly_period_for(evaluated_at),
-                                          monthly_used=0,
+                                          monthly_period=period,
+                                          monthly_used=carried,
                                           created_at=evaluated_at,
                                           updated_at=evaluated_at))
 
