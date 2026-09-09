@@ -154,9 +154,18 @@ def subscription_notification_from(notification: DeveloperNotification) -> Subsc
     return notification.subscriptionNotification
 
 
-def instant_from_millis(milliseconds: int) -> datetime:
-    """Convert one of Google's UNIX-millisecond stamps into an aware instant."""
-    return datetime.fromtimestamp(milliseconds / 1000, UTC)
+def instant_from_millis(milliseconds: int) -> datetime | None:
+    """Convert one of Google's UNIX-millisecond stamps, or `None` when it names no instant."""
+    try:
+        return datetime.fromtimestamp(milliseconds / 1000, UTC)
+    except (ValueError, OverflowError, OSError):
+        # `eventTimeMillis` is an unbounded int, and a value past year 9999 raised out of the
+        # dependency onto the generic 500 -- which is the answer that makes Pub/Sub redeliver this
+        # same body until retention expires. Out of range is as unusable as undecodable, and it
+        # answers the same way: `signed_at` is optional on every path that reads it, so the
+        # delivery still resolves and this one acknowledges. The value never reaches the log.
+        logger.error("google_play_event_time_out_of_range")
+        return None
 
 
 def notification_key_for(purchase_token: str, event_time_millis: int, event_type: str) -> str:

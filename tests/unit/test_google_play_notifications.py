@@ -27,6 +27,7 @@ from nativespeaker.api.auth.google_play import (
     PlayDeveloperSubscriptions,
     PubSubPushTokens,
     developer_notification_from,
+    instant_from_millis,
 )
 from nativespeaker.api.auth.jwt_verifier import DECODE_OPTIONS, BoundedReason, JWTVerifier
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
@@ -307,6 +308,36 @@ class TestTheUndecodableBody:
 
     def test_the_decoder_itself_answers_none_rather_than_raising(self, play_logs):
         assert developer_notification_from("this is not base64 at all!!") is None
+
+
+class TestAnEventTimeThatNamesNoInstant:
+    """WR-21: `eventTimeMillis` is an unbounded int, and `datetime.fromtimestamp` raises past year
+    9999. The escape was a 500, which is the one answer that makes Pub/Sub redeliver this same
+    body until retention expires -- the loop `developer_notification_from` exists to stop."""
+
+    # Google's own stamp is milliseconds; these two are far outside `datetime`'s year range.
+    OUT_OF_RANGE = (10 ** 18, -10 ** 18)
+
+    @pytest.mark.parametrize("millis", OUT_OF_RANGE, ids=["far-future", "far-past"])
+    def test_the_conversion_answers_none_naming_no_value(self, millis, play_logs):
+        assert instant_from_millis(millis) is None
+        assert play_logs.records("error") == [("google_play_event_time_out_of_range", {})]
+
+    def test_an_ordinary_stamp_still_converts_control(self, play_logs):
+        """The control: a conversion that answered `None` unconditionally would pass the case above."""
+        assert instant_from_millis(EVENT_TIME_MILLIS) == datetime(2026, 5, 28, 20, 26, 40, tzinfo=UTC)
+        assert play_logs.records("error") == []
+
+    @pytest.mark.parametrize("millis", OUT_OF_RANGE, ids=["far-future", "far-past"])
+    async def test_the_delivery_still_reaches_play_carrying_no_signed_at(self, millis, play_logs):
+        """The token is usable even when the stamp is not, so the read happens and the push is acked."""
+        play = _RecordingPlay()
+
+        assert await _verify(_push(_rtdn(eventTimeMillis=millis, **SUBSCRIPTION_BODY)),
+                             play=play) is None
+
+        assert play.calls[0]["signed_at"] is None
+        assert play.calls[0]["notification_uuid"] == f"google_play:{PURCHASE_TOKEN}:{millis}:4"
 
 
 class TestTheBodiesThatAreNotSubscriptions:
