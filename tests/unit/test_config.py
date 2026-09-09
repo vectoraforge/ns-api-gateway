@@ -369,6 +369,23 @@ class TestTheTrackedPoolSizeMergesWithTheEnvironmentCredentials:
             shutil.rmtree(tmp_dir)
 
 
+class TestTheLoggingLevelIsAPerDeploymentLever:
+    """WR-02. `config.yaml` is init_settings, so a `log_level` declared there outranked LOG_LEVEL
+    in every environment: the chart's `env` escape hatch rendered faithfully and did nothing."""
+
+    def test_the_environment_raises_the_level(self):
+        assert load_tracked_config({"LOG_LEVEL": "DEBUG"}).log_level == "DEBUG"
+
+    def test_an_unset_variable_still_leaves_the_default(self):
+        """The control: a case that read DEBUG from anywhere would pass the one above regardless."""
+        assert load_tracked_config({}).log_level == "INFO"
+
+    def test_the_tracked_file_declares_no_key_that_outranks_a_deployment_lever(self):
+        declared = yaml.safe_load(TRACKED_CONFIG.read_text())
+
+        assert "log_level" not in declared
+
+
 class TestNoTrackedYamlCarriesKeyMaterial:
     """The tracked configuration is a public file: a credential pasted into it would be committed."""
 

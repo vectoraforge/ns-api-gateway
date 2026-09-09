@@ -81,4 +81,9 @@ jwt:
   issuer: ""
   jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
 
+# Extra container environment, rendered verbatim by `deployment.yaml`. This is the supported
+# route for a per-deployment override, and LOG_LEVEL is the one an incident reaches for:
+#   --set env[0].name=LOG_LEVEL --set env[0].value=DEBUG
+# A setting declared in the image's `config/config.yaml` cannot be overridden here: that file
+# is init_settings and outranks the environment, so only settings absent from it are levers.
 env: []
