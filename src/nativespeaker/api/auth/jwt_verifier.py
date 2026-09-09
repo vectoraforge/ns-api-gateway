@@ -21,6 +21,7 @@ from jwt.exceptions import (
     PyJWKClientError,
     PyJWTError,
 )
+from jwt.types import Options
 
 logger = structlog.get_logger()
 
@@ -45,7 +46,7 @@ class BoundedReason(StrEnum):
 #: RS256 alone, so `alg: none` and HS256-over-the-public-key fail before any check runs.
 DECODE_ALGORITHMS = ["RS256"]
 DEFAULT_LEEWAY = 30
-DECODE_OPTIONS = {"require": ["exp", "iat", "aud", "iss", "sub"]}
+DECODE_OPTIONS: Options = {"require": ["exp", "iat", "aud", "iss", "sub"]}
 
 #: The negative-cache key an absent, empty, or non-string `kid` is recorded under.
 _ABSENT_KID_SENTINEL = ""
