@@ -58,8 +58,14 @@ def _logging_app():
         return {"ok": True}
 
     @app.get("/health/ready")
-    async def health_ready():
+    async def health_ready(boom: bool = False):
+        if boom:
+            raise RuntimeError("a readiness probe that failed")
         return {"status": "ok"}
+
+    @app.get("/boom")
+    async def boom_route():
+        raise RuntimeError("a handler failure no registered handler claims")
 
     @app.get("/error")
     async def error_route():
@@ -99,6 +105,53 @@ def test_middleware_error_level_for_non_2xx(_logging_app):
     request_logs = [log for log in cap_logs if log["event"] == "request"]
     assert len(request_logs) == 1
     assert request_logs[0]["log_level"] == "error"
+
+
+def test_middleware_logs_the_request_when_the_handler_raises(_logging_app):
+    """WR-07: `ServerErrorMiddleware` sits outside every user middleware, so the 500 exits past it."""
+    with capture_logs() as cap_logs:
+        with TestClient(_logging_app, raise_server_exceptions=False) as client:
+            response = client.get("/boom")
+
+    assert response.status_code == 500
+    request_logs = [log for log in cap_logs if log["event"] == "request"]
+    assert len(request_logs) == 1
+    assert request_logs[0]["status_code"] == 500
+    assert request_logs[0]["log_level"] == "error"
+    assert "duration_ms" in request_logs[0]
+
+
+def test_middleware_still_excludes_the_probe_path_when_it_raises(_logging_app):
+    """The exclusion applies to both exits, so a failing probe stays out of the access log."""
+    with capture_logs() as cap_logs:
+        with TestClient(_logging_app, raise_server_exceptions=False) as client:
+            client.get("/health/ready?boom=true")
+
+    assert [log for log in cap_logs if log["event"] == "request"] == []
+
+
+def test_the_line_is_written_under_the_production_error_handlers():
+    """The registered bare-`Exception` handler installs on `ServerErrorMiddleware`, outside this one."""
+    from nativespeaker.api.app.error_handlers import register_exception_handlers
+
+    app = FastAPI()
+
+    @app.get("/boom")
+    async def boom_route():
+        raise RuntimeError("a handler failure no registered handler claims")
+
+    register_exception_handlers(app)
+    # ty cannot match BaseHTTPMiddleware subclasses against Starlette's factory protocol.
+    app.add_middleware(RequestLoggingMiddleware)  # ty: ignore[invalid-argument-type]
+
+    with capture_logs() as cap_logs:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.get("/boom")
+
+    assert (response.status_code, response.json()) == (500, {"code": "internal_error"})
+    # Only the access-log line: the handler's own logger is a module-level proxy another test may hold.
+    request_logs = [log for log in cap_logs if log["event"] == "request"]
+    assert [(log["status_code"], log["log_level"]) for log in request_logs] == [(500, "error")]
 
 
 def test_third_party_loggers_suppressed():

@@ -65,11 +65,20 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         )
 
         start = time.perf_counter()
-        response = await call_next(request)
-        duration_ms = round((time.perf_counter() - start) * 1000, 2)
+        try:
+            response = await call_next(request)
+        except Exception:
+            # `ServerErrorMiddleware` sits outside this one and answers 500, so nothing else logs it.
+            self._log_request(request, status_code=500, start=start)
+            raise
 
-        if request.url.path not in _EXCLUDED_PATHS:
-            log_method = logger.info if response.status_code < 400 else logger.error
-            log_method("request", status_code=response.status_code, duration_ms=duration_ms)
-
+        self._log_request(request, status_code=response.status_code, start=start)
         return response
+
+    def _log_request(self, request: Request, *, status_code: int, start: float) -> None:
+        """One access-log line per request, written on the raising exit as well as the ordinary one."""
+        if request.url.path in _EXCLUDED_PATHS:
+            return
+        log_method = logger.info if status_code < 400 else logger.error
+        log_method("request", status_code=status_code,
+                   duration_ms=round((time.perf_counter() - start) * 1000, 2))
