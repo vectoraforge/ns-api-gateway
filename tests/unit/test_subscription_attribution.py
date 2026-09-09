@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
-from nativespeaker.api.crud.subscriptions import WriteOutcome
+from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
 from nativespeaker.api.errors import AttributionConflict, InternalError
 from nativespeaker.api.services.subscriptions import SubscriptionsService
 from nativespeaker.api.tables import (
@@ -76,6 +76,36 @@ class _RefusingSession(_StubSession):
         raise IntegrityError("COMMIT", {}, Exception("23503"))
 
 
+class _UpsertResult:
+    """One row and one row count: what the writer's read and its conditional owner update ask for."""
+
+    def __init__(self, row: Subscription | None) -> None:
+        self._row = row
+        # The claim's whole answer. One, because nothing else writes this row inside a case here.
+        self.rowcount = 1
+
+    def first(self) -> Subscription | None:
+        return self._row
+
+
+class _UpsertSession:
+    """The one-row session `SubscriptionsDB.upsert_subscription` runs over, so this file measures
+    against the real writer rather than a restatement of it."""
+
+    def __init__(self, stored: Subscription | None) -> None:
+        self._stored = stored
+        self.added: list = []
+
+    async def exec(self, statement) -> _UpsertResult:  # noqa: ARG002
+        return _UpsertResult(self._stored)
+
+    def add(self, instance) -> None:
+        self.added.append(instance)
+
+    async def flush(self) -> None:
+        return None
+
+
 class _RecordingSubscriptions:
     """Stands in for the subscription crud calls, keyed as the two tables' unique indexes key them."""
 
@@ -136,27 +166,14 @@ class _RecordingSubscriptions:
         self.timeline.append("upsert_subscription")
         self.upserts.append(fields)
         key = (fields["provider"], fields["external_id"])
-        stored = self.subscriptions.get(key)
-        if stored is None:
-            stored = Subscription(provider=fields["provider"],
-                                  external_id=fields["external_id"],
-                                  user_id=fields["user_id"],
-                                  tier_id=fields["tier_id"],
-                                  status=fields["status"],
-                                  store_signed_at=fields["signed_at"],
-                                  created_at=fields["evaluated_at"],
-                                  updated_at=fields["evaluated_at"])
-            self.subscriptions[key] = stored
-        else:
-            # The same rule the crud holds: the token attributes an unowned row only.
-            stored.user_id = (stored.user_id if stored.user_id is not None
-                              else fields["user_id"])
-            stored.tier_id = fields["tier_id"]
-            stored.status = fields["status"]
-            # The same rule the crud holds: an absent signing date clears nothing.
-            stored.store_signed_at = (stored.store_signed_at if fields["signed_at"] is None
-                                      else fields["signed_at"])
-        return stored, WriteOutcome.applied
+        # WR-49: the real writer over a one-row session, never a second statement of its rules. The
+        # copy this replaces moved the store clock backwards where production only ever advances it
+        # -- the exact column the service's own out-of-order guard reads -- and answered `applied`
+        # where production answers `replayed` or, since the conditional owner claim, `lost_race`.
+        session = _UpsertSession(self.subscriptions.get(key))
+        stored, outcome = await SubscriptionsDB(session).upsert_subscription(**fields)
+        self.subscriptions[key] = stored
+        return stored, outcome
 
     async def insert_purchase(self, **fields) -> WriteOutcome:
         self.timeline.append("insert_purchase")
@@ -538,6 +555,51 @@ class TestADeliveryThatCommitsInTheWindowSupersedesThisOne:
         assert [upsert["status"] for upsert in writer.upserts] == [SubscriptionStatus.expired]
         assert [grant["status"] for grant in writer.granted] == [SubscriptionStatus.expired]
         assert session.commits == 1
+
+
+async def _upsert(writer, external_id: str, *, signed_at=NOW,
+                  status=SubscriptionStatus.active) -> tuple[Subscription, WriteOutcome]:
+    """One canonical write through the recorder, with the fields every case here holds fixed."""
+    return await writer.upsert_subscription(provider=PurchaseProvider.apple,
+                                            external_id=external_id,
+                                            user_id=RESTORER,
+                                            tier_id=PAID_TIER_ID,
+                                            status=status,
+                                            signed_at=signed_at,
+                                            evaluated_at=NOW)
+
+
+@pytest.mark.asyncio
+class TestTheRecorderAnswersWithTheRealWriter:
+    """WR-49: the stand-in restated the writer's rules instead of running them, and had drifted on
+    both -- it moved the store clock backwards where production only advances it, and answered
+    `applied` for a delivery that changed nothing where production answers `replayed`."""
+
+    async def test_a_delivery_carrying_no_change_is_a_replay_and_not_an_application(self,
+                                                                                    writer):
+        external_id = _seed_owned(writer, RESTORER)
+
+        _, outcome = await _upsert(writer, external_id)
+
+        assert outcome is WriteOutcome.replayed
+
+    async def test_a_delivery_carrying_a_change_is_applied_control(self, writer):
+        """The control: the outcome tracks the delivery, so the case above is not `replayed` always."""
+        external_id = _seed_owned(writer, RESTORER)
+
+        _, outcome = await _upsert(writer, external_id, status=SubscriptionStatus.expired)
+
+        assert outcome is WriteOutcome.applied
+
+    async def test_an_older_signing_date_never_moves_the_clock_backwards(self, writer):
+        """The column the service's own out-of-order guard reads: moved back, a stale redelivery
+        passes that guard and downgrades a paying subscriber."""
+        external_id = _seed_owned(writer, RESTORER)
+        await _upsert(writer, external_id, signed_at=NOW + timedelta(hours=2))
+
+        stored, _ = await _upsert(writer, external_id, signed_at=NOW + timedelta(hours=1))
+
+        assert stored.store_signed_at == NOW + timedelta(hours=2)
 
 
 @pytest.mark.asyncio
