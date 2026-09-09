@@ -198,8 +198,9 @@ async def sync(identity: Identity = Depends(get_linked_identity),
 @router.post("/auth/sign-out-all",
              status_code=204,
              summary="Revoke every refresh token the caller's provider account holds",
-             description="Signs the caller out on every device. The account cannot use its current "
-                         "sessions again, and an anonymous account cannot be signed in to again.")
+             description="Revokes every refresh token the account holds, so no new session can be "
+                         "minted for it. An ID token already issued stays valid until it expires "
+                         "(up to one hour). An anonymous account cannot be signed in to again.")
 async def sign_out_all(identity: Identity = Depends(get_linked_identity),
                        adapter=Depends(get_firebase_adapter)) -> Response:
     """Revoke the caller's refresh tokens at the provider. It opens no session and writes no row."""
