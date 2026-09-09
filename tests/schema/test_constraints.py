@@ -342,9 +342,8 @@ class TestSubscriptionConstraints:
 
     async def test_both_entitlement_foreign_keys_are_deferrable_initially_deferred(self, conn):
         """The three cases below prove that something rejected, never that it rejected at COMMIT.
-        The deferral itself is load-bearing: migration :241 states it so ingestion and restore can
-        write both rows in one transaction, and `RestoreService.restore` moves the owner while the
-        old owner's grant still points at the old pair."""
+        Migration :241 states why the deferral is load-bearing: ingestion and restore write both
+        rows in one transaction, in either order."""
         names = {row["conname"] for row in await conn.fetch(_DEFERRED_GRANT_FKS)}
 
         assert names == {FK_GRANT_SUBSCRIPTION_ENTITLED, FK_GRANT_SUBSCRIPTION_OWNER}
