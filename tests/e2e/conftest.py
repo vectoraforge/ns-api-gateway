@@ -83,7 +83,9 @@ def firebase_token(_app_config):
     resp.raise_for_status()
     data = resp.json()
     token = data["idToken"]
-    os.environ.setdefault("FIREBASE_TEST_USER_ID", data["localId"])
+    # Assigned, never `setdefault`: `test_user_id` must be the subject of the token this fixture
+    # returned, and a stale value carried in by `.env` would silently decouple the two.
+    os.environ["FIREBASE_TEST_USER_ID"] = data["localId"]
     return token
 
 
