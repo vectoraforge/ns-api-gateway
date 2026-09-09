@@ -40,11 +40,4 @@ jwt:
   issuer: ""
   jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
 
-rateLimits:
-  monthly:
-    free: 150
-    silver: 1500
-    gold: 3000
-    platinum: 30000
-
 env: []
