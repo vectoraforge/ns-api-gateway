@@ -11,6 +11,7 @@ from nativespeaker.api.errors import (
     UnknownTierError,
 )
 from nativespeaker.api.schemas.auth import Entitlement, EntitlementStatus, EntitlementType
+from nativespeaker.api.tables import monthly_period_for
 
 
 class SyncService:
@@ -23,8 +24,7 @@ class SyncService:
 
     async def read_entitlement(self, user_id: UUID) -> Entitlement:
         """Report the entitlement `user_id` holds at the captured instant, taking no lock and writing nothing."""
-        # The only place the period is derived, and always from the request's captured instant.
-        period = self.evaluated_at.strftime("%Y-%m")
+        period = monthly_period_for(self.evaluated_at)
 
         grants = await self.grants_db.read_effective_grants(user_id, self.evaluated_at)
         if not grants:

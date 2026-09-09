@@ -18,6 +18,7 @@ from nativespeaker.api.tables import (
     AccessGrantStatus,
     AccessTier,
     UserMonthlyUsage,
+    monthly_period_for,
 )
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, NativeClaimProvider
 
@@ -176,7 +177,7 @@ class GrantsDB:
                                 updated_at=evaluated_at)
         self.session.add(activated)
         self.session.add(UserMonthlyUsage(grant_id=activated.id,
-                                          monthly_period=evaluated_at.strftime("%Y-%m"),
+                                          monthly_period=monthly_period_for(evaluated_at),
                                           monthly_used=0,
                                           created_at=evaluated_at,
                                           updated_at=evaluated_at))
@@ -270,7 +271,8 @@ class GrantsDB:
         # The carried period and count are safe because the registered tier's allowance is the larger one.
         self.session.add(UserMonthlyUsage(
             grant_id=activated.id,
-            monthly_period=evaluated_at.strftime("%Y-%m") if carried is None else carried.monthly_period,
+            monthly_period=(monthly_period_for(evaluated_at) if carried is None
+                            else carried.monthly_period),
             monthly_used=0 if carried is None else carried.monthly_used,
             created_at=evaluated_at,
             updated_at=evaluated_at))

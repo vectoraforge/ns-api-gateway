@@ -21,6 +21,7 @@ from nativespeaker.api.tables import (
     SubscriptionEvent,
     SubscriptionStatus,
     UserMonthlyUsage,
+    monthly_period_for,
 )
 
 # The set `core.subscriptions.product_entitled_subscription_id` is generated over, named once for its readers.
@@ -329,7 +330,7 @@ class SubscriptionsDB:
         self.session.add(activated)
         # Minted with its grant and never for an existing one: a missing usage row is a broken invariant.
         self.session.add(UserMonthlyUsage(grant_id=activated.id,
-                                          monthly_period=evaluated_at.strftime("%Y-%m"),
+                                          monthly_period=monthly_period_for(evaluated_at),
                                           monthly_used=0,
                                           created_at=evaluated_at,
                                           updated_at=evaluated_at))

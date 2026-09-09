@@ -6,7 +6,7 @@ __all__ = [
     "IdentityState", "Message", "NativeClaimProvider",
     "PurchaseProvider", "StorePurchase", "StorePurchaseToken", "Subscription",
     "SubscriptionEvent", "SubscriptionStatus", "User",
-    "UserMonthlyUsage",
+    "UserMonthlyUsage", "monthly_period_for",
 ]
 
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
@@ -18,6 +18,7 @@ from nativespeaker.api.tables.grants import (
     AccessGrantStatus,
     AccessTier,
     UserMonthlyUsage,
+    monthly_period_for,
 )
 from nativespeaker.api.tables.identities import (
     ExternalIdentity,

@@ -27,6 +27,14 @@ class AccessGrantStatus(StrEnum):
 FREE_GRANT_SOURCES = frozenset({AccessGrantSource.anonymous_device_grant,
                                 AccessGrantSource.registered_account_grant})
 
+
+def monthly_period_for(evaluated_at: datetime) -> str:
+    """The UTC calendar month `UserMonthlyUsage.monthly_period` stores, in `YYYY-MM`."""
+    # The only place the period is derived, and always from the request's captured instant.
+    # Converted first: `strftime` reports the stored wall clock, so a non-UTC instant would name
+    # the wrong month and split one allowance across two period strings.
+    return evaluated_at.astimezone(UTC).strftime("%Y-%m")
+
 AccessGrantSourceType = cast(Any, Enum(AccessGrantSource, name='access_grant_source', schema='core'))
 AccessGrantStatusType = cast(Any, Enum(AccessGrantStatus, name='access_grant_status', schema='core'))
 DateTimeType = cast(Any, DateTime(timezone=True))

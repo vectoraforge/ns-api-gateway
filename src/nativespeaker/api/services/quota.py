@@ -16,6 +16,7 @@ from nativespeaker.api.errors import (
     QuotaExceededError,
     UnknownTierError,
 )
+from nativespeaker.api.tables import monthly_period_for
 
 logger = structlog.get_logger()
 
@@ -69,8 +70,7 @@ class QuotaService:
                     logger.error("quota_integrity_failure", branch="missing_usage_row")
                     raise MissingUsageRowError(grant.id)
 
-                # The only place the period is derived, and always from the request's captured instant.
-                period = evaluated_at.strftime("%Y-%m")
+                period = monthly_period_for(evaluated_at)
 
                 if usage.monthly_period != period:
                     # Rollover runs before the comparison and in the same transaction: no reset commits uncharged.
