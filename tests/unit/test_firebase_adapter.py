@@ -11,6 +11,7 @@ from nativespeaker.api.auth.firebase import (
     FIREBASE_LOOKUP_ATTEMPTS,
     FirebaseAdminLookup,
     RetryableLookupError,
+    _application_default_credential,
     build_admin_apps,
     lookup_with_retry,
 )
@@ -183,6 +184,31 @@ class TestBuildAdminApps:
 
         monkeypatch.setattr(firebase_admin, "initialize_app", explode)
         assert build_admin_apps(StubConfig()) == {}
+
+    @pytest.mark.parametrize("failure", ["DefaultCredentialsError", "RefreshError",
+                                         "TransportError", "MutualTLSChannelError"])
+    def test_every_adc_failure_is_that_absent_state_and_never_a_dead_pod(self, monkeypatch,
+                                                                        failure):
+        """WR-08b, the twin of WR-08: a metadata server that answers badly raises a different
+        `GoogleAuthError` subclass, and caught narrowly it escaped `lifespan` and crashlooped the
+        pod -- under a docstring that promises this reader never raises."""
+        def raising(*_args, **_kwargs):
+            raise getattr(google.auth.exceptions, failure)(f"{failure} in this test")
+
+        def explode(*_args, **_kwargs):
+            raise AssertionError("initialize_app must not be called with no credential")
+
+        monkeypatch.setattr(google.auth, "default", raising)
+        monkeypatch.setattr(firebase_admin, "initialize_app", explode)
+
+        assert _application_default_credential() is None
+        assert build_admin_apps(StubConfig()) == {}
+
+    def test_a_supplied_credential_is_still_read_control(self, monkeypatch):
+        """The control: a reader that answered `None` unconditionally would pass every case above."""
+        monkeypatch.setattr(google.auth, "default", lambda *a, **k: (object(), PROJECT_ID))
+
+        assert isinstance(_application_default_credential(), credentials.ApplicationDefault)
 
     def test_the_per_attempt_timeout_sits_inside_the_mandated_band(self):
         """`adapters.py`'s preamble: a fixed configured per-attempt timeout on the order of 5-10 s."""

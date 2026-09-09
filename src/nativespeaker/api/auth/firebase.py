@@ -49,7 +49,12 @@ def _application_default_credential() -> credentials.ApplicationDefault | None:
     """ADC if the environment supplies it, `None` if it does not -- never a raise."""
     try:
         google.auth.default()
-    except google.auth.exceptions.DefaultCredentialsError:
+    except google.auth.exceptions.GoogleAuthError:
+        # The whole family, not just an absent credential: `google.auth.default()` also raises
+        # `RefreshError` and `TransportError` when the metadata server answers but answers badly,
+        # a routine transient at pod start. Caught narrowly, those escaped `build_admin_apps` and
+        # `lifespan` and crashlooped the pod, under a docstring promising the opposite. Every ADC
+        # failure is one outcome here: user creation answers 503 and the pod still serves.
         return None
     logger.info("firebase_admin_using_application_default_credentials")
     return credentials.ApplicationDefault()
