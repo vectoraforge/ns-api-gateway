@@ -1,7 +1,7 @@
 """The eight auth routes: `/auth/challenge` issues a challenge, `/auth/create-user`, `/auth/upgrade-anonymous`
 and the two `/auth/claim-*-grant` routes spend one, `/auth/restore-subscription` attaches a paid store
 subscription, `/auth/sync` reports entitlement, and `/auth/sign-out-all` revokes the refresh tokens."""
-from datetime import UTC, datetime
+from datetime import datetime
 
 import structlog
 from fastapi import APIRouter, Depends
@@ -12,6 +12,7 @@ from nativespeaker.api.app.dependencies import (
     get_auth_service,
     get_challenge_store,
     get_db,
+    get_evaluated_at,
     get_firebase_adapter,
     get_identity,
     get_linked_identity,
@@ -51,11 +52,9 @@ router = APIRouter(tags=["auth"], dependencies=[Depends(get_identity)])
 async def issue_challenge(body: ChallengeRequest,
                           identity: Identity = Depends(get_identity),
                           session: AsyncSession = Depends(get_db),
-                          challenge_store: ChallengesDB = Depends(get_challenge_store)) -> Response:
+                          challenge_store: ChallengesDB = Depends(get_challenge_store),
+                          evaluated_at: datetime = Depends(get_evaluated_at)) -> Response:
     """Issue one challenge for an operation this route serves. It reads no provider and mutates no account."""
-    # One instant for this request, so `created_at` and `expires_at` cannot straddle a boundary.
-    evaluated_at = datetime.now(UTC)
-
     if body.operation not in AuthOperation:
         # The rejected string is caller-supplied and bounded, so logging it is safe; a handle never is.
         logger.warning("auth_challenge_operation_not_issuable", operation=body.operation)
