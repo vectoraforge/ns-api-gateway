@@ -705,11 +705,21 @@ class TestATierlessNotificationIsRefusedBeforeAnyWrite:
         assert session.commits == 0
 
 
+@pytest.fixture
+def race_warnings(monkeypatch) -> list[tuple[str, dict]]:
+    """A spy, not `capture_logs`: the module-level logger caches its binding at import."""
+    entries: list[tuple[str, dict]] = []
+    monkeypatch.setattr("nativespeaker.api.services.subscriptions.logger.warning",
+                        lambda event, **kwargs: entries.append((event, kwargs)))
+    return entries
+
+
 @pytest.mark.asyncio
 class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
     """WR-62: the grant keys are DEFERRABLE INITIALLY DEFERRED, so COMMIT is their only evaluation."""
 
-    async def test_a_violation_at_commit_is_the_lost_race_the_flushes_report(self, writer):
+    async def test_a_violation_at_commit_is_the_lost_race_the_flushes_report(self, writer,
+                                                                            race_warnings):
         session = _RefusingSession()
         service = _service(session, writer, ORIGINAL_BUYER)
 
@@ -718,6 +728,20 @@ class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
 
         assert session.commits == 1
         assert session.rollbacks == 1
+        # The line itself. `InternalError.log_level` is None, so the shared handler writes nothing
+        # for the 500: delete this call and the refusal is completely silent to an operator.
+        assert race_warnings == [("store_notification_race_lost", {"provider": "apple"})]
+
+    async def test_an_ingest_that_wins_reports_no_race_control(self, session, writer,
+                                                               race_warnings):
+        """The control: a line written unconditionally would pass the case above and page on
+        every ordinary notification."""
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        await service.ingest(_notification(attribution_token=TOKEN))
+
+        assert session.commits == 1
+        assert race_warnings == []
 
 
 @pytest.mark.asyncio

@@ -752,10 +752,19 @@ async def _grant_written(purchased_at) -> dict:
     return recorder.granted[0]
 
 
+@pytest.fixture
+def race_warnings(monkeypatch) -> list[tuple[str, dict]]:
+    """A spy, not `capture_logs`: the module-level logger caches its binding at import."""
+    entries: list[tuple[str, dict]] = []
+    monkeypatch.setattr("nativespeaker.api.services.restore.logger.warning",
+                        lambda event, **kwargs: entries.append((event, kwargs)))
+    return entries
+
+
 class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
     """WR-62: the grant keys are DEFERRABLE INITIALLY DEFERRED, so COMMIT is their only evaluation."""
 
-    async def test_a_violation_at_commit_is_the_lost_race_the_flushes_report(self):
+    async def test_a_violation_at_commit_is_the_lost_race_the_flushes_report(self, race_warnings):
         """It reached `unhandled_exception` with a full traceback for a state this file's other
         writers report as an ordinary race in one line."""
         session = _CommittingSession(IntegrityError("COMMIT", {}, Exception("23503")))
@@ -765,6 +774,17 @@ class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
 
         # The winner's rows are what a retry reads, so the refused transaction is rolled back first.
         assert (session.commits, session.rollbacks) == (1, 1)
+        # The line itself. `InternalError.log_level` is None, so the shared handler writes nothing
+        # for the 500: delete this call and the refusal is completely silent to an operator.
+        assert race_warnings == [("restore_grant_race_lost", {"provider": "apple"})]
+
+    async def test_a_restore_that_wins_reports_no_race_control(self, race_warnings):
+        """The control: a line written unconditionally would pass the case above and page on
+        every ordinary restore."""
+        recorder, session = await _same_account_restore(EVALUATED_AT - timedelta(days=1))
+
+        assert (len(recorder.granted), session.commits) == (1, 1)
+        assert race_warnings == []
 
 
 class TestTheStatusIsReReadUnderTheGrantLocksBeforeAnythingIsWritten:
