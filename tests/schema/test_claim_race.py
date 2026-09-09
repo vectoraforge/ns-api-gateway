@@ -55,12 +55,13 @@ async def harness(_schema_db_uri):
 
 
 async def clean_up(harness: _Harness) -> None:
-    """Child-first: usage, grants, then the identity rows, then the users they pointed at."""
+    """Child-first: usage, grants, the challenges bound to the identity rows, then those rows and their users."""
     async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
         owned = (await conn.execute(
-            text("SELECT user_id FROM core.external_identities WHERE issuer = :issuer"),
+            text("SELECT id, user_id FROM core.external_identities WHERE issuer = :issuer"),
             {"issuer": harness.issuer})).all()
-        user_ids = [row[0] for row in owned]
+        identity_ids = [row[0] for row in owned]
+        user_ids = [row[1] for row in owned]
 
         for user_id in user_ids:
             for statement in (
@@ -69,9 +70,14 @@ async def clean_up(harness: _Harness) -> None:
                     "DELETE FROM core.access_grants WHERE user_id = :id"):
                 await conn.execute(text(statement), {"id": user_id})
 
-        for statement in ("DELETE FROM core.external_identities WHERE issuer = :issuer",
-                          "DELETE FROM core.auth_challenges WHERE preauth_issuer = :issuer"):
-            await conn.execute(text(statement), {"issuer": harness.issuer})
+        # Before the identity rows: core.auth_challenges.bound_external_identity_id references them,
+        # so a challenge left behind here would both block the delete and leak into the scratch database.
+        for identity_id in identity_ids:
+            await conn.execute(
+                text("DELETE FROM core.auth_challenges WHERE bound_external_identity_id = :id"),
+                {"id": identity_id})
+        await conn.execute(text("DELETE FROM core.external_identities WHERE issuer = :issuer"),
+                           {"issuer": harness.issuer})
 
         # Last: core.external_identities references core.users ON DELETE RESTRICT.
         for user_id in user_ids:
@@ -89,8 +95,10 @@ async def scalar(harness: _Harness, sql: str, params: dict | None = None):
     return rows[0][0] if rows else None
 
 
-async def commit_anonymous_account(harness: _Harness, *, subject: str) -> uuid.UUID:
-    """One anonymous identity and its user, committed, because each attempt reads them on its own connection."""
+async def commit_anonymous_account(harness: _Harness, *,
+                                   subject: str) -> tuple[uuid.UUID, uuid.UUID]:
+    """One anonymous identity and its user, committed, because each attempt reads them on its own connection.
+    The identity row's id comes back because the challenges these cases seed are bound to it."""
     user_id, identity_id = uuid.uuid4(), uuid.uuid4()
     async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
         await conn.execute(text("INSERT INTO core.users (id) VALUES (:id)"), {"id": user_id})
@@ -101,11 +109,13 @@ async def commit_anonymous_account(harness: _Harness, *, subject: str) -> uuid.U
                  "VALUES (:id, :user_id, :issuer, :subject, 'anonymous', 'active', :now, :now)"),
             {"id": identity_id, "user_id": user_id, "issuer": harness.issuer,
              "subject": subject, "now": NOW})
-    return user_id
+    return user_id, identity_id
 
 
-async def commit_registered_account(harness: _Harness, *, subject: str) -> uuid.UUID:
-    """One google identity and its user, committed, because each attempt reads them on its own connection."""
+async def commit_registered_account(harness: _Harness, *,
+                                    subject: str) -> tuple[uuid.UUID, uuid.UUID]:
+    """One google identity and its user, committed, because each attempt reads them on its own connection.
+    The identity row's id comes back because the challenges these cases seed are bound to it."""
     user_id, identity_id = uuid.uuid4(), uuid.uuid4()
     async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
         await conn.execute(text("INSERT INTO core.users (id) VALUES (:id)"), {"id": user_id})
@@ -118,23 +128,25 @@ async def commit_registered_account(harness: _Harness, *, subject: str) -> uuid.
                  "        :now, :now)"),
             {"id": identity_id, "user_id": user_id, "issuer": harness.issuer,
              "subject": subject, "provider_uid": f"uid-{uuid.uuid4().hex[:16]}", "now": NOW})
-    return user_id
+    return user_id, identity_id
 
 
-async def commit_issued_challenge(harness: _Harness, *, subject: str,
+async def commit_issued_challenge(harness: _Harness, *, identity_id: uuid.UUID,
                                   operation: str) -> tuple[uuid.UUID, str]:
-    """One issued challenge; the completion under test claims it itself, so `claimed_at` starts NULL."""
+    """One issued challenge; the completion under test claims it itself, so `claimed_at` starts NULL.
+    Bound to the identity row and carrying no preauth pair, which is the only shape `ChallengesDB.issue`
+    can produce for a claim: both claim routes depend on `get_linked_identity`."""
     row_id = uuid.uuid4()
     challenge_id = f"handle-{uuid.uuid4().hex[:16]}"
     async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
         await conn.execute(
             text("INSERT INTO core.auth_challenges "
-                 "(id, challenge_id, operation, preauth_issuer, preauth_subject, "
+                 "(id, challenge_id, operation, bound_external_identity_id, "
                  " expires_at, created_at) "
                  "VALUES (:id, :challenge_id, CAST(:operation AS core.auth_operation), "
-                 "        :issuer, :subject, :expires_at, :now)"),
+                 "        :identity_id, :expires_at, :now)"),
             {"id": row_id, "challenge_id": challenge_id, "operation": operation,
-             "issuer": harness.issuer, "subject": subject,
+             "identity_id": identity_id,
              "expires_at": NOW + timedelta(seconds=300), "now": NOW})
     return row_id, challenge_id
 
@@ -201,6 +213,8 @@ class _Attempt:
     subject: str
     challenge_row_id: uuid.UUID
     challenge_id: str
+    # The row the challenge is bound to: consuming must leave that binding in place.
+    identity_row_id: uuid.UUID
     operation: str = "claim_anonymous_grant"
     # What the call produced: the entitlement read after commit, or the rejection it raised.
     result: Entitlement | AppError | None = None
@@ -223,11 +237,13 @@ def status_of(attempt: _Attempt) -> int:
 
 
 async def prepare_attempt(harness: _Harness, *, name: str, subject: str,
+                          identity_id: uuid.UUID,
                           operation: str = "claim_anonymous_grant") -> _Attempt:
-    row_id, challenge_id = await commit_issued_challenge(harness, subject=subject,
+    row_id, challenge_id = await commit_issued_challenge(harness, identity_id=identity_id,
                                                          operation=operation)
     return _Attempt(name=name, subject=subject, challenge_row_id=row_id,
-                    challenge_id=challenge_id, operation=operation)
+                    challenge_id=challenge_id, identity_row_id=identity_id,
+                    operation=operation)
 
 
 async def resolve_identity(harness: _Harness, subject: str):
@@ -289,9 +305,11 @@ class TestTwoSimultaneousFirstClaimsAllocateOnce:
     async def raced(self, harness):
         """Two challenges for one anonymous account, released together and held until both have re-resolved."""
         subject = f"claimant-{uuid.uuid4().hex[:8]}"
-        user_id = await commit_anonymous_account(harness, subject=subject)
-        first = await prepare_attempt(harness, name="first", subject=subject)
-        second = await prepare_attempt(harness, name="second", subject=subject)
+        user_id, identity_id = await commit_anonymous_account(harness, subject=subject)
+        first = await prepare_attempt(harness, name="first", subject=subject,
+                                      identity_id=identity_id)
+        second = await prepare_attempt(harness, name="second", subject=subject,
+                                       identity_id=identity_id)
 
         first_ready, second_ready = asyncio.Event(), asyncio.Event()
         await asyncio.gather(
@@ -340,15 +358,17 @@ class TestTwoSimultaneousFirstClaimsAllocateOnce:
             {"issuer": harness.issuer, "s": raced["subject"]})
         assert rows == [(NOW, "ios_devicecheck")]
 
-    async def test_both_challenges_were_consumed_and_their_verifiers_cleared(self, harness, raced):
+    async def test_both_challenges_were_consumed_and_their_bindings_kept(self, harness, raced):
         """The loser consumes too, so a retry needs a fresh prepare rather than a replay of either handle."""
         for attempt in raced["attempts"]:
             rows = await read(
                 harness,
-                "SELECT consumed_at, preauth_subject FROM core.auth_challenges WHERE id = :id",
+                "SELECT consumed_at, bound_external_identity_id "
+                "FROM core.auth_challenges WHERE id = :id",
                 {"id": attempt.challenge_row_id})
             assert rows[0][0] is not None, f"the {attempt.name} attempt left its challenge unconsumed"
-            assert rows[0][1] is None
+            # The binding is what a replay would be checked against, so consuming must not clear it.
+            assert rows[0][1] == attempt.identity_row_id
 
     async def test_the_loser_answers_two_hundred_with_the_winners_entitlement(self, raced):
         """D-13, inverting the create race: the loser is answered as a repeat is, not with a rejection."""
@@ -374,10 +394,12 @@ class TestTwoSimultaneousRegisteredClaimsAllocateOnce:
     async def raced(self, harness):
         """Two challenges for one registered account, released together and held until both have re-resolved."""
         subject = f"claimant-{uuid.uuid4().hex[:8]}"
-        user_id = await commit_registered_account(harness, subject=subject)
+        user_id, identity_id = await commit_registered_account(harness, subject=subject)
         first = await prepare_attempt(harness, name="first", subject=subject,
+                                      identity_id=identity_id,
                                       operation="claim_registered_grant")
         second = await prepare_attempt(harness, name="second", subject=subject,
+                                       identity_id=identity_id,
                                        operation="claim_registered_grant")
 
         first_ready, second_ready = asyncio.Event(), asyncio.Event()
@@ -427,15 +449,17 @@ class TestTwoSimultaneousRegisteredClaimsAllocateOnce:
             {"issuer": harness.issuer, "s": raced["subject"]})
         assert rows == [(NOW, None)]
 
-    async def test_both_challenges_were_consumed_and_their_verifiers_cleared(self, harness, raced):
+    async def test_both_challenges_were_consumed_and_their_bindings_kept(self, harness, raced):
         """The loser consumes too, so a retry needs a fresh prepare rather than a replay of either handle."""
         for attempt in raced["attempts"]:
             rows = await read(
                 harness,
-                "SELECT consumed_at, preauth_subject FROM core.auth_challenges WHERE id = :id",
+                "SELECT consumed_at, bound_external_identity_id "
+                "FROM core.auth_challenges WHERE id = :id",
                 {"id": attempt.challenge_row_id})
             assert rows[0][0] is not None, f"the {attempt.name} attempt left its challenge unconsumed"
-            assert rows[0][1] is None
+            # The binding is what a replay would be checked against, so consuming must not clear it.
+            assert rows[0][1] == attempt.identity_row_id
 
     async def test_the_loser_answers_two_hundred_with_the_winners_entitlement(self, raced):
         """D-13, inverting the create race: the loser is answered as a repeat is, not with a rejection."""
@@ -491,11 +515,13 @@ class TestTwoSimultaneousConversionsSupersedeOnce:
     async def raced(self, harness):
         """Two conversions on one account holding an active anonymous grant, held until both have claimed."""
         subject = f"claimant-{uuid.uuid4().hex[:8]}"
-        user_id = await commit_registered_account(harness, subject=subject)
+        user_id, identity_id = await commit_registered_account(harness, subject=subject)
         anonymous_id = await commit_active_anonymous_grant(harness, user_id=user_id)
         first = await prepare_attempt(harness, name="first", subject=subject,
+                                      identity_id=identity_id,
                                       operation="claim_registered_grant")
         second = await prepare_attempt(harness, name="second", subject=subject,
+                                       identity_id=identity_id,
                                        operation="claim_registered_grant")
 
         # Held before the challenge commit, not before the first flush: a conversion takes the grant
@@ -566,15 +592,17 @@ class TestTwoSimultaneousConversionsSupersedeOnce:
             {"id": raced["user_id"]})
         assert rows == [(SEEDED_PERIOD, SEEDED_USED)]
 
-    async def test_both_challenges_were_consumed_and_their_verifiers_cleared(self, harness, raced):
+    async def test_both_challenges_were_consumed_and_their_bindings_kept(self, harness, raced):
         """The loser consumes too, so a retry needs a fresh prepare rather than a replay of either handle."""
         for attempt in raced["attempts"]:
             rows = await read(
                 harness,
-                "SELECT consumed_at, preauth_subject FROM core.auth_challenges WHERE id = :id",
+                "SELECT consumed_at, bound_external_identity_id "
+                "FROM core.auth_challenges WHERE id = :id",
                 {"id": attempt.challenge_row_id})
             assert rows[0][0] is not None, f"the {attempt.name} attempt left its challenge unconsumed"
-            assert rows[0][1] is None
+            # The binding is what a replay would be checked against, so consuming must not clear it.
+            assert rows[0][1] == attempt.identity_row_id
 
     async def test_the_loser_answers_two_hundred_with_the_winners_entitlement(self, raced):
         """D-13, inverting the create race: the loser is answered as a repeat is, not with a rejection."""
