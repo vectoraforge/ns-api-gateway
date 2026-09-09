@@ -88,10 +88,11 @@ class FirebaseAdminLookup:
             # Definitive, spends no retry budget, and listed before the FirebaseError it subclasses.
             logger.info("firebase_revoke_not_found")
             raise UserNotFound(stage="token_revocation") from None
-        except ValueError as error:
+        except ValueError:
             # The SDK checks the uid before it sends the request, so another attempt answers the same.
-            logger.warning("firebase_revoke_subject_malformed", detail=str(error))
-            raise RevocationUnconfirmed(stage="subject_rejected") from error
+            # The SDK's own message embeds the uid, so it is not admissible here.
+            logger.warning("firebase_revoke_subject_malformed")
+            raise RevocationUnconfirmed(stage="subject_rejected") from None
         except google.auth.exceptions.GoogleAuthError as error:
             # Not a FirebaseError and raised before the request is sent, so it needs its own arm.
             logger.warning("firebase_credential_unavailable", detail=str(error))
