@@ -577,9 +577,11 @@ class TestThePushTokenCheck:
 class TestTheClaimPinsArePostDecodeComparisons:
     """D-09's two properties, which a passing verification case would otherwise hide."""
 
-    def test_bounded_reason_still_has_exactly_five_members(self):
-        """A sixth member would be a new refusal word the client-visible answer does not carry."""
-        assert len(BoundedReason) == 5
+    def test_bounded_reason_stays_inside_the_closed_set_the_specs_name(self):
+        """A member outside those eight would be a refusal word no spec closed over."""
+        assert set(BoundedReason) <= {"missing_token", "malformed", "duplicate_authorization",
+                                      "bad_signature", "issuer_mismatch", "audience_mismatch",
+                                      "expired", "empty_subject"}
 
     def test_email_is_compared_after_decode_rather_than_required(self):
         """In `require`, a Google token shape without `email` would fail like a forgery (P-03)."""

@@ -14,6 +14,7 @@ from nativespeaker.api.auth.google_play import (
     notification_key_for,
     subscription_notification_from,
 )
+from nativespeaker.api.auth.jwt_verifier import BoundedReason
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
@@ -53,11 +54,19 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession]:
 # `auto_error=False`: our own code raises, so the rejection keeps its class, code and log event.
 _bearer = HTTPBearer(auto_error=False)
 
+#: The raw ASGI field name. ASGI lowercases every field name, so differently-cased duplicates fold into it.
+_AUTHORIZATION = b"authorization"
+
 
 async def get_identity(request: Request,
                        credential: HTTPAuthorizationCredentials | None = Depends(_bearer),
                        ) -> Identity:
     """Accept the token and resolve the identity it names -- once per request."""
+    # Counted on the raw scope before any value is read: the merged view returns the first field
+    # value and hides the rest, so a second Authorization field would otherwise win by position.
+    if sum(1 for name, _value in request.scope["headers"] if name == _AUTHORIZATION) > 1:
+        raise InvalidExternalJwt(bounded_reason=BoundedReason.duplicate_authorization)
+
     if credential is None:
         raise InvalidExternalJwt(bounded_reason=None)
 

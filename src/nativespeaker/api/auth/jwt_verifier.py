@@ -22,6 +22,7 @@ from jwt.exceptions import (
 class BoundedReason(StrEnum):
     """Rejection reasons for logs and metric labels; all of them surface the same copy to the client."""
     bad_signature = "bad_signature"
+    duplicate_authorization = "duplicate_authorization"
     issuer_mismatch = "issuer_mismatch"
     audience_mismatch = "audience_mismatch"
     expired = "expired"

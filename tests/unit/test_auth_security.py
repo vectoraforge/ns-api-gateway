@@ -103,6 +103,18 @@ class TestBearerTokenEdgeCases:
         assert response.status_code == 401
         assert response.json()["code"] == "auth_required"
 
+    @pytest.mark.parametrize("first_is_valid", [True, False])
+    def test_two_authorization_field_lines_are_rejected(self, probe_client, first_is_valid):
+        """Two separate Authorization lines reject whichever one is usable: never first-wins."""
+        # Both orders, because the merged header view hides everything after the first value:
+        # with a valid credential first, a positional read would accept and answer 200.
+        usable, unusable = f"Bearer {make_token()}", "Bearer not.a.jwt"
+        values = [usable, unusable] if first_is_valid else [unusable, usable]
+        response = probe_client.get("/probe",
+                                    headers=[("Authorization", value) for value in values])
+        assert response.status_code == 401
+        assert response.json()["code"] == "auth_required"
+
 
 class TestEveryRealUnauthorizedCarriesTheChallenge:
     """RFC 9110 requires WWW-Authenticate on a 401. Asserted against real requests, never a raised class."""

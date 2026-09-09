@@ -355,7 +355,7 @@ class TestExternalIdentityModel:
 
 
 class TestTheWireContractTheFrameworkNowEnforces:
-    """What `HTTPBearer(auto_error=False)` admits and refuses, written down rather than left implicit."""
+    """What the barrier admits and refuses at the wire, written down rather than left implicit."""
 
     def test_a_padded_credential_value_is_accepted_which_loosens_the_wire_contract(self):
         """A-09: the scheme/param split strips the padding, so a value the extractor called
@@ -365,14 +365,15 @@ class TestTheWireContractTheFrameworkNowEnforces:
                                          headers={"Authorization": f"Bearer   {token}  "})
         assert response.status_code == 200
 
-    def test_a_duplicate_authorization_field_is_resolved_by_taking_the_first(self):
-        """The first/last resolution the old extractor refused to make: the second value is hidden."""
+    def test_a_duplicate_authorization_field_is_refused_rather_than_resolved(self):
+        """The valid credential comes first, so a first-wins read would authenticate this request."""
         token = make_token(sub=SUBJECT)
         response = _client(row=None).get(
             "/admitted",
             headers=[("Authorization", f"Bearer {token}"),
                      ("Authorization", "Bearer not.a.jwt")])
-        assert response.status_code == 200
+        assert response.status_code == 401
+        assert response.json() == {"code": "auth_required"}
 
     def test_trailing_content_after_the_token_degrades_to_a_verification_failure(self):
         """Named by the wire-contract rule as its own rejection; it is now a bad signature."""
