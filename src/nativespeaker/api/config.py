@@ -175,7 +175,17 @@ class EnvironmentConfig(BaseConfig):
         config_path = self.config_dir / self.config_filename
         prompt_path = self.config_dir / self.prompt_filename
         examples_path = self.config_dir / self.examples_filename
-        self.app_config = AppConfig(**_mapping(config_path),
+        mapping = _mapping(config_path)
+        # `prompt` and `examples` are `AppConfig` fields like any other, but they alone come from
+        # the two sibling files rather than from `config.yaml`, and nothing in `config.yaml` says
+        # so. Declaring either there is the obvious mistake, and unchecked it reaches the call
+        # below as a duplicate keyword: a bare `TypeError` that names neither file nor the
+        # collision, and a pod that crashloops on it.
+        collided = mapping.keys() & {"prompt", "examples"}
+        if collided:
+            raise ValueError(f"{config_path} declares {sorted(collided)}, which come from "
+                             f"{self.prompt_filename} and {self.examples_filename}")
+        self.app_config = AppConfig(**mapping,
                                     prompt=prompt_path.read_text(),
                                     examples=_mapping(examples_path))
         return self

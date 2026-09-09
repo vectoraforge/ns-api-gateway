@@ -186,6 +186,19 @@ class TestAYamlFileThatIsNotAMappingNamesItself:
         """The control: a loader that rejected everything would pass both cases above."""
         self._load(config="model:\n  name: gpt-4\n", examples='en:\n  - "Example 1"\n')
 
+    @pytest.mark.parametrize("key", ["prompt", "examples"])
+    def test_a_key_that_comes_from_a_sibling_file_names_both_files(self, key):
+        """WR-04. Both are `AppConfig` fields and `config.yaml` says nothing about where they come
+        from, so declaring one there is the obvious mistake -- and it used to crashloop the pod on
+        a bare `TypeError` naming neither file."""
+        with pytest.raises(ValidationError) as raised:
+            self._load(config=f"model:\n  name: gpt-4\n{key}: anything\n",
+                       examples='en:\n  - "Example 1"\n')
+
+        message = str(raised.value)
+        assert f"config.yaml declares ['{key}']" in message
+        assert "prompt.txt" in message and "examples.yaml" in message
+
 
 class TestAnAbsentCredentialBlockIsReportedUnderItsOwnName:
     """37.4 WR-05. `default_factory` on a model whose own fields are required raised from inside the
