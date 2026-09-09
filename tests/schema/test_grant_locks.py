@@ -349,9 +349,14 @@ class TestTheActivationAddsNoThirdLockTier:
     async def test_the_writer_locks_the_grant_rows_then_their_usage_rows(self, activation_statements):
         """The ORDER BY is the lock order itself, not presentation, so it is asserted with the tier."""
         taken = locking(activation_statements["statements"])
+        # Two grant-tier reads, the one-active set first: it contains the effective subset the
+        # second one takes, so one grant-tier order holds across both.
         assert [relation_of(statement) for statement in taken] == ["core.access_grants",
+                                                                   "core.access_grants",
                                                                    "core.user_monthly_usage"]
-        assert "ORDER BY core.access_grants.id ASC" in taken[0]
+        # Every grant-tier read, not the first alone: an unordered second one is a second order.
+        for statement in taken[:2]:
+            assert "ORDER BY core.access_grants.id ASC" in statement
 
     async def test_exactly_two_distinct_lock_tiers_are_taken_on_the_claim_path(self,
                                                                                activation_statements):
@@ -857,9 +862,9 @@ class TestTheSubscriptionWriterAddsNoThirdLockTier:
                                                                             ingestion_statements):
         """The ORDER BY is the lock order itself, not presentation, so it is asserted with the tier."""
         taken = locking(ingestion_statements["statements"])
-        # Two grant-tier reads, the status-only one first: it contains the effective one, so one order holds.
+        # One grant-tier read: the whole one-active set, which is the set `write_subscription_grant`
+        # supersedes, so the usage tier behind it covers every row this writer touches.
         assert [relation_of(statement) for statement in taken] == ["core.access_grants",
-                                                                   "core.access_grants",
                                                                    "core.user_monthly_usage"]
         assert "ORDER BY core.access_grants.id ASC" in taken[0]
 
