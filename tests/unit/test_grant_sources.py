@@ -41,6 +41,9 @@ WRITER_SUBSCRIPTION = "write_subscription_grant"
 # Every module under `src/` that names the subscription member off its enum. A new entry is a new site.
 NAMING_MODULES_SUBSCRIPTION = {
     "nativespeaker/api/crud/subscriptions.py",
+    # A reader, never a writer: `RestoreService` picks the term out of the grant the webhook wrote
+    # for this subscription, and the construction-site case above is what keeps it a reader.
+    "nativespeaker/api/services/restore.py",
 }
 
 

@@ -23,7 +23,7 @@ from nativespeaker.api.errors import (
 )
 from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.services.restore import RestoreService
-from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
+from nativespeaker.api.tables import AccessGrantSource, PurchaseProvider, SubscriptionStatus
 from nativespeaker.api.tables.users import User
 from unit.test_app_store_notifications import (
     APPLE_ROOT_G3,
@@ -806,6 +806,73 @@ class TestTheRestoredGrantNeverBeginsAfterTheInstantThatWroteIt:
         granted = await _grant_written(None)
 
         assert granted["starts_at"] == EVALUATED_AT
+
+
+# The window the webhook recorded when it wrote `grace_period`, which no client proof can restate.
+GRACE_WINDOW_ENDS = EVALUATED_AT + timedelta(days=14)
+
+
+class _GraceRecorder(_GrantRecorder):
+    """The canonical row in `grace_period`, and -- where the webhook wrote one -- the grant it
+    wrote for that row, answered from the grant locks as `lock_grants_of` answers in production."""
+
+    def __init__(self, destination, ends_at: datetime | None) -> None:
+        super().__init__(destination, SubscriptionStatus.grace_period)
+        # The row the webhook left: the pre-lock read and the read under the locks agree on it.
+        self._stored.status = SubscriptionStatus.grace_period
+        self._locked = ([] if ends_at is None
+                        else [SimpleNamespace(source=AccessGrantSource.subscription,
+                                              subscription_id=self._stored.id,
+                                              user_id=destination,
+                                              ends_at=ends_at)])
+
+    async def lock_grants_of(self, user_ids):
+        return self._locked
+
+
+async def _grace_restore(ends_at: datetime | None) -> tuple[_GraceRecorder, _CommittingSession]:
+    """One same-account restore of an Apple proof whose paid term has lapsed -- the only proof
+    Apple can produce for a subscription it has put in grace -- against a `grace_period` row."""
+    session = _CommittingSession()
+    caller = _caller()
+    recorder = _GraceRecorder(caller.user.id, ends_at)
+    proof = RestoredSubscription(provider=PurchaseProvider.apple,
+                                 external_id=ORIGINAL_TRANSACTION_ID,
+                                 product_id=PRODUCT_ID,
+                                 tier_id=TIER_ID,
+                                 attribution_token=ATTRIBUTION_TOKEN,
+                                 status=SubscriptionStatus.expired,
+                                 purchased_at=EVALUATED_AT - timedelta(days=31),
+                                 # The paid term, lapsed: what put the subscription into grace.
+                                 expires_at=EVALUATED_AT - timedelta(days=1),
+                                 # Apple's grace window lives in the renewal payload, and a bare
+                                 # signed transaction carries none, so this is never anything else.
+                                 grace_period_expires_at=None)
+    service = _service(session, _ScriptedAppStore(session, proof))
+    service.subscriptions_db = recorder
+    service.purchases_db = _NoAttribution()
+
+    await service.restore(identity=caller, provider=PurchaseProvider.apple,
+                          restore_proof="a-signed-transaction")
+    return recorder, session
+
+
+class TestTheTermIsReadFromWhateverDecidedTheStatus:
+    """CR-25: the status came from the canonical row and the window from the client's proof, which
+    on Apple can never agree for `grace_period` -- the proof states no grace window at all -- so a
+    subscriber the store had put in grace was refused. The row's own webhook wrote both."""
+
+    async def test_a_grace_row_restores_on_the_window_its_own_webhook_wrote(self):
+        recorder, session = await _grace_restore(GRACE_WINDOW_ENDS)
+
+        assert session.commits == 1
+        assert [granted["ends_at"] for granted in recorder.granted] == [GRACE_WINDOW_ENDS]
+
+    async def test_a_grace_row_with_no_recorded_term_is_still_refused_control(self):
+        """The control: the case above passes because the locked grant answered, not because the
+        term check was loosened -- with nothing recording the window, nothing entitles anything."""
+        with pytest.raises(RestoreSubscriptionNotEntitled):
+            await _grace_restore(None)
 
 
 class _Orig(Exception):

@@ -25,7 +25,7 @@ from nativespeaker.api.errors import (
     RestoreTransferRejected,
 )
 from nativespeaker.api.schemas.auth import LinkedIdentity
-from nativespeaker.api.tables import PurchaseProvider
+from nativespeaker.api.tables import AccessGrantSource, PurchaseProvider
 
 logger = structlog.get_logger()
 
@@ -63,19 +63,12 @@ class RestoreService:
         if status not in ENTITLED_STATUSES:
             raise RestoreSubscriptionNotEntitled
 
-        # The term is the proof's and the status is the row's, so the pair is checked before it is written.
-        term_ends_at = term_end_for(status, proof)
         # The captured instant stands in where the store gave no purchase date for this term, and
         # caps it where it did: `10-restore-subscription.md:84(3)` requires `starts_at <= now`, and
         # a store date ahead of this server's clock wrote a grant the shared effective predicate
         # never reads while it still held the one-active slot. Clamped here rather than at the
         # write, so the term check below is made against the value the row will carry.
         starts_at = min(proof.purchased_at or self.evaluated_at, self.evaluated_at)
-        if term_ends_at is None or term_ends_at <= self.evaluated_at:
-            # A proof carrying no open term entitles nothing, whatever the canonical row still says.
-            # With `starts_at` capped at this instant, this arm also refuses every term that would
-            # trip the row's own `CHECK (ends_at IS NULL OR ends_at > starts_at)`.
-            raise RestoreSubscriptionNotEntitled
 
         token = proof.attribution_token
         # The nullable resolve, never the completeness-checking read: no row here is ordinary.
@@ -105,8 +98,32 @@ class RestoreService:
         # the deferred entitlement key at COMMIT, as an opaque 500.
         settled_status = await self.subscriptions_db.read_status(proof.provider, proof.external_id)
         if settled_status is not None and settled_status != status:
-            # Refused whichever way it moved: the term was read off the pre-lock status, so an
-            # entitled status that merely changed spelling carries a window this proof never checked.
+            # Refused whichever way it moved: the term below is read for the status this decided,
+            # so an entitled status that merely changed spelling carries a window nothing checked.
+            raise RestoreSubscriptionNotEntitled
+
+        # The window travels with the status that decided entitlement. Where the canonical row
+        # decided it, the webhook that wrote that status also wrote the grant carrying the window
+        # it wrote it with, and `lock_grants_of` above holds that row. Reading the window off the
+        # proof instead asked a second artifact for it, and an Apple proof states no grace window
+        # at all -- `verify_transaction` sets `grace_period_expires_at=None` unconditionally,
+        # because Apple's grace window lives in the renewal payload a bare signed transaction does
+        # not carry -- so a subscriber the store had actually put in grace was told there was no
+        # subscription to restore. `10-restore-subscription.md:90`: later terms come from
+        # ingestion's renewal and never from restore, so where the grant is, its end is the term.
+        # At most one row answers: `write_subscription_grant` supersedes every active grant of this
+        # subscription before it inserts the next.
+        recorded_term = [grant.ends_at for grant in marked_active
+                         if stored is not None
+                         and grant.source is AccessGrantSource.subscription
+                         and grant.subscription_id == stored.id]
+        # The proof is the term's source only where no grant records one: adoption of an unowned
+        # row, and adoption-with-creation, where nothing but the proof has seen this subscription.
+        term_ends_at = recorded_term[0] if recorded_term else term_end_for(status, proof)
+        if term_ends_at is None or term_ends_at <= self.evaluated_at:
+            # No open term entitles nothing, whatever the canonical row still says. With
+            # `starts_at` capped at this instant, this arm also refuses every term that would trip
+            # the row's own `CHECK (ends_at IS NULL OR ends_at > starts_at)`.
             raise RestoreSubscriptionNotEntitled
 
         if stored is None:

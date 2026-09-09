@@ -318,11 +318,13 @@ class TestTheAdoptionBranches:
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach:
-    """CR-02: the status is the row's and the term is the proof's, so the pair is checked first."""
+    """CR-02, CR-25: the term is read from whatever decided the status -- the grant the row's own
+    webhook wrote where one records it, and the client's proof where nothing else does."""
 
     async def test_a_stored_grace_row_and_an_apple_proof_attaches_nothing(
             self, restore_client, _db_transaction, scripted_app_store_notifications):
-        """An Apple proof carries no grace window, so a stored grace row has no term to attach."""
+        """An Apple proof carries no grace window, so a grace row with no grant recording one
+        has no term to attach from either source."""
         user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
                                       provider=IdentityProvider.google)
         external_id = f"e2e-grace-row-{uuid4()}"
