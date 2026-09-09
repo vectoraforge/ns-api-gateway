@@ -11,7 +11,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.crud.grants import GrantsDB
 from nativespeaker.api.crud.violations import is_unique_violation
-from nativespeaker.api.errors import MissingUsageRowError
+from nativespeaker.api.errors import MissingUsageRowError, MultipleEffectiveGrantsError
 from nativespeaker.api.tables import (
     AccessGrant,
     AccessGrantSource,
@@ -368,11 +368,14 @@ class SubscriptionsDB:
         period = monthly_period_for(evaluated_at)
         # The allowance is a UTC calendar month's, not a store term's, so a supersession inside one month carries it.
         carried = 0
-        for grant in superseded:
-            # This account's own rows only: on a move `superseded` also holds the old owner's, and
-            # `ix_access_grants_one_active_per_user` leaves at most one of them for this user.
-            if grant.user_id != user_id:
-                continue
+        # This account's own rows only: on a move `superseded` also holds the old owner's.
+        mine = [grant for grant in superseded if grant.user_id == user_id]
+        if len(mine) > 1:
+            # A tripwire, not a tie-break: `ix_access_grants_one_active_per_user` leaves at most one
+            # of them for this user, and keeping the last row's count would erase a higher one and
+            # hand the account free credits. The same fail-closed answer the sibling readers give.
+            raise MultipleEffectiveGrantsError(len(mine), user_id)
+        for grant in mine:
             usage = await self.grants_db.read_usage(grant.id)
             if usage is None:
                 # Fail closed, never mint: a grant with no usage row is a failed write, not a fresh allowance.
