@@ -71,5 +71,9 @@ select = ["E", "W", "F", "I", "UP"]
 
 [tool.pogo]
 migrations = './migrations'
-database_config = 'postgres://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}'
+# One already-assembled variable, never five interpolated ones: pogo substitutes them raw
+# (`config.py` builds the same string through `URL.create` for the reason stated there -- a password
+# carrying `@ / : ? #` re-partitions a DSN), and migrations are the one operation that runs against
+# production with DDL rights. `.env.example` says the password in it must be percent-encoded.
+database_config = '{DATABASE_URL}'
 schema = 'api'
