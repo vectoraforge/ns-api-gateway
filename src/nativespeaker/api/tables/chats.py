@@ -37,7 +37,7 @@ class Chat(SQLModel, table=True):
     __table_args__ = {"schema": "core"}
 
 
-    id: UUID = Field(primary_key=True)
+    id: UUID = Field(default_factory=uuid7, primary_key=True)
     # `ix_chats_user_id` in the migration, which owns every index; this metadata declares none.
     user_id: UUID = Field(foreign_key="core.users.id")
     title: str = Field()

@@ -2,17 +2,29 @@
 A field that declares either states a second version of the schema, and `SQLModel.metadata` is
 mirrored by nothing -- a `create_all` bootstrap would build a database the inventory suite fails on.
 """
-from uuid import uuid7
+from uuid import UUID, uuid7
 
 from sqlmodel import SQLModel
 
 # Imported for the registration alone: a model no module imported is in no metadata.
-import nativespeaker.api.tables  # noqa: F401
+import nativespeaker.api.tables
 from nativespeaker.api.tables.grants import AccessGrant, AccessTier, UserMonthlyUsage
 
 TABLES = SQLModel.metadata.tables
 
 _ENTITLEMENT_TABLES = (AccessTier, AccessGrant, UserMonthlyUsage)
+
+# Every mapped model the package exports, read off the package namespace rather than restated,
+# so a table added later is walked without this file being edited.
+_MAPPED_TABLES = tuple(sorted(
+    (exported for exported in vars(nativespeaker.api.tables).values()
+     if isinstance(exported, type) and issubclass(exported, SQLModel)
+     and getattr(exported, "__table__", None) is not None),
+    key=lambda model: model.__name__))
+
+_UUID_KEYED_TABLES = tuple(model for model in _MAPPED_TABLES
+                           if "id" in model.model_fields
+                           and model.model_fields["id"].annotation is UUID)
 
 
 class TestTheMetadataDeclaresNoIndex:
@@ -54,6 +66,24 @@ class TestTheEntitlementTablesHoldNoSecondClock:
     def test_the_grant_id_factory_is_still_there_control(self):
         """The control: the RNG is not the clock, and `crud` reads `activated.id` before the flush."""
         assert AccessGrant.model_fields["id"].default_factory is uuid7
+
+
+class TestEveryUuidPrimaryKeyMintsItsOwnValue:
+    """WR-20: `Chat.id` alone declared no factory. `table=True` skips validation, so the omission
+    was not a `ValidationError` but a NULL sent to the primary key -- sqlstate 23502, which
+    `is_unique_violation` reads as False, so every writer re-raised it as an opaque 500 rather
+    than as the race the arm was written for. `AccessTier.id` is out of the walk by annotation:
+    its key is the seeded tier name, not a minted id."""
+
+    def test_no_uuid_keyed_table_leaves_its_id_unminted(self):
+        unminted = sorted(model.__name__ for model in _UUID_KEYED_TABLES
+                          if model.model_fields["id"].default_factory is not uuid7)
+
+        assert unminted == []
+
+    def test_the_walk_sees_the_tables_control(self):
+        """The control: an empty walk would pass the case above without reading a field."""
+        assert {model.__name__ for model in _UUID_KEYED_TABLES} >= {"Chat", "Message", "User"}
 
 
 class TestTheWalkFires:

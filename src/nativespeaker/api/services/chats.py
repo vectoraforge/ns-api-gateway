@@ -1,5 +1,5 @@
 from datetime import datetime
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import orjson
 import structlog
@@ -91,7 +91,7 @@ class ChatService:
         if chats_count >= self.chats_limit:
             raise ChatHistoryLimitError(self.chats_limit)
 
-        chat = Chat(id=uuid4(), user_id=user_id, title=phrase, lang=lang)
+        chat = Chat(user_id=user_id, title=phrase, lang=lang)
         input_model = AnalyzeInput(phrase=phrase, context=context)
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
                                 content=input_model.model_dump(exclude_none=True))
