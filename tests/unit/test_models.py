@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from nativespeaker.api.auth.google_play import developer_notification_from
+from nativespeaker.api.crud.challenges import new_challenge_id
 from nativespeaker.api.errors import AnalysisError, AppError, InvalidChatError, UnsupportedLanguageError
 from nativespeaker.api.schemas.api import (
     ChatRequest,
@@ -15,6 +16,7 @@ from nativespeaker.api.schemas.api import (
     MessageRequest,
     MessageResponse,
 )
+from nativespeaker.api.schemas.auth import CompletionRequest, GrantClaimRequest
 from nativespeaker.api.schemas.llm import (
     AnalyzeInput,
     AnalyzeResponse,
@@ -318,6 +320,53 @@ _BOUNDED_WEBHOOK_FIELDS = [
 
 # The upper end of the range a real V2 notification occupies, certificate chain included.
 REALISTIC_APP_STORE_ENVELOPE = 24 * 1024
+
+# What `ChallengesDB.new_challenge_id` actually mints: 16 CSPRNG bytes, base64url, unpadded.
+CHALLENGE_ID_CHARACTERS = len(new_challenge_id())
+
+# The upper end of the range a real DeviceCheck token occupies, measured nowhere but assumed
+# generously: Apple documents no ceiling, so the bound is a flood stop and not a format check.
+REALISTIC_DEVICE_TOKEN = 1024
+
+
+def _bound_of(model, field: str) -> int:
+    """The bound the field carries, read off the model rather than restated here."""
+    return next(rule.max_length for rule in model.model_fields[field].metadata
+                if getattr(rule, "max_length", None) is not None)
+
+
+# Every string an authenticated auth body carries, with the real value each one must stay above.
+_BOUNDED_AUTH_FIELDS = [
+    (CompletionRequest, "challenge_id", {}, CHALLENGE_ID_CHARACTERS),
+    (GrantClaimRequest, "challenge_id", {"device_token": "t"}, CHALLENGE_ID_CHARACTERS),
+    (GrantClaimRequest, "device_token", {"challenge_id": "c"}, REALISTIC_DEVICE_TOKEN),
+]
+
+
+class TestTheAuthBodyStringsAreBounded:
+    """WR-24. `device_token` is relayed verbatim to Apple, and `challenge_id` costs a store lookup."""
+
+    @pytest.mark.parametrize("model,field,other,realistic", _BOUNDED_AUTH_FIELDS)
+    def test_an_oversized_value_is_refused(self, model, field, other, realistic):
+        limit = _bound_of(model, field)
+
+        with pytest.raises(ValidationError) as refusal:
+            model(**other, **{field: "a" * (limit + 1)})
+
+        assert f"at most {limit}" in str(refusal.value)
+
+    @pytest.mark.parametrize("model,field,other,realistic", _BOUNDED_AUTH_FIELDS)
+    def test_the_bound_stands_well_above_the_real_value(self, model, field, other, realistic):
+        """The control: a bound at or below the real value would refuse every genuine request."""
+        limit = _bound_of(model, field)
+        assert limit >= 2 * realistic
+
+        assert len(getattr(model(**other, **{field: "a" * limit}), field)) == limit
+
+    @pytest.mark.parametrize("model,field,other,realistic", _BOUNDED_AUTH_FIELDS)
+    def test_an_empty_value_is_still_refused(self, model, field, other, realistic):
+        with pytest.raises(ValidationError):
+            model(**other, **{field: ""})
 
 
 class TestTheUnauthenticatedWebhookBodiesAreBounded:
