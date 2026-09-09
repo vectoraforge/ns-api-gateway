@@ -99,12 +99,15 @@ _NO_ADMIN_CREDENTIAL = (
 
 
 # firebase_token signs in with a password, whose providerData the classifier rejects; only signUp is anonymous.
-@pytest.fixture(scope="session")
-def anonymous_firebase_credential(_app_config):
-    """A genuinely anonymous Firebase user, minted for real; returns (id_token, local_id), or skips."""
+# Module-scoped, not session-scoped, so the minted user can be deleted through the Admin app the
+# lifespan built: that app is torn down with the lifespan, and a session fixture outlives it.
+@pytest.fixture(scope="module")
+def anonymous_firebase_credential(_app_lifespan, _app_config):
+    """A genuinely anonymous Firebase user, minted for real; yields (id_token, local_id), or skips.
+    Deleted on the way out, as google_linked_firebase_credential does: the project is shared, so a
+    user left behind is permanent, and one accumulates per run."""
     if not _admin_credential_configured():
         pytest.skip(_NO_ADMIN_CREDENTIAL)
-    # Each call leaves a permanent user in the shared Firebase project, and nothing deletes it.
     resp = httpx.post(
         f"https://identitytoolkit.googleapis.com/v1/accounts:signUp"
         f"?key={_identity_toolkit_key(_app_config)}",
@@ -113,7 +116,13 @@ def anonymous_firebase_credential(_app_config):
     resp.raise_for_status()
     data = resp.json()
     # Subscripting rather than .get(): if returnSecureToken were ever ignored, this fails loudly.
-    return data["idToken"], data["localId"]
+    local_id = data["localId"]
+    # The app the lifespan already built, reached by its documented name -- never a second one.
+    admin_app = firebase_admin.get_app(name=f"issuer:{_app_config.jwt.issuer}")
+    try:
+        yield data["idToken"], local_id
+    finally:
+        auth.delete_user(local_id, app=admin_app)
 
 
 def _google_id_token() -> str:
