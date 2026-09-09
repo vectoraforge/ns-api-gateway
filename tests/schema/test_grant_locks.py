@@ -11,6 +11,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from sqlalchemy import event, text
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
@@ -30,52 +31,54 @@ from schema.test_subscription_ingestion import _clean, _notification
 
 pytestmark = pytest.mark.schema
 
-# Mirrors GrantsDB.lock_effective_grants; the ORDER BY is the lock order itself, not presentation.
-# Pinned to production by TestTheMirrorsStillMatchProduction below, so a drift there fails here.
-# The one deliberate difference: production binds the request's captured instant, and a raw
-# connection has none to bind, so the mirror asks PostgreSQL for the transaction's own.
-_LOCK_GRANTS = (
-    "SELECT id FROM core.access_grants "
-    "WHERE user_id = $1 AND status = 'active' "
-    "  AND starts_at <= CURRENT_TIMESTAMP "
-    "  AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP) "
-    "ORDER BY id ASC "
-    "FOR UPDATE"
-)
 
-# Mirrors GrantsDB.lock_usage: second in the order, keyed on the whole primary key, and never an INSERT.
-_LOCK_USAGE = "SELECT grant_id FROM core.user_monthly_usage WHERE grant_id = $1 FOR UPDATE"
+def _issuable(statement) -> str:
+    """One production statement as the literal SQL a raw asyncpg connection can issue."""
+    # `literal_binds`, because a raw connection carries none of the session's bound values.
+    return str(statement.compile(dialect=postgresql.asyncpg.dialect(),
+                                 compile_kwargs={"literal_binds": True}))
 
 
-class TestTheMirrorsStillMatchProduction:
-    """Every contention case below issues the two mirrors, so nothing they prove is production's
-    unless production still compiles to what the mirrors say. Compiled, not executed: no database."""
+def _lock_grants(user_id: uuid.UUID, evaluated_at: datetime | None = None) -> str:
+    """The SQL `GrantsDB.lock_effective_grants` compiles, so there is no mirror left to drift."""
+    return _issuable(_effective_grants_statement(
+        user_id, evaluated_at if evaluated_at is not None else datetime.now(UTC)).with_for_update())
 
-    def test_the_grant_mirror_still_matches_the_locking_read(self):
-        compiled = str(
-            _effective_grants_statement(uuid.uuid4(), datetime.now(UTC)).with_for_update())
+
+def _lock_usage(grant_id: uuid.UUID) -> str:
+    """The SQL `GrantsDB.lock_usage` compiles, so there is no mirror left to drift."""
+    return _issuable(_usage_statement(grant_id).with_for_update())
+
+
+class TestTheIssuedStatementsAreProductionsOwn:
+    """The contention cases below issue exactly what production compiles, so a production drift
+    reaches them. These pin the two properties the cases read but cannot see. No database."""
+
+    def test_the_grant_lock_carries_the_lock_the_order_and_no_cap(self):
+        issued = _lock_grants(uuid.uuid4())
 
         # The lock and its order are the whole subject of the cases below: dropped or reversed in
-        # production, the deadlock case would still deadlock a statement nothing runs.
-        assert "FOR UPDATE" in compiled
-        assert "ORDER BY core.access_grants.id ASC" in compiled
+        # production, the deadlock case would deadlock nothing and still pass.
+        assert "FOR UPDATE" in issued
+        assert "ORDER BY core.access_grants.id ASC" in issued
         # No cap: a second effective grant must reach the caller rather than be picked over, and a
-        # LIMIT 1 would also shrink the lock the mirror takes to one row.
-        assert "LIMIT" not in compiled
-        # The four terms the mirror spells out, so a narrowed or widened predicate fails here.
+        # LIMIT 1 would also shrink the lock the statement takes to one row.
+        assert "LIMIT" not in issued
+        # The four terms of the shared effective predicate, so a narrowed or widened one fails here.
         for term in ("core.access_grants.user_id = ",
                      "core.access_grants.status = ",
                      "core.access_grants.starts_at <= ",
                      "core.access_grants.ends_at IS NULL",
                      "core.access_grants.ends_at > "):
-            assert term in compiled, f"the mirror carries {term!r} and production no longer does"
+            assert term in issued, f"the effective predicate no longer carries {term!r}"
 
-    def test_the_usage_mirror_still_matches_the_locking_read(self):
-        compiled = str(_usage_statement(uuid.uuid4()).with_for_update())
+    def test_the_usage_lock_carries_the_lock_and_the_whole_key(self):
+        issued = _lock_usage(uuid.uuid4())
 
-        assert "FOR UPDATE" in compiled
+        assert "FOR UPDATE" in issued
         # Keyed on the whole primary key, which is what makes it the second lock and not a range.
-        assert "core.user_monthly_usage.grant_id = " in compiled
+        assert "core.user_monthly_usage.grant_id = " in issued
+
 
 # Longer than PostgreSQL's 1s deadlock_timeout, so a deadlock case fails on a missed detection, not a timeout.
 _WAIT = "5s"
@@ -157,12 +160,12 @@ class TestTheGrantLockExcludes:
         tx_a = await _begin(conn_a, lock_timeout=_WAIT)
         tx_b = await _begin(conn_b, lock_timeout=_NO_WAIT)
         try:
-            held = await conn_a.fetch(_LOCK_GRANTS, committed_grant.user_id)
+            held = await conn_a.fetch(_lock_grants(committed_grant.user_id))
             assert [row["id"] for row in held] == [committed_grant.grant_id], \
                 "control: A must actually hold the seeded grant row, or B has nothing to wait for"
 
             with pytest.raises(asyncpg.exceptions.LockNotAvailableError):
-                await conn_b.fetch(_LOCK_GRANTS, committed_grant.user_id)
+                await conn_b.fetch(_lock_grants(committed_grant.user_id))
         finally:
             await _rollback(tx_b)
             await _rollback(tx_a)
@@ -172,12 +175,12 @@ class TestTheGrantLockExcludes:
         """A lock that never released would be a hang, not a gate; the short timeout is what asserts that."""
         conn_a, conn_b = contenders
         tx_a = await _begin(conn_a, lock_timeout=_WAIT)
-        await conn_a.fetch(_LOCK_GRANTS, committed_grant.user_id)
+        await conn_a.fetch(_lock_grants(committed_grant.user_id))
         await _rollback(tx_a)
 
         tx_b = await _begin(conn_b, lock_timeout=_NO_WAIT)
         try:
-            rows = await conn_b.fetch(_LOCK_GRANTS, committed_grant.user_id)
+            rows = await conn_b.fetch(_lock_grants(committed_grant.user_id))
             assert [row["id"] for row in rows] == [committed_grant.grant_id]
         finally:
             await _rollback(tx_b)
@@ -193,12 +196,12 @@ class TestTheLockOrderIsLoadBearing:
         tx_a = await _begin(conn_a, lock_timeout=_WAIT)
         tx_b = await _begin(conn_b, lock_timeout=_WAIT)
         try:
-            await conn_a.fetch(_LOCK_GRANTS, committed_grant.user_id)   # fixed order, step 1
-            await conn_b.fetch(_LOCK_USAGE, committed_grant.grant_id)   # reverse order, step 1
+            await conn_a.fetch(_lock_grants(committed_grant.user_id))   # fixed order, step 1
+            await conn_b.fetch(_lock_usage(committed_grant.grant_id))   # reverse order, step 1
 
             outcomes = await asyncio.gather(
-                conn_a.fetch(_LOCK_USAGE, committed_grant.grant_id),    # fixed order, step 2
-                conn_b.fetch(_LOCK_GRANTS, committed_grant.user_id),    # reverse order, step 2
+                conn_a.fetch(_lock_usage(committed_grant.grant_id)),    # fixed order, step 2
+                conn_b.fetch(_lock_grants(committed_grant.user_id)),    # reverse order, step 2
                 return_exceptions=True,
             )
 
@@ -217,15 +220,15 @@ class TestTheLockOrderIsLoadBearing:
         tx_b = await _begin(conn_b, lock_timeout=_WAIT)
         released_at = None
         try:
-            await conn_a.fetch(_LOCK_GRANTS, committed_grant.user_id)
-            await conn_a.fetch(_LOCK_USAGE, committed_grant.grant_id)
+            await conn_a.fetch(_lock_grants(committed_grant.user_id))
+            await conn_a.fetch(_lock_usage(committed_grant.grant_id))
 
             async def b_takes_the_same_order_and_waits():
                 asked_at = time.monotonic()
-                await conn_b.fetch(_LOCK_GRANTS, committed_grant.user_id)
+                await conn_b.fetch(_lock_grants(committed_grant.user_id))
                 acquired_at = time.monotonic()
-                return asked_at, acquired_at, await conn_b.fetch(_LOCK_USAGE,
-                                                                 committed_grant.grant_id)
+                usage = await conn_b.fetch(_lock_usage(committed_grant.grant_id))
+                return asked_at, acquired_at, usage
 
             async def a_finishes_shortly():
                 nonlocal released_at
