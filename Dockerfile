@@ -2,7 +2,11 @@
 # wheels: `uv sync --frozen` on 3.12 fails on the interpreter constraint before it reaches a wheel.
 FROM python:3.14-slim AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+# Pinned, because `uv.lock` plus `--frozen` below pin every package and `uv` itself is then the
+# one input a rebuild of this commit can change. 0.12.5 is the release `uv.lock` was resolved
+# with; the `python:3.14-slim` tags above and below are still moving, which is weaker but only
+# ever moves the base OS, never the resolution.
+COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /bin/uv
 
 WORKDIR /app
 
