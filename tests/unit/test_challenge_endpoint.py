@@ -19,7 +19,7 @@ from nativespeaker.api.app.dependencies import (
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.routers import auth as auth_module
 from nativespeaker.api.routers import auth_router
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import ChallengeRequest, Identity
 from nativespeaker.api.tables.auth import AuthOperation
 
 from .conftest import TEST_IDENTITY, TEST_ISSUER
@@ -247,6 +247,31 @@ class TestTheRefusalOrderDisclosesNothing:
         _assert_invalid_request(linked_client.post("/auth/challenge", json={"operation": operation}))
 
         assert store.issued == []
+
+
+# The bound the field carries, read off the model rather than restated here.
+_OPERATION_LIMIT = ChallengeRequest.model_fields["operation"].metadata[0].max_length
+
+# The longest member of the vocabulary, which the bound must stay well above.
+_LONGEST_OPERATION = max(len(value) for value in _EVERY_OPERATION)
+
+
+class TestTheOperationFieldIsBounded:
+    """WR-01. The refusal log carries this value verbatim, so an unbounded string is a log-flooding hole."""
+
+    def test_the_bound_stands_well_above_every_member_of_the_vocabulary(self):
+        assert _OPERATION_LIMIT >= 2 * _LONGEST_OPERATION
+
+    def test_an_oversized_operation_is_the_frameworks_refusal_and_never_reaches_the_log(self, client,
+                                                                                        store):
+        _assert_validation_error(client.post("/auth/challenge",
+                                             json={"operation": "a" * (_OPERATION_LIMIT + 1)}))
+        assert store.issued == []
+
+    def test_an_operation_at_the_bound_is_still_the_handlers_refusal(self, client):
+        """The control: a value the bound admits is classified by the handler, as every string is."""
+        _assert_invalid_request(client.post("/auth/challenge",
+                                            json={"operation": "a" * _OPERATION_LIMIT}))
 
 
 class TestTheIssuableSetIsTheEnumAndNothingElse:

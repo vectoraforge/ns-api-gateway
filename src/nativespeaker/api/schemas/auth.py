@@ -12,7 +12,10 @@ from nativespeaker.api.tables.users import User
 
 class ChallengeRequest(BaseModel):
     """The issuance body. `operation` is a plain `str`, never a Literal: an unissuable value is the handler's 400."""
-    operation: str
+    # Bounded well above every member of core.auth_operation, because the handler's refusal log carries this value.
+    # No `min_length`: the empty string must stay one of the many 400s, indistinguishable from every other
+    # unissuable value, and a 422 for it alone would make it distinguishable.
+    operation: str = Field(..., max_length=64)
 
 
 class PrepareResponse(BaseModel):
