@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from schema.helpers import insert_grant, insert_usage, insert_user
+from schema.helpers import insert_grant, insert_tier, insert_usage, insert_user
 
 pytestmark = pytest.mark.schema
 
@@ -59,6 +59,11 @@ _INSERT_STORE_PURCHASE = (
     "INSERT INTO core.store_purchases "
     "(id, provider, identity_value, external_id, resolved_token_value, created_at) "
     "VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)"
+)
+_INSERT_MANUAL_ISSUANCE = (
+    "INSERT INTO core.manual_grant_issuances "
+    "(case_id, grant_id, user_id, operator, reason) "
+    "VALUES ($1, $2, $3, $4, $5)"
 )
 _INSERT_CHALLENGE = (
     "INSERT INTO core.auth_challenges "
@@ -132,6 +137,22 @@ async def _insert_subscription(
         _INSERT_SUBSCRIPTION, subscription_id, user_id, provider, external_id, tier_id, status
     )
     return subscription_id
+
+
+async def _insert_manual_issuance(
+    conn: asyncpg.Connection,
+    *,
+    grant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    case_id: str | None = None,
+    operator: str = "operator@native-speaker.test",
+    reason: str = "a support credit",
+) -> str:
+    """Insert one core.manual_grant_issuances row and return its case id."""
+    if case_id is None:
+        case_id = f"case_{uuid.uuid4().hex[:16]}"
+    await conn.execute(_INSERT_MANUAL_ISSUANCE, case_id, grant_id, user_id, operator, reason)
+    return case_id
 
 
 async def _insert_challenge(
@@ -272,6 +293,36 @@ class TestAccessGrantConstraints:
             )
         assert IX_ONE_PER_SUBSCRIPTION in str(exc_info.value)
 
+    async def test_grant_of_a_free_source_may_not_carry_a_subscription_id(self, conn, tier):
+        """The CHECK 00-schema.md:489 names: free and manual grants are real grant rows, never fake
+        subscriptions. It is the only thing keeping one out of ix_access_grants_one_per_subscription."""
+        user_id = await insert_user(conn)
+        subscription_id = await _insert_subscription(conn, user_id=user_id, tier_id=tier)
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            await insert_grant(
+                conn, user_id=user_id, tier_id=tier,
+                source="anonymous_device_grant", subscription_id=subscription_id
+            )
+        assert await conn.fetchval(
+            "SELECT count(*) FROM core.access_grants WHERE user_id = $1", user_id
+        ) == 0
+
+    async def test_grant_of_source_subscription_without_a_subscription_id_rejected(self, conn, tier):
+        """The other direction of the same CHECK: a subscription grant naming no subscription."""
+        user_id = await insert_user(conn)
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            await insert_grant(conn, user_id=user_id, tier_id=tier, source="subscription")
+
+    async def test_grant_monthly_usage_with_a_negative_count_rejected(self, conn, tier):
+        """A counter below zero is an allowance handed out, so the lower bound is the schema's."""
+        user_id = await insert_user(conn)
+        grant_id = await insert_grant(conn, user_id=user_id, tier_id=tier, source="manual")
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            await insert_usage(conn, grant_id=grant_id, monthly_used=-1)
+        assert await conn.fetchval(
+            "SELECT count(*) FROM core.user_monthly_usage WHERE grant_id = $1", grant_id
+        ) == 0
+
     async def test_grant_monthly_usage_is_keyed_by_grant_alone(self, conn, tier):
         """core.user_monthly_usage's primary key is grant_id alone -- not (grant_id, monthly_period)."""
         user_id = await insert_user(conn)
@@ -383,6 +434,99 @@ class TestSubscriptionConstraints:
         assert await conn.fetchval(
             "SELECT resolved_token_value FROM core.store_purchases WHERE id = $1", purchase_id
         ) is None
+
+
+class TestAccessTierConstraints:
+    """The tier table's one CHECK: a monthly allowance is never negative."""
+
+    async def test_tier_with_negative_monthly_credits_rejected(self, conn):
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            await insert_tier(conn, monthly_credits=-1)
+
+    async def test_tier_with_no_credits_at_all_accepted_control(self, conn):
+        """The control: the bound is at zero, so a free tier is legal and the case above is not
+        rejecting every value."""
+        tier_id = await insert_tier(conn, monthly_credits=0)
+
+        assert await conn.fetchval(
+            "SELECT monthly_credits FROM core.access_tiers WHERE id = $1", tier_id) == 0
+
+
+class TestStorePurchaseConstraints:
+    """The resolved-token agreement and the lifecycle pair the two store services write in order."""
+
+    async def test_store_purchase_resolved_token_other_than_the_identity_value_rejected(self, conn,
+                                                                                        tier):
+        """The CHECK that keeps resolved_token_value from drifting away from identity_value."""
+        external_id = f"ext_{uuid.uuid4().hex[:16]}"
+        await _insert_subscription(conn, tier_id=tier, status="active", external_id=external_id)
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            await conn.execute(
+                _INSERT_STORE_PURCHASE,
+                uuid.uuid4(),
+                "apple",
+                f"tok_{uuid.uuid4().hex[:16]}",
+                external_id,
+                # Any other token: the column may be NULL or the identity value, and nothing else.
+                f"tok_{uuid.uuid4().hex[:16]}",
+            )
+
+    async def test_store_purchase_naming_no_canonical_subscription_rejected(self, conn):
+        """The ordering both services are written around: the canonical row is written before the
+        purchase that names its (provider, external_id) pair."""
+        async with _rejects(conn, asyncpg.ForeignKeyViolationError):
+            await conn.execute(
+                _INSERT_STORE_PURCHASE,
+                uuid.uuid4(),
+                "apple",
+                f"tok_{uuid.uuid4().hex[:16]}",
+                f"ext_{uuid.uuid4().hex[:16]}",
+                None,
+            )
+
+
+class TestManualGrantIssuanceConstraints:
+    """The immutable operator record: three non-empty CHECKs, one issuance per grant, and foreign
+    keys that carry no cascade, so nothing deletes the record of who granted what."""
+
+    async def test_an_issuance_naming_its_grant_its_operator_and_its_reason_is_accepted_control(
+            self, conn, tier):
+        """The control: without it a table that refused every row would satisfy every case below."""
+        user_id = await insert_user(conn)
+        grant_id = await insert_grant(conn, user_id=user_id, tier_id=tier, source="manual")
+
+        case_id = await _insert_manual_issuance(conn, grant_id=grant_id, user_id=user_id)
+
+        assert await conn.fetchval(
+            "SELECT count(*) FROM core.manual_grant_issuances WHERE case_id = $1", case_id) == 1
+
+    @pytest.mark.parametrize("empty_column", ["case_id", "operator", "reason"])
+    async def test_an_issuance_carrying_an_empty_text_column_rejected(self, conn, tier,
+                                                                      empty_column):
+        """Each of the three CHECKs in turn: an empty string is not an operator, a reason or a case."""
+        user_id = await insert_user(conn)
+        grant_id = await insert_grant(conn, user_id=user_id, tier_id=tier, source="manual")
+        async with _rejects(conn, asyncpg.CheckViolationError):
+            await _insert_manual_issuance(conn, grant_id=grant_id, user_id=user_id,
+                                          **{empty_column: ""})
+
+    async def test_a_second_issuance_for_one_grant_rejected(self, conn, tier):
+        """UNIQUE (grant_id): one grant is issued once, so a second case cannot claim the same row."""
+        user_id = await insert_user(conn)
+        grant_id = await insert_grant(conn, user_id=user_id, tier_id=tier, source="manual")
+        await _insert_manual_issuance(conn, grant_id=grant_id, user_id=user_id)
+        async with _rejects(conn, asyncpg.UniqueViolationError):
+            await _insert_manual_issuance(conn, grant_id=grant_id, user_id=user_id)
+
+    async def test_deleting_the_grant_an_issuance_names_rejected(self, conn, tier):
+        """No cascade, deliberately: the grant row cannot be deleted out from under its record."""
+        user_id = await insert_user(conn)
+        grant_id = await insert_grant(conn, user_id=user_id, tier_id=tier, source="manual")
+        await _insert_manual_issuance(conn, grant_id=grant_id, user_id=user_id)
+        async with _rejects(conn, asyncpg.ForeignKeyViolationError):
+            await conn.execute("DELETE FROM core.access_grants WHERE id = $1", grant_id)
+        assert await conn.fetchval(
+            "SELECT count(*) FROM core.access_grants WHERE id = $1", grant_id) == 1
 
 
 class TestAuthChallengeConstraints:
