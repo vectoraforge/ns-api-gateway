@@ -10,7 +10,7 @@ from appstoreserverlibrary.models.Environment import Environment
 from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier
 from fastapi import FastAPI
 from jwt.exceptions import PyJWTError
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.app.dependencies import get_evaluated_at
@@ -98,74 +98,86 @@ async def lifespan(app: FastAPI):
 
     app.state.challenge_store = ChallengesDB()
 
-    # One named Firebase app per configured issuer; an absent credential returns {} and boot proceeds.
-    firebase_apps = build_admin_apps(config)
-    app.state.firebase_adapter = FirebaseAdminLookup(firebase_apps)
+    # Nothing built yet: the `finally` below reaches every one of these on a startup that
+    # failed part-way, where the later names do not exist at all.
+    db_engine: AsyncEngine | None = None
+    devicecheck_client: httpx.AsyncClient | None = None
+    play_client: httpx.AsyncClient | None = None
+    firebase_apps: dict[str, firebase_admin.App] = {}
 
-    devicecheck_key = read_private_key(config.devicecheck.private_key_path)
-    if not (config.devicecheck.key_id and config.devicecheck.team_id and devicecheck_key):
-        logger.warning("devicecheck_credential_absent",
-                       consequence="the anonymous grant claim fails closed as "
-                                   "verification_temporarily_unavailable until the DeviceCheck key id, "
-                                   "team id and private key are available in this environment")
-    devicecheck_client = httpx.AsyncClient(timeout=DEVICECHECK_HTTP_TIMEOUT_SECONDS)
-    app.state.devicecheck_adapter = AppleDeviceCheck(key_id=config.devicecheck.key_id,
-                                                     team_id=config.devicecheck.team_id,
-                                                     private_key=devicecheck_key,
-                                                     client=devicecheck_client)
+    try:
+        # One named Firebase app per configured issuer; an absent credential returns {} and boot proceeds.
+        firebase_apps = build_admin_apps(config)
+        app.state.firebase_adapter = FirebaseAdminLookup(firebase_apps)
 
-    app_store_verifier = build_app_store_verifier(config.app_store)
-    if app_store_verifier is None:
-        logger.warning("app_store_configuration_absent",
-                       consequence="POST /webhooks/app-store fails closed as "
-                                   "verification_temporarily_unavailable until the App Store bundle "
-                                   "id, environment, app id and root certificate are available in "
-                                   "this environment")
-    # Set unconditionally, so the route set is the same in every environment.
-    app.state.app_store_notifications = AppStoreNotifications(verifier=app_store_verifier,
-                                                              products=config.app_store.products)
+        devicecheck_key = read_private_key(config.devicecheck.private_key_path)
+        if not (config.devicecheck.key_id and config.devicecheck.team_id and devicecheck_key):
+            logger.warning("devicecheck_credential_absent",
+                           consequence="the anonymous grant claim fails closed as "
+                                       "verification_temporarily_unavailable until the DeviceCheck key id, "
+                                       "team id and private key are available in this environment")
+        devicecheck_client = httpx.AsyncClient(timeout=DEVICECHECK_HTTP_TIMEOUT_SECONDS)
+        app.state.devicecheck_adapter = AppleDeviceCheck(key_id=config.devicecheck.key_id,
+                                                         team_id=config.devicecheck.team_id,
+                                                         private_key=devicecheck_key,
+                                                         client=devicecheck_client)
 
-    google_push_verifier = build_google_push_verifier(config.google_play)
-    play_credential = _play_credential()
-    if google_push_verifier is None or play_credential is None:
-        logger.warning("google_play_configuration_absent",
-                       consequence="POST /webhooks/google-play/rtdn fails closed as "
-                                   "verification_temporarily_unavailable until the Play package "
-                                   "name, push audience, push service account and Application "
-                                   "Default Credentials are available in this environment")
-    play_client = httpx.AsyncClient(timeout=PLAY_HTTP_TIMEOUT_SECONDS)
-    # Set unconditionally, so the route set is the same in every environment.
-    app.state.google_push_tokens = PubSubPushTokens(verifier=google_push_verifier)
-    app.state.play_subscriptions = PlayDeveloperSubscriptions(
-        credential=play_credential,
-        client=play_client,
-        products=config.google_play.products,
-        evaluated_at_source=get_evaluated_at)
+        app_store_verifier = build_app_store_verifier(config.app_store)
+        if app_store_verifier is None:
+            logger.warning("app_store_configuration_absent",
+                           consequence="POST /webhooks/app-store fails closed as "
+                                       "verification_temporarily_unavailable until the App Store bundle "
+                                       "id, environment, app id and root certificate are available in "
+                                       "this environment")
+        # Set unconditionally, so the route set is the same in every environment.
+        app.state.app_store_notifications = AppStoreNotifications(verifier=app_store_verifier,
+                                                                  products=config.app_store.products)
 
-    db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)
-    app.state.session_factory = async_sessionmaker(db_engine, class_=SQLModelAsyncSession,
+        google_push_verifier = build_google_push_verifier(config.google_play)
+        play_credential = _play_credential()
+        if google_push_verifier is None or play_credential is None:
+            logger.warning("google_play_configuration_absent",
+                           consequence="POST /webhooks/google-play/rtdn fails closed as "
+                                       "verification_temporarily_unavailable until the Play package "
+                                       "name, push audience, push service account and Application "
+                                       "Default Credentials are available in this environment")
+        play_client = httpx.AsyncClient(timeout=PLAY_HTTP_TIMEOUT_SECONDS)
+        # Set unconditionally, so the route set is the same in every environment.
+        app.state.google_push_tokens = PubSubPushTokens(verifier=google_push_verifier)
+        app.state.play_subscriptions = PlayDeveloperSubscriptions(
+            credential=play_credential,
+            client=play_client,
+            products=config.google_play.products,
+            evaluated_at_source=get_evaluated_at)
+
+        db_engine = create_async_engine(config.db.url, pool_size=config.db.pool_size, max_overflow=0)
+        app.state.session_factory = async_sessionmaker(db_engine, class_=SQLModelAsyncSession,
                                                        expire_on_commit=False)
 
-    app.state.jwt_verifier = JWTVerifier(jwks_url=config.jwt.jwks_url,
-                                         audience=config.jwt.project_id,
-                                         issuer=config.jwt.issuer,
-                                         leeway=config.jwt.leeway_seconds,
-                                         cache_ttl_seconds=config.jwt.jwks_cache_ttl_seconds)
+        app.state.jwt_verifier = JWTVerifier(jwks_url=config.jwt.jwks_url,
+                                             audience=config.jwt.project_id,
+                                             issuer=config.jwt.issuer,
+                                             leeway=config.jwt.leeway_seconds,
+                                             cache_ttl_seconds=config.jwt.jwks_cache_ttl_seconds)
 
-    app.state.llm_service = LLMService(model_config=config.model,
-                                       resilence_config=config.resilience,
-                                       system_prompt=config.prompt)
+        app.state.llm_service = LLMService(model_config=config.model,
+                                           resilence_config=config.resilience,
+                                           system_prompt=config.prompt)
 
-    logger.info("started", model=config.model.name, concurrency=config.resilience.pool_size,
-                languages=list(config.examples.keys()))
-    yield
+        logger.info("started", model=config.model.name, concurrency=config.resilience.pool_size,
+                    languages=list(config.examples.keys()))
 
-    await db_engine.dispose()
-    await devicecheck_client.aclose()
-    await play_client.aclose()
+        yield
+    finally:
+        if db_engine is not None:
+            await db_engine.dispose()
+        for client in (devicecheck_client, play_client):
+            if client is not None:
+                await client.aclose()
 
-    # firebase_admin registers named apps process-globally and raises on a repeat, so a second boot needs these gone.
-    for firebase_app in firebase_apps.values():
-        firebase_admin.delete_app(firebase_app)
+        # firebase_admin registers named apps process-globally and raises on a repeat, so a
+        # second boot needs these gone -- a failed startup that kept them poisons every later one.
+        for firebase_app in firebase_apps.values():
+            firebase_admin.delete_app(firebase_app)
 
-    logger.info("shutdown")
+        logger.info("shutdown")
