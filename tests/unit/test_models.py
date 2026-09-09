@@ -430,9 +430,15 @@ class TestTheUnauthenticatedWebhookBodiesAreBounded:
 
     def test_a_body_at_the_bound_still_reaches_the_decoder(self):
         """The control: a bound off by one here would drop every genuine RTDN at the ceiling."""
-        payload = b64encode(json.dumps({"packageName": "com.example",
-                                        "eventTimeMillis": 1}).encode()).decode()
-        assert len(payload) <= PUBSUB_DATA_LIMIT
+        # Padded inside the envelope so the encoded text lands exactly on the bound. That is the
+        # one length a `>` and a `>=` disagree about; an eighty-byte body measures neither.
+        envelope = {"packageName": "com.example", "eventTimeMillis": 1, "pad": ""}
+        # 3 decoded bytes per 4 encoded characters, so this many decode to exactly the bound.
+        decoded_limit = PUBSUB_DATA_LIMIT // 4 * 3
+        envelope["pad"] = "a" * (decoded_limit - len(json.dumps(envelope).encode()))
+        payload = b64encode(json.dumps(envelope).encode()).decode()
+
+        assert len(payload) == PUBSUB_DATA_LIMIT
         assert developer_notification_from(payload) is not None
 
     def test_an_envelope_the_size_apple_really_sends_is_accepted(self):
