@@ -105,6 +105,41 @@ class SubscriptionsDB:
         """The recorded purchase for the lifecycle pair, or `None`, taking no lock."""
         return (await self.session.exec(_purchase_statement(provider, external_id))).first()
 
+    async def _flush_or_lose(self, stored: Subscription,
+                             outcome: WriteOutcome) -> tuple[Subscription, WriteOutcome]:
+        """Flush the pending canonical row, reading a unique violation as a race this writer lost."""
+        # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
+        try:
+            await self.session.flush()
+        except IntegrityError as violation:
+            # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
+            if violation.orig.sqlstate != "23505":
+                # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
+                raise
+            return stored, WriteOutcome.lost_race
+        return stored, outcome
+
+    async def insert_subscription(self, *,
+                                  provider: PurchaseProvider,
+                                  external_id: str,
+                                  user_id: UUID | None,
+                                  tier_id: str,
+                                  status: SubscriptionStatus,
+                                  signed_at: datetime | None,
+                                  evaluated_at: datetime) -> tuple[Subscription, WriteOutcome]:
+        """Add the canonical row for a lifecycle pair that has none, and flush it.
+        A row another writer committed first is a lost race, never an update over its state."""
+        stored = Subscription(provider=provider,
+                              external_id=external_id,
+                              user_id=user_id,
+                              tier_id=tier_id,
+                              status=status,
+                              store_signed_at=signed_at,
+                              created_at=evaluated_at,
+                              updated_at=evaluated_at)
+        self.session.add(stored)
+        return await self._flush_or_lose(stored, WriteOutcome.applied)
+
     async def upsert_subscription(self, *,
                                   provider: PurchaseProvider,
                                   external_id: str,
@@ -142,16 +177,7 @@ class SubscriptionsDB:
                     # Only ever advanced by a payload that carries one: an absent date clears nothing.
                     stored.store_signed_at = signed_at
 
-        # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
-        try:
-            await self.session.flush()
-        except IntegrityError as violation:
-            # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-            if violation.orig.sqlstate != "23505":
-                # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
-                raise
-            return stored, WriteOutcome.lost_race
-        return stored, outcome
+        return await self._flush_or_lose(stored, outcome)
 
     async def claim_subscription_owner(self, *,
                                        subscription_id: UUID,

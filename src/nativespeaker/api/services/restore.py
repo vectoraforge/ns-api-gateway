@@ -84,7 +84,9 @@ class RestoreService:
 
         if stored is None:
             # Adoption-with-creation: written unowned, so the one owner write is the update below.
-            stored, outcome = await self.subscriptions_db.upsert_subscription(
+            # Insert-only: a row a webhook committed since the read above is a lost race, never an
+            # update, because canonical status is the webhooks' and this proof may already be stale.
+            stored, outcome = await self.subscriptions_db.insert_subscription(
                 provider=proof.provider,
                 external_id=proof.external_id,
                 user_id=None,

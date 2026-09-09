@@ -6,9 +6,11 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 from appstoreserverlibrary.signed_data_verifier import VerificationStatus
+from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.auth.google_play import GRACE_STATE, PlayDeveloperSubscriptions
 from nativespeaker.api.auth.store_notifications import RestoredSubscription
+from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
 from nativespeaker.api.errors import (
     ProofRejected,
     Unavailable,
@@ -561,3 +563,117 @@ class TestTheStoreCallRunsBeforeTheSessionsFirstStatement:
             await session.exec("any statement")
 
         assert session.statements == 1
+
+
+class _InsertOnlyRecorder:
+    """The two reads the create branch makes, and a recorder for whichever writer it then calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def read_subscription(self, provider, external_id):
+        return None
+
+    async def read_purchase(self, provider, external_id):
+        return None
+
+    async def insert_subscription(self, **fields):
+        self.calls.append("insert_subscription")
+        raise _Stop
+
+    async def upsert_subscription(self, **fields):
+        self.calls.append("upsert_subscription")
+        raise _Stop
+
+
+class _NoAttribution:
+    """The purchases read the create branch makes, answering that this proof is attributed to nobody."""
+
+    async def resolve_user(self, provider, token):
+        return None
+
+
+class TestTheCreateBranchNeverOverwritesARowCommittedSinceItsRead:
+    """WR-02: the in-place updater re-reads under READ COMMITTED, so it could write over a webhook's status."""
+
+    async def test_the_create_branch_calls_the_insert_only_writer_and_nothing_else(self):
+        session = _CountingSession()
+        service = _service(session, _ScriptedAppStore(session, _restored()))
+        recorder = _InsertOnlyRecorder()
+        service.subscriptions_db = recorder
+        service.purchases_db = _NoAttribution()
+
+        with pytest.raises(_Stop):
+            await service.restore(identity=_caller(), provider=PurchaseProvider.apple,
+                                  restore_proof="a-signed-transaction")
+
+        assert recorder.calls == ["insert_subscription"]
+
+
+class _Orig(Exception):
+    """The DBAPI exception SQLAlchemy wraps, carrying the one attribute the writer reads."""
+
+    def __init__(self, sqlstate: str) -> None:
+        self.sqlstate = sqlstate
+
+
+class _AddingSession:
+    """A session stand-in for the insert-only writer: it records the add and refuses to be read."""
+
+    def __init__(self, violation: BaseException | None = None) -> None:
+        self.added: list = []
+        self._violation = violation
+
+    async def exec(self, *args, **kwargs):
+        raise AssertionError("the insert-only writer must issue no read")
+
+    def add(self, obj) -> None:
+        self.added.append(obj)
+
+    async def flush(self) -> None:
+        if self._violation is not None:
+            raise self._violation
+
+
+def _violation(sqlstate: str) -> IntegrityError:
+    return IntegrityError("INSERT INTO core.subscriptions", {}, _Orig(sqlstate))
+
+
+async def _insert_through(session: _AddingSession):
+    return await SubscriptionsDB(session).insert_subscription(  # ty: ignore[invalid-argument-type]
+        provider=PurchaseProvider.apple,
+        external_id=ORIGINAL_TRANSACTION_ID,
+        user_id=None,
+        tier_id=TIER_ID,
+        status=SubscriptionStatus.active,
+        signed_at=None,
+        evaluated_at=EVALUATED_AT)
+
+
+class TestTheInsertOnlyWriterReadsNothingAndLosesTheRaceCleanly:
+    """One INSERT and no read, so a row that appeared since cannot be updated in place by this path."""
+
+    async def test_it_adds_the_row_and_reports_applied(self):
+        session = _AddingSession()
+
+        stored, outcome = await _insert_through(session)
+
+        assert session.added == [stored]
+        assert (stored.provider, stored.external_id) == (PurchaseProvider.apple,
+                                                         ORIGINAL_TRANSACTION_ID)
+        assert (stored.user_id, stored.store_signed_at) == (None, None)
+        assert outcome is WriteOutcome.applied
+
+    async def test_a_unique_violation_is_reported_as_a_lost_race(self):
+        session = _AddingSession(_violation("23505"))
+
+        _, outcome = await _insert_through(session)
+
+        assert outcome is WriteOutcome.lost_race
+
+    async def test_every_other_integrity_failure_propagates(self):
+        """A NOT NULL or a foreign key is a broken invariant, and swallowing it would hide it."""
+        session = _AddingSession(_violation("23502"))
+
+        with pytest.raises(IntegrityError):
+            await _insert_through(session)
