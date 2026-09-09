@@ -143,6 +143,10 @@ class TestTwoAbsentEntitlementsAreIndistinguishable:
 
         response = await async_client.post("/auth/sync")
 
+        # The status code and the answer first: `{"code":"internal_error"}` names neither substring
+        # either, so without these two the case passes on the 500 it exists to rule out.
+        assert response.status_code == 200, response.text
+        assert response.json()["entitlement"]["status"] == EntitlementStatus.none.value
         # Which internal condition applies is the caller's to not know; the public status enum has no such member.
         assert "revoked" not in response.text
         assert "expired" not in response.text
