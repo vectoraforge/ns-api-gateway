@@ -94,6 +94,13 @@ async def stored_usage(harness: _Harness) -> int:
             {"grant_id": harness.grant_id})).scalar_one()
 
 
+async def transaction_started_at(session) -> datetime:
+    """`CURRENT_TIMESTAMP`, which PostgreSQL fixes when a transaction opens and never moves within it.
+    Two equal readings are one transaction; a commit in between gives the next one a later start."""
+    return (await (await session.connection()).execute(
+        text("SELECT CURRENT_TIMESTAMP"))).scalar_one()
+
+
 async def sync_with_a_bounded_lock_wait(harness: _Harness):
     """One real `SyncService.read_entitlement` whose transaction refuses to wait for a lock."""
     # SET LOCAL lock_timeout is the instrument: a statement taking no lock is unaffected by it, so
@@ -141,13 +148,23 @@ class TestSyncWaitsOnNoLock:
         """The converse, and the one that matters in production: a read taking no lock cannot stall the writer."""
         async with harness.factory() as reader:
             await (await reader.connection()).execute(text(f"SET LOCAL lock_timeout = '{_NO_WAIT}'"))
-            await SyncService(reader, harness.evaluated_at).read_entitlement(harness.user_id)
+            opened_at = await transaction_started_at(reader)
+            entitlement = await SyncService(reader,
+                                            harness.evaluated_at).read_entitlement(harness.user_id)
+
+            assert entitlement.status is EntitlementStatus.active, \
+                "control: the read must have found the grant, or it read through nothing"
+            assert await transaction_started_at(reader) == opened_at, \
+                "control: the read ended its own transaction, so the charge below races nothing"
 
             # The reader's transaction stays open across the charge: that a charge still commits is the point.
             await asyncio.wait_for(
                 QuotaService(harness.factory).charge(user_id=harness.user_id,
                                                      evaluated_at=harness.evaluated_at),
                 _DEADLINE_SECONDS)
+
+            assert await transaction_started_at(reader) == opened_at, \
+                "control: the reader's transaction did not span the charge it was meant to race"
             await reader.rollback()
 
         assert await stored_usage(harness) == SEEDED_USED + 1
