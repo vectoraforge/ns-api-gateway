@@ -1,6 +1,12 @@
 replicaCount: 1
 namespace: native-speaker
 
+# The ServiceAccount the pod runs as. Empty means the namespace's `default`, which carries no
+# Workload Identity annotation, so `google.auth.default()` finds no metadata-server identity and
+# Firebase Admin and the Play read both have none. Set this, or `credentials.googleCredentials*`
+# below: Application Default Credentials has exactly these two routes, and the deployment needs one.
+serviceAccountName: ""
+
 image:
   # No default is possible for either, so the template declares both `required`: an install that
   # forgets `--set image.repository=... --set image.tag=...` fails rather than rendering `image: ":"`.
@@ -53,6 +59,15 @@ credentials:
   deviceCheckSecretName: ""
   # The key inside that Secret, which is also the file name under the mount point.
   deviceCheckKey: devicecheck.p8
+  # The Secret carrying an Application Default Credentials JSON, for a cluster with no
+  # metadata-server identity. Leave it empty on GKE with Workload Identity, where the
+  # `serviceAccountName` above is the whole answer. The same argument as the DeviceCheck key
+  # applies: `GOOGLE_APPLICATION_CREDENTIALS` is a path, `readOnlyRootFilesystem` leaves nowhere
+  # to write the file at runtime, so the chart mounts it and sets the path itself. Without either
+  # route every account-creation route answers 503 for the life of the deployment.
+  googleCredentialsSecretName: ""
+  # The key inside that Secret, which is also the file name under the mount point.
+  googleCredentialsKey: application_default_credentials.json
 
 jwt:
   # No default is possible and an empty one is not checked, so the template declares it `required`:

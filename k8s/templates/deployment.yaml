@@ -15,6 +15,12 @@ spec:
       labels:
         {{- include "ns-api-gateway.selectorLabels" . | nindent 8 }}
     spec:
+      {{- with .Values.serviceAccountName }}
+      # The Workload-Identity route to Application Default Credentials, which Firebase Admin and
+      # the Play Developer API both authenticate through. The namespace `default` account is not
+      # annotated for it, so an unset value leaves the pod with no Google identity at all.
+      serviceAccountName: {{ . }}
+      {{- end }}
       # The four settings the Restricted Pod Security Standard treats as its baseline. Without
       # them the container keeps every default capability, a writable root filesystem, and
       # whatever uid the image happens to declare.
@@ -73,6 +79,12 @@ spec:
         # environment variable cannot carry the key itself.
         - name: DEVICECHECK_PRIVATE_KEY_PATH
           value: /etc/ns/devicecheck/{{ .Values.credentials.deviceCheckKey }}
+        {{- if .Values.credentials.googleCredentialsSecretName }}
+        # The file route to Application Default Credentials, set by the chart for the same reason:
+        # the path has to name the mount below.
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /etc/ns/google/{{ .Values.credentials.googleCredentialsKey }}
+        {{- end }}
         {{- with .Values.env }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -80,6 +92,11 @@ spec:
         - name: devicecheck
           mountPath: /etc/ns/devicecheck
           readOnly: true
+        {{- if .Values.credentials.googleCredentialsSecretName }}
+        - name: google-credentials
+          mountPath: /etc/ns/google
+          readOnly: true
+        {{- end }}
         # The one writable path, because `readOnlyRootFilesystem` above leaves none otherwise.
         - name: tmp
           mountPath: /tmp
@@ -94,3 +111,12 @@ spec:
             path: {{ .Values.credentials.deviceCheckKey }}
           # Owner root, group `fsGroup`: readable by the process and by no other mode bit.
           defaultMode: 0440
+      {{- if .Values.credentials.googleCredentialsSecretName }}
+      - name: google-credentials
+        secret:
+          secretName: {{ .Values.credentials.googleCredentialsSecretName }}
+          items:
+          - key: {{ .Values.credentials.googleCredentialsKey }}
+            path: {{ .Values.credentials.googleCredentialsKey }}
+          defaultMode: 0440
+      {{- end }}

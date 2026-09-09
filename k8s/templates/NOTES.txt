@@ -20,3 +20,9 @@ carries Envoy's own plain-text body, not the shared `{"code": ...}` one the erro
 requires. Nothing in this chart supplies that body.
 
 The monthly allowance is not a gateway concern: the backend charges it per access grant.
+
+Application Default Credentials: set `serviceAccountName` to a KSA annotated for Workload
+Identity, or `credentials.googleCredentialsSecretName` to a Secret holding an ADC JSON. Firebase
+Admin and the Play Developer API both authenticate through ADC, so with neither set the pod
+becomes Ready and every account-creation route answers 503, both probes still pass, and the only
+signal is one warning line at boot.
