@@ -8,6 +8,7 @@ from uuid import uuid7
 import pytest
 
 from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
+from nativespeaker.api.errors import MissingUsageRowError
 from nativespeaker.api.tables import (
     AccessGrant,
     AccessGrantSource,
@@ -21,6 +22,10 @@ FREE_TIER_ID = "free"
 
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
 TERM_END = NOW + timedelta(days=30)
+
+# The month `NOW` falls in, and the one before it: the rule is the calendar month, not the term.
+THIS_MONTH = "2026-09"
+LAST_MONTH = "2026-08"
 
 DESTINATION = uuid7()
 OLD_OWNER = uuid7()
@@ -108,8 +113,8 @@ class TestTheDestinationLosesEverythingItHolds:
 
     async def test_a_live_term_of_another_subscription_is_superseded_too(self):
         """One account holds one active grant, so a second store subscription's term ends here."""
-        session = _StubSession()
         other = _grant(subscription_id=SUBSCRIPTION_A)
+        session = _StubSession(_usage(other, monthly_period=THIS_MONTH, monthly_used=0))
 
         outcome = await _write(session, [other])
 
@@ -117,9 +122,9 @@ class TestTheDestinationLosesEverythingItHolds:
         assert (other.status, other.ends_at) == (AccessGrantStatus.expired, NOW)
 
     async def test_a_free_grant_is_superseded_too(self):
-        session = _StubSession()
         free = _grant(source=AccessGrantSource.anonymous_device_grant, subscription_id=None,
                       ends_at=None, tier_id=FREE_TIER_ID)
+        session = _StubSession(_usage(free, monthly_period=THIS_MONTH, monthly_used=0))
 
         outcome = await _write(session, [free])
 
@@ -128,8 +133,8 @@ class TestTheDestinationLosesEverythingItHolds:
 
     async def test_this_subscriptions_own_earlier_term_is_superseded(self):
         """A mid-term tier change takes the same expire-then-insert path as every other write."""
-        session = _StubSession()
         own = _grant(subscription_id=SUBSCRIPTION_B, tier_id=FREE_TIER_ID)
+        session = _StubSession(_usage(own, monthly_period=THIS_MONTH, monthly_used=0))
 
         outcome = await _write(session, [own])
 
@@ -138,9 +143,10 @@ class TestTheDestinationLosesEverythingItHolds:
 
     async def test_the_new_term_is_inserted_with_its_usage_row_control(self):
         """The control: the supersessions above are followed by the insert, not by an empty write."""
-        session = _StubSession()
+        other = _grant(subscription_id=SUBSCRIPTION_A)
+        session = _StubSession(_usage(other, monthly_period=THIS_MONTH, monthly_used=0))
 
-        await _write(session, [_grant(subscription_id=SUBSCRIPTION_A)])
+        await _write(session, [other])
 
         inserted = [row for row in session.added if isinstance(row, AccessGrant)]
         assert len(inserted) == 1
@@ -195,11 +201,6 @@ class TestAWithdrawalEndsItsOwnTermOnly:
         assert own.status is AccessGrantStatus.revoked
 
 
-# The month `NOW` falls in, and the one before it: the rule is the calendar month, not the term.
-THIS_MONTH = "2026-09"
-LAST_MONTH = "2026-08"
-
-
 @pytest.mark.asyncio
 class TestTheMonthsCountSurvivesATermChangeInsideIt:
     """WR-48: the allowance is a UTC calendar month's, so a supersession inside one month carries
@@ -234,11 +235,23 @@ class TestTheMonthsCountSurvivesATermChangeInsideIt:
 
         assert (_minted(session), session.reads) == ([0], 0)
 
-    async def test_a_superseded_grant_with_no_usage_row_starts_at_zero(self):
-        """Absent, not fail-closed: this writer mints the row, so there is nothing to refuse."""
+    async def test_a_superseded_grant_with_no_usage_row_fails_closed(self):
+        """CR-29: SHARED-INVARIANTS refuses a missing usage row for an existing grant, and reading
+        it as zero used minted this account a monthly allowance it never bought."""
         own = _grant(subscription_id=SUBSCRIPTION_B, ends_at=TERM_END + timedelta(days=1))
         session = _StubSession(None)
 
-        await _write(session, [own])
+        with pytest.raises(MissingUsageRowError) as failure:
+            await _write(session, [own])
 
-        assert (_minted(session), session.reads) == ([0], 1)
+        assert failure.value.grant_id == own.id
+
+    async def test_the_refusal_inserts_no_grant_and_no_counter(self):
+        """The insert is what the free allowance would have ridden in on, so nothing is added."""
+        own = _grant(subscription_id=SUBSCRIPTION_B, ends_at=TERM_END + timedelta(days=1))
+        session = _StubSession(None)
+
+        with pytest.raises(MissingUsageRowError):
+            await _write(session, [own])
+
+        assert session.added == []

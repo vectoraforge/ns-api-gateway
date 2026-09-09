@@ -11,6 +11,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.crud.grants import GrantsDB
 from nativespeaker.api.crud.violations import is_unique_violation
+from nativespeaker.api.errors import MissingUsageRowError
 from nativespeaker.api.tables import (
     AccessGrant,
     AccessGrantSource,
@@ -386,7 +387,10 @@ class SubscriptionsDB:
             if grant.user_id != user_id:
                 continue
             usage = await self.grants_db.read_usage(grant.id)
-            if usage is not None and usage.monthly_period == period:
+            if usage is None:
+                # Fail closed, never mint: a grant with no usage row is a failed write, not a fresh allowance.
+                raise MissingUsageRowError(grant.id)
+            if usage.monthly_period == period:
                 carried = usage.monthly_used
 
         activated = AccessGrant(user_id=user_id,
