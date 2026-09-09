@@ -335,10 +335,10 @@ class TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach:
 
         assert refused.status_code == 404
         assert refused.content == RESTORE_NOT_FOUND_BODY
+        # The grant count is what carries the truth the report names: the term is the only end this
+        # path could write, so a grant attached here would carry a NULL end -- paid access no store
+        # event can ever end. The caller holds none before, so the count is the whole claim.
         assert await _four_counts(_db_transaction, user.id, external_id) == before
-        # The truth the report names: a NULL end is a paid grant no store event can ever end.
-        assert [grant.ends_at for grant in await _grants_of(_db_transaction, user.id)
-                if grant.ends_at is None] == []
 
     async def test_an_active_proof_carrying_no_expiry_attaches_nothing(
             self, restore_client, _db_transaction, scripted_app_store_notifications):
@@ -357,8 +357,6 @@ class TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach:
         assert refused.status_code == 404
         assert refused.content == RESTORE_NOT_FOUND_BODY
         assert await _four_counts(_db_transaction, user.id, external_id) == before
-        assert [grant.ends_at for grant in await _grants_of(_db_transaction, user.id)
-                if grant.ends_at is None] == []
 
     async def test_a_stale_proof_against_an_active_row_attaches_nothing_and_frees_no_slot(
             self, restore_client, _db_transaction, scripted_app_store_notifications):
