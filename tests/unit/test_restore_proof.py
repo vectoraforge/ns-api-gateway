@@ -616,6 +616,10 @@ class _InsertOnlyRecorder:
     async def read_purchase(self, provider, external_id):
         return None
 
+    async def lock_grants_of(self, user_ids):
+        self.calls.append("lock_grants_of")
+        return []
+
     async def insert_subscription(self, **fields):
         self.calls.append("insert_subscription")
         raise _Stop
@@ -646,7 +650,9 @@ class TestTheCreateBranchNeverOverwritesARowCommittedSinceItsRead:
             await service.restore(identity=_caller(), provider=PurchaseProvider.apple,
                                   restore_proof="a-signed-transaction")
 
-        assert recorder.calls == ["insert_subscription"]
+        # The order is part of the claim: the grant locks come first, so the unique-index slot the
+        # insert holds is never taken ahead of them, and `SubscriptionsService.ingest` agrees.
+        assert recorder.calls == ["lock_grants_of", "insert_subscription"]
 
 
 class _Orig(Exception):

@@ -1,5 +1,6 @@
 """Store-subscription restore: one client-presented proof, one transaction, one commit.
-Lock order: grant rows ascending by id, then their usage rows; the subscription row is never locked."""
+Lock order: grant rows ascending by id, then their usage rows; the subscription row is never
+locked, and the insert that holds its unique-index slot runs after both tiers are taken."""
 from datetime import UTC, date, datetime
 from uuid import UUID, uuid7
 
@@ -81,10 +82,17 @@ class RestoreService:
             # D-10: one move per subscription per UTC month, refused before any lock and with nothing written.
             raise RestoreTransferRejected
 
+        # One statement for every account this restore touches: a move also takes from the old owner.
+        accounts = [destination] if current_owner is None else [current_owner, destination]
+        marked_active = await self.subscriptions_db.lock_grants_of(accounts)
+
         if stored is None:
             # Adoption-with-creation: written unowned, so the one owner write is the update below.
             # Insert-only: a row a webhook committed since the read above is a lost race, never an
             # update, because canonical status is the webhooks' and this proof may already be stale.
+            # Taken under the grant locks: the flush below holds the lifecycle pair's unique-index
+            # slot until this transaction ends, and holding that slot ahead of the grant rows would
+            # invert `SubscriptionsService.ingest`'s order and deadlock the buy-then-restore race.
             stored, outcome = await self.subscriptions_db.insert_subscription(
                 provider=proof.provider,
                 external_id=proof.external_id,
@@ -97,10 +105,6 @@ class RestoreService:
             await self._settle(outcome, proof)
         subscription_id = stored.id
         tier_id = stored.tier_id
-
-        # One statement for every account this restore touches: a move also takes from the old owner.
-        accounts = [destination] if current_owner is None else [current_owner, destination]
-        marked_active = await self.subscriptions_db.lock_grants_of(accounts)
 
         if owner_read != destination:
             # Adoption and the move run it: a same-account restore changes no owner, and a no-op
