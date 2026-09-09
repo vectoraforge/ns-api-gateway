@@ -16,6 +16,12 @@ NAMESPACES = "SELECT count(*) FROM pg_namespace WHERE nspname IN ('core', 'audit
 # The reference rows the migration seeds; TestSeededTiers below is the only place the credits are pinned.
 SEEDED_TIERS = {"anonymous", "registered", "paid"}
 
+# What the seeding case inserted, read by the case after it. Keyed by id rather than counted:
+# `_schema_db_uri` is session-scoped and seven sibling modules COMMIT rows into the same scratch
+# database, so a table-wide count answers for their rows and for collection order, not for the
+# per-test rollback this pair is about.
+_SEEDED_BY_THE_PREVIOUS_CASE: dict[str, object] = {}
+
 
 class TestMigrationDirectory:
     """migrations/ holds exactly one .sql file, so pogo applies exactly that one."""
@@ -91,14 +97,21 @@ class TestHarnessIsolation:
     async def test_seed_helpers_insert_rows(self, conn, tier):
         user_id = await insert_user(conn)
         grant_id = await insert_grant(conn, user_id=user_id, tier_id=tier)
+        # Handed to the case below, which is the one that proves these two rows did not survive.
+        _SEEDED_BY_THE_PREVIOUS_CASE.update({"core.users": user_id,
+                                             "core.access_grants": grant_id})
         assert await conn.fetchval("SELECT count(*) FROM core.users WHERE id = $1", user_id) == 1
         assert await conn.fetchval("SELECT count(*) FROM core.access_grants WHERE id = $1", grant_id) == 1
 
     async def test_previous_test_rows_were_rolled_back(self, conn):
-        for table in ("core.users", "core.access_grants"):
-            # table comes from the fixed literal tuple above, never from test input.
-            count = await conn.fetchval(f"SELECT count(*) FROM {table}")
-            assert count == 0, f"{table} still holds {count} rows from a previous test"
+        """Keyed to the two ids the case above inserted: this is the only pair of rows whose absence
+        says anything about the rollback, and the only pair no sibling module can write."""
+        assert _SEEDED_BY_THE_PREVIOUS_CASE, \
+            "the case that seeds the rows this one looks for did not run"
+        for table, row_id in _SEEDED_BY_THE_PREVIOUS_CASE.items():
+            # table comes from the keys the case above wrote, never from test input.
+            count = await conn.fetchval(f"SELECT count(*) FROM {table} WHERE id = $1", row_id)
+            assert count == 0, f"{table} still holds {row_id} from a previous test"
 
     async def test_only_the_seeded_tiers_survive(self, conn):
         """core.access_tiers is seeded, so a leak shows up as an id outside the seeded set rather than a count."""

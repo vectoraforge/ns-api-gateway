@@ -45,6 +45,19 @@ _IDENTITIES_OF_ONE_ISSUER = (
     "SELECT count(*) FROM core.external_identities i WHERE i.issuer = :issuer"
 )
 
+# The same two, in asyncpg's positional form: the `conn` fixture is a raw connection and the
+# `:issuer` spelling above is SQLAlchemy's, which `scalar` binds for the production-writer class.
+_FOR_ONE_ISSUER_POSITIONAL = " AND i.issuer = $1"
+_IDENTITIES_OF_ONE_ISSUER_POSITIONAL = (
+    "SELECT count(*) FROM core.external_identities i WHERE i.issuer = $1"
+)
+
+
+def _an_issuer() -> str:
+    """An issuer no other case and no other module writes under, so a scan keyed to it answers for
+    the rows this case seeded and for nothing else."""
+    return f"{ISSUER}/scan-{uuid.uuid4().hex[:8]}"
+
 
 @contextlib.asynccontextmanager
 async def _rolled_back(conn: asyncpg.Connection):
@@ -63,44 +76,64 @@ async def _insert_user(conn: asyncpg.Connection, *, registered_at: datetime | No
     return user_id
 
 
-async def _insert_identity(conn: asyncpg.Connection, *, user_id: uuid.UUID, provider: str) -> uuid.UUID:
+async def _insert_identity(conn: asyncpg.Connection, *, user_id: uuid.UUID, provider: str,
+                           issuer: str = ISSUER) -> uuid.UUID:
     """Insert one core.external_identities row; subject and provider_uid are generated so neither collides."""
     identity_id = uuid.uuid4()
     # The table's CHECK ties the two together: provider_uid is NULL exactly for anonymous.
     provider_uid = None if provider == "anonymous" else f"uid_{uuid.uuid4().hex[:16]}"
-    await conn.execute(_INSERT_IDENTITY, identity_id, user_id, ISSUER,
+    await conn.execute(_INSERT_IDENTITY, identity_id, user_id, issuer,
                        f"sub_{uuid.uuid4().hex[:16]}", provider, provider_uid)
     return identity_id
 
 
 class TestTheRegistrationPairing:
-    """Neither half of the pairing stands without the other. These scans are conformance probes
-    over whatever the database holds, which on a migrated scratch database is nothing: coverage of
-    the writer is `TestTheProductionWriterLeavesNeitherHalf` below, not these."""
+    """Neither half of the pairing stands without the other. Each case seeds a conforming pair under
+    an issuer of its own and scans that issuer alone: sibling modules COMMIT into this shared
+    scratch database, so an unscoped scan answers for their rows and for collection order."""
 
     async def test_no_registered_user_carries_an_anonymous_identity(self, conn):
         """One half of the third state: a timestamp set while the identity row still says anonymous."""
-        assert await conn.fetchval(_REGISTERED_USER_ON_AN_ANONYMOUS_IDENTITY) == 0
+        issuer = _an_issuer()
+        user_id = await _insert_user(conn, registered_at=datetime.now(UTC))
+        await _insert_identity(conn, user_id=user_id, provider="google", issuer=issuer)
+        # The premise: a conforming pair of this issuer exists, so the zero below is conformance
+        # and never an empty scope.
+        assert await conn.fetchval(_IDENTITIES_OF_ONE_ISSUER_POSITIONAL, issuer) == 1
+
+        assert await conn.fetchval(
+            _REGISTERED_USER_ON_AN_ANONYMOUS_IDENTITY + _FOR_ONE_ISSUER_POSITIONAL, issuer) == 0
 
     async def test_the_first_scan_counts_a_deliberately_offending_row(self, conn):
         """The control: the database accepts the third state, so the scan above must be able to see it."""
+        issuer = _an_issuer()
+        scan = _REGISTERED_USER_ON_AN_ANONYMOUS_IDENTITY + _FOR_ONE_ISSUER_POSITIONAL
         async with _rolled_back(conn):
             user_id = await _insert_user(conn, registered_at=datetime.now(UTC))
-            await _insert_identity(conn, user_id=user_id, provider="anonymous")
-            assert await conn.fetchval(_REGISTERED_USER_ON_AN_ANONYMOUS_IDENTITY) == 1
-        assert await conn.fetchval(_REGISTERED_USER_ON_AN_ANONYMOUS_IDENTITY) == 0
+            await _insert_identity(conn, user_id=user_id, provider="anonymous", issuer=issuer)
+            assert await conn.fetchval(scan, issuer) == 1
+        assert await conn.fetchval(scan, issuer) == 0
 
     async def test_no_registered_identity_belongs_to_a_user_without_a_timestamp(self, conn):
         """The other half: a google/apple identity row whose user was never marked registered."""
-        assert await conn.fetchval(_REGISTERED_IDENTITY_ON_AN_UNREGISTERED_USER) == 0
+        issuer = _an_issuer()
+        user_id = await _insert_user(conn, registered_at=datetime.now(UTC))
+        await _insert_identity(conn, user_id=user_id, provider="google", issuer=issuer)
+        # The same premise as the first half: this scan has a row of its own to answer for.
+        assert await conn.fetchval(_IDENTITIES_OF_ONE_ISSUER_POSITIONAL, issuer) == 1
+
+        assert await conn.fetchval(
+            _REGISTERED_IDENTITY_ON_AN_UNREGISTERED_USER + _FOR_ONE_ISSUER_POSITIONAL, issuer) == 0
 
     async def test_the_second_scan_counts_a_deliberately_offending_row(self, conn):
         """The control for the other direction, inserted, counted, and rolled back to the savepoint."""
+        issuer = _an_issuer()
+        scan = _REGISTERED_IDENTITY_ON_AN_UNREGISTERED_USER + _FOR_ONE_ISSUER_POSITIONAL
         async with _rolled_back(conn):
             user_id = await _insert_user(conn, registered_at=None)
-            await _insert_identity(conn, user_id=user_id, provider="google")
-            assert await conn.fetchval(_REGISTERED_IDENTITY_ON_AN_UNREGISTERED_USER) == 1
-        assert await conn.fetchval(_REGISTERED_IDENTITY_ON_AN_UNREGISTERED_USER) == 0
+            await _insert_identity(conn, user_id=user_id, provider="google", issuer=issuer)
+            assert await conn.fetchval(scan, issuer) == 1
+        assert await conn.fetchval(scan, issuer) == 0
 
 
 class TestTheProductionWriterLeavesNeitherHalf:
