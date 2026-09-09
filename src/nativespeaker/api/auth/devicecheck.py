@@ -105,9 +105,14 @@ def _parse_bit_state(response: httpx.Response, *, stage: str) -> BitState:
         return BitState(bit0=False, bit1=False)
 
     payload = _decoded(response)
-    if not isinstance(payload, dict) or "bit0" not in payload or "bit1" not in payload:
+    if not isinstance(payload, dict):
         raise RetryableDeviceCheckError("unrecognised body")
-    return BitState(bit0=bool(payload["bit0"]), bit1=bool(payload["bit1"]))
+    bit0, bit1 = payload.get("bit0"), payload.get("bit1")
+    if not isinstance(bit0, bool) or not isinstance(bit1, bool):
+        # The type is part of the guard: coercing `None` would report a bit clear that Apple
+        # never answered, granting a second free grant and writing a set bit1 away.
+        raise RetryableDeviceCheckError("unrecognised body")
+    return BitState(bit0=bit0, bit1=bit1)
 
 
 class AppleDeviceCheck:

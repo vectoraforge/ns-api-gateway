@@ -217,8 +217,11 @@ class TestTheParseArms:
 
     @pytest.mark.parametrize("response", [_text("something nobody documented"),
                                           _ok({"bit0": True}),
-                                          _ok({"unrelated": 1})],
-                             ids=["unparseable", "one bit only", "no bits"])
+                                          _ok({"unrelated": 1}),
+                                          _ok({"bit0": None, "bit1": None}),
+                                          _ok({"bit0": 1, "bit1": 0})],
+                             ids=["unparseable", "one bit only", "no bits",
+                                  "both bits null", "both bits numeric"])
     async def test_arm_five_an_unrecognised_body_fails_closed_rather_than_defaulting(
             self, response, private_key):
         recorder = Recorder(*[response for _ in range(DEVICECHECK_ATTEMPTS)])
