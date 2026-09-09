@@ -79,19 +79,23 @@ class SubscriptionsService:
         # Read under the grant locks for the reason the owner is: the pre-lock read took no lock, so
         # a concurrent delivery can have committed a newer store clock since. Comparing against the
         # clock that read saw lets an older payload through the guard and downgrade the buyer.
-        settled_signed_at = await self.subscriptions_db.read_signed_at(notification.provider,
-                                                                       notification.external_id)
-        if (stored is not None and settled_signed_at is not None
+        # The whole row, and every conjunct below read off it: gating on the pre-lock `stored`
+        # skipped the guard entirely when the rival's insert is what that read missed -- the two
+        # deliveries carry different `notification_uuid`s, so the replay arm does not catch it
+        # either, and the older payload then overwrote a status the store had already moved on.
+        settled = await self.subscriptions_db.read_subscription(notification.provider,
+                                                                 notification.external_id)
+        if (settled is not None and settled.store_signed_at is not None
                 and notification.signed_at is not None
-                and notification.signed_at < settled_signed_at):
+                and notification.signed_at < settled.store_signed_at):
             # Neither store guarantees delivery order, and `notification_uuid` only catches one payload twice.
             await self._settle(await self.subscriptions_db.append_event(
-                subscription=stored,
+                subscription=settled,
                 event_type=notification.event_type,
                 notification_uuid=notification.notification_uuid,
                 # The recorded tier on both sides: no transition was applied, so none is claimed.
-                old_tier_id=stored.tier_id,
-                new_tier_id=stored.tier_id,
+                old_tier_id=settled.tier_id,
+                new_tier_id=settled.tier_id,
                 evaluated_at=self.evaluated_at), notification)
             logger.warning("store_notification_superseded", event_type=notification.event_type)
             # Reached before the attribution guard: a stale payload must not earn the 500 that guard raises.

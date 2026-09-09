@@ -130,16 +130,6 @@ class SubscriptionsDB:
         # this against a `SubscriptionStatus`, and a bare column value answers by value only.
         return None if settled is None else SubscriptionStatus(settled)
 
-    async def read_signed_at(self, provider: PurchaseProvider,
-                             external_id: str) -> datetime | None:
-        """The store clock the canonical row carries right now, or `None`, taking no lock."""
-        # A column select for the reason `read_owner` gives: the out-of-order guard asks what the
-        # row says now, and an entity load would answer with the clock the first read saw.
-        statement = select(Subscription.store_signed_at).where(
-            col(Subscription.provider) == provider,
-            col(Subscription.external_id) == external_id)
-        return (await self.session.exec(statement)).first()
-
     async def read_purchase(self, provider: PurchaseProvider,
                             external_id: str) -> StorePurchase | None:
         """The recorded purchase for the lifecycle pair, or `None`, taking no lock."""

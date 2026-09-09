@@ -2,6 +2,7 @@
 
 Each case asserts the values the writer was asked to persist, never the statements it emitted.
 """
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4, uuid7
 
@@ -124,9 +125,10 @@ class _RecordingSubscriptions:
         # What the canonical row says once the locks are held. `None` follows the stored row; a case
         # sets it to model a restore that committed between the unlocked read and the locks.
         self.settled_owner: UUID | None = None
-        # The same, for the store clock: a case sets it to model a newer delivery that committed in
-        # that window, which the unlocked read of the row cannot see.
-        self.settled_signed_at: datetime | None = None
+        # A rival delivery committing between the unlocked read and the locks. It is run once,
+        # immediately after the unlocked `read_subscription`, so the second, under-lock read
+        # answers with the row it left behind -- which is how the staleness arises in production.
+        self.rival: Callable[[], None] | None = None
 
     async def lock_grants(self, user_id: UUID) -> list:
         self.timeline.append("lock_grants")
@@ -138,13 +140,6 @@ class _RecordingSubscriptions:
             return self.settled_owner
         stored = self.subscriptions.get((provider, external_id))
         return None if stored is None else stored.user_id
-
-    async def read_signed_at(self, provider: PurchaseProvider,
-                             external_id: str) -> datetime | None:
-        if self.settled_signed_at is not None:
-            return self.settled_signed_at
-        stored = self.subscriptions.get((provider, external_id))
-        return None if stored is None else stored.store_signed_at
 
     async def write_subscription_grant(self, **fields) -> WriteOutcome:
         self.timeline.append("write_subscription_grant")
@@ -160,7 +155,11 @@ class _RecordingSubscriptions:
 
     async def read_subscription(self, provider: PurchaseProvider,
                                 external_id: str) -> Subscription | None:
-        return self.subscriptions.get((provider, external_id))
+        stored = self.subscriptions.get((provider, external_id))
+        if self.rival is not None:
+            rival, self.rival = self.rival, None
+            rival()
+        return stored
 
     async def upsert_subscription(self, **fields) -> tuple[Subscription, WriteOutcome]:
         self.timeline.append("upsert_subscription")
@@ -221,15 +220,18 @@ def writer() -> _RecordingSubscriptions:
     return _RecordingSubscriptions()
 
 
-def _seed_owned(writer, owner: UUID) -> str:
+def _seed_owned(writer, owner: UUID, *, external_id: str | None = None,
+                store_signed_at: datetime | None = None,
+                status: SubscriptionStatus = SubscriptionStatus.active) -> str:
     """Put one already-owned canonical row in the writer, as a restore leaves it; return its key."""
-    external_id = f"original-{uuid4()}"
+    external_id = external_id or f"original-{uuid4()}"
     writer.subscriptions[(PurchaseProvider.apple, external_id)] = Subscription(
         provider=PurchaseProvider.apple,
         external_id=external_id,
         user_id=owner,
         tier_id=PAID_TIER_ID,
-        status=SubscriptionStatus.active,
+        status=status,
+        store_signed_at=store_signed_at,
         created_at=NOW,
         updated_at=NOW)
     return external_id
@@ -529,7 +531,8 @@ class TestADeliveryThatCommitsInTheWindowSupersedesThisOne:
         """CR-17: the renewal commits `T2` between the unlocked read and the locks, so comparing
         against the clock that read saw would apply this expiry and end the paying buyer's grant."""
         external_id = _seed_owned(writer, RESTORER)
-        writer.settled_signed_at = NOW + timedelta(hours=2)
+        writer.rival = lambda: _seed_owned(writer, RESTORER, external_id=external_id,
+                                           store_signed_at=NOW + timedelta(hours=2))
         service = _service(session, writer, None)
 
         await service.ingest(_notification(external_id=external_id, event_type="EXPIRED",
@@ -545,7 +548,8 @@ class TestADeliveryThatCommitsInTheWindowSupersedesThisOne:
     async def test_a_payload_newer_than_that_clock_applies(self, session, writer):
         """The control: the same guard reading the same fresh clock lets the newer payload through."""
         external_id = _seed_owned(writer, RESTORER)
-        writer.settled_signed_at = NOW + timedelta(hours=1)
+        writer.rival = lambda: _seed_owned(writer, RESTORER, external_id=external_id,
+                                           store_signed_at=NOW + timedelta(hours=1))
         service = _service(session, writer, None)
 
         await service.ingest(_notification(external_id=external_id, event_type="EXPIRED",
@@ -554,6 +558,43 @@ class TestADeliveryThatCommitsInTheWindowSupersedesThisOne:
 
         assert [upsert["status"] for upsert in writer.upserts] == [SubscriptionStatus.expired]
         assert [grant["status"] for grant in writer.granted] == [SubscriptionStatus.expired]
+        assert session.commits == 1
+
+    async def test_a_row_the_unlocked_read_missed_entirely_still_supersedes_this_one(self, session,
+                                                                                    writer):
+        """WR-40: the guard was gated on the pre-lock read, so a rival that *inserted* the row in
+        the window skipped it. One buyer leaves the owner guard nothing to say and the two
+        `notification_uuid`s leave the replay arm nothing, so the older payload re-granted."""
+        external_id = f"original-{uuid4()}"
+        writer.rival = lambda: _seed_owned(writer, RESTORER, external_id=external_id,
+                                           status=SubscriptionStatus.revoked,
+                                           store_signed_at=NOW + timedelta(hours=2))
+        # The same buyer on both deliveries, which is what leaves the owner guard with nothing to say.
+        service = _service(session, writer, RESTORER)
+
+        await service.ingest(_notification(attribution_token=TOKEN, external_id=external_id,
+                                           event_type="DID_RENEW",
+                                           status=SubscriptionStatus.active,
+                                           signed_at=NOW + timedelta(hours=1)))
+
+        assert [event["notification_uuid"] for event in writer.appended] != []
+        assert writer.upserts == []
+        assert writer.granted == []
+        assert session.commits == 1
+
+    async def test_the_same_delivery_writes_when_no_rival_committed_control(self, session, writer):
+        """The control: the case above must pass because the rival's row superseded it, not because
+        a delivery whose unlocked read saw nothing stopped writing at all."""
+        external_id = f"original-{uuid4()}"
+        service = _service(session, writer, RESTORER)
+
+        await service.ingest(_notification(attribution_token=TOKEN, external_id=external_id,
+                                           event_type="DID_RENEW",
+                                           status=SubscriptionStatus.active,
+                                           signed_at=NOW + timedelta(hours=1)))
+
+        assert [upsert["status"] for upsert in writer.upserts] == [SubscriptionStatus.active]
+        assert [grant["status"] for grant in writer.granted] == [SubscriptionStatus.active]
         assert session.commits == 1
 
 
