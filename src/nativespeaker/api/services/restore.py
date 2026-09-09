@@ -94,6 +94,18 @@ class RestoreService:
         accounts = [destination] if current_owner is None else [current_owner, destination]
         marked_active = await self.subscriptions_db.lock_grants_of(accounts)
 
+        # The status above came from a plain read taken before any lock, and the term below was
+        # derived from it. Re-read it under the grant locks, as `SubscriptionsService.ingest`
+        # re-reads the owner and for the same reason: the webhooks own canonical state, and one
+        # that revoked or expired this subscription inside the window leaves this path writing an
+        # entitled grant against a row that no longer entitles anything -- caught, if at all, by
+        # the deferred entitlement key at COMMIT, as an opaque 500.
+        settled_status = await self.subscriptions_db.read_status(proof.provider, proof.external_id)
+        if settled_status is not None and settled_status != status:
+            # Refused whichever way it moved: the term was read off the pre-lock status, so an
+            # entitled status that merely changed spelling carries a window this proof never checked.
+            raise RestoreSubscriptionNotEntitled
+
         if stored is None:
             # Adoption-with-creation: written unowned, so the one owner write is the update below.
             # Insert-only: a row a webhook committed since the read above is a lost race, never an

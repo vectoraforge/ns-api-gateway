@@ -16,6 +16,7 @@ from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
 from nativespeaker.api.crud.violations import UNIQUE_VIOLATION, is_unique_violation
 from nativespeaker.api.errors import (
     ProofRejected,
+    RestoreSubscriptionNotEntitled,
     Unavailable,
     UnmappedStoreProduct,
 )
@@ -618,6 +619,10 @@ class _InsertOnlyRecorder:
     async def read_purchase(self, provider, external_id):
         return None
 
+    async def read_status(self, provider, external_id):
+        # No canonical row on this branch, so the re-read under the locks finds no status either.
+        return None
+
     async def lock_grants_of(self, user_ids):
         self.calls.append("lock_grants_of")
         return []
@@ -671,14 +676,19 @@ class _CommittingSession(_CountingSession):
 class _GrantRecorder:
     """The subscriptions crud as a recorder, on the branch that reaches the grant writer directly."""
 
-    def __init__(self, destination) -> None:
+    def __init__(self, destination, settled_status=SubscriptionStatus.active) -> None:
         self.granted: list[dict] = []
+        self._settled_status = settled_status
         self._stored = SimpleNamespace(id=uuid4(), user_id=destination, tier_id=TIER_ID,
                                        status=SubscriptionStatus.active,
                                        last_cross_account_transfer_month=None)
 
     async def read_subscription(self, provider, external_id):
         return self._stored
+
+    async def read_status(self, provider, external_id):
+        # What the canonical row says under the grant locks, which a case moves out from under it.
+        return self._settled_status
 
     async def read_purchase(self, provider, external_id):
         # Not `None`, so the purchase insert is skipped and the grant writer is the one write.
@@ -692,11 +702,13 @@ class _GrantRecorder:
         return WriteOutcome.applied
 
 
-async def _grant_written(purchased_at) -> dict:
-    """The fields the restore hands the grant writer for a proof carrying `purchased_at`."""
+async def _same_account_restore(purchased_at, settled_status=SubscriptionStatus.active
+                                ) -> tuple[_GrantRecorder, _CommittingSession]:
+    """One same-account restore of a proof carrying `purchased_at`, against a canonical row whose
+    status under the grant locks is `settled_status`."""
     session = _CommittingSession()
     caller = _caller()
-    recorder = _GrantRecorder(caller.user.id)
+    recorder = _GrantRecorder(caller.user.id, settled_status)
     proof = RestoredSubscription(provider=PurchaseProvider.apple,
                                  external_id=ORIGINAL_TRANSACTION_ID,
                                  product_id=PRODUCT_ID,
@@ -712,9 +724,34 @@ async def _grant_written(purchased_at) -> dict:
 
     await service.restore(identity=caller, provider=PurchaseProvider.apple,
                           restore_proof="a-signed-transaction")
+    return recorder, session
+
+
+async def _grant_written(purchased_at) -> dict:
+    """The fields the restore hands the grant writer for a proof carrying `purchased_at`."""
+    recorder, session = await _same_account_restore(purchased_at)
 
     assert session.commits == 1
     return recorder.granted[0]
+
+
+class TestTheStatusIsReReadUnderTheGrantLocksBeforeAnythingIsWritten:
+    """WR-61: the entitlement decision came from a plain read taken before the locks were taken."""
+
+    @pytest.mark.parametrize("moved", [SubscriptionStatus.revoked,
+                                       SubscriptionStatus.expired,
+                                       SubscriptionStatus.grace_period])
+    async def test_a_status_that_moved_under_the_locks_is_refused_with_nothing_written(self, moved):
+        """A webhook owns canonical state; writing an entitled grant against a row it just moved
+        reached the deferred entitlement key at COMMIT as an opaque 500, or committed a wrong term."""
+        with pytest.raises(RestoreSubscriptionNotEntitled):
+            await _same_account_restore(EVALUATED_AT - timedelta(days=1), moved)
+
+    async def test_a_status_that_still_agrees_is_written_control(self):
+        recorder, session = await _same_account_restore(EVALUATED_AT - timedelta(days=1))
+
+        assert len(recorder.granted) == 1
+        assert session.commits == 1
 
 
 class TestTheRestoredGrantNeverBeginsAfterTheInstantThatWroteIt:
