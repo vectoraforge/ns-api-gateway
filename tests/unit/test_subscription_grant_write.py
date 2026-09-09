@@ -255,3 +255,61 @@ class TestTheMonthsCountSurvivesATermChangeInsideIt:
             await _write(session, [own])
 
         assert session.added == []
+
+
+class _LockStubResult:
+    """The grant-tier read is taken with `.all()` and the usage-tier lock with `.first()`."""
+
+    def __init__(self, answer) -> None:
+        self._answer = answer
+
+    def all(self):
+        return self._answer
+
+    def first(self):
+        return self._answer
+
+
+class _LockStubSession:
+    """Answers the first read with the locked grant rows and every read after it with one usage row."""
+
+    def __init__(self, grants: list[AccessGrant], usage: UserMonthlyUsage | None) -> None:
+        self.grants = grants
+        self.usage = usage
+        self.reads = 0
+
+    async def exec(self, statement):  # noqa: ARG002
+        self.reads += 1
+        return _LockStubResult(self.grants if self.reads == 1 else self.usage)
+
+
+@pytest.mark.asyncio
+class TestTheSecondLockTierRefusesAnAbsentUsageRow:
+    """WR-33: `lock_usage` answers `None` for a row that is not there, which is the fail-closed
+    signal. Refused here, no row is written and no lock has been spent on anything."""
+
+    async def test_an_absent_usage_row_raises_under_the_locks(self):
+        held = _grant(subscription_id=SUBSCRIPTION_A)
+        session = _LockStubSession([held], None)
+
+        with pytest.raises(MissingUsageRowError) as failure:
+            await SubscriptionsDB(session).lock_grants_of([DESTINATION])
+
+        assert failure.value.grant_id == held.id
+
+    async def test_a_present_usage_row_answers_the_locked_set_control(self):
+        """The control: the refusal above is the absent row and not every call to this method."""
+        held = _grant(subscription_id=SUBSCRIPTION_A)
+        session = _LockStubSession([held], _usage(held, monthly_period=THIS_MONTH, monthly_used=0))
+
+        assert await SubscriptionsDB(session).lock_grants_of([DESTINATION]) == [held]
+
+    async def test_the_usage_tier_is_taken_after_the_grant_tier_control(self):
+        """The control: a refusal that preceded the grant-tier read would invert the lock order."""
+        held = _grant(subscription_id=SUBSCRIPTION_A)
+        session = _LockStubSession([held], None)
+
+        with pytest.raises(MissingUsageRowError):
+            await SubscriptionsDB(session).lock_grants_of([DESTINATION])
+
+        assert session.reads == 2

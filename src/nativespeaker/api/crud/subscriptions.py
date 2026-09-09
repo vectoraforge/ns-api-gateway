@@ -90,7 +90,10 @@ class SubscriptionsDB:
         for grant in marked_active:
             # Second in the lock order, always after the grant rows, and over the same set
             # `write_subscription_grant` supersedes.
-            await self.grants_db.lock_usage(grant.id)
+            usage = await self.grants_db.lock_usage(grant.id)
+            if usage is None:
+                # Fail closed, never mint: refused here, no row is written and no lock is spent.
+                raise MissingUsageRowError(grant.id)
         return marked_active
 
     async def read_event(self, notification_uuid: str) -> SubscriptionEvent | None:
