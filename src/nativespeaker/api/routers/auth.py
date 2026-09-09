@@ -203,7 +203,11 @@ async def sync(identity: Identity = Depends(get_linked_identity),
 async def sign_out_all(identity: Identity = Depends(get_linked_identity),
                        adapter=Depends(get_firebase_adapter)) -> Response:
     """Revoke the caller's refresh tokens at the provider. It opens no session and writes no row."""
-    await revoke_with_retry(adapter, identity.identity.issuer, identity.identity.subject)
+    # The request-verified pair, never the stored row: the provider is told what this request proved.
+    await revoke_with_retry(adapter, identity.issuer, identity.subject)
+    row = identity.identity
+    # `resolve` sets the row and the user together, and `get_linked_identity` admits only a linked caller.
+    assert row is not None
     # The row id alone: enough to answer "did this account sign out everywhere", and no more.
-    logger.info("sign_out_all_confirmed", identity_row_id=str(identity.identity.id))
+    logger.info("sign_out_all_confirmed", identity_row_id=str(row.id))
     return Response(status_code=204)
