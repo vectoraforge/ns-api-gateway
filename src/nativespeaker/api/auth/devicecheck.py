@@ -52,11 +52,23 @@ class DeviceCheckAdapter(Protocol):
 
 
 def read_private_key(path: str | None) -> str | None:
-    """Read the ES256 private key at `path`, or return `None` when there is no usable file."""
+    """Read the ES256 private key at `path`, or return `None` when there is no usable key there."""
     if path is None:
         return None
     pem = Path(path)
-    return pem.read_text() if pem.is_file() else None
+    if not pem.is_file():
+        return None
+    try:
+        text = pem.read_text()
+        # Parsed once, here, so a key that is present but unusable is the same absent state an
+        # unset path is: a 503 on the claim and one boot warning. Unparsed, it reached `jwt.encode`
+        # instead and raised out of the retry frame onto the generic 500 on every claim, with the
+        # pod reporting healthy. The exception is dropped rather than logged: its text quotes the
+        # file's own bytes.
+        jwt.encode({}, text, algorithm="ES256")
+    except (OSError, ValueError, jwt.PyJWTError):
+        return None
+    return text
 
 
 def _service_jwt(key_id: str | None, team_id: str | None, private_key: str | None, *, stage: str) -> str:

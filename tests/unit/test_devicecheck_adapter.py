@@ -7,7 +7,7 @@ import httpx
 import jwt as pyjwt
 import pytest
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
 from nativespeaker.api.auth.devicecheck import (
     DEVICECHECK_ATTEMPTS,
@@ -17,6 +17,7 @@ from nativespeaker.api.auth.devicecheck import (
     AppleDeviceCheck,
     BitState,
     read_bits_with_retry,
+    read_private_key,
     write_bits_with_retry,
 )
 from nativespeaker.api.errors import ProofRejected, Unavailable
@@ -251,6 +252,44 @@ class TestAnAbsentCredentialFailsClosed:
             await _adapter(recorder, private_key, **{missing: None}).read_bits(QUERY_TOKEN)
 
         assert recorder.requests == []
+
+    @pytest.mark.parametrize("contents", [
+        b"not a pem at all",
+        b"",
+        b"-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----\n",
+        b"\x80\x81\x82",
+    ], ids=["garbage", "empty", "framing-only", "not-text"])
+    async def test_a_present_but_unusable_key_is_that_same_absent_state(self, contents, tmp_path):
+        """WR-22: nothing parsed the PEM, so a truncated or corrupt file reached `jwt.encode` and
+        raised past the retry frame onto the generic 500 on every claim, with the pod healthy."""
+        pem = tmp_path / "AuthKey_ABCDE12345.p8"
+        pem.write_bytes(contents)
+        recorder = Recorder()
+
+        assert read_private_key(str(pem)) is None
+
+        with pytest.raises(Unavailable):
+            await _adapter(recorder, "", key=read_private_key(str(pem))).read_bits(QUERY_TOKEN)
+        assert recorder.requests == []
+
+    async def test_a_key_of_the_wrong_type_is_refused_the_same_way(self, tmp_path):
+        """An RSA key mounted at the DeviceCheck path parses as a PEM and then fails ES256."""
+        pem = tmp_path / "AuthKey_ABCDE12345.p8"
+        pem.write_bytes(rsa.generate_private_key(public_exponent=65537, key_size=2048)
+                        .private_bytes(encoding=serialization.Encoding.PEM,
+                                       format=serialization.PrivateFormat.PKCS8,
+                                       encryption_algorithm=serialization.NoEncryption()))
+
+        assert read_private_key(str(pem)) is None
+
+    def test_a_real_key_is_still_read_back_control(self, private_key, tmp_path):
+        """The control: a reader that answered `None` for everything would pass every case above."""
+        pem = tmp_path / "AuthKey_ABCDE12345.p8"
+        pem.write_text(private_key)
+
+        assert read_private_key(str(pem)) == private_key
+        assert read_private_key(str(tmp_path / "no-such-file.p8")) is None
+        assert read_private_key(None) is None
 
 
 class TestTheTransportIsReallyReached:
