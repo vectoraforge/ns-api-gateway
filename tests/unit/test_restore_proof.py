@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from nativespeaker.api.auth.google_play import GRACE_STATE, PlayDeveloperSubscriptions
 from nativespeaker.api.auth.store_notifications import RestoredSubscription
 from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
+from nativespeaker.api.crud.violations import UNIQUE_VIOLATION, is_unique_violation
 from nativespeaker.api.errors import (
     ProofRejected,
     Unavailable,
@@ -677,3 +678,30 @@ class TestTheInsertOnlyWriterReadsNothingAndLosesTheRaceCleanly:
 
         with pytest.raises(IntegrityError):
             await _insert_through(session)
+
+    async def test_an_integrity_error_carrying_no_dbapi_exception_propagates(self):
+        """WR-08. SQLAlchemy raises this class itself with `orig` unset, and reading `orig.sqlstate`
+        raised AttributeError inside the except block, losing the classification and the rollback."""
+        session = _AddingSession(IntegrityError("INSERT INTO core.subscriptions", {}, None))
+
+        with pytest.raises(IntegrityError):
+            await _insert_through(session)
+
+
+class TestTheUniqueViolationIsReadFailClosed:
+    """WR-08. One classifier for all eight arms, so no writer dereferences an optional attribute."""
+
+    def test_the_arbiters_own_code_is_a_race(self):
+        assert is_unique_violation(_violation(UNIQUE_VIOLATION)) is True
+
+    @pytest.mark.parametrize("sqlstate", ["23502", "23503", "23514", ""])
+    def test_every_other_code_is_not_a_race(self, sqlstate):
+        assert is_unique_violation(_violation(sqlstate)) is False
+
+    def test_an_absent_dbapi_exception_is_not_a_race(self):
+        """Fail closed: the caller re-raises rather than reading an unreadable code as a lost race."""
+        assert is_unique_violation(IntegrityError("INSERT", {}, None)) is False
+
+    def test_a_dbapi_exception_of_another_driver_is_not_a_race(self):
+        """A psycopg-shaped exception carries `pgcode`, so this refuses rather than guessing."""
+        assert is_unique_violation(IntegrityError("INSERT", {}, Exception())) is False

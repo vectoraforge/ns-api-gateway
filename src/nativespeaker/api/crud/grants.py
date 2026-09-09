@@ -9,6 +9,7 @@ from sqlmodel import col, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.crud.identities import IdentitiesDB
+from nativespeaker.api.crud.violations import is_unique_violation
 from nativespeaker.api.errors import MultipleEffectiveGrantsError
 from nativespeaker.api.tables import (
     FREE_GRANT_SOURCES,
@@ -188,7 +189,7 @@ class GrantsDB:
             await self.session.flush()
         except IntegrityError as violation:
             # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-            if violation.orig.sqlstate != "23505":
+            if not is_unique_violation(violation):
                 # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                 raise
             return ActivationOutcome.lost_race
@@ -246,7 +247,7 @@ class GrantsDB:
                 await self.session.flush()
             except IntegrityError as violation:
                 # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-                if violation.orig.sqlstate != "23505":
+                if not is_unique_violation(violation):
                     # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                     raise
                 return ActivationOutcome.lost_race
@@ -275,7 +276,7 @@ class GrantsDB:
             await self.session.flush()
         except IntegrityError as violation:
             # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-            if violation.orig.sqlstate != "23505":
+            if not is_unique_violation(violation):
                 # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                 raise
             return ActivationOutcome.lost_race

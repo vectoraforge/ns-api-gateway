@@ -10,6 +10,7 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.crud.grants import GrantsDB
+from nativespeaker.api.crud.violations import is_unique_violation
 from nativespeaker.api.tables import (
     AccessGrant,
     AccessGrantSource,
@@ -113,7 +114,7 @@ class SubscriptionsDB:
             await self.session.flush()
         except IntegrityError as violation:
             # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-            if violation.orig.sqlstate != "23505":
+            if not is_unique_violation(violation):
                 # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                 raise
             return stored, WriteOutcome.lost_race
@@ -220,7 +221,7 @@ class SubscriptionsDB:
             await self.session.flush()
         except IntegrityError as violation:
             # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-            if violation.orig.sqlstate != "23505":
+            if not is_unique_violation(violation):
                 # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                 raise
             return WriteOutcome.lost_race
@@ -246,7 +247,7 @@ class SubscriptionsDB:
             await self.session.flush()
         except IntegrityError as violation:
             # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-            if violation.orig.sqlstate != "23505":
+            if not is_unique_violation(violation):
                 # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                 raise
             return WriteOutcome.lost_race
@@ -293,7 +294,7 @@ class SubscriptionsDB:
                 await self.session.flush()
             except IntegrityError as violation:
                 # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-                if violation.orig.sqlstate != "23505":
+                if not is_unique_violation(violation):
                     # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                     raise
                 return WriteOutcome.lost_race
@@ -323,7 +324,7 @@ class SubscriptionsDB:
             await self.session.flush()
         except IntegrityError as violation:
             # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
-            if violation.orig.sqlstate != "23505":
+            if not is_unique_violation(violation):
                 # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                 raise
             return WriteOutcome.lost_race
