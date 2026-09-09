@@ -6,7 +6,7 @@ from datetime import datetime
 import structlog
 from fastapi import APIRouter, Depends
 from sqlmodel.ext.asyncio.session import AsyncSession
-from starlette.responses import JSONResponse, Response
+from starlette.responses import Response
 
 from nativespeaker.api.app.dependencies import (
     get_auth_service,
@@ -48,12 +48,14 @@ router = APIRouter(tags=["auth"], dependencies=[Depends(get_identity)])
 
 
 @router.post("/auth/challenge",
+             response_model=PrepareResponse,
              summary="Issue a single-use challenge for a challenge-bearing operation")
 async def issue_challenge(body: ChallengeRequest,
+                          response: Response,
                           identity: Identity = Depends(get_identity),
                           session: AsyncSession = Depends(get_db),
                           challenge_store: ChallengesDB = Depends(get_challenge_store),
-                          evaluated_at: datetime = Depends(get_evaluated_at)) -> Response:
+                          evaluated_at: datetime = Depends(get_evaluated_at)) -> PrepareResponse:
     """Issue one challenge for an operation this route serves. It reads no provider and mutates no account."""
     if body.operation not in AuthOperation:
         # The rejected string is caller-supplied and bounded, so logging it is safe; a handle never is.
@@ -72,9 +74,8 @@ async def issue_challenge(body: ChallengeRequest,
     # the caller could hold a handle naming a row a failed commit never wrote.
     await session.commit()
     # `no-store` rather than `no-cache`: the handle is a secret, and a revalidatable copy is a copy.
-    return JSONResponse(content=PrepareResponse(challenge_id=challenge_id, expires_at=expires_at)
-                        .model_dump(mode="json"),
-                        headers={"Cache-Control": "no-store"})
+    response.headers["Cache-Control"] = "no-store"
+    return PrepareResponse(challenge_id=challenge_id, expires_at=expires_at)
 
 
 @router.post("/auth/create-user",
