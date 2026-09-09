@@ -24,11 +24,16 @@ def _reset_logging():
     root = logging.getLogger()
     original_handlers = root.handlers[:]
     original_level = root.level
+    # `setup_logging` writes the root's level and the level of every quieted library. Snapshot
+    # both, or the nine library levels a test sets stay pinned for the rest of the session.
+    original_levels = {name: logging.getLogger(name).level for name in _QUIETED_LIBRARIES}
     _uncache_module_logger()
     structlog.reset_defaults()
     yield
     structlog.reset_defaults()
     _uncache_module_logger()
+    for name, level in original_levels.items():
+        logging.getLogger(name).setLevel(level)
     root.handlers = original_handlers
     root.setLevel(original_level)
 
@@ -310,3 +315,13 @@ class TestEveryConfigurableLevelBoots:
         assert "FATAL" not in {member.value for member in LogLevel}
         with pytest.raises(KeyError):
             structlog.make_filtering_bound_logger("FATAL")
+
+
+def test_no_quieted_library_level_outlives_the_test_that_set_it():
+    """Reads what every case above left behind: `setup_logging` pins nine named loggers to
+    WARNING, and only `_reset_logging` puts them back. A level still pinned here escaped this
+    file and would silence those nine for every later test in the session."""
+    pinned = {name: logging.getLogger(name).level for name in _QUIETED_LIBRARIES
+              if logging.getLogger(name).level != logging.NOTSET}
+
+    assert pinned == {}
