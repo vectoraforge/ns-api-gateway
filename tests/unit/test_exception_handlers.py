@@ -1,8 +1,4 @@
-import os
-import subprocess
-import sys
 from functools import partial
-from pathlib import Path
 from typing import cast
 from uuid import uuid7
 
@@ -33,6 +29,7 @@ from nativespeaker.api.errors import (
 )
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.users import User
+from unit.error_tree import fresh_interpreter
 
 ISSUER = "https://securetoken.google.com/test-project"
 SUBJECT = "subject-under-test"
@@ -422,24 +419,13 @@ class TestAnAccountUnavailableArmTravelsTheWholeErrorPath:
             assert set(fields) == {"exc_info"}
 
 
-_TESTS_ROOT = Path(__file__).resolve().parent.parent
-
-# `subprocess.run` inherits `os.environ` but not pytest's own `sys.path` insertions.
-_SUBPROCESS_PATH = os.pathsep.join(
-    entry for entry in (str(_TESTS_ROOT), os.environ.get("PYTHONPATH")) if entry)
-
-
-def _fresh_interpreter(snippet: str) -> subprocess.CompletedProcess:
-    """Run the check in its own process, so a synthetic subclass cannot outlive it."""
-    return subprocess.run([sys.executable, "-c", snippet], capture_output=True, text=True,
-                          env={**os.environ, "PYTHONPATH": _SUBPROCESS_PATH})
 
 
 class TestStartupFailsClosedOnATreeDefect:
     """`assert_tree_total` is the gate; a walk that quietly found nothing would pass every case."""
 
     def test_a_duplicate_code_at_another_status_is_reported_and_names_both_classes(self):
-        result = _fresh_interpreter(
+        result = fresh_interpreter(
             "from nativespeaker.api.errors import AppError\n"
             "from unit.error_tree import assert_tree_total\n"
             "class _Duplicate(AppError):\n"
@@ -452,7 +438,7 @@ class TestStartupFailsClosedOnATreeDefect:
         assert "_Duplicate" in result.stderr
 
     def test_a_class_declaring_only_status_is_reported(self):
-        result = _fresh_interpreter(
+        result = fresh_interpreter(
             "from nativespeaker.api.errors import AppError\n"
             "from unit.error_tree import assert_tree_total\n"
             "class _HalfDeclared(AppError):\n"
@@ -464,7 +450,7 @@ class TestStartupFailsClosedOnATreeDefect:
 
     def test_the_same_check_reports_neither_when_neither_class_exists(self):
         """The control: without it the two cases above would pass on any raised message at all."""
-        result = _fresh_interpreter(
+        result = fresh_interpreter(
             "from unit.error_tree import assert_tree_total\n"
             "try:\n"
             "    assert_tree_total()\n"

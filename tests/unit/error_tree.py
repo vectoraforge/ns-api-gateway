@@ -1,8 +1,29 @@
-"""The error tree's totality check."""
+"""The error tree's totality check, and the fresh-interpreter runner its subprocess cases share."""
+import os
+import subprocess
+import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import get_args
 
 from nativespeaker.api.errors import AppError, ErrorCode, _family
+
+_TESTS_ROOT = Path(__file__).resolve().parent.parent
+
+# `subprocess.run` inherits `os.environ` but not pytest's own `sys.path` insertions.
+_SUBPROCESS_PATH = os.pathsep.join(
+    entry for entry in (str(_TESTS_ROOT), os.environ.get("PYTHONPATH")) if entry)
+
+#: Generous, because the child imports the whole app; a hung child must still name a failing case
+#: rather than block the session until CI kills the job with nothing reported.
+SUBPROCESS_TIMEOUT_SECONDS = 120
+
+
+def fresh_interpreter(snippet: str) -> subprocess.CompletedProcess:
+    """Run a check in its own process, so a synthetic subclass cannot outlive it."""
+    return subprocess.run([sys.executable, "-c", snippet], capture_output=True, text=True,
+                          timeout=SUBPROCESS_TIMEOUT_SECONDS,
+                          env={**os.environ, "PYTHONPATH": _SUBPROCESS_PATH})
 
 
 def undeclared(classes: Sequence[type], *, root: type) -> list[str]:

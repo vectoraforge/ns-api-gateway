@@ -1,8 +1,5 @@
 """The error tree is total, and the handlers read it."""
-import os
 import re
-import subprocess
-import sys
 from pathlib import Path
 from typing import get_args
 
@@ -23,7 +20,7 @@ from nativespeaker.api.errors import (
     _family,
     class_answering_status,
 )
-from unit.error_tree import assert_tree_total, tree_problems
+from unit.error_tree import assert_tree_total, fresh_interpreter, tree_problems
 
 # The statuses a bare framework rejection can arrive with, each answered by exactly one class.
 FRAMEWORK_STATUSES = (400, 401, 404, 405, 409, 422, 429, 500, 503)
@@ -32,19 +29,6 @@ FRAMEWORK_STATUSES = (400, 401, 404, 405, 409, 422, 429, 500, 503)
 def _declaring(code: str) -> list[type[AppError]]:
     """Every class that declares `code` itself, rather than inheriting it from a base."""
     return [cls for cls in _family(AppError) if vars(cls).get("code") == code]
-
-
-_TESTS_ROOT = Path(__file__).resolve().parent.parent
-
-# `subprocess.run` inherits `os.environ` but not pytest's own `sys.path` insertions.
-_SUBPROCESS_PATH = os.pathsep.join(
-    entry for entry in (str(_TESTS_ROOT), os.environ.get("PYTHONPATH")) if entry)
-
-
-def _fresh_interpreter(snippet: str) -> subprocess.CompletedProcess:
-    """Run a check in its own process, so a synthetic subclass cannot outlive it."""
-    return subprocess.run([sys.executable, "-c", snippet], capture_output=True, text=True,
-                          env={**os.environ, "PYTHONPATH": _SUBPROCESS_PATH})
 
 
 class _RecordingLogger:
@@ -86,7 +70,7 @@ class TestTreeTotality:
 
         In a fresh interpreter, because a synthetic subclass joins the real tree while it is alive.
         """
-        result = _fresh_interpreter(
+        result = fresh_interpreter(
             "from nativespeaker.api.errors import AppError\n"
             "class _Bare(AppError):\n"
             "    pass\n"
@@ -102,7 +86,7 @@ class TestTreeTotalityCatchesDefects:
     """
 
     def test_a_code_claimed_at_a_second_status_is_reported_and_names_both_classes(self):
-        result = _fresh_interpreter(
+        result = fresh_interpreter(
             "from nativespeaker.api.errors import AppError\n"
             "from unit.error_tree import assert_tree_total\n"
             "class _Duplicate(AppError):\n"
@@ -115,7 +99,7 @@ class TestTreeTotalityCatchesDefects:
         assert "NotFound" in result.stderr
 
     def test_a_class_declaring_only_a_status_is_reported(self):
-        result = _fresh_interpreter(
+        result = fresh_interpreter(
             "from nativespeaker.api.errors import AppError\n"
             "from unit.error_tree import assert_tree_total\n"
             "class _HalfDeclared(AppError):\n"
@@ -126,7 +110,7 @@ class TestTreeTotalityCatchesDefects:
         assert "_HalfDeclared declares only status" in result.stderr
 
     def test_a_class_declaring_only_a_code_is_reported(self):
-        result = _fresh_interpreter(
+        result = fresh_interpreter(
             "from nativespeaker.api.errors import AppError\n"
             "from unit.error_tree import assert_tree_total\n"
             "class _HalfDeclared(AppError):\n"
@@ -137,7 +121,7 @@ class TestTreeTotalityCatchesDefects:
         assert "_HalfDeclared declares only code" in result.stderr
 
     def test_a_leaf_declaring_nothing_is_reported(self):
-        result = _fresh_interpreter(
+        result = fresh_interpreter(
             "from nativespeaker.api.errors import AppError\n"
             "from unit.error_tree import assert_tree_total\n"
             "class _SilentLeaf(AppError):\n"
@@ -148,7 +132,7 @@ class TestTreeTotalityCatchesDefects:
         assert "_SilentLeaf declares no status or code" in result.stderr
 
     def test_a_second_class_claiming_one_framework_status_is_reported(self):
-        result = _fresh_interpreter(
+        result = fresh_interpreter(
             "from nativespeaker.api.errors import AppError\n"
             "from unit.error_tree import assert_tree_total\n"
             "class _SecondNotFound(AppError):\n"
@@ -168,7 +152,7 @@ class TestTreeTotalityCatchesDefects:
 
     def test_the_same_checks_report_nothing_when_no_synthetic_class_exists(self):
         """The control: without it, every case above would pass on any raised message at all."""
-        result = _fresh_interpreter(
+        result = fresh_interpreter(
             "from unit.error_tree import assert_tree_total\n"
             "assert_tree_total()\n")
 
