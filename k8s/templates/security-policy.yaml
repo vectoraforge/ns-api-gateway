@@ -23,6 +23,9 @@ spec:
   jwt:
     providers:
     - name: firebase
-      issuer: {{ .Values.jwt.issuer | quote }}
+      # `required`, because Envoy treats an empty `issuer` as "do not check the issuer": an unset
+      # value would install a policy that accepts any token signed by Google's shared securetoken
+      # key, including one minted for another Firebase project, and report itself healthy.
+      issuer: {{ required "jwt.issuer must be set to https://securetoken.google.com/<project-id>" .Values.jwt.issuer | quote }}
       remoteJWKS:
         uri: {{ .Values.jwt.jwksUri | quote }}

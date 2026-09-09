@@ -37,6 +37,8 @@ gateway:
   name: eg-gateway
 
 jwt:
+  # No default is possible and an empty one is not checked, so the template declares it `required`:
+  # an install that forgets `--set jwt.issuer=...` fails rather than shipping an unchecked issuer.
   issuer: ""
   jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
 
