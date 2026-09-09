@@ -63,7 +63,8 @@ _INSERT_CHALLENGE = (
 @contextlib.asynccontextmanager
 async def _rejects(conn: asyncpg.Connection, exc_type: type[Exception]):
     """A rejected statement aborts the whole transaction, so the savepoint is what keeps a follow-up query possible."""
-    # Not usable for the COMMIT-time cases: a deferred failure leaves no savepoint to return to.
+    # The deferred cases use it too: `SET CONSTRAINTS ALL IMMEDIATE` moves the check off COMMIT and
+    # onto a statement inside this savepoint, so the fixture's transaction survives to be rolled back.
     await conn.execute("SAVEPOINT rejected_statement")
     with pytest.raises(exc_type) as exc_info:
         yield exc_info
@@ -294,49 +295,48 @@ class TestSubscriptionConstraints:
             )
         assert await conn.fetchval("SELECT count(*) FROM core.subscriptions") == 0
 
-    async def test_subscription_expired_rejects_active_grant_at_commit(self, conn, tier):
+    async def test_subscription_expired_rejects_active_grant_when_the_deferred_check_runs(self, conn, tier):
         """Case E1 -- an active subscription grant on an expired subscription fails the deferred FK."""
         user_id = await insert_user(conn)
         subscription_id = await _insert_subscription(conn, user_id=user_id, tier_id=tier, status="expired")
         assert await conn.fetchval(
             "SELECT product_entitled_subscription_id FROM core.subscriptions WHERE id = $1", subscription_id
         ) is None
-        await conn.execute("BEGIN")
-        await insert_grant(
-            conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
-        )
-        with pytest.raises(asyncpg.ForeignKeyViolationError) as exc_info:
-            await conn.execute("COMMIT")  # the deferred FK fires HERE, not on the INSERT above
+        async with _rejects(conn, asyncpg.ForeignKeyViolationError) as exc_info:
+            await insert_grant(
+                conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
+            )
+            # The FK is checked here rather than at COMMIT: committing would end the fixture's own
+            # transaction, and the day this constraint is dropped the row would be written for good.
+            await conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
         assert FK_GRANT_SUBSCRIPTION_ENTITLED in str(exc_info.value)
 
-    async def test_subscription_billing_retry_rejects_active_grant_at_commit(self, conn, tier):
+    async def test_subscription_billing_retry_rejects_active_grant_when_the_deferred_check_runs(self, conn, tier):
         """Case E2 -- ruling 9.14 fixes the entitled set at ('active','grace_period'); billing_retry is out."""
         user_id = await insert_user(conn)
         subscription_id = await _insert_subscription(conn, user_id=user_id, tier_id=tier, status="billing_retry")
         assert await conn.fetchval(
             "SELECT product_entitled_subscription_id FROM core.subscriptions WHERE id = $1", subscription_id
         ) is None
-        await conn.execute("BEGIN")
-        # Not a duplicate of E1: a later reader is most likely to widen this one for a card retry.
-        await insert_grant(
-            conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
-        )
-        with pytest.raises(asyncpg.ForeignKeyViolationError) as exc_info:
-            await conn.execute("COMMIT")
+        async with _rejects(conn, asyncpg.ForeignKeyViolationError) as exc_info:
+            # Not a duplicate of E1: a later reader is most likely to widen this one for a card retry.
+            await insert_grant(
+                conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
+            )
+            await conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
         assert FK_GRANT_SUBSCRIPTION_ENTITLED in str(exc_info.value)
 
-    async def test_subscription_grant_owner_mismatch_rejected_at_commit(self, conn, tier):
+    async def test_subscription_grant_owner_mismatch_rejected_when_the_deferred_check_runs(self, conn, tier):
         """Case OWN -- a grant may not point at another user's subscription."""
         owner = await insert_user(conn)
         thief = await insert_user(conn)
         # The subscription stays entitled, so the only constraint left to reject is the ownership FK.
         subscription_id = await _insert_subscription(conn, user_id=owner, tier_id=tier, status="active")
-        await conn.execute("BEGIN")
-        await insert_grant(
-            conn, user_id=thief, tier_id=tier, source="subscription", subscription_id=subscription_id
-        )
-        with pytest.raises(asyncpg.ForeignKeyViolationError) as exc_info:
-            await conn.execute("COMMIT")
+        async with _rejects(conn, asyncpg.ForeignKeyViolationError) as exc_info:
+            await insert_grant(
+                conn, user_id=thief, tier_id=tier, source="subscription", subscription_id=subscription_id
+            )
+            await conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
         assert FK_GRANT_SUBSCRIPTION_OWNER in str(exc_info.value)
 
     async def test_subscription_with_null_user_id_accepted(self, conn, tier):
