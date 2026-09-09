@@ -167,15 +167,28 @@ async def lifespan(app: FastAPI):
 
         yield
     finally:
+        # Every step is guarded on its own, because a step that raises must not skip the ones after
+        # it: `dispose()` on a pool in a bad state and `aclose()` on a client mid-flight both raise,
+        # and the step they would strand is the one whose failure outlives the process.
         if db_engine is not None:
-            await db_engine.dispose()
+            try:
+                await db_engine.dispose()
+            except Exception:
+                logger.error("shutdown_step_failed", step="db_engine_dispose", exc_info=True)
         for client in (devicecheck_client, play_client):
             if client is not None:
-                await client.aclose()
+                try:
+                    await client.aclose()
+                except Exception:
+                    logger.error("shutdown_step_failed", step="http_client_close", exc_info=True)
 
         # firebase_admin registers named apps process-globally and raises on a repeat, so a
         # second boot needs these gone -- a failed startup that kept them poisons every later one.
+        # Guarded per app as well: one app that refuses to go must not strand the rest.
         for firebase_app in firebase_apps.values():
-            firebase_admin.delete_app(firebase_app)
+            try:
+                firebase_admin.delete_app(firebase_app)
+            except Exception:
+                logger.error("shutdown_step_failed", step="firebase_delete_app", exc_info=True)
 
         logger.info("shutdown")
