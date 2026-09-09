@@ -566,6 +566,55 @@ class TestAnEntitledNotificationWithNoOpenTermIsRefusedBeforeAnyWrite:
                                                status=SubscriptionStatus.grace_period,
                                                grace_period_expires_at=None))
 
+    async def test_a_term_that_closed_before_the_captured_instant_raises_the_generic_500(
+            self, session, writer):
+        """CR-20: `starts_at` is a store purchase date, so it lies before the term end and guards
+        nothing. An Apple redelivery, or a Play read answering `ACTIVE` past its expiry, arrives
+        with a term already run out; writing it costs every grant held for one no read returns."""
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        with pytest.raises(InternalError):
+            await service.ingest(_notification(attribution_token=TOKEN,
+                                               purchased_at=NOW - timedelta(days=40),
+                                               expires_at=NOW - timedelta(minutes=1)))
+
+    async def test_a_grace_window_that_closed_before_the_captured_instant_raises_the_generic_500(
+            self, session, writer):
+        """The grace arm reads its own field, so the closed window is the one guarded there."""
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        with pytest.raises(InternalError):
+            await service.ingest(_notification(attribution_token=TOKEN,
+                                               status=SubscriptionStatus.grace_period,
+                                               purchased_at=NOW - timedelta(days=40),
+                                               expires_at=NOW - timedelta(days=10),
+                                               grace_period_expires_at=NOW - timedelta(minutes=1)))
+
+    async def test_a_closed_term_supersedes_no_grant_and_commits_nothing(self, session, writer):
+        """The half that matters: the crud expires every grant the destination holds before it
+        inserts an entitled one, so reaching the write would cost the buyer their free grant."""
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        with pytest.raises(InternalError):
+            await service.ingest(_notification(attribution_token=TOKEN,
+                                               purchased_at=NOW - timedelta(days=40),
+                                               expires_at=NOW - timedelta(minutes=1)))
+
+        assert (writer.upserts, writer.inserted, writer.appended, writer.granted) == ([], [], [], [])
+        assert session.commits == 0
+
+    async def test_a_term_still_open_at_the_captured_instant_is_written_control(self, session,
+                                                                                writer):
+        """The control: the captured instant is what the guard compares against, so a term open at
+        it is written whatever the purchase date says."""
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        await service.ingest(_notification(attribution_token=TOKEN,
+                                           purchased_at=NOW - timedelta(days=40),
+                                           expires_at=NOW + timedelta(minutes=1)))
+
+        assert writer.granted[0]["ends_at"] == NOW + timedelta(minutes=1)
+
     async def test_a_term_ending_no_later_than_it_starts_raises_the_generic_500(self, session,
                                                                                writer):
         """The row's own CHECK would fire as a non-unique violation the writer re-raises as a bare 500."""

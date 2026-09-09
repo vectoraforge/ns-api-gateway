@@ -108,10 +108,15 @@ class SubscriptionsService:
         starts_at = (self.evaluated_at if notification.purchased_at is None
                      else notification.purchased_at)
         term_ends_at = term_end_for(status, notification)
-        if status in ENTITLED_STATUSES and (term_ends_at is None or term_ends_at <= starts_at):
-            # An entitled status with no open term would insert a grant `_effective_grants_statement`
-            # reads as unbounded, or trip the row's own CHECK. Refused before any write, exactly as
-            # `RestoreService.restore` refuses the same shape; the store resends.
+        if status in ENTITLED_STATUSES and (term_ends_at is None
+                                            or term_ends_at <= starts_at
+                                            or term_ends_at <= self.evaluated_at):
+            # An entitled status whose term is absent, inverted, or already closed would insert a
+            # grant `_effective_grants_statement` never reads, or trip the row's own CHECK -- and
+            # because an entitled write supersedes every grant the buyer holds first, it would take
+            # the one-active slot and leave the account with nothing effective and no way back.
+            # The term must be open at the instant this delivery is evaluated, which is what
+            # `RestoreService.restore` requires of the same shape; the store resends.
             logger.error("store_notification_without_term", event_type=notification.event_type)
             raise InternalError
         subscription, outcome = await self.subscriptions_db.upsert_subscription(

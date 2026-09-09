@@ -704,18 +704,21 @@ class TestAGoogleGracePeriodGrantIsEffective:
             assert await buyer.effective() == []
             assert ("error", "store_notification_without_term") in service_logs.calls
 
-    async def test_a_grace_window_already_closed_leaves_no_effective_grant_control(
-            self, _schema_db_uri):
-        """Phase 43's CR-02 verbatim: an already-past window writes a grant the read never returns."""
+    async def test_a_grace_window_already_closed_is_refused_before_any_write(
+            self, _schema_db_uri, service_logs):
+        """CR-20: `SUBSCRIPTION_STATE_ACTIVE`/grace with an expiry a moment past is an ordinary Play
+        read, and it used to commit a grant the entitlement read never returns while superseding
+        every grant the buyer held. The term must be open at the captured instant, so it is refused."""
         async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
-            await buyer.deliver(event_type=GOOGLE_RENEWED,
-                                status=SubscriptionStatus.grace_period,
-                                expires_in=-timedelta(minutes=1),
-                                grace_period_in=-timedelta(minutes=1))
+            with pytest.raises(InternalError):
+                await buyer.deliver(event_type=GOOGLE_RENEWED,
+                                    status=SubscriptionStatus.grace_period,
+                                    expires_in=-timedelta(minutes=1),
+                                    grace_period_in=-timedelta(minutes=1))
 
-            assert [row["ends_at"] for row in await buyer.grants()] == \
-                [buyer.evaluated_at - timedelta(minutes=1)]
+            assert await buyer.counts() == (0, 0, 0, 0)
             assert await buyer.effective() == []
+            assert ("error", "store_notification_without_term") in service_logs.calls
 
 
 @pytest.mark.asyncio
