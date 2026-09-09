@@ -29,7 +29,9 @@ class PubSubPushMessage(BaseModel):
     # acknowledges 2xx alone and redelivers every other status, so a body pydantic refuses is a 422
     # this subscription retries forever. The decoder answers 200 and drops it, as it already does
     # for a body that does not decode. The bound itself is unchanged.
-    data: str
+    # Defaulted for the same reason: Pub/Sub permits an attributes-only message, so requiring the
+    # field made that delivery a 422 this subscription retries until retention expires.
+    data: str = ""
 
 
 class PubSubPushRequest(BaseModel):

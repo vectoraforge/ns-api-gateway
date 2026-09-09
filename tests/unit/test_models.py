@@ -354,6 +354,14 @@ class TestTheUnauthenticatedWebhookBodiesAreBounded:
         renamed it was a 422 Pub/Sub retries forever -- in exchange for validating nothing."""
         assert PubSubPushMessage(data="ZQ==").data == "ZQ=="
 
+    def test_an_attributes_only_message_validates_and_reaches_the_decoder(self):
+        """WR-63: Pub/Sub permits a message with attributes and no data, and a 422 for one is a
+        delivery this subscription retries until retention expires."""
+        body = PubSubPushRequest(message={"attributes": {"k": "v"}})
+
+        assert body.message.data == ""
+        assert developer_notification_from(body.message.data) is None
+
     def test_a_delivery_still_carrying_the_message_id_validates_unchanged(self):
         """The control: real Pub/Sub sends `messageId` on every push, so dropping the declaration
         must leave those bodies accepted rather than merely stop requiring the field."""
