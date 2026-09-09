@@ -619,6 +619,11 @@ def _repeat(identity_row, grants, devicecheck) -> None:
     grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant)]
 
 
+def _marked_outside_its_term(identity_row, grants, devicecheck) -> None:
+    # A row the one-active index sees and the effective read does not, so only the status read finds it.
+    grants.marked_active = [_a_grant(AccessGrantSource.anonymous_device_grant)]
+
+
 def _device_spent(identity_row, grants, devicecheck) -> None:
     devicecheck.script(BitState(bit0=True, bit1=False))
 
@@ -651,8 +656,8 @@ def _success(identity_row, grants, devicecheck) -> None:
 
 
 POST_CLAIM_OUTCOMES = (_registered, _slot_spent, _prior_free_grant, _other_source_held, _repeat,
-                       _device_spent, _proof_refused, _apple_unavailable, _race_lost,
-                       _write_refused, _race_lost_with_nothing_to_read, _success)
+                       _marked_outside_its_term, _device_spent, _proof_refused, _apple_unavailable,
+                       _race_lost, _write_refused, _race_lost_with_nothing_to_read, _success)
 
 
 class TestTheConsumptionCounterIsOneForEveryPostClaimOutcome:

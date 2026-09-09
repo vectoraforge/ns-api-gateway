@@ -540,6 +540,13 @@ def _conversion(identity_row, grants, devicecheck) -> None:
     grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant)]
 
 
+def _marked_outside_its_term(identity_row, grants, devicecheck) -> None:
+    # The convertible grant, plus a row the one-active index sees and this window cannot: the
+    # marked row carries an id absent from `held`, which is what the branch filters on.
+    grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant)]
+    grants.marked_active = [_a_grant(AccessGrantSource.subscription)]
+
+
 def _device_spent(identity_row, grants, devicecheck) -> None:
     devicecheck.script(BitState(bit0=False, bit1=True))
 
@@ -572,8 +579,9 @@ def _new_grant(identity_row, grants, devicecheck) -> None:
 
 
 POST_CLAIM_OUTCOMES = (_anonymous_claimant, _other_source_held, _free_grant_already_consumed,
-                       _repeat, _conversion, _device_spent, _proof_refused, _apple_unavailable,
-                       _race_lost, _write_refused, _race_lost_with_nothing_to_read, _new_grant)
+                       _repeat, _conversion, _marked_outside_its_term, _device_spent,
+                       _proof_refused, _apple_unavailable, _race_lost, _write_refused,
+                       _race_lost_with_nothing_to_read, _new_grant)
 
 
 class TestTheConsumptionCounterIsOneForEveryPostClaimOutcome:
