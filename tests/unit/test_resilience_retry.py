@@ -255,11 +255,9 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         await breaker.before_call()
 
     async def test_a_straggler_landing_after_the_reset_does_not_clear_the_fresh_tally(self):
-        """WR-02: one retry chain runs `retry_max_attempts x timeout_seconds` plus backoff, which
-        outlives `circuit_breaker_reset_seconds`. Reading "is the breaker open right now" therefore
-        let a straggler zero a tally accumulated entirely after the reset, delaying the reopen by
-        another `failure_threshold` failures. `reset_seconds=0` makes the elapsed arm fire at once,
-        and the reopen is read off the trip counter."""
+        """WR-02: one retry chain outlives `circuit_breaker_reset_seconds`, so reading "is the
+        breaker open right now" let a straggler zero a tally accumulated after the reset.
+        `reset_seconds=0` fires the elapsed arm at once; the reopen is read off the trip counter."""
         breaker = CircuitBreaker(failure_threshold=2, reset_seconds=0)
         straggler = await breaker.current_generation()
 
