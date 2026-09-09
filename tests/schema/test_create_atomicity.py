@@ -290,7 +290,9 @@ class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
         return {"error": result, "users_before": users_before,
                 "identities_before": identities_before, "subject": subject,
                 # The pinned key both the rival row and the rolled-back one carry.
-                "minted": minted}
+                "minted": minted,
+                # The rival's owner, so a count over the key can exclude the row the fixture put there.
+                "other_user": other_user}
 
     async def test_a_conflict_on_a_rule_nobody_anticipated_reads_as_already_linked(
             self, token_collision):
@@ -309,13 +311,14 @@ class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
 
     async def test_no_attribution_token_survives_for_the_would_be_user(self, harness,
                                                                        token_collision):
-        """Keyed to the value this attempt minted, not to the whole table: the rolled-back row is
-        the one that has to be gone, and a leftover from any other file must not answer for it."""
+        """Every token row carrying the pinned value, less the rival the fixture committed: `uuid4`
+        is pinned, so the attempt minted one row per store on that key, and neither may survive.
+        A `provider = 'google_play'` filter would name the one store that never collided."""
         found = await scalar(
             harness,
             "SELECT count(*) FROM core.store_purchase_tokens "
-            "WHERE provider = 'google_play' AND identity_value = :value",
-            {"value": str(token_collision["minted"])})
+            "WHERE identity_value = :value AND user_id <> :rival",
+            {"value": str(token_collision["minted"]), "rival": token_collision["other_user"]})
         assert found == 0
 
         # The control on that zero: the rival row the fixture committed carries the same value, so
