@@ -83,8 +83,11 @@ class IdentitiesDB:
         identity, user = row
         return identity, user
 
-    async def user_by_id(self, user_id: UUID | None) -> User | None:
+    async def user_by_id(self, user_id: UUID) -> User | None:
         """The user an identity row points at, or `None`."""
+        # Never `UUID | None`: `core.external_identities.user_id` is NOT NULL, and a nullable
+        # parameter would compile to `id IS NULL`, matching no row and answering the caller's
+        # "that user does not exist" for an identity that lost its user.
         return (await self.session.exec(select(User).where(col(User.id) == user_id))).first()
 
     async def insert_account(self, *,
