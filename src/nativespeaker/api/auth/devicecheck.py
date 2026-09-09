@@ -66,7 +66,12 @@ def read_private_key(path: str | None) -> str | None:
         # pod reporting healthy. The exception is dropped rather than logged: its text quotes the
         # file's own bytes.
         jwt.encode({}, text, algorithm="ES256")
-    except (OSError, ValueError, jwt.PyJWTError):
+    except Exception:
+        # Every exception, because this is a classifier with two outcomes and no caller can act on
+        # the distinction: `prepare_key` loads a public PEM successfully and fails at `.sign()` with
+        # `AttributeError`, and a passphrase-wrapped `.p8` fails with `TypeError`. Both are outside
+        # `(OSError, ValueError, PyJWTError)`, and both raised out of `lifespan` into a crashloop of
+        # the whole pod -- the outcome this parse exists to prevent.
         return None
     return text
 
