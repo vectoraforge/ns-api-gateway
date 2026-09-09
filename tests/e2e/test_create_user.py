@@ -173,7 +173,8 @@ class TestTheChallengeEndpoint:
 
     async def test_an_operation_this_route_will_not_issue_for_is_rejected(
             self, create_user_client, _db_transaction, scripted_firebase_adapter):
-        """A valid enum member whose phase is unbuilt rejects exactly as an unknown string would."""
+        """An operation string outside `core.auth_operation` is a 400 that issues no row.
+        All four members are served, so the unknown-string arm is the only one this gate has."""
         challenges_before = await _count(_db_transaction, _CHALLENGES)
 
         response = await create_user_client.post("/auth/challenge",
