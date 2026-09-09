@@ -555,7 +555,7 @@ class _Row:
 
 @dataclass(frozen=True)
 class _Account:
-    """A seeded google account, an open session, and the instant the writer is driven at."""
+    """A seeded account, an open session, and the instant the writer is driven at."""
     session: SQLModelAsyncSession
     user_id: uuid.UUID
     identity_row: object
@@ -564,6 +564,12 @@ class _Account:
 
     async def activate(self):
         return await GrantsDB(self.session).activate_registered_account_grant(
+            user_id=self.user_id, identity_row=self.identity_row,
+            tier_id=self.tier_id, evaluated_at=self.evaluated_at)
+
+    async def activate_anonymous(self):
+        """The other free-grant writer, on the same seed, the same session and the same instant."""
+        return await GrantsDB(self.session).activate_anonymous_device_grant(
             user_id=self.user_id, identity_row=self.identity_row,
             tier_id=self.tier_id, evaluated_at=self.evaluated_at)
 
@@ -578,8 +584,9 @@ class _Account:
 
 @contextlib.asynccontextmanager
 async def _account_holding(schema_db_uri: str, rows: tuple[_Row, ...],
-                           *, evaluated_before: timedelta = timedelta(0)):
-    """Seed a google account holding `rows`, and yield an open session the writer runs on."""
+                           *, evaluated_before: timedelta = timedelta(0),
+                           provider: str = "google"):
+    """Seed an account of `provider` holding `rows`, and yield an open session the writer runs on."""
     subject = f"outcome-{uuid.uuid4().hex[:10]}"
     issuer = f"ns-outcome-{uuid.uuid4().hex[:10]}"
     instant = datetime.now(UTC)
@@ -588,11 +595,13 @@ async def _account_holding(schema_db_uri: str, rows: tuple[_Row, ...],
     try:
         user_id = await insert_user(setup)
         tier_id = await insert_tier(setup)
+        # NULL for anonymous and a value for every other provider, which is the table's own CHECK.
+        provider_uid = None if provider == "anonymous" else f"{provider}-uid-{subject}"
         await setup.execute(
             "INSERT INTO core.external_identities "
             "(id, user_id, issuer, subject, provider, provider_uid, identity_state, created_at, updated_at) "
-            "VALUES ($1, $2, $3, $4, 'google', $5, 'active', $6, $6)",
-            uuid.uuid4(), user_id, issuer, subject, f"google-uid-{subject}", NOW)
+            "VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $7)",
+            uuid.uuid4(), user_id, issuer, subject, provider, provider_uid, NOW)
         for row in rows:
             grant_id = uuid.uuid4()
             await setup.execute(
@@ -706,6 +715,32 @@ class TestTheRegisteredWriterNamesWhyItRefused:
                 await account.activate()
             # Not 23505, which is the whole reason the narrowed catch re-raises this one.
             assert refused.value.orig.sqlstate != "23505"
+
+
+@pytest.mark.asyncio
+class TestTheAnonymousWriterNamesWhyItRefused:
+    """WR-40. The twin of the class above: the anonymous writer read the same state as a lost race,
+    because it took the effective tier alone and never asked the one-active index's own question."""
+
+    async def test_a_clean_account_is_activated(self, _schema_db_uri):
+        """The control: without it a writer that refused everything would satisfy the case below."""
+        async with _account_holding(_schema_db_uri, (), provider="anonymous") as account:
+            assert await account.activate_anonymous() is ActivationOutcome.activated
+            assert await account.grants() == [("anonymous_device_grant", "active")]
+
+    async def test_a_term_lapsed_active_row_is_refused_and_not_lost(self, _schema_db_uri):
+        """The row sits inside the one-active index and outside the effective read, so the insert
+        this writer used to issue was doomed and its unique violation was never a race."""
+        held = (_Row("manual", ends_before=timedelta(minutes=1)),)
+        async with _account_holding(_schema_db_uri, held, provider="anonymous") as account:
+            assert await account.activate_anonymous() is ActivationOutcome.refused
+            assert await account.grants() == [("manual", "active")]
+
+    async def test_the_repeat_is_a_lost_race_and_not_a_refusal(self, _schema_db_uri):
+        """The one in-lock branch that stays a 200: the winner's row is there to be read back."""
+        async with _account_holding(_schema_db_uri, (_Row("anonymous_device_grant"),),
+                                    provider="anonymous") as account:
+            assert await account.activate_anonymous() is ActivationOutcome.lost_race
 
 
 @pytest.mark.asyncio
