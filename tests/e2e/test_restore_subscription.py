@@ -439,6 +439,55 @@ class TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach:
         assert [grant.status for grant in grants] == [AccessGrantStatus.active]
         assert grants[0].ends_at == window_ends
 
+    async def test_a_dead_proof_refuses_where_nothing_records_the_term_and_replays_where_one_does(
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
+        """One dead proof, both answers, the recorded term the only difference: a proof's own
+        expiry is not an entitlement input, so it refuses where nothing else records a term and
+        replays where the account's own live grant records one."""
+        # `10-restore-subscription.md:65` confirms entitlement "under locked state (statuses
+        # exactly `active` and `grace_period` ...)" and names no proof date, and an Apple original
+        # transaction states the first term's expiry for a subscription now on its tenth -- so the
+        # dead proof below is a currently-subscribed caller, and `:77`(a) makes the repeat
+        # "idempotent success (no owner change, grant keeps its id, usage row stays on the same
+        # `grant_id` ...)": the same writes-nothing guarantee the refusal carries, under the other
+        # status code. CR-02 survives as the first half; CR-25 is the second.
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        unrecorded = f"e2e-dead-unrecorded-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=unrecorded, user_id=user.id,
+                                tier_id=PAID_TIER_ID)
+        scripted_app_store_notifications.script_restore(
+            _proof(unrecorded, expires_at=datetime.now(UTC) - TERM_ENDED_AGO))
+
+        refused = await _restore(restore_client)
+
+        # Nothing recorded this subscription's term, so the proof was the only source of one and
+        # a dead one attaches nothing: the account is left holding no grant at all.
+        assert refused.status_code == 404
+        assert refused.content == RESTORE_NOT_FOUND_BODY
+        assert await _row_counts(_db_transaction, user.id) == (0, 0)
+
+        recorded = f"e2e-dead-repeat-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=recorded, user_id=user.id,
+                                tier_id=PAID_TIER_ID)
+        scripted_app_store_notifications.script_restore(_proof(recorded))
+        assert (await _restore(restore_client)).status_code == 200
+        granted = (await _grants_of(_db_transaction, user.id))[0]
+        await _spend(_db_transaction, granted.id, 9)
+        before = await _account_snapshot(_db_transaction, user.id)
+
+        # The same dead proof, now against the subscription whose own live grant records the term.
+        scripted_app_store_notifications.script_restore(
+            _proof(recorded, expires_at=datetime.now(UTC) - TERM_ENDED_AGO))
+        replayed = await _restore(restore_client)
+
+        # The slot the grant holds is neither taken nor refreshed: no new row, no new term, and
+        # the counter still carries what the account spent under the grant it already had.
+        assert replayed.status_code == 200, replayed.text
+        assert await _account_snapshot(_db_transaction, user.id) == before
+        assert [grant.id for grant in await _grants_of(_db_transaction, user.id)] == [granted.id]
+        assert (await _usage_of(_db_transaction, granted.id)).monthly_used == 9
+
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheTwoRefusalsOfTheRestoreNotFoundFamily:
@@ -539,33 +588,6 @@ class TestTheTwoRefusalsOfTheRestoreNotFoundFamily:
         assert arms[0] == arms[1] == arms[2]
         assert arms[0] == (404, RESTORE_NOT_FOUND_BODY)
         assert await _row_counts(_db_transaction, user.id) == (0, 0)
-
-    async def test_a_repeat_of_a_proof_whose_term_has_passed_is_refused_and_changes_nothing(
-            self, restore_client, _db_transaction, scripted_app_store_notifications):
-        """CR-02: a dead proof may not pin an account into a slot the grant it holds still fills."""
-        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
-                                      provider=IdentityProvider.google)
-        external_id = f"e2e-dead-repeat-{uuid4()}"
-        await seed_subscription(_db_transaction, external_id=external_id, user_id=user.id,
-                                tier_id=PAID_TIER_ID)
-        scripted_app_store_notifications.script_restore(_proof(external_id))
-        assert (await _restore(restore_client)).status_code == 200
-        granted = (await _grants_of(_db_transaction, user.id))[0]
-        await _spend(_db_transaction, granted.id, 9)
-        before = await _account_snapshot(_db_transaction, user.id)
-
-        # The account keeps its existing grant: the refusal happens before any write, so the old
-        # term stands until a store event ends it.
-        scripted_app_store_notifications.script_restore(
-            _proof(external_id, expires_at=datetime.now(UTC) - TERM_ENDED_AGO))
-        refused = await _restore(restore_client)
-
-        assert refused.status_code == 404
-        assert refused.content == RESTORE_NOT_FOUND_BODY
-        assert await _account_snapshot(_db_transaction, user.id) == before
-        assert [grant.id for grant in await _grants_of(_db_transaction, user.id)] == [granted.id]
-        assert (await _usage_of(_db_transaction, granted.id)).monthly_used == 9
-
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheSameAccountBranchRunsNoOwnerUpdate:
