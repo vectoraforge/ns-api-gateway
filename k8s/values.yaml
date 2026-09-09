@@ -42,10 +42,10 @@ jwt:
 
 rateLimits:
   burst:
-    free: 5
-    silver: 50
-    gold: 100
-    platinum: 1000
+    # One route-wide ceiling per Envoy pod on POST /chats. The tier names it replaces had no
+    # counterpart in the entitlement model (anonymous / registered / paid) and keyed on a header
+    # the client controlled. Raise it as traffic grows; the monthly allowance is the real cap.
+    requests: 60
     unit: Minute
   monthly:
     free: 150

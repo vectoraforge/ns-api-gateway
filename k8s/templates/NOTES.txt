@@ -3,13 +3,12 @@ NativeSpeaker API Gateway deployed.
 Service: {{ include "ns-api-gateway.fullname" . }}.{{ .Values.namespace }}:{{ .Values.service.port }}
 
 Envoy Gateway policies:
-  - SecurityPolicy: JWT validation with plan claim extraction (targets app-routes, llm-routes and auth-routes)
-  - BackendTrafficPolicy: Per-tier local rate limiting (targets llm-routes only)
+  - SecurityPolicy: JWT validation only, no claim headers (targets app-routes, llm-routes and auth-routes)
+  - BackendTrafficPolicy: One local burst limit (targets llm-routes only)
   - HTTPRoutes: app-routes (authenticated), auth-routes (authenticated: /auth/* and /),
     llm-routes (rate-limited), webhook-routes (public), health-routes (public)
 
-Rate limits (per minute, per pod) — applied to POST /chats only:
-  Free:     {{ .Values.rateLimits.burst.free }}
-  Silver:   {{ .Values.rateLimits.burst.silver }}
-  Gold:     {{ .Values.rateLimits.burst.gold }}
-  Platinum: {{ .Values.rateLimits.burst.platinum }}
+Burst limit applied to POST /chats only, per Envoy pod, shared by every caller:
+  {{ .Values.rateLimits.burst.requests }} per {{ .Values.rateLimits.burst.unit }}
+
+The monthly allowance is not a gateway concern: the backend charges it per access grant.

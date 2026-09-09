@@ -12,34 +12,14 @@ spec:
     name: {{ include "ns-api-gateway.fullname" . }}-llm-routes
   rateLimit:
     local:
+      # One rule, no `clientSelectors`: every POST /chats shares one bucket per Envoy pod.
+      # The four tier buckets this replaces selected on `x-user-plan`, a header nothing ever set
+      # from the token and any client could send, so the caller chose its own bucket or none and
+      # the limit never fired. The monthly allowance stays where it is enforceable: the backend
+      # charges it per grant, and the execution gate caps in-flight work.
       rules:
-      - clientSelectors:
-        - headers:
-          - name: x-user-plan
-            value: free
-        limit:
-          requests: {{ .Values.rateLimits.burst.free }}
-          unit: {{ .Values.rateLimits.burst.unit }}
-      - clientSelectors:
-        - headers:
-          - name: x-user-plan
-            value: silver
-        limit:
-          requests: {{ .Values.rateLimits.burst.silver }}
-          unit: {{ .Values.rateLimits.burst.unit }}
-      - clientSelectors:
-        - headers:
-          - name: x-user-plan
-            value: gold
-        limit:
-          requests: {{ .Values.rateLimits.burst.gold }}
-          unit: {{ .Values.rateLimits.burst.unit }}
-      - clientSelectors:
-        - headers:
-          - name: x-user-plan
-            value: platinum
-        limit:
-          requests: {{ .Values.rateLimits.burst.platinum }}
+      - limit:
+          requests: {{ .Values.rateLimits.burst.requests }}
           unit: {{ .Values.rateLimits.burst.unit }}
   responseOverride:
   - match:

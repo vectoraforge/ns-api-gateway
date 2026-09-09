@@ -16,12 +16,13 @@ spec:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: {{ include "ns-api-gateway.fullname" . }}-auth-routes
+  # No `claimToHeaders`. SHARED-INVARIANTS: "the gateway forwards `Authorization` unchanged,
+  # injects no identity headers, and the backend ignores every client/proxy identity header",
+  # and "No claim-header authentication or header-derived identity". The backend reads no such
+  # header, and Envoy's JWT filter is defense-in-depth only: identity happens in the barrier.
   jwt:
     providers:
     - name: firebase
       issuer: {{ .Values.jwt.issuer | quote }}
       remoteJWKS:
         uri: {{ .Values.jwt.jwksUri | quote }}
-      claimToHeaders:
-      - claim: plan
-        header: x-user-plan
