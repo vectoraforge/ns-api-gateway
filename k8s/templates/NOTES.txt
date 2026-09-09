@@ -4,11 +4,14 @@ Service: {{ include "ns-api-gateway.fullname" . }}.{{ .Values.namespace }}:{{ .V
 
 Envoy Gateway policies:
   - SecurityPolicy: JWT validation only, no claim headers (targets app-routes, llm-routes and auth-routes)
-  - BackendTrafficPolicy: One local burst limit (targets llm-routes only)
   - HTTPRoutes: app-routes (authenticated), auth-routes (authenticated: /auth/* and /),
-    llm-routes (rate-limited), webhook-routes (public), health-routes (public)
+    llm-routes (authenticated), webhook-routes (public), health-routes (public)
 
-Burst limit applied to POST /chats only, per Envoy pod, shared by every caller:
-  {{ .Values.rateLimits.burst.requests }} per {{ .Values.rateLimits.burst.unit }}
+No gateway rate limit on llm-routes, and no response override. Envoy's local limit answers
+429, and so does the backend when a caller's monthly allowance is spent. A response override
+matches on the status code alone, so it rewrote the backend's `quota_exceeded` -- the month is
+spent, do not retry -- into `rate_limited` -- retry in a moment. Shedding stays where it can
+still say which answer it is giving: the backend's execution gate caps in-flight work and
+refuses with 503 `service_unavailable` and `Retry-After`.
 
 The monthly allowance is not a gateway concern: the backend charges it per access grant.

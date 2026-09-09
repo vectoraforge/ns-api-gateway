@@ -41,12 +41,6 @@ jwt:
   jwksUri: "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
 
 rateLimits:
-  burst:
-    # One route-wide ceiling per Envoy pod on POST /chats. The tier names it replaces had no
-    # counterpart in the entitlement model (anonymous / registered / paid) and keyed on a header
-    # the client controlled. Raise it as traffic grows; the monthly allowance is the real cap.
-    requests: 60
-    unit: Minute
   monthly:
     free: 150
     silver: 1500
