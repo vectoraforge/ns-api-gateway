@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 from uuid import UUID, uuid7
 
 import structlog
+from sqlalchemy.exc import IntegrityError
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.app_store import AppStoreNotifications
@@ -170,7 +171,13 @@ class RestoreService:
         await self._settle(outcome, proof)
 
         # Deliberate commit: the caller reads the sync body, so 200 must mean the rows are durable.
-        await self.session.commit()
+        try:
+            await self.session.commit()
+        except IntegrityError:
+            # The two entitlement keys on `core.access_grants` are DEFERRABLE INITIALLY DEFERRED, so
+            # this statement is the only place they are evaluated. A violation here is the same lost
+            # race every flush above classifies, and it earns the same line rather than a traceback.
+            await self._settle(WriteOutcome.lost_race, proof)
 
     def _this_month(self) -> date:
         """The first day of the captured instant's UTC month, as the `DATE` column stores it."""

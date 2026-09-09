@@ -3,6 +3,7 @@ from datetime import datetime
 from uuid import uuid7
 
 import structlog
+from sqlalchemy.exc import IntegrityError
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.store_notifications import VerifiedNotification, term_end_for
@@ -166,7 +167,13 @@ class SubscriptionsService:
                 evaluated_at=self.evaluated_at), notification)
 
         # Deliberate commit: the store reads the status code, so 200 must mean the rows are durable.
-        await self.session.commit()
+        try:
+            await self.session.commit()
+        except IntegrityError:
+            # The two entitlement keys on `core.access_grants` are DEFERRABLE INITIALLY DEFERRED, so
+            # this statement is the only place they are evaluated. A violation here is the same lost
+            # race every flush above classifies, and it earns the same line rather than a traceback.
+            await self._settle(WriteOutcome.lost_race, notification)
 
     async def _settle(self, outcome: WriteOutcome,
                       notification: VerifiedNotification) -> None:

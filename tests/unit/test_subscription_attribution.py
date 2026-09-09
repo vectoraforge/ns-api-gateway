@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4, uuid7
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.crud.subscriptions import WriteOutcome
@@ -65,6 +66,14 @@ class _StubSession:
 
     async def exec(self, statement):
         raise AssertionError(f"the ingestion path issued a query of its own: {statement!r}")
+
+
+class _RefusingSession(_StubSession):
+    """The stub session whose commit raises what the deferred entitlement keys raise at COMMIT."""
+
+    async def commit(self) -> None:
+        self.commits += 1
+        raise IntegrityError("COMMIT", {}, Exception("23503"))
 
 
 class _RecordingSubscriptions:
@@ -543,6 +552,21 @@ class TestATierlessNotificationIsRefusedBeforeAnyWrite:
 
         assert writer.upserts == []
         assert session.commits == 0
+
+
+@pytest.mark.asyncio
+class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
+    """WR-62: the grant keys are DEFERRABLE INITIALLY DEFERRED, so COMMIT is their only evaluation."""
+
+    async def test_a_violation_at_commit_is_the_lost_race_the_flushes_report(self, writer):
+        session = _RefusingSession()
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        with pytest.raises(InternalError):
+            await service.ingest(_notification(attribution_token=TOKEN))
+
+        assert session.commits == 1
+        assert session.rollbacks == 1
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,7 @@ from nativespeaker.api.auth.store_notifications import RestoredSubscription
 from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
 from nativespeaker.api.crud.violations import UNIQUE_VIOLATION, is_unique_violation
 from nativespeaker.api.errors import (
+    InternalError,
     ProofRejected,
     RestoreSubscriptionNotEntitled,
     Unavailable,
@@ -665,12 +666,19 @@ class TestTheCreateBranchNeverOverwritesARowCommittedSinceItsRead:
 class _CommittingSession(_CountingSession):
     """The counting session for the cases that run to the end: it commits rather than refusing to."""
 
-    def __init__(self) -> None:
+    def __init__(self, refusal: BaseException | None = None) -> None:
         super().__init__()
         self.commits = 0
+        self.rollbacks = 0
+        self._refusal = refusal
 
     async def commit(self, *args, **kwargs):
         self.commits += 1
+        if self._refusal is not None:
+            raise self._refusal
+
+    async def rollback(self, *args, **kwargs):
+        self.rollbacks += 1
 
 
 class _GrantRecorder:
@@ -702,11 +710,12 @@ class _GrantRecorder:
         return WriteOutcome.applied
 
 
-async def _same_account_restore(purchased_at, settled_status=SubscriptionStatus.active
+async def _same_account_restore(purchased_at, settled_status=SubscriptionStatus.active,
+                                session: _CommittingSession | None = None
                                 ) -> tuple[_GrantRecorder, _CommittingSession]:
     """One same-account restore of a proof carrying `purchased_at`, against a canonical row whose
-    status under the grant locks is `settled_status`."""
-    session = _CommittingSession()
+    status under the grant locks is `settled_status`, over `session` or a plain one."""
+    session = _CommittingSession() if session is None else session
     caller = _caller()
     recorder = _GrantRecorder(caller.user.id, settled_status)
     proof = RestoredSubscription(provider=PurchaseProvider.apple,
@@ -733,6 +742,21 @@ async def _grant_written(purchased_at) -> dict:
 
     assert session.commits == 1
     return recorder.granted[0]
+
+
+class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
+    """WR-62: the grant keys are DEFERRABLE INITIALLY DEFERRED, so COMMIT is their only evaluation."""
+
+    async def test_a_violation_at_commit_is_the_lost_race_the_flushes_report(self):
+        """It reached `unhandled_exception` with a full traceback for a state this file's other
+        writers report as an ordinary race in one line."""
+        session = _CommittingSession(IntegrityError("COMMIT", {}, Exception("23503")))
+
+        with pytest.raises(InternalError):
+            await _same_account_restore(EVALUATED_AT - timedelta(days=1), session=session)
+
+        # The winner's rows are what a retry reads, so the refused transaction is rolled back first.
+        assert (session.commits, session.rollbacks) == (1, 1)
 
 
 class TestTheStatusIsReReadUnderTheGrantLocksBeforeAnythingIsWritten:
