@@ -168,12 +168,13 @@ async def lifespan(app: FastAPI):
 
         google_push_verifier = build_google_push_verifier(config.google_play)
         play_credential = _play_credential()
-        if google_push_verifier is None or play_credential is None:
+        if (google_push_verifier is None or play_credential is None
+                or not config.google_play.package_name or not config.google_play.products):
             logger.warning("google_play_configuration_absent",
-                           consequence="POST /webhooks/google-play/rtdn fails closed as "
-                                       "verification_temporarily_unavailable until the Play package "
-                                       "name, push audience, push service account and Application "
-                                       "Default Credentials are available in this environment")
+                           consequence="POST /webhooks/google-play/rtdn refuses every delivery "
+                                       "until the Play package name, product map, push audience, "
+                                       "push service account and Application Default Credentials "
+                                       "are available in this environment")
         play_client = httpx.AsyncClient(timeout=PLAY_HTTP_TIMEOUT_SECONDS)
         # Set unconditionally, so the route set is the same in every environment.
         app.state.google_push_tokens = PubSubPushTokens(verifier=google_push_verifier)
