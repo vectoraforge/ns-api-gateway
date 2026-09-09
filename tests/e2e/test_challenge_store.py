@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, or_
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
@@ -13,7 +13,7 @@ from e2e.conftest import seed_identity
 from nativespeaker.api.errors import ChallengeConsumed, ChallengeIdentityMismatch
 from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
-from nativespeaker.api.tables.identities import IdentityProvider
+from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 
 pytestmark = pytest.mark.e2e
 
@@ -57,8 +57,16 @@ async def read(factory, handle: str) -> AuthChallenge | None:
 
 
 async def row_count(factory) -> int:
+    """How many challenge rows this module wrote: the pre-auth ones carry its issuer, and the bound
+    ones reach it through the identity they name. A whole-table count would answer for every other
+    module's committed rows as well, so one leaked row would fail an unrelated case here."""
     async with factory() as session:
-        return await session.scalar(select(func.count()).select_from(AuthChallenge))
+        return await session.scalar(
+            select(func.count()).select_from(AuthChallenge)
+            .outerjoin(ExternalIdentity,
+                       col(AuthChallenge.bound_external_identity_id) == col(ExternalIdentity.id))
+            .where(or_(col(AuthChallenge.preauth_issuer) == ISSUER,
+                       col(ExternalIdentity.issuer) == ISSUER)))
 
 
 @pytest_asyncio.fixture(loop_scope="module")
@@ -86,10 +94,12 @@ async def _contended_challenge(_app_lifespan, store):
     try:
         yield handle, results, factory
     finally:
-        # These rows are committed, so they outlive the per-test transaction and must be removed here.
+        # These rows are committed, so they outlive the per-test transaction and must be removed
+        # here. Keyed on this module's issuer rather than on `handle`: a run interrupted before this
+        # block leaves its row behind for good, and the next run is what has to sweep it.
         async with factory() as session:
             await session.exec(delete(AuthChallenge)  # ty: ignore[invalid-argument-type]
-                               .where(col(AuthChallenge.challenge_id) == handle))
+                               .where(col(AuthChallenge.preauth_issuer) == ISSUER))
             await session.commit()
         await engine.dispose()
 
@@ -382,8 +392,9 @@ class TestLocateIsByteForByteAgainstPostgres:
 class TestTheRollbackIsolatesEveryRow:
     """The operational proof that the store reads its session per call rather than caching one."""
 
-    async def test_the_table_is_empty_at_the_start_of_a_test(self, _db_transaction):
-        """Every case above wrote a row, so a non-zero count means one escaped the per-test transaction."""
+    async def test_no_row_this_module_wrote_survives_its_test(self, _db_transaction):
+        """Every case above wrote a row, so a non-zero count means one escaped the per-test
+        transaction. The count owns its rows, so another module's leftovers cannot fail it."""
         assert await row_count(_db_transaction) == 0
 
     async def test_a_row_written_in_this_test_is_visible_and_still_rolls_back(self, store,
