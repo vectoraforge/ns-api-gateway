@@ -410,7 +410,8 @@ class TestTheReplayAndTheEmptyNotificationWriteNothing:
     async def test_an_unmapped_product_answers_500_and_writes_nothing(
             self, webhook_client, scripted_app_store_notifications, _db_transaction, error_records):
         """D-14, D-21. An operator adds the map line and Apple's next retry succeeds; nothing is written."""
-        notification = _notification()
+        # The seam raises instead of returning, so this case names no key: count the three tables,
+        # as `test_a_refused_payload_writes_nothing` does, rather than query a uuid4 nothing wrote.
         scripted_app_store_notifications.script(
             UnmappedStoreProduct(PurchaseProvider.apple, UNMAPPED_PRODUCT_ID))
         before = await _counts(_db_transaction)
@@ -419,9 +420,6 @@ class TestTheReplayAndTheEmptyNotificationWriteNothing:
 
         assert response.status_code == 500
         assert response.json() == INTERNAL
-        assert await _subscriptions_of(_db_transaction, notification.external_id) == []
-        assert await _purchases_of(_db_transaction, notification.external_id) == []
-        assert await _events_of(_db_transaction, notification.notification_uuid) == []
         assert await _counts(_db_transaction) == before
         assert len(error_records.entries) == 1
         event, fields = error_records.entries[0]
