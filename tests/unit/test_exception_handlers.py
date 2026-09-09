@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from nativespeaker.api.app.dependencies import get_db
 from nativespeaker.api.app.error_handlers import app_error_handler, register_exception_handlers
 from nativespeaker.api.auth.jwt_verifier import BoundedReason
 from nativespeaker.api.crud.identities import IdentitiesDB
@@ -258,11 +259,19 @@ class TestARejectionFromADependencyReachesTheSameHandler:
 
 
 class _RollbackRecordingSession:
-    """Stands in for the session `get_db` yields: only the two boundaries this case observes."""
+    """Stands in for the session `get_db` yields: only the two boundaries this case observes.
+
+    Its own async context manager too, so it can be what the session factory hands back."""
 
     def __init__(self) -> None:
         self.commits = 0
         self.rollbacks = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info) -> bool:
+        return False
 
     async def commit(self) -> None:
         self.commits += 1
@@ -273,22 +282,17 @@ class _RollbackRecordingSession:
 
 @pytest.fixture
 def generator_session_client():
-    """A route whose session comes from a real `get_db`-shaped generator, rollback arm included."""
+    """A route whose session comes from the production `get_db`, rollback arm included."""
     app = FastAPI()
     register_exception_handlers(app)
     session = _RollbackRecordingSession()
-
-    async def _get_db():
-        # A generator, as `get_db` is: a plain callable has no `except` arm to exercise.
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
+    # WR-06: the real dependency rather than a line-for-line copy of it. `get_db` reads only this
+    # attribute, and this is the suite whose stated subject is its rollback arm -- against a mirror,
+    # deleting that arm from `app/dependencies.py` left the whole unit suite green.
+    app.state.session_factory = lambda: session
 
     @app.get("/consuming")
-    async def _consuming_route(db=Depends(_get_db)):
+    async def _consuming_route(db=Depends(get_db)):
         raise HistoricalIdentity
 
     with TestClient(app, raise_server_exceptions=False) as client:
