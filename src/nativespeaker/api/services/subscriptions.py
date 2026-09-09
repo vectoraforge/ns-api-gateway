@@ -104,9 +104,10 @@ class SubscriptionsService:
 
         # The store's own word, read live or from the signed envelope: never derived here.
         status = notification.status
-        # The captured instant stands in where the store gave no purchase date for this term.
-        starts_at = (self.evaluated_at if notification.purchased_at is None
-                     else notification.purchased_at)
+        # The captured instant stands in where the store gave no purchase date for this term, and
+        # caps it where it did: a store date ahead of this server's clock writes a grant the shared
+        # effective predicate never reads, while it still holds the buyer's one-active slot.
+        starts_at = min(notification.purchased_at or self.evaluated_at, self.evaluated_at)
         term_ends_at = term_end_for(status, notification)
         if status in ENTITLED_STATUSES and (term_ends_at is None
                                             or term_ends_at <= starts_at

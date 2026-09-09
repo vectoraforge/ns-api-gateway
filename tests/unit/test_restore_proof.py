@@ -2,6 +2,8 @@
 The store call's place in the request is measured here too: it runs before the session's first statement.
 Untested by construction: only whether the two stores' live artifacts match their declared shapes."""
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -653,6 +655,88 @@ class TestTheCreateBranchNeverOverwritesARowCommittedSinceItsRead:
         # The order is part of the claim: the grant locks come first, so the unique-index slot the
         # insert holds is never taken ahead of them, and `SubscriptionsService.ingest` agrees.
         assert recorder.calls == ["lock_grants_of", "insert_subscription"]
+
+
+class _CommittingSession(_CountingSession):
+    """The counting session for the cases that run to the end: it commits rather than refusing to."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.commits = 0
+
+    async def commit(self, *args, **kwargs):
+        self.commits += 1
+
+
+class _GrantRecorder:
+    """The subscriptions crud as a recorder, on the branch that reaches the grant writer directly."""
+
+    def __init__(self, destination) -> None:
+        self.granted: list[dict] = []
+        self._stored = SimpleNamespace(id=uuid4(), user_id=destination, tier_id=TIER_ID,
+                                       status=SubscriptionStatus.active,
+                                       last_cross_account_transfer_month=None)
+
+    async def read_subscription(self, provider, external_id):
+        return self._stored
+
+    async def read_purchase(self, provider, external_id):
+        # Not `None`, so the purchase insert is skipped and the grant writer is the one write.
+        return SimpleNamespace(id=uuid4(), resolved_token_value=None)
+
+    async def lock_grants_of(self, user_ids):
+        return []
+
+    async def write_subscription_grant(self, **fields):
+        self.granted.append(fields)
+        return WriteOutcome.applied
+
+
+async def _grant_written(purchased_at) -> dict:
+    """The fields the restore hands the grant writer for a proof carrying `purchased_at`."""
+    session = _CommittingSession()
+    caller = _caller()
+    recorder = _GrantRecorder(caller.user.id)
+    proof = RestoredSubscription(provider=PurchaseProvider.apple,
+                                 external_id=ORIGINAL_TRANSACTION_ID,
+                                 product_id=PRODUCT_ID,
+                                 tier_id=TIER_ID,
+                                 attribution_token=ATTRIBUTION_TOKEN,
+                                 status=SubscriptionStatus.active,
+                                 purchased_at=purchased_at,
+                                 expires_at=EVALUATED_AT + timedelta(days=30),
+                                 grace_period_expires_at=None)
+    service = _service(session, _ScriptedAppStore(session, proof))
+    service.subscriptions_db = recorder
+    service.purchases_db = _NoAttribution()
+
+    await service.restore(identity=caller, provider=PurchaseProvider.apple,
+                          restore_proof="a-signed-transaction")
+
+    assert session.commits == 1
+    return recorder.granted[0]
+
+
+class TestTheRestoredGrantNeverBeginsAfterTheInstantThatWroteIt:
+    """WR-60: `10-restore-subscription.md:84(3)` requires `starts_at <= now` of the created grant."""
+
+    async def test_a_purchase_date_ahead_of_the_captured_instant_is_capped_at_it(self):
+        """Unclamped it wrote a row the shared effective predicate never reads, while that row still
+        held `ix_access_grants_one_active_per_user` and refused every free claim behind it."""
+        granted = await _grant_written(EVALUATED_AT + timedelta(days=2))
+
+        assert granted["starts_at"] == EVALUATED_AT
+
+    async def test_a_purchase_date_before_it_is_carried_through_control(self):
+        """The control: the cap binds one direction only, so a real purchase date is still the start."""
+        granted = await _grant_written(EVALUATED_AT - timedelta(days=1))
+
+        assert granted["starts_at"] == EVALUATED_AT - timedelta(days=1)
+
+    async def test_an_absent_purchase_date_is_the_captured_instant_control(self):
+        granted = await _grant_written(None)
+
+        assert granted["starts_at"] == EVALUATED_AT
 
 
 class _Orig(Exception):

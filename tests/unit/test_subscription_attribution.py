@@ -615,6 +615,28 @@ class TestAnEntitledNotificationWithNoOpenTermIsRefusedBeforeAnyWrite:
 
         assert writer.granted[0]["ends_at"] == NOW + timedelta(minutes=1)
 
+    async def test_a_purchase_date_ahead_of_the_captured_instant_is_capped_at_it(self, session,
+                                                                                writer):
+        """WR-60: unclamped it wrote a grant the shared effective predicate never reads, while that
+        row still held the buyer's one-active slot and refused every free claim behind it."""
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        await service.ingest(_notification(attribution_token=TOKEN,
+                                           purchased_at=NOW + timedelta(days=2),
+                                           expires_at=NOW + timedelta(days=30)))
+
+        assert writer.granted[0]["starts_at"] == NOW
+
+    async def test_a_purchase_date_before_it_is_carried_through_control(self, session, writer):
+        """The control: the cap binds one direction only, so a real purchase date is still the start."""
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        await service.ingest(_notification(attribution_token=TOKEN,
+                                           purchased_at=NOW - timedelta(days=1),
+                                           expires_at=NOW + timedelta(days=30)))
+
+        assert writer.granted[0]["starts_at"] == NOW - timedelta(days=1)
+
     async def test_a_term_ending_no_later_than_it_starts_raises_the_generic_500(self, session,
                                                                                writer):
         """The row's own CHECK would fire as a non-unique violation the writer re-raises as a bare 500."""

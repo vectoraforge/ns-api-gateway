@@ -62,8 +62,16 @@ class RestoreService:
 
         # The term is the proof's and the status is the row's, so the pair is checked before it is written.
         term_ends_at = term_end_for(status, proof)
+        # The captured instant stands in where the store gave no purchase date for this term, and
+        # caps it where it did: `10-restore-subscription.md:84(3)` requires `starts_at <= now`, and
+        # a store date ahead of this server's clock wrote a grant the shared effective predicate
+        # never reads while it still held the one-active slot. Clamped here rather than at the
+        # write, so the term check below is made against the value the row will carry.
+        starts_at = min(proof.purchased_at or self.evaluated_at, self.evaluated_at)
         if term_ends_at is None or term_ends_at <= self.evaluated_at:
             # A proof carrying no open term entitles nothing, whatever the canonical row still says.
+            # With `starts_at` capped at this instant, this arm also refuses every term that would
+            # trip the row's own `CHECK (ends_at IS NULL OR ends_at > starts_at)`.
             raise RestoreSubscriptionNotEntitled
 
         token = proof.attribution_token
@@ -142,9 +150,8 @@ class RestoreService:
             status=status,
             marked_active=marked_active,
             tier_id=tier_id,
-            # The captured instant stands in where the store gave no purchase date for this term.
-            starts_at=(self.evaluated_at if proof.purchased_at is None
-                       else proof.purchased_at),
+            # The clamped date checked above, and never a second reading of it that could drift.
+            starts_at=starts_at,
             # The term checked above, and never a second reading of it that could drift from it.
             ends_at=term_ends_at,
             evaluated_at=self.evaluated_at)
