@@ -71,21 +71,21 @@ def _depends_on(function: ast.AST, parameter: str) -> str | None:
     return getattr(default.args[0], "id", None)
 
 
-class TestTheInstantIsCapturedOnceAndSharedByBothServices:
+class TestTheInstantIsCapturedOnceAndSharedByEveryService:
     """`req~sessions-sync-single-evaluation-time~2`: one `datetime.now(UTC)` call, not zero and not two."""
 
     def test_get_evaluated_at_calls_the_clock_exactly_once(self):
         function = _function(ast.parse(DEPENDENCIES.read_text()), "get_evaluated_at")
         assert len(_clock_calls(function)) == 1
 
-    @pytest.mark.parametrize("name", ("get_sync_service", "get_auth_service"))
-    def test_neither_service_dependency_reads_the_clock_itself(self, name):
-        """A read here would hand the two services two instants on the one request that uses both."""
+    @pytest.mark.parametrize("name", ("get_sync_service", "get_auth_service", "get_chat_service"))
+    def test_no_service_dependency_reads_the_clock_itself(self, name):
+        """A read here would hand two services two instants on the one request that uses both."""
         function = _function(ast.parse(DEPENDENCIES.read_text()), name)
         assert _clock_calls(function) == []
 
-    @pytest.mark.parametrize("name", ("get_sync_service", "get_auth_service"))
-    def test_both_service_dependencies_take_the_one_captured_instant(self, name):
+    @pytest.mark.parametrize("name", ("get_sync_service", "get_auth_service", "get_chat_service"))
+    def test_every_service_dependency_takes_the_one_captured_instant(self, name):
         """FastAPI caches a dependency per request, so declaring it is what makes the instant shared."""
         function = _function(ast.parse(DEPENDENCIES.read_text()), name)
         assert _depends_on(function, "evaluated_at") == "get_evaluated_at"
@@ -94,8 +94,13 @@ class TestTheInstantIsCapturedOnceAndSharedByBothServices:
 class TestTheClockWalkIsNotVacuous:
     """A guard that finds no clock call anywhere would pass for the wrong reason, so it must find some."""
 
-    def test_the_walk_finds_the_clock_calls_dependencies_genuinely_makes(self):
-        assert len(_clock_calls(ast.parse(DEPENDENCIES.read_text()))) >= 2
+    def test_the_walk_finds_the_clock_call_dependencies_genuinely_makes(self):
+        """37.4 WR-03: exactly one, and it is `get_evaluated_at`'s. Every service factory takes the
+        captured instant, so a second call anywhere in this module is a second instant per request."""
+        tree = ast.parse(DEPENDENCIES.read_text())
+        calls = _clock_calls(tree)
+        assert len(calls) == 1
+        assert _clock_calls(_function(tree, "get_evaluated_at")) == calls
 
     def test_the_default_walk_reads_a_declared_dependency_and_not_every_call(self):
         """The control: `_depends_on` must distinguish a `Depends()` default from any other call."""

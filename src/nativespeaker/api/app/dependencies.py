@@ -116,19 +116,27 @@ def get_quota_service(session_factory: async_sessionmaker = Depends(get_session_
     return QuotaService(session_factory=session_factory)
 
 
+def get_evaluated_at() -> datetime:
+    """One instant per request, shared by construction: FastAPI caches this dependency per request."""
+    return datetime.now(UTC)
+
+
 # Defined below the dependencies it declares, because its `Depends()` defaults are evaluated at definition time.
 def get_chat_service(request: Request,
                      db: AsyncSession = Depends(get_db),
                      config: AppConfig = Depends(get_config),
-                     quota_service: QuotaService = Depends(get_quota_service)) -> ChatService:
+                     quota_service: QuotaService = Depends(get_quota_service),
+                     evaluated_at: datetime = Depends(get_evaluated_at)) -> ChatService:
     return ChatService(db=db,
                        llm_service=request.app.state.llm_service,
                        examples=config.examples,
                        chats_limit=config.chats_limit,
                        messages_limit=config.messages_limit,
                        quota_service=quota_service,
-                       # One instant for this request; nothing downstream reads the clock again.
-                       evaluated_at=datetime.now(UTC))
+                       # The solver-resolved instant, never a second `now()`: a route taking this
+                       # factory beside any other clock-bearing one would otherwise get two
+                       # instants for one request, and the quota charge is a time-dependent write.
+                       evaluated_at=evaluated_at)
 
 
 # These two accessors exist so a challenge-bearing route can stay Depends()-only and never take Request itself.
@@ -146,11 +154,6 @@ def get_firebase_adapter(request: Request) -> FirebaseAdminAdapter:
 def get_devicecheck_adapter(request: Request):
     """The device-gate seam the lifespan built, deliberately unannotated."""
     return request.app.state.devicecheck_adapter
-
-
-def get_evaluated_at() -> datetime:
-    """One instant per request, shared by construction: FastAPI caches this dependency per request."""
-    return datetime.now(UTC)
 
 
 def get_auth_service(db: AsyncSession = Depends(get_db),
