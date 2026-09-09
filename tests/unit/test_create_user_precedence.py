@@ -16,7 +16,6 @@ from nativespeaker.api.app.dependencies import (
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.firebase import FIREBASE_LOOKUP_ATTEMPTS, RetryableLookupError
-from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import (
     AppError,
     IdentityAlreadyLinked,
@@ -30,50 +29,16 @@ from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import IdentityProvider
 
+# The challenge-store fake is imported rather than copied: two drifting fakes of one conditional
+# update is the hazard, and that update is the system's only serialization point.
 from .conftest import TEST_ISSUER
+from .conftest import FakeChallengeStore as _FakeChallengeStore
 
 SUBJECT = "precedence-unlinked-subject"
 OTHER_SUBJECT = "precedence-somebody-else"
 OTHER_ISSUER = "https://securetoken.google.com/some-other-project"
 HANDLE = "a-scripted-handle"
 
-
-
-class _FakeChallengeStore:
-    """One in-memory row whose `claim` and `consume` mirror the real conditional updates clause for clause."""
-
-    def __init__(self) -> None:
-        self._binding = ChallengesDB()
-        self.row: AuthChallenge | None = None
-        self.consume_calls = 0
-
-    async def locate(self, session, challenge_id: str) -> AuthChallenge | None:
-        if self.row is not None and self.row.challenge_id == challenge_id:
-            return self.row
-        return None
-
-    def verify_binding(self, row, identity):
-        return self._binding.verify_binding(row, identity)
-
-    async def claim(self, session, *, challenge_id, now) -> bool:
-        row = self.row
-        if row is None or row.challenge_id != challenge_id:
-            return False
-        if row.claimed_at is not None or row.expires_at <= now:
-            return False
-        row.claimed_at = now
-        return True
-
-    async def consume(self, session, *, challenge_id, now) -> bool:
-        self.consume_calls += 1
-        row = self.row
-        if row is None or row.challenge_id != challenge_id:
-            return False
-        if row.claimed_at is None or row.consumed_at is not None:
-            return False
-        row.consumed_at = now
-        row.preauth_subject = None
-        return True
 
 
 class _RejectionLog:

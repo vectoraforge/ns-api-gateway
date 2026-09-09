@@ -34,13 +34,14 @@ from nativespeaker.api.tables.users import User
 
 from .conftest import TEST_ISSUER
 
-# The scaffolding is imported rather than copied: two drifting fakes of one conditional update is the hazard.
+# The scaffolding is imported rather than copied: two drifting fakes of one conditional update is
+# the hazard, and that update is the system's only serialization point.
+from .conftest import FakeChallengeStore as _FakeChallengeStore
 from .test_claim_precedence import (
     CHALLENGE_REQUIRED,
     HANDLE,
     REFUSED,
     _a_grant,
-    _FakeChallengeStore,
     _issued_row,
     _RecordingGrants,
     _ScriptedDeviceCheck,
