@@ -24,7 +24,9 @@ class Message(SQLModel, table=True):
     __table_args__ = {"schema": "core"}
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
-    chat_id: UUID = Field(foreign_key="core.chats.id", ondelete="CASCADE")
+    # ON DELETE CASCADE in the migration, which owns every referential action: the relationship
+    # below is what makes this package's own deletes leave the rows to the database.
+    chat_id: UUID = Field(foreign_key="core.chats.id")
     role: ChatRole = Field(sa_type=ChatRoleType)
     content: dict = Field(sa_type=JSONB)
     created_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
@@ -36,7 +38,8 @@ class Chat(SQLModel, table=True):
 
 
     id: UUID = Field(primary_key=True)
-    user_id: UUID = Field(foreign_key="core.users.id", index=True)
+    # `ix_chats_user_id` in the migration, which owns every index; this metadata declares none.
+    user_id: UUID = Field(foreign_key="core.users.id")
     title: str = Field()
     lang: str | None = Field(default=None)
     created_at: datetime = Field(sa_type=DateTimeType, default_factory=lambda: datetime.now(UTC))
