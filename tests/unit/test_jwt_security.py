@@ -12,7 +12,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from nativespeaker.api.auth.jwt_verifier import (
     _ABSENT_KID_SENTINEL,
+    _MISSING_CLAIM_REASONS,
     DECODE_ALGORITHMS,
+    DECODE_OPTIONS,
     BoundedReason,
     JWTVerifier,
     VerifiedClaims,
@@ -180,7 +182,7 @@ class TestClaimValidation:
             "email_verified": True,
         }
         token = pyjwt.encode(payload, PRIVATE_KEY_PEM, algorithm="RS256", headers={"alg": "RS256"})
-        assert rejected(verifier, token) is BoundedReason.bad_signature
+        assert rejected(verifier, token) is BoundedReason.expired
 
 
 class TestMalformedTokens:
@@ -318,7 +320,40 @@ class TestProductionVerifier:
         now = time.time()
         payload = {"sub": "u", "aud": TEST_PROJECT_ID, "iss": TEST_ISSUER, "iat": now}
         token = pyjwt.encode(payload, PRIVATE_KEY_PEM, algorithm="RS256")
-        assert rejected(real_verifier, token) is BoundedReason.bad_signature
+        assert rejected(real_verifier, token) is BoundedReason.expired
+
+
+class TestAnAbsentClaimIsNotLabelledAsForgery:
+    """WR-15. PyJWT checks `require` before `iss`, `aud` and `exp`, and after the signature, so a
+    signed token that merely omits one reached the catch-all and inflated the forgery counter."""
+
+    @pytest.mark.parametrize("claim, reason", [("iss", BoundedReason.issuer_mismatch),
+                                               ("aud", BoundedReason.audience_mismatch),
+                                               ("exp", BoundedReason.expired),
+                                               ("iat", BoundedReason.expired),
+                                               ("sub", BoundedReason.empty_subject)])
+    def test_it_carries_the_label_of_its_present_but_wrong_twin(self, real_verifier, claim, reason):
+        now = time.time()
+        payload = {"sub": "u", "aud": TEST_PROJECT_ID, "iss": TEST_ISSUER,
+                   "exp": now + 3600, "iat": now}
+        del payload[claim]
+        token = pyjwt.encode(payload, PRIVATE_KEY_PEM, algorithm="RS256")
+
+        assert rejected(real_verifier, token) is reason
+
+    def test_every_required_claim_is_mapped(self):
+        """The map and `require` are one list: a claim added to one and not the other falls through."""
+        assert set(_MISSING_CLAIM_REASONS) == set(DECODE_OPTIONS["require"])
+
+    def test_a_forged_signature_still_carries_the_forgery_label_control(self, real_verifier):
+        """The control: returning a claim label for everything would pass the cases above."""
+        other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        other_pem = other_key.private_bytes(encoding=serialization.Encoding.PEM,
+                                            format=serialization.PrivateFormat.PKCS8,
+                                            encryption_algorithm=serialization.NoEncryption())
+
+        assert rejected(real_verifier, make_token("u", private_key=other_pem)) is (
+            BoundedReason.bad_signature)
 
 
 class TestTheJwksTransportIsNotHitPerRequest:

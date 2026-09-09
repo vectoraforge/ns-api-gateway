@@ -53,6 +53,14 @@ DECODE_ALGORITHMS = ["RS256"]
 DEFAULT_LEEWAY = 30
 DECODE_OPTIONS: Options = {"require": ["exp", "iat", "aud", "iss", "sub"]}
 
+#: One entry per claim in `require` above. The signature has already verified by the time any of
+#: these is raised, so an absent claim carries the label of its present-but-wrong twin.
+_MISSING_CLAIM_REASONS = {"sub": BoundedReason.empty_subject,
+                          "iss": BoundedReason.issuer_mismatch,
+                          "aud": BoundedReason.audience_mismatch,
+                          "exp": BoundedReason.expired,
+                          "iat": BoundedReason.expired}
+
 #: The negative-cache key an absent, empty, or non-string `kid` is recorded under.
 _ABSENT_KID_SENTINEL = ""
 
@@ -87,9 +95,8 @@ def bounded_reason_for(exc: PyJWTError) -> BoundedReason:
         return BoundedReason.audience_mismatch
     if isinstance(exc, (ExpiredSignatureError, ImmatureSignatureError)):
         return BoundedReason.expired
-    # An absent `sub` is caught by `require`; a present-but-empty one after decode. Same condition.
-    if isinstance(exc, MissingRequiredClaimError) and exc.claim == "sub":
-        return BoundedReason.empty_subject
+    if isinstance(exc, MissingRequiredClaimError):
+        return _MISSING_CLAIM_REASONS.get(exc.claim, BoundedReason.malformed)
     # A token that is not a token: too few segments, an unreadable header or body, bad padding.
     # `InvalidSignatureError` is excluded because it subclasses `DecodeError` and is a real forgery,
     # and `PyJWKClientError` because an unknown key id is not a `DecodeError` at all.
