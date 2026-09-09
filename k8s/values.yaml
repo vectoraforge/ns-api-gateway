@@ -38,6 +38,22 @@ probes:
 gateway:
   name: eg-gateway
 
+credentials:
+  # The Secret carrying the six settings the process cannot boot without: DB_HOST, DB_PORT,
+  # DB_USER, DB_PASSWORD, DB_NAME and JWT_PROJECT_ID. `config.py` gives none of them a default, so
+  # an install without this Secret renders a pod that CrashLoopBackOffs on a pydantic
+  # ValidationError. The template declares it `required`, as it does `image.tag`, so the omission
+  # fails at render instead. Any other setting the deployment needs (OPENAI_API_KEY, the store and
+  # DeviceCheck ids) belongs in the same Secret.
+  secretName: ""
+  # The Secret carrying the Apple DeviceCheck .p8. An environment variable cannot carry a file --
+  # `DEVICECHECK_PRIVATE_KEY_PATH` is a path (`config.py:81`) and the adapter reads it from disk --
+  # so the key is mounted and the template sets the path itself. Without it both free-grant claims
+  # fail closed as 503 for the life of the deployment.
+  deviceCheckSecretName: ""
+  # The key inside that Secret, which is also the file name under the mount point.
+  deviceCheckKey: devicecheck.p8
+
 jwt:
   # No default is possible and an empty one is not checked, so the template declares it `required`:
   # an install that forgets `--set jwt.issuer=...` fails rather than shipping an unchecked issuer.

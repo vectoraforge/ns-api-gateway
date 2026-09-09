@@ -15,6 +15,12 @@ spec:
       labels:
         {{- include "ns-api-gateway.selectorLabels" . | nindent 8 }}
     spec:
+      securityContext:
+        # The mounted DeviceCheck key is owned by root; `fsGroup` gives the group that owns it to
+        # the uid the image runs as, so mode 0440 below is readable by the process and by nobody
+        # else. Without it the key mounts unreadable and the claim fails closed exactly as if it
+        # were absent.
+        fsGroup: 1000
       containers:
       - name: {{ .Chart.Name }}
         # `required` on both halves, as `security-policy.yaml` does for the issuer: neither has a
@@ -42,7 +48,30 @@ spec:
           periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
         resources:
           {{- toYaml .Values.resources | nindent 10 }}
-        {{- if .Values.env }}
+        # `required` for the same reason as `image.tag` above: `db.*` and `jwt.project_id` have no
+        # default (`config.py`), so an install that omits the Secret renders a pod that
+        # CrashLoopBackOffs on a pydantic ValidationError rather than failing at render.
+        envFrom:
+        - secretRef:
+            name: {{ required "credentials.secretName must name a Secret carrying DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME and JWT_PROJECT_ID" .Values.credentials.secretName }}
         env:
-          {{- toYaml .Values.env | nindent 10 }}
+        # Set by the chart, not by the operator: the path has to name the mount below, and an
+        # environment variable cannot carry the key itself.
+        - name: DEVICECHECK_PRIVATE_KEY_PATH
+          value: /etc/ns/devicecheck/{{ .Values.credentials.deviceCheckKey }}
+        {{- with .Values.env }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
+        volumeMounts:
+        - name: devicecheck
+          mountPath: /etc/ns/devicecheck
+          readOnly: true
+      volumes:
+      - name: devicecheck
+        secret:
+          secretName: {{ required "credentials.deviceCheckSecretName must name a Secret holding the Apple DeviceCheck .p8" .Values.credentials.deviceCheckSecretName }}
+          items:
+          - key: {{ .Values.credentials.deviceCheckKey }}
+            path: {{ .Values.credentials.deviceCheckKey }}
+          # Owner root, group `fsGroup`: readable by the process and by no other mode bit.
+          defaultMode: 0440
