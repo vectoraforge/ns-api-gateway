@@ -567,6 +567,22 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         # bit1 carried forward from the query, never fabricated.
         assert devicecheck.write_calls == [(DEVICE_TOKEN, True, False)]
 
+    def test_a_second_effective_grant_trips_the_wire_rather_than_choosing_between_them(
+            self, client, store, account, grants, devicecheck):
+        """The tripwire the registered sibling raises: two effective grants fail closed here too,
+        rather than letting the repeat arm below rank `anonymous_device_grant` above the other."""
+        identity_row, _ = account
+        grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant),
+                       _a_grant(AccessGrantSource.manual)]
+        store.row = _issued_row(bound_to=identity_row.id)
+
+        response = _claim(client)
+
+        assert response.status_code == 500
+        assert store.consume_calls == 1
+        assert grants.activates == 0
+        assert devicecheck.read_calls == []
+
 
 class TestTheDeviceReadAndTheDeviceWriteNameOneDevice:
     """ANONGRANT-03: two tokens would let bit0 be read off a device that is never written to."""

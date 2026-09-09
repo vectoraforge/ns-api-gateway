@@ -173,6 +173,10 @@ class AuthService:
             raise ClaimantNotAnonymous
 
         held = await self.grants_db.read_effective_grants(identity.user.id, self.evaluated_at)
+        if len(held) > 1:
+            # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
+            # Read before the source test below, which would otherwise rank sources against each other.
+            raise MultipleEffectiveGrantsError(len(held), identity.user.id)
         if any(grant.source is AccessGrantSource.anonymous_device_grant for grant in held):
             # The repeat: nothing is written, Apple is never reached, and the entitlement is read after commit.
             return
