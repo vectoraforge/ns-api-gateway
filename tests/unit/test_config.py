@@ -6,11 +6,13 @@ from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.engine import make_url
 
 from nativespeaker.api.app.lifespan import build_app_store_verifier
 from nativespeaker.api.config import (
     AppConfig,
     AppStoreConfig,
+    DatabaseConfig,
     EnvironmentConfig,
     ModelConfig,
     ResilienceConfig,
@@ -387,3 +389,24 @@ class TestTheCommittedEnvExampleCannotCrashABoot:
     def test_the_reader_finds_the_assignments_that_file_does_ship_control(self):
         """The control: a reader that quietly returned nothing would pass the case above."""
         assert "DB_HOST" in _uncommented(REPOSITORY_ROOT / ".env.example")
+
+
+class TestTheDsnSurvivesAPasswordCarryingUrlDelimiters:
+    """WR-01. An f-string DSN re-partitioned on `@ / : ? #`, sending the credential to another host."""
+
+    @pytest.mark.parametrize("password", ["p@ss/w0rd", "a:b@c", "pw?x#y", "pass word", "sim.ple"])
+    def test_every_component_round_trips(self, password):
+        config = DatabaseConfig(host="db.internal", port=5432, user="postgres",
+                                password=password, name="ns")  # ty: ignore[invalid-argument-type]
+
+        parsed = make_url(config.url)
+
+        assert (parsed.host, parsed.port, parsed.username, parsed.database) == (
+            "db.internal", 5432, "postgres", "ns")
+        assert parsed.password == password
+
+    def test_a_user_carrying_a_delimiter_round_trips_too(self):
+        config = DatabaseConfig(host="db.internal", port=5432, user="ns@tenant",
+                                password="p", name="ns")  # ty: ignore[invalid-argument-type]
+
+        assert make_url(config.url).username == "ns@tenant"

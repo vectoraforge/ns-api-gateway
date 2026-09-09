@@ -4,6 +4,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL
 
 # The levels both libraries share. `logging.getLevelNamesMapping()` alone would also admit FATAL,
 # which `structlog.make_filtering_bound_logger` has no entry for: `setup_logging` runs at startup
@@ -36,8 +37,13 @@ class DatabaseConfig(BaseModel):
 
     @property
     def url(self) -> str:
-        return (f"postgresql+asyncpg://{self.user}:{self.password.get_secret_value()}"
-                f"@{self.host}:{self.port}/{self.name}")
+        # Built by the library, never by f-string: a password carrying `@ / : ? #` re-partitions a DSN.
+        return URL.create("postgresql+asyncpg",
+                          username=self.user,
+                          password=self.password.get_secret_value(),
+                          host=self.host,
+                          port=self.port,
+                          database=self.name).render_as_string(hide_password=False)
 
 
 class ResilienceConfig(BaseModel):
