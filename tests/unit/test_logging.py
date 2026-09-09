@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from structlog.testing import capture_logs
 
 import nativespeaker.api.logs as logs_module
+from nativespeaker.api.config import LogLevel
 from nativespeaker.api.logs import RequestLoggingMiddleware, setup_logging
 
 
@@ -105,3 +106,21 @@ def test_third_party_loggers_suppressed():
     assert logging.getLogger("httpx").level == logging.WARNING
     assert logging.getLogger("httpcore").level == logging.WARNING
     assert logging.getLogger("sqlalchemy.engine").level == logging.WARNING
+
+
+class TestEveryConfigurableLevelBoots:
+    """setup_logging runs before any exception handler exists, so an unusable level crashloops."""
+
+    @pytest.mark.parametrize("level", sorted(member.value for member in LogLevel))
+    def test_the_config_admits_only_levels_setup_logging_can_use(self, level):
+        """The whole bug: LogLevel admitted FATAL and structlog has no entry for it."""
+        setup_logging(level)
+
+        assert structlog.get_config()["wrapper_class"] is not None
+
+    def test_the_level_the_enum_no_longer_admits_is_the_one_that_crashed(self):
+        """The control: FATAL is a real stdlib level, so only the narrowing keeps it out."""
+        assert "FATAL" in logging.getLevelNamesMapping()
+        assert "FATAL" not in {member.value for member in LogLevel}
+        with pytest.raises(KeyError):
+            structlog.make_filtering_bound_logger("FATAL")

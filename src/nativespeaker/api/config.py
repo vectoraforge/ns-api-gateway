@@ -1,4 +1,3 @@
-import logging
 from enum import StrEnum
 from pathlib import Path
 
@@ -6,7 +5,12 @@ import yaml
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-LogLevel = StrEnum("LogLevel", {k: k for k in logging.getLevelNamesMapping()})
+# The levels both libraries share. `logging.getLevelNamesMapping()` alone would also admit FATAL,
+# which `structlog.make_filtering_bound_logger` has no entry for: `setup_logging` runs at startup
+# before any handler exists, so that name crashloops the pod with a bare KeyError. WARN and NOTSET
+# are dropped with it -- an alias and a non-threshold, neither worth a config surface.
+_SUPPORTED_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
+LogLevel = StrEnum("LogLevel", {name: name for name in _SUPPORTED_LEVELS})
 
 
 class StoreEnvironment(StrEnum):
