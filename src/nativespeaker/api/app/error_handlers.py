@@ -37,8 +37,12 @@ async def app_error_handler(_: Request, exc: Exception) -> JSONResponse:
         # structlog's filtering logger indexes the five standard levels and raises on any other.
         level = exc.log_level if exc.log_level in _LOGGABLE else logging.ERROR
         record = getattr(logger, logging.getLevelName(level).lower())
+        # `exc` itself, never `True`: structlog resolves `True` to `sys.exc_info()` at render time,
+        # which is the exception the thread is currently handling. That is only `exc` when Starlette
+        # reached this handler from its own `except`; the three adapters below call it directly with
+        # a freshly constructed exception, where the ambient one is a different failure or none.
         record(camel_to_snake(type(exc).__name__),
-               exc_info=(exc.log_level >= logging.ERROR), **exc.log_fields())
+               exc_info=exc if exc.log_level >= logging.ERROR else False, **exc.log_fields())
     return JSONResponse(status_code=exc.status,
                         content=ErrorResponse(code=exc.code).model_dump(),
                         headers=exc.extra_headers())

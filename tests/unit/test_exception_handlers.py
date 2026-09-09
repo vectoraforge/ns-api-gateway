@@ -579,7 +579,20 @@ class TestEveryServiceOutage503LeavesOneLineOfItsOwn:
         """`exc_info` is what puts `__cause__` in the record, and an outage is the case for it."""
         await app_error_handler(None, exc)
 
-        assert levels.entries[0][1]["exc_info"] is carries_cause
+        assert levels.entries[0][1]["exc_info"] is (exc if carries_cause else False)
+
+    async def test_the_record_carries_the_exception_it_was_given_and_not_the_ambient_one(self,
+                                                                                        levels):
+        """37.4 WR-07: `exc_info=True` resolves to `sys.exc_info()` at render time. This handler is
+        also called directly -- by the three adapters and by these cases -- where the exception the
+        thread is handling is a different failure entirely, or none at all."""
+        given = TransientLLMError("upstream timeout")
+        try:
+            raise RuntimeError("the ambient failure, which this record must not name")
+        except RuntimeError:
+            await app_error_handler(None, given)
+
+        assert levels.entries[0][1]["exc_info"] is given
 
 
 class TestARejectedBodyValueNeverReachesTheLog:
