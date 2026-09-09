@@ -1,5 +1,6 @@
 """Quota consumption: the one place an allowance is resolved and spent.
 A failed provider call is not refunded."""
+import math
 from collections.abc import Callable
 from datetime import datetime
 from uuid import UUID
@@ -19,6 +20,17 @@ from nativespeaker.api.errors import (
 logger = structlog.get_logger()
 
 
+def seconds_until_rollover(evaluated_at: datetime) -> int:
+    """Whole seconds from this instant to the UTC month boundary the allowance rolls over on."""
+    # Built by `replace`, so it carries the captured instant's own tzinfo and reads no clock.
+    december = evaluated_at.month == 12
+    rollover = evaluated_at.replace(year=evaluated_at.year + (1 if december else 0),
+                                    month=1 if december else evaluated_at.month + 1,
+                                    day=1, hour=0, minute=0, second=0, microsecond=0)
+    # Rounded up and floored at one: `Retry-After: 0` invites the immediate retry this refuses.
+    return max(math.ceil((rollover - evaluated_at).total_seconds()), 1)
+
+
 class QuotaService:
 
     def __init__(self, session_factory: async_sessionmaker | Callable[[], AsyncSession]) -> None:
@@ -26,6 +38,11 @@ class QuotaService:
 
     async def charge(self, *, user_id: UUID, evaluated_at: datetime) -> None:
         """Spend one unit of `user_id`'s allowance, or raise. Commits on success."""
+        # One value for both refusal branches: SHARED-INVARIANTS requires the header on a 429, and
+        # requires the branches within a class to stay indistinguishable. The rollover is the floor
+        # under both -- neither an absent grant nor a spent one changes before the period does.
+        retry_after_seconds = seconds_until_rollover(evaluated_at)
+
         # Its own short session: no grant or usage row lock is held across the provider round trip.
         async with self.session_factory() as session:
             try:
@@ -35,7 +52,8 @@ class QuotaService:
                 if not grants:
                     # Labels come from a closed set only: a fixed branch name, never an id or a raw path.
                     logger.warning("quota_rejected", branch="no_effective_grant")
-                    raise QuotaExceededError("No effective grant for this user")
+                    raise QuotaExceededError("No effective grant for this user",
+                                             retry_after_seconds=retry_after_seconds)
 
                 if len(grants) > 1:
                     # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
@@ -70,7 +88,8 @@ class QuotaService:
                 if remaining == 0:
                     # Raised before the increment: a request the service refused must never be charged.
                     logger.warning("quota_rejected", branch="allowance_exhausted")
-                    raise QuotaExceededError("The allowance for the current period is used up")
+                    raise QuotaExceededError("The allowance for the current period is used up",
+                                             retry_after_seconds=retry_after_seconds)
 
                 # `updated_at` is stamped from the captured instant, not a clock.
                 usage.monthly_used += 1

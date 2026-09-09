@@ -11,7 +11,7 @@ from nativespeaker.api.errors import (
     QuotaExceededError,
     UnknownTierError,
 )
-from nativespeaker.api.services.quota import QuotaService
+from nativespeaker.api.services.quota import QuotaService, seconds_until_rollover
 from nativespeaker.api.tables import (
     AccessGrant,
     AccessGrantSource,
@@ -351,3 +351,42 @@ class TestTheResolverReadsNoClock:
         grant, usage = _one_effective_grant()
         await _consume(grants=(grant,), usage=usage)
         assert usage.updated_at == EVALUATED_AT
+
+
+class TestEveryRejectionCarriesTheRetryAfterTheInvariantRequires:
+    """SHARED-INVARIANTS: a 429 carries `Retry-After` where computable -- and the same one per branch."""
+
+    async def _refusal(self, **kwargs) -> QuotaExceededError:
+        with pytest.raises(QuotaExceededError) as caught:
+            await _consume(**kwargs)
+        return caught.value
+
+    async def test_an_exhausted_allowance_names_the_rollover(self):
+        grant, usage = _one_effective_grant(monthly_used=ALLOWANCE)
+        refusal = await self._refusal(grants=(grant,), usage=usage)
+        # 2026-09-01T00:00Z is 10 days and 12 hours after the captured instant.
+        assert refusal.extra_headers() == {"Retry-After": str(10 * 86400 + 12 * 3600)}
+
+    async def test_an_absent_grant_names_the_same_instant(self):
+        """The anti-oracle half: a client cannot tell the two branches apart by the header either."""
+        grant, usage = _one_effective_grant(monthly_used=ALLOWANCE)
+        assert (await self._refusal(grants=())).extra_headers() == (
+            await self._refusal(grants=(grant,), usage=usage)).extra_headers()
+
+
+class TestTheRolloverIsDerivedFromTheCapturedInstant:
+    """The header's value, computed off the same instant the period is, and never off a clock."""
+
+    @pytest.mark.parametrize(("instant", "expected"), [
+        (datetime(2026, 8, 31, 23, 59, 59, tzinfo=UTC), 1),
+        (datetime(2026, 12, 31, 23, 0, tzinfo=UTC), 3600),
+        (datetime(2026, 2, 1, tzinfo=UTC), 28 * 86400),
+        (datetime(2026, 1, 1, tzinfo=UTC), 31 * 86400),
+    ], ids=["month-end", "year-end", "short-month", "long-month"])
+    def test_it_counts_to_the_next_utc_month_boundary(self, instant, expected):
+        assert seconds_until_rollover(instant) == expected
+
+    def test_the_boundary_instant_itself_never_says_zero(self):
+        """A `Retry-After: 0` invites the immediate retry the refusal exists to stop."""
+        # A microsecond before the boundary rounds up to one second, not down to none.
+        assert seconds_until_rollover(datetime(2026, 8, 31, 23, 59, 59, 999999, tzinfo=UTC)) == 1

@@ -197,6 +197,16 @@ class QuotaExceededError(RateLimited):
     status = 429
     code = "quota_exceeded"
 
+    def __init__(self, *args, retry_after_seconds: int | None = None) -> None:
+        # Every branch raising this class passes the same value, so the header names no branch.
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(*args)
+
+    def extra_headers(self) -> dict[str, str] | None:
+        if self.retry_after_seconds is None:
+            return None
+        return {"Retry-After": str(self.retry_after_seconds)}
+
 
 class AnalysisError(InternalError):
     """Raised when phrase analysis fails."""
