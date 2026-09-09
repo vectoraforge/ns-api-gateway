@@ -273,3 +273,65 @@ class TestTheLlmHistoryIsOrdered:
     def test_the_id_it_orders_by_is_the_time_ordered_one(self):
         """The control: ascending id is chronological only because `Message.id` is uuid7."""
         assert Message.model_fields["id"].default_factory is uuid7
+
+
+class TestAChargedWriteThatFailsIsFindable:
+    """WR-51: `charge` commits a credit in its own session and nothing reverses it, so a commit
+    that fails after it bills a chat that does not exist. Not a ledger and no compensating write --
+    one line an operator can match a support request against."""
+
+    @pytest.fixture
+    def errors(self, monkeypatch) -> list[tuple[str, dict]]:
+        """A recording spy on the service's own logger, as `test_identity_accessors.py` does."""
+        entries: list[tuple[str, dict]] = []
+        monkeypatch.setattr("nativespeaker.api.services.chats.logger.error",
+                            lambda event, **kw: entries.append((event, kw)))
+        return entries
+
+    @staticmethod
+    def _failing_after_the_charge(service) -> None:
+        """The first commit ends the read; the second is the one the charge has already paid for."""
+        service.session.commit.side_effect = [None, RuntimeError("the connection dropped")]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_create_names_the_user_and_the_branch(self, service, mock_chats_db,
+                                                                 errors):
+        service.llm_service.ainvoke.return_value = {"resolved_mode": "analyze",
+                                                    "response": "ok",
+                                                    "issues": [],
+                                                    "suggestions": []}
+        self._failing_after_the_charge(service)
+
+        with pytest.raises(RuntimeError):
+            await service.create_chat(phrase="I am going to home", user_id=TEST_USER_ID, lang="en")
+
+        assert errors == [("charged_write_failed",
+                           {"user_id": str(TEST_USER_ID), "branch": "create_chat"})]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_follow_up_names_its_own_branch(self, service, mock_chats_db, errors):
+        """The same on the other charged route, named apart so the two are distinguishable."""
+        chat = Chat(id=uuid4(), user_id=TEST_USER_ID, title="Existing chat")
+        mock_chats_db.get_chat.return_value = chat
+        service.llm_service.ainvoke.return_value = {"resolved_mode": "follow_up",
+                                                    "response": "ok"}
+        self._failing_after_the_charge(service)
+
+        with pytest.raises(RuntimeError):
+            await service.send_message(chat_id=chat.id, user_id=TEST_USER_ID, message="Why?")
+
+        assert errors == [("charged_write_failed",
+                           {"user_id": str(TEST_USER_ID), "branch": "send_message"})]
+
+    @pytest.mark.asyncio
+    async def test_a_commit_that_succeeds_writes_no_line_control(self, service, mock_chats_db,
+                                                                 errors):
+        """The control: the line names a failure, so an ordinary chat must not produce one."""
+        service.llm_service.ainvoke.return_value = {"resolved_mode": "analyze",
+                                                    "response": "ok",
+                                                    "issues": [],
+                                                    "suggestions": []}
+
+        await service.create_chat(phrase="I am going to home", user_id=TEST_USER_ID, lang="en")
+
+        assert errors == []

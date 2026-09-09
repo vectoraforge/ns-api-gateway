@@ -2,6 +2,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 import orjson
+import structlog
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -19,6 +20,8 @@ from nativespeaker.api.schemas.llm import AnalyzeInput, AnalyzeResponse, FollowU
 from nativespeaker.api.services.llm import LLMService
 from nativespeaker.api.services.quota import QuotaService
 from nativespeaker.api.tables import Chat, ChatRole, Message
+
+logger = structlog.get_logger()
 
 
 class ChatService:
@@ -103,7 +106,7 @@ class ChatService:
         self.chats_db.create_chat(chat)
         # Deliberate commit: `charge` above spent a monthly credit in its own session and has already
         # committed it, so answering before these rows are durable can bill for a chat that never existed.
-        await self.session.commit()
+        await self._commit_the_charged_write(user_id, branch="create_chat")
 
         return ai_message
 
@@ -130,9 +133,22 @@ class ChatService:
         chat.messages.append(human_message)
         chat.messages.append(ai_message)
         # Deliberate commit, as in `create_chat`: the credit is already spent when this returns.
-        await self.session.commit()
+        await self._commit_the_charged_write(user_id, branch="send_message")
 
         return ai_message
+
+    async def _commit_the_charged_write(self, user_id: UUID, *, branch: str) -> None:
+        """Commit the rows this request charged for, naming the spent credit if the commit fails."""
+        try:
+            await self.session.commit()
+        except Exception:
+            # Re-raised unchanged, so the failure still reaches the handler: this only makes the
+            # case findable. `charge` committed the credit in its own session and nothing reverses
+            # it, so a dropped connection or a pool timeout here bills a chat that does not exist,
+            # and the 500 the caller receives carries nothing an operator could match it by. Not a
+            # ledger -- this product does not need one -- and no compensating write.
+            logger.error("charged_write_failed", user_id=str(user_id), branch=branch)
+            raise
 
     async def get_messages(self,
                            chat_id: UUID,
