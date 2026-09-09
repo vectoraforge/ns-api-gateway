@@ -10,7 +10,13 @@ from nativespeaker.api.errors import (
     QueueFullError,
     TransientLLMError,
 )
-from nativespeaker.api.resilience import Admitted, CircuitBreaker, ResiliencePolicy
+from nativespeaker.api.resilience import (
+    _TRANSIENT_STATUSES,
+    Admitted,
+    CircuitBreaker,
+    ResiliencePolicy,
+    _is_transient_error,
+)
 
 MAX_ATTEMPTS = 3
 BACKOFF_BASE = 0.5
@@ -350,3 +356,28 @@ class TestBackoffSchedule:
 
         assert operation.calls == MAX_ATTEMPTS
         assert sleeps == []
+
+
+class _StatusOnly(Exception):
+    """An exception carrying only `status_code`, which is what `_extract_status_code` reads first."""
+
+    def __init__(self, status_code: int):
+        super().__init__(f"status {status_code}")
+        self.status_code = status_code
+
+
+class TestTheStatusClassificationIsNamedOnce:
+    """WR-24. The set decides whether the breaker counts a failure, so a second copy that drifts
+    would silently split classification -- and the shadowed copy would be the invisible one."""
+
+    @pytest.mark.parametrize("status", sorted(_TRANSIENT_STATUSES))
+    def test_a_retry_eligible_status_is_transient(self, status):
+        assert _is_transient_error(_StatusOnly(status))
+
+    @pytest.mark.parametrize("status", (400, 401, 403, 404, 422))
+    def test_a_status_outside_the_set_is_permanent(self, status):
+        """The control: a predicate answering True for everything would also pass above."""
+        assert not _is_transient_error(_StatusOnly(status))
+
+    def test_an_exception_carrying_no_status_at_all_is_permanent(self):
+        assert not _is_transient_error(ValueError("no status anywhere"))

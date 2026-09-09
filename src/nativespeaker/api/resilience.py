@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from openai import APIConnectionError, APIStatusError, APITimeoutError, InternalServerError, RateLimitError
+from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from nativespeaker.api.config import ResilienceConfig
@@ -22,19 +22,20 @@ def _extract_status_code(exc: Exception) -> int | None:
     return None
 
 
+# The retry-eligible statuses, named once. A second copy is what lets the two drift apart, and the
+# split would be invisible: this predicate decides whether the circuit breaker counts a failure,
+# which decides whether the whole fleet answers 503.
+_TRANSIENT_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
+
+
 def _is_transient_error(exc: Exception) -> bool:
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return True
     if isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)):
         return True
-    if isinstance(exc, APIStatusError):
-        status = _extract_status_code(exc)
-        if status in {408, 409, 429, 500, 502, 503, 504}:
-            return True
-    status = _extract_status_code(exc)
-    if status in {408, 409, 429, 500, 502, 503, 504}:
-        return True
-    return False
+    # No `APIStatusError` arm: it read the same status off the same exception and compared it against
+    # the same set, so the wider check below already answers for it and answered first either way.
+    return _extract_status_code(exc) in _TRANSIENT_STATUSES
 
 
 class CircuitBreaker:
