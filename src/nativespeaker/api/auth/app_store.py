@@ -10,10 +10,10 @@ from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier, Verif
 
 from nativespeaker.api.auth.store_notifications import RestoredSubscription, VerifiedNotification
 from nativespeaker.api.errors import (
-    InternalError,
     NotificationRejected,
     ProofRejected,
     Unavailable,
+    UnknownStoreSubscriptionStatus,
     UnmappedStoreProduct,
 )
 from nativespeaker.api.tables.purchases import PurchaseProvider, SubscriptionStatus
@@ -104,8 +104,9 @@ class AppStoreNotifications:
 
         status = _APPLE_STATUSES.get(data.status)
         if status is None:
-            # A subscription payload with no status Apple's own enum names: Apple retries and it is visible.
-            raise InternalError
+            # A subscription payload with no status Apple's own enum names. The named class carries
+            # the log line this module cannot write itself, so Apple's retries are visible.
+            raise UnknownStoreSubscriptionStatus(PurchaseProvider.apple)
         tier_id = self._tier_for(transaction.productId)
 
         if data.signedRenewalInfo is None:

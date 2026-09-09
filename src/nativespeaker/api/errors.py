@@ -276,6 +276,20 @@ class UnmappedStoreProduct(InternalError):
         return {"provider": str(self.provider), "product_id": self.product_id}
 
 
+class UnknownStoreSubscriptionStatus(InternalError):
+    """A verified store payload whose status is outside the provider's own enum."""
+    # A named class rather than a logger: the Apple adapter carries attribution tokens and holds none.
+    log_level = logging.ERROR
+
+    def __init__(self, provider: PurchaseProvider) -> None:
+        self.provider = provider
+        super().__init__(f"{provider.value} reported a status outside its own enum")
+
+    def log_fields(self) -> dict[str, str | None]:
+        # The store's own name, which is a closed set; the payload named no value that may be logged.
+        return {"provider": str(self.provider)}
+
+
 class AttributionConflict(InternalError):
     """A recorded store purchase whose attribution value differs from the one presented."""
     # Refused, never repaired: an owner this route cannot verify is a wrong entitlement waiting to happen.

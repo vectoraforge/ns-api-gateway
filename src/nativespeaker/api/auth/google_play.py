@@ -164,6 +164,8 @@ def _play_answer_is_usable(response: httpx.Response) -> bool:
         # Definitive: a token Google says is gone can never resolve, so a retry loops until retention.
         logger.error("google_play_purchase_token_gone", status_code=response.status_code)
         return False
+    # Named before the raise: `InternalError` logs nothing of its own, and the access line says only 500.
+    logger.error("google_play_read_refused", status_code=response.status_code)
     # Pub/Sub acknowledges five statuses only, so a failed read is redelivered rather than lost.
     raise InternalError
 
@@ -218,6 +220,8 @@ class PlayDeveloperSubscriptions:
         try:
             response = await self._get(package_name, purchase_token)
         except httpx.HTTPError as failure:
+            # The exception's class name, never its text: a URL carrying the purchase token is in there.
+            logger.error("google_play_read_transport_failed", failure=type(failure).__name__)
             # A transport failure is the 500 that makes Pub/Sub redeliver this notification.
             raise InternalError from failure
         if not _play_answer_is_usable(response):

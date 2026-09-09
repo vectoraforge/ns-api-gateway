@@ -361,12 +361,35 @@ class TestThePlayResponseArms:
         with pytest.raises(InternalError):
             await _read_through(reader)
 
+    @pytest.mark.parametrize("status_code", [400, 401, 403, 429, 500, 502, 503])
+    async def test_every_other_non_2xx_status_names_itself_in_one_error_line(self, status_code,
+                                                                             play_logs):
+        """WR-03: `InternalError` logs nothing of its own, so the 500 would name no cause at all."""
+        reader = _play_reader(_answering({"error": {"status": "UNAVAILABLE"}}, status_code))
+
+        with pytest.raises(InternalError):
+            await _read_through(reader)
+
+        assert play_logs.records("error") == [("google_play_read_refused",
+                                               {"status_code": status_code})]
+
     async def test_a_transport_failure_is_redelivered(self):
         def _unreachable(_request):
             raise httpx.ConnectError("the Play endpoint is unreachable")
 
         with pytest.raises(InternalError):
             await _read_through(_play_reader(_unreachable))
+
+    async def test_a_transport_failure_names_its_class_in_one_error_line(self, play_logs):
+        """WR-03. The exception's class name only: its text carries the URL, and the URL is the token."""
+        def _unreachable(_request):
+            raise httpx.ConnectError("the Play endpoint is unreachable")
+
+        with pytest.raises(InternalError):
+            await _read_through(_play_reader(_unreachable))
+
+        assert play_logs.records("error") == [("google_play_read_transport_failed",
+                                               {"failure": "ConnectError"})]
 
 
 class TestTheRefusalsDifferOnlyInStage:

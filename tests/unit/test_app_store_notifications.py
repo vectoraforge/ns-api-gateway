@@ -2,6 +2,7 @@
 A throwaway root, intermediate and leaf mint the payloads, and the vendored Apple root refuses them.
 Untested by construction: only whether Apple's live notifications match Apple's own declared shapes."""
 import ast
+import logging
 import time
 from base64 import b64encode
 from dataclasses import dataclass
@@ -21,7 +22,12 @@ from cryptography.x509.oid import NameOID
 
 from nativespeaker.api.auth.app_store import AppStoreNotifications, StoreNotificationVerifier
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
-from nativespeaker.api.errors import InternalError, NotificationRejected, Unavailable
+from nativespeaker.api.errors import (
+    InternalError,
+    NotificationRejected,
+    Unavailable,
+    UnknownStoreSubscriptionStatus,
+)
 from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
 from unit.test_google_play_notifications import (
     LAPSED,
@@ -364,6 +370,15 @@ class TestApplesFiveStatusesStillMapOneToOne:
         with pytest.raises(InternalError):
             _notifications(chain).verify(
                 _mint(chain, _envelope(chain, transaction=_transaction(), status=None)))
+
+    def test_the_raise_is_the_named_class_that_carries_its_own_log_line(self, chain):
+        """WR-03. A bare `InternalError` logs nothing, so this arm answered 500 naming no cause."""
+        with pytest.raises(UnknownStoreSubscriptionStatus) as refusal:
+            _notifications(chain).verify(
+                _mint(chain, _envelope(chain, transaction=_transaction(), status=None)))
+
+        assert refusal.value.log_level == logging.ERROR
+        assert refusal.value.log_fields() == {"provider": str(PurchaseProvider.apple)}
 
 
 class TestRevokedIsAnAppleOnlyWord:

@@ -89,6 +89,8 @@ EVENT_NAMES = frozenset({
     "unknown_tier_error",
     "missing_purchase_token_error",
     "unmapped_store_product",
+    # WR-03: the Apple adapter holds no logger, so this class carries the line for it.
+    "unknown_store_subscription_status",
     "attribution_conflict",
     "queue_full_error",
     "circuit_open_error",
@@ -171,6 +173,7 @@ CONSTRUCTOR_ARGUMENTS: dict[type, tuple[tuple, dict]] = {
     errors_module.UnknownTierError: (("registered", uuid7()), {}),
     errors_module.MissingPurchaseTokenError: ((uuid7(), [PurchaseProvider.apple]), {}),
     errors_module.UnmappedStoreProduct: ((PurchaseProvider.apple, "com.example.monthly"), {}),
+    errors_module.UnknownStoreSubscriptionStatus: ((PurchaseProvider.apple,), {}),
     errors_module.AttributionConflict: ((PurchaseProvider.apple, uuid7()), {}),
     errors_module.QueueFullError: ((30,), {}),
     errors_module.CircuitOpenError: ((60,), {}),
