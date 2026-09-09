@@ -39,7 +39,12 @@ def setup_logging(log_level: str,
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
                 structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S", utc=True),
-                structlog.dev.ConsoleRenderer(exception_formatter=structlog.dev.plain_traceback),
+                # `colors` defaults to "not Windows", never to `isatty`, so on Linux every line
+                # carries escape codes whatever the stream is. Nothing this service writes to is a
+                # terminal -- stderr is a pipe into the aggregated log store -- and every grep,
+                # alert regex and field extractor over these events would have to tolerate them.
+                structlog.dev.ConsoleRenderer(colors=False,
+                                              exception_formatter=structlog.dev.plain_traceback),
             ],
         )
     )

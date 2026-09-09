@@ -1,3 +1,4 @@
+import io
 import logging
 
 import pytest
@@ -163,6 +164,30 @@ def test_the_line_is_written_under_the_production_error_handlers():
     # Only the access-log line: the handler's own logger is a module-level proxy another test may hold.
     request_logs = [log for log in cap_logs if log["event"] == "request"]
     assert [(log["status_code"], log["log_level"]) for log in request_logs] == [(500, "error")]
+
+
+class TestTheRenderedLineIsPlainText:
+    """WR-23. structlog picks `colors` off the platform, never off `isatty`, so on Linux the
+    escape codes land in the aggregated log store where every field extractor has to strip them."""
+
+    def test_no_record_carries_an_escape_sequence(self):
+        stream = io.StringIO()
+        setup_logging(log_level="INFO", log_stream=stream)
+
+        logs_module.logger.warning("auth_challenge_operation_not_issuable", operation="x")
+
+        assert "\x1b" not in stream.getvalue()
+
+    def test_the_event_and_its_fields_still_render(self):
+        """The control: an empty line, or one rendered by some other renderer, would also pass above."""
+        stream = io.StringIO()
+        setup_logging(log_level="INFO", log_stream=stream)
+
+        logs_module.logger.warning("auth_challenge_operation_not_issuable", operation="x")
+
+        written = stream.getvalue()
+        assert "auth_challenge_operation_not_issuable" in written
+        assert "operation=x" in written
 
 
 def test_third_party_loggers_suppressed():
