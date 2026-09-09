@@ -98,8 +98,13 @@ class SubscriptionsDB:
 
     async def read_subscription(self, provider: PurchaseProvider,
                                 external_id: str) -> Subscription | None:
-        """The canonical row for the lifecycle pair, or `None`, taking no lock."""
-        return (await self.session.exec(_subscription_statement(provider, external_id))).first()
+        """The canonical row as of now for the lifecycle pair, or `None`, taking no lock."""
+        # `populate_existing` for the reason `read_owner` gives: without it a row already in the
+        # identity map is answered with the values the first read saw, so a second read under the
+        # locks decides on a snapshot a concurrent commit has already replaced.
+        statement = _subscription_statement(provider, external_id).execution_options(
+            populate_existing=True)
+        return (await self.session.exec(statement)).first()
 
     async def read_owner(self, provider: PurchaseProvider, external_id: str) -> UUID | None:
         """The owner the canonical row carries right now, or `None`, taking no lock."""
@@ -120,6 +125,16 @@ class SubscriptionsDB:
         # Coerced for the reason `VerifiedNotification.__post_init__` gives: the caller compares
         # this against a `SubscriptionStatus`, and a bare column value answers by value only.
         return None if settled is None else SubscriptionStatus(settled)
+
+    async def read_signed_at(self, provider: PurchaseProvider,
+                             external_id: str) -> datetime | None:
+        """The store clock the canonical row carries right now, or `None`, taking no lock."""
+        # A column select for the reason `read_owner` gives: the out-of-order guard asks what the
+        # row says now, and an entity load would answer with the clock the first read saw.
+        statement = select(Subscription.store_signed_at).where(
+            col(Subscription.provider) == provider,
+            col(Subscription.external_id) == external_id)
+        return (await self.session.exec(statement)).first()
 
     async def read_purchase(self, provider: PurchaseProvider,
                             external_id: str) -> StorePurchase | None:

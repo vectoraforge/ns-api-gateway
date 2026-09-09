@@ -76,9 +76,14 @@ class SubscriptionsService:
             # The replay: the store's own key is already recorded, so this delivery writes nothing.
             return
 
-        if (stored is not None and stored.store_signed_at is not None
+        # Read under the grant locks for the reason the owner is: the pre-lock read took no lock, so
+        # a concurrent delivery can have committed a newer store clock since. Comparing against the
+        # clock that read saw lets an older payload through the guard and downgrade the buyer.
+        settled_signed_at = await self.subscriptions_db.read_signed_at(notification.provider,
+                                                                       notification.external_id)
+        if (stored is not None and settled_signed_at is not None
                 and notification.signed_at is not None
-                and notification.signed_at < stored.store_signed_at):
+                and notification.signed_at < settled_signed_at):
             # Neither store guarantees delivery order, and `notification_uuid` only catches one payload twice.
             await self._settle(await self.subscriptions_db.append_event(
                 subscription=stored,

@@ -94,6 +94,9 @@ class _RecordingSubscriptions:
         # What the canonical row says once the locks are held. `None` follows the stored row; a case
         # sets it to model a restore that committed between the unlocked read and the locks.
         self.settled_owner: UUID | None = None
+        # The same, for the store clock: a case sets it to model a newer delivery that committed in
+        # that window, which the unlocked read of the row cannot see.
+        self.settled_signed_at: datetime | None = None
 
     async def lock_grants(self, user_id: UUID) -> list:
         self.timeline.append("lock_grants")
@@ -105,6 +108,13 @@ class _RecordingSubscriptions:
             return self.settled_owner
         stored = self.subscriptions.get((provider, external_id))
         return None if stored is None else stored.user_id
+
+    async def read_signed_at(self, provider: PurchaseProvider,
+                             external_id: str) -> datetime | None:
+        if self.settled_signed_at is not None:
+            return self.settled_signed_at
+        stored = self.subscriptions.get((provider, external_id))
+        return None if stored is None else stored.store_signed_at
 
     async def write_subscription_grant(self, **fields) -> WriteOutcome:
         self.timeline.append("write_subscription_grant")
@@ -489,6 +499,44 @@ class TestARestoreThatCommitsInTheWindowIsRefused:
 
         assert writer.locked == [RESTORER]
         assert [grant["user_id"] for grant in writer.granted] == [RESTORER]
+        assert session.commits == 1
+
+
+@pytest.mark.asyncio
+class TestADeliveryThatCommitsInTheWindowSupersedesThisOne:
+    """The unlocked read is stale on the store clock for the reason it is stale on the owner: the
+    two deliveries of one subscription serialise on the buyer's grant locks, not before them."""
+
+    async def test_a_payload_older_than_the_clock_the_winner_committed_is_superseded(self, session,
+                                                                                     writer):
+        """CR-17: the renewal commits `T2` between the unlocked read and the locks, so comparing
+        against the clock that read saw would apply this expiry and end the paying buyer's grant."""
+        external_id = _seed_owned(writer, RESTORER)
+        writer.settled_signed_at = NOW + timedelta(hours=2)
+        service = _service(session, writer, None)
+
+        await service.ingest(_notification(external_id=external_id, event_type="EXPIRED",
+                                           status=SubscriptionStatus.expired,
+                                           signed_at=NOW + timedelta(hours=1)))
+
+        # The event is recorded on both sides at the tier the row already carries, and nothing else moves.
+        assert [event["notification_uuid"] for event in writer.appended] != []
+        assert writer.upserts == []
+        assert writer.granted == []
+        assert session.commits == 1
+
+    async def test_a_payload_newer_than_that_clock_applies(self, session, writer):
+        """The control: the same guard reading the same fresh clock lets the newer payload through."""
+        external_id = _seed_owned(writer, RESTORER)
+        writer.settled_signed_at = NOW + timedelta(hours=1)
+        service = _service(session, writer, None)
+
+        await service.ingest(_notification(external_id=external_id, event_type="EXPIRED",
+                                           status=SubscriptionStatus.expired,
+                                           signed_at=NOW + timedelta(hours=2)))
+
+        assert [upsert["status"] for upsert in writer.upserts] == [SubscriptionStatus.expired]
+        assert [grant["status"] for grant in writer.granted] == [SubscriptionStatus.expired]
         assert session.commits == 1
 
 
