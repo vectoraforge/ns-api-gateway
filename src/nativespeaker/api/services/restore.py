@@ -8,7 +8,7 @@ import structlog
 from sqlalchemy.exc import IntegrityError
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.auth.app_store import AppStoreNotifications
+from nativespeaker.api.auth.app_store import StoreNotificationVerifier
 from nativespeaker.api.auth.google_play import PlaySubscriptionSource
 from nativespeaker.api.auth.store_notifications import RestoredSubscription, term_end_for
 from nativespeaker.api.crud.purchases import PurchasesDB
@@ -33,7 +33,9 @@ logger = structlog.get_logger()
 class RestoreService:
 
     def __init__(self, db: AsyncSession, evaluated_at: datetime,
-                 app_store: AppStoreNotifications, play: PlaySubscriptionSource,
+                 # Both declared seams, never a concrete class: a Protocol nothing is typed against
+                 # catches no wrong-shaped double, and this service reads two methods of each.
+                 app_store: StoreNotificationVerifier, play: PlaySubscriptionSource,
                  package_name: str) -> None:
         self.session = db
         self.subscriptions_db = SubscriptionsDB(db)

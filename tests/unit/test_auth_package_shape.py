@@ -13,7 +13,10 @@ AUTH_PACKAGE = Path(auth_package.__file__).parent
 # 65: `store_notifications.term_end_for`, the one spelling of the term both write paths read.
 # 66, 67: the two `__post_init__` coercions that make the declared `status` type true, so the
 # identity and value comparisons its readers use cannot answer one field two ways.
-CURRENT = (8, 24, 67)
+# 68: `StoreNotificationVerifier.verify_transaction`, the second member `RestoreService` calls of
+# the seam it is now annotated against, so a double that omits it is a type error rather than an
+# `AttributeError` inside a handler.
+CURRENT = (8, 24, 68)
 
 
 def _measure(directory: Path) -> tuple[int, int, int]:

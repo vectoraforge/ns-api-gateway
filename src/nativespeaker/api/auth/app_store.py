@@ -27,10 +27,15 @@ _APPLE_STATUSES = {Status.ACTIVE: SubscriptionStatus.active,
 
 
 class StoreNotificationVerifier(Protocol):
-    """The store-callback seam: one verified notification, or a raise."""
+    """The Apple store seam: one verified notification or one verified proof, or a raise."""
 
     def verify(self, signed_payload: str) -> VerifiedNotification:
         """The verification call: this project's value type, or a raise."""
+        ...
+
+    def verify_transaction(self, signed_transaction: str,
+                           evaluated_at: datetime) -> RestoredSubscription:
+        """The same for a client-presented proof: this project's value type, or a raise."""
         ...
 
 
