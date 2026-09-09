@@ -157,6 +157,10 @@ class IdentitiesDB:
         try:
             await self.session.flush()
         except IntegrityError as conflict:
+            # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
+            if not is_unique_violation(conflict):
+                # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
+                raise
             raise ProviderAccountAlreadyLinked(identity_row_id=identity_row_id,
                                                stored_provider=stored_provider,
                                                live_provider=provider) from conflict
