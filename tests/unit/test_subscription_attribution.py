@@ -527,3 +527,60 @@ class TestATierlessNotificationIsRefusedBeforeAnyWrite:
 
         assert writer.upserts == []
         assert session.commits == 0
+
+
+@pytest.mark.asyncio
+class TestAnEntitledNotificationWithNoOpenTermIsRefusedBeforeAnyWrite:
+    """CR-20: an entitled status with no term end would insert a grant read as unbounded."""
+
+    async def test_an_active_notification_with_no_expiry_raises_the_generic_500(self, session,
+                                                                                writer):
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        with pytest.raises(InternalError):
+            await service.ingest(_notification(attribution_token=TOKEN, expires_at=None))
+
+    async def test_a_grace_notification_with_no_grace_end_raises_the_generic_500(self, session,
+                                                                                writer):
+        """The grace arm reads its own field, so a paid expiry standing beside it is not the term."""
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        with pytest.raises(InternalError):
+            await service.ingest(_notification(attribution_token=TOKEN,
+                                               status=SubscriptionStatus.grace_period,
+                                               grace_period_expires_at=None))
+
+    async def test_a_term_ending_no_later_than_it_starts_raises_the_generic_500(self, session,
+                                                                               writer):
+        """The row's own CHECK would fire as a non-unique violation the writer re-raises as a bare 500."""
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        with pytest.raises(InternalError):
+            await service.ingest(_notification(attribution_token=TOKEN, expires_at=NOW))
+
+    async def test_it_writes_nothing_and_commits_nothing(self, session, writer):
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        with pytest.raises(InternalError):
+            await service.ingest(_notification(attribution_token=TOKEN, expires_at=None))
+
+        assert (writer.upserts, writer.inserted, writer.appended, writer.granted) == ([], [], [], [])
+        assert session.commits == 0
+
+    async def test_the_same_shape_carrying_a_term_writes_that_term_control(self, session, writer):
+        """The control: the guard refuses the missing term alone, never the entitled status."""
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        await service.ingest(_notification(attribution_token=TOKEN))
+
+        assert writer.granted[0]["ends_at"] == NOW + timedelta(days=30)
+
+    async def test_a_status_outside_the_entitled_set_still_writes_its_termless_end(self, session,
+                                                                                  writer):
+        """The second control: only an entitled term becomes an entitlement, so only it is guarded."""
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        await service.ingest(_notification(attribution_token=TOKEN,
+                                           status=SubscriptionStatus.expired, expires_at=None))
+
+        assert writer.granted[0]["ends_at"] is None

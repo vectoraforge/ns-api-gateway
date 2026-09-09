@@ -43,3 +43,11 @@ class RestoredSubscription:
     purchased_at: datetime | None
     expires_at: datetime | None
     grace_period_expires_at: datetime | None
+
+
+def term_end_for(status: SubscriptionStatus,
+                 term: VerifiedNotification | RestoredSubscription) -> datetime | None:
+    """The end of the term this status is in, in one spelling both write paths read.
+    During grace that is the store's grace window, because the paid term has lapsed."""
+    return (term.grace_period_expires_at if status is SubscriptionStatus.grace_period
+            else term.expires_at)

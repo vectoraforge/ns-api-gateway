@@ -8,7 +8,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.app_store import AppStoreNotifications
 from nativespeaker.api.auth.google_play import PlaySubscriptionSource
-from nativespeaker.api.auth.store_notifications import RestoredSubscription
+from nativespeaker.api.auth.store_notifications import RestoredSubscription, term_end_for
 from nativespeaker.api.crud.purchases import PurchasesDB
 from nativespeaker.api.crud.subscriptions import (
     ENTITLED_STATUSES,
@@ -23,7 +23,7 @@ from nativespeaker.api.errors import (
     RestoreTransferRejected,
 )
 from nativespeaker.api.schemas.auth import LinkedIdentity
-from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
+from nativespeaker.api.tables import PurchaseProvider
 
 logger = structlog.get_logger()
 
@@ -60,8 +60,7 @@ class RestoreService:
             raise RestoreSubscriptionNotEntitled
 
         # The term is the proof's and the status is the row's, so the pair is checked before it is written.
-        term_ends_at = (proof.grace_period_expires_at
-                        if status is SubscriptionStatus.grace_period else proof.expires_at)
+        term_ends_at = term_end_for(status, proof)
         if term_ends_at is None or term_ends_at <= self.evaluated_at:
             # A proof carrying no open term entitles nothing, whatever the canonical row still says.
             raise RestoreSubscriptionNotEntitled

@@ -5,11 +5,14 @@ from uuid import uuid7
 import structlog
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.auth.store_notifications import VerifiedNotification
+from nativespeaker.api.auth.store_notifications import VerifiedNotification, term_end_for
 from nativespeaker.api.crud.purchases import PurchasesDB
-from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
+from nativespeaker.api.crud.subscriptions import (
+    ENTITLED_STATUSES,
+    SubscriptionsDB,
+    WriteOutcome,
+)
 from nativespeaker.api.errors import AttributionConflict, InternalError
-from nativespeaker.api.tables import SubscriptionStatus
 
 logger = structlog.get_logger()
 
@@ -101,6 +104,16 @@ class SubscriptionsService:
 
         # The store's own word, read live or from the signed envelope: never derived here.
         status = notification.status
+        # The captured instant stands in where the store gave no purchase date for this term.
+        starts_at = (self.evaluated_at if notification.purchased_at is None
+                     else notification.purchased_at)
+        term_ends_at = term_end_for(status, notification)
+        if status in ENTITLED_STATUSES and (term_ends_at is None or term_ends_at <= starts_at):
+            # An entitled status with no open term would insert a grant `_effective_grants_statement`
+            # reads as unbounded, or trip the row's own CHECK. Refused before any write, exactly as
+            # `RestoreService.restore` refuses the same shape; the store resends.
+            logger.error("store_notification_without_term", event_type=notification.event_type)
+            raise InternalError
         subscription, outcome = await self.subscriptions_db.upsert_subscription(
             provider=notification.provider,
             external_id=notification.external_id,
@@ -141,12 +154,9 @@ class SubscriptionsService:
                 status=status,
                 marked_active=marked_active,
                 tier_id=tier_id,
-                # The captured instant stands in where the store gave no purchase date for this term.
-                starts_at=(self.evaluated_at if notification.purchased_at is None
-                           else notification.purchased_at),
-                # During grace the term is Apple's grace window, because the paid term has lapsed.
-                ends_at=(notification.grace_period_expires_at
-                         if status is SubscriptionStatus.grace_period else notification.expires_at),
+                starts_at=starts_at,
+                # The term checked above, and never a second reading of it that could drift from it.
+                ends_at=term_ends_at,
                 evaluated_at=self.evaluated_at), notification)
 
         # Deliberate commit: the store reads the status code, so 200 must mean the rows are durable.

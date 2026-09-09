@@ -10,7 +10,8 @@ from nativespeaker.api import auth as auth_package
 AUTH_PACKAGE = Path(auth_package.__file__).parent
 
 # What it measures now: modules, classes, functions.
-CURRENT = (8, 24, 64)
+# 65: `store_notifications.term_end_for`, the one spelling of the term both write paths read.
+CURRENT = (8, 24, 65)
 
 
 def _measure(directory: Path) -> tuple[int, int, int]:
