@@ -609,14 +609,18 @@ async def seed_grant(factory, *,
                             source=source,
                             status=status,
                             starts_at=now if starts_at is None else starts_at,
-                            ends_at=ends_at)
+                            ends_at=ends_at,
+                            created_at=now,
+                            updated_at=now)
         session.add(grant)
         await session.flush()
         usage = None
         if with_usage:
             usage = UserMonthlyUsage(grant_id=grant.id,
                                      monthly_period=monthly_period or now.strftime("%Y-%m"),
-                                     monthly_used=monthly_used)
+                                     monthly_used=monthly_used,
+                                     created_at=now,
+                                     updated_at=now)
             session.add(usage)
         await session.commit()
     return grant, usage

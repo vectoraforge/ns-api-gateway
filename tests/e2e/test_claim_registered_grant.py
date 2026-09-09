@@ -130,11 +130,13 @@ async def _seed_subscription_grant(factory, *, user_id) -> AccessGrant:
                             source=AccessGrantSource.subscription,
                             status=AccessGrantStatus.active,
                             subscription_id=subscription_id,
-                            starts_at=now - SEEDED_AGO)
+                            starts_at=now - SEEDED_AGO,
+                            created_at=now,
+                            updated_at=now)
         session.add(grant)
         await session.flush()
         session.add(UserMonthlyUsage(grant_id=grant.id, monthly_period=now.strftime("%Y-%m"),
-                                     monthly_used=0))
+                                     monthly_used=0, created_at=now, updated_at=now))
         await session.commit()
     return grant
 

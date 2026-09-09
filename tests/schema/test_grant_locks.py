@@ -760,7 +760,9 @@ class TestTheDriverCarriesTheSqlstateTheNarrowingReads:
                                     (_Row("manual"),)) as account:
             account.session.add(AccessGrant(user_id=account.user_id, tier_id=account.tier_id,
                                             source=AccessGrantSource.manual,
-                                            starts_at=account.evaluated_at))
+                                            starts_at=account.evaluated_at,
+                                            created_at=account.evaluated_at,
+                                            updated_at=account.evaluated_at))
             with pytest.raises(IntegrityError) as violation:
                 await account.session.flush()
 
