@@ -221,9 +221,9 @@ class TestTheIdentityToolkitKeyIsOptionalAndSecret:
 
     def test_the_key_never_renders_in_a_dump_or_a_repr(self):
         """`hide_input_in_errors` covers a validation error; a dump and a repr are the other two channels."""
-        with patch.dict(os.environ, _ENV_SECRETS, clear=True):
-            jwt = EnvironmentConfig(  # ty: ignore[unknown-argument]
-                config_dir=TRACKED_CONFIG.parent, _env_file=None).app_config.jwt
+        # The copied directory its siblings all use: reading the live `config/` would make what
+        # this asserts depend on whatever a developer has there, and skips the `is not None` guard.
+        jwt = load_tracked_config({}).jwt
 
         assert jwt.api_key is not None
         assert jwt.api_key.get_secret_value() == "test-api-key"
