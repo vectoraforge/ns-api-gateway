@@ -16,6 +16,12 @@ SOURCE_PATH = Path(adapters_module.__file__)
 SOURCE = SOURCE_PATH.read_text()
 TREE = ast.parse(SOURCE)
 
+AUTH_PACKAGE = SOURCE_PATH.parent
+# Every auth module that may never reach the provider SDK. `firebase` is excluded: it imports
+# `firebase_admin` by design, and it is the only module that may.
+SDK_FREE_MODULES = tuple(sorted({path.stem for path in AUTH_PACKAGE.glob("*.py")}
+                                - {"__init__", "firebase"}))
+
 PROTOCOLS = (FirebaseAdminAdapter,)
 FROZEN = (VerifiedProviderIdentity,)
 
@@ -48,13 +54,35 @@ class TestTheOutcomeVocabularyLeftTheSeam:
 
 
 class TestNoProviderDependency:
-    """No `firebase_admin` in `sys.modules`, so a convenience import anywhere in the auth package fails this too."""
+    """No `firebase_admin` in `sys.modules` after importing any auth module but `firebase`.
 
-    def test_importing_the_module_does_not_import_firebase_admin(self):
-        result = _run("import sys, nativespeaker.api.auth.adapters; "
+    Package-wide is not assertable as one import: `auth/__init__.py` exposes nothing, so importing
+    `adapters` loads no sibling and says nothing about them. The set is read off the directory
+    instead, so a module added later is covered without editing this file."""
+
+    @pytest.mark.parametrize("sdk_free_module", SDK_FREE_MODULES)
+    def test_importing_the_module_does_not_import_firebase_admin(self, sdk_free_module):
+        result = _run(f"import sys, nativespeaker.api.auth.{sdk_free_module}; "
                       "print('firebase_admin' in sys.modules)")
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "False"
+
+    def test_the_set_is_every_auth_module_but_the_one_excluded_by_design(self):
+        """The control: a glob that matched nothing, or that quietly swept `firebase` in, would
+        make the case above vacuous or permanently red."""
+        on_disk = {path.stem for path in AUTH_PACKAGE.glob("*.py")} - {"__init__"}
+
+        assert set(SDK_FREE_MODULES) == on_disk - {"firebase"}
+        assert len(SDK_FREE_MODULES) > 1
+        assert "adapters" in SDK_FREE_MODULES
+
+    def test_the_excluded_module_is_the_one_that_really_holds_the_sdk(self):
+        """The control: `firebase` is excluded because it imports the SDK legitimately. If that
+        stopped being true the exclusion would be hiding a module this class should be walking."""
+        result = _run("import sys, nativespeaker.api.auth.firebase; "
+                      "print('firebase_admin' in sys.modules)")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "True"
 
     def test_the_source_names_firebase_admin_nowhere_as_an_import(self):
         for node in ast.walk(TREE):
