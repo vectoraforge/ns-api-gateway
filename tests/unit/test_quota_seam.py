@@ -432,6 +432,25 @@ class TestAdmissionCannotBeBypassed:
         with pytest.raises(TypeError, match="admitted"):
             await invoke(operation)
 
+    async def test_a_token_the_policy_never_minted_reaches_no_provider(self):
+        """WR-01: the parameter alone was a name, not a guarantee -- a caller could build its own
+        token, hold no in-flight slot, and never meet the `queue_size` bound at all."""
+        policy = ResiliencePolicy(_resilience_config())
+        free_slots = policy._gate._slots.qsize()
+        calls = 0
+
+        async def operation() -> dict:
+            nonlocal calls
+            calls += 1
+            return LLM_ANSWER
+
+        with pytest.raises(RuntimeError, match="did not mint"):
+            await policy.ainvoke(operation, Admitted(object()))
+
+        assert calls == 0
+        # The control on the assertion above: a refusal that had taken a slot would read the same.
+        assert policy._gate._slots.qsize() == free_slots
+
     async def test_admission_mints_the_only_token_the_gate_accounts_for(self):
         """A minted token means a slot was actually taken, which is what a bypass would skip."""
         policy = ResiliencePolicy(_resilience_config())

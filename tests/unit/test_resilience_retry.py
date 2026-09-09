@@ -11,6 +11,7 @@ from nativespeaker.api.errors import (
     TransientLLMError,
 )
 from nativespeaker.api.resilience import (
+    _ADMISSION,
     _TRANSIENT_STATUSES,
     Admitted,
     CircuitBreaker,
@@ -27,8 +28,9 @@ TRANSIENT = TimeoutError
 # Nothing in `_is_transient_error` matches a bare ValueError, so it is permanent by construction.
 PERMANENT = ValueError
 
-# Every case below is about execution rather than admission, which has its own class.
-ADMITTED = Admitted()
+# Every case below is about execution rather than admission, which has its own class. The proof is
+# reached through its private name deliberately: a token that can be minted without it is WR-01.
+ADMITTED = Admitted(_ADMISSION)
 
 
 def make_config(**overrides) -> ResilienceConfig:

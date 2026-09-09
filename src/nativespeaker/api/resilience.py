@@ -106,9 +106,20 @@ class LLMExecutionGate:
             yield
 
 
+# The one value `Admitted.proof` may carry. A token is proof of admission only because this object
+# cannot be reached from outside the module, so a hand-built `Admitted` carries something else and
+# `ainvoke` refuses it. Without this, the token was a name rather than a guarantee: `Admitted()` was
+# spellable anywhere, and a caller that spelled it took no in-flight slot, so the `queue_size` bound
+# and its `QueueFullError` never fired for it.
+_ADMISSION = object()
+
+
 @dataclass(frozen=True, slots=True)
 class Admitted:
-    """Proof that the breaker was closed and a slot is held. Only `ResiliencePolicy.admission` mints one."""
+    """Proof that the breaker was closed and a slot is held. Only `ResiliencePolicy.admission` mints one:
+    `proof` has exactly one accepted value and it is module-private."""
+
+    proof: object
 
 
 def _should_retry(exc: BaseException) -> bool:
@@ -139,10 +150,14 @@ class ResiliencePolicy:
         """Admit one request: the breaker is consulted and an in-flight slot is taken. Both are instantaneous."""
         await self._circuit_breaker.before_call()
         async with self._gate.inflight_slot():
-            yield Admitted()
+            yield Admitted(_ADMISSION)
 
     async def ainvoke(self, operation: Callable[[], Awaitable], admitted: Admitted) -> Any:
         """Run `operation` under one provider permit, the timeout and the retry policy, on the caller's admission."""
+        if admitted.proof is not _ADMISSION:
+            # A programming error, not a runtime condition: the only way here is a caller that built
+            # its own token instead of entering `admission()`, and so holds no in-flight slot.
+            raise RuntimeError("ainvoke was given a token `admission()` did not mint")
         attempted = False
 
         async def attempt() -> Any:

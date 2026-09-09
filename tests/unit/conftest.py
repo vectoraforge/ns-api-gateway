@@ -29,7 +29,7 @@ from nativespeaker.api.auth.jwt_verifier import (
 )
 from nativespeaker.api.crud import ChatsDB
 from nativespeaker.api.crud.challenges import ChallengesDB
-from nativespeaker.api.resilience import Admitted
+from nativespeaker.api.resilience import _ADMISSION, Admitted
 from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router
 from nativespeaker.api.schemas.auth import LinkedIdentity
 from nativespeaker.api.services import ChatService, QuotaService
@@ -162,7 +162,9 @@ def charge_calls(monkeypatch) -> list[UUID]:
 @asynccontextmanager
 async def _granted_admission():
     """A real async context manager, because `ChatService` enters one; an `AsyncMock` attribute is not."""
-    yield Admitted()
+    # The token `ResiliencePolicy.admission` mints, not a fresh one: a double yielding any other
+    # value stands in for something the policy would refuse.
+    yield Admitted(_ADMISSION)
 
 
 @pytest.fixture
