@@ -17,7 +17,10 @@ spec:
     spec:
       containers:
       - name: {{ .Chart.Name }}
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        # `required` on both halves, as `security-policy.yaml` does for the issuer: neither has a
+        # default, and an unset one renders `image: ":"`, which the API server refuses with a
+        # message naming nothing. An install that forgets `--set` fails at render instead.
+        image: "{{ required "image.repository must be set" .Values.image.repository }}:{{ required "image.tag must be set" .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         ports:
         - name: http

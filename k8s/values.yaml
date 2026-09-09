@@ -2,6 +2,8 @@ replicaCount: 1
 namespace: native-speaker
 
 image:
+  # No default is possible for either, so the template declares both `required`: an install that
+  # forgets `--set image.repository=... --set image.tag=...` fails rather than rendering `image: ":"`.
   repository: ""
   tag: ""
   pullPolicy: IfNotPresent
