@@ -156,7 +156,11 @@ class GrantsDB:
         marked_active = await self.lock_active_grants(user_id)
         grants = await self.lock_effective_grants(user_id, evaluated_at)
         for grant in grants:
-            await self.lock_usage(grant.id)
+            if await self.lock_usage(grant.id) is None:
+                # Fail closed, never mint, exactly as the registered sibling and `lock_grants_of` do:
+                # `None` is a grant whose usage row was never written, and tolerating it here reports
+                # the breakage from a later request against some other grant id.
+                raise MissingUsageRowError(grant.id)
 
         # A plain re-read, never `lock_identity_and_user`: a user-row lock ahead of the grant locks is forbidden.
         stored = await IdentitiesDB(self.session).resolve_existing(issuer=identity_row.issuer,
