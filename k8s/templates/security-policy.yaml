@@ -13,6 +13,9 @@ spec:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: {{ include "ns-api-gateway.fullname" . }}-llm-routes
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: {{ include "ns-api-gateway.fullname" . }}-auth-routes
   jwt:
     providers:
     - name: firebase

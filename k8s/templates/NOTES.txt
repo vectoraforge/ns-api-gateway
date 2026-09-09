@@ -3,9 +3,10 @@ NativeSpeaker API Gateway deployed.
 Service: {{ include "ns-api-gateway.fullname" . }}.{{ .Values.namespace }}:{{ .Values.service.port }}
 
 Envoy Gateway policies:
-  - SecurityPolicy: JWT validation with plan claim extraction (targets app-routes and llm-routes)
+  - SecurityPolicy: JWT validation with plan claim extraction (targets app-routes, llm-routes and auth-routes)
   - BackendTrafficPolicy: Per-tier local rate limiting (targets llm-routes only)
-  - HTTPRoutes: app-routes (authenticated), llm-routes (rate-limited), webhook-routes (public), health-routes (public)
+  - HTTPRoutes: app-routes (authenticated), auth-routes (authenticated: /auth/* and /),
+    llm-routes (rate-limited), webhook-routes (public), health-routes (public)
 
 Rate limits (per minute, per pod) — applied to POST /chats only:
   Free:     {{ .Values.rateLimits.burst.free }}
