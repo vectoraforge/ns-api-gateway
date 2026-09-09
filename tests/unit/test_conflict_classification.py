@@ -333,6 +333,31 @@ def _code_only(source: str) -> str:
     return ast.unparse(_StripDocstrings().visit(ast.parse(source)))
 
 
+def _exception_names(tree: ast.AST) -> set[str]:
+    """Every name an `except ... as NAME` clause binds anywhere in `tree`."""
+    return {node.name for node in ast.walk(tree)
+            if isinstance(node, ast.ExceptHandler) and node.name}
+
+
+def _reads_a_caught_message(tree: ast.AST, caught: set[str]) -> list[str]:
+    """Every read of a caught exception's text: `str(name)`, an f-string on one, and `name.args`."""
+    found = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "str" and node.args
+                and isinstance(node.args[0], ast.Name) and node.args[0].id in caught):
+            found.append(f"str({node.args[0].id})")
+        elif (isinstance(node, ast.Attribute) and node.attr == "args"
+                and isinstance(node.value, ast.Name) and node.value.id in caught):
+            found.append(f"{node.value.id}.args")
+        elif isinstance(node, ast.JoinedStr):
+            found.extend(f"f-string on {inner.id}" for value in node.values
+                         if isinstance(value, ast.FormattedValue)
+                         for inner in ast.walk(value.value)
+                         if isinstance(inner, ast.Name) and inner.id in caught)
+    return sorted(found)
+
+
 class TestTheModuleUsesNoSecondRaceArbiter:
     """The UNIQUE constraints are the sole arbiters, and nothing else may be added.
     One row lock is allowed and counted below: the upgrade path's revalidation, which decides
@@ -349,10 +374,23 @@ class TestTheModuleUsesNoSecondRaceArbiter:
         assert _code_only(_CREATION_SOURCE).lower().count("with_for_update") == 1
 
     def test_conflicts_are_never_discriminated_by_message_text(self):
-        """Message text depends on the server's locale and would accept either rule naming the same table."""
-        code = _code_only(_CREATION_SOURCE)
-        assert "str(exc" not in code
-        assert "str(e)" not in code
+        """Message text depends on the server's locale and would accept either rule naming the same
+        table. WR-71: matched on the syntax tree, not on `str(exc`/`str(e)` -- two spellings neither
+        module uses, so the regression this exists to catch passed it as `str(conflict)`."""
+        tree = ast.parse(_CREATION_SOURCE)
+        caught = _exception_names(tree)
+
+        # The control: the walk must find the handlers, or the check below reads nothing.
+        assert caught >= {"conflict", "failure"}, caught
+        assert _reads_a_caught_message(tree, caught) == []
+
+    @pytest.mark.parametrize("body", ["x = str(conflict)", "x = f'{conflict}'", "x = conflict.args"],
+                             ids=["str", "f-string", "args"])
+    def test_the_walk_sees_a_synthetic_message_read_control(self, body):
+        """The control: each spelling the guard is meant to refuse, on a caught name it must bind to."""
+        tree = ast.parse(f"try:\n    pass\nexcept Exception as conflict:\n    {body}\n")
+
+        assert _reads_a_caught_message(tree, _exception_names(tree)) != []
 
     def test_the_inserts_open_no_savepoint_of_their_own(self):
         """D-06: one transaction, owned by the route, so no nested boundary can outlive its owner."""
