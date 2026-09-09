@@ -447,6 +447,11 @@ class TestTheRestoreArmsAnswerOneThingAndDeclareNothingBelowTheBase:
                                                                                "operation_not_allowed")
         assert RestoreProviderUnknown().log_fields() == {}
 
+    def test_the_unserved_store_refusal_is_silent_so_the_route_writes_the_only_line(self):
+        """The route logs this rejection with the store name it refused; a second record from the
+        handler would make one refusal two lines, which § Fail-closed defaults forbids."""
+        assert RestoreProviderUnknown.log_level is None
+
     def test_the_restore_refusals_are_distinct_log_events(self):
         """One answer per base to the client, and one record per class in the log."""
         events = [camel_to_snake(cls.__name__) for cls in (*RESTORE_ARMS, RestoreProviderUnknown)]

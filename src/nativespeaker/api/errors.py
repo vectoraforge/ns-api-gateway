@@ -573,6 +573,8 @@ class RestoreProviderUnknown(AppError):
     # The claim refusals' own answer, reused: an unserved store name is a refusal, not a bad body.
     status = 403
     code = "operation_not_allowed"
+    # Silent: the route logs this rejection itself, with the rejected store name.
+    log_level = None
 
 
 class RestoreTransferRejected(AppError):
