@@ -16,12 +16,6 @@ NAMESPACES = "SELECT count(*) FROM pg_namespace WHERE nspname IN ('core', 'audit
 # The reference rows the migration seeds; TestSeededTiers below is the only place the credits are pinned.
 SEEDED_TIERS = {"anonymous", "registered", "paid"}
 
-# What the seeding case inserted, read by the case after it. Keyed by id rather than counted:
-# `_schema_db_uri` is session-scoped and seven sibling modules COMMIT rows into the same scratch
-# database, so a table-wide count answers for their rows and for collection order, not for the
-# per-test rollback this pair is about.
-_SEEDED_BY_THE_PREVIOUS_CASE: dict[str, object] = {}
-
 
 class TestMigrationDirectory:
     """migrations/ holds exactly one .sql file, so pogo applies exactly that one."""
@@ -75,7 +69,10 @@ class TestSeededTiers:
     """The migration seeds core.access_tiers as reference data, overriding 00-schema.md:249."""
 
     async def test_seeded_tiers_and_credits(self, conn):
-        rows = await conn.fetch("SELECT id, monthly_credits FROM core.access_tiers ORDER BY id")
+        """Keyed to the three seeded ids: `_schema_db_uri` is session-scoped and sibling modules
+        COMMIT throwaway tiers into it, so a whole-table read answers for their rows too."""
+        rows = await conn.fetch("SELECT id, monthly_credits FROM core.access_tiers "
+                                "WHERE id = ANY($1) ORDER BY id", sorted(SEEDED_TIERS))
         assert {row["id"]: row["monthly_credits"] for row in rows} == {
             "anonymous": 10,
             "registered": 50,
@@ -92,28 +89,31 @@ class TestSeededTiers:
 
 
 class TestHarnessIsolation:
-    """The per-test transaction rolls back, so no test observes another test's seed rows."""
+    """WR-35. The per-test transaction is never committed, so no test observes another's seed rows.
+    Each case stands alone: a pair that hands rows to the next case through module state fails when
+    it is run alone, re-run with --lf, or distributed, for a reason that is not the schema's."""
 
     async def test_seed_helpers_insert_rows(self, conn, tier):
         user_id = await insert_user(conn)
         grant_id = await insert_grant(conn, user_id=user_id, tier_id=tier)
-        # Handed to the case below, which is the one that proves these two rows did not survive.
-        _SEEDED_BY_THE_PREVIOUS_CASE.update({"core.users": user_id,
-                                             "core.access_grants": grant_id})
         assert await conn.fetchval("SELECT count(*) FROM core.users WHERE id = $1", user_id) == 1
         assert await conn.fetchval("SELECT count(*) FROM core.access_grants WHERE id = $1", grant_id) == 1
 
-    async def test_previous_test_rows_were_rolled_back(self, conn):
-        """Keyed to the two ids the case above inserted: this is the only pair of rows whose absence
-        says anything about the rollback, and the only pair no sibling module can write."""
-        assert _SEEDED_BY_THE_PREVIOUS_CASE, \
-            "the case that seeds the rows this one looks for did not run"
-        for table, row_id in _SEEDED_BY_THE_PREVIOUS_CASE.items():
-            # table comes from the keys the case above wrote, never from test input.
-            count = await conn.fetchval(f"SELECT count(*) FROM {table} WHERE id = $1", row_id)
-            assert count == 0, f"{table} still holds {row_id} from a previous test"
+    async def test_the_seeded_rows_are_invisible_to_a_second_connection(self, conn, tier,
+                                                                       _schema_db_uri):
+        """The guarantee itself, read from outside: what this case writes lives in a transaction the
+        fixture only ever rolls back, so no committed row of it can reach the next case."""
+        user_id = await insert_user(conn)
+        grant_id = await insert_grant(conn, user_id=user_id, tier_id=tier)
+        observer = await asyncpg.connect(_schema_db_uri)
+        try:
+            seen = await observer.fetchval(
+                "SELECT count(*) FROM core.access_grants WHERE id = $1", grant_id)
+        finally:
+            await observer.close()
 
-    async def test_only_the_seeded_tiers_survive(self, conn):
-        """core.access_tiers is seeded, so a leak shows up as an id outside the seeded set rather than a count."""
-        ids = {row["id"] for row in await conn.fetch("SELECT id FROM core.access_tiers")}
-        assert ids == SEEDED_TIERS, f"core.access_tiers holds {ids}, expected {SEEDED_TIERS}"
+        # The premise: the row is there on this connection, so the zero above is isolation and
+        # never a mistyped id.
+        assert await conn.fetchval("SELECT count(*) FROM core.access_grants WHERE id = $1",
+                                   grant_id) == 1
+        assert seen == 0, "a seeded row was visible outside its own transaction"
