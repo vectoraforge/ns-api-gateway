@@ -11,7 +11,9 @@ class ChatRequest(BaseModel):
     # `services/quota.py` never refunds one. The same rule the challenge handle is bounded under.
     phrase: str = Field(..., min_length=1, max_length=4096)
     context: str | None = Field(default=None, max_length=4096)
-    lang: str | None = Field(default=None)
+    # Non-empty for the reason `phrase` is: the empty string is falsy, so it slipped past the
+    # supported-language check every other value gets and was stored as a chat's language.
+    lang: str | None = Field(default=None, min_length=1, max_length=16)
 
 
 class ChatResponse(BaseModel):

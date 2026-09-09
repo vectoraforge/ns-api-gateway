@@ -79,7 +79,9 @@ class ChatService:
                           phrase: str,
                           context: str | None = None,
                           lang: str | None = None) -> Message:
-        if lang and lang not in self.supported_languages:
+        # Absence is `None` and nothing else here: a truthiness test spelled it two ways and let
+        # the empty string through the one check that names the supported set.
+        if lang is not None and lang not in self.supported_languages:
             raise UnsupportedLanguageError(lang, self.supported_languages)
 
         chats_count = await self.chats_db.count_chats(user_id)

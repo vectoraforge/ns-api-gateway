@@ -58,6 +58,13 @@ class TestChatRequest:
             ChatRequest(phrase="", lang="en")
         assert "phrase" in str(exc_info.value)
 
+    def test_an_empty_language_is_refused(self):
+        """WR-63: the empty string is not a language code. Falsy, it slipped past the service's
+        supported-language check, was persisted, and was then reported back as the chat's language."""
+        with pytest.raises(ValidationError) as exc_info:
+            ChatRequest(phrase="Hello world", lang="")
+        assert "lang" in str(exc_info.value)
+
 
 class TestMessageRequest:
     def test_valid_request(self):

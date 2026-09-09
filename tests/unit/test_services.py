@@ -83,6 +83,15 @@ class TestCreateChat:
         assert "en" in exc_info.value.supported
 
     @pytest.mark.asyncio
+    async def test_new_chat_empty_language(self, service):
+        """WR-63: the empty string is falsy, so a truthiness guard let it past the supported set
+        and stored it as the chat's language, which is not a language code."""
+        with pytest.raises(UnsupportedLanguageError) as exc_info:
+            await service.create_chat(phrase="Bonjour", user_id=TEST_USER_ID, lang="")
+
+        assert exc_info.value.lang == ""
+
+    @pytest.mark.asyncio
     async def test_new_chat_chats_limit_exceeded(self, service, mock_chats_db):
         mock_chats_db.count_chats.return_value = 50
         with pytest.raises(ChatHistoryLimitError) as exc_info:
