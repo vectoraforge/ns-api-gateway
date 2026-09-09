@@ -39,7 +39,7 @@ class TestCreateChat:
 
     async def test_create_chat_autodetect_lang(self, async_client, linked_firebase_identity,
                                                quota_grant):
-        """An omitted lang is served; the phrase must be incorrect English, as a correct one trips a known 500."""
+        """An omitted lang is served: the language is resolved from the phrase itself."""
         response = await async_client.post("/chats",
                                            json={"phrase": "I am going to home."})
         assert response.status_code == 200
