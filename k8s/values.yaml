@@ -41,6 +41,11 @@ probes:
     initialDelaySeconds: 10
     periodSeconds: 30
 
+# REQUIRES ENVOY GATEWAY >= v1.2. `security-policy.yaml` sets `spec.jwt.optional`, added in that
+# release, so an unauthenticated request falls through to the backend and receives the shared
+# {"code": "auth_required"} body. An older gateway prunes the unknown field silently -- the install
+# succeeds, both probes pass, and every such request gets Envoy's plain-text "Jwt is missing"
+# instead. Nothing in this chart can detect it; NOTES.txt carries the post-install check.
 gateway:
   name: eg-gateway
   # The Gateway's namespace. Empty means this release's own namespace, which is what an omitted

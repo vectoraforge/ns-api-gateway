@@ -8,6 +8,18 @@ Envoy Gateway policies:
     shared {"code": "auth_required"} body instead of Envoy's plain-text "Jwt is missing".
     A token that is present but invalid or expired is still refused at the gateway, with that
     plain-text body: Envoy Gateway exposes no setting that lets a failed token fall through.
+
+    REQUIRES ENVOY GATEWAY >= v1.2, which is where `spec.jwt.optional` was added. On an older
+    gateway a CRD structural schema prunes the unknown field without error: the policy installs
+    green, `helm install` succeeds, both probes pass, and an unauthenticated request receives
+    Envoy's plain-text "Jwt is missing" instead of {"code": "auth_required"}. That is the most
+    common error response this product emits, and the only signal that it is wrong is a
+    client-side parse failure in production. The chart cannot read the CRD schema, so nothing
+    here can check it. Verify it after install:
+
+        curl -s $GATEWAY_URL/ | jq -e .code
+
+    Anything other than "auth_required" means the field was pruned and the gateway is too old.
   - HTTPRoutes: app-routes (authenticated: /chats, /users, /examples, every method),
     auth-routes (authenticated: /auth/* and /), webhook-routes (public), health-routes (public)
 
