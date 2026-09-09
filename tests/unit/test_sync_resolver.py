@@ -86,12 +86,12 @@ class _StubSession:
 
 
 def _grant(*, user_id=..., tier_id=TIER_ID, status=AccessGrantStatus.active,
-           starts_at=..., ends_at=None) -> AccessGrant:
+           source=AccessGrantSource.manual, starts_at=..., ends_at=None) -> AccessGrant:
     """One grant row shaped exactly as `read_effective_grants` returns one."""
     return AccessGrant(id=uuid7(),
                        user_id=USER_ID if user_id is ... else user_id,
                        tier_id=tier_id,
-                       source=AccessGrantSource.manual,
+                       source=source,
                        status=status,
                        starts_at=EVALUATED_AT if starts_at is ... else starts_at,
                        ends_at=ends_at)
@@ -323,6 +323,24 @@ class TestTheRolloverIsComputedNeverWritten:
         entitlement = await _read(session, evaluated_at=EVALUATED_AT - timedelta(days=30))
 
         assert (entitlement.current_period, entitlement.monthly_used) == ("2026-07", 7)
+
+
+class TestEverySourceIsReportedAsItsOwnType:
+    """WR-85: `EntitlementType(grant.source.value)` converts between two independently declared enums,
+    and a member on one side only raises a `ValueError` that is no tripwire class and no `AppError`."""
+
+    def test_every_grant_source_has_a_wire_type(self):
+        """The four sources SHARED-INVARIANTS enumerates are all reportable, so no stored row is a 500."""
+        assert {member.value for member in AccessGrantSource} <= {member.value for member in EntitlementType}
+
+    @pytest.mark.parametrize("source", list(AccessGrantSource), ids=lambda source: source.value)
+    async def test_each_source_is_reported_as_its_own_type(self, source):
+        grant = _grant(source=source)
+
+        entitlement = await _read(_StubSession(grants=(grant,), usage=_usage(grant)))
+
+        assert entitlement.type.value == source.value
+        assert entitlement.status is EntitlementStatus.active
 
 
 class TestMultipleEffectiveGrants:
