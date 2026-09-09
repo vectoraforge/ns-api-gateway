@@ -186,6 +186,11 @@ class AuthService:
         if await self.grants_db.read_active_grants(identity.user.id):
             raise ActiveGrantOutsideItsTerm
 
+        # Ends the preflight's read transaction and returns the pooled connection, so no request
+        # holds one across the Apple round trip. Safe because every statement above is a plain read,
+        # and `activate_*` opens a fresh transaction and re-takes every lock itself.
+        await self.session.rollback()
+
         # One token for both calls: the bit the read decided on is the bit the write below sets.
         state = await read_bits_with_retry(self.devicecheck, device_token)
         if state.bit0:
@@ -237,6 +242,10 @@ class AuthService:
             # History by source and status: `free_grant_consumed_at` is already set on the conversion path.
             if await self.grants_db.has_prior_free_grant(identity.user.id):
                 raise FreeGrantAlreadyConsumed
+
+            # As on the anonymous claim: the preflight's read transaction ends here, so the pooled
+            # connection is back before the Apple round trip rather than held across it.
+            await self.session.rollback()
 
             # One token for both calls: the bit the read decided on is the bit the write below sets.
             state = await read_bits_with_retry(self.devicecheck, device_token)

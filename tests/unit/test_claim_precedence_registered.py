@@ -489,6 +489,36 @@ class TestThePrecedenceOrderAndNotOnlyTheOutcome:
         assert devicecheck.read_calls == []
 
 
+class TestNoVendorCallHappensUnderALockOrInsideTheTransaction:
+    """REGGRANT-02 as a sequence check, as the anonymous claim states it: the preflight reads
+    check a connection out of a pool of twelve, and the Apple round trip is up to 24 seconds."""
+
+    def test_the_preflight_transaction_ends_before_the_seam_is_reached(
+            self, client, store, account, devicecheck, timeline):
+        """A post-read refusal, chosen because it reaches the seam and then refuses."""
+        identity_row, _ = account
+        store.row = _issued(bound_to=identity_row.id)
+        devicecheck.script(BitState(bit0=False, bit1=True))
+
+        response = _claim(client)
+
+        assert response.status_code == 403
+        assert timeline.index("read_active_grants") < timeline.index("rollback") \
+            < timeline.index("read_bits")
+        assert devicecheck.transaction_open_during == [False]
+
+    def test_neither_seam_call_sees_an_open_transaction_on_the_new_grant_arm(
+            self, client, store, account, devicecheck):
+        """The read is preceded by the preflight's rollback; the write follows the activation's commit."""
+        identity_row, _ = account
+        store.row = _issued(bound_to=identity_row.id)
+
+        response = _claim(client)
+
+        assert response.status_code == 200
+        assert devicecheck.transaction_open_during == [False, False]
+
+
 def _anonymous_claimant(identity_row, grants, devicecheck) -> None:
     identity_row.provider = IdentityProvider.anonymous
     identity_row.provider_uid = None

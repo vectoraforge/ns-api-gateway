@@ -91,7 +91,8 @@ class _StubSession:
         self.timeline = timeline
         self.commits = 0
         self.rollbacks = 0
-        # A real session holds one open from its first statement until the next boundary; the writer opens it.
+        # A real session holds one open from its first statement until the next boundary, so every
+        # recorded read sets this as well as the writer: a preflight read checks a connection out too.
         self.in_transaction = False
         # The rows `get_identity` resolved on its own closed session, which this session never held.
         self.detached = detached
@@ -132,6 +133,9 @@ class _RecordingGrants:
 
     async def read_effective(self, user_id: UUID, evaluated_at: datetime) -> list[AccessGrant]:
         self.timeline.append("read_effective_grants")
+        # A read opens the transaction as surely as a write does: SQLAlchemy autobegins on the
+        # first statement, and the connection stays checked out until the next boundary.
+        self.session.in_transaction = True
         # Every read after the first is the loser's re-read, taken in the transaction the rollback opened.
         answer = self.won_by if self.reads and self.won_by is not None else self.held
         self.reads += 1
@@ -140,14 +144,17 @@ class _RecordingGrants:
     async def read_active(self, user_id: UUID) -> list[AccessGrant]:
         """The status-only read, which by default sees exactly the effective rows and no more."""
         self.timeline.append("read_active_grants")
+        self.session.in_transaction = True
         return list(self.held) + list(self.marked_active)
 
     async def holds_grant_of_source(self, user_id: UUID, source: AccessGrantSource) -> bool:
         self.timeline.append("holds_grant_of_source")
+        self.session.in_transaction = True
         return source in self.grant_of_source
 
     async def has_prior_free_grant(self, user_id: UUID) -> bool:
         self.timeline.append("has_prior_free_grant")
+        self.session.in_transaction = True
         return self.prior_free_grant
 
     async def activate(self, *, user_id, identity_row, tier_id,
