@@ -56,7 +56,7 @@ class SubscriptionsService:
 
         # An unattributed purchase has no buyer, so there is no row to lock and no grant to hold.
         marked_active = ([] if owner is None
-                         else await self.subscriptions_db.lock_grants(owner, self.evaluated_at))
+                         else await self.subscriptions_db.lock_grants(owner))
 
         # The read above took no lock, so a restore committed since can have adopted or moved this
         # subscription. Re-read the owner under the grant locks: writing against an account this

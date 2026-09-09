@@ -86,7 +86,7 @@ class _RecordingSubscriptions:
         # sets it to model a restore that committed between the unlocked read and the locks.
         self.settled_owner: UUID | None = None
 
-    async def lock_grants(self, user_id: UUID, evaluated_at: datetime) -> list:  # noqa: ARG002
+    async def lock_grants(self, user_id: UUID) -> list:
         self.timeline.append("lock_grants")
         self.locked.append(user_id)
         return []

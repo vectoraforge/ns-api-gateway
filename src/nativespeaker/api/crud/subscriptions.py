@@ -74,22 +74,21 @@ class SubscriptionsDB:
         # The one spelling of the lock order: a second pair of statements would be a second thing to keep correct.
         self.grants_db = GrantsDB(session)
 
-    async def lock_grants(self, user_id: UUID, evaluated_at: datetime) -> list[AccessGrant]:
+    async def lock_grants(self, user_id: UUID) -> list[AccessGrant]:
         """Take both lock tiers for one buyer and return every grant row marked active."""
-        # First and ascending by id: this set contains the effective one, so one grant-tier order holds.
-        marked_active = await self.grants_db.lock_active_grants(user_id)
-        effective = await self.grants_db.lock_effective_grants(user_id, evaluated_at)
-        for grant in effective:
-            # Second in the lock order, always after the grant rows.
-            await self.grants_db.lock_usage(grant.id)
-        return marked_active
+        # The one-account case of the statement below, so the two writers behind one written lock
+        # order can never take two different sets. The second tier used to follow the effective
+        # subset here and the whole active set there, which left a row this writer supersedes with
+        # its usage row unlocked.
+        return await self.lock_grants_of([user_id])
 
     async def lock_grants_of(self, user_ids: list[UUID]) -> list[AccessGrant]:
-        """Take both lock tiers for two accounts at once and return every grant row marked active."""
+        """Take both lock tiers for one or two accounts at once and return every grant marked active."""
         # One statement for the pair, so the grant tier stays one ascending order and never two.
         marked_active = await self.grants_db.lock_active_grants_of(user_ids)
         for grant in marked_active:
-            # Second in the lock order, always after the grant rows.
+            # Second in the lock order, always after the grant rows, and over the same set
+            # `write_subscription_grant` supersedes.
             await self.grants_db.lock_usage(grant.id)
         return marked_active
 
