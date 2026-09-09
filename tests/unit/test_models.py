@@ -51,6 +51,13 @@ class TestChatRequest:
             ChatRequest(lang="en")
         assert "phrase" in str(exc_info.value)
 
+    def test_an_empty_phrase_is_refused(self):
+        """WR-22: `create_chat` charges the monthly credit before the provider sees the phrase,
+        so an empty one has to be the framework's 422 rather than a spent, unrefundable credit."""
+        with pytest.raises(ValidationError) as exc_info:
+            ChatRequest(phrase="", lang="en")
+        assert "phrase" in str(exc_info.value)
+
 
 class TestMessageRequest:
     def test_valid_request(self):
@@ -60,6 +67,11 @@ class TestMessageRequest:
     def test_missing_question(self):
         with pytest.raises(ValidationError):
             MessageRequest()
+
+    def test_an_empty_message_is_refused(self):
+        """WR-22, for the reason the empty phrase is: `send_message` charges before it asks."""
+        with pytest.raises(ValidationError):
+            MessageRequest(message="")
 
 
 class TestIssue:

@@ -6,7 +6,10 @@ from pydantic import BaseModel, Field
 
 class ChatRequest(BaseModel):
     """New chat request."""
-    phrase: str = Field(..., max_length=4096)
+    # Non-empty, so an unusable body is the framework's 422 and never a charged credit: `create_chat`
+    # spends the monthly allowance at `services/chats.py:96` before the provider sees the phrase, and
+    # `services/quota.py` never refunds one. The same rule the challenge handle is bounded under.
+    phrase: str = Field(..., min_length=1, max_length=4096)
     context: str | None = Field(default=None, max_length=4096)
     lang: str | None = Field(default=None)
 
@@ -21,7 +24,8 @@ class ChatResponse(BaseModel):
 
 class MessageRequest(BaseModel):
     """Followup message in existing chat."""
-    message: str = Field(..., max_length=4096)
+    # Non-empty, for the reason `ChatRequest.phrase` is: `send_message` charges before it asks.
+    message: str = Field(..., min_length=1, max_length=4096)
 
 
 class MessageResponse(BaseModel):
