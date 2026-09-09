@@ -173,6 +173,13 @@ class SubscriptionsDB:
         else:
             # D-09: the token attributes an unowned row only, and restore alone changes an owner.
             owner = stored.user_id if stored.user_id is not None else user_id
+            if signed_at is not None and (stored.store_signed_at is None
+                                          or signed_at > stored.store_signed_at):
+                # Moved whatever the comparison below decides: the out-of-order guard reads this
+                # clock, so a delivery carrying no state change but a newer one must still move it.
+                # Only ever advanced by a payload that carries one: an absent date clears nothing.
+                stored.store_signed_at = signed_at
+                stored.updated_at = evaluated_at
             if (stored.tier_id, stored.status, stored.user_id) == (tier_id, status, owner):
                 # The lifecycle row already says this, so a repeat event carries no change to record.
                 outcome = WriteOutcome.replayed
@@ -182,9 +189,6 @@ class SubscriptionsDB:
                 stored.status = status
                 stored.user_id = owner
                 stored.updated_at = evaluated_at
-                if signed_at is not None:
-                    # Only ever advanced by a payload that carries one: an absent date clears nothing.
-                    stored.store_signed_at = signed_at
 
         return await self._flush_or_lose(stored, outcome)
 
