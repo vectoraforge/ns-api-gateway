@@ -529,14 +529,57 @@ class TestTheThreeGooglePlayVariablesLandOnTheConfig:
 
 
 class TestTheDefaultRootCertificateIsTheCommittedAppleRoot:
-    """D-10. A deployment that configures no certificate still pins Apple's own root."""
+    """D-10, WR-08. The vendored root is found wherever `config_dir` puts the config tree, not
+    wherever the process was started: as two independent notions, CONFIG_DIR moved config.yaml and
+    left the certificate behind, and the webhook then 503'd for the life of the deployment."""
 
-    def test_the_default_path_is_the_committed_file(self):
-        assert AppStoreConfig().root_certificate_path == "config/certs/AppleRootCA-G3.cer"
+    def _loaded(self, config_dir: Path, env: dict[str, str] | None = None) -> AppStoreConfig:
+        with patch.dict(os.environ, {**_ENV_SECRETS, **(env or {})}, clear=True):
+            loaded = EnvironmentConfig(config_dir=config_dir,
+                                       _env_file=None)  # ty: ignore[unknown-argument]
+        assert loaded.app_config is not None
+        return loaded.app_config.app_store
 
-    def test_the_default_path_reads_as_bytes(self):
-        default = REPOSITORY_ROOT / AppStoreConfig().root_certificate_path
-        assert default.read_bytes()
+    def _config_tree_without_the_certs(self) -> str:
+        tmp_dir = tempfile.mkdtemp()
+        for name in ("config.yaml", "prompt.txt", "examples.yaml"):
+            Path(tmp_dir, name).write_text((TRACKED_CONFIG.parent / name).read_text())
+        return tmp_dir
+
+    def test_the_shipped_tree_resolves_to_the_committed_file(self):
+        store = self._loaded(TRACKED_CONFIG.parent)
+
+        assert Path(store.root_certificate_path).read_bytes()
+        assert build_app_store_verifier(self._complete(store)) is not None
+
+    def test_a_moved_config_dir_moves_the_certificate_with_it(self):
+        """The defect: this used to resolve under the process working directory regardless."""
+        tmp_dir = self._config_tree_without_the_certs()
+        try:
+            store = self._loaded(Path(tmp_dir))
+            assert store.root_certificate_path == str(Path(tmp_dir, "certs", "AppleRootCA-G3.cer"))
+        finally:
+            shutil.rmtree(tmp_dir)
+
+    def test_an_explicitly_configured_path_still_outranks_the_derived_one(self):
+        """The derived value is filled after construction, so it must not shadow the variable."""
+        tmp_dir = self._config_tree_without_the_certs()
+        try:
+            store = self._loaded(Path(tmp_dir),
+                                 {"APP_STORE_ROOT_CERTIFICATE_PATH": "/etc/ns/apple.cer"})
+            assert store.root_certificate_path == "/etc/ns/apple.cer"
+        finally:
+            shutil.rmtree(tmp_dir)
+
+    def test_the_bare_model_carries_no_working_directory_relative_default(self):
+        assert AppStoreConfig().root_certificate_path is None
+
+    def _complete(self, store: AppStoreConfig) -> AppStoreConfig:
+        """The resolved path on an otherwise complete Production configuration."""
+        return AppStoreConfig(bundle_id="com.nativespeaker.app",
+                              environment=StoreEnvironment.production,
+                              app_apple_id=6001234567,
+                              root_certificate_path=store.root_certificate_path)
 
 
 class TestAnIncompleteConfigurationBootsAndHoldsNoVerifier:

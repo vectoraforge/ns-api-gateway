@@ -86,8 +86,14 @@ class AppStoreConfig(BaseModel):
     app_apple_id: int | None = Field(default=None, description="The app's App Store ID, required in production")
     # No default: a typed member, never free text, because two library values skip signature verification.
     environment: StoreEnvironment | None = Field(default=None, description="The store environment")
-    root_certificate_path: str | None = Field(default="config/certs/AppleRootCA-G3.cer",
-                                              description="Path to the Apple root CA in DER form")
+    # `None` rather than a literal path: the vendored root (D-10) lives in the config tree, so its
+    # location is `EnvironmentConfig.config_dir`'s to say. A literal here was resolved against the
+    # process working directory instead, so `CONFIG_DIR=/etc/ns/config/` moved `config.yaml` and
+    # left the certificate behind -- and the route then answered 503 for the life of the deployment
+    # behind a warning that reads exactly like an unconfigured one.
+    root_certificate_path: str | None = Field(default=None,
+                                              description="Path to the Apple root CA in DER form; "
+                                                          "defaults to `config_dir`'s vendored copy")
     products: dict[str, str] = Field(default_factory=dict,
                                      description="Store product ID to core.access_tiers.id")
 
@@ -157,6 +163,10 @@ class AppConfig(BaseConfig):
     examples: dict[str, list[str]]
 
 
+#: Apple's vendored root CA (D-10), relative to the config tree that carries it.
+_APPLE_ROOT_CERTIFICATE = Path("certs") / "AppleRootCA-G3.cer"
+
+
 def _mapping(path: Path) -> dict:
     """One YAML document as a mapping, or a failure naming the file that is not one."""
     loaded = yaml.safe_load(path.read_text())
@@ -190,4 +200,10 @@ class EnvironmentConfig(BaseConfig):
         self.app_config = AppConfig(**mapping,
                                     prompt=prompt_path.read_text(),
                                     examples=_mapping(examples_path))
+        if self.app_config.app_store.root_certificate_path is None:
+            # Filled after construction, never into `mapping`: a value passed to `AppConfig` is
+            # init_settings and would outrank `APP_STORE_ROOT_CERTIFICATE_PATH`, which is the one
+            # way to point this somewhere other than the config tree.
+            self.app_config.app_store.root_certificate_path = str(self.config_dir
+                                                                  / _APPLE_ROOT_CERTIFICATE)
         return self
