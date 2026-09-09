@@ -8,6 +8,7 @@ import httpx
 import structlog
 from appstoreserverlibrary.models.Environment import Environment
 from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier
+from cryptography import x509
 from fastapi import FastAPI
 from jwt.exceptions import PyJWTError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
@@ -53,7 +54,18 @@ def build_app_store_verifier(store: AppStoreConfig) -> SignedDataVerifier | None
     if not (store.bundle_id and store.environment and root and root.is_file()) or (
             store.environment is StoreEnvironment.production and store.app_apple_id is None):
         return None
-    return SignedDataVerifier(root_certificates=[root.read_bytes()],
+    try:
+        root_bytes = root.read_bytes()
+        # Parsed here because `SignedDataVerifier` parses its root lazily: a PEM mounted where the
+        # DER form belongs, or a truncated ConfigMap value, would otherwise build a verifier that
+        # answers 401 to every genuine Apple notification and reads in the log as a forgery. The
+        # read is inside the guard too -- a present-but-unreadable projected secret raises
+        # `PermissionError`, which is the boot this function exists to prevent.
+        x509.load_der_x509_certificate(root_bytes)
+    except (OSError, ValueError):
+        # An unreadable or non-DER root is an unconfigured deployment, not a forged notification.
+        return None
+    return SignedDataVerifier(root_certificates=[root_bytes],
                               # No network call on the admission path, so `verify` performs no I/O.
                               enable_online_checks=False,
                               environment=_STORE_ENVIRONMENTS[store.environment],

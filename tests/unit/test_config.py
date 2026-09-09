@@ -442,6 +442,32 @@ class TestAnIncompleteConfigurationBootsAndHoldsNoVerifier:
         assert build_app_store_verifier(
             self._store(root_certificate_path="/nonexistent/AppleRootCA-G3.cer")) is None
 
+    @pytest.mark.parametrize("content", [b"", b"not a certificate at all", b"-----BEGIN CERT"],
+                             ids=["truncated", "arbitrary-bytes", "the-pem-form"])
+    def test_a_root_that_is_not_a_der_certificate_yields_no_verifier(self, content):
+        """37.4 WR-06. The library parses its root lazily, so an unchecked one built a verifier that
+        answered 401 to every genuine Apple notification -- a rejection reading as Apple forging."""
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            root = Path(tmp_dir, "AppleRootCA-G3.cer")
+            root.write_bytes(content)
+            assert build_app_store_verifier(self._store(root_certificate_path=str(root))) is None
+        finally:
+            shutil.rmtree(tmp_dir)
+
+    def test_an_unopenable_root_yields_no_verifier_rather_than_raising(self):
+        """A projected secret carrying the wrong mode is present, and `is_file()` says so."""
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            root = Path(tmp_dir, "AppleRootCA-G3.cer")
+            root.write_bytes((REPOSITORY_ROOT / "config/certs/AppleRootCA-G3.cer").read_bytes())
+            root.chmod(0o000)
+            if os.access(root, os.R_OK):  # pragma: no cover - the root user reads it regardless
+                pytest.skip("running as a user that ignores file modes")
+            assert build_app_store_verifier(self._store(root_certificate_path=str(root))) is None
+        finally:
+            shutil.rmtree(tmp_dir)
+
 
 def _uncommented(path: Path) -> dict[str, str]:
     """Every assignment a file ships uncommented, which is what a copied .env carries to boot."""
