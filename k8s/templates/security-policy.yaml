@@ -12,9 +12,6 @@ spec:
     name: {{ include "ns-api-gateway.fullname" . }}-app-routes
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: {{ include "ns-api-gateway.fullname" . }}-llm-routes
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
     name: {{ include "ns-api-gateway.fullname" . }}-auth-routes
   # No `claimToHeaders`. SHARED-INVARIANTS: "the gateway forwards `Authorization` unchanged,
   # injects no identity headers, and the backend ignores every client/proxy identity header",

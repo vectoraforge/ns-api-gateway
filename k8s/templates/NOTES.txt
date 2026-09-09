@@ -3,9 +3,9 @@ NativeSpeaker API Gateway deployed.
 Service: {{ include "ns-api-gateway.fullname" . }}.{{ .Values.namespace }}:{{ .Values.service.port }}
 
 Envoy Gateway policies:
-  - SecurityPolicy: JWT validation only, no claim headers (targets app-routes, llm-routes and auth-routes)
-  - HTTPRoutes: app-routes (authenticated), auth-routes (authenticated: /auth/* and /),
-    llm-routes (authenticated), webhook-routes (public), health-routes (public)
+  - SecurityPolicy: JWT validation only, no claim headers (targets app-routes and auth-routes)
+  - HTTPRoutes: app-routes (authenticated: /chats, /users, /examples, every method),
+    auth-routes (authenticated: /auth/* and /), webhook-routes (public), health-routes (public)
 
 No rate-limit policy ships in this chart: the BackendTrafficPolicy that carried the only one was
 removed, so nothing at the gateway answers 429 on these routes. The backend does, and only when a
