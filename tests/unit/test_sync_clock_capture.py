@@ -9,15 +9,45 @@ SRC = REPO / "src"
 SYNC_SERVICE = SRC / "nativespeaker" / "api" / "services" / "sync.py"
 DEPENDENCIES = SRC / "nativespeaker" / "api" / "app" / "dependencies.py"
 
-# The shapes a clock read takes in this codebase, reused from the logging-call walk's own shape.
-CLOCK_CALLS = frozenset({("datetime", "now"), ("datetime", "utcnow"), ("date", "today"), ("time", "time")})
+# The modules a clock can be read from, and the members of each that read one. Both wall-clock and
+# monotonic: a second instant is a second instant whichever source it came from.
+CLOCK_MEMBERS = {"datetime": frozenset({"now", "utcnow", "today"}),
+                 "date": frozenset({"today"}),
+                 "time": frozenset({"time", "time_ns", "monotonic", "monotonic_ns",
+                                    "perf_counter", "perf_counter_ns"})}
 
 
-def _clock_calls(node: ast.AST) -> list[ast.Call]:
-    """Every call under `node` matching one of the known clock-reading shapes."""
-    return [n for n in ast.walk(node)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-            and isinstance(n.func.value, ast.Name) and (n.func.value.id, n.func.attr) in CLOCK_CALLS]
+def _clock_aliases(tree: ast.Module) -> dict[str, str]:
+    """Every local name bound to one of those modules. `import datetime as dt` reads the same
+    clock under another name, and a walk pinned to the canonical spelling never saw it."""
+    aliases = {name: name for name in CLOCK_MEMBERS}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            aliases |= {alias.asname or alias.name: alias.name
+                        for alias in node.names if alias.name in CLOCK_MEMBERS}
+        elif isinstance(node, ast.Import):
+            aliases |= {alias.asname or alias.name: alias.name
+                        for alias in node.names if alias.name in CLOCK_MEMBERS}
+    return aliases
+
+
+def _clock_reads(node: ast.AST, aliases: dict[str, str] | None = None) -> list[ast.Attribute]:
+    """Every reference to a clock-reading member under `node`, whatever local name its module was
+    imported under. References rather than calls: `now = datetime.now` is the same second read,
+    deferred by one line, and a call-shaped walk passed straight over it."""
+    aliases = _clock_aliases(node) if aliases is None and isinstance(node, ast.Module) else aliases
+    aliases = {name: name for name in CLOCK_MEMBERS} if aliases is None else aliases
+    found = []
+    for n in ast.walk(node):
+        if not isinstance(n, ast.Attribute):
+            continue
+        base = n.value
+        # `datetime.datetime.now` as well as `datetime.now`.
+        name = (base.attr if isinstance(base, ast.Attribute)
+                else base.id if isinstance(base, ast.Name) else None)
+        if n.attr in CLOCK_MEMBERS.get(aliases.get(name, name), ()):
+            found.append(n)
+    return found
 
 
 def _function(tree: ast.Module, name: str) -> ast.AST:
@@ -50,7 +80,7 @@ class TestSyncServiceReadsNoClock:
     """`current_period` must come from the one instant the dependency captured, never a fresh read below it."""
 
     def test_sync_service_makes_no_clock_call_on_any_path(self):
-        assert _clock_calls(ast.parse(SYNC_SERVICE.read_text())) == []
+        assert _clock_reads(ast.parse(SYNC_SERVICE.read_text())) == []
 
     def test_the_datetime_import_is_used_only_as_a_type_annotation(self):
         tree = ast.parse(SYNC_SERVICE.read_text())
@@ -75,14 +105,15 @@ class TestTheInstantIsCapturedOnceAndSharedByEveryService:
     """`req~sessions-sync-single-evaluation-time~2`: one `datetime.now(UTC)` call, not zero and not two."""
 
     def test_get_evaluated_at_calls_the_clock_exactly_once(self):
-        function = _function(ast.parse(DEPENDENCIES.read_text()), "get_evaluated_at")
-        assert len(_clock_calls(function)) == 1
+        tree = ast.parse(DEPENDENCIES.read_text())
+        function = _function(tree, "get_evaluated_at")
+        assert len(_clock_reads(function, _clock_aliases(tree))) == 1
 
     @pytest.mark.parametrize("name", ("get_sync_service", "get_auth_service", "get_chat_service"))
     def test_no_service_dependency_reads_the_clock_itself(self, name):
         """A read here would hand two services two instants on the one request that uses both."""
-        function = _function(ast.parse(DEPENDENCIES.read_text()), name)
-        assert _clock_calls(function) == []
+        tree = ast.parse(DEPENDENCIES.read_text())
+        assert _clock_reads(_function(tree, name), _clock_aliases(tree)) == []
 
     @pytest.mark.parametrize("name", ("get_sync_service", "get_auth_service", "get_chat_service"))
     def test_every_service_dependency_takes_the_one_captured_instant(self, name):
@@ -98,12 +129,38 @@ class TestTheClockWalkIsNotVacuous:
         """37.4 WR-03: exactly one, and it is `get_evaluated_at`'s. Every service factory takes the
         captured instant, so a second call anywhere in this module is a second instant per request."""
         tree = ast.parse(DEPENDENCIES.read_text())
-        calls = _clock_calls(tree)
-        assert len(calls) == 1
-        assert _clock_calls(_function(tree, "get_evaluated_at")) == calls
+        reads = _clock_reads(tree)
+        assert len(reads) == 1
+        assert _clock_reads(_function(tree, "get_evaluated_at"), _clock_aliases(tree)) == reads
 
     def test_the_default_walk_reads_a_declared_dependency_and_not_every_call(self):
         """The control: `_depends_on` must distinguish a `Depends()` default from any other call."""
         tree = ast.parse("def f(a = Depends(g), b = dict()): pass")
         function = _function(tree, "f")
         assert (_depends_on(function, "a"), _depends_on(function, "b")) == ("g", None)
+
+    @pytest.mark.parametrize("source", [
+        "x = datetime.datetime.now(UTC)",
+        "from datetime import datetime as dt\nx = dt.now()",
+        "import datetime as dt\nx = dt.datetime.now()",
+        "x = time.monotonic()",
+        "x = time.perf_counter()",
+        "import time as clock\nx = clock.time()",
+        "now = datetime.now\nx = now(UTC)",
+        "x = datetime.now(tz=UTC)",
+        "x = date.today()",
+    ], ids=["qualified", "aliased_class", "aliased_module", "monotonic", "perf_counter",
+            "aliased_time", "bound_then_called", "keyword_tz", "date_today"])
+    def test_every_spelling_of_a_second_read_is_seen(self, source):
+        """Each of these read a clock and were counted as zero, so `req~sessions-sync-single-
+        evaluation-time~2` held only against the one spelling the walk happened to match."""
+        assert _clock_reads(ast.parse(source)) != []
+
+    @pytest.mark.parametrize("source", [
+        "x = row.date\nx = obj.now",
+        "x = self.evaluated_at",
+        "from mine import time\nx = time",
+    ], ids=["a_member_of_something_else", "the_captured_instant", "a_name_that_is_not_a_call"])
+    def test_a_near_miss_is_not_counted(self, source):
+        """The control: a walk matching the member name alone would report every one of these."""
+        assert _clock_reads(ast.parse(source)) == []
