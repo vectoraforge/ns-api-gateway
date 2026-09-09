@@ -6,6 +6,14 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
+from nativespeaker.api.tables.identities import IdentityProvider
+
+# The production completion and its harness, so the pairing is scanned over rows the application
+# wrote rather than over rows this file invented. The harness is aliased because pytest registers
+# an imported fixture under the name it is bound to here.
+from schema.test_create_atomicity import harness as creation_harness  # noqa: F401
+from schema.test_create_atomicity import run_creation, scalar
+
 pytestmark = pytest.mark.schema
 
 ISSUER = "https://securetoken.google.com/native-speaker-test"
@@ -27,6 +35,14 @@ _REGISTERED_IDENTITY_ON_AN_UNREGISTERED_USER = (
     "SELECT count(*) FROM core.external_identities i "
     "JOIN core.users u ON u.id = i.user_id "
     "WHERE i.provider <> 'anonymous' AND u.registered_at IS NULL"
+)
+
+# Both scans alias the identity table as `i`, so one suffix keys either of them to a single issuer.
+# The scoped form is what a case owning its rows asks; the bare form is the whole-database probe.
+_FOR_ONE_ISSUER = " AND i.issuer = :issuer"
+
+_IDENTITIES_OF_ONE_ISSUER = (
+    "SELECT count(*) FROM core.external_identities i WHERE i.issuer = :issuer"
 )
 
 
@@ -58,7 +74,10 @@ async def _insert_identity(conn: asyncpg.Connection, *, user_id: uuid.UUID, prov
 
 
 class TestTheRegistrationPairing:
-    """Neither half of the pairing stands without the other, and neither scan may pass vacuously."""
+    """Neither half of the pairing stands without the other. The two scans below are conformance
+    probes over whatever the database holds -- on a freshly migrated scratch database that is
+    nothing, so each is a control on the query, not coverage of the writer. The writer is scanned
+    by `TestTheProductionWriterLeavesNeitherHalf` at the end of this file."""
 
     async def test_no_registered_user_carries_an_anonymous_identity(self, conn):
         """One half of the third state: a timestamp set while the identity row still says anonymous."""
@@ -83,3 +102,29 @@ class TestTheRegistrationPairing:
             await _insert_identity(conn, user_id=user_id, provider="google")
             assert await conn.fetchval(_REGISTERED_IDENTITY_ON_AN_UNREGISTERED_USER) == 1
         assert await conn.fetchval(_REGISTERED_IDENTITY_ON_AN_UNREGISTERED_USER) == 0
+
+
+class TestTheProductionWriterLeavesNeitherHalf:
+    """The pairing over rows `AuthService.complete` committed, which is the only writer that can
+    reach the third state: it sets `registered_at` and the identity's provider in one transaction."""
+
+    # noqa F811: the parameter is the imported fixture's request, not a second definition of it.
+    async def test_a_created_registered_account_satisfies_both_halves(self, creation_harness):  # noqa: F811
+        subject = f"pairing-{uuid.uuid4().hex[:8]}"
+
+        result, _, _ = await run_creation(creation_harness, subject=subject,
+                                          provider=IdentityProvider.google,
+                                          provider_uid=f"uid_{uuid.uuid4().hex[:16]}")
+
+        # The premise: the completion committed an account, so the two scans below have a row to
+        # scan. Without it this case would pass as vacuously as an empty table does.
+        assert result is IdentityProvider.google
+        assert await scalar(creation_harness, _IDENTITIES_OF_ONE_ISSUER,
+                            {"issuer": creation_harness.issuer}) == 1
+        # Keyed to this case's own issuer: a whole-table count would answer for every other file's
+        # leftovers as well, and could neither fail for this writer nor pass for it.
+        assert await scalar(creation_harness, _REGISTERED_USER_ON_AN_ANONYMOUS_IDENTITY + _FOR_ONE_ISSUER,
+                            {"issuer": creation_harness.issuer}) == 0
+        assert await scalar(creation_harness,
+                            _REGISTERED_IDENTITY_ON_AN_UNREGISTERED_USER + _FOR_ONE_ISSUER,
+                            {"issuer": creation_harness.issuer}) == 0
