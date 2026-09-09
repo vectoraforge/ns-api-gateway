@@ -89,8 +89,12 @@ class TestEveryRouteIsAuthenticated:
         assert path not in PUBLIC_PATHS | PREAUTH_CALLABLE_PATHS
 
     def test_the_public_allowlist_is_exactly_the_readiness_probe(self):
-        """The literal alone, separated from the structural set below, which the callbacks also join."""
-        assert PUBLIC_PATHS == {"/health/ready"}
+        """Read off the live router, not off the literal: a second open route fails here, not only below."""
+        open_paths = {route.path for route in _api_routes()
+                      if route.path not in PROVIDER_CALLBACK_PATHS
+                      and get_linked_identity not in _declared(route)
+                      and get_identity not in _declared(route)}
+        assert open_paths == {"/health/ready"}
 
     def test_no_route_serves_without_an_identity_or_a_callback_declaration(self):
         """A second such route would have to be added to one of the two literals above to pass."""

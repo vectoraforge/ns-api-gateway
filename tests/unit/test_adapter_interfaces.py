@@ -42,8 +42,9 @@ class TestTheOutcomeVocabularyLeftTheSeam:
         assert offenders == []
 
     def test_the_seam_declares_exactly_one_value_type(self):
-        """One type crosses the seam on success."""
-        assert [t.__name__ for t in FROZEN] == ["VerifiedProviderIdentity"]
+        """One type crosses the seam on success, counted in the module rather than in this file."""
+        declared = {node.name for node in _classes()} - {p.__name__ for p in PROTOCOLS}
+        assert declared == {"VerifiedProviderIdentity"}
 
 
 class TestNoProviderDependency:
