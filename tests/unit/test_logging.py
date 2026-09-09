@@ -2,6 +2,7 @@ import ast
 import io
 import logging
 import re
+import uuid
 from pathlib import Path
 
 import pytest
@@ -44,14 +45,6 @@ def test_console_output_always_active():
     assert isinstance(root.handlers[0], logging.StreamHandler)
 
 
-def test_request_id_bound_in_context():
-    """Request correlation travels through contextvars, which is what carries it into every record."""
-    structlog.contextvars.clear_contextvars()
-    structlog.contextvars.bind_contextvars(request_id="test-req-123")
-    ctx = structlog.contextvars.get_contextvars()
-    assert ctx["request_id"] == "test-req-123"
-
-
 @pytest.fixture
 def _logging_app():
     """Minimal FastAPI app with RequestLoggingMiddleware for testing."""
@@ -79,6 +72,28 @@ def _logging_app():
         return JSONResponse(status_code=500, content={"error": "fail"})
 
     return app
+
+
+def test_the_middleware_binds_the_correlation_fields_onto_every_record(_logging_app):
+    """WR-70: `capture_logs` does not merge contextvars, so the bindings are read where they are
+    set. The case this replaces bound a contextvar itself and read it back, which stayed green
+    with the whole `bind_contextvars` call deleted from the middleware."""
+    seen: list[dict] = []
+
+    @_logging_app.get("/bound")
+    async def _bound():
+        seen.append(dict(structlog.contextvars.get_contextvars()))
+        return {"ok": True}
+
+    with TestClient(_logging_app) as client:
+        client.get("/bound")
+        client.get("/bound")
+
+    assert [sorted(ctx) for ctx in seen] == [["method", "path", "request_id"]] * 2
+    assert [ctx["method"] for ctx in seen] == ["GET", "GET"]
+    assert [ctx["path"] for ctx in seen] == ["/bound", "/bound"]
+    # A fresh id per request, or correlation groups two requests into one.
+    assert uuid.UUID(seen[0]["request_id"]) != uuid.UUID(seen[1]["request_id"])
 
 
 def test_middleware_logs_request_on_response(_logging_app):
