@@ -288,7 +288,9 @@ class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
         result, _, _ = await run_creation(harness, subject=subject,
                                           provider=IdentityProvider.anonymous, provider_uid=None)
         return {"error": result, "users_before": users_before,
-                "identities_before": identities_before, "subject": subject}
+                "identities_before": identities_before, "subject": subject,
+                # The pinned key both the rival row and the rolled-back one carry.
+                "minted": minted}
 
     async def test_a_conflict_on_a_rule_nobody_anticipated_reads_as_already_linked(
             self, token_collision):
@@ -307,10 +309,22 @@ class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
 
     async def test_no_attribution_token_survives_for_the_would_be_user(self, harness,
                                                                        token_collision):
+        """Keyed to the value this attempt minted, not to the whole table: the rolled-back row is
+        the one that has to be gone, and a leftover from any other file must not answer for it."""
         found = await scalar(
             harness,
-            "SELECT count(*) FROM core.store_purchase_tokens WHERE provider = 'google_play'")
+            "SELECT count(*) FROM core.store_purchase_tokens "
+            "WHERE provider = 'google_play' AND identity_value = :value",
+            {"value": str(token_collision["minted"])})
         assert found == 0
+
+        # The control on that zero: the rival row the fixture committed carries the same value, so
+        # the count above found nothing because the row is gone, not because the key matches nothing.
+        surviving = await scalar(
+            harness,
+            "SELECT count(*) FROM core.store_purchase_tokens WHERE identity_value = :value",
+            {"value": str(token_collision["minted"])})
+        assert surviving == 1
 
 
 class TestTheHappyPathStillCommitsEverything:
