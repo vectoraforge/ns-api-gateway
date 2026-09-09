@@ -129,7 +129,12 @@ class IdentitiesDB:
             if not is_unique_violation(conflict):
                 # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                 raise
-            # The only uniqueness this insert can lose is `(issuer, subject)`.
+            # Three uniqueness rules are reachable here, not one: `(issuer, subject)`, the partial
+            # `ix_external_identities_provider_account` over `(issuer, provider, provider_uid)`, and
+            # `core.store_purchase_tokens`' own. 37.4 D-06 collapses all of them into this single
+            # answer rather than resolving which one the winner took. The cost is bounded to the
+            # race: `create_user`'s pre-check still earns the provider account its own 403 for every
+            # caller that does not lose a flush to a concurrent completion.
             raise IdentityAlreadyLinked() from conflict
         return user.id
 

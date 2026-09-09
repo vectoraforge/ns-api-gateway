@@ -151,8 +151,9 @@ async def _insert(*, expect: type[BaseException] = AppError,
 
 
 class TestTheInsertsUniqueViolationIsTheSubjectRace:
-    """D-06: no constraint name is read. The provider account is decided before the insert, so the
-    one uniqueness rule left for this flush to lose is `UNIQUE (issuer, subject)`."""
+    """D-06: no constraint name is read, and this arm collapses every uniqueness rule the flush can
+    lose -- `(issuer, subject)`, the partial provider-account index, the purchase token's -- into the
+    one already-linked answer. The pre-check, not this arm, earns the provider account its own 403."""
 
     async def test_a_unique_violation_raises_already_linked(self):
         """An account exists for this pair: reconcile it, do not create a second."""
