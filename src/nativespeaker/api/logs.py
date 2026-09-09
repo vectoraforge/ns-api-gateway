@@ -79,6 +79,14 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         """One access-log line per request, written on the raising exit as well as the ordinary one."""
         if request.url.path in _EXCLUDED_PATHS:
             return
-        log_method = logger.info if status_code < 400 else logger.error
+        # Split at the 5xx boundary, not at 400: `errors.py` marks every client-caused rejection
+        # silent so ERROR stays the level a whole-product outage is paged on, and an access line
+        # at ERROR for a 401 probe or a 404 typo undoes exactly that.
+        if status_code >= 500:
+            log_method = logger.error
+        elif status_code >= 400:
+            log_method = logger.warning
+        else:
+            log_method = logger.info
         log_method("request", status_code=status_code,
                    duration_ms=round((time.perf_counter() - start) * 1000, 2))

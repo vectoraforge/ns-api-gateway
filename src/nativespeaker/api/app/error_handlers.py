@@ -49,10 +49,12 @@ async def validation_error_handler(request: Request, exc: Exception) -> JSONResp
     A rejected value can be a live secret -- a challenge handle in a malformed body reaches
     this handler intact -- so only `loc` and `type` are logged, and `input` never is."""
     assert isinstance(exc, RequestValidationError)
-    logger.error("validation_error",
-                 failures=[{"loc": ".".join(str(part) for part in error.get("loc", ())),
-                            "type": error.get("type", "unknown")}
-                           for error in exc.errors()])
+    # WARNING, not ERROR: a body that failed its schema is the client's mistake, and `ValidationError`
+    # already declares itself silent so this one line is all a 422 leaves.
+    logger.warning("validation_error",
+                   failures=[{"loc": ".".join(str(part) for part in error.get("loc", ())),
+                              "type": error.get("type", "unknown")}
+                             for error in exc.errors()])
     return await app_error_handler(request, ValidationError())
 
 

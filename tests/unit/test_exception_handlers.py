@@ -140,6 +140,17 @@ def test_validation_error_handler(handler_client):
     assert body["code"] == "validation_error"
 
 
+def test_a_rejected_body_is_recorded_at_warning(handler_client, warnings, monkeypatch):
+    """A 422 is a client-caused rejection; ERROR is reserved for a whole-product outage."""
+    errors = _WarningSpy()
+    monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.error", errors.record)
+
+    handler_client.post("/validate-body", json={})
+
+    assert [event for event, _fields in warnings.entries] == ["validation_error"]
+    assert errors.entries == []
+
+
 class TestRetryAfterHeaders:
     """Verify Retry-After header on 503 errors."""
 
@@ -598,7 +609,8 @@ class TestARejectedBodyValueNeverReachesTheLog:
     def errors(self, monkeypatch) -> _WarningSpy:
         """A spy, not `capture_logs`: the module-level logger caches its binding, so capture sees nothing here."""
         spy = _WarningSpy()
-        monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.error", spy.record)
+        # The handler records the rejected body at WARNING; this is still the line under test.
+        monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.warning", spy.record)
         return spy
 
     def _post(self, client):

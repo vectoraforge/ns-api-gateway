@@ -97,7 +97,7 @@ def test_middleware_excludes_health_ready(_logging_app):
     assert len(request_logs) == 0
 
 
-def test_middleware_error_level_for_non_2xx(_logging_app):
+def test_middleware_error_level_for_a_server_error(_logging_app):
     with capture_logs() as cap_logs:
         with TestClient(_logging_app) as client:
             client.get("/error")
@@ -105,6 +105,17 @@ def test_middleware_error_level_for_non_2xx(_logging_app):
     request_logs = [log for log in cap_logs if log["event"] == "request"]
     assert len(request_logs) == 1
     assert request_logs[0]["log_level"] == "error"
+
+
+def test_middleware_warning_level_for_a_client_error(_logging_app):
+    """ERROR is what an operator is paged on, so an unmatched path may not reach it."""
+    with capture_logs() as cap_logs:
+        with TestClient(_logging_app) as client:
+            response = client.get("/no-such-path")
+
+    assert response.status_code == 404
+    request_logs = [log for log in cap_logs if log["event"] == "request"]
+    assert [(log["status_code"], log["log_level"]) for log in request_logs] == [(404, "warning")]
 
 
 def test_middleware_logs_the_request_when_the_handler_raises(_logging_app):
