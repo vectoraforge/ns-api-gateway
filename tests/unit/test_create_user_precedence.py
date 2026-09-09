@@ -375,6 +375,34 @@ class TestTheProviderStageRejections:
         assert creator.calls[0]["provider"] is IdentityProvider.google
         assert creator.calls[0]["provider_uid"] == "google-uid-1"
         assert creator.calls[0]["email"] == "someone@example.test"
+        # Spent on success as on every rejection: a handle still live after an account was created
+        # is a replayable capability. Every rejection arm below asserts this; success owns it too.
+        assert store.consume_calls == 1
+        assert store.row.consumed_at is not None
+        assert store.row.preauth_subject is None
+
+    def test_a_replay_after_a_success_mints_no_second_account(
+            self, client, store, rejections, creator, fake_firebase_adapter):
+        """The success side of `test_a_replay_after_a_rejection_...`: one handle, one account.
+
+        The outcome, not a mechanism. Two independent things refuse the replay -- the claim gate
+        and the binding the spend clears -- so this fails only once both are gone. The case above
+        is what pins the spend itself."""
+        store.row = _issued_row()
+        fake_firebase_adapter.script(VerifiedProviderIdentity(provider=IdentityProvider.google,
+                                                              provider_uid="google-uid-1",
+                                                              email="someone@example.test"))
+
+        first = _complete(client)
+        second = _complete(client)
+
+        assert first.status_code == 200
+        _assert_challenge_required(second)
+        assert rejections.results == ["challenge_consumed"]
+        # The second attempt performs no work at all: neither the provider nor the creator is
+        # reached again, so no second account exists to be reconciled.
+        assert len(creator.calls) == 1
+        assert len(fake_firebase_adapter.calls) == 1
 
 
 class TestEveryProviderStageRejectionConsumes:
