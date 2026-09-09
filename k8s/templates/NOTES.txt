@@ -7,11 +7,16 @@ Envoy Gateway policies:
   - HTTPRoutes: app-routes (authenticated), auth-routes (authenticated: /auth/* and /),
     llm-routes (authenticated), webhook-routes (public), health-routes (public)
 
-No gateway rate limit on llm-routes, and no response override. Envoy's local limit answers
-429, and so does the backend when a caller's monthly allowance is spent. A response override
-matches on the status code alone, so it rewrote the backend's `quota_exceeded` -- the month is
-spent, do not retry -- into `rate_limited` -- retry in a moment. Shedding stays where it can
-still say which answer it is giving: the backend's execution gate caps in-flight work and
-refuses with 503 `service_unavailable` and `Retry-After`.
+No rate-limit policy ships in this chart: the BackendTrafficPolicy that carried the only one was
+removed, so nothing at the gateway answers 429 on these routes. The backend does, and only when a
+caller's monthly allowance is spent (`quota_exceeded`). The response override went with it,
+because it matches on the status code alone, so it rewrote that answer -- the month is spent, do
+not retry -- into `rate_limited` -- retry in a moment. Shedding stays where it can still say which
+answer it is giving: the backend's execution gate caps in-flight work and refuses with 503
+`service_unavailable` and `Retry-After`.
+
+If the cluster Gateway applies its own IP- or user-keyed limits ahead of this chart, its 429
+carries Envoy's own plain-text body, not the shared `{"code": ...}` one the error contract
+requires. Nothing in this chart supplies that body.
 
 The monthly allowance is not a gateway concern: the backend charges it per access grant.
