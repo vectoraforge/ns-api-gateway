@@ -8,6 +8,9 @@ metadata:
 spec:
   parentRefs:
   - name: {{ .Values.gateway.name }}
+    {{- with .Values.gateway.namespace }}
+    namespace: {{ . }}
+    {{- end }}
   # Under the JWT SecurityPolicy, as app-routes and llm-routes are. Every route here carries a
   # Firebase ID token, the pre-auth-callable ones included: an unlinked caller still presents a
   # verified token, and the unlinked decision stays in the backend barrier.

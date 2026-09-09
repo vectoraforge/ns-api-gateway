@@ -43,6 +43,12 @@ probes:
 
 gateway:
   name: eg-gateway
+  # The Gateway's namespace. Empty means this release's own namespace, which is what an omitted
+  # `parentRefs[].namespace` means to Gateway API -- so a platform-owned Gateway needs this set, or
+  # the routes install green, both probes pass, and every request 404s at the gateway with nothing
+  # in the application's logs. A Gateway elsewhere also needs its listener's
+  # `allowedRoutes.namespaces` to admit this one, which is outside this chart.
+  namespace: ""
 
 credentials:
   # The Secret carrying the six settings the process cannot boot without: DB_HOST, DB_PORT,

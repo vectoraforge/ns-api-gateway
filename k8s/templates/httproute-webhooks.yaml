@@ -8,6 +8,9 @@ metadata:
 spec:
   parentRefs:
   - name: {{ .Values.gateway.name }}
+    {{- with .Values.gateway.namespace }}
+    namespace: {{ . }}
+    {{- end }}
   # Both paths are outside the JWT SecurityPolicy. Envoy cannot verify a store-signed token.
   # Apple sends no Authorization header. The signed payload is the only credential.
   # Google sends `Authorization: Bearer <OIDC token>`. That header must reach the backend
