@@ -59,6 +59,7 @@ addopts = "-v --tb=short -m 'not e2e and not schema'"
 markers = [
     "e2e: marks end-to-end tests requiring real infrastructure (deselect with -m 'not e2e')",
     "schema: marks schema-conformance tests requiring a real PostgreSQL (deselect with -m 'not schema')",
+    "timing: marks tests whose assertion is wall-clock dependent (report separately with -m timing)",
 ]
 
 [tool.ruff]

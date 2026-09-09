@@ -23,6 +23,11 @@ KNOWN_KID = "test-key-1"
 FETCH_DELAY = 0.4
 HEARTBEAT_INTERVAL = 0.01
 
+# The share of the ideal tick count an unstarved loop must still deliver. Derived from the window
+# each case actually observed rather than pinned as an integer: `asyncio.sleep` drifts on an
+# oversubscribed runner, and this is the one wall-clock-dependent measurement in the suite.
+UNSTARVED_TICK_FRACTION = 0.1
+
 
 def jwks_body(kid: str = KNOWN_KID) -> bytes:
     """A one-key JWKS document served under whatever `kid` is asked for; `PyJWKSet` rejects an empty key list."""
@@ -138,6 +143,10 @@ class Heartbeat:
     def ticks_between(self, started: float, finished: float) -> int:
         return sum(1 for tick in self.ticks if started <= tick <= finished)
 
+    def unstarved_floor(self, started: float, finished: float) -> float:
+        """The fewest ticks the observed window admits before the loop counts as starved."""
+        return (finished - started) / HEARTBEAT_INTERVAL * UNSTARVED_TICK_FRACTION
+
 
 async def _get_probe(app: FastAPI, headers) -> tuple[int, dict, float, float]:
     """Drive one request over the app's own loop and return it bracketed by a measured window."""
@@ -148,8 +157,9 @@ async def _get_probe(app: FastAPI, headers) -> tuple[int, dict, float, float]:
     return response.status_code, response.json(), started, finished
 
 
+@pytest.mark.timing
 async def test_an_unknown_kid_request_does_not_starve_the_event_loop(probe_app, transport):
-    """The loop keeps serving while an unrecognized `kid` is fetched; ten ticks is a fourfold margin on noise."""
+    """The loop keeps serving while an unrecognized `kid` is fetched, at a tenth of the ideal tick rate."""
     token = make_token("u", headers={"kid": "unrecognised-1"})
     transport.fetch_delay = FETCH_DELAY
 
@@ -161,9 +171,12 @@ async def test_an_unknown_kid_request_does_not_starve_the_event_loop(probe_app, 
     assert body == {"code": "auth_required"}, "the client-visible response is unchanged by the fix"
     assert finished - started >= FETCH_DELAY, "the request really did wait on the stubbed fetch"
     ticks = heartbeat.ticks_between(started, finished)
-    assert ticks >= 10, f"the event loop was starved during the JWKS fetch: {ticks} heartbeat ticks"
+    floor = heartbeat.unstarved_floor(started, finished)
+    assert ticks >= floor, (f"the event loop was starved during the JWKS fetch: {ticks} heartbeat "
+                            f"ticks against a floor of {floor:.1f} for this window")
 
 
+@pytest.mark.timing
 async def test_the_harness_detects_a_starved_loop(verifier, transport):
     """Permanent, not scaffolding: without this control the case above is a green assertion never shown to fail."""
     token = make_token("u", headers={"kid": "unrecognised-control"})
@@ -177,7 +190,11 @@ async def test_the_harness_detects_a_starved_loop(verifier, transport):
     assert claims is None and reason is not None
     assert finished - started >= FETCH_DELAY
     ticks = heartbeat.ticks_between(started, finished)
+    # Kept absolute: load pushes a starved count down, never up, so this bound cannot go flaky --
+    # and it must stay under the case above's floor for the two to partition the outcome.
     assert ticks <= 2, f"the harness cannot register a starved loop: it counted {ticks} ticks"
+    assert ticks < heartbeat.unstarved_floor(started, finished), \
+        "the starved bound and the unstarved floor overlap, so neither case discriminates"
 
 
 async def test_a_credential_less_request_never_reaches_the_jwks_transport(probe_app, transport):
