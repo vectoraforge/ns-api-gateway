@@ -20,7 +20,12 @@ from nativespeaker.api.schemas.llm import (
     Issue,
     RejectResponse,
 )
-from nativespeaker.api.schemas.webhooks import AppStoreNotificationRequest, PubSubPushMessage
+from nativespeaker.api.schemas.webhooks import (
+    APP_STORE_ENVELOPE_LIMIT,
+    PUBSUB_DATA_LIMIT,
+    AppStoreNotificationRequest,
+    PubSubPushMessage,
+)
 from nativespeaker.api.tables import PurchaseProvider, StorePurchaseToken
 
 
@@ -289,33 +294,40 @@ class TestStorePurchaseTokenMapping:
         assert sorted(provider_type.enums) == ["apple", "google_play"]
 
 
-# The two unauthenticated bodies, each with whatever else its model requires.
+# The two unauthenticated bodies, each with its own bound and whatever else its model requires.
 _BOUNDED_WEBHOOK_FIELDS = [
-    (AppStoreNotificationRequest, "signedPayload", {}),
-    (PubSubPushMessage, "data", {"messageId": "m"}),
+    (AppStoreNotificationRequest, "signedPayload", {}, APP_STORE_ENVELOPE_LIMIT),
+    (PubSubPushMessage, "data", {"messageId": "m"}, PUBSUB_DATA_LIMIT),
 ]
 
-WEBHOOK_BODY_LIMIT = 16384
+# The upper end of the range a real V2 notification occupies, certificate chain included.
+REALISTIC_APP_STORE_ENVELOPE = 24 * 1024
 
 
 class TestTheUnauthenticatedWebhookBodiesAreBounded:
     """WR-03. These are the only two routes outside the gateway JWT policy, so the body is the credential."""
 
-    @pytest.mark.parametrize("model,field,other", _BOUNDED_WEBHOOK_FIELDS)
-    def test_an_oversized_body_is_refused(self, model, field, other):
+    @pytest.mark.parametrize("model,field,other,limit", _BOUNDED_WEBHOOK_FIELDS)
+    def test_an_oversized_body_is_refused(self, model, field, other, limit):
         with pytest.raises(ValidationError) as refusal:
-            model(**other, **{field: "a" * (WEBHOOK_BODY_LIMIT + 1)})
+            model(**other, **{field: "a" * (limit + 1)})
 
-        assert f"at most {WEBHOOK_BODY_LIMIT}" in str(refusal.value)
+        assert f"at most {limit}" in str(refusal.value)
 
-    @pytest.mark.parametrize("model,field,other", _BOUNDED_WEBHOOK_FIELDS)
-    def test_a_body_at_the_bound_is_accepted(self, model, field, other):
+    @pytest.mark.parametrize("model,field,other,limit", _BOUNDED_WEBHOOK_FIELDS)
+    def test_a_body_at_the_bound_is_accepted(self, model, field, other, limit):
         """The control: a bound set below a real envelope would refuse live deliveries."""
-        body = model(**other, **{field: "a" * WEBHOOK_BODY_LIMIT})
+        body = model(**other, **{field: "a" * limit})
 
-        assert len(getattr(body, field)) == WEBHOOK_BODY_LIMIT
+        assert len(getattr(body, field)) == limit
 
-    @pytest.mark.parametrize("model,field,other", _BOUNDED_WEBHOOK_FIELDS)
-    def test_an_empty_body_is_still_refused(self, model, field, other):
+    @pytest.mark.parametrize("model,field,other,limit", _BOUNDED_WEBHOOK_FIELDS)
+    def test_an_empty_body_is_still_refused(self, model, field, other, limit):
         with pytest.raises(ValidationError):
             model(**other, **{field: ""})
+
+    def test_an_envelope_the_size_apple_really_sends_is_accepted(self):
+        """CR-01. Apple carries the certificate chain three times, so a 16 KB bound refused every genuine delivery."""
+        body = AppStoreNotificationRequest(signedPayload="a" * REALISTIC_APP_STORE_ENVELOPE)
+
+        assert len(body.signedPayload) == REALISTIC_APP_STORE_ENVELOPE
