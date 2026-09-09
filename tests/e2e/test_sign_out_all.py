@@ -330,7 +330,9 @@ class TestWhatEachOutcomeWritesDown:
         assert (confirmed.status_code, refused.status_code, rejected.status_code) == (204, 503, 401)
         assert [event for event, _ in route_records.entries] == [
             "sign_out_all_confirmed", "revocation_unconfirmed", "user_not_found"]
-        # Every value of every record, so a field added later cannot slip an identifier past this.
-        assert [value for _, fields in route_records.entries for value in fields.values()
-                if isinstance(value, str)
-                and (SUBJECT in value or identity.provider_uid in value)] == []
+        # Rendered first, as the two webhook twins do: a `str` filter would read only the string
+        # fields, and a UUID, a dict or a row carrying the subject renders it in the final line all
+        # the same. So a field added later cannot slip an identifier past this, whatever its type.
+        rendered = repr(route_records.entries)
+        for secret in (SUBJECT, identity.provider_uid):
+            assert secret not in rendered, f"a log record carries {secret!r}"
