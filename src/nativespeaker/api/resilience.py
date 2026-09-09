@@ -44,6 +44,10 @@ class CircuitBreaker:
         self._reset_seconds = reset_seconds
         self._failure_count = 0
         self._opened_at: float | None = None
+        # Bumped on every trip, so an attempt can stamp the state it began under. "Open right now"
+        # is not that state: `before_call`'s elapsed arm clears `_opened_at` while an attempt
+        # admitted before the trip is still in flight.
+        self._generation = 0
         self._lock = asyncio.Lock()
 
     async def before_call(self) -> None:
@@ -58,11 +62,19 @@ class CircuitBreaker:
             retry_after = max(1, int(self._reset_seconds - elapsed))
             raise CircuitOpenError(retry_after)
 
-    async def record_success(self) -> None:
+    async def current_generation(self) -> int:
+        """The trip counter as of now. An attempt stamps it before calling the provider."""
         async with self._lock:
-            if self._opened_at is not None:
+            return self._generation
+
+    async def record_success(self, generation: int) -> None:
+        async with self._lock:
+            if generation != self._generation:
                 # An attempt in flight when the breaker tripped predates it, so its answer says
-                # nothing about the provider now. Only `before_call`'s elapsed arm closes this.
+                # nothing about the provider now. Stamped rather than read from `_opened_at`: one
+                # retry chain outlives `circuit_breaker_reset_seconds`, so by the time such an
+                # answer lands the elapsed arm has already cleared `_opened_at` and the straggler
+                # would zero a tally accumulated entirely after the reset.
                 return
             self._failure_count = 0
 
@@ -73,6 +85,7 @@ class CircuitBreaker:
             self._failure_count += 1
             if self._failure_count >= self._failure_threshold:
                 self._opened_at = time.monotonic()
+                self._generation += 1
 
 
 class LLMExecutionGate:
@@ -172,6 +185,10 @@ class ResiliencePolicy:
                 if attempted:
                     await self._circuit_breaker.before_call()
                 attempted = True
+                # Stamped here, immediately before the provider call: a trip after this instant
+                # makes this attempt's answer a straggler's, whatever the breaker's state is by
+                # the time it lands.
+                generation = await self._circuit_breaker.current_generation()
                 result = await asyncio.wait_for(operation(), timeout=self._timeout_seconds)
             except (QueueFullError, CircuitOpenError):
                 # First, and it must stay first: the breaker's own refusal is not the provider's failure.
@@ -185,7 +202,7 @@ class ResiliencePolicy:
                     await self._circuit_breaker.record_failure()
                     raise TransientLLMError(str(e)) from e
                 raise PermanentLLMError(str(e)) from e
-            await self._circuit_breaker.record_success()
+            await self._circuit_breaker.record_success(generation)
             return result
 
         # The permit covers all three attempts as one unit, and is taken only once the caller is

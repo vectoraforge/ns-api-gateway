@@ -84,9 +84,9 @@ class BreakerSpy:
             self.failures += 1
             await real_failure()
 
-        async def counting_success() -> None:
+        async def counting_success(generation: int) -> None:
             self.successes += 1
-            await real_success()
+            await real_success(generation)
 
         async def counting_before_call() -> None:
             self.checks += 1
@@ -233,24 +233,60 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
     async def test_a_success_landing_after_the_trip_does_not_close_the_breaker(self):
         """WR-21: one shared breaker serves `pool_size` calls, so a straggler can answer after the trip."""
         breaker = CircuitBreaker(failure_threshold=2, reset_seconds=60)
+        # The straggler stamped its generation before the two failures below and answers after them.
+        straggler = await breaker.current_generation()
 
         await breaker.record_failure()
         await breaker.record_failure()
-        # The straggler entered `before_call` before the two failures above and answers now.
-        await breaker.record_success()
+        await breaker.record_success(straggler)
 
         with pytest.raises(CircuitOpenError):
             await breaker.before_call()
 
     async def test_a_success_while_the_breaker_is_closed_still_clears_the_tally(self):
-        """The control: the guard above must refuse only while the breaker is open."""
+        """The control: the guard above must refuse only a success from before the last trip."""
         breaker = CircuitBreaker(failure_threshold=2, reset_seconds=60)
+        generation = await breaker.current_generation()
 
         await breaker.record_failure()
-        await breaker.record_success()
+        await breaker.record_success(generation)
         await breaker.record_failure()
 
         await breaker.before_call()
+
+    async def test_a_straggler_landing_after_the_reset_does_not_clear_the_fresh_tally(self):
+        """WR-02: one retry chain runs `retry_max_attempts x timeout_seconds` plus backoff, which
+        outlives `circuit_breaker_reset_seconds`. Reading "is the breaker open right now" therefore
+        let a straggler zero a tally accumulated entirely after the reset, delaying the reopen by
+        another `failure_threshold` failures. `reset_seconds=0` makes the elapsed arm fire at once,
+        and the reopen is read off the trip counter."""
+        breaker = CircuitBreaker(failure_threshold=2, reset_seconds=0)
+        straggler = await breaker.current_generation()
+
+        await breaker.record_failure()
+        await breaker.record_failure()
+        await breaker.before_call()
+        await breaker.record_failure()
+        await breaker.record_success(straggler)
+        await breaker.record_failure()
+
+        # Two trips: the original one, then the reopen the two fresh failures earned.
+        assert await breaker.current_generation() == straggler + 2
+
+    async def test_a_success_stamped_after_the_reset_still_clears_the_tally(self):
+        """The control: the case above must pass because the success predates the trip, not
+        because a reset breaker stopped accepting any success at all."""
+        breaker = CircuitBreaker(failure_threshold=2, reset_seconds=0)
+
+        await breaker.record_failure()
+        await breaker.record_failure()
+        await breaker.before_call()
+        fresh = await breaker.current_generation()
+        await breaker.record_failure()
+        await breaker.record_success(fresh)
+        await breaker.record_failure()
+
+        assert await breaker.current_generation() == fresh
 
     async def test_the_full_budget_is_still_spent_while_the_breaker_stays_closed(self, policy, spy, sleeps):
         """The control: the case above must pass because the breaker opened, not because retrying broke generally."""
