@@ -1,0 +1,28 @@
+# The build context, not the image: the Dockerfile copies only `pyproject.toml`, `uv.lock`, `src`
+# and `config`, so nothing below lands in a layer today. The context transfer itself is the
+# exposure the moment the builder is not local -- buildx against a remote builder, a shared
+# BuildKit daemon, kaniko, a hosted CI build -- and `.env` holds the real database password and
+# the long-lived Google refresh token. The credential shapes are the ones `.gitignore` names.
+.env
+.env.*
+!.env.example
+*.p8
+*.pem
+*.key
+application_default_credentials.json
+
+.git/
+.venv/
+.planning/
+.claude/
+.gsd/
+tests/
+migrations/
+k8s/
+
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
