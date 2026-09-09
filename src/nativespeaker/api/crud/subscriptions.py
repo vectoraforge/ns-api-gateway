@@ -184,7 +184,9 @@ class SubscriptionsDB:
                                   status: SubscriptionStatus,
                                   signed_at: datetime | None,
                                   evaluated_at: datetime) -> tuple[Subscription, WriteOutcome]:
-        """Update the existing canonical row in place, or insert one, and flush it."""
+        """Update the existing canonical row in place, or insert one, and flush it.
+        An owner is taken by the same conditional statement `claim_subscription_owner` emits, so a
+        restore that adopted the row since the read above is a lost race rather than an overwrite."""
         stored = await self.read_subscription(provider, external_id)
         outcome = WriteOutcome.applied
         if stored is None:
@@ -200,6 +202,25 @@ class SubscriptionsDB:
         else:
             # D-09: the token attributes an unowned row only, and restore alone changes an owner.
             owner = stored.user_id if stored.user_id is not None else user_id
+            # Read before the claim below writes it: the whole question this arm answers is whether
+            # the row already said what this delivery carries, and the claim changes that answer.
+            settled = (stored.tier_id, stored.status, stored.user_id) == (tier_id, status, owner)
+            if stored.user_id is None and owner is not None:
+                # The row is unowned and this token resolved a buyer. This row is never locked, so
+                # only the sibling's `user_id IS NOT DISTINCT FROM` predicate makes the rule above
+                # true of the statement that is emitted; an ORM update keyed on the id alone
+                # overwrites the owner a restore settled in the window since the read.
+                claimed = await self.claim_subscription_owner(
+                    subscription_id=stored.id,
+                    # Unowned and unmoved: what the read above saw, and what the sibling asks for.
+                    owner_read=None,
+                    month_read=stored.last_cross_account_transfer_month,
+                    destination=owner,
+                    # Adoption, never a move: D-10's month cap is spent by restore alone.
+                    transfer_month=None,
+                    evaluated_at=evaluated_at)
+                if not claimed:
+                    return stored, WriteOutcome.lost_race
             if signed_at is not None and (stored.store_signed_at is None
                                           or signed_at > stored.store_signed_at):
                 # Moved whatever the comparison below decides: the out-of-order guard reads this
@@ -207,13 +228,15 @@ class SubscriptionsDB:
                 # Only ever advanced by a payload that carries one: an absent date clears nothing.
                 stored.store_signed_at = signed_at
                 stored.updated_at = evaluated_at
-            if (stored.tier_id, stored.status, stored.user_id) == (tier_id, status, owner):
+            if settled:
                 # The lifecycle row already says this, so a repeat event carries no change to record.
                 outcome = WriteOutcome.replayed
             else:
                 # Updated in place, never flipped and re-inserted: one row per lifecycle pair is the index's rule.
                 stored.tier_id = tier_id
                 stored.status = status
+                # Repeats the column a successful claim above already wrote, under the row lock that
+                # statement holds until this transaction ends: the callers read this attribute.
                 stored.user_id = owner
                 stored.updated_at = evaluated_at
 

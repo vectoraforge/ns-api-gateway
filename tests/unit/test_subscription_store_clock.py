@@ -1,11 +1,12 @@
-"""The store clock `core.subscriptions.store_signed_at` carries, over a stub session.
-
-The out-of-order guard compares against this column, so what moves it is what that guard can see.
+"""What `upsert_subscription` writes over a stub session: the store clock, and the owner.
+The out-of-order guard compares against `core.subscriptions.store_signed_at`, so what moves that
+column is what that guard can see; the owner is written by a statement carrying its own rule.
 """
 from datetime import UTC, datetime, timedelta
-from uuid import uuid7
+from uuid import UUID, uuid7
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
 from nativespeaker.api.tables import PurchaseProvider, Subscription, SubscriptionStatus
@@ -20,23 +21,29 @@ T2 = T1 + timedelta(minutes=5)
 
 class _StubResult:
 
-    def __init__(self, row):
+    def __init__(self, row, rowcount: int):
         self._row = row
+        # The conditional owner update answers with a row count and nothing else.
+        self.rowcount = rowcount
 
     def first(self):
         return self._row
 
 
 class _StubSession:
-    """Answers the one read `upsert_subscription` makes and counts the flush it ends with."""
+    """Answers the reads `upsert_subscription` makes, keeps its statements, and counts its flush."""
 
-    def __init__(self, stored: Subscription | None):
+    def __init__(self, stored: Subscription | None, claimed: bool = True):
         self._stored = stored
+        # What the conditional owner update finds: one row, or none because a restore won it.
+        self._claimed = claimed
         self.flushes = 0
         self.added: list = []
+        self.statements: list = []
 
-    async def exec(self, statement):  # noqa: ARG002
-        return _StubResult(self._stored)
+    async def exec(self, statement):
+        self.statements.append(statement)
+        return _StubResult(self._stored, 1 if self._claimed else 0)
 
     def add(self, instance) -> None:
         self.added.append(instance)
@@ -45,10 +52,15 @@ class _StubSession:
         self.flushes += 1
 
 
-def _stored(store_signed_at: datetime | None) -> Subscription:
+def _compiled(statement) -> str:
+    """The statement as PostgreSQL would receive it -- the dialect that actually runs it."""
+    return str(statement.compile(dialect=postgresql.dialect()))
+
+
+def _stored(store_signed_at: datetime | None, user_id: UUID | None = OWNER) -> Subscription:
     return Subscription(provider=PurchaseProvider.apple,
                         external_id=EXTERNAL_ID,
-                        user_id=OWNER,
+                        user_id=user_id,
                         tier_id=PAID_TIER_ID,
                         status=SubscriptionStatus.active,
                         store_signed_at=store_signed_at,
@@ -118,3 +130,46 @@ class TestTheClockMovesWithoutAStateChange:
         row, outcome = await _upsert(stored, signed_at=T2, status=SubscriptionStatus.grace_period)
 
         assert (outcome, row.store_signed_at) == (WriteOutcome.applied, T2)
+
+
+async def _adopt(*, claimed: bool) -> tuple[Subscription, WriteOutcome, _StubSession]:
+    """Run the real crud method over an unowned stored row the delivery's token resolves an owner for."""
+    session = _StubSession(_stored(T1, user_id=None), claimed=claimed)
+    row, outcome = await SubscriptionsDB(session).upsert_subscription(
+        provider=PurchaseProvider.apple,
+        external_id=EXTERNAL_ID,
+        user_id=OWNER,
+        tier_id=PAID_TIER_ID,
+        status=SubscriptionStatus.active,
+        signed_at=T2,
+        evaluated_at=T2)
+    return row, outcome, session
+
+
+@pytest.mark.asyncio
+class TestAnUnownedRowIsTakenConditionally:
+    """WR-31: `core.subscriptions` is never locked here, so the statement that attributes an unowned
+    row must say so itself. An update keyed on the id alone overwrites the owner a restore settled
+    in the window since the read, leaving that account's active grant pointing at another owner."""
+
+    async def test_the_owner_write_carries_the_unowned_predicate(self):
+        _, _, session = await _adopt(claimed=True)
+
+        updates = [_compiled(statement) for statement in session.statements
+                   if _compiled(statement).startswith("UPDATE")]
+        assert updates and "user_id IS NOT DISTINCT FROM" in updates[0]
+
+    async def test_the_taken_owner_reaches_the_caller_that_writes_the_grant(self):
+        """The control: the statement wrote the column, and `ingest` reads this attribute to decide
+        whether a subscription grant is written at all."""
+        row, outcome, _ = await _adopt(claimed=True)
+
+        assert (row.user_id, outcome) == (OWNER, WriteOutcome.applied)
+
+    async def test_a_restore_that_took_the_row_first_is_a_lost_race(self):
+        """Zero rows means the predicate no longer holds: the store resends and reads the settled owner."""
+        row, outcome, session = await _adopt(claimed=False)
+
+        assert outcome is WriteOutcome.lost_race
+        # Nothing after the refused claim ran: no flush, and the owner is left as it was read.
+        assert (session.flushes, row.user_id) == (0, None)
