@@ -45,6 +45,12 @@ ENVELOPE = "signed-payload-that-only-the-scripted-seam-reads"
 # The product id the Apple seam refuses, because the configured map has no line for it.
 UNMAPPED_PRODUCT_ID = "com.nativespeaker.subscription.unmapped"
 
+# The library's status set as of app-store-server-library 3.0.0, pinned as a literal so a member it
+# adds arrives here as a failure rather than as one more silently-generated parameter below.
+KNOWN_STATUSES = frozenset({"OK", "VERIFICATION_FAILURE", "INVALID_APP_IDENTIFIER",
+                            "INVALID_CERTIFICATE", "INVALID_CHAIN_LENGTH", "INVALID_CHAIN",
+                            "INVALID_ENVIRONMENT", "RETRYABLE_VERIFICATION_FAILURE"})
+
 # Every reachable arm: the library's whole status set less the one that is not a refusal.
 REFUSAL_STAGES = tuple(status.name for status in VerificationStatus
                        if status is not VerificationStatus.OK)
@@ -244,9 +250,10 @@ class TestEveryVerificationFailureAnswersTheOneBody:
         assert response.content == REJECTED_BODY
 
     async def test_every_reachable_arm_is_covered_by_one_parameter(self):
-        """The control: a narrowed tuple would leave an arm untested while every case above still passed."""
-        assert set(REFUSAL_STAGES) == {status.name for status in VerificationStatus} - {"OK"}
-        assert len(REFUSAL_STAGES) == len(VerificationStatus) - 1
+        """The control: the members are pinned, so a library that grows one fails here rather than
+        expanding the parametrisation silently. Derived from the enum on both sides, this could not."""
+        assert {status.name for status in VerificationStatus} == KNOWN_STATUSES
+        assert set(REFUSAL_STAGES) == KNOWN_STATUSES - {"OK"}
 
     async def test_a_refused_payload_writes_nothing(
             self, webhook_client, scripted_app_store_notifications, _db_transaction):
