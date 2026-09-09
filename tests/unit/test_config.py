@@ -173,6 +173,37 @@ class TestAYamlFileThatIsNotAMappingNamesItself:
         self._load(config="model:\n  name: gpt-4\n", examples='en:\n  - "Example 1"\n')
 
 
+class TestAnAbsentCredentialBlockIsReportedUnderItsOwnName:
+    """37.4 WR-05. `default_factory` on a model whose own fields are required raised from inside the
+    factory, so a wholly absent block surfaced as leaf names with no path -- five `Field required`
+    lines, none of them saying "db". Boot is the one place that message has to be actionable."""
+
+    @pytest.mark.parametrize(("block", "prefix"), [("db", "DB_"), ("jwt", "JWT_")])
+    def test_a_wholly_absent_block_names_the_block(self, block, prefix):
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            Path(tmp_dir, "config.yaml").write_text("model:\n  name: gpt-4\n")
+            Path(tmp_dir, "prompt.txt").write_text("Analyze {lang} phrase: {phrase}")
+            Path(tmp_dir, "examples.yaml").write_text('en:\n  - "Example 1"\n')
+
+            without = {key: value for key, value in _ENV_SECRETS.items()
+                       if not key.startswith(prefix)}
+            with patch.dict(os.environ, without, clear=True):
+                with pytest.raises(ValidationError) as failure:
+                    # See above: _env_file is invisible to ty's synthesised __init__.
+                    EnvironmentConfig(config_dir=Path(tmp_dir),
+                                      _env_file=None)  # ty: ignore[unknown-argument]
+
+            assert [error["loc"] for error in failure.value.errors()] == [(block,)]
+        finally:
+            shutil.rmtree(tmp_dir)
+
+    def test_neither_block_declares_a_factory_that_would_hide_the_path(self):
+        """The mechanism, not just the message: a factory reinstated here restores the old error."""
+        for block in ("db", "jwt"):
+            assert AppConfig.model_fields[block].is_required()
+
+
 class TestSubscriptionConfigSurfaceIsGone:
     """The model no longer describes subscription plans or receipt verification."""
 

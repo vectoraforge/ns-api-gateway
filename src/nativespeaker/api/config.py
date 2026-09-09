@@ -135,8 +135,12 @@ class AppConfig(BaseConfig):
 
     model: ModelConfig = Field(default_factory=ModelConfig)
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
-    db: DatabaseConfig = Field(default_factory=DatabaseConfig)
-    jwt: JWTConfig = Field(default_factory=JWTConfig)
+    # Required, not `default_factory`: both name models whose own fields are required, so a factory
+    # call on a wholly absent block raises from inside `DatabaseConfig()` and reports the leaf names
+    # with no path -- five `Field required` lines, none of which says "db". Declaring the block
+    # required moves the same absence onto `db.host` / `jwt.project_id`, which names the block.
+    db: DatabaseConfig
+    jwt: JWTConfig
     devicecheck: DeviceCheckConfig = Field(default_factory=DeviceCheckConfig)
     app_store: AppStoreConfig = Field(default_factory=AppStoreConfig)
     google_play: GooglePlayConfig = Field(default_factory=GooglePlayConfig)
