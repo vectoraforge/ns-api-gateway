@@ -82,7 +82,10 @@ async def get_identity(request: Request,
     claims, reason = await run_in_threadpool(request.app.state.jwt_verifier.verify,
                                              credential.credentials)
     if claims is None:
-        raise InvalidExternalJwt(bounded_reason=reason)
+        # `verify` is typed to allow `(None, None)`, and the reason set is closed: a null label is
+        # not one of its members, and it would reach the log as the string "None" -- a population
+        # the spike alert cannot name. An unlabelled refusal is a forgery for logging purposes.
+        raise InvalidExternalJwt(bounded_reason=reason or BoundedReason.bad_signature)
 
     # Its own short session, closed before the handler: Depends(get_db) would hold it across the provider call.
     async with request.app.state.session_factory() as session:

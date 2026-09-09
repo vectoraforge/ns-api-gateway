@@ -124,6 +124,13 @@ def _client(row=None) -> TestClient:
     return TestClient(app, raise_server_exceptions=False)
 
 
+class _UnlabelledVerifier:
+    """The arm `VerificationResult` permits and no member of the closed reason set names."""
+
+    def verify(self, _token: str):
+        return None, None
+
+
 def _bearer(subject: str = SUBJECT) -> dict[str, str]:
     return {"Authorization": f"Bearer {make_token(sub=subject)}"}
 
@@ -216,6 +223,18 @@ class TestTheWireArmsRaiseAndTheHandlerRecordsThemOnce:
         # D-03 dropped `route`, so the reason is now the only field the record carries.
         assert fields["bounded_reason"] == expected_reason
         assert set(fields) == {"bounded_reason", "exc_info"}
+
+    def test_an_unlabelled_refusal_is_recorded_under_a_member_of_the_closed_set(self, warnings):
+        """37.4 WR-02: `verify` is typed to permit `(None, None)`, and a null label is not one of
+        the eight -- it would reach the pipeline as the string "None", which no alert can key on."""
+        client = _client()
+        client.app.state.jwt_verifier = _UnlabelledVerifier()
+
+        response = client.get("/linked", headers={"Authorization": "Bearer not.a.jwt"})
+
+        assert response.status_code == 401
+        _event, fields = warnings[0]
+        assert fields["bounded_reason"] == "bad_signature"
 
     def test_the_bounded_reason_is_logged_as_a_plain_string(self, warnings):
         """`BoundedReason` is a StrEnum; the field's type in the log pipeline does not change."""
