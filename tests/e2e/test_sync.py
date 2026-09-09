@@ -203,6 +203,8 @@ class TestTheRequestChangesNothing:
         response = await async_client.post("/auth/sync")
 
         assert response.status_code == 200, response.text
+        # The seeded count reaches the wire: without this the whole file passes on a hard-coded zero.
+        assert response.json()["entitlement"]["monthly_used"] == _CURRENT_USED
         assert await _entitlement_snapshot(_db_transaction, user.id) == before
 
     async def test_a_stale_period_grant_is_left_untouched(
