@@ -75,6 +75,12 @@ async def scalar(harness: _Harness, sql: str, params: dict | None = None):
     return rows[0][0] if rows else None
 
 
+async def user_ids_stamped_now(harness: _Harness) -> list[uuid.UUID]:
+    """Every `core.users` id already carrying the `NOW` stamp, so a scan can exclude them."""
+    return [row[0] for row in await read(
+        harness, "SELECT id FROM core.users WHERE created_at = :now", {"now": NOW})]
+
+
 async def commit_issued_challenge(harness: _Harness, *,
                                   subject: str) -> tuple[uuid.UUID, str]:
     """One issued challenge; each attempt claims its own and must consume it.
@@ -203,13 +209,19 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
         second = await prepare_attempt(harness, subject=subject, provider=IdentityProvider.apple,
                                        provider_uid=f"apple-uid-{subject}")
 
+        # `NOW` is a constant `test_create_atomicity` and `test_claim_race` COMMIT rows under, into
+        # this same session-scoped scratch database. The two orphan scans below are keyed on it, so
+        # they are differenced against the rows that were already there before this race ran.
+        users_before = await user_ids_stamped_now(harness)
+
         first_ready, second_ready = asyncio.Event(), asyncio.Event()
         await asyncio.gather(
             run_attempt(harness, first, barrier_for(harness, first, first_ready, second_ready)),
             run_attempt(harness, second, barrier_for(harness, second, second_ready, first_ready)))
 
         by_result = {outcome_name(attempt): attempt for attempt in (first, second)}
-        return {"subject": subject, "attempts": (first, second), "by_result": by_result}
+        return {"subject": subject, "attempts": (first, second), "by_result": by_result,
+                "users_before": users_before}
 
     async def test_both_attempts_observed_an_unlinked_subject(self, raced):
         """The premise: without this the case could be two sequential creations."""
@@ -236,12 +248,14 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
         assert rows[0][0] == 1
 
     async def test_the_loser_left_no_orphaned_user_row(self, harness, raced):
-        """A core.users row with no identity row is a partial account, so any extra one is an orphan."""
+        """A core.users row with no identity row is a partial account, so any extra one is an orphan.
+        Restricted to the rows this race added: a sibling module's leftovers are not its loser."""
         assert await scalar(
             harness,
             "SELECT count(*) FROM core.users u WHERE u.created_at = :now "
+            "AND NOT (u.id = ANY(CAST(:before AS uuid[]))) "
             "AND NOT EXISTS (SELECT 1 FROM core.external_identities i WHERE i.user_id = u.id)",
-            {"now": NOW}) == 0
+            {"now": NOW, "before": raced["users_before"]}) == 0
 
     async def test_the_surviving_row_carries_the_winners_pair_and_none_of_the_losers(self, harness,
                                                                                     raced):
@@ -266,12 +280,14 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
             "WHERE i.issuer = :issuer AND i.subject = :s",
             {"issuer": harness.issuer, "s": raced["subject"]}) == 2
 
+        # The same restriction the orphan scan above carries, and for the same reason.
         assert await scalar(
             harness,
             "SELECT count(*) FROM core.store_purchase_tokens t "
-            "WHERE t.created_at = :now AND NOT EXISTS "
+            "WHERE t.created_at = :now AND NOT (t.user_id = ANY(CAST(:before AS uuid[]))) "
+            "AND NOT EXISTS "
             "(SELECT 1 FROM core.external_identities i WHERE i.user_id = t.user_id)",
-            {"now": NOW}) == 0
+            {"now": NOW, "before": raced["users_before"]}) == 0
 
     async def test_both_challenges_were_consumed_and_their_verifiers_cleared(self, harness, raced):
         """The loser consumes too, so a retry needs a fresh prepare rather than a replay of this one."""
