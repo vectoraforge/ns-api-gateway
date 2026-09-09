@@ -32,8 +32,9 @@ feature it serves.
 - `schemas/` — Pydantic request and response bodies, and domain value types.
 - `tables/` — SQLModel tables and the enums mirroring database types.
 - `routers/` — HTTP handlers, `Depends()` only, calling `crud/` or a service.
-- `auth/` — external-SDK seams only: `adapters.py`, `firebase.py` and
-  `jwt_verifier.py`.
+- `auth/` — external-SDK seams: `adapters.py`, `app_store.py`,
+  `devicecheck.py`, `firebase.py`, `google_play.py`, `jwt_verifier.py`, and
+  the verified notification both store seams fill, `store_notifications.py`.
 
 A router may call `crud/` directly. Introduce a `services/` class when the
 router body would otherwise become too big or complicated: a service is earned
