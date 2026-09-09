@@ -259,7 +259,11 @@ class TestNoTrackedYamlCarriesKeyMaterial:
     """The tracked configuration is a public file: a credential pasted into it would be committed."""
 
     def test_no_tracked_yaml_under_config_carries_service_account_material(self):
-        for path in TRACKED_CONFIG.parent.rglob("*.y*ml"):
+        files = list(TRACKED_CONFIG.parent.rglob("*.y*ml"))
+        # The control every other walking guard here carries: an empty walk is a pass, so a
+        # renamed `config/` would turn the one committed-credential scan green having read nothing.
+        assert files, f"no tracked YAML found under {TRACKED_CONFIG.parent}: the scan checked nothing"
+        for path in files:
             text = path.read_text()
             assert "private_key" not in text, f"{path} carries key material"
             assert "service_account" not in text, f"{path} carries key material"
