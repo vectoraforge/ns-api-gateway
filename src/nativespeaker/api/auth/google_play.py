@@ -9,7 +9,7 @@ import google.auth.exceptions
 import google.auth.transport.requests
 import httpx
 import structlog
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from nativespeaker.api.auth.jwt_verifier import JWTVerifier
@@ -97,15 +97,15 @@ class SubscriptionNotification(BaseModel):
 
 
 class DeveloperNotification(BaseModel):
-    """One decoded RTDN: the envelope, and at most one notification body."""
+    """One decoded RTDN: the envelope, and at most one notification body.
+    Every other body is kept as an extra rather than declared, so `model_fields_set` names the
+    one that arrived even when this build has never seen it. No body's value is ever read."""
+    model_config = ConfigDict(extra="allow")
+
     version: str | None = None
     packageName: str
     eventTimeMillis: int
     subscriptionNotification: SubscriptionNotification | None = None
-    oneTimeProductNotification: dict | None = None
-    voidedPurchaseNotification: dict | None = None
-    pendingRefundReviewNotification: dict | None = None
-    testNotification: dict | None = None
 
 
 class PlaySubscriptionSource(Protocol):

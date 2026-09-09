@@ -324,6 +324,12 @@ class TestTheBodiesThatAreNotSubscriptions:
         """The arm a three-member allow-list would let through into a Play call with no token."""
         assert await _verify(_push(_rtdn(subscriptionRefundNotification={"version": "1.0"}))) is None
 
+    async def test_a_body_google_adds_later_names_itself_in_the_log(self, play_logs):
+        """WR-13: the line exists for the unseen body, so an empty `bodies` is the one useless case."""
+        assert await _verify(_push(_rtdn(subscriptionRefundNotification={"version": "1.0"}))) is None
+
+        assert play_logs.records("info")[0][1]["bodies"] == ["subscriptionRefundNotification"]
+
     def test_no_function_in_the_module_names_the_four_other_bodies(self):
         """The presence test, pinned at the source: enumerating the names is the anti-pattern."""
         used = _names_read_inside_functions()
