@@ -1,8 +1,15 @@
 services:
   db:
-    env_file:
-      - .env
     image: postgres:17
+    # The three keys the postgres:17 entrypoint reads, taken from the DB_* values the
+    # application already declares in .env -- compose interpolates that file by default.
+    # Not `env_file: .env`: the image ignores the DB_* prefix, so the container would boot
+    # uninitialized, and the whole file (Firebase and Google credentials included) would be
+    # handed to the database for no reason.
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     ports:
       - "5432:5432"
     volumes:
