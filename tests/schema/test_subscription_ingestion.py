@@ -14,6 +14,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from nativespeaker.api.auth.google_play import instant_from_millis, notification_key_for
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.crud.grants import GrantsDB
+from nativespeaker.api.errors import InternalError
 from nativespeaker.api.services.subscriptions import SubscriptionsService
 from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
 from schema.helpers import (
@@ -688,16 +689,20 @@ class TestAGoogleGracePeriodGrantIsEffective:
             assert held[0]["ends_at"] > buyer.evaluated_at
             assert await buyer.effective() == [held[0]["id"]]
 
-    async def test_an_absent_grace_end_writes_a_grant_carrying_no_end_at_all_control(
-            self, _schema_db_uri):
-        """P-01's first failure, reproduced: the term written is the grace value and nothing else."""
+    async def test_a_grace_delivery_with_no_grace_end_writes_no_grant(
+            self, _schema_db_uri, service_logs):
+        """Fail closed: an indeterminate term may not become an entitlement with no end.
+        The grace value is the only end this path could write, so an absent one entitles nothing."""
         async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
-            await buyer.deliver(event_type=GOOGLE_RENEWED,
-                                status=SubscriptionStatus.grace_period,
-                                expires_in=timedelta(days=16), grace_period_in=None)
+            with pytest.raises(InternalError):
+                await buyer.deliver(event_type=GOOGLE_RENEWED,
+                                    status=SubscriptionStatus.grace_period,
+                                    expires_in=timedelta(days=16), grace_period_in=None)
 
-            # Unbounded, not ineffective: `expires_at` was never read for a grace-period term.
-            assert [row["ends_at"] for row in await buyer.grants()] == [None]
+            # Refused ahead of the first write, so no half of the delivery is durable.
+            assert await buyer.counts() == (0, 0, 0, 0)
+            assert await buyer.effective() == []
+            assert ("error", "store_notification_without_term") in service_logs.calls
 
     async def test_a_grace_window_already_closed_leaves_no_effective_grant_control(
             self, _schema_db_uri):
