@@ -60,7 +60,10 @@ class ResilienceConfig(BaseModel):
 
 class JWTConfig(BaseModel):
     project_id: str = Field(description="GCP project ID")
-    api_key: str = Field(description="GCP API key")
+    # Optional and secret. No request path reads it: the e2e harness alone mints tokens with it,
+    # and that harness already asserts on its own that it is present. A required value would make
+    # every deployment carry a credential it never uses, and a plain `str` renders in any model dump.
+    api_key: SecretStr | None = Field(default=None, description="GCP API key, e2e harness only")
     jwks_url: str = Field(default="https://www.googleapis.com/service_accounts/v1/jwk/"
                                   "securetoken@system.gserviceaccount.com")
     leeway_seconds: int = Field(default=30, ge=0, description="Expiration timeout")

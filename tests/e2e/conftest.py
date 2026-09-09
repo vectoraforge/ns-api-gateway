@@ -58,11 +58,19 @@ def _app_config():
     return EnvironmentConfig().app_config
 
 
+def _identity_toolkit_key(config) -> str:
+    """The Identity Toolkit key, unwrapped once. Secret in the config, and read only here."""
+    # The loud failure lives here rather than in the config: no request path reads this value,
+    # so an absent key is a broken test environment and never a broken deployment.
+    api_key = config.jwt.api_key
+    assert api_key is not None, "JWT_API_KEY env var required for e2e tests"
+    return api_key.get_secret_value()
+
+
 @pytest.fixture(scope="session")
 def firebase_token(_app_config):
     """Obtain a real Firebase ID token via REST API for the dedicated test user."""
-    api_key = _app_config.jwt.api_key
-    assert api_key, "JWT_API_KEY env var required for e2e tests"
+    api_key = _identity_toolkit_key(_app_config)
     email = os.environ["FIREBASE_TEST_EMAIL"]
     password = os.environ["FIREBASE_TEST_PASSWORD"]
     resp = httpx.post(
@@ -99,7 +107,7 @@ def anonymous_firebase_credential(_app_config):
     # Each call leaves a permanent user in the shared Firebase project, and nothing deletes it.
     resp = httpx.post(
         f"https://identitytoolkit.googleapis.com/v1/accounts:signUp"
-        f"?key={_app_config.jwt.api_key}",
+        f"?key={_identity_toolkit_key(_app_config)}",
         json={"returnSecureToken": True},
     )
     resp.raise_for_status()
@@ -132,7 +140,7 @@ def _release_google_account(admin_app, google_subject: str) -> None:
 def google_linked_firebase_credential(_app_lifespan, _app_config):
     """A fresh anonymous Firebase user with the test Google account linked onto it.
     Yields (id_token, local_id), the same pair shape anonymous_firebase_credential yields."""
-    api_key = _app_config.jwt.api_key
+    api_key = _identity_toolkit_key(_app_config)
     # The app the lifespan already built, reached by its documented name -- never a second one.
     admin_app = firebase_admin.get_app(name=f"issuer:{_app_config.jwt.issuer}")
     google_id_token = _google_id_token()

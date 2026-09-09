@@ -197,6 +197,40 @@ class TestFirebaseCredentialSurfaceIsGone:
             shutil.rmtree(tmp_dir)
 
 
+class TestTheIdentityToolkitKeyIsOptionalAndSecret:
+    """WR-07. Only the e2e harness reads it, so a deployment must boot without it and never print it."""
+
+    def _config_without_the_key(self) -> AppConfig:
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            Path(tmp_dir, "config.yaml").write_text(TRACKED_CONFIG.read_text())
+            Path(tmp_dir, "prompt.txt").write_text("Analyze {lang} phrase: {phrase}")
+            Path(tmp_dir, "examples.yaml").write_text('en:\n  - "Example 1"\n')
+
+            without = {key: value for key, value in _ENV_SECRETS.items() if key != "JWT_API_KEY"}
+            with patch.dict(os.environ, without, clear=True):
+                loaded = EnvironmentConfig(config_dir=Path(tmp_dir),
+                                           _env_file=None)  # ty: ignore[unknown-argument]
+                assert loaded.app_config is not None
+                return loaded.app_config
+        finally:
+            shutil.rmtree(tmp_dir)
+
+    def test_a_deployment_carrying_no_key_still_boots(self):
+        assert self._config_without_the_key().jwt.api_key is None
+
+    def test_the_key_never_renders_in_a_dump_or_a_repr(self):
+        """`hide_input_in_errors` covers a validation error; a dump and a repr are the other two channels."""
+        with patch.dict(os.environ, _ENV_SECRETS, clear=True):
+            jwt = EnvironmentConfig(  # ty: ignore[unknown-argument]
+                config_dir=TRACKED_CONFIG.parent, _env_file=None).app_config.jwt
+
+        assert jwt.api_key is not None
+        assert jwt.api_key.get_secret_value() == "test-api-key"
+        assert "test-api-key" not in repr(jwt)
+        assert "test-api-key" not in str(jwt.model_dump())
+
+
 class TestTheTrackedPoolSizeMergesWithTheEnvironmentCredentials:
     """D-16: a partial `db:` block sets the pool size without displacing the credentials that live in .env."""
 
