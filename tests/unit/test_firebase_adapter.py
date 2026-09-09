@@ -345,7 +345,9 @@ class TestTheEmailRuleIsAppliedInsideTheRead:
     """The two-condition copy rule: absent, empty after stripping, or unverified each withholds the address."""
 
     async def test_a_non_empty_verified_address_is_copied(self, adapter, get_user_calls):
-        get_user_calls(StubUserRecord(email="a@b.test", email_verified=True))
+        # A classified record throughout this class: the anonymous arm withholds every address on
+        # its own (WR-23 below), so measuring the copy rule there would measure nothing.
+        get_user_calls(_record((GOOGLE,), email="a@b.test", email_verified=True))
         identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
         assert identity.email == "a@b.test"
 
@@ -359,14 +361,14 @@ class TestTheEmailRuleIsAppliedInsideTheRead:
     async def test_every_other_combination_yields_none(self, adapter, get_user_calls,
                                                        email, email_verified, why):
         """The read judges now; no downstream predicate is left to turn any of these into `None`."""
-        get_user_calls(StubUserRecord(email=email, email_verified=email_verified))
+        get_user_calls(_record((GOOGLE,), email=email, email_verified=email_verified))
         identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
         assert identity.email is None, why
 
     async def test_the_address_is_returned_verbatim_and_never_normalized(self, adapter,
                                                                         get_user_calls):
         """The `.strip()` inside the rule is a non-empty test, not a normalization step."""
-        get_user_calls(StubUserRecord(email="  Mixed.Case@B.TEST  ", email_verified=True))
+        get_user_calls(_record((GOOGLE,), email="  Mixed.Case@B.TEST  ", email_verified=True))
         identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
         assert identity.email == "  Mixed.Case@B.TEST  "
 
@@ -377,6 +379,18 @@ class TestTheEmailRuleIsAppliedInsideTheRead:
         identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
         assert (identity.provider, identity.provider_uid, identity.email) == (
             IdentityProvider.google, "google-uid-1", "a@b.test")
+
+    async def test_an_anonymous_record_carries_no_address_however_verified(self, adapter,
+                                                                          get_user_calls):
+        """WR-23: Firebase leaves `email` populated after a client unlinks its last provider, and
+        the copied address then blocked the real one at upgrade with no route to repair it."""
+        # `adapters.py:17`: a record with no provider entry has no address to attribute to it.
+        get_user_calls(StubUserRecord(provider_data=(), email="a@b.test", email_verified=True))
+
+        identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
+
+        assert identity.provider is IdentityProvider.anonymous
+        assert identity.email is None
 
 
 class TestFailureMapping:
