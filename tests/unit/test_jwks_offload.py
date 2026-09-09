@@ -3,6 +3,7 @@ import asyncio
 import io
 import json
 import time
+from urllib.error import URLError
 
 import pytest
 from fastapi import APIRouter, Depends, FastAPI
@@ -11,7 +12,7 @@ from jwt.algorithms import RSAAlgorithm
 
 from nativespeaker.api.app.dependencies import get_linked_identity
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.auth.jwt_verifier import JWTVerifier
+from nativespeaker.api.auth.jwt_verifier import BoundedReason, JWTVerifier
 from nativespeaker.api.schemas.auth import Identity
 from unit.conftest import PUBLIC_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_token
 
@@ -188,3 +189,33 @@ async def test_a_credential_less_request_never_reaches_the_jwks_transport(probe_
     assert status == 401
     assert body == {"code": "auth_required"}
     assert len(transport) == before, "step 2 refused the request, so step 3 never ran"
+
+
+class TestAnOutageNamesItselfInTheOperatorLog:
+    """WR-23: the reason set is closed at eight, so the outage has to be named somewhere else."""
+
+    @pytest.fixture
+    def errors(self, monkeypatch) -> list[str]:
+        """A recording spy on the verifier's own logger, which nothing else in this module uses."""
+        events: list[str] = []
+        monkeypatch.setattr("nativespeaker.api.auth.jwt_verifier.logger.error",
+                            lambda event, **_kw: events.append(event))
+        return events
+
+    def test_an_unreachable_endpoint_is_logged_while_the_client_answer_is_unchanged(
+            self, verifier, transport, errors):
+        transport.error = URLError("the JWKS endpoint is unreachable")
+
+        claims, reason = verifier.verify(make_token("u", headers={"kid": "unrecognised-outage"}))
+
+        # The label and the body must not move: an outage is not a client-visible condition.
+        assert claims is None and reason is BoundedReason.bad_signature
+        assert errors == ["jwks_endpoint_unreachable"]
+
+    def test_a_bogus_key_id_over_a_healthy_endpoint_logs_nothing(self, verifier, transport, errors):
+        """The control: without it the case above would pass on a line written for every refusal."""
+        claims, reason = verifier.verify(make_token("u", headers={"kid": "unrecognised-but-served"}))
+
+        assert claims is None and reason is BoundedReason.bad_signature
+        assert errors == []
+        assert len(transport) > 1, "the miss really did reach for the keys"

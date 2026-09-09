@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import Protocol
 
 import jwt
+import structlog
 from jwt import PyJWKClient
 from jwt.exceptions import (
     DecodeError,
@@ -16,9 +17,12 @@ from jwt.exceptions import (
     InvalidIssuerError,
     InvalidSignatureError,
     MissingRequiredClaimError,
+    PyJWKClientConnectionError,
     PyJWKClientError,
     PyJWTError,
 )
+
+logger = structlog.get_logger()
 
 
 # Exactly the closed set spec 11 names, and never a null. The first three separate the three
@@ -172,8 +176,14 @@ class JWTVerifier:
                                  leeway=self._leeway,
                                  options={"require": ["exp", "iat", "aud", "iss", "sub"]})
         except PyJWKClientError as exc:
+            if isinstance(exc, PyJWKClientConnectionError):
+                # Named here because nothing else can: the bounded reason set is closed at eight
+                # values and carries no `jwks_unavailable`, so an outage rejects the whole fleet
+                # labelled `bad_signature` and the spike alert reads it as mass forgery.
+                # The event name alone, never the exception text: it embeds the JWKS URL.
+                logger.error("jwks_endpoint_unreachable")
             # A connection error records no `kid`: caching an outage would prolong it fleet-wide.
-            if cache_key is not None and _DEFINITIVE_KID_MISS in str(exc):
+            elif cache_key is not None and _DEFINITIVE_KID_MISS in str(exc):
                 self._record_unknown(cache_key)
             return None, bounded_reason_for(exc)
         except PyJWTError as exc:
