@@ -190,14 +190,18 @@ class TestExternalIdentityConstraints:
         user_id = await insert_user(conn)
         async with _rejects(conn, asyncpg.CheckViolationError):
             await _insert_identity(conn, user_id=user_id, provider="anonymous", provider_uid="uid_not_allowed")
-        assert await conn.fetchval("SELECT count(*) FROM core.external_identities") == 0
+        # Keyed to the user this case just minted, never the whole table: the scratch database is
+        # shared, and a sibling module's committed rows would fail a table-wide count here.
+        assert await conn.fetchval(
+            "SELECT count(*) FROM core.external_identities WHERE user_id = $1", user_id) == 0
 
     async def test_identity_registered_with_empty_provider_uid_rejected(self, conn):
         """A google/apple identity with an empty provider_uid violates the provider agreement CHECK."""
         user_id = await insert_user(conn)
         async with _rejects(conn, asyncpg.CheckViolationError):
             await _insert_identity(conn, user_id=user_id, provider="google", provider_uid="")
-        assert await conn.fetchval("SELECT count(*) FROM core.external_identities") == 0
+        assert await conn.fetchval(
+            "SELECT count(*) FROM core.external_identities WHERE user_id = $1", user_id) == 0
 
     async def test_identity_state_defaults_to_active(self, conn):
         """identity_state defaults to 'active' when the INSERT omits the column."""
@@ -293,7 +297,9 @@ class TestSubscriptionConstraints:
                 "expired",
                 subscription_id,
             )
-        assert await conn.fetchval("SELECT count(*) FROM core.subscriptions") == 0
+        # The id this case minted, never the whole table: sibling modules commit subscriptions.
+        assert await conn.fetchval(
+            "SELECT count(*) FROM core.subscriptions WHERE id = $1", subscription_id) == 0
 
     async def test_subscription_expired_rejects_active_grant_when_the_deferred_check_runs(self, conn, tier):
         """Case E1 -- an active subscription grant on an expired subscription fails the deferred FK."""
@@ -369,7 +375,11 @@ class TestAuthChallengeConstraints:
         # or Exception would also pass for a connection failure and prove nothing about the type.
         async with _rejects(conn, asyncpg.exceptions.InvalidTextRepresentationError):
             await _insert_challenge(conn, operation=operation)
-        assert await conn.fetchval("SELECT count(*) FROM core.auth_challenges") == 0
+        # The module-private pre-auth subject `_insert_challenge` binds, never the whole table:
+        # sibling modules commit challenges of their own into this shared scratch database.
+        assert await conn.fetchval(
+            "SELECT count(*) FROM core.auth_challenges WHERE preauth_subject = $1",
+            _PREAUTH_SUBJECT) == 0
 
     @pytest.mark.parametrize("operation", [
         "create_user", "upgrade_anonymous_to_registered",
