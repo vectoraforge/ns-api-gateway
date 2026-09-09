@@ -17,9 +17,11 @@ _EXCLUDED_PATHS = frozenset({"/health/ready"})
 # the user's phrase and the chat's entire history. `DEBUG` is an admitted `LogLevel`, so without
 # this an operator raising the level for one incident ships every customer's sentences into the
 # aggregated log store, which retains them indefinitely.
+# `uvicorn.access` is the duplicate of the line `RequestLoggingMiddleware` writes below, and it
+# honours neither `_EXCLUDED_PATHS` nor the structured format.
 _QUIETED_LIBRARIES = ("httpx", "httpcore", "sqlalchemy.engine",
                       "openai", "langchain", "langchain_core",
-                      "urllib3", "google.auth")
+                      "urllib3", "google.auth", "uvicorn.access")
 
 logger = structlog.get_logger()
 

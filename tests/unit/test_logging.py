@@ -254,6 +254,31 @@ class TestRaisingTheLevelNeverOpensAContentChannel:
         assert logging.getLogger("nativespeaker.api").getEffectiveLevel() == logging.DEBUG
 
 
+class TestOnlyOneAccessLineIsWrittenPerRequest:
+    """WR-03. Uvicorn gives `uvicorn.access` its own handler and `propagate=False`, so clearing the
+    root handlers left a second, unstructured line per request that ignored `_EXCLUDED_PATHS`."""
+
+    def test_uvicorn_writes_no_access_line_at_the_configured_level(self):
+        setup_logging(log_level="INFO")
+
+        assert not logging.getLogger("uvicorn.access").isEnabledFor(logging.INFO)
+
+    def test_it_stays_silent_when_an_operator_raises_the_level_to_debug(self):
+        setup_logging(log_level="DEBUG")
+
+        assert not logging.getLogger("uvicorn.access").isEnabledFor(logging.INFO)
+
+    def test_uvicorn_access_is_named_in_the_quieted_list(self):
+        """Named rather than only enumerated: the list is what an edit can silently shorten."""
+        assert "uvicorn.access" in _QUIETED_LIBRARIES
+
+    def test_uvicorn_error_still_reports_a_failed_start_control(self):
+        """The control: silencing all of uvicorn would pass the cases above and hide a dead boot."""
+        setup_logging(log_level="INFO")
+
+        assert logging.getLogger("uvicorn.error").isEnabledFor(logging.INFO)
+
+
 class TestEveryConfigurableLevelBoots:
     """setup_logging runs before any exception handler exists, so an unusable level crashloops."""
 
