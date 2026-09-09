@@ -10,7 +10,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.crud.violations import is_unique_violation
-from nativespeaker.api.errors import MultipleEffectiveGrantsError
+from nativespeaker.api.errors import MissingUsageRowError, MultipleEffectiveGrantsError
 from nativespeaker.api.tables import (
     FREE_GRANT_SOURCES,
     AccessGrant,
@@ -237,8 +237,14 @@ class GrantsDB:
         if await self.holds_grant_of_source(user_id, AccessGrantSource.registered_account_grant):
             return ActivationOutcome.refused
 
-        carried = locked_usage.get(superseded.id) if superseded is not None else None
+        carried = None
         if superseded is not None:
+            carried = locked_usage.get(superseded.id)
+            if carried is None:
+                # Fail closed, never mint: a grant with no usage row is a failed write, and reading
+                # it as a fresh allowance hands the account free credits. `carried is None` below
+                # means "no superseded grant" alone, which is the only case it is correct for.
+                raise MissingUsageRowError(superseded.id)
             superseded.status = AccessGrantStatus.expired
             superseded.ends_at = evaluated_at
             superseded.updated_at = evaluated_at
