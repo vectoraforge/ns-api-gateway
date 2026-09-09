@@ -756,7 +756,7 @@ Plans:
 **Goal:** Revoke the verified subject's Firebase refresh tokens through the issuer-selected Admin client.
 **Requirements:** SIGNOUT-01, SIGNOUT-02
 **Depends on:** 34, 35
-**Plans:** 5/5 plans executed
+**Plans:** 5/5 plans complete
 **Success criteria:**
 
 1. Success is returned only after Firebase confirms revocation — **met as written, 2026-09-08.** The handler's whole body is one awaited `revoke_with_retry` call, and confirmation is that call returning: the SDK returns nothing on success, so there is no read-back, no `getUser` call and no stored-provider read. A confirmed revocation answers **204 No Content** with an empty body, proved on the wire by `test_a_confirmed_revocation_answers_204_with_an_empty_body`. **The call is pinned as well as the answer:** the recorded call list is asserted whole, `[{"uid": SUBJECT, "app": app}]`, so a forgotten explicit `app=` fails on the identity of the Admin app object rather than passing on a call count — which is what makes "through the issuer-selected client" an assertion and not a claim. Matching requirement: SIGNOUT-01.
@@ -832,4 +832,4 @@ Plans:
 | 43. POST /webhooks/app-store | v2.0 | 6/6 | Complete    | 2026-09-04 |
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 7/7 | Complete    | 2026-09-06 |
 | 45. POST /auth/restore-subscription | v2.0 | 9/9 | Complete    | 2026-09-08 |
-| 46. POST /auth/sign-out-all | v2.0 | 5/5 | In Progress|  |
+| 46. POST /auth/sign-out-all | v2.0 | 5/5 | Complete    | 2026-09-08 |

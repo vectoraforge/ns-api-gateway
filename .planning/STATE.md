@@ -3,19 +3,18 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 46
-current_phase_name: POST /auth/sign-out-all
-status: executing
-stopped_at: Completed 46-05-PLAN.md
-last_updated: "2026-09-08T23:49:03.792Z"
+status: completed
+stopped_at: Phase 46 complete — all phases complete
+last_updated: "2026-09-09T00:02:43.072Z"
 last_activity: 2026-09-08
-last_activity_desc: Phase 46 execution started
-state_head: 18cfcacc69daa22442c103dfd9022ae77d9fb283
+last_activity_desc: Phase 46 complete
+state_head: 25db24aa1efc58e895e0781f62d3c6e45be07cc8
 progress:
   total_phases: 18
-  completed_phases: 16
+  completed_phases: 17
   total_plans: 124
   completed_plans: 124
-  percent: 89
+  percent: 94
 ---
 
 # Project State
@@ -29,9 +28,9 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 
 ## Current Position
 
-Phase: 46 (POST /auth/sign-out-all) — EXECUTING
-Plan: 5 of 5
-Status: Executed, awaiting verification
+Phase: 46
+Plan: Not started
+Status: All phases complete
 Progress: [████████████████████] 124/124 plans ([█████████░] 89%)
 
 **Phase 45 closed 2026-09-08.** Re-verification passed 7/7 after the four gap-closure plans. The
@@ -56,7 +55,7 @@ three fixes do not interact.
 `45-VERIFICATION.md` itself still reads `gaps_found` and still records RESTORE-01 as BLOCKED:
 **re-verification is what changes those, not this file.** `/gsd:verify-phase 45` decides whether the
 phase is complete; this plan does not.
-Last activity: 2026-09-08 — Phase 46 execution started
+Last activity: 2026-09-08 — Phase 46 complete
 fixes together, and REQUIREMENTS.md carries the dated gap-closure record
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07 and 45-05 each did.
@@ -524,7 +523,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 **Last session:** 2026-09-08T23:48:50.074Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 46-05-PLAN.md
+Stopped at: Phase 46 complete — all phases complete
 Resume file: None
 
 ## Performance Metrics
