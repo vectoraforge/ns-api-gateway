@@ -38,7 +38,12 @@ from nativespeaker.api.errors import (
 from nativespeaker.api.schemas.auth import Identity, LinkedIdentity
 from nativespeaker.api.tables.auth import AuthOperation
 from nativespeaker.api.tables.grants import AccessGrantSource
-from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
+from nativespeaker.api.tables.identities import (
+    ExternalIdentity,
+    IdentityProvider,
+    IdentityState,
+    NativeClaimProvider,
+)
 
 logger = structlog.get_logger()
 
@@ -205,6 +210,9 @@ class AuthService:
         outcome = await self.grants_db.activate_anonymous_device_grant(
             user_id=identity.user.id,
             identity_row=identity.identity,
+            # The attestation this arm actually ran, which is what the writer pins: the DeviceCheck
+            # read above is the only one on this route, and an Android arm would name its own.
+            claim_platform=NativeClaimProvider.ios_devicecheck,
             tier_id=ANONYMOUS_TIER_ID,
             evaluated_at=self.evaluated_at)
         await self._settle(identity, outcome)

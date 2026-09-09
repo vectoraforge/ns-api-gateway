@@ -145,6 +145,10 @@ class GrantsDB:
     async def activate_anonymous_device_grant(self, *,
                                               user_id: UUID,
                                               identity_row: ExternalIdentity,
+                                              # The platform whose attestation this caller actually
+                                              # ran, never a constant: 06 step 7 refuses an Android
+                                              # claim recorded as an Apple one as a workaround.
+                                              claim_platform: NativeClaimProvider,
                                               tier_id: str,
                                               evaluated_at: datetime) -> ActivationOutcome:
         """Take both lock tiers, then write the grant, its usage row and the identity marker."""
@@ -158,6 +162,12 @@ class GrantsDB:
         stored = await IdentitiesDB(self.session).resolve_existing(issuer=identity_row.issuer,
                                                                    subject=identity_row.subject)
         if stored is None or stored.provider is not IdentityProvider.anonymous:
+            return ActivationOutcome.refused
+        if (stored.native_claim_platform is not None
+                and stored.native_claim_platform is not claim_platform):
+            # 06 step 7: the platform is pinned at the identity's first verified attestation, and
+            # material from the other platform is refused thereafter. Read before any mutation, so
+            # a refusal leaves the session with nothing pending.
             return ActivationOutcome.refused
         if len(grants) > 1:
             # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
@@ -189,7 +199,10 @@ class GrantsDB:
                                           created_at=evaluated_at,
                                           updated_at=evaluated_at))
         stored.free_grant_consumed_at = evaluated_at
-        stored.native_claim_platform = NativeClaimProvider.ios_devicecheck
+        if stored.native_claim_platform is None:
+            # Set where unset: the pin is the record of the first attestation, and the guard above
+            # is what refuses a later claim from the other platform rather than restamping it.
+            stored.native_claim_platform = claim_platform
         stored.updated_at = evaluated_at
 
         # Only the flush is inside: the try holds the one statement that can raise, and nothing else.

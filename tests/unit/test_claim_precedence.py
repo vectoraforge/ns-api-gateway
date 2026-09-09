@@ -31,7 +31,11 @@ from nativespeaker.api.schemas.auth import (
 )
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.grants import AccessGrant, AccessGrantSource
-from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
+from nativespeaker.api.tables.identities import (
+    ExternalIdentity,
+    IdentityProvider,
+    NativeClaimProvider,
+)
 from nativespeaker.api.tables.users import User
 
 # The challenge-store fake is imported rather than copied: two drifting fakes of one conditional
@@ -91,6 +95,8 @@ class _RecordingGrants:
         self.grant_of_source: set[AccessGrantSource] = set()
         self.prior_free_grant = False
         self.activates = 0
+        # The platform each activation named, so the pin is asserted rather than assumed.
+        self.claim_platforms: list = []
         self.outcome = ActivationOutcome.activated
         # What the loser's re-read finds after its rollback, which is the winner's row and not its own.
         self.won_by: list[AccessGrant] | None = None
@@ -122,9 +128,12 @@ class _RecordingGrants:
         self.session.in_transaction = True
         return self.prior_free_grant
 
-    async def activate(self, *, user_id, identity_row, tier_id,
-                       evaluated_at) -> ActivationOutcome:
+    async def activate(self, *, user_id, identity_row, tier_id, evaluated_at,
+                       claim_platform=None) -> ActivationOutcome:
+        # One double for both writers, and only the anonymous one pins a platform: the default is
+        # what lets the registered writer, which has no attestation to name, share this recorder.
         self.activates += 1
+        self.claim_platforms.append(claim_platform)
         self.timeline.append("activate")
         # The writer takes both lock tiers and flushes, so the transaction is open from here.
         self.session.in_transaction = True
@@ -531,6 +540,16 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert devicecheck.read_calls == [DEVICE_TOKEN]
         # bit1 carried forward from the query, never fabricated.
         assert devicecheck.write_calls == [(DEVICE_TOKEN, True, False)]
+
+    def test_the_writer_is_told_which_attestation_this_route_ran(self, client, store, account,
+                                                                 grants, devicecheck):
+        """WR-41. The platform pinned on the identity is the one this arm verified, supplied by the
+        caller: a constant inside the writer records an Android claim as an Apple one."""
+        identity_row, _ = account
+        store.row = _issued_row(bound_to=identity_row.id)
+
+        assert _claim(client).status_code == 200
+        assert grants.claim_platforms == [NativeClaimProvider.ios_devicecheck]
 
     def test_a_second_effective_grant_trips_the_wire_rather_than_choosing_between_them(
             self, client, store, account, grants, devicecheck):

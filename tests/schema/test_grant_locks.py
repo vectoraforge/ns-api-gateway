@@ -24,6 +24,7 @@ from nativespeaker.api.crud.grants import (
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.services.subscriptions import SubscriptionsService
 from nativespeaker.api.tables.grants import FREE_GRANT_SOURCES, AccessGrant, AccessGrantSource
+from nativespeaker.api.tables.identities import NativeClaimProvider
 from schema.helpers import insert_grant, insert_tier, insert_usage, insert_user
 from schema.test_subscription_ingestion import _clean, _notification
 
@@ -323,6 +324,7 @@ async def activation_statements(_schema_db_uri):
             recorded.clear()
             outcome = await GrantsDB(session).activate_anonymous_device_grant(
                 user_id=user_id, identity_row=identity_row,
+                claim_platform=NativeClaimProvider.ios_devicecheck,
                 tier_id=tier_id, evaluated_at=evaluated_at)
             await session.rollback()
         yield {"statements": list(recorded), "outcome": outcome}
@@ -571,6 +573,7 @@ class _Account:
         """The other free-grant writer, on the same seed, the same session and the same instant."""
         return await GrantsDB(self.session).activate_anonymous_device_grant(
             user_id=self.user_id, identity_row=self.identity_row,
+            claim_platform=NativeClaimProvider.ios_devicecheck,
             tier_id=self.tier_id, evaluated_at=self.evaluated_at)
 
     async def grants(self) -> list[tuple[str, str]]:
