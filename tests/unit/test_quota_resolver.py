@@ -1,5 +1,5 @@
 """The resolver's pure policy: the branches a real database cannot produce, and the lock order it cannot show."""
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid7
 
 import pytest
@@ -18,6 +18,7 @@ from nativespeaker.api.tables import (
     AccessGrantStatus,
     AccessTier,
     UserMonthlyUsage,
+    monthly_period_for,
 )
 
 USER_ID = uuid7()
@@ -425,3 +426,19 @@ class TestTheRolloverIsDerivedFromTheCapturedInstant:
         """A `Retry-After: 0` invites the immediate retry the refusal exists to stop."""
         # A microsecond before the boundary rounds up to one second, not down to none.
         assert seconds_until_rollover(datetime(2026, 8, 31, 23, 59, 59, 999999, tzinfo=UTC)) == 1
+
+    def test_a_non_utc_instant_names_the_boundary_of_the_month_the_counter_is_keyed_by(self):
+        """WR-31: `monthly_period_for` converts first, so an unconverted `replace` here would send
+        the client back before its own allowance reset."""
+        # 2026-08-31T20:00-05:00 is 2026-09-01T01:00Z: September already, so the boundary is October's.
+        instant = datetime(2026, 8, 31, 20, 0, tzinfo=timezone(timedelta(hours=-5)))
+        assert monthly_period_for(instant) == "2026-09"
+        assert seconds_until_rollover(instant) == 30 * 86400 - 3600
+
+    def test_the_two_derivations_agree_on_every_offset_around_a_boundary(self):
+        """One argument, one month: the period the charge spends from and the boundary it reports."""
+        for hours in range(-12, 15):
+            instant = datetime(2026, 8, 31, 23, 30, tzinfo=timezone(timedelta(hours=hours)))
+            rollover = instant + timedelta(seconds=seconds_until_rollover(instant))
+            assert monthly_period_for(rollover) > monthly_period_for(instant)
+            assert monthly_period_for(rollover - timedelta(seconds=1)) == monthly_period_for(instant)

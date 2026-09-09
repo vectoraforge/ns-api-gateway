@@ -2,7 +2,7 @@
 A failed provider call is not refunded."""
 import math
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 import structlog
@@ -23,11 +23,13 @@ logger = structlog.get_logger()
 
 def seconds_until_rollover(evaluated_at: datetime) -> int:
     """Whole seconds from this instant to the UTC month boundary the allowance rolls over on."""
-    # Built by `replace`, so it carries the captured instant's own tzinfo and reads no clock.
-    december = evaluated_at.month == 12
-    rollover = evaluated_at.replace(year=evaluated_at.year + (1 if december else 0),
-                                    month=1 if december else evaluated_at.month + 1,
-                                    day=1, hour=0, minute=0, second=0, microsecond=0)
+    # Converted first, as `monthly_period_for` is: `replace` reads the stored wall clock, so a
+    # non-UTC instant would name the boundary of a month other than the one the counter is keyed by.
+    instant = evaluated_at.astimezone(UTC)
+    december = instant.month == 12
+    rollover = instant.replace(year=instant.year + (1 if december else 0),
+                               month=1 if december else instant.month + 1,
+                               day=1, hour=0, minute=0, second=0, microsecond=0)
     # Rounded up and floored at one: `Retry-After: 0` invites the immediate retry this refuses.
     return max(math.ceil((rollover - evaluated_at).total_seconds()), 1)
 
