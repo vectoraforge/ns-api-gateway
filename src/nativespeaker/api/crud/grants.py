@@ -216,15 +216,17 @@ class GrantsDB:
         if stored is None or stored.provider not in (IdentityProvider.google, IdentityProvider.apple):
             return ActivationOutcome.refused
 
+        if len(grants) > 1:
+            # A tripwire, not a recovery branch: read before the source tests below, which would
+            # otherwise rank sources against each other. A partial unique index makes it unreachable.
+            raise MultipleEffectiveGrantsError(len(grants), user_id)
+
         held = [grant.source for grant in grants]
         if AccessGrantSource.registered_account_grant in held:
             # The repeat under the lock, and the one branch here whose row is there to be read back.
             return ActivationOutcome.lost_race
         if any(source is not AccessGrantSource.anonymous_device_grant for source in held):
             return ActivationOutcome.refused
-        if len(grants) > 1:
-            # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
-            raise MultipleEffectiveGrantsError(len(grants), user_id)
         superseded = grants[0] if grants else None
         # A row the one-active index sees and this window cannot: the insert below would be refused.
         if [grant for grant in marked_active if superseded is None or grant.id != superseded.id]:
