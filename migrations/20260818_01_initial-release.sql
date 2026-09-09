@@ -138,7 +138,9 @@ CREATE TABLE core.subscriptions (
     -- the pre-transaction read of it in the CAS predicate. Its one reader is the cap that raises
     -- restore_transfer_rejected, so dropping this column removes the only limit on sharing.
     last_cross_account_transfer_month DATE,
-    -- Lifetime restore binding: NULL until the first successful restore, then never changed.
+    -- Reserved for a future lifetime restore binding, and NOT written by any code path today:
+    -- the restore e2e cases assert it is still NULL after a move, an adoption and a repeat.
+    -- The only sharing limit in force is last_cross_account_transfer_month (D-10) above.
     restore_bound_user_id UUID REFERENCES core.users (id),
     -- The entitled set is fixed here; changing it is a future migration, never a runtime toggle.
     product_entitled_subscription_id UUID GENERATED ALWAYS AS (
