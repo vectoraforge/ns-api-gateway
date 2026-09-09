@@ -9,7 +9,7 @@ import google.auth.exceptions
 import google.auth.transport.requests
 import httpx
 import structlog
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from nativespeaker.api.auth.jwt_verifier import JWTVerifier
@@ -76,13 +76,18 @@ class PlaySubscriptionLineItem(BaseModel):
     """One line item of a Play subscription: the product bought, and when its term ends."""
     productId: str | None = None
     # Optional as defensive typing only: Play gives every entitled term an end, so no producer sends None here.
-    expiryTime: datetime | None = None
+    # Aware, never a bare `datetime`: a zone-less stamp parses into a naive value that only detonates
+    # later, as a `TypeError` inside `_status_for`'s comparison against the captured instant, past
+    # both read paths' `except ValueError` arms. Declared aware, it is the `ValidationError` those
+    # arms already classify -- and no naive value ever reaches a grant's `ends_at`.
+    expiryTime: AwareDatetime | None = None
 
 
 class PlaySubscription(BaseModel):
     """The `purchases.subscriptionsv2.get` response, keeping Google's own field names."""
     subscriptionState: str
-    startTime: datetime | None = None
+    # Aware for the same reason as `expiryTime` above: it is written to `core.subscriptions`.
+    startTime: AwareDatetime | None = None
     latestOrderId: str | None = None
     # Parsed and not acted on: an upgrade's old token is the restore route's to read.
     linkedPurchaseToken: str | None = None

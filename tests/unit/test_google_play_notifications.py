@@ -23,6 +23,7 @@ from nativespeaker.api.app.lifespan import build_google_push_verifier
 from nativespeaker.api.auth.google_play import (
     GOOGLE_ISSUER,
     GOOGLE_JWKS_URL,
+    RESTORE_READ_STAGE,
     PlayDeveloperSubscriptions,
     PubSubPushTokens,
     developer_notification_from,
@@ -555,6 +556,48 @@ class TestThePlayResponseArms:
         assert play_logs.records("error") == [("google_play_read_unparseable",
                                                {"failure": "ValidationError"})]
         assert ATTRIBUTION_TOKEN not in str(play_logs.records("error"))
+
+
+class TestAZoneLessStampIsClassifiedRatherThanRaised:
+    """WR-20: a stamp carrying no offset parses into a naive `datetime` and then raises `TypeError`
+    inside `_status_for`, past both read paths' `except ValueError` arms and onto the generic 500.
+    Declared `AwareDatetime`, it is the parse failure both paths already answer for."""
+
+    ZONE_LESS = "2026-07-01T00:00:00"
+
+    def _reader(self, **overrides) -> PlayDeveloperSubscriptions:
+        return _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_CANCELED",
+                                                          expiry=UNEXPIRED) | overrides))
+
+    @pytest.mark.parametrize("overrides", [
+        {"lineItems": [{"productId": PRODUCT_ID, "expiryTime": ZONE_LESS}]},
+        {"startTime": ZONE_LESS},
+    ], ids=["expiry", "start"])
+    async def test_the_webhook_read_redelivers_it_like_any_other_unreadable_body(self, overrides,
+                                                                                 play_logs):
+        with pytest.raises(InternalError):
+            await _read_through(self._reader(**overrides))
+
+        assert play_logs.records("error") == [("google_play_read_unparseable",
+                                               {"failure": "ValidationError"})]
+
+    async def test_the_restore_read_answers_its_own_refusal_rather_than_a_type_error(self):
+        reader = self._reader(lineItems=[{"productId": PRODUCT_ID, "expiryTime": self.ZONE_LESS}])
+
+        with pytest.raises(Unavailable) as refusal:
+            await reader.read_for_restore(package_name=PACKAGE_NAME,
+                                          purchase_token=PURCHASE_TOKEN,
+                                          evaluated_at=EVALUATED_AT)
+
+        assert refusal.value.stage == RESTORE_READ_STAGE
+
+    async def test_the_same_term_carrying_an_offset_is_read_normally_control(self, play_logs):
+        """The control: the offset is the whole requirement, and a canceled term still resolves."""
+        notification = await _read_through(self._reader())
+
+        assert (notification.status, notification.expires_at) == (SubscriptionStatus.active,
+                                                                  UNEXPIRED)
+        assert play_logs.records("error") == []
 
 
 class TestTheRefusalsDifferOnlyInStage:
