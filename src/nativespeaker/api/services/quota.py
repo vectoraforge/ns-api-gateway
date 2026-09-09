@@ -20,6 +20,12 @@ from nativespeaker.api.tables import monthly_period_for
 
 logger = structlog.get_logger()
 
+# The ceiling on the shared `Retry-After`. An absent grant becomes effective the instant a claim or
+# a restore commits -- both write `starts_at=evaluated_at`, which the shared effective predicate
+# reads on the very next request -- so the raw rollover strands a caller who has just paid for up
+# to a month. An early retry on the exhausted branch is refused again and grants nothing.
+RETRY_AFTER_CEILING_SECONDS = 300
+
 
 def seconds_until_rollover(evaluated_at: datetime) -> int:
     """Whole seconds from this instant to the UTC month boundary the allowance rolls over on."""
@@ -42,9 +48,11 @@ class QuotaService:
     async def charge(self, *, user_id: UUID, evaluated_at: datetime) -> None:
         """Spend one unit of `user_id`'s allowance, or raise. Commits on success."""
         # One value for both refusal branches: SHARED-INVARIANTS requires the header on a 429, and
-        # requires the branches within a class to stay indistinguishable. The rollover is the floor
-        # under both -- neither an absent grant nor a spent one changes before the period does.
-        retry_after_seconds = seconds_until_rollover(evaluated_at)
+        # requires the branches within a class to stay indistinguishable. Capped rather than the
+        # raw rollover, for the reason the ceiling states: an absent grant does change before the
+        # period does, so the rollover is a floor under one branch only.
+        retry_after_seconds = min(seconds_until_rollover(evaluated_at),
+                                  RETRY_AFTER_CEILING_SECONDS)
 
         # Its own short session: no grant or usage row lock is held across the provider round trip.
         async with self.session_factory() as session:

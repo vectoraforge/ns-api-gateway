@@ -11,7 +11,11 @@ from nativespeaker.api.errors import (
     QuotaExceededError,
     UnknownTierError,
 )
-from nativespeaker.api.services.quota import QuotaService, seconds_until_rollover
+from nativespeaker.api.services.quota import (
+    RETRY_AFTER_CEILING_SECONDS,
+    QuotaService,
+    seconds_until_rollover,
+)
 from nativespeaker.api.tables import (
     AccessGrant,
     AccessGrantSource,
@@ -392,22 +396,33 @@ class TestTheResolverReadsNoClock:
 class TestEveryRejectionCarriesTheRetryAfterTheInvariantRequires:
     """SHARED-INVARIANTS: a 429 carries `Retry-After` where computable -- and the same one per branch."""
 
-    async def _refusal(self, **kwargs) -> QuotaExceededError:
+    async def _refusal(self, evaluated_at=EVALUATED_AT, **kwargs) -> QuotaExceededError:
+        session = _StubSession(**{"grants": (), "usage": None, "allowance": ALLOWANCE} | kwargs)
         with pytest.raises(QuotaExceededError) as caught:
-            await _consume(**kwargs)
+            await _charge(session, evaluated_at=evaluated_at)
         return caught.value
 
-    async def test_an_exhausted_allowance_names_the_rollover(self):
+    async def test_an_exhausted_allowance_names_the_capped_wait(self):
+        """WR-41: 2026-09-01T00:00Z is 10 days and 12 hours away, and that raw rollover is what
+        both branches used to send."""
         grant, usage = _one_effective_grant(monthly_used=ALLOWANCE)
         refusal = await self._refusal(grants=(grant,), usage=usage)
-        # 2026-09-01T00:00Z is 10 days and 12 hours after the captured instant.
-        assert refusal.extra_headers() == {"Retry-After": str(10 * 86400 + 12 * 3600)}
+
+        assert refusal.extra_headers() == {"Retry-After": str(RETRY_AFTER_CEILING_SECONDS)}
 
     async def test_an_absent_grant_names_the_same_instant(self):
         """The anti-oracle half: a client cannot tell the two branches apart by the header either."""
         grant, usage = _one_effective_grant(monthly_used=ALLOWANCE)
         assert (await self._refusal(grants=())).extra_headers() == (
             await self._refusal(grants=(grant,), usage=usage)).extra_headers()
+
+    async def test_a_rollover_closer_than_the_ceiling_is_the_value_sent(self):
+        """The control: the cap is a ceiling, not a constant. A header past the boundary would send
+        a client back after its own allowance had already reset."""
+        near_the_boundary = datetime(2026, 8, 31, 23, 59, tzinfo=UTC)
+        refusal = await self._refusal(evaluated_at=near_the_boundary)
+
+        assert refusal.extra_headers() == {"Retry-After": "60"}
 
 
 class TestTheRolloverIsDerivedFromTheCapturedInstant:
