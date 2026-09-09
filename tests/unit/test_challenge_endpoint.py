@@ -281,12 +281,36 @@ class TestTheOperationFieldIsBounded:
                                             json={"operation": "a" * _OPERATION_LIMIT}))
 
 
+# The names a re-introduced list would most likely be built with, beside a display.
+_COLLECTION_BUILDERS = {"frozenset", "set", "list", "tuple", "dict"}
+
+
+def _module_level_collections(source: str) -> list[str]:
+    """The names bound at module level to a collection, whether written as a display or built by a call."""
+    found = []
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.Assign | ast.AnnAssign) or node.value is None:
+            continue
+        builds_a_collection = (isinstance(node.value, ast.List | ast.Set | ast.Dict | ast.Tuple)
+                               or (isinstance(node.value, ast.Call)
+                                   and getattr(node.value.func, "id", None) in _COLLECTION_BUILDERS))
+        if builds_a_collection:
+            targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+            found.extend(getattr(target, "id", "<unnamed>") for target in targets)
+    return found
+
+
 class TestTheIssuableSetIsTheEnumAndNothingElse:
     """The handler's module holds no collection of operation names for the enum to disagree with."""
 
     def test_the_router_module_declares_no_module_level_collection(self):
-        module = ast.parse(Path(auth_module.__file__).read_text())
-        collections = [node for node in module.body if isinstance(node, ast.Assign)
-                       and isinstance(node.value, ast.List | ast.Set | ast.Dict | ast.Tuple)]
+        assert _module_level_collections(Path(auth_module.__file__).read_text()) == []
 
-        assert collections == []
+    def test_the_walk_sees_an_annotated_binding_and_a_constructor_call(self):
+        """WR-65. The control: matching only an unannotated display let the two spellings a
+        re-introduced list would actually use through."""
+        source = ('_ANNOTATED: frozenset[str] = frozenset({"create_user"})\n'
+                  '_CALLED = frozenset({"create_user"})\n'
+                  '_DISPLAY = ["create_user"]\n')
+
+        assert _module_level_collections(source) == ["_ANNOTATED", "_CALLED", "_DISPLAY"]
