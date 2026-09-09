@@ -79,10 +79,19 @@ class _RecordingSubscriptions:
         self.appended: list[dict] = []
         self.locked: list[UUID] = []
         self.granted: list[dict] = []
+        # What the canonical row says once the locks are held. `None` follows the stored row; a case
+        # sets it to model a restore that committed between the unlocked read and the locks.
+        self.settled_owner: UUID | None = None
 
     async def lock_grants(self, user_id: UUID, evaluated_at: datetime) -> list:  # noqa: ARG002
         self.locked.append(user_id)
         return []
+
+    async def read_owner(self, provider: PurchaseProvider, external_id: str) -> UUID | None:
+        if self.settled_owner is not None:
+            return self.settled_owner
+        stored = self.subscriptions.get((provider, external_id))
+        return None if stored is None else stored.user_id
 
     async def write_subscription_grant(self, **fields) -> WriteOutcome:
         self.granted.append(fields)
@@ -404,6 +413,58 @@ class TestTheOwnerIsChangedByRestoreAlone:
 
         assert writer.locked == [RESTORER]
         assert [grant["user_id"] for grant in writer.granted] == [RESTORER]
+
+
+@pytest.mark.asyncio
+class TestARestoreThatCommitsInTheWindowIsRefused:
+    """The unlocked read of the canonical row can be stale: nothing serialises it against a restore,
+    which takes no lock on `core.subscriptions` either. Writing against the owner this path locked
+    when the row has since moved supersedes nothing at all."""
+
+    async def test_an_expiry_whose_owner_moved_refuses_rather_than_writing_against_the_old_one(
+            self, session, writer):
+        """The sharp case: `expired` supersedes no grant, so a silent write would commit the event
+        and leave the new owner holding an active grant with a future `ends_at`."""
+        external_id = _seed_owned(writer, ORIGINAL_BUYER)
+        writer.settled_owner = RESTORER
+        service = _service(session, writer, None)
+
+        with pytest.raises(InternalError):
+            await service.ingest(_notification(external_id=external_id, event_type="EXPIRED",
+                                               status=SubscriptionStatus.expired))
+
+        # The account whose grants were locked is the one the write would have gone to.
+        assert writer.locked == [ORIGINAL_BUYER]
+        assert writer.granted == []
+        assert writer.upserts == []
+        assert session.commits == 0
+
+    async def test_an_adoption_of_a_row_this_path_read_unowned_is_refused_too(self, session,
+                                                                             writer):
+        """The unowned row locks nothing, so a restore adopting it in the window leaves the new
+        owner's grants unlocked and unread."""
+        writer.settled_owner = RESTORER
+        service = _service(session, writer, None)
+
+        with pytest.raises(InternalError):
+            await service.ingest(_notification(event_type="EXPIRED",
+                                               status=SubscriptionStatus.expired))
+
+        assert writer.locked == []
+        assert writer.granted == []
+        assert session.commits == 0
+
+    async def test_an_owner_that_did_not_move_writes_exactly_as_before(self, session, writer):
+        """The control: the guard reads the same owner the locks were taken on and changes nothing."""
+        external_id = _seed_owned(writer, RESTORER)
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        await service.ingest(_notification(attribution_token=TOKEN, external_id=external_id,
+                                           event_type="DID_RENEW"))
+
+        assert writer.locked == [RESTORER]
+        assert [grant["user_id"] for grant in writer.granted] == [RESTORER]
+        assert session.commits == 1
 
 
 @pytest.mark.asyncio

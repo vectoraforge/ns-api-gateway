@@ -55,6 +55,19 @@ class SubscriptionsService:
         marked_active = ([] if owner is None
                          else await self.subscriptions_db.lock_grants(owner, self.evaluated_at))
 
+        # The read above took no lock, so a restore committed since can have adopted or moved this
+        # subscription. Re-read the owner under the grant locks: writing against an account this
+        # path did not lock supersedes nothing, and an expiry would commit leaving the real owner
+        # holding an active grant no later delivery is guaranteed to end.
+        settled_owner = await self.subscriptions_db.read_owner(notification.provider,
+                                                               notification.external_id)
+        if settled_owner is not None and settled_owner != owner:
+            # Labels come from a closed set only: the store's own name, never a payload value.
+            logger.warning("store_notification_owner_moved", provider=str(notification.provider))
+            # The generic 500 a lost race earns: the store resends, and the resend locks the owner
+            # the restore settled on.
+            raise InternalError
+
         if await self.subscriptions_db.read_event(notification.notification_uuid) is not None:
             # The replay: the store's own key is already recorded, so this delivery writes nothing.
             return

@@ -101,6 +101,14 @@ class SubscriptionsDB:
         """The canonical row for the lifecycle pair, or `None`, taking no lock."""
         return (await self.session.exec(_subscription_statement(provider, external_id))).first()
 
+    async def read_owner(self, provider: PurchaseProvider, external_id: str) -> UUID | None:
+        """The owner the canonical row carries right now, or `None`, taking no lock."""
+        # A column select, not an entity load: the identity map would answer a row already loaded
+        # with the value that read saw, which is exactly the staleness this asks about.
+        statement = select(Subscription.user_id).where(col(Subscription.provider) == provider,
+                                                       col(Subscription.external_id) == external_id)
+        return (await self.session.exec(statement)).first()
+
     async def read_purchase(self, provider: PurchaseProvider,
                             external_id: str) -> StorePurchase | None:
         """The recorded purchase for the lifecycle pair, or `None`, taking no lock."""
