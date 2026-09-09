@@ -61,11 +61,12 @@ class TestEveryRouteIsAuthenticated:
                    and get_linked_identity not in _declared(route)]
         assert missing == [], f"routes serving without a linked-identity declaration: {missing}"
 
-    def test_the_preauth_callable_route_still_resolves_the_identity(self):
+    @pytest.mark.parametrize("path", sorted(PREAUTH_CALLABLE_PATHS))
+    def test_the_preauth_callable_route_still_resolves_the_identity(self, path):
         """Create-user is exempt from the narrowing, not from authentication: a linked caller is owed a 409."""
-        for route in _api_routes():
-            if route.path in PREAUTH_CALLABLE_PATHS:
-                assert get_identity in _declared(route), route.path
+        declared = [_declared(route) for route in _api_routes() if route.path == path]
+        assert declared, f"{path} is not a registered route"
+        assert all(get_identity in calls for calls in declared)
 
     @pytest.mark.parametrize("path", ("/auth/sync", "/auth/upgrade-anonymous",
                                       "/auth/claim-anonymous-grant",
