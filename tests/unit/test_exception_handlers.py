@@ -34,20 +34,22 @@ from unit.error_tree import fresh_interpreter
 ISSUER = "https://securetoken.google.com/test-project"
 SUBJECT = "subject-under-test"
 
+# Each case carries the one code its class must answer with, as `REJECTION_CASES` below does: two
+# of these codes share a status with another, so a status alone proves nothing about the contract.
 CASES = [
-    ("missing_token", InvalidExternalJwt(bounded_reason=BoundedReason.missing_token), 401),
-    ("invalid_token", InvalidExternalJwt(bounded_reason=BoundedReason.bad_signature), 401),
-    ("expired_token", InvalidExternalJwt(bounded_reason=BoundedReason.expired), 401),
-    ("unsupported_lang", UnsupportedLanguageError("fr", ["en"]), 400),
-    ("invalid_chat", InvalidChatError("xyz"), 404),
-    ("queue_full", QueueFullError(30), 503),
-    ("circuit_open", CircuitOpenError(60), 503),
-    ("history_limit", ChatHistoryLimitError(max_messages=50), 400),
-    ("out_of_scope", OutOfScopeError(), 400),
-    ("generic_exception", Exception("boom"), 500),
-    ("starlette_http", StarletteHTTPException(status_code=404, detail="not found"), 404),
-    ("transient_llm", TransientLLMError("upstream timeout"), 503),
-    ("permanent_llm", PermanentLLMError("bad response format"), 503),
+    ("missing_token", InvalidExternalJwt(bounded_reason=BoundedReason.missing_token), 401, "auth_required"),
+    ("invalid_token", InvalidExternalJwt(bounded_reason=BoundedReason.bad_signature), 401, "auth_required"),
+    ("expired_token", InvalidExternalJwt(bounded_reason=BoundedReason.expired), 401, "auth_required"),
+    ("unsupported_lang", UnsupportedLanguageError("fr", ["en"]), 400, "invalid_request"),
+    ("invalid_chat", InvalidChatError("xyz"), 404, "not_found"),
+    ("queue_full", QueueFullError(30), 503, "service_unavailable"),
+    ("circuit_open", CircuitOpenError(60), 503, "service_unavailable"),
+    ("history_limit", ChatHistoryLimitError(max_messages=50), 400, "invalid_request"),
+    ("out_of_scope", OutOfScopeError(), 400, "out_of_scope"),
+    ("generic_exception", Exception("boom"), 500, "internal_error"),
+    ("starlette_http", StarletteHTTPException(status_code=404, detail="not found"), 404, "not_found"),
+    ("transient_llm", TransientLLMError("upstream timeout"), 503, "service_unavailable"),
+    ("permanent_llm", PermanentLLMError("bad response format"), 503, "service_unavailable"),
 ]
 
 
@@ -97,7 +99,7 @@ def handler_client():
     app = FastAPI()
     register_exception_handlers(app)
 
-    for name, exc, _ in CASES:
+    for name, exc, _, _ in CASES:
         app.add_api_route(f"/raise/{name}", _make_raise_route(exc), methods=["GET"])
 
     for name, exc, _, _ in REJECTION_CASES:
@@ -114,20 +116,14 @@ def handler_client():
         yield client
 
 
-@pytest.mark.parametrize("name,exc,expected_status", CASES)
-def test_handler(handler_client, name, exc, expected_status):
+@pytest.mark.parametrize("name,exc,expected_status,expected_code", CASES)
+def test_handler(handler_client, name, exc, expected_status, expected_code):
     response = handler_client.get(f"/raise/{name}")
     assert response.status_code == expected_status
     body = response.json()
     assert list(body.keys()) == ["code"], f"Expected only 'code' key, got {list(body.keys())}"
-    assert body["code"] in {
-        "invalid_request",
-        "auth_required",
-        "not_found",
-        "service_unavailable",
-        "internal_error",
-        "out_of_scope",
-    }
+    # Equality, never membership: a shared set accepts the code of any other case at the same status.
+    assert body["code"] == expected_code
 
 
 def test_validation_error_handler(handler_client):
