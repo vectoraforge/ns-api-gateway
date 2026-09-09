@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
+from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError
 from nativespeaker.api.schemas.auth import Identity
@@ -74,37 +75,54 @@ async def scalar(harness: _Harness, sql: str, params: dict | None = None):
     return rows[0][0] if rows else None
 
 
-async def commit_claimed_challenge(harness: _Harness, *,
-                                   subject: str) -> tuple[uuid.UUID, str]:
-    """One already-claimed challenge; each attempt gets its own and must consume it."""
+async def commit_issued_challenge(harness: _Harness, *,
+                                  subject: str) -> tuple[uuid.UUID, str]:
+    """One issued challenge; each attempt claims its own and must consume it.
+    The preauth pair is the shape production issues for `create_user`: the pair is not linked yet."""
     row_id = uuid.uuid4()
     challenge_id = f"handle-{uuid.uuid4().hex[:16]}"
     async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
         await conn.execute(
             text("INSERT INTO core.auth_challenges "
                  "(id, challenge_id, operation, preauth_issuer, preauth_subject, "
-                 " expires_at, claimed_at, created_at) "
+                 " expires_at, created_at) "
                  "VALUES (:id, :challenge_id, 'create_user', :issuer, :subject, "
-                 "        :expires_at, :now, :now)"),
+                 "        :expires_at, :now)"),
             {"id": row_id, "challenge_id": challenge_id, "issuer": harness.issuer,
              "subject": subject,
              "expires_at": NOW + timedelta(seconds=300), "now": NOW})
     return row_id, challenge_id
 
 
-class _HookedSession:
-    """A real session that runs a callback once after its first read, which is the in-transaction re-resolution."""
+class _ScriptedAdapter:
+    """The providerData seam, scripted: the completion's remote read is not what this file is about."""
 
-    def __init__(self, session, after_first_read=None) -> None:
+    def __init__(self, provider: IdentityProvider, provider_uid: str | None) -> None:
+        self._facts = VerifiedProviderIdentity(provider=provider, provider_uid=provider_uid)
+
+    async def get_user_provider_data(self, issuer: str, subject: str) -> VerifiedProviderIdentity:
+        return self._facts
+
+
+class _HookedSession:
+    """A real session that runs a callback once after the in-transaction re-resolution."""
+
+    def __init__(self, session, after_re_resolution=None) -> None:
         self._session = session
-        self._after_first_read = after_first_read
-        self.reads = 0
+        self._after_re_resolution = after_re_resolution
+        # `_complete` commits exactly once before the post-claim work -- the claim -- so the first
+        # read after that commit is the re-resolution, which is where the barrier belongs.
+        self._claim_committed = False
+
+    async def commit(self, *args, **kwargs):
+        result = await self._session.commit(*args, **kwargs)
+        self._claim_committed = True
+        return result
 
     async def exec(self, statement):
         result = await self._session.exec(statement)
-        self.reads += 1
-        if self.reads == 1 and self._after_first_read is not None:
-            hook, self._after_first_read = self._after_first_read, None
+        if self._claim_committed and self._after_re_resolution is not None:
+            hook, self._after_re_resolution = self._after_re_resolution, None
             await hook()
         return result
 
@@ -122,43 +140,40 @@ class _Attempt:
     identity: Identity
     challenge_row_id: uuid.UUID
     challenge_id: str
-    # What the call produced: the new user's id on success, the rejection it raised otherwise.
-    result: uuid.UUID | AppError | None = None
+    # What the call produced: the provider it settled on, or the rejection it raised.
+    result: IdentityProvider | AppError | None = None
     identities_seen_at_barrier: int | None = None
 
 
 def outcome_name(attempt: _Attempt) -> str:
-    """The bucket an attempt lands in: `succeeded` for a returned id, the class name for a rejection."""
-    return "succeeded" if isinstance(attempt.result, uuid.UUID) else type(attempt.result).__name__
+    """The bucket an attempt lands in: `succeeded` for a settled provider, the class name for a rejection."""
+    return type(attempt.result).__name__ if isinstance(attempt.result, AppError) else "succeeded"
 
 
 async def prepare_attempt(harness: _Harness, *, subject: str, provider: IdentityProvider,
                           provider_uid: str | None) -> _Attempt:
     identity = Identity(issuer=harness.issuer, subject=subject)
-    row_id, challenge_id = await commit_claimed_challenge(harness, subject=subject)
+    row_id, challenge_id = await commit_issued_challenge(harness, subject=subject)
     return _Attempt(subject=subject, provider=provider, provider_uid=provider_uid,
                     identity=identity,
                     challenge_row_id=row_id, challenge_id=challenge_id)
 
 
-async def run_attempt(harness: _Harness, attempt: _Attempt, after_first_read=None) -> _Attempt:
-    """Drive the production consuming transaction once, on its own session and connection."""
+async def run_attempt(harness: _Harness, attempt: _Attempt, after_re_resolution=None) -> _Attempt:
+    """Drive the production completion once, on its own session and connection, as the route does.
+    `AuthService.complete` owns the claim, the rollback on a rejection and the consumption after it,
+    so the consumption asserted below is the shipped arm rather than a model of it written here."""
     store = ChallengesDB()
     async with harness.factory() as real_session:
-        session = _HookedSession(real_session, after_first_read)
+        session = _HookedSession(real_session, after_re_resolution)
+        service = AuthService(db=session, challenge_store=store,
+                              adapter=_ScriptedAdapter(attempt.provider, attempt.provider_uid),
+                              evaluated_at=NOW)
         try:
-            service = AuthService(db=session, challenge_store=store, adapter=None,
-                                  evaluated_at=NOW)
-            attempt.result = await service.create_user(identity=attempt.identity,
-                                                       provider=attempt.provider,
-                                                       provider_uid=attempt.provider_uid,
-                                                       email=None)
+            attempt.result = await service.complete(identity=attempt.identity,
+                                                    challenge_id=attempt.challenge_id)
         except AppError as rejection:
-            # The route's own except arm: roll the conflicting inserts back, then spend the handle.
-            await session.rollback()
             attempt.result = rejection
-        await store.consume(session, challenge_id=attempt.challenge_id, now=NOW)
-        await session.commit()
     return attempt
 
 
@@ -315,7 +330,8 @@ class TestRunningTheSameCreationTwiceSequentially:
         return identities, users, tokens
 
     async def test_the_first_run_creates_the_account(self, twice):
-        assert isinstance(twice["first"].result, uuid.UUID)
+        # The completion returns the provider the transaction settled on, never a rejection.
+        assert twice["first"].result is IdentityProvider.google
         assert twice["counts_after_first"] == (1, 1, 2)
 
     async def test_the_second_run_rejects_rather_than_returning_idempotent_success(self, twice):
