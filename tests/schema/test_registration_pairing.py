@@ -74,10 +74,9 @@ async def _insert_identity(conn: asyncpg.Connection, *, user_id: uuid.UUID, prov
 
 
 class TestTheRegistrationPairing:
-    """Neither half of the pairing stands without the other. The two scans below are conformance
-    probes over whatever the database holds -- on a freshly migrated scratch database that is
-    nothing, so each is a control on the query, not coverage of the writer. The writer is scanned
-    by `TestTheProductionWriterLeavesNeitherHalf` at the end of this file."""
+    """Neither half of the pairing stands without the other. These scans are conformance probes
+    over whatever the database holds, which on a migrated scratch database is nothing: coverage of
+    the writer is `TestTheProductionWriterLeavesNeitherHalf` below, not these."""
 
     async def test_no_registered_user_carries_an_anonymous_identity(self, conn):
         """One half of the third state: a timestamp set while the identity row still says anonymous."""
