@@ -327,9 +327,14 @@ class TestWhatEachOutcomeWritesDown:
 
         rejected = await sign_out_client.post("/auth/sign-out-all", headers=_auth())
 
-        assert (confirmed.status_code, refused.status_code, rejected.status_code) == (204, 503, 401)
+        assert (confirmed.status_code, refused.status_code, rejected.status_code) == (204, 503, 503)
         assert [event for event, _ in route_records.entries] == [
-            "sign_out_all_confirmed", "revocation_unconfirmed", "user_not_found"]
+            "sign_out_all_confirmed", "revocation_unconfirmed", "revocation_unconfirmed"]
+        # WR-29: the third call is a vanished provider account, and past the barrier that is a
+        # non-confirmation and never `auth_required`. The two refusals differ in their stage
+        # alone, so the list above alone would pass with the third taking the second's arm.
+        assert [fields["stage"] for event, fields in route_records.entries
+                if event == "revocation_unconfirmed"] == ["issuer_selection", "subject_absent"]
         # Rendered first, as the two webhook twins do: a `str` filter would read only the string
         # fields, and a UUID, a dict or a row carrying the subject renders it in the final line all
         # the same. So a field added later cannot slip an identifier past this, whatever its type.
