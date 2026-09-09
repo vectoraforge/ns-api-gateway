@@ -36,6 +36,20 @@ JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname IN ('core','audit') AND NOT t.tgisinternal
 """
 
+# Keyed on the referencing columns, not on conname: the migration writes no constraint name, so a
+# name is PostgreSQL's own and says nothing about what was declared.
+FK_DELETE_ACTIONS = """
+SELECT n.nspname || '.' || c.relname AS table_name,
+       con.confdeltype::text AS delete_action,
+       (SELECT string_agg(a.attname, ',' ORDER BY k.ord)
+        FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord)
+        JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum) AS columns
+FROM pg_constraint con
+JOIN pg_class c     ON c.oid = con.conrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE con.contype = 'f' AND n.nspname IN ('core', 'audit')
+"""
+
 VIEWS = "SELECT count(*) FROM pg_views WHERE schemaname IN ('core','audit')"
 MATVIEWS = "SELECT count(*) FROM pg_matviews WHERE schemaname IN ('core','audit')"
 
@@ -141,6 +155,33 @@ EXPECTED_INDEX_PREDICATES = {
     "ix_subscriptions_provider_external_id": None,
 }
 
+# confdeltype as pg_constraint stores it: 'c' CASCADE, 'r' RESTRICT, 'a' NO ACTION -- the three the
+# migration uses. Every entry is one REFERENCES clause of the migration, transcribed in file order.
+EXPECTED_FK_DELETE_ACTIONS = {
+    "core.chats(user_id)": "a",
+    "core.messages(chat_id)": "c",
+    "core.external_identities(user_id)": "r",
+    "core.subscriptions(user_id)": "a",
+    "core.subscriptions(tier_id)": "a",
+    "core.subscriptions(restore_bound_user_id)": "a",
+    "core.store_purchase_tokens(user_id)": "c",
+    "core.store_purchases(purchase_user_id)": "a",
+    "core.store_purchases(provider,external_id)": "a",
+    "core.store_purchases(provider,resolved_token_value)": "a",
+    "audit.subscription_events(subscription_id)": "a",
+    "audit.subscription_events(old_tier_id)": "a",
+    "audit.subscription_events(new_tier_id)": "a",
+    "core.access_grants(user_id)": "c",
+    "core.access_grants(tier_id)": "a",
+    "core.access_grants(active_subscription_grant_subscription_id,"
+    "active_subscription_grant_user_id)": "a",
+    "core.access_grants(active_subscription_grant_subscription_id)": "a",
+    "core.manual_grant_issuances(grant_id)": "a",
+    "core.manual_grant_issuances(user_id)": "a",
+    "core.user_monthly_usage(grant_id)": "c",
+    "core.auth_challenges(bound_external_identity_id)": "a",
+}
+
 EXPECTED_USER_TRIGGERS = 0
 EXPECTED_VIEWS = 0
 EXPECTED_MATVIEWS = 0
@@ -226,6 +267,29 @@ class TestIndexPredicates:
             f"{index_name} predicate differs -- expected {expected_predicate!r}, "
             f"got {predicates[index_name]!r}"
         )
+
+
+async def fetch_delete_actions(conn) -> dict[str, str]:
+    """Every foreign key in core and audit, keyed by its referencing table and columns."""
+    rows = await conn.fetch(FK_DELETE_ACTIONS)
+    return {f"{row['table_name']}({row['columns']})": row["delete_action"] for row in rows}
+
+
+class TestForeignKeyDeleteActions:
+    """`00-schema.md` names the cascades that exist "and only these", and every fixture teardown in
+    this suite deletes children before parents -- so a cascade dropped from the migration is
+    invisible to every other case here."""
+
+    async def test_the_foreign_key_set_is_exact(self, conn):
+        actual = await fetch_delete_actions(conn)
+        assert_exact_set(set(actual), set(EXPECTED_FK_DELETE_ACTIONS), "the foreign key set")
+
+    async def test_every_delete_action_matches_capture(self, conn):
+        actual = await fetch_delete_actions(conn)
+        differing = {key: (action, EXPECTED_FK_DELETE_ACTIONS.get(key))
+                     for key, action in actual.items()
+                     if EXPECTED_FK_DELETE_ACTIONS.get(key) != action}
+        assert not differing, f"delete actions differ (found, expected): {differing}"
 
 
 class TestNoProceduralObjects:
