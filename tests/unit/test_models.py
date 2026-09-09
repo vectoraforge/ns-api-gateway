@@ -21,7 +21,6 @@ from nativespeaker.api.schemas.llm import (
     FollowUpInput,
     FollowUpResponse,
     Issue,
-    RejectResponse,
 )
 from nativespeaker.api.schemas.webhooks import (
     APP_STORE_ENVELOPE_LIMIT,
@@ -234,12 +233,6 @@ class TestFollowUpResponse:
     def test_valid(self):
         fr = FollowUpResponse(resolved_mode="follow_up", response="because...")
         assert fr.response == "because..."
-
-
-class TestRejectResponse:
-    def test_valid(self):
-        rr = RejectResponse(resolved_mode="reject", response="out of scope")
-        assert rr.response == "out of scope"
 
 
 class TestExceptions:

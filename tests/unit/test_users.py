@@ -127,10 +127,10 @@ class TestTheTablesPackageDependsOnNoSchema:
         assert not offenders, f"tables/ imports schemas/: {offenders}"
 
     def test_the_barrel_exports_no_schema_type(self):
-        """The eleven re-exports nobody imported from here, named so they cannot come back unnoticed."""
+        """The ten re-exports nobody imported from here, named so they cannot come back unnoticed."""
         schema_names = {"AnalyzeInput", "AnalyzeResponse", "ChatRequest", "ChatResponse",
                         "ExamplesResponse", "FollowUpInput", "FollowUpResponse", "Issue",
-                        "MessageRequest", "MessageResponse", "RejectResponse"}
+                        "MessageRequest", "MessageResponse"}
 
         assert schema_names.isdisjoint(tables.__all__)
         assert not [name for name in schema_names if hasattr(tables, name)]

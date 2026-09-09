@@ -32,11 +32,6 @@ class FollowUpResponse(BaseModel):
     response: str
 
 
-class RejectResponse(BaseModel):
-    resolved_mode: Literal["reject"]
-    response: str
-
-
 class ChatModelResponse(BaseModel):
     """The one shape the provider is asked for: every field any of the three modes can produce.
     Flat on purpose: the strict-schema conversion does not descend into a root-level union, so a
