@@ -108,6 +108,11 @@ def _compiled(statement) -> str:
     return str(statement.compile(dialect=postgresql.dialect()))
 
 
+def _bound(statement) -> list:
+    """The values the statement carries, which the compiled text renders only as placeholders."""
+    return list(statement.compile(dialect=postgresql.dialect()).params.values())
+
+
 def _without_the_lock(sql: str) -> str:
     """The compiled locking text with its trailing lock clause removed, and nothing else changed."""
     assert sql.endswith(LOCK_CLAUSE), sql
@@ -203,10 +208,48 @@ class TestThePredicateBoundaries:
         assert "ORDER BY core.access_grants.id ASC" in sql
         assert "LIMIT" not in sql
 
+    async def test_the_predicate_is_scoped_to_one_owner(self):
+        """The tenant scope its quota sibling already asserts: a grant read with no owner predicate
+        answers off every account's rows."""
+        sql = _compiled((await _happy_path()).statements[0])
+        assert "core.access_grants.user_id = " in sql
+
     async def test_no_user_row_is_read_by_any_statement(self):
         """SHARED-INVARIANTS:33 forbids a user-row tier above the grants on any path, not just a swap."""
         session = await _happy_path()
         assert all("core.users" not in _compiled(s) for s in session.statements)
+
+
+class TestEveryReadIsKeyedOnWhatTheOneBeforeItNamed:
+    """WR-83: the entity of a statement is not its key. A wrong bound value is a cross-tenant read or
+    a second evaluation instant, and the compiled text renders every one of them as a placeholder."""
+
+    @staticmethod
+    async def _three_reads() -> tuple[AccessGrant, _StubSession]:
+        grant = _grant()
+        session = _StubSession(grants=(grant,), usage=_usage(grant))
+        await _read(session)
+        return grant, session
+
+    async def test_the_grant_read_is_keyed_on_the_caller_the_handler_named(self):
+        """SHARED-INVARIANTS:5 makes `core.users.id` the sole ownership key of this read."""
+        _, session = await self._three_reads()
+        assert USER_ID in _bound(session.statements[0])
+
+    async def test_both_grant_bounds_carry_the_one_captured_instant(self):
+        """03-sync.md:42: grant selection and the period come from ONE instant, so a second clock
+        reading here would select against a different one than `current_period` reports."""
+        _, session = await self._three_reads()
+        instants = [value for value in _bound(session.statements[0]) if isinstance(value, datetime)]
+        assert instants == [EVALUATED_AT, EVALUATED_AT]
+
+    async def test_the_usage_read_is_keyed_on_the_grant_the_first_read_returned(self):
+        grant, session = await self._three_reads()
+        assert grant.id in _bound(session.statements[1])
+
+    async def test_the_allowance_read_is_keyed_on_that_grants_own_tier(self):
+        grant, session = await self._three_reads()
+        assert grant.tier_id in _bound(session.statements[2])
 
 
 class TestTheZeroGrantAnswer:
