@@ -4,7 +4,7 @@ import asyncio
 import time
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4, uuid7
 
 import pytest
@@ -168,6 +168,16 @@ def _effective_grant_rows(*, monthly_used: int = 0):
     return grant, usage
 
 
+class _RecordingRequestSession:
+    """Records the request session's own commit, which is what returns its connection to the pool."""
+
+    def __init__(self, events: list[str]):
+        self._events = events
+
+    async def commit(self) -> None:
+        self._events.append("request_committed")
+
+
 def _recording_factory(events: list[str], grant, usage):
     rows = {"grants": [grant], "usage": [usage], "allowance": [ALLOWANCE]}
     return lambda: _RecordingSession(events, rows)
@@ -178,9 +188,9 @@ def _llm_double(llm=None) -> Any:
     return RecordingLLM() if llm is None else llm
 
 
-def _service(mock_chats_db, *, llm=None, session_factory=None) -> ChatService:
+def _service(mock_chats_db, *, llm=None, session_factory=None, request_session=None) -> ChatService:
     """The real `ChatService`, so the order of its validations against the charge is the production order."""
-    svc = ChatService(db=MagicMock(),
+    svc = ChatService(db=AsyncMock() if request_session is None else request_session,
                       llm_service=_llm_double(llm),
                       examples={"en": ["Example 1"], "es": ["Ejemplo 1"]},
                       messages_limit=MESSAGES_LIMIT,
@@ -364,6 +374,47 @@ class TestNoSessionIsHeldAcrossTheProviderCall:
         assert events == ["session_opened", "session_rolled_back", "session_closed"]
         assert llm.calls == 0
         assert usage.monthly_used == ALLOWANCE
+
+
+class TestNoConnectionIsHeldAcrossTheProviderCall:
+    """CR-01: the request session and the charge session must never want a connection at the same instant."""
+
+    async def test_the_request_session_commits_before_the_charge_opens_its_own(self, mock_chats_db):
+        events: list[str] = []
+        grant, usage = _effective_grant_rows()
+        service = _service(mock_chats_db, llm=RecordingLLM(events),
+                           session_factory=_recording_factory(events, grant, usage),
+                           request_session=_RecordingRequestSession(events))
+
+        await service.create_chat(phrase=PHRASE, user_id=TEST_USER_ID, lang="en")
+
+        assert events == ["request_committed", "session_opened", "session_committed",
+                          "session_closed", "provider_called"]
+
+    async def test_the_follow_up_commits_its_request_session_the_same_way(self, mock_chats_db):
+        events: list[str] = []
+        grant, usage = _effective_grant_rows()
+        mock_chats_db.get_chat.return_value = _chat_with_ai_messages(1)
+        service = _service(mock_chats_db, llm=RecordingLLM(events),
+                           session_factory=_recording_factory(events, grant, usage),
+                           request_session=_RecordingRequestSession(events))
+
+        await service.send_message(uuid4(), user_id=TEST_USER_ID, message="why?")
+
+        assert events == ["request_committed", "session_opened", "session_committed",
+                          "session_closed", "provider_called"]
+
+    async def test_a_service_rejection_commits_nothing(self, mock_chats_db):
+        """The commit sits after the two limit checks, so a refused request never opens a transaction to end."""
+        events: list[str] = []
+        mock_chats_db.count_chats.return_value = CHATS_LIMIT
+        service = _service(mock_chats_db, llm=RecordingLLM(events),
+                           request_session=_RecordingRequestSession(events))
+
+        with pytest.raises(ChatHistoryLimitError):
+            await service.create_chat(phrase=PHRASE, user_id=TEST_USER_ID, lang="en")
+
+        assert events == []
 
 
 class TestAdmissionCannotBeBypassed:

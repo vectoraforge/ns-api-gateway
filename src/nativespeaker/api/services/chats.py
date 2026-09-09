@@ -32,6 +32,7 @@ class ChatService:
                  quota_service: QuotaService,
                  evaluated_at: datetime) -> None:
         self.llm_service = llm_service
+        self.session = db
         self.chats_db = ChatsDB(db)
         self.examples = examples
         self.messages_limit = messages_limit
@@ -89,6 +90,8 @@ class ChatService:
         input_model = AnalyzeInput(phrase=phrase, context=context)
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
                                 content=input_model.model_dump(exclude_none=True))
+        # Ends the read above and returns its connection, so no request holds one across the provider call.
+        await self.session.commit()
         async with self.llm_service.admission() as admitted:
             await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
             ai_message = await self.ask_llm(chat, human_message, admitted)
@@ -113,6 +116,8 @@ class ChatService:
         input_model = FollowUpInput(message=message)
         human_message = Message(chat_id=chat.id, role=ChatRole.human,
                                 content=input_model.model_dump(exclude_none=True))
+        # Ends the read above and returns its connection; `expire_on_commit=False` keeps `chat` readable.
+        await self.session.commit()
         async with self.llm_service.admission() as admitted:
             await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
             ai_message = await self.ask_llm(chat=chat, message=human_message, admitted=admitted)

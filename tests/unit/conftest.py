@@ -152,7 +152,8 @@ def service(mock_chats_db, charge_calls):
     llm_service = AsyncMock()
     llm_service.admission = _granted_admission
     # Explicit arguments, not omitted ones: ChatService requires both, so a wiring slip cannot serve free.
-    svc = ChatService(db=MagicMock(),
+    # `AsyncMock`, because the service commits the request session before it enters admission.
+    svc = ChatService(db=AsyncMock(),
                       llm_service=llm_service,
                       examples={"en": ["Example 1", "Example 2"],
                                 "es": ["Ejemplo 1"]},

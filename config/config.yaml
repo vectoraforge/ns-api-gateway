@@ -13,8 +13,8 @@ resilience:
   retry_backoff_max_seconds: 4
   circuit_breaker_failure_threshold: 5
   circuit_breaker_reset_seconds: 60
-# Two connections per possible in-flight chat plus two spare, at the resilience.pool_size of 5
-# above. The relation is this comment, not code: the two stay independent numbers.
+# One connection per request at a time, and none held across the provider call, so this bounds
+# short database work only. The relation to resilience above is this comment, not code.
 db:
   pool_size: 12
 jwt:
