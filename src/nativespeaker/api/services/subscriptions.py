@@ -34,6 +34,10 @@ class SubscriptionsService:
 
         # Resolved in the provider's own class, which refuses a product the configured map misses.
         tier_id = notification.tier_id
+        if tier_id is None:
+            # Tested, not assumed from `product_id`: it reaches three NOT NULL columns below.
+            logger.error("store_notification_without_tier", event_type=notification.event_type)
+            raise InternalError
 
         token = notification.attribution_token
         # Read before the transaction writes, so no token read happens under a lock.

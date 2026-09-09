@@ -9,7 +9,7 @@ import pytest
 
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.crud.subscriptions import WriteOutcome
-from nativespeaker.api.errors import AttributionConflict
+from nativespeaker.api.errors import AttributionConflict, InternalError
 from nativespeaker.api.services.subscriptions import SubscriptionsService
 from nativespeaker.api.tables import (
     PurchaseProvider,
@@ -437,3 +437,32 @@ class TestTheMeasurementFires:
 
         assert writer.upserts[0]["status"] is SubscriptionStatus.revoked
         assert writer.upserts[0]["tier_id"] == PAID_TIER_ID
+
+
+@pytest.mark.asyncio
+class TestATierlessNotificationIsRefusedBeforeAnyWrite:
+    """WR-06: `tier_id` reaches three NOT NULL columns, guarded only by a comment about `product_id`."""
+
+    async def test_it_raises_the_generic_500_the_store_then_retries(self, session, writer):
+        service = _service(session, writer, None)
+
+        with pytest.raises(InternalError):
+            await service.ingest(_notification(tier_id=None))
+
+    async def test_it_writes_nothing_and_commits_nothing(self, session, writer):
+        service = _service(session, writer, None)
+
+        with pytest.raises(InternalError):
+            await service.ingest(_notification(tier_id=None))
+
+        assert (writer.upserts, writer.inserted, writer.appended, writer.granted) == ([], [], [], [])
+        assert session.commits == 0
+
+    async def test_a_notification_naming_no_product_still_returns_quietly(self, session, writer):
+        """The neighbouring branch is unchanged: no product means nothing to write, not a failure."""
+        service = _service(session, writer, None)
+
+        await service.ingest(_notification(product_id=None, tier_id=None))
+
+        assert writer.upserts == []
+        assert session.commits == 0
