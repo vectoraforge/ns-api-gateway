@@ -115,17 +115,22 @@ class TestTheProductionWriterLeavesNeitherHalf:
     """The pairing over rows `AuthService.complete` committed, which is the only writer that can
     reach the third state: it sets `registered_at` and the identity's provider in one transaction."""
 
+    # Both providers: only the anonymous arm can put a row in the first scan, and only the
+    # registered arm in the second, so one provider leaves half the pairing unexercised.
+    @pytest.mark.parametrize("provider", [IdentityProvider.google, IdentityProvider.anonymous])
     # noqa F811: the parameter is the imported fixture's request, not a second definition of it.
-    async def test_a_created_registered_account_satisfies_both_halves(self, creation_harness):  # noqa: F811
+    async def test_a_created_account_satisfies_both_halves(self, creation_harness, provider):  # noqa: F811
         subject = f"pairing-{uuid.uuid4().hex[:8]}"
+        # The table's CHECK ties the two together: provider_uid is NULL exactly for anonymous.
+        provider_uid = (None if provider is IdentityProvider.anonymous
+                        else f"uid_{uuid.uuid4().hex[:16]}")
 
         result, _, _ = await run_creation(creation_harness, subject=subject,
-                                          provider=IdentityProvider.google,
-                                          provider_uid=f"uid_{uuid.uuid4().hex[:16]}")
+                                          provider=provider, provider_uid=provider_uid)
 
         # The premise: the completion committed an account, so the two scans below have a row to
         # scan. Without it this case would pass as vacuously as an empty table does.
-        assert result is IdentityProvider.google
+        assert result is provider
         assert await scalar(creation_harness, _IDENTITIES_OF_ONE_ISSUER,
                             {"issuer": creation_harness.issuer}) == 1
         # Keyed to this case's own issuer: a whole-table count would answer for every other file's
