@@ -105,6 +105,16 @@ def adapter(app) -> FirebaseAdminLookup:
 
 
 @pytest.fixture
+def firebase_logs(monkeypatch) -> list[tuple[str, dict]]:
+    """A spy, not `capture_logs`: the module-level logger caches its binding at import."""
+    records: list[tuple[str, dict]] = []
+    for level in ("info", "warning", "error"):
+        monkeypatch.setattr(f"nativespeaker.api.auth.firebase.logger.{level}",
+                            lambda event, **fields: records.append((event, fields)))
+    return records
+
+
+@pytest.fixture
 def get_user_calls(monkeypatch):
     """Monkeypatches `auth.get_user` to record its calls; the test scripts the answer."""
     calls: list[dict] = []
@@ -428,6 +438,19 @@ class TestNoProviderTextLeaks:
         rendered = repr(raised.value.log_fields()) + repr(raised.value.args)
         assert PROVIDER_TEXT not in rendered
         assert "ns-test-project" not in rendered
+
+    async def test_the_provider_lookups_own_log_line_carries_no_sdk_message(
+            self, adapter, get_user_calls, firebase_logs):
+        """WR-02: the SDK's `ValueError` text embeds the uid and the raw Identity Toolkit record,
+        so the event name stands alone -- the rule `_revoke` states for the same exception type."""
+        get_user_calls(StubUserRecord(raises=ValueError(PROVIDER_TEXT)))
+
+        with pytest.raises(Unavailable):
+            await lookup_with_retry(adapter, ISSUER, SUBJECT)
+
+        # Equality over the whole list, so the record really fired and it carries no field at all:
+        # an emptied `detail=` would leave the key behind, and a `str` filter would not see it.
+        assert firebase_logs == [("firebase_provider_data_malformed", {})]
 
     async def test_the_internal_marker_does_carry_it_for_the_log(self, adapter, get_user_calls):
         """The control: the text is not merely absent everywhere, it is kept where the log needs it."""
