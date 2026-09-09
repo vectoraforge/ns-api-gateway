@@ -1,455 +1,549 @@
 ---
 phase: 36-rebind-pre-existing-routes
-reviewed: 2026-08-21T00:00:00Z
+reviewed: 2026-09-08T00:00:00Z
 depth: standard
-files_reviewed: 29
+files_reviewed: 150
 files_reviewed_list:
+  - AGENTS.md
+  - config/config.yaml
+  - docker-compose.yml
+  - .env.example
+  - .gitignore
+  - k8s/templates/httproute-webhooks.yaml
   - migrations/20260818_01_initial-release.sql
+  - pyproject.toml
   - src/nativespeaker/api/app/dependencies.py
-  - src/nativespeaker/api/auth/registry.py
-  - src/nativespeaker/api/database/grants.py
-  - src/nativespeaker/api/database/__init__.py
+  - src/nativespeaker/api/app/error_handlers.py
+  - src/nativespeaker/api/app/lifespan.py
+  - src/nativespeaker/api/app/main.py
+  - src/nativespeaker/api/auth/adapters.py
+  - src/nativespeaker/api/auth/app_store.py
+  - src/nativespeaker/api/auth/devicecheck.py
+  - src/nativespeaker/api/auth/firebase.py
+  - src/nativespeaker/api/auth/google_play.py
+  - src/nativespeaker/api/auth/__init__.py
+  - src/nativespeaker/api/auth/jwt_verifier.py
+  - src/nativespeaker/api/auth/store_notifications.py
+  - src/nativespeaker/api/config.py
+  - src/nativespeaker/api/crud/challenges.py
+  - src/nativespeaker/api/crud/chats.py
+  - src/nativespeaker/api/crud/grants.py
+  - src/nativespeaker/api/crud/identities.py
+  - src/nativespeaker/api/crud/__init__.py
+  - src/nativespeaker/api/crud/purchases.py
+  - src/nativespeaker/api/crud/subscriptions.py
   - src/nativespeaker/api/errors.py
-  - src/nativespeaker/api/models/grants.py
-  - src/nativespeaker/api/models/__init__.py
-  - src/nativespeaker/api/models/llm.py
-  - src/nativespeaker/api/quota.py
+  - src/nativespeaker/api/__init__.py
+  - src/nativespeaker/api/logs.py
+  - src/nativespeaker/api/resilience.py
+  - src/nativespeaker/api/routers/auth.py
   - src/nativespeaker/api/routers/chats.py
+  - src/nativespeaker/api/routers/examples.py
+  - src/nativespeaker/api/routers/__init__.py
+  - src/nativespeaker/api/routers/root.py
+  - src/nativespeaker/api/routers/users.py
+  - src/nativespeaker/api/routers/webhooks.py
+  - src/nativespeaker/api/schemas/api.py
+  - src/nativespeaker/api/schemas/auth.py
+  - src/nativespeaker/api/schemas/__init__.py
+  - src/nativespeaker/api/schemas/llm.py
+  - src/nativespeaker/api/schemas/webhooks.py
+  - src/nativespeaker/api/services/auth.py
   - src/nativespeaker/api/services/chats.py
+  - src/nativespeaker/api/services/__init__.py
+  - src/nativespeaker/api/services/llm.py
+  - src/nativespeaker/api/services/quota.py
+  - src/nativespeaker/api/services/restore.py
+  - src/nativespeaker/api/services/subscriptions.py
+  - src/nativespeaker/api/services/sync.py
+  - src/nativespeaker/api/tables/auth.py
+  - src/nativespeaker/api/tables/chats.py
+  - src/nativespeaker/api/tables/grants.py
+  - src/nativespeaker/api/tables/identities.py
+  - src/nativespeaker/api/tables/__init__.py
+  - src/nativespeaker/api/tables/purchases.py
+  - src/nativespeaker/api/tables/users.py
+  - src/nativespeaker/__init__.py
+  - tests/conftest.py
   - tests/e2e/conftest.py
-  - tests/e2e/test_audit_writer.py
+  - tests/e2e/test_admission.py
+  - tests/e2e/test_app_store_webhook.py
+  - tests/e2e/test_challenge_store.py
+  - tests/e2e/test_chat_queries.py
   - tests/e2e/test_chats.py
+  - tests/e2e/test_claim_anonymous_grant.py
+  - tests/e2e/test_claim_registered_grant.py
+  - tests/e2e/test_create_user.py
   - tests/e2e/test_error_cases.py
+  - tests/e2e/test_examples.py
   - tests/e2e/test_flows.py
+  - tests/e2e/test_google_play_webhook.py
   - tests/e2e/test_isolation.py
+  - tests/e2e/test_llm_schema.py
+  - tests/e2e/test_model_queries.py
   - tests/e2e/test_quota.py
+  - tests/e2e/test_restore_subscription.py
+  - tests/e2e/test_root.py
+  - tests/e2e/test_sign_out_all.py
+  - tests/e2e/test_sync.py
+  - tests/e2e/test_unauthenticated_access.py
+  - tests/e2e/test_upgrade_anonymous.py
+  - tests/e2e/test_users_me.py
   - tests/schema/conftest.py
   - tests/schema/helpers.py
   - tests/schema/test_apply_rollback.py
+  - tests/schema/test_claim_race.py
   - tests/schema/test_constraints.py
+  - tests/schema/test_create_atomicity.py
+  - tests/schema/test_create_race.py
   - tests/schema/test_grant_locks.py
+  - tests/schema/test_inventory.py
+  - tests/schema/test_registration_pairing.py
+  - tests/schema/test_restore_race.py
+  - tests/schema/test_store_purchase_tokens.py
+  - tests/schema/test_subscription_ingestion.py
+  - tests/schema/test_subscription_race.py
+  - tests/schema/test_sync_lock_freedom.py
   - tests/unit/conftest.py
+  - tests/unit/error_tree.py
+  - tests/unit/test_adapter_interfaces.py
+  - tests/unit/test_app_store_notifications.py
+  - tests/unit/test_app_wiring.py
+  - tests/unit/test_auth_package_shape.py
+  - tests/unit/test_auth_security.py
+  - tests/unit/test_challenge_endpoint.py
+  - tests/unit/test_challenge_ids.py
+  - tests/unit/test_chats_crud.py
+  - tests/unit/test_claim_ordering.py
+  - tests/unit/test_claim_precedence.py
+  - tests/unit/test_claim_precedence_registered.py
+  - tests/unit/test_config.py
+  - tests/unit/test_conflict_classification.py
+  - tests/unit/test_create_user_body.py
+  - tests/unit/test_create_user_precedence.py
+  - tests/unit/test_create_user_rollback.py
+  - tests/unit/test_devicecheck_adapter.py
+  - tests/unit/test_docstring_bar.py
+  - tests/unit/test_error_contract.py
+  - tests/unit/test_error_registry.py
+  - tests/unit/test_exception_handlers.py
+  - tests/unit/test_firebase_adapter.py
+  - tests/unit/test_firebase_retry.py
+  - tests/unit/test_google_play_notifications.py
+  - tests/unit/test_grant_sources.py
+  - tests/unit/test_identities_crud.py
+  - tests/unit/test_identity_accessors.py
+  - tests/unit/test_jwks_offload.py
+  - tests/unit/test_jwt_security.py
+  - tests/unit/test_llm_chain_schema.py
+  - tests/unit/test_logging.py
   - tests/unit/test_models.py
+  - tests/unit/test_purchases_crud.py
   - tests/unit/test_quota_resolver.py
-  - tests/unit/test_route_registry.py
+  - tests/unit/test_quota_seam.py
+  - tests/unit/test_rejection_vocabulary.py
+  - tests/unit/test_resilience_retry.py
+  - tests/unit/test_restore_proof.py
+  - tests/unit/test_services.py
+  - tests/unit/test_subscription_attribution.py
+  - tests/unit/test_sync_audit_removal.py
+  - tests/unit/test_sync_clock_capture.py
+  - tests/unit/test_sync_error_reuse.py
+  - tests/unit/test_sync_resolver.py
+  - tests/unit/test_upgrade_precedence.py
+  - tests/unit/test_users_me.py
   - tests/unit/test_users.py
+  - uv.lock
 findings:
-  critical: 2
+  critical: 1
   warning: 7
-  info: 5
-  total: 14
+  info: 7
+  total: 15
 status: issues_found
 ---
 
 # Phase 36: Code Review Report
 
-**Reviewed:** 2026-08-21
+**Reviewed:** 2026-09-08
 **Depth:** standard
-**Files Reviewed:** 29
+**Files Reviewed:** 150
 **Status:** issues_found
 
 ## Summary
 
-The quota core is, on its own terms, correct. I traced the lock path end to end and could not
-break it: `lock_effective_grants` takes `FOR UPDATE` on the grant rows with `ORDER BY id ASC`
-(PostgreSQL puts `LockRows` above `Sort`, so rows really are locked in sorted order), `lock_usage`
-runs second on a row the grant lock already serialises, and two concurrent POSTs for the same user
-therefore cannot double-spend — the second blocks on the grant row and re-reads `monthly_used`
-after the first commits. The `max(allowance - used, 0)` floor is right, rollover happens strictly
-before the comparison and inside the same transaction, and every fail-closed branch (`no grant`,
-`>1 grant`, `missing usage row`, `unknown tier`) resolves to the intended status. I also verified
-against the installed FastAPI 0.135.1 that the D-14 mitigation actually works: `solve_dependencies`
-does `if solved_result.errors: errors.extend(...); continue`, so a wrapper whose own body/path
-params fail validation is never called — no credit is spent on a 422.
+Incremental re-review of the whole tree as it stands after Phase 46 and the Phase 35 fix pass
+(`11b5573..42c4e55`). Those fixes are treated as current code and are not re-flagged; I agree with
+all eight of them on the merits.
 
-What the phase got wrong is not inside `consume_quota`. It is the **boundary**: the credit is
-committed unconditionally before dispatch, and the executors reasoned about only one of the ways
-the request can then fail. D-11's justification ("a rare provider failure") does not cover
-`CircuitOpenError` and `QueueFullError`, which are raised as **backpressure before any provider
-call is made**, return 503 with a `Retry-After` that instructs the client to retry, and are by
-design a sustained multi-request state — so a single circuit-open window charges every request in
-it and delivers nothing (CR-01). Nor does it cover the 400s the app itself produces after the
-charge; `ChatRequest.lang` is unvalidated free text, so a one-character typo drains a paying user's
-allowance one 400 at a time (CR-02). The recorded REBIND-06 divergence covers only the 404 arm of
-this same family.
+Baseline measurements taken during this review: `ruff check .` is clean, `pytest` is 1296 passed /
+577 deselected, `ty check src` reports 50 diagnostics (all annotation gaps, none of which I could
+turn into a live failure except WR-06).
 
-On the test side, the suite is unusually strong (the deadlock/lock-order schema tests and the
-compiled-SQL assertions are genuinely load-bearing), but it has a specific hole worth naming: the
-compiled-predicate assertions pin `starts_at`, `ends_at`, `FOR UPDATE` and `ORDER BY` but **not
-`user_id`**, and no e2e case ever has two users holding active grants at once — so a regression
-that let one user spend another user's allowance would pass the entire suite (WR-01).
+The rejection taxonomy, the lock ordering in `crud/grants.py` and `crud/subscriptions.py`, the
+fail-closed reads in `services/quota.py` and `services/sync.py`, and the adapter seams in `auth/`
+are the strongest parts of the tree and I found nothing wrong in them. The concentration of defects
+is at the edges: connection lifetime, DSN construction, request-body bounds, and one read that is
+issued twice with two different conclusions drawn from it.
 
-`ruff check` and `ty check src` are both clean.
+One BLOCKER. `QuotaService.charge` opens a second database session while the request session is
+already holding a connection, and the pool is sized for a concurrency figure five times smaller than
+the one the resilience gate actually admits. Twelve concurrent chat POSTs exhaust the pool with
+every request holding one connection and waiting for a second.
+
+I did **not** flag the absent challenge-row reaper: `SHARED-INVARIANTS.md:59` binds "no scheduled
+cleanup, purge, reconciliation, recovery-scan, or background-healer job of any kind (challenge rows
+... indefinite retention)". The unbounded growth of `core.auth_challenges` is a decision, not a
+defect.
 
 ## Critical Issues
 
-### CR-01: 503 backpressure rejections spend a credit and tell the client to retry
+### CR-01: Two connections per in-flight chat POST against a pool sized for one
 
-**File:** `src/nativespeaker/api/app/dependencies.py:133-144`, `src/nativespeaker/api/resilience.py:56`, `src/nativespeaker/api/resilience.py:86`, `src/nativespeaker/api/quota.py:22-26`
+**File:** `src/nativespeaker/api/services/quota.py:30`, `src/nativespeaker/api/services/chats.py:92-94`,
+`src/nativespeaker/api/app/lifespan.py:145`, `config/config.yaml:16-19`
 
-**Issue:** `require_quota` commits the increment in its own transaction before the handler body is
-entered. Two of the failure modes downstream of that commit never touch the provider at all:
+**Issue:** A chat POST holds two database connections at once, and the pool cannot supply them.
 
-- `CircuitBreaker.before_call()` (`resilience.py:56`) raises `CircuitOpenError` for the whole
-  `reset_seconds` window, before any LLM work.
-- `LLMExecutionGate._inflight_slot()` (`resilience.py:86`) raises `QueueFullError` when the local
-  in-process slot queue is exhausted, before any LLM work.
+The sequence for `POST /chats` is:
 
-Both map to `SERVICE_UNAVAILABLE` (503) and both attach a `Retry-After` header
-(`errors.py:350-351`, `errors.py:361-362`) whose copy is *"The service is busy. Wait for the
-indicated interval and retry."* So the service charges a credit, delivers nothing, and explicitly
-instructs the client to spend another one.
+1. `ChatService.create_chat` calls `self.chats_db.count_chats(user_id)` (`services/chats.py:84`) on
+   the request session that `Depends(get_db)` supplied. That statement checks a connection out of
+   the pool and opens a transaction; `get_db` does not commit until the handler has returned
+   (`app/dependencies.py:43-50`), so the connection stays held for the rest of the request —
+   including the whole OpenAI round trip.
+2. Inside `async with self.llm_service.admission()`, `services/chats.py:93` calls
+   `QuotaService.charge`, which opens a **second** session from `app.state.session_factory`
+   (`services/quota.py:30`) on the same engine. That needs a second connection at the same instant.
 
-`quota.py:22-26` justifies non-refund as *"this product would rather lose one credit on a rare
-provider failure than serialise every caller behind a network call."* That reasoning does not hold
-here. Circuit-open and queue-full are not rare single-request failures — they are sustained states
-that reject **every** request for their duration, by design. A `paid` user (1000 credits) behind a
-5-minute circuit-open window with a client honouring `Retry-After` loses credits at the retry rate
-for the whole window while receiving zero analyses. That is direct loss of purchased value on a
-subscription product, and it is invisible: nothing in the 503 body or headers tells the client a
-credit was taken.
+`POST /chats/{chat_id}` is identical: `get_chat` at `services/chats.py:106` checks the first
+connection out, `charge` at line 117 asks for the second.
 
-No test covers it. `tests/e2e/test_quota.py` asserts the counter after 200, 429, 422 and 500, but
-never after a 503.
+The pool is `pool_size=12, max_overflow=0` (`app/lifespan.py:145`, `config/config.yaml:19`), so the
+engine hands out at most 12 connections and never overflows. The number of requests that can be
+inside `admission()` simultaneously is `resilience.pool_size + resilience.queue_size` = 5 + 25 = 30
+(`resilience.py:76-80` — `inflight_slot` takes from a queue of `max_concurrency + max_queue`
+tokens; the semaphore of 5 is only taken later, inside `ainvoke`).
 
-**Fix:** Move the backpressure admission ahead of the charge, or compensate. The cheapest correct
-option is to have `require_quota` refund on the two pre-provider rejections, since they are
-distinguishable by class and carry no provider cost:
+So with 12 concurrent chat POSTs, all 12 hold their request-session connection and all 12 then ask
+for a quota connection. Nothing is free. Every one of them blocks in `QueuePool._do_get` for
+`pool_timeout` (SQLAlchemy default 30 s) and then raises `sqlalchemy.exc.TimeoutError`, which the
+generic handler turns into a 500. Fewer than 12 also degrade: with 7 concurrent POSTs, 12 - 7 = 5
+quota connections are available for 7 requests, so 2 of them stall.
 
-```python
-# routers/chats.py -- gate admission before the credit is committed
-@router.post("/chats", dependencies=[Depends(require_quota_create_chat)], ...)
-```
-becomes, in `app/dependencies.py`:
+The config comment at `config/config.yaml:16-17` states the intended arithmetic and shows where the
+reasoning went wrong: "Two connections per possible in-flight chat plus two spare, at the
+resilience.pool_size of 5 above" — 5 x 2 + 2 = 12. But `resilience.pool_size` is the *provider
+permit* count, not the number of requests past admission. `queue_size: 25` is the other 25.
 
-```python
-async def require_quota(request: Request, context: RequestContext) -> None:
-    ...
-    # Backpressure is not a provider failure and costs the provider nothing. Refuse
-    # BEFORE the charge so a circuit-open window cannot drain a paying allowance.
-    request.app.state.llm_service.assert_admitting()   # raises CircuitOpenError / QueueFullError
-
-    async with request.app.state.session_factory() as session:
-        ...
-```
-
-with a matching non-consuming probe on `ResiliencePolicy` (peek at `_opened_at` and at
-`_slots.qsize()`), and a `tests/e2e` case that forces the circuit open and asserts
-`monthly_used` is unchanged across the 503. If a probe is judged too racy, the alternative is an
-explicit compensating decrement in an exception handler for `CircuitOpenError`/`QueueFullError`
-only — but a probe is preferable because it keeps the "never refund" rule intact for genuine
-provider failures.
-
-### CR-02: `lang` is unvalidated free text, so a 400 the app itself produces still burns a credit
-
-**File:** `src/nativespeaker/api/models/api.py:18`, `src/nativespeaker/api/services/chats.py:85-90`, `tests/e2e/test_error_cases.py:60-71`
-
-**Issue:** `ChatRequest.lang: str | None = Field(default=None)` accepts any string. The supported
-set is only checked inside `ChatService.create_chat`:
+**Fix:** Release the request-session connection before the quota charge, so a chat POST never needs
+two connections at the same time. The request session has no uncommitted work at that point —
+`count_chats` and `get_chat` are reads.
 
 ```python
-if lang and lang not in self.supported_languages:
-    raise UnsupportedLanguageError(lang, self.supported_languages)
+# services/chats.py, both create_chat and send_message, before entering admission()
+# Ends the read transaction and returns the connection to the pool; the session reopens
+# lazily when the handler writes the chat rows after the provider answers.
+await self.chats_db.session.rollback()
+async with self.llm_service.admission() as admitted:
+    await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
+    ai_message = await self.ask_llm(chat, human_message, admitted)
 ```
 
-That runs *after* `require_quota` has already committed. So
-`POST /chats {"phrase": "x", "lang": "zz"}` returns **400 `invalid_request`** and permanently
-consumes one credit, with no LLM call and no service rendered. The same shape applies to
-`ChatHistoryLimitError` (`services/chats.py:88-90`, chats-limit) and `ChatHistoryLimitError` on
-`send_message` (`services/chats.py:112-113`) — both are 400s the app produces from state it could
-have consulted before charging.
-
-This is the same root cause as the recorded REBIND-06 divergence, but it is a *different, cheaper
-and more reachable* arm: REBIND-06 needs a syntactically valid UUID naming a nonexistent chat;
-this needs a two-character typo in a language code that the API never told the client was invalid.
-A client with a stale language list drains the allowance in as many requests as it has credits.
-
-`quota.py:143-147` states the intended rule explicitly — *"a request the service refused must
-never be charged"* — and this violates it. Worse, `tests/e2e/test_error_cases.py:60-71` was
-*modified in this phase* to seed `quota_grant` so the 400 branch is reachable, and asserts only the
-status code; the charge it now makes is silently accepted and untested.
-
-**Fix:** Move the language check ahead of the charge by making it a request-model constraint, so
-FastAPI rejects it while solving the wrapper (the same D-14 mechanism that already protects the
-body and path):
-
-```python
-# models/api.py -- the supported set is config-driven, so validate against it at the seam
-class ChatRequest(BaseModel):
-    phrase: str = Field(..., max_length=4096)
-    context: str | None = Field(default=None, max_length=4096)
-    lang: str | None = Field(default=None, max_length=8, pattern=r"^[a-z]{2}$")
-```
-
-The pattern alone reduces the blast radius to two-letter codes; the complete fix is to have
-`require_quota_create_chat` consult `config.examples` before calling `require_quota`, and to add an
-e2e case asserting `monthly_used` is unchanged across the 400. The chats-limit and messages-limit
-checks should likewise be hoisted ahead of the charge (both are pure reads).
+If the two-connection shape is kept deliberately instead, then `db.pool_size` must cover
+`2 * (resilience.pool_size + resilience.queue_size)` = 60, not 12, and the comment in
+`config/config.yaml:16-17` must name `queue_size` rather than `pool_size`. A `pool_timeout` shorter
+than the 30 s default should be set either way, so an exhausted pool answers fast instead of pinning
+a worker.
 
 ## Warnings
 
-### WR-01: Nothing constrains the `user_id` scoping of the effective-grant predicate
+### WR-01: The database DSN interpolates the password without percent-encoding
 
-**File:** `src/nativespeaker/api/database/grants.py:38`, `tests/unit/test_quota_resolver.py:286-330`, `tests/e2e/test_quota.py:1-30`
+**File:** `src/nativespeaker/api/config.py:38-40`, `pyproject.toml:328`
 
-**Issue:** `TestTheLockingStatements` asserts the compiled predicate contains
-`starts_at <= `, `ends_at > `, `ends_at IS NULL`, `FOR UPDATE` and `ORDER BY ... ASC`. It does not
-assert `core.access_grants.user_id = `. The stub session (`_StubSession.exec`) ignores the `WHERE`
-clause entirely and dispatches rows by target entity, so it cannot notice a missing filter either.
+**Issue:** `DatabaseConfig.url` builds the DSN by f-string. A password containing any of `@ / : ? #`
+re-partitions the URL. Demonstrated against the installed SQLAlchemy:
 
-The e2e suite does not close the gap: `linked_firebase_identity` seeds a fresh user per test, and
-in every case at most **one** active grant exists inside the per-test transaction — including
-`tests/e2e/test_isolation.py`, where only `STRANGER` gets a grant. Delete
-`col(AccessGrant.user_id) == user_id` from `grants.py:38` and the whole suite still passes: the
-single active grant is found and charged regardless of who asked. The `status` filter *is* covered
-(`test_a_grant_whose_status_is_not_active_is_no_grant` seeds revoked/expired rows), so the hole is
-specifically the tenant scoping — the one predicate term whose failure is a cross-user
-entitlement leak rather than a self-inflicted error.
-
-**Fix:** Add the missing compiled-SQL assertion, and a behavioural control with two users:
-
-```python
-# tests/unit/test_quota_resolver.py::TestTheLockingStatements
-async def test_the_predicate_is_scoped_to_the_caller(self):
-    session = await self._admitted_session()
-    sql = _compiled(session.statements[0])
-    assert "core.access_grants.user_id = " in sql
-    assert "core.access_grants.status = " in sql
-
-# tests/e2e/test_quota.py -- the behavioural control
-async def test_another_users_grant_is_not_spendable(self, async_client,
-                                                    linked_firebase_identity, _db_transaction):
-    other, _ = await seed_identity(_db_transaction, issuer=..., subject="someone-else")
-    other_grant, _ = await seed_grant(_db_transaction, user_id=other.id)   # caller has none
-
-    response = await async_client.post("/chats", json=PHRASE)
-
-    assert response.status_code == 429
-    assert [r.monthly_used for r in await usage_rows(_db_transaction, other_grant.id)] == [0]
+```
+make_url("postgresql+asyncpg://postgres:p@ss/w0rd@db.internal:5432/ns")
+  -> host='ss'  user='postgres'  password='p'  database='w0rd@db.internal:5432/ns'
 ```
 
-### WR-02: Registry condition 10 accepts *any* quota wrapper on *any* flagged route
+The application then tries to reach a host named `ss` and sends it the user `postgres` and the
+password `p`. In a cluster that is a credential sent to whatever `ss` resolves to, not a clean boot
+failure. `pyproject.toml:328` builds the pogo DSN the same way and has the same behaviour during
+migrations.
 
-**File:** `src/nativespeaker/api/auth/registry.py:147`, `src/nativespeaker/api/auth/registry.py:215-231`
-
-**Issue:** `quota_wrappers` is a flat tuple and the membership test is
-`any(dependency.dependency is wrapper for dependency in route.dependencies for wrapper in quota_wrappers)`.
-The resulting `attached` set records only `(method, path)`. So a route that declares
-`quota_checked=True` and carries the **wrong** wrapper passes boot cleanly. Concretely, putting
-`Depends(require_quota_send_message)` on `POST /chats` satisfies condition 10, but the wrapper
-declares `chat_id: UUID`, which on a path with no `{chat_id}` placeholder becomes a **required
-query parameter** — every request to the product's primary route would 422. The assertion that
-exists precisely to stop wrapper/flag drift would not have said a word.
-
-`tests/unit/test_route_registry.py::TestCondition10QuotaFlagAndDependencyDisagree` covers both set
-directions but has no wrong-wrapper case, so the gap is unpinned in either direction.
-
-**Fix:** Key the wrapper table by route rather than by set membership:
+**Fix:** Build the URL with the library rather than by string, so every component is escaped:
 
 ```python
-QUOTA_WRAPPERS: dict[tuple[str, str], Callable[..., Any]] = {
-    ("POST", "/chats"): require_quota_create_chat,
-    ("POST", "/chats/{chat_id}"): require_quota_send_message,
-}
-...
-for route in app.routes:
-    if not isinstance(route, APIRoute):
-        continue
-    for method in route.methods:
-        expected = QUOTA_WRAPPERS.get((method, route.path))
-        got = [d.dependency for d in route.dependencies
-               if d.dependency in QUOTA_WRAPPERS.values()]
-        if expected is not None and expected not in got:
-            problems.append(f"{(method, route.path)} carries {got}, expected {expected.__name__}")
+from sqlalchemy.engine import URL
+
+@property
+def url(self) -> str:
+    return URL.create("postgresql+asyncpg",
+                      username=self.user,
+                      password=self.password.get_secret_value(),
+                      host=self.host,
+                      port=self.port,
+                      database=self.name).render_as_string(hide_password=False)
 ```
 
-### WR-03: `ask_llm` calls `.get()` on unvalidated provider output
+### WR-02: The restore reads the subscription twice and the second read can overwrite webhook-owned state
 
-**File:** `src/nativespeaker/api/services/chats.py:53`
+**File:** `src/nativespeaker/api/services/restore.py:53`, `:58`, `:85-95`;
+`src/nativespeaker/api/crud/subscriptions.py:117-143`
 
-**Issue:** `llm_response` comes from a plain `JsonOutputParser()` (`services/llm.py:29`) with no
-schema binding, so it is whatever JSON value the model emitted — including a list, a string or a
-number. `llm_response.get("resolved_mode")` then raises `AttributeError`, which is not a
-`ServiceError`, so it falls to `generic_error_handler` and surfaces as an unlabelled 500 — plus a
-burned credit under D-11.
+**Issue:** `RestoreService.restore` reads the canonical row at line 53 and, when it is `None`, takes
+the "adoption-with-creation" branch at line 85. `upsert_subscription` then issues its **own**
+`read_subscription` at `crud/subscriptions.py:117`. Both statements run under READ COMMITTED, which
+takes a fresh snapshot per statement, so the second read can see a row a concurrent webhook
+committed in between.
 
-This function was edited in this phase for exactly this class of defect (D-35-11-A: "the product's
-primary route answered 500 for an already-correct sentence"), and the same fix was applied only to
-the missing-list case. The non-dict case is one line away and was left open.
+When it does, `upsert_subscription` falls into the `else` branch at line 129 and **updates the
+canonical row in place** with `tier_id=proof.tier_id` and `status=proof.status`. That is exactly the
+write D-06 forbids: the service already decided at `restore.py:58`
+(`status = proof.status if stored is None else stored.status`) that a row which exists decides with
+its own status "because canonical state is the webhooks'". The two reads reach opposite conclusions
+and the second one wins the write.
 
-**Fix:**
+Concrete failure: a webhook records `expired` for the subscription between the two reads; the
+restore, holding a proof that still parses as `active`, writes `active` back over it. The grant that
+`write_subscription_grant` then mints at `restore.py:134` uses the *first* read's `status`
+(`proof.status`), so the caller receives an entitlement the store has already withdrawn, bounded
+only by `term_ends_at`.
+
+**Fix:** Make the create branch insert-only, so a row appearing between the two reads is a lost race
+rather than a silent update. Give `SubscriptionsDB` a separate `insert_subscription` that adds the
+row and returns `WriteOutcome.lost_race` on sqlstate 23505, and call that from `restore.py:87`
+instead of `upsert_subscription`. `_settle` already turns `lost_race` into the 500 whose retry
+re-reads the winner's row.
+
+### WR-03: The two unauthenticated routes accept an unbounded request body
+
+**File:** `src/nativespeaker/api/schemas/webhooks.py:8`, `:15`
+
+**Issue:** `AppStoreNotificationRequest.signedPayload` and `PubSubPushMessage.data` declare only
+`min_length=1`. `POST /webhooks/app-store` and `POST /webhooks/google-play/rtdn` are the only two
+routes outside the Envoy JWT SecurityPolicy (`k8s/templates/httproute-webhooks.yaml:237-240`), so
+they are the only two an unauthenticated caller reaches. On the Apple route the body is handed
+straight to `SignedDataVerifier.verify_and_decode_notification` (`app/dependencies.py:170`) with no
+credential checked first — the payload *is* the credential.
+
+The asymmetry is the evidence that this is an oversight rather than a decision: the *authenticated*
+`RestoreRequest.restore_proof` is capped at `max_length=8192` (`schemas/auth.py:44`) with the
+comment "Bounded well above an Apple transaction and a Play token, which reach a decoder and a URL".
+The same reasoning applies harder to the body nobody authenticated.
+
+**Fix:** Bound both fields at the same order of magnitude as `restore_proof`, so the framework's 422
+refuses an oversized body before any decoder runs:
 
 ```python
-if not isinstance(llm_response, dict):
-    raise AnalysisError(f"Provider returned {type(llm_response).__name__}, not an object")
-resolved_mode = llm_response.get("resolved_mode")
+signedPayload: str = Field(..., min_length=1, max_length=16384)
+data: str = Field(..., min_length=1, max_length=16384)
 ```
 
-### WR-04: `docker-compose.yml` now depends on undocumented env vars and sprays every secret into the DB container
+### WR-04: `tables/__init__.py` re-exports eleven `schemas/` types that nobody imports from there
 
-**File:** `docker-compose.yml:2-4`, `.env.example`
+**File:** `src/nativespeaker/api/tables/__init__.py:3-9`, `:13-27`
 
-**Issue:** The phase replaced the (admittedly broken) literal `POSTGRES_USER: {DB_USER}` block with
-`env_file: - .env`. Two consequences:
+**Issue:** The package root re-exports `AnalyzeInput`, `AnalyzeResponse`, `ChatRequest`,
+`ChatResponse`, `ExamplesResponse`, `FollowUpInput`, `FollowUpResponse`, `Issue`, `MessageRequest`,
+`MessageResponse` and `RejectResponse` from `schemas/api.py` and `schemas/llm.py`.
 
-1. **Broken from a clean clone.** `.env.example` defines `DB_USER`/`DB_PASSWORD`/`DB_NAME`, not
-   `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB`. The developer's working `.env` happens to
-   carry both sets, which is why nobody noticed. `cp .env.example .env && docker compose up db`
-   exits with *"Database is uninitialized and superuser password is not specified"*, and the
-   schema and e2e suites — which both need a live Postgres — cannot be run at all.
-2. **Least privilege.** `env_file` injects the *entire* file, so `OPENAI_API_KEY`, `JWT_API_KEY`
-   and `FIREBASE_TEST_PASSWORD` are now present in the Postgres container's environment and
-   readable via `docker inspect` / `/proc/1/environ`. The database needs none of them. AGENTS.md
-   permits skipping high-value-theft defences, not handing every secret to every container.
+I collected every `from nativespeaker.api.tables import ...` in `src/` and `tests/` by AST walk. The
+complete set of names taken from that root is: `AccessGrant, AccessGrantSource, AccessGrantStatus,
+AccessTier, Chat, ChatRole, ExternalIdentity, FREE_GRANT_SOURCES, IdentityProvider, IdentityState,
+Message, PurchaseProvider, StorePurchase, StorePurchaseToken, Subscription, SubscriptionEvent,
+SubscriptionStatus, User, UserMonthlyUsage`. Not one of the eleven appears. Every real consumer
+imports them from `schemas.api` or `schemas.llm` directly.
 
-**Fix:** Name only what Postgres needs, and add the three vars to `.env.example`:
+Beyond being dead, they invert the layering `AGENTS.md` § "Package layout" fixes: `tables/` is
+declared to hold "SQLModel tables and the enums mirroring database types", and this import makes the
+tables package depend on the schemas package.
+
+**Fix:** Delete lines 13-27 and the eleven names from `__all__`. Nothing imports them from here, so
+the change cannot break a caller.
+
+### WR-05: Compose publishes Postgres on every interface with the `.env` password
+
+**File:** `docker-compose.yml:54-55`
+
+**Issue:** `ports: - "5432:5432"` binds the container port to `0.0.0.0` on the host. The password is
+`${DB_PASSWORD}`, which `.env.example:67` ships as `postgres`. On any developer machine on a shared
+network — a café, a co-working space, a conference — that is an open Postgres with a guessable
+password holding the plaintext `preauth_subject` values of `core.auth_challenges` and every
+`store_purchase_tokens.identity_value`.
+
+**Fix:** Bind to loopback. The application connects from the host (`DB_HOST=localhost`), so nothing
+needs the wider binding:
 
 ```yaml
-services:
-  db:
-    image: postgres:17
-    environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - "127.0.0.1:5432:5432"
 ```
 
-`${VAR}` interpolation reads the same `.env` Compose already loads, keeps the existing `DB_*` names
-that `[tool.pogo]` in `pyproject.toml` also uses, and passes nothing else through.
+### WR-06: `tier_id` reaches a NOT NULL column guarded only by a comment about a different field
 
-### WR-05: A live-LLM assertion on empty `issues`/`suggestions` is flaky by construction
+**File:** `src/nativespeaker/api/services/subscriptions.py:29`, `:36`, `:91`, `:117`, `:126`;
+`src/nativespeaker/api/auth/store_notifications.py:19-21`
 
-**File:** `tests/e2e/test_quota.py:386-394`
+**Issue:** `VerifiedNotification.tier_id` is `str | None`. `SubscriptionsService.ingest` guards at
+line 29 on `external_id` and `product_id` — never on `tier_id` — and then passes `tier_id` to
+`upsert_subscription` (line 91), `append_event` (line 117) and `write_subscription_grant`
+(line 126), all three of which declare the parameter `str`. `ty check src` reports all three.
 
-**Issue:** `test_a_correct_phrase_returns_200_with_empty_issue_and_suggestion_lists` sends
-`"I am going home."` to the real model and asserts `content["issues"] == []` **and**
-`content["suggestions"] == []`. Nothing constrains the model to return neither. An unconstrained
-chain (the module's own premise) may legitimately volunteer a stylistic suggestion for a correct
-sentence, and the case then fails for a reason unrelated to D-12. The property actually under test
-— that the two keys are *present* and default to `[]` when the provider omits them — is already
-proven deterministically at the model layer by
-`tests/unit/test_models.py::TestAnalyzeResponse::test_validates_payload_omitting_both_lists`.
+The safety rests on the comment at `store_notifications.py:19-20` ("Resolved by the provider's own
+class, so it is absent exactly when `product_id` is"). That holds today because both
+`AppStoreNotifications._tier_for` (`auth/app_store.py:149-155`) and
+`PlayDeveloperSubscriptions._product_of` (`auth/google_play.py:299-306`) raise
+`UnmappedStoreProduct` rather than return `None`. But it is an invariant across three files with
+nothing enforcing it. If a third adapter, or a change to either of those two, ever returns a
+notification with a `product_id` and no `tier_id`, `AccessGrant.tier_id` is set to `NULL`, Postgres
+raises 23502, `crud/subscriptions.py:300` re-raises it, and the store gets a 500 it retries forever.
 
-**Fix:** Assert presence and type over the transport, and leave emptiness to the unit case:
+**Fix:** Test the value the code actually consumes, next to the two it already tests:
 
 ```python
-assert response.status_code == 200
-content = response.json()["content"]
-assert isinstance(content["issues"], list)        # the keys exist -- D-12's transport claim
-assert isinstance(content["suggestions"], list)
-assert set(content) == {"resolved_mode", "response", "issues", "suggestions"}  # extras dropped
+if (notification.external_id is None or notification.product_id is None
+        or notification.tier_id is None):
+    logger.info("store_notification_without_transaction", event_type=notification.event_type)
+    return
+tier_id = notification.tier_id  # now `str`, and the three call sites type-check
 ```
 
-### WR-06: The schema lock suite commits into a shared database with no pre-clean
+### WR-07: No access-log line is written for a 500 raised out of a handler
 
-**File:** `tests/schema/test_grant_locks.py:82-122`
+**File:** `src/nativespeaker/api/logs.py:68-73`, `src/nativespeaker/api/app/main.py:52-54`
 
-**Issue:** `committed_grant` is the only fixture in the repo that commits outside the rolled-back
-`conn` harness (necessarily so — uncommitted rows are invisible to the second connection). Cleanup
-is a `finally`, which covers assertion failures and deadlocks, but not process death: a `Ctrl-C`, a
-`pytest-timeout` kill, or an OOM between the commit and the `finally` leaves a `core.users`, a
-`core.access_grants`, a `core.user_monthly_usage` and a `core.access_tiers` row behind. The next
-run then fails in a *different module* —
-`test_apply_rollback.py::TestHarnessIsolation::test_previous_test_rows_were_rolled_back` and
-`test_only_the_seeded_tiers_survive` — with a message that points at transaction rollback rather
-than at the module that actually leaked.
+**Issue:** `RequestLoggingMiddleware.dispatch` reaches its logging block only if `await call_next()`
+returns. Starlette installs the handler registered for bare `Exception`
+(`app/error_handlers.py:81`) on `ServerErrorMiddleware`, which sits *outside* every user middleware.
+So an exception that no `AppError` handler claims propagates straight through `dispatch`, and lines
+71-73 never run.
 
-**Fix:** Make the fixture self-healing at setup, so a leak from a previous run is repaired rather
-than inherited:
+Verified against this build:
+
+```
+GET /boom (handler raises RuntimeError)
+  status: 500 {'code': 'internal_error'}
+  log events emitted: ['Unhandled exception']      # no 'request' line
+```
+
+The `logger.error` choice at line 72 shows the intent is that failures are logged loudest, and the
+one class of request that reaches it never does. The 500s stemming from CR-01 above are exactly the
+traffic this would have surfaced. `request_id` still correlates through contextvars, but
+`status_code` and `duration_ms` are lost for every such request.
+
+**Fix:** Wrap the call so the line is written on both exits:
 
 ```python
-setup = await asyncpg.connect(_schema_db_uri)
+start = time.perf_counter()
 try:
-    # Repair a leak from an interrupted previous run before seeding this one.
-    await setup.execute("DELETE FROM core.access_tiers WHERE id LIKE 'tier_%'")
-    user_id = await insert_user(setup)
-    ...
+    response = await call_next(request)
+except BaseException:
+    if request.url.path not in _EXCLUDED_PATHS:
+        logger.error("request", status_code=500,
+                     duration_ms=round((time.perf_counter() - start) * 1000, 2))
+    raise
 ```
-
-(`core.users` / `core.access_grants` cascade from the tier delete's dependents only if the grant is
-removed first, so delete grants-by-tier before the tier.)
-
-### WR-07: The e2e harness cannot prove D-04's independent commit
-
-**File:** `tests/e2e/conftest.py:92-115`
-
-**Issue:** `_db_transaction` binds every session — `require_quota`'s "own" session and the
-handler's `get_db` session — to a single connection with
-`join_transaction_mode="create_savepoint"`. Both "commits" are savepoint releases inside one outer
-transaction. That is correct for rollback isolation, but it means the property D-04 exists to buy
-is untestable here: *the quota increment is durable even when the handler's transaction rolls
-back*. Every e2e assertion in `test_quota.py` would read identically if `require_quota` had taken
-`Depends(get_db)` instead — the exact wiring the module docstring forbids. The suite therefore
-constrains the *observable ordering* of the charge but not its *transactional independence*, which
-is the load-bearing half of the decision (and the half whose failure would silently reintroduce
-grant locks held across the provider round trip).
-
-**Fix:** Prove it in `tests/schema/`, which is the one package with genuinely independent
-connections — e.g. two asyncpg connections replicating the charge-then-fail sequence, asserting
-`monthly_used` survives after connection B's transaction rolls back. Failing that, record the gap
-explicitly in the module docstring so a later phase does not read `test_quota.py` as covering it.
 
 ## Info
 
-### IN-01: `_StubSession` / `_StubResult` are duplicated across two test packages
+### IN-01: `_is_transient_error` checks the status code twice
 
-**File:** `tests/unit/test_quota_resolver.py:51-100`, `tests/e2e/test_quota.py:495-510`
+**File:** `src/nativespeaker/api/resilience.py:30-36`
 
-**Issue:** Two independent stub-session implementations with the same names and overlapping
-purpose. The e2e copy is a degenerate version (always returns `[]`). Its one test —
-`TestTheEffectiveGrantStatement` — duplicates
-`tests/unit/test_quota_resolver.py::TestTheLockingStatements` and needs no database, so it does not
-belong in an `e2e`-marked module at all.
+**Issue:** Lines 30-33 extract the status code for an `APIStatusError` and test it against a set;
+lines 34-36 extract it again for *any* exception and test it against the identical set literal. The
+`APIStatusError` branch cannot produce an answer the unconditional check below would not. Two copies
+of the same set literal will drift.
 
-**Fix:** Delete `TestTheEffectiveGrantStatement` and both stub classes from `tests/e2e/test_quota.py`;
-the unit module already asserts `FOR UPDATE`, `ORDER BY ... ASC` and the absence of a cap.
+**Fix:** Delete lines 30-33 and hoist the set to a module constant.
 
-### IN-02: The grants model layer reads the system clock its own data layer forbids
+### IN-02: `Chat.human_messages` has no caller
 
-**File:** `src/nativespeaker/api/models/grants.py:86-87`, `:105`, `:108-109`, `:125-126`
+**File:** `src/nativespeaker/api/tables/chats.py:57-59`
 
-**Issue:** `database/grants.py:12-14` states *"Nothing here reads the system clock"* as a module
-invariant, but the models it returns carry `default_factory=lambda: datetime.now(UTC)` on
-`starts_at`, `created_at` and `updated_at`. Nothing on the quota path constructs these (the
-resolver only mutates rows it loaded), so it is currently harmless — but Phases 41/42/45 will
-construct them, and the ambient clock is exactly what D-06 exists to eliminate.
+**Issue:** Grepped across `src/` and `tests/`: the property is defined and never read. Its sibling
+`ai_messages` is used at `services/chats.py:110`.
 
-**Fix:** Note in the model docstring that construction sites must pass `evaluated_at` explicitly
-and that the factories are an insert-time backstop only, or drop the factory on `starts_at` (the
-database already has `DEFAULT CURRENT_TIMESTAMP` for it).
+**Fix:** Delete it.
 
-### IN-03: `require_quota`'s pre-auth guard is unreachable
+### IN-03: `RejectResponse` is never used outside its own test
 
-**File:** `src/nativespeaker/api/app/dependencies.py:124-129`
+**File:** `src/nativespeaker/api/schemas/llm.py:35-37`
 
-**Issue:** Both quota-checked routes are `Category.authenticated` with `preauth_callable=False`,
-and the barrier rejects a pre-auth principal on such a route at step 5. The `isinstance` branch is
-therefore dead. The comment says so explicitly and justifies keeping it as a fail-closed narrowing;
-recorded here only so it is not mistaken for live coverage.
+**Issue:** `ChatService.ask_llm` handles the reject arm by raising `OutOfScopeError`
+(`services/chats.py:63-64`) without constructing or validating `RejectResponse`. The only reference
+anywhere is `tests/unit/test_models.py:219`, which keeps a class alive that production never builds.
 
-### IN-04: `pyproject.toml` still declares version 1.6.0
+**Fix:** Delete the class and its test, or state in the docstring that it exists as a schema
+document for the reject arm rather than as a runtime type.
 
-**File:** `pyproject.toml:3`
+### IN-04: `ix_auth_challenges_expires_at` serves no query
 
-**Issue:** `version = "1.6.0"` while the codebase describes itself throughout as v2.0 and treats
-v1.6 as the previous release. `app.main` reads `version("ns-api-gateway")` into the OpenAPI
-document, so the served API version is wrong.
+**File:** `migrations/20260818_01_initial-release.sql:322`
 
-**Fix:** Bump to `2.0.0` (or a `2.0.0.devN`) as part of the milestone.
+**Issue:** The only statement filtering on `expires_at` is the claim UPDATE
+(`crud/challenges.py:70-72`), and it already selects a single row by `challenge_id`, which is
+UNIQUE. The `expires_at > now` term is evaluated against that one row. The index is the shape a
+sweeper would need, and `SHARED-INVARIANTS.md:59` forbids the sweeper.
 
-### IN-05: `QuotaExceededError` carries no `Retry-After`
+**Fix:** Drop it, or add a one-line comment saying it is deliberately kept for a future manual
+purge, so the next reader does not go looking for the job that uses it.
 
-**File:** `src/nativespeaker/api/errors.py:365-366`
+### IN-05: One of the three 400s on `POST /chats` charges a credit and the other two do not
 
-**Issue:** Every other 429/503 in the registry that a client should back off from
-(`QueueFullError`, `CircuitOpenError`) implements `extra_headers()`; `QuotaExceededError` does not.
-The distinct `code` (`quota_exceeded` vs `rate_limited`) is enough for a client to tell the two
-apart, so this is not a correctness defect — but a client doing generic 429 backoff has nothing to
-wait on. Given the period is a UTC calendar month, the seconds to the next period boundary are
-computable from the already-captured `evaluated_at`.
+**File:** `src/nativespeaker/api/services/chats.py:81-86` vs `:63-64`, `src/nativespeaker/api/services/quota.py:2`
+
+**Issue:** `UnsupportedLanguageError` and `ChatHistoryLimitError` are raised at lines 82 and 86,
+before the charge at line 93, so a caller refused for those reasons keeps its credit.
+`OutOfScopeError` is raised at line 64, after the charge has committed, so a caller refused for
+being off-topic loses one. All three answer 400. The module docstring at `quota.py:2` covers "a
+failed provider call is not refunded", which is not this case — the provider call succeeded and
+returned `resolved_mode: "reject"`.
+
+**Fix:** Either state the intent in the docstring ("a completed provider call is charged whatever
+mode it resolved to"), or move the reject arm's refusal ahead of the charge. Charging for real
+provider work is defensible; the silence about it is what makes it a finding.
+
+### IN-06: `write_bits` accepts any 2xx while its docstring claims explicit confirmation
+
+**File:** `src/nativespeaker/api/auth/devicecheck.py:129`, `:132`, `:89-95`
+
+**Issue:** The docstring says "accepting only Apple's explicit confirmation as success", but the
+implementation calls `_reject_or_retry`, which returns without raising for every status in the 2xx
+range and never looks at the body. `read_bits` really does inspect the body
+(`_parse_bit_state`); `write_bits` does not. Per `AGENTS.md` § "Comments and docstrings", the
+docstring states something the function does not do.
+
+**Fix:** Reword to what it does — "Write both bits; any 2xx is the confirmation, every other status
+is refused or retried" — or check the body if Apple's update response carries one worth checking.
+
+### IN-07: `violation.orig.sqlstate` reads an attribute off an Optional at eight sites
+
+**File:** `src/nativespeaker/api/crud/grants.py:191`, `:249`, `:278`;
+`src/nativespeaker/api/crud/subscriptions.py:150`, `:197`, `:223`, `:270`, `:300`
+
+**Issue:** `StatementError.orig` is typed `BaseException | None` and `ty` reports all eight. In
+practice SQLAlchemy always populates `orig` for a `DBAPIError`, and the asyncpg dialect does set
+`.sqlstate` on the translated exception (verified in
+`sqlalchemy/dialects/postgresql/asyncpg.py::_handle_exception`), so I could not turn this into a
+live failure. It stays a finding because the failure mode if the assumption ever breaks is an
+`AttributeError` raised *inside* an `except IntegrityError` block — the race branch would be lost
+and the caller would see an opaque 500 instead of `lost_race`.
+
+**Fix:** One shared helper, so the eight copies become one:
+
+```python
+def _is_unique_violation(violation: IntegrityError) -> bool:
+    """Whether this integrity failure is a unique violation the indexes arbitrated."""
+    return getattr(violation.orig, "sqlstate", None) == "23505"
+```
 
 ---
 
-_Reviewed: 2026-08-21_
+_Reviewed: 2026-09-08_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
