@@ -68,9 +68,15 @@ async def get_identity(request: Request,
         raise InvalidExternalJwt(bounded_reason=BoundedReason.duplicate_authorization)
 
     if credential is None:
-        # A reason of its own, never a null: the spike alert separates clients that send nothing
-        # from clients that send garbage, and it can only do that if the label distinguishes them.
-        raise InvalidExternalJwt(bounded_reason=BoundedReason.missing_token)
+        # `HTTPBearer` answers `None` for four inputs: no field, a non-Bearer scheme, an empty
+        # credential and an unparsable value. Only the first is an absent credential, so the raw
+        # field is read to tell them apart -- spec 01 §1.1 gives a non-Bearer scheme and an empty
+        # token the reason `malformed`, and `missing_token` only zero field values. The label is
+        # also what picks the challenge: `missing_token` earns the bare RFC 6750 §3.1 `Bearer`,
+        # and a garbage field earns `error="invalid_token"` like any other presented credential.
+        presented = request.headers.get("authorization") is not None
+        raise InvalidExternalJwt(bounded_reason=BoundedReason.malformed if presented
+                                 else BoundedReason.missing_token)
 
     # `verify` is synchronous and can block on a JWKS fetch, so it never runs on the event loop.
     claims, reason = await run_in_threadpool(request.app.state.jwt_verifier.verify,

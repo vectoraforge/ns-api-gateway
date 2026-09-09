@@ -129,11 +129,13 @@ class TestEveryRealUnauthorizedCarriesTheChallenge:
                                         "Basic dXNlcjpwYXNz",
                                         "Bearertoken123",
                                         ""])
-    def test_no_extractable_bearer_credential_gets_the_bare_challenge(self, probe_client, header):
-        """HTTPBearer extracts nothing from any of these, so no credential was presented to reject."""
+    def test_an_unusable_authorization_field_names_the_error(self, probe_client, header):
+        """HTTPBearer extracts nothing from any of these, but a field WAS presented, so the bare
+        challenge RFC 6750 3.1 reserves for a request carrying no credential is not what they earn.
+        Spec 01 1.1 calls a non-Bearer scheme and an empty token `malformed`, not `missing_token`."""
         response = probe_client.get("/probe", headers={"Authorization": header})
         assert response.status_code == 401
-        assert response.headers["WWW-Authenticate"] == "Bearer"
+        assert response.headers["WWW-Authenticate"] == 'Bearer error="invalid_token"'
 
     def test_a_credential_that_fails_verification_names_the_error(self, probe_client):
         """The one path where a credential WAS extracted and did not verify: RFC 6750 invalid_token."""

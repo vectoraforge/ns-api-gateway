@@ -198,7 +198,12 @@ class TestTheWireArmsRaiseAndTheHandlerRecordsThemOnce:
         # Well-formed on the wire -- one Bearer credential -- so this is the verifier's own reason.
         # WR-22: three segments that do not decode is a token's shape, not a forged signature.
         ({"Authorization": "Bearer not.a.jwt"}, "malformed"),
-    ], ids=["absent-token", "failed-verify"])
+        # 37.4 WR-01: HTTPBearer refuses these three exactly as it refuses an absent field, and
+        # spec 01 1.1 names all three `malformed` -- a field was presented in every one of them.
+        ({"Authorization": "Basic dXNlcjpwYXNz"}, "malformed"),
+        ({"Authorization": "Bearer"}, "malformed"),
+        ({"Authorization": "zzzzz"}, "malformed"),
+    ], ids=["absent-token", "failed-verify", "wrong-scheme", "empty-credential", "unparsable-field"])
     def test_each_arm_logs_one_record_naming_its_class_and_its_bounded_reason(
             self, headers, expected_reason, warnings):
         response = _client().get("/linked", headers=headers)
