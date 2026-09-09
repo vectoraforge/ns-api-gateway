@@ -68,6 +68,9 @@ async def issue_challenge(body: ChallengeRequest,
                                                            operation=AuthOperation(body.operation),
                                                            identity=identity,
                                                            now=evaluated_at)
+    # Deliberate commit: `get_db`'s runs in the teardown, after the body is sent, so without this
+    # the caller could hold a handle naming a row a failed commit never wrote.
+    await session.commit()
     # `no-store` rather than `no-cache`: the handle is a secret, and a revalidatable copy is a copy.
     return JSONResponse(content=PrepareResponse(challenge_id=challenge_id, expires_at=expires_at)
                         .model_dump(mode="json"),

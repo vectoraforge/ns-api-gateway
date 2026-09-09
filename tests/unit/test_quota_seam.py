@@ -388,8 +388,10 @@ class TestNoConnectionIsHeldAcrossTheProviderCall:
 
         await service.create_chat(phrase=PHRASE, user_id=TEST_USER_ID, lang="en")
 
+        # The trailing commit is WR-51's: the credit is already spent when this returns, so the
+        # chat rows are made durable before the route answers rather than in `get_db`'s teardown.
         assert events == ["request_committed", "session_opened", "session_committed",
-                          "session_closed", "provider_called"]
+                          "session_closed", "provider_called", "request_committed"]
 
     async def test_the_follow_up_commits_its_request_session_the_same_way(self, mock_chats_db):
         events: list[str] = []
@@ -402,7 +404,7 @@ class TestNoConnectionIsHeldAcrossTheProviderCall:
         await service.send_message(uuid4(), user_id=TEST_USER_ID, message="why?")
 
         assert events == ["request_committed", "session_opened", "session_committed",
-                          "session_closed", "provider_called"]
+                          "session_closed", "provider_called", "request_committed"]
 
     async def test_a_service_rejection_commits_nothing(self, mock_chats_db):
         """The commit sits after the two limit checks, so a refused request never opens a transaction to end."""

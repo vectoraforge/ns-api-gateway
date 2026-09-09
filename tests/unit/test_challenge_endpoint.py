@@ -53,13 +53,16 @@ class _RecordingSession:
 
     def __init__(self) -> None:
         self.statements: list[object] = []
+        self.commits = 0
 
     async def exec(self, statement):
         self.statements.append(statement)
         return _EmptyResult()
 
     async def commit(self):
-        raise AssertionError("no path in this module may commit")
+        # Counted, not refused: the route commits the issued row before it answers, because
+        # `get_db`'s own commit runs in the teardown, after the body is already sent.
+        self.commits += 1
 
     async def rollback(self):
         raise AssertionError("no path in this module may roll back")
@@ -132,7 +135,7 @@ class TestTheIssuableOperations:
 
     @pytest.mark.parametrize("operation", _EVERY_OPERATION)
     def test_a_member_of_the_vocabulary_is_issued_with_the_two_field_body(self, linked_client, store,
-                                                                          operation):
+                                                                          session, operation):
         response = linked_client.post("/auth/challenge", json={"operation": operation})
 
         assert response.status_code == 200
@@ -142,6 +145,8 @@ class TestTheIssuableOperations:
         assert store.issued == [AuthOperation(operation)]
         # The member and not the caller's string, so the store never stores what was typed.
         assert all(isinstance(issued, AuthOperation) for issued in store.issued)
+        # The handle names a row, so the row is durable before the caller is told the handle.
+        assert session.commits == 1
 
     def test_the_issued_handle_is_not_cacheable(self, client):
         """`no-store` and not `no-cache`: a revalidatable copy of a secret handle is still a copy."""
@@ -200,6 +205,8 @@ class TestEveryRefusalLeavesNothingBehind:
         assert store.issued == []
         # Issuance resolves no identity of its own, so a statement here would be a new read.
         assert session.statements == []
+        # A refusal reaches no commit either: only the issuing arm has a row to make durable.
+        assert session.commits == 0
         assert fake_firebase_adapter.calls == []
 
     def test_an_issue_after_a_refusal_still_succeeds(self, client, store):

@@ -99,6 +99,9 @@ class ChatService:
         chat.messages.append(human_message)
         chat.messages.append(ai_message)
         self.chats_db.create_chat(chat)
+        # Deliberate commit: `charge` above spent a monthly credit in its own session and has already
+        # committed it, so answering before these rows are durable can bill for a chat that never existed.
+        await self.session.commit()
 
         return ai_message
 
@@ -124,6 +127,8 @@ class ChatService:
 
         chat.messages.append(human_message)
         chat.messages.append(ai_message)
+        # Deliberate commit, as in `create_chat`: the credit is already spent when this returns.
+        await self.session.commit()
 
         return ai_message
 
@@ -143,6 +148,8 @@ class ChatService:
         chats_deleted = await self.chats_db.delete(chat_id, user_id)
         if chats_deleted == 0:
             raise InvalidChatError(chat_id)
+        # Deliberate commit: a 204 states the chat is gone, so it must be gone before the route answers.
+        await self.session.commit()
 
     def get_examples(self, lang: str) -> ExamplesResponse:
         examples = self.examples.get(lang, [])
