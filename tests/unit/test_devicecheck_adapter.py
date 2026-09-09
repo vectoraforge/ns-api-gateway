@@ -271,10 +271,9 @@ class TestAnAbsentCredentialFailsClosed:
                                  encryption_algorithm=serialization.BestAvailableEncryption(b"secret")),
     ], ids=["garbage", "empty", "framing-only", "not-text", "public-half", "passphrase-wrapped"])
     async def test_a_present_but_unusable_key_is_that_same_absent_state(self, contents, tmp_path):
-        """WR-22: nothing parsed the PEM, so a truncated or corrupt file reached `jwt.encode` and
-        raised past the retry frame onto the generic 500 on every claim, with the pod healthy.
-        CR-09: the last two parse and then fail with `AttributeError` and `TypeError`, which the
-        original except tuple did not name, so they raised out of `lifespan` and crashlooped."""
+        """WR-22: an unparsed PEM reached `jwt.encode` and raised past the retry frame onto the
+        generic 500 on every claim. CR-09: the last two parse and then fail with `AttributeError`
+        and `TypeError`, outside the first except tuple, so they crashlooped the pod from boot."""
         pem = tmp_path / "AuthKey_ABCDE12345.p8"
         pem.write_bytes(contents)
         recorder = Recorder()
