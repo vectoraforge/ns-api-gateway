@@ -39,6 +39,11 @@ class BoundedReason(StrEnum):
     audience_mismatch = "audience_mismatch"
     expired = "expired"
     empty_subject = "empty_subject"
+    # The ninth, and the one no barrier rejection can carry: only a caller that pinned
+    # `required_claims` runs the comparison that returns it. The specs close
+    # `invalid_external_jwt` over the eight above, and name them as a minimum rather than a
+    # total (`00-overview-and-shared-contracts.md`: "including at least").
+    required_claim_mismatch = "required_claim_mismatch"
 
 
 #: The decode rules, module-level so a test double substituting only the key lookup imports them
@@ -216,8 +221,12 @@ class JWTVerifier:
 
         for claim, expected in self._required_claims.items():
             if payload.get(claim) != expected:
-                # The same reason every other refusal carries, so the answer names no failed check.
-                return None, BoundedReason.bad_signature
+                # Its own reason, not `bad_signature`. The answer is `auth_required` either way and
+                # the reason is never client-visible, so naming the class of failure discloses
+                # nothing -- while collapsing it leaves a mistyped push identity in this
+                # deployment's own configuration indistinguishable from a forged token, which is
+                # the one distinction `.env.example` promises the operator this field carries.
+                return None, BoundedReason.required_claim_mismatch
 
         claims, reason = claims_from_payload(payload)
         if claims is None:

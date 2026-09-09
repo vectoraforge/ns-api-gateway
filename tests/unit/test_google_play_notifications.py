@@ -709,11 +709,19 @@ def _require_list() -> list[str]:
     return required
 
 
+# The eight bounded reasons `invalid_external_jwt` is closed over: `01-foundation.md:260`,
+# `02-create-user.md:85`, `11-sign-out-all.md:80`. `00-overview-and-shared-contracts.md:617`
+# names them as a minimum -- "including at least" -- which is what admits a ninth that only a
+# caller pinning required claims can reach.
+SPEC_REASONS = frozenset({"missing_token", "malformed", "duplicate_authorization",
+                          "bad_signature", "issuer_mismatch", "audience_mismatch",
+                          "expired", "empty_subject"})
+
 # Each arm of the push-token check, with the bounded reason the refusal carries as its `stage`.
 TOKEN_REFUSALS = [
     ({"private_key": FOREIGN_PRIVATE_KEY_PEM}, "bad_signature"),
-    ({"email": "someone-else@example-project.iam.gserviceaccount.com"}, "bad_signature"),
-    ({"email_verified": False}, "bad_signature"),
+    ({"email": "someone-else@example-project.iam.gserviceaccount.com"}, "required_claim_mismatch"),
+    ({"email_verified": False}, "required_claim_mismatch"),
     ({"aud": "https://api.example.com/webhooks/somewhere-else"}, "audience_mismatch"),
     ({"iss": "https://accounts.example.com"}, "issuer_mismatch"),
 ]
@@ -771,11 +779,14 @@ class TestThePushTokenCheck:
 class TestTheClaimPinsArePostDecodeComparisons:
     """D-09's two properties, which a passing verification case would otherwise hide."""
 
-    def test_bounded_reason_stays_inside_the_closed_set_the_specs_name(self):
-        """A member outside those eight would be a refusal word no spec closed over."""
-        assert set(BoundedReason) <= {"missing_token", "malformed", "duplicate_authorization",
-                                      "bad_signature", "issuer_mismatch", "audience_mismatch",
-                                      "expired", "empty_subject"}
+    def test_bounded_reason_adds_only_a_reason_no_barrier_rejection_can_carry(self):
+        """The eight the specs close `invalid_external_jwt` over must all still be there, and the
+        only member outside them must be one the barrier cannot reach: it passes no
+        `required_claims`, so the `is None` guard returns before the comparison that yields it."""
+        assert SPEC_REASONS <= set(BoundedReason)
+        assert set(BoundedReason) - SPEC_REASONS == {BoundedReason.required_claim_mismatch}
+        # One return site, under the pin. A second would be a word no spec closed over.
+        assert VERIFIER_MODULE.read_text().count("BoundedReason.required_claim_mismatch") == 1
 
     def test_email_is_compared_after_decode_rather_than_required(self):
         """In `require`, a Google token shape without `email` would fail like a forgery (P-03)."""

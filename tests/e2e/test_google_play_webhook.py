@@ -196,8 +196,9 @@ REFUSALS = (
     (None, GOOGLE_PACKAGE_NAME, "push_credential_absent"),
     (_RawBearer("not-a-jwt"), GOOGLE_PACKAGE_NAME, "malformed"),
     ({"private_key": FOREIGN_PRIVATE_KEY_PEM}, GOOGLE_PACKAGE_NAME, "bad_signature"),
-    ({"extra_claims": {"email": OTHER_SERVICE_ACCOUNT}}, GOOGLE_PACKAGE_NAME, "bad_signature"),
-    ({"email_verified": False}, GOOGLE_PACKAGE_NAME, "bad_signature"),
+    ({"extra_claims": {"email": OTHER_SERVICE_ACCOUNT}}, GOOGLE_PACKAGE_NAME,
+     "required_claim_mismatch"),
+    ({"email_verified": False}, GOOGLE_PACKAGE_NAME, "required_claim_mismatch"),
     ({"aud": OTHER_AUDIENCE}, GOOGLE_PACKAGE_NAME, "audience_mismatch"),
     ({"iss": OTHER_ISSUER}, GOOGLE_PACKAGE_NAME, "issuer_mismatch"),
     ({"exp": time.time() - 3600}, GOOGLE_PACKAGE_NAME, "expired"),
@@ -213,7 +214,8 @@ REFUSAL_IDS = ["no-credential", "not-a-jwt", "signature", "email", "email-verifi
 # duplicate-header rule runs on this path at all.
 _PUSH_REASONS = frozenset({BoundedReason.bad_signature, BoundedReason.malformed,
                            BoundedReason.issuer_mismatch, BoundedReason.audience_mismatch,
-                           BoundedReason.expired, BoundedReason.empty_subject})
+                           BoundedReason.expired, BoundedReason.empty_subject,
+                           BoundedReason.required_claim_mismatch})
 
 # The two places on this path that raise the refusal, read as source so a third one arrives here.
 _REFUSAL_SOURCES = (inspect.getsource(verify_google_play_notification),
