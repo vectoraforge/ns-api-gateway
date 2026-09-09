@@ -150,6 +150,39 @@ class TestFollowup:
         assert exc_info.value.chat_id == chat_id
 
     @pytest.mark.asyncio
+    async def test_followup_on_a_chat_deleted_across_the_provider_call_is_a_refusal(
+            self, service, mock_chats_db):
+        """WR-42: the two inserts would point at no `core.chats` row, and the foreign key is not an
+        `AppError` -- an opaque 500 raised after the credit was already committed."""
+        chat_id = uuid4()
+        chat = Chat(id=chat_id, title="hello", user_id=TEST_USER_ID)
+        # The second read is the one taken in the transaction that writes.
+        mock_chats_db.get_chat.side_effect = [chat, None]
+        service.llm_service.ainvoke.return_value = {"resolved_mode": "analyze", "response": "r",
+                                                    "issues": [], "suggestions": []}
+
+        with pytest.raises(InvalidChatError) as exc_info:
+            await service.send_message(chat_id, user_id=TEST_USER_ID, message="why?")
+
+        assert exc_info.value.chat_id == chat_id
+        assert chat.messages == []
+
+    @pytest.mark.asyncio
+    async def test_followup_on_a_chat_that_is_still_there_writes_control(self, service,
+                                                                        mock_chats_db):
+        """The control: the case above must refuse because the chat went, not because a second
+        read was introduced that no chat survives."""
+        chat_id = uuid4()
+        chat = Chat(id=chat_id, title="hello", user_id=TEST_USER_ID)
+        mock_chats_db.get_chat.side_effect = [chat, chat]
+        service.llm_service.ainvoke.return_value = {"resolved_mode": "analyze", "response": "r",
+                                                    "issues": [], "suggestions": []}
+
+        await service.send_message(chat_id, user_id=TEST_USER_ID, message="why?")
+
+        assert [message.role for message in chat.messages] == [ChatRole.human, ChatRole.ai]
+
+    @pytest.mark.asyncio
     async def test_followup_capacity_exceeded(self, service, mock_chats_db):
         chat_id = uuid4()
         chat = Chat(id=chat_id, title="hello", user_id=TEST_USER_ID)
