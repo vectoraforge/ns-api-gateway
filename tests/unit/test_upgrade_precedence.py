@@ -377,7 +377,10 @@ class TestTheUpgradeCaseMatrix:
         assert rejections.results == ["not_linked",
                                       "provider_transition_not_allowed",
                                       "provider_account_already_linked"]
-        assert identity_row.id is not None
+        # One client answer, but every refusal that names a row must name the one under test,
+        # or an operator reading the log is sent to the wrong account.
+        assert {fields["identity_row_id"] for _, fields in rejections.entries
+                if "identity_row_id" in fields} == {str(identity_row.id)}
 
 
 def _not_linked_case(store, upgrade, account, adapter) -> None:
