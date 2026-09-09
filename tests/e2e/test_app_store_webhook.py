@@ -1,4 +1,6 @@
 """The App Store notification callback, end to end through the real router against a real database."""
+import ast
+import inspect
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -10,6 +12,8 @@ from sqlalchemy import func
 from sqlmodel import col, select
 from unit.conftest import make_token
 
+from nativespeaker.api.app.dependencies import verify_app_store_notification
+from nativespeaker.api.auth import app_store
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.errors import NotificationRejected, UnmappedStoreProduct
 from nativespeaker.api.tables import (
@@ -51,9 +55,36 @@ KNOWN_STATUSES = frozenset({"OK", "VERIFICATION_FAILURE", "INVALID_APP_IDENTIFIE
                             "INVALID_CERTIFICATE", "INVALID_CHAIN_LENGTH", "INVALID_CHAIN",
                             "INVALID_ENVIRONMENT", "RETRYABLE_VERIFICATION_FAILURE"})
 
-# Every reachable arm: the library's whole status set less the one that is not a refusal.
-REFUSAL_STAGES = tuple(status.name for status in VerificationStatus
-                       if status is not VerificationStatus.OK)
+# The two places on this path that raise the refusal, read as source so a third one arrives here.
+_REFUSAL_SOURCES = (inspect.getsource(verify_app_store_notification),
+                    inspect.getsource(app_store))
+
+# What a `stage=` that is not a literal leaves behind: the library's own `VerificationStatus.name`.
+_COMPUTED = "<computed at the raise site>"
+
+
+def _raised_refusal_stages() -> set[str]:
+    """Every `NotificationRejected(stage=...)` the Apple path raises, read from its own source."""
+    stages = set()
+    for source in _REFUSAL_SOURCES:
+        for node in ast.walk(ast.parse(source)):
+            if not (isinstance(node, ast.Call)
+                    and getattr(node.func, "id", None) == "NotificationRejected"):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg == "stage":
+                    stages.add(keyword.value.value
+                               if isinstance(keyword.value, ast.Constant) else _COMPUTED)
+    return stages
+
+
+# Every reachable arm, written out rather than derived, so the control below can disagree with the
+# module's own raise sites. Deriving it from `VerificationStatus` was how the two stages the seam
+# raises outside that enum came to have no case at all.
+REFUSAL_STAGES = ("VERIFICATION_FAILURE", "INVALID_APP_IDENTIFIER", "INVALID_CERTIFICATE",
+                  "INVALID_CHAIN_LENGTH", "INVALID_CHAIN", "INVALID_ENVIRONMENT",
+                  "RETRYABLE_VERIFICATION_FAILURE",
+                  "payload_unstructurable", "notification_without_identity")
 
 # One obviously synthetic attribution token, and a second that disagrees with it.
 TOKEN = "a-synthetic-attribution-token"
@@ -88,6 +119,12 @@ def _spy_on(monkeypatch, targets: tuple[str, ...], levels: tuple[str, ...]) -> _
         for level in levels:
             monkeypatch.setattr(f"{target}.{level}", spy.record)
     return spy
+
+
+@pytest.fixture
+def refusal_records(monkeypatch) -> _LogSpy:
+    """Every WARNING record the handler writes, which is the level a refusal is recorded at."""
+    return _spy_on(monkeypatch, (_LOGGERS[0],), ("warning",))
 
 
 @pytest.fixture
@@ -238,8 +275,8 @@ class TestEveryVerificationFailureAnswersTheOneBody:
 
     @pytest.mark.parametrize("stage", REFUSAL_STAGES)
     async def test_each_refusal_answers_the_same_401_body(
-            self, webhook_client, scripted_app_store_notifications, stage):
-        """One parameter per reachable status, so an arm the library adds arrives here rather than silently."""
+            self, webhook_client, scripted_app_store_notifications, refusal_records, stage):
+        """One parameter per reachable arm, so an arm the library or the seam adds arrives here."""
         scripted_app_store_notifications.script(NotificationRejected(stage=stage))
 
         response = await webhook_client.post(PATH, json={"signedPayload": ENVELOPE})
@@ -248,12 +285,20 @@ class TestEveryVerificationFailureAnswersTheOneBody:
         assert response.json() == REJECTED
         # On the wire, not after parsing: a field added later fails here rather than becoming an oracle.
         assert response.content == REJECTED_BODY
+        # The distinguishing detail exists, and it exists only in the log the operator reads.
+        assert [(event, fields["stage"]) for event, fields in refusal_records.entries] == [
+            ("notification_rejected", stage)]
 
     async def test_every_reachable_arm_is_covered_by_one_parameter(self):
-        """The control: the members are pinned, so a library that grows one fails here rather than
-        expanding the parametrisation silently. Derived from the enum on both sides, this could not."""
+        """The control: the library's members are pinned, so a status it grows fails here, and the
+        seam's own raise sites are read, so a stage raised outside that enum cannot be missed --
+        `notification_without_identity` was, because both sides were read off the enum."""
         assert {status.name for status in VerificationStatus} == KNOWN_STATUSES
-        assert set(REFUSAL_STAGES) == KNOWN_STATUSES - {"OK"}
+        raised = _raised_refusal_stages()
+        # The one computed stage is `failure.status.name`, so it stands for every member of the
+        # library's enum but `OK`; the literal ones stand only for themselves.
+        assert _COMPUTED in raised
+        assert set(REFUSAL_STAGES) == (raised - {_COMPUTED}) | (KNOWN_STATUSES - {"OK"})
 
     async def test_a_refused_payload_writes_nothing(
             self, webhook_client, scripted_app_store_notifications, _db_transaction):
