@@ -139,6 +139,40 @@ def test_main_config_missing_file():
                               _env_file=None)  # ty: ignore[unknown-argument]
 
 
+class TestAYamlFileThatIsNotAMappingNamesItself:
+    """37.4 WR-04. An empty ConfigMap key is a routine mount failure, and the bare interpreter
+    error it used to raise named neither the file nor the problem an operator has to fix."""
+
+    def _load(self, config: str, examples: str):
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            Path(tmp_dir, "config.yaml").write_text(config)
+            Path(tmp_dir, "prompt.txt").write_text("Analyze {lang} phrase: {phrase}")
+            Path(tmp_dir, "examples.yaml").write_text(examples)
+
+            with patch.dict(os.environ, _ENV_SECRETS, clear=True):
+                # See above: _env_file is invisible to ty's synthesised __init__.
+                EnvironmentConfig(config_dir=Path(tmp_dir),
+                                  _env_file=None)  # ty: ignore[unknown-argument]
+        finally:
+            shutil.rmtree(tmp_dir)
+
+    @pytest.mark.parametrize("content", ["", "# every line a comment\n", "- one\n- two\n", "42\n"],
+                             ids=["empty", "comments-only", "a-list", "a-scalar"])
+    def test_a_config_file_carrying_no_mapping_names_the_file(self, content):
+        with pytest.raises(ValidationError, match="config.yaml does not contain a YAML mapping"):
+            self._load(config=content, examples='en:\n  - "Example 1"\n')
+
+    def test_an_examples_file_carrying_no_mapping_names_the_file(self):
+        """The second read, which reached pydantic as `None` and blamed the `examples` field."""
+        with pytest.raises(ValidationError, match="examples.yaml does not contain a YAML mapping"):
+            self._load(config="model:\n  name: gpt-4\n", examples="")
+
+    def test_two_well_formed_mappings_still_load_control(self):
+        """The control: a loader that rejected everything would pass both cases above."""
+        self._load(config="model:\n  name: gpt-4\n", examples='en:\n  - "Example 1"\n')
+
+
 class TestSubscriptionConfigSurfaceIsGone:
     """The model no longer describes subscription plans or receipt verification."""
 

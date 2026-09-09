@@ -147,6 +147,17 @@ class AppConfig(BaseConfig):
     examples: dict[str, list[str]]
 
 
+def _mapping(path: Path) -> dict:
+    """One YAML document as a mapping, or a failure naming the file that is not one."""
+    loaded = yaml.safe_load(path.read_text())
+    if not isinstance(loaded, dict):
+        # An empty file, an all-comments file, or a list at the top level is a routine ConfigMap
+        # or volume-mount failure. Unchecked it reaches pydantic as `None` and crashloops the pod
+        # with an interpreter error naming neither the file nor the problem.
+        raise ValueError(f"{path} does not contain a YAML mapping")
+    return loaded
+
+
 class EnvironmentConfig(BaseConfig):
     config_dir: Path = Field(default=Path("config/"))
     config_filename: str = Field(default="config.yaml")
@@ -160,8 +171,7 @@ class EnvironmentConfig(BaseConfig):
         config_path = self.config_dir / self.config_filename
         prompt_path = self.config_dir / self.prompt_filename
         examples_path = self.config_dir / self.examples_filename
-        yaml_data = yaml.safe_load(config_path.read_text())
-        self.app_config = AppConfig(**yaml_data,
+        self.app_config = AppConfig(**_mapping(config_path),
                                     prompt=prompt_path.read_text(),
-                                    examples=yaml.safe_load(examples_path.read_text()))
+                                    examples=_mapping(examples_path))
         return self
