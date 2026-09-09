@@ -2,6 +2,7 @@
 import asyncio
 import contextlib
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -41,6 +42,12 @@ _WAIT = "5s"
 
 # Short on purpose: the blocking cases assert a lock is NOT available, so the timeout is their instrument.
 _NO_WAIT = "500ms"
+
+# How long A keeps the fixed-order locks before releasing them, in the no-deadlock control.
+_A_HOLDS_FOR_SECONDS = 0.2
+
+# The wait B must have measured to prove it blocked. Below A's hold, so scheduling jitter is not a failure.
+_BLOCKED_FOR_SECONDS = 0.15
 
 
 @dataclass(frozen=True)
@@ -175,12 +182,14 @@ class TestTheLockOrderIsLoadBearing:
             await conn_a.fetch(_LOCK_USAGE, committed_grant.grant_id)
 
             async def b_takes_the_same_order_and_waits():
+                started = time.monotonic()
                 await conn_b.fetch(_LOCK_GRANTS, committed_grant.user_id)
-                return await conn_b.fetch(_LOCK_USAGE, committed_grant.grant_id)
+                # Measured, not assumed: how long B sat on A's grant lock is the evidence of contention.
+                waited = time.monotonic() - started
+                return waited, await conn_b.fetch(_LOCK_USAGE, committed_grant.grant_id)
 
             async def a_finishes_shortly():
-                # Long enough that B is provably blocked before A releases; without it the two could serialise.
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(_A_HOLDS_FOR_SECONDS)
                 await tx_a.rollback()
 
             outcomes = await asyncio.gather(b_takes_the_same_order_and_waits(),
@@ -189,7 +198,12 @@ class TestTheLockOrderIsLoadBearing:
 
             assert not [outcome for outcome in outcomes if isinstance(outcome, BaseException)], \
                 f"the fixed order must not deadlock or time out, got {outcomes}"
-            assert [row["grant_id"] for row in outcomes[0]] == [committed_grant.grant_id]
+            waited, rows = outcomes[0]
+            # Without contention B takes the grant lock at once, and this case would be two serialized
+            # transactions rather than the control the deadlock case above is measured against.
+            assert waited >= _BLOCKED_FOR_SECONDS, \
+                f"B never blocked on A's grant lock: it took the lock in {waited:.3f}s"
+            assert [row["grant_id"] for row in rows] == [committed_grant.grant_id]
         finally:
             await _rollback(tx_b)
             await _rollback(tx_a)
