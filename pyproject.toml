@@ -17,8 +17,6 @@ dependencies = [
     "sqlmodel >=0.0.22",
     "greenlet >=3.0",
     "PyJWT[crypto]>=2.9.0",
-    "ruff==0.15.7",
-    "ty==0.0.24",
     "structlog>=25.5",
     "app-store-server-library>=3.0.0",
     "firebase-admin>=7.3.0",
