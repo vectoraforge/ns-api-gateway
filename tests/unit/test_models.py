@@ -252,7 +252,7 @@ class TestExceptions:
 
 
 class TestPurchaseProviderEnum:
-    """The Python mirror of the pre-existing crud enum type, whose names deliberately differ."""
+    """The Python mirror of the pre-existing database enum type, whose names deliberately differ."""
 
     def test_exactly_two_members_in_migration_order(self):
         assert list(PurchaseProvider) == [PurchaseProvider.apple, PurchaseProvider.google_play]
@@ -275,7 +275,7 @@ class TestStorePurchaseTokenMapping:
         assert StorePurchaseToken.__table_args__ == {"schema": "core"}
 
     def test_orm_primary_key_is_the_composite_user_id_provider(self):
-        """ORM-level only. The table has no crud primary key by design (migration:327-338)."""
+        """ORM-level only. The table has no database primary key by design (migration:327-338)."""
         columns = StorePurchaseToken.__table__.primary_key.columns
         assert {column.name for column in columns} == {"user_id", "provider"}
 

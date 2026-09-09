@@ -1,4 +1,4 @@
-"""The consuming transaction's rejection arms at unit speed; durability needs a real crud."""
+"""The consuming transaction's rejection arms at unit speed; durability needs a real database."""
 import ast
 from datetime import UTC, datetime
 from pathlib import Path

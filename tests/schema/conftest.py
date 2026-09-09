@@ -52,7 +52,7 @@ def admin_dsn() -> str:
 def _check_identifier(name: str) -> str:
     """Reject any database name that is not a plain lowercase identifier."""
     if not _SAFE_IDENTIFIER.fullmatch(name):
-        msg = f"refusing to interpolate {name!r} as a crud identifier"
+        msg = f"refusing to interpolate {name!r} as a database identifier"
         raise ValueError(msg)
     return name
 

@@ -5,7 +5,7 @@ from pathlib import Path
 from nativespeaker.api import tables
 from nativespeaker.api.tables import User
 
-# The same seven names tests/schema/test_inventory.py asserts against the live crud.
+# The same seven names tests/schema/test_inventory.py asserts against the live database.
 EXPECTED_FIELDS = {
     "id", "email", "display_name", "registered_at", "active", "created_at", "updated_at",
 }
@@ -15,7 +15,7 @@ ABSENT_FIELDS = ("jwt_sub", "name", "subscription_plan")
 
 # Symbols that left with tables/subscriptions.py and tables.users.UsageMonthly, and stayed gone.
 # `Subscription`, `SubscriptionEvent` and the two status names came back in 43-01, against the v2.0
-# migration and in tables/purchases.py; the plan names below are the v1 layer and have no crud table.
+# migration and in tables/purchases.py; the plan names below are the v1 layer and have no database table.
 REMOVED_SYMBOLS = frozenset({
     "SubscriptionPlan", "SubscriptionPlanType",
     "SubscriptionProvider", "SubscriptionProviderType", "UsageMonthly",
@@ -54,7 +54,7 @@ class TestUserModel:
             assert not hasattr(User, field), f"User still exposes {field}"
 
     def test_email_is_nullable(self):
-        """NULL unless a verified address was copied, so NOT NULL would reject rows the crud accepts."""
+        """NULL unless a verified address was copied, so NOT NULL would reject rows the database accepts."""
         assert User(email=None).email is None
         assert User().email is None
 
