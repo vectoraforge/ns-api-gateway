@@ -15,7 +15,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.crud.grants import ActivationOutcome, GrantsDB
+from nativespeaker.api.crud.grants import (
+    ActivationOutcome,
+    GrantsDB,
+    _effective_grants_statement,
+    _usage_statement,
+)
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.services.subscriptions import SubscriptionsService
 from nativespeaker.api.tables.grants import FREE_GRANT_SOURCES, AccessGrant, AccessGrantSource
@@ -25,6 +30,9 @@ from schema.test_subscription_ingestion import _clean, _notification
 pytestmark = pytest.mark.schema
 
 # Mirrors GrantsDB.lock_effective_grants; the ORDER BY is the lock order itself, not presentation.
+# Pinned to production by TestTheMirrorsStillMatchProduction below, so a drift there fails here.
+# The one deliberate difference: production binds the request's captured instant, and a raw
+# connection has none to bind, so the mirror asks PostgreSQL for the transaction's own.
 _LOCK_GRANTS = (
     "SELECT id FROM core.access_grants "
     "WHERE user_id = $1 AND status = 'active' "
@@ -36,6 +44,37 @@ _LOCK_GRANTS = (
 
 # Mirrors GrantsDB.lock_usage: second in the order, keyed on the whole primary key, and never an INSERT.
 _LOCK_USAGE = "SELECT grant_id FROM core.user_monthly_usage WHERE grant_id = $1 FOR UPDATE"
+
+
+class TestTheMirrorsStillMatchProduction:
+    """Every contention case below issues the two mirrors, so nothing they prove is production's
+    unless production still compiles to what the mirrors say. Compiled, not executed: no database."""
+
+    def test_the_grant_mirror_still_matches_the_locking_read(self):
+        compiled = str(
+            _effective_grants_statement(uuid.uuid4(), datetime.now(UTC)).with_for_update())
+
+        # The lock and its order are the whole subject of the cases below: dropped or reversed in
+        # production, the deadlock case would still deadlock a statement nothing runs.
+        assert "FOR UPDATE" in compiled
+        assert "ORDER BY core.access_grants.id ASC" in compiled
+        # No cap: a second effective grant must reach the caller rather than be picked over, and a
+        # LIMIT 1 would also shrink the lock the mirror takes to one row.
+        assert "LIMIT" not in compiled
+        # The four terms the mirror spells out, so a narrowed or widened predicate fails here.
+        for term in ("core.access_grants.user_id = ",
+                     "core.access_grants.status = ",
+                     "core.access_grants.starts_at <= ",
+                     "core.access_grants.ends_at IS NULL",
+                     "core.access_grants.ends_at > "):
+            assert term in compiled, f"the mirror carries {term!r} and production no longer does"
+
+    def test_the_usage_mirror_still_matches_the_locking_read(self):
+        compiled = str(_usage_statement(uuid.uuid4()).with_for_update())
+
+        assert "FOR UPDATE" in compiled
+        # Keyed on the whole primary key, which is what makes it the second lock and not a range.
+        assert "core.user_monthly_usage.grant_id = " in compiled
 
 # Longer than PostgreSQL's 1s deadlock_timeout, so a deadlock case fails on a missed detection, not a timeout.
 _WAIT = "5s"
