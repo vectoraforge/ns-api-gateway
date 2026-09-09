@@ -67,6 +67,11 @@ def _compiled(statement) -> str:
     return str(statement.compile(dialect=postgresql.dialect()))
 
 
+def _bound(statement) -> list:
+    """The values the statement carries, which the compiled text renders only as placeholders."""
+    return list(statement.compile(dialect=postgresql.dialect()).params.values())
+
+
 def _linked_identity(*, email=EMAIL, display_name=DISPLAY_NAME) -> LinkedIdentity:
     """A linked caller carrying the profile fields the shared `TEST_IDENTITY` leaves unset."""
     user_id = uuid7()
@@ -150,6 +155,14 @@ class TestTheProfileTakesOneQuery:
         client.get("/users/me")
 
         assert all("core.users" not in _compiled(statement) for statement in session.statements)
+
+    def test_the_read_is_keyed_on_the_barrier_resolved_caller(self, client, session, identity):
+        """WR-84: the happy path has no refusal to inspect, so an unscoped read leaks every account's
+        store tokens through a 200 that the two secrecy cases below never see."""
+        client.get("/users/me")
+
+        assert "core.store_purchase_tokens.user_id = " in _compiled(session.statements[0])
+        assert _bound(session.statements[0]) == [identity.user.id]
 
 
 # Signals the caller supplies about itself: a user agent, an unknown header, an unknown query parameter.

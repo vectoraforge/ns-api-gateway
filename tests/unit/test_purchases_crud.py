@@ -51,6 +51,11 @@ def _compiled(statement) -> str:
     return str(statement.compile(dialect=postgresql.dialect()))
 
 
+def _bound(statement) -> list:
+    """The values the statement carries, which the compiled text renders only as placeholders."""
+    return list(statement.compile(dialect=postgresql.dialect()).params.values())
+
+
 async def _read(tokens):
     """The admitting half: the mapping the read returns, and the session it used."""
     session = _StubSession(tokens)
@@ -135,3 +140,19 @@ class TestTheReadTakesOneUnlockedStatement:
         _, session = await _read(SEEDED)
 
         assert all("core.users" not in _compiled(statement) for statement in session.statements)
+
+
+class TestTheReadIsScopedToOneOwner:
+    """WR-84: the token column is the secret this read returns, so an unscoped predicate hands every
+    account's Apple and Play tokens to whichever caller asked. SHARED-INVARIANTS:5 is the whole rule."""
+
+    async def test_the_statement_carries_an_owner_predicate(self):
+        _, session = await _read(SEEDED)
+
+        assert "core.store_purchase_tokens.user_id = " in _compiled(session.statements[0])
+
+    async def test_the_owner_it_is_keyed_on_is_the_caller_the_handler_named(self):
+        """The predicate is not enough on its own: the compiled text renders its value as a placeholder."""
+        _, session = await _read(SEEDED)
+
+        assert _bound(session.statements[0]) == [USER_ID]
