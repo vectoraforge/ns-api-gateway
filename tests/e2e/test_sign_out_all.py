@@ -112,16 +112,19 @@ _UNLINKED_SUBJECT = "sign-out-all-unlinked-subject"
 _RETIRED_SUBJECT = "sign-out-all-retired-subject"
 _BLOCKED_SUBJECT = "sign-out-all-blocked-subject"
 
-# Each rejection the shared barrier owns: the state that causes it, the header that reaches it, and its class.
+# Each rejection the shared barrier owns: the state that causes it, the credential that reaches it,
+# and its class. A subject is carried rather than a signed token, because a param is built when this
+# module is imported at collection and `make_token` expires an hour later: a session that takes that
+# long to reach this module would fail these cases at the JWT check instead of at the barrier.
 _BARRIER_REJECTIONS = (
-    pytest.param(None, None, InvalidExternalJwt, id="no-credential"),
-    pytest.param(None, {"Authorization": "Bearer not-a-signed-token"}, InvalidExternalJwt,
+    pytest.param(None, None, None, InvalidExternalJwt, id="no-credential"),
+    pytest.param(None, {"Authorization": "Bearer not-a-signed-token"}, None, InvalidExternalJwt,
                  id="an-unverifiable-token"),
-    pytest.param(None, _auth(_UNLINKED_SUBJECT), PreAuthIdentityNotAllowed, id="a-pre-auth-subject"),
+    pytest.param(None, None, _UNLINKED_SUBJECT, PreAuthIdentityNotAllowed, id="a-pre-auth-subject"),
     pytest.param({"subject": _RETIRED_SUBJECT, "identity_state": IdentityState.historical},
-                 _auth(_RETIRED_SUBJECT), HistoricalIdentity, id="a-retired-identity"),
+                 None, _RETIRED_SUBJECT, HistoricalIdentity, id="a-retired-identity"),
     pytest.param({"subject": _BLOCKED_SUBJECT, "user_active": False},
-                 _auth(_BLOCKED_SUBJECT), BlockedUser, id="a-blocked-user"),
+                 None, _BLOCKED_SUBJECT, BlockedUser, id="a-blocked-user"),
 )
 
 
@@ -262,14 +265,17 @@ class TestARepeatedSignOut:
 class TestEveryBarrierRejectionIsTheOneSyncAnswers:
     """T-46-05: the barrier is shared and never re-implemented, so no rejection may differ by route."""
 
-    @pytest.mark.parametrize(("seeding", "headers", "rejection"), _BARRIER_REJECTIONS)
+    @pytest.mark.parametrize(("seeding", "raw_headers", "subject", "rejection"),
+                             _BARRIER_REJECTIONS)
     async def test_the_two_routes_answer_the_same_rejection(
             self, sign_out_client, _db_transaction, scripted_firebase_adapter,
-            seeding, headers, rejection):
+            seeding, raw_headers, subject, rejection):
         if seeding is not None:
             await seed_identity(_db_transaction, issuer=TEST_ISSUER,
                                 provider=IdentityProvider.google, **seeding)
         scripted_firebase_adapter.script_revocation(None)
+        # Signed here, so the token's hour starts when the case runs rather than when it was collected.
+        headers = raw_headers if subject is None else _auth(subject)
 
         synced = await sign_out_client.post("/auth/sync", headers=headers)
         signed_out = await sign_out_client.post("/auth/sign-out-all", headers=headers)
