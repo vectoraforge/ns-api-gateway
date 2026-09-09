@@ -69,8 +69,8 @@ async def issue_challenge(body: ChallengeRequest,
                                                            operation=AuthOperation(body.operation),
                                                            identity=identity,
                                                            now=evaluated_at)
-    # Deliberate commit: `get_db`'s runs in the teardown, after the body is sent, so without this
-    # the caller could hold a handle naming a row a failed commit never wrote.
+    # The only write channel: `get_db` never commits, so without this the caller would hold a
+    # handle naming a row no transaction ever wrote. Here a failed commit still reaches the client.
     await session.commit()
     # `no-store` rather than `no-cache`: the handle is a secret, and a revalidatable copy is a copy.
     response.headers["Cache-Control"] = "no-store"

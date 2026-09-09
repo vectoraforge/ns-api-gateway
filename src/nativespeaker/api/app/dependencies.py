@@ -42,10 +42,14 @@ def get_config(request: Request) -> AppConfig:
 
 
 async def get_db(request: Request) -> AsyncGenerator[AsyncSession]:
+    """The request session: it rolls back on the way out, and never commits."""
+    # FastAPI resumes this generator on the request's inner exit stack, which `fastapi/routing.py`
+    # closes only after `await response(...)`. A commit written here would therefore run once the
+    # body is on the wire, where its failure reaches nobody -- the caller reads 200 for a
+    # transaction that rolled back. Every write commits in its own service or handler instead.
     async with request.app.state.session_factory() as session:
         try:
             yield session
-            await session.commit()
         except Exception:
             await session.rollback()
             raise

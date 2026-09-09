@@ -389,7 +389,7 @@ class TestNoConnectionIsHeldAcrossTheProviderCall:
         await service.create_chat(phrase=PHRASE, user_id=TEST_USER_ID, lang="en")
 
         # The trailing commit is WR-51's: the credit is already spent when this returns, so the
-        # chat rows are made durable before the route answers rather than in `get_db`'s teardown.
+        # chat rows are made durable by the service, which is the only path that commits them.
         assert events == ["request_committed", "session_opened", "session_committed",
                           "session_closed", "provider_called", "request_committed"]
 

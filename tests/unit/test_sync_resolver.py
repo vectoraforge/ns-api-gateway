@@ -159,7 +159,7 @@ class TestSyncTakesNoLock:
         assert session.entities == ["grants", "usage", "allowance"]
 
     async def test_the_request_session_is_left_clean(self):
-        """`get_db` commits on exit, so anything this service dirtied would silently persist."""
+        """A read path leaves nothing pending: a dirtied session is a write channel with no commit."""
         session = await _happy_path()
         assert session.added == []
         assert (session.committed, session.rolled_back) == (False, False)
@@ -294,7 +294,7 @@ class TestTheRolloverIsComputedNeverWritten:
         assert (entitlement.current_period, entitlement.monthly_used) == (PERIOD, 0)
 
     async def test_a_stale_row_is_left_exactly_as_it_was_found(self):
-        """`get_db` commits on exit, so an assignment here would persist a rollover from a read."""
+        """A read never rolls a period over: an assignment here would be a write this path may not make."""
         usage, session = self._seeded(monthly_period=STALE_PERIOD, monthly_used=17)
         await _read(session)
         assert (usage.monthly_period, usage.monthly_used) == (STALE_PERIOD, 17)
@@ -425,7 +425,7 @@ class TestTheTierHasNoRow:
 
 
 class TestTheServiceKeepsNoSessionHandle:
-    """WR-30: SYNC-02 is read-only, and `get_db` commits on teardown, so a kept session is a writer."""
+    """WR-30: SYNC-02 is read-only, and a kept session handle is the one thing that could write."""
 
     def test_the_service_holds_only_the_reads_and_the_instant(self):
         service = SyncService(db=_StubSession(grants=()), evaluated_at=EVALUATED_AT)

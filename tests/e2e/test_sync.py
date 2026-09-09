@@ -210,7 +210,7 @@ class TestTheRequestChangesNothing:
     async def test_a_stale_period_grant_is_left_untouched(
             self, async_client, _db_transaction, linked_firebase_identity):
         user, _ = linked_firebase_identity
-        # The branch quota resolves by writing: an assignment here would ride `get_db`'s commit-on-exit to disk.
+        # The branch quota resolves by writing: an assignment here must never reach disk from a read.
         await seed_grant(_db_transaction, user_id=user.id,
                          monthly_period=_STALE_PERIOD, monthly_used=_STALE_USED)
         before = await _entitlement_snapshot(_db_transaction, user.id)

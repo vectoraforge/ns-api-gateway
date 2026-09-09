@@ -61,7 +61,7 @@ class _RecordingSession:
 
     async def commit(self):
         # Counted, not refused: the route commits the issued row before it answers, because
-        # `get_db`'s own commit runs in the teardown, after the body is already sent.
+        # `get_db` never commits -- an uncommitted handle would name a row nothing wrote.
         self.commits += 1
 
     async def rollback(self):
