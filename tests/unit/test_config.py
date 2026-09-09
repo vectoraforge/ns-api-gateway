@@ -1,3 +1,4 @@
+import inspect
 import os
 import shutil
 import tempfile
@@ -29,6 +30,7 @@ from nativespeaker.api.config import (
     ResilienceConfig,
     StoreEnvironment,
 )
+from nativespeaker.api.logs import setup_logging
 from unit.test_jwks_offload import install_counted_transport
 
 # Removed for these cases: the nested delimiter makes pytest-dotenv's CONFIG_DIR ambiguous.
@@ -262,6 +264,26 @@ class TestSubscriptionConfigSurfaceIsGone:
         """`extra='forbid'` makes the removal real: an ignored block would read as allowance nothing enforces."""
         with pytest.raises(ValidationError, match="quotas"):
             AppConfig(quotas={"free": 10},  # ty: ignore[unknown-argument]
+                      prompt="p",
+                      examples={"en": ["Example 1"]})
+
+
+class TestEveryLoggingFieldReachesTheLoggingSetup:
+    """WR-03: `json_log_path` outlived the `FileHandler` branch that read it. `extra='forbid'`
+    accepted it from `config.yaml` and from `JSON_LOG_PATH`, so an operator who set it got console
+    lines, no JSON file, and no error saying so -- the silent stand-in this codebase refuses."""
+
+    def test_no_logging_field_is_declared_that_setup_logging_cannot_take(self):
+        declared = {name for name in AppConfig.model_fields if "log" in name}
+        accepted = set(inspect.signature(setup_logging).parameters)
+
+        # The control: an empty left side would pass this on any signature at all.
+        assert declared
+        assert declared <= accepted, declared - accepted
+
+    def test_the_removed_field_is_now_refused_rather_than_ignored(self):
+        with pytest.raises(ValidationError, match="json_log_path"):
+            AppConfig(json_log_path="/var/log/app.json",  # ty: ignore[unknown-argument]
                       prompt="p",
                       examples={"en": ["Example 1"]})
 
