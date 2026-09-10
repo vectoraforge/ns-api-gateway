@@ -183,8 +183,9 @@ class TestARaisedRejectionBecomesItsClientResponse:
         assert list(body.keys()) == ["code"], f"Expected only 'code' key, got {list(body.keys())}"
         assert body["code"] == expected_code
 
-    def test_the_two_forbidden_arms_answer_the_same_status_and_body(self, handler_client):
-        """`operation_not_allowed` and `account_unavailable` are both 403 and must stay distinct codes."""
+    def test_the_two_forbidden_arms_share_a_status_and_keep_distinct_codes(self, handler_client):
+        """`operation_not_allowed` and `account_unavailable` are both 403 and must stay distinct codes.
+        Two classes, so the anti-oracle rule binds within each and never merges them."""
         forbidden = handler_client.get("/fail/not_linked")
         unavailable = handler_client.get("/fail/blocked_user")
 
