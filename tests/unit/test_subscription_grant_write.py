@@ -71,6 +71,24 @@ class _StubSession:
         self.flushes += 1
 
 
+class _WarningSpy:
+    """Stands in for the writer's whole `logger`; only the level this loss is recorded at exists."""
+
+    def __init__(self, records: list[dict]) -> None:
+        self.records = records
+
+    def warning(self, event, **fields) -> None:
+        self.records.append({"event": event} | fields)
+
+
+def _writer_warnings(monkeypatch) -> list[dict]:
+    """The whole `logger` name, never its level attributes: structlog's lazy proxy builds those on
+    demand, so monkeypatch's undo would freeze one onto the proxy for the rest of the session."""
+    records: list[dict] = []
+    monkeypatch.setattr("nativespeaker.api.crud.subscriptions.logger", _WarningSpy(records))
+    return records
+
+
 def _usage(grant: AccessGrant, *, monthly_period: str, monthly_used: int) -> UserMonthlyUsage:
     return UserMonthlyUsage(grant_id=grant.id,
                             monthly_period=monthly_period,
@@ -311,6 +329,46 @@ class TestALapsedTermIsNeverBroughtBackByIngestion:
         outcome = await _write(session, [], may_reactivate=True)
 
         assert (outcome, len(session.added)) == (WriteOutcome.applied, 2)
+
+
+@pytest.mark.asyncio
+class TestAnOperatorsGrantIsNotEndedSilently:
+    """WR-61: `08-webhook-app-store.md`:40 names the free and the subscription grant as the rows
+    ingestion may end, and D-18 gives no path back, so ending a `manual` one is recorded."""
+
+    async def test_a_superseded_manual_grant_is_named_in_one_warning(self, monkeypatch):
+        issued = _grant(source=AccessGrantSource.manual, subscription_id=None, ends_at=None)
+        session = _StubSession(_usage(issued, monthly_period=THIS_MONTH, monthly_used=0))
+        records = _writer_warnings(monkeypatch)
+
+        await _write(session, [issued])
+
+        assert issued.status is AccessGrantStatus.expired
+        assert records == [{"event": "manual_grant_superseded",
+                            "grant_id": str(issued.id),
+                            "source": AccessGrantSource.manual}]
+
+    async def test_a_withdrawal_never_reaches_the_operators_grant_control(self, monkeypatch):
+        """The control on what the line carries: outside the entitled set the sweep is this
+        subscription's own rows, so a manual grant is neither ended nor recorded."""
+        issued = _grant(source=AccessGrantSource.manual, subscription_id=None, ends_at=None)
+        session = _StubSession()
+        records = _writer_warnings(monkeypatch)
+
+        await _write(session, [issued], status=SubscriptionStatus.revoked)
+
+        assert (issued.status, records) == (AccessGrantStatus.active, [])
+
+    async def test_an_ordinary_supersession_is_not_recorded_control(self, monkeypatch):
+        """The control: every entitled write supersedes something, so an unconditional line is noise."""
+        free = _grant(source=AccessGrantSource.anonymous_device_grant, subscription_id=None,
+                      ends_at=None, tier_id=FREE_TIER_ID)
+        session = _StubSession(_usage(free, monthly_period=THIS_MONTH, monthly_used=0))
+        records = _writer_warnings(monkeypatch)
+
+        await _write(session, [free])
+
+        assert records == []
 
 
 class _LockStubResult:

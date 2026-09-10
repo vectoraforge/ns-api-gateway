@@ -4,6 +4,7 @@ from datetime import date, datetime
 from enum import StrEnum
 from uuid import UUID
 
+import structlog
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
@@ -24,6 +25,8 @@ from nativespeaker.api.tables import (
     UserMonthlyUsage,
     monthly_period_for,
 )
+
+logger = structlog.get_logger()
 
 # The set `core.subscriptions.product_entitled_subscription_id` is generated over, named once for its readers.
 ENTITLED_STATUSES = frozenset({SubscriptionStatus.active, SubscriptionStatus.grace_period})
@@ -341,6 +344,11 @@ class SubscriptionsDB:
         ended = (AccessGrantStatus.revoked if status is SubscriptionStatus.revoked
                  else AccessGrantStatus.expired)
         for grant in superseded:
+            if grant.source is AccessGrantSource.manual:
+                # `08-webhook-app-store.md`:40 does not name this source and D-18 gives no way back,
+                # so the id `core.manual_grant_issuances.grant_id` keys the case by is recorded.
+                logger.warning("manual_grant_superseded", grant_id=str(grant.id),
+                               source=grant.source)
             grant.status = ended
             grant.ends_at = evaluated_at
             grant.updated_at = evaluated_at
