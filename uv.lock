@@ -868,6 +868,7 @@ source = { editable = "." }
 dependencies = [
     { name = "app-store-server-library" },
     { name = "asyncpg" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "firebase-admin" },
     { name = "google-auth" },
@@ -907,6 +908,7 @@ dev = [
 requires-dist = [
     { name = "app-store-server-library", specifier = ">=3.0.0" },
     { name = "asyncpg", specifier = ">=0.30" },
+    { name = "cryptography", specifier = ">=46,<47" },
     { name = "fastapi", specifier = "==0.135.1" },
     { name = "firebase-admin", specifier = ">=7.3.0" },
     { name = "google-auth", specifier = ">=2.49" },

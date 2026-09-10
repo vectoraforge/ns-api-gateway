@@ -4,10 +4,11 @@ version = "1.6.0"
 requires-python = ">=3.14"
 dependencies = [
     "fastapi==0.135.1",
-    # Declared, not inherited: `src/` imports both directly -- `starlette` in nine modules,
-    # `sqlalchemy` in eighteen -- so a transitive range widening (sqlmodel's, fastapi's) would
-    # relock this project onto a version nothing here constrains. The SQLAlchemy ceiling is the
-    # 2.0 API `URL.create` and `AsyncSession` are called against.
+    # Declared, not inherited: `src/` imports all three directly -- `starlette` in nine modules,
+    # `sqlalchemy` in eighteen, `cryptography` in `app/lifespan.py` -- so a transitive range widening
+    # (sqlmodel's, fastapi's, PyJWT's) would relock this project onto a version nothing here
+    # constrains. Each ceiling is the API this codebase calls: SQLAlchemy's 2.0 `URL.create` and
+    # `AsyncSession`, and `cryptography`'s `x509.load_der_x509_certificate`.
     "starlette >=0.47",
     "uvicorn[standard]==0.42.0",
     "pydantic >=2.12",
@@ -23,6 +24,7 @@ dependencies = [
     "sqlalchemy >=2.0,<2.1",
     "greenlet >=3.0",
     "PyJWT[crypto]>=2.9.0",
+    "cryptography >=46,<47",
     "structlog>=25.5",
     "app-store-server-library>=3.0.0",
     "firebase-admin>=7.3.0",
