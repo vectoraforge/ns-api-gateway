@@ -33,6 +33,11 @@ PERMANENT = ValueError
 ADMITTED = Admitted(_ADMISSION)
 
 
+async def _fail(breaker: CircuitBreaker) -> None:
+    """One failure stamped at the breaker's current generation, as `attempt()` stamps it."""
+    await breaker.record_failure(await breaker.current_generation())
+
+
 def make_config(**overrides) -> ResilienceConfig:
     """A config whose gate never rejects and whose breaker never opens, so a count can only move for one reason."""
     return ResilienceConfig(**{"pool_size": 4,
@@ -80,9 +85,9 @@ class BreakerSpy:
         real_success = breaker.record_success
         real_before_call = breaker.before_call
 
-        async def counting_failure() -> None:
+        async def counting_failure(generation: int) -> None:
             self.failures += 1
-            await real_failure()
+            await real_failure(generation)
 
         async def counting_success(generation: int) -> None:
             self.successes += 1
@@ -236,8 +241,8 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         # The straggler stamped its generation before the two failures below and answers after them.
         straggler = await breaker.current_generation()
 
-        await breaker.record_failure()
-        await breaker.record_failure()
+        await _fail(breaker)
+        await _fail(breaker)
         await breaker.record_success(straggler)
 
         with pytest.raises(CircuitOpenError):
@@ -248,9 +253,9 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         breaker = CircuitBreaker(failure_threshold=2, reset_seconds=60)
         generation = await breaker.current_generation()
 
-        await breaker.record_failure()
+        await _fail(breaker)
         await breaker.record_success(generation)
-        await breaker.record_failure()
+        await _fail(breaker)
 
         await breaker.before_call()
 
@@ -261,11 +266,11 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         breaker = CircuitBreaker(failure_threshold=2, reset_seconds=0)
         straggler = await breaker.current_generation()
 
-        await breaker.record_failure()
-        await breaker.record_failure()
+        await _fail(breaker)
+        await _fail(breaker)
         await breaker.before_call()
         await breaker.record_success(straggler)
-        await breaker.record_failure()
+        await _fail(breaker)
 
         # Two trips: the original one, then the reopen the one fresh failure earned half-open.
         assert await breaker.current_generation() == straggler + 2
@@ -275,14 +280,28 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         because a reset breaker stopped accepting any success at all."""
         breaker = CircuitBreaker(failure_threshold=2, reset_seconds=0)
 
-        await breaker.record_failure()
-        await breaker.record_failure()
+        await _fail(breaker)
+        await _fail(breaker)
         await breaker.before_call()
         fresh = await breaker.current_generation()
         await breaker.record_success(fresh)
-        await breaker.record_failure()
+        await _fail(breaker)
 
         assert await breaker.current_generation() == fresh
+
+    async def test_a_straggler_failure_landing_after_the_reset_does_not_reopen_the_breaker(self):
+        """WR-22: the elapsed arm primes the tally at `threshold - 1`, so one failure stamped
+        before the trip reopened the breaker and the fleet paid another reset window of 503."""
+        breaker = CircuitBreaker(failure_threshold=2, reset_seconds=0)
+        straggler = await breaker.current_generation()
+
+        await _fail(breaker)
+        await _fail(breaker)
+        await breaker.before_call()
+        await breaker.record_failure(straggler)
+
+        # The one trip the two genuine failures earned, and not the second the straggler bought.
+        assert await breaker.current_generation() == straggler + 1
 
     async def test_the_full_budget_is_still_spent_while_the_breaker_stays_closed(self, policy, spy, sleeps):
         """The control: the case above must pass because the breaker opened, not because retrying broke generally."""
@@ -298,11 +317,11 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         full retry chains per reset window, so most of an outage ran closed."""
         breaker = CircuitBreaker(failure_threshold=5, reset_seconds=0)
         for _ in range(5):
-            await breaker.record_failure()
+            await _fail(breaker)
         reopened_from = await breaker.current_generation()
 
         await breaker.before_call()
-        await breaker.record_failure()
+        await _fail(breaker)
 
         # The reopen the single failure earned; clearing the tally would leave the counter here.
         assert await breaker.current_generation() == reopened_from + 1

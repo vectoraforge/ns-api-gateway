@@ -79,9 +79,12 @@ class CircuitBreaker:
                 return
             self._failure_count = 0
 
-    async def record_failure(self) -> None:
+    async def record_failure(self, generation: int) -> None:
         async with self._lock:
-            if self._opened_at is not None:
+            if generation != self._generation or self._opened_at is not None:
+                # Stamped, not read: `before_call`'s elapsed arm primes the tally at
+                # `_failure_threshold - 1`, so a failure from before the trip reopened the
+                # breaker on its own and the whole fleet paid another reset window of 503.
                 return
             self._failure_count += 1
             if self._failure_count >= self._failure_threshold:
@@ -177,19 +180,18 @@ class ResiliencePolicy:
         async def attempt() -> Any:
             """One attempt, already triaged: everything `_should_retry` reads is decided here."""
             nonlocal attempted
+            # Per attempt, not once at admission: a provider declared dead mid-flight costs one
+            # attempt. Never on the first one, though: the permit above is an unbounded wait, so
+            # re-deciding here what `admission()` already decided refuses a request that has made
+            # no provider call while its caller's quota charge -- committed against the admission
+            # verdict -- stands. A charged request always reaches the provider at least once.
+            if attempted:
+                await self._circuit_breaker.before_call()
+            attempted = True
+            # Stamped here, immediately before the provider call: a trip after this instant makes
+            # this attempt's answer a straggler's, and both arms below discard a straggler's answer.
+            generation = await self._circuit_breaker.current_generation()
             try:
-                # Per attempt, not once at admission: a provider declared dead mid-flight costs one
-                # attempt. Never on the first one, though: the permit above is an unbounded wait, so
-                # re-deciding here what `admission()` already decided refuses a request that has made
-                # no provider call while its caller's quota charge -- committed against the admission
-                # verdict -- stands. A charged request always reaches the provider at least once.
-                if attempted:
-                    await self._circuit_breaker.before_call()
-                attempted = True
-                # Stamped here, immediately before the provider call: a trip after this instant
-                # makes this attempt's answer a straggler's, whatever the breaker's state is by
-                # the time it lands.
-                generation = await self._circuit_breaker.current_generation()
                 result = await asyncio.wait_for(operation(), timeout=self._timeout_seconds)
             except (QueueFullError, CircuitOpenError):
                 # First, and it must stay first: the breaker's own refusal is not the provider's failure.
@@ -200,7 +202,7 @@ class ResiliencePolicy:
                     # Counted only on this arm: the classification is the provider's, but the cause
                     # of a permanent rejection is the request -- one user's phrase refused by the
                     # content policy would otherwise open the breaker on everybody.
-                    await self._circuit_breaker.record_failure()
+                    await self._circuit_breaker.record_failure(generation)
                     raise TransientLLMError(str(e)) from e
                 raise PermanentLLMError(str(e)) from e
             await self._circuit_breaker.record_success(generation)
