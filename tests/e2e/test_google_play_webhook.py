@@ -33,7 +33,7 @@ from e2e.refusal_sites import (
     raised_refusal_stages,
 )
 from nativespeaker.api.auth.jwt_verifier import BoundedReason
-from nativespeaker.api.errors import AttributionConflict, InternalError, UnmappedStoreProduct
+from nativespeaker.api.errors import InternalError, UnmappedStoreProduct
 from nativespeaker.api.tables import (
     PurchaseProvider,
     StorePurchase,
@@ -139,9 +139,9 @@ def _refund_review_push_body() -> dict:
                              "pendingRefundReviewNotification": {}}))
 
 
-def _replay_key(purchase_token: str) -> str:
+def _replay_key(purchase_token: str, *, event_time_millis: int = EVENT_TIME_MILLIS) -> str:
     """The composite key the Google path derives from the RTDN itself, spelled out here."""
-    return f"google_play:{purchase_token}:{EVENT_TIME_MILLIS}:{SUBSCRIPTION_PURCHASED}"
+    return f"google_play:{purchase_token}:{event_time_millis}:{SUBSCRIPTION_PURCHASED}"
 
 
 async def _subscriptions_of(factory, external_id: str) -> list[Subscription]:
@@ -423,13 +423,14 @@ class TestTheTwoArmsThatAnswerWithoutWriting:
         assert real_google_play_seam.requests == []
 
 
-# The three failures of the read that each answer the shared 500, which is what makes Pub/Sub redeliver.
+# The two failures of the read that each answer the shared 500, which is what makes Pub/Sub redeliver.
+# `AttributionConflict` is not among them: its one raise site is inside the service, which this
+# class never reaches, so scripting it here would assert nothing the class below does not.
 PLAY_FAILURES = (
     InternalError(),
     UnmappedStoreProduct(PurchaseProvider.google_play, UNMAPPED_PRODUCT_ID),
-    AttributionConflict(PurchaseProvider.google_play, PURCHASE_TOKEN),
 )
-PLAY_FAILURE_IDS = ["failed-play-call", "unmapped-product", "attribution-conflict"]
+PLAY_FAILURE_IDS = ["failed-play-call", "unmapped-product"]
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -462,6 +463,57 @@ class TestEveryFailedReadAnswersTheShared500:
         assert len(scripted_google_play.calls) == 1
         assert scripted_google_play.calls[0]["purchase_token"] == PURCHASE_TOKEN
         assert scripted_google_play.calls[0]["notification_uuid"] == _replay_key(PURCHASE_TOKEN)
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestAChangedAttributionIsRefusedAndNothingIsWritten:
+    """T-43-07 on the Google path: a recorded owner is never reassigned, because a wrongly
+    granted entitlement cannot be undone. The one raise site is in the service, so this is
+    driven through the real seam and never scripted at the read."""
+
+    async def _record_then_conflict(self, client, seam, factory, purchase_token: str):
+        """Deliver one purchase under the seeded token, then a later one naming another owner.
+        Returns the second answer and the row counts standing when it was sent."""
+        await _seed_store_token(factory, ATTRIBUTION_TOKEN)
+        headers = {"Authorization": f"Bearer {_push_token()}"}
+        seam.body = play_subscription_body(
+            externalAccountIdentifiers={"obfuscatedExternalAccountId": ATTRIBUTION_TOKEN})
+        recorded = await client.post(PATH, json=_push_body(purchase_token), headers=headers)
+        # The control: a first delivery that wrote no purchase row leaves nothing to conflict with.
+        assert recorded.status_code == 200, recorded.text
+        before = await _counts(factory)
+
+        seam.body = play_subscription_body(
+            externalAccountIdentifiers={"obfuscatedExternalAccountId": OTHER_ATTRIBUTION_TOKEN})
+        # A later instant, so this is a fresh delivery rather than a replay of the key above.
+        conflicting = await client.post(
+            PATH, json=_push_body(purchase_token, event_time_millis=EVENT_TIME_MILLIS + 1000),
+            headers=headers)
+        return conflicting, before
+
+    async def test_the_conflicting_delivery_answers_the_shared_500_body(
+            self, webhook_client, real_google_play_seam, _db_transaction):
+        purchase_token = f"purchase-token-{uuid4()}"
+
+        conflicting, _before = await self._record_then_conflict(
+            webhook_client, real_google_play_seam, _db_transaction, purchase_token)
+
+        assert conflicting.status_code == 500
+        assert conflicting.json() == INTERNAL
+
+    async def test_the_conflicting_delivery_adds_no_row_of_any_of_the_three_kinds(
+            self, webhook_client, real_google_play_seam, _db_transaction):
+        purchase_token = f"purchase-token-{uuid4()}"
+
+        conflicting, before = await self._record_then_conflict(
+            webhook_client, real_google_play_seam, _db_transaction, purchase_token)
+
+        assert conflicting.status_code == 500
+        assert await _counts(_db_transaction) == before
+        # The second delivery carries its own replay key, so an accepted conflict would add a row.
+        assert await _events_of(_db_transaction, _replay_key(
+            purchase_token, event_time_millis=EVENT_TIME_MILLIS + 1000)) == []
+        assert len(await _purchases_of(_db_transaction, purchase_token)) == 1
 
 
 @pytest.mark.asyncio(loop_scope="module")
