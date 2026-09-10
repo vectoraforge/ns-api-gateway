@@ -119,11 +119,20 @@ def _answering(body: dict, status_code: int = 200):
     return lambda _request: httpx.Response(status_code, json=body)
 
 
+def _never_reached(_request: httpx.Request) -> httpx.Response:
+    """A Play transport for the cases that must refuse before the network is touched."""
+    raise AssertionError("this case must not reach Play at all")
+
+
+# A sentinel and not `None`: the default substitutes the fake, so `None` was unsayable here.
+_UNSET = object()
+
+
 def _play_reader(handler, *, products: dict[str, str] | None = None,
-                 credential=None) -> PlayDeveloperSubscriptions:
+                 credential=_UNSET) -> PlayDeveloperSubscriptions:
     """The real Play read class over a stubbed transport and a captured instant."""
     return PlayDeveloperSubscriptions(
-        credential=_FakeCredential() if credential is None else credential,
+        credential=_FakeCredential() if credential is _UNSET else credential,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         products={PRODUCT_ID: TIER_ID} if products is None else products)
 
@@ -668,6 +677,25 @@ class TestThePlayResponseArms:
         assert play_logs.records("error") == [("google_play_read_unparseable",
                                                {"failure": "ValidationError"})]
         assert ATTRIBUTION_TOKEN not in str(play_logs.records("error"))
+
+
+class TestAnUnconfiguredCredentialIsNeverAcknowledged:
+    """WR-82: the arm for a pod whose ADC read answered `None`. Returning instead of raising
+    acknowledges every RTDN, and Pub/Sub redelivers nothing it has already acknowledged."""
+
+    async def test_the_read_refuses_before_any_play_call(self):
+        with pytest.raises(Unavailable) as refusal:
+            await _read_through(_play_reader(_never_reached, credential=None))
+
+        assert refusal.value.stage == "play_subscriptions_read"
+
+    async def test_a_configured_credential_still_reaches_play_control(self):
+        """The control on the sentinel: the default must still stand a credential in, or every
+        other case in this file would be measuring this refusal instead of its own arm."""
+        reader = _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_ACTIVE",
+                                                            expiry=UNEXPIRED)))
+
+        assert await _read_through(reader) is not None
 
 
 class TestAZoneLessStampIsClassifiedRatherThanRaised:
