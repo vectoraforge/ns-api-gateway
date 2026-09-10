@@ -323,6 +323,21 @@ class TestProductionVerifier:
         token = pyjwt.encode(payload, PRIVATE_KEY_PEM, algorithm="RS256")
         assert rejected(real_verifier, token) is BoundedReason.expired
 
+    def test_rejects_a_token_issued_in_the_future(self, real_verifier):
+        """WR-126: SHARED-INVARIANTS § Wire contract requires `exp`/`iat` temporal validity, and
+        `DECODE_OPTIONS` states only `require` -- so the future-`iat` rejection is PyJWT's default
+        alone. Nothing else in this file would fail if an upgrade, a new `options` entry or a
+        leeway change withdrew it, and `exp` has two leeway cases where `iat` had none."""
+        now = time.time()
+        token = make_token("u", iat=now + 3600, exp=now + 7200)
+
+        assert rejected(real_verifier, token) is BoundedReason.expired
+
+    def test_accepts_a_token_issued_inside_production_leeway(self, real_verifier):
+        """The control: clock skew inside the leeway is not a forgery, and a rejection of every
+        `iat` at all would pass the case above."""
+        assert accepted(real_verifier, make_token("u", iat=time.time() + 10)).subject == "u"
+
 
 class TestAnAbsentClaimIsNotLabelledAsForgery:
     """WR-15. PyJWT checks `require` before `iss`, `aud` and `exp`, and after the signature, so a
