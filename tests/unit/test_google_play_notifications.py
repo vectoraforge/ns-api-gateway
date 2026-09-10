@@ -276,9 +276,12 @@ def _stub_request(*, play=None, tokens=None, package_name: str | None = PACKAGE_
     return SimpleNamespace(app=SimpleNamespace(state=state))
 
 
-async def _verify(body: PubSubPushRequest, *, credential=PUSH_CREDENTIAL, **stub):
-    """Run the real dependency over a stubbed request, which is what the route resolves."""
-    return await verify_google_play_notification(_stub_request(**stub), body, credential)
+async def _verify(body: PubSubPushRequest, *, credential=PUSH_CREDENTIAL,
+                  evaluated_at: datetime = EVALUATED_AT, **stub):
+    """Run the real dependency over a stubbed request, with every argument the route resolves.
+    `evaluated_at` is passed explicitly: left to its default it is the `Depends` object itself."""
+    return await verify_google_play_notification(_stub_request(**stub), body, credential,
+                                                 evaluated_at)
 
 
 def _names_read_inside_functions() -> set[str]:
@@ -449,6 +452,14 @@ class TestTheEntitlementDecisionUsesTheInstantTheRequestCaptured:
         """Read off the signature: a surviving source would let a later edit silently use it again."""
         parameters = set(inspect.signature(PlayDeveloperSubscriptions.__init__).parameters)
         assert parameters == {"self", "credential", "client", "products"}
+
+    async def test_the_dependency_forwards_the_solver_resolved_instant_to_the_read(self):
+        """The other half: the instant reaches the adapter through the dependency, not by hand."""
+        play = _RecordingPlay()
+
+        await _verify(_push(_rtdn(**SUBSCRIPTION_BODY)), play=play, evaluated_at=LAPSED)
+
+        assert play.calls[0]["evaluated_at"] == LAPSED
 
 
 class TestBothEntryPointsGuardTheValueTheyPutInThePath:
