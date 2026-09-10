@@ -3,14 +3,18 @@ The read runs before the transaction opens and the write after it commits, neith
 names a seam member at all, and importing that module pulls in no HTTP client.
 """
 import ast
+import inspect
 import subprocess
 import sys
 from pathlib import Path
+from uuid import UUID
 
 import pytest
+from sqlmodel import SQLModel
 
 from nativespeaker.api.crud import grants as crud_grants
 from nativespeaker.api.services import auth as auth_service
+from nativespeaker.api.tables.identities import ExternalIdentity
 
 CRUD_SOURCE = Path(crud_grants.__file__).read_text()
 SERVICE_SOURCE = Path(auth_service.__file__).read_text()
@@ -153,6 +157,33 @@ class TestTheCrudWriterCannotReachTheVendor:
                       f"print([n for n in {FORBIDDEN_MODULES!r} if n in sys.modules])")
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "[]"
+
+
+def _mapped_parameters(function) -> list[str]:
+    """Every parameter of `function` annotated with a mapped ORM row."""
+    return [name for name, parameter in inspect.signature(function).parameters.items()
+            if isinstance(parameter.annotation, type) and issubclass(parameter.annotation, SQLModel)]
+
+
+class TestTheWritersTakeTheVerifiedPairAndNoOrmRow:
+    """WR-40. The barrier resolves its identity row in a session that closes before the handler runs,
+    so a row in either signature offers a frozen copy beside the `stored` re-read every rule reads."""
+
+    @pytest.mark.parametrize("writer", [WRITER, WRITER_REGISTERED])
+    def test_it_takes_the_issuer_and_the_subject_as_plain_strings(self, writer):
+        parameters = inspect.signature(getattr(crud_grants.GrantsDB, writer)).parameters
+
+        assert [parameters[name].annotation for name in ("issuer", "subject")] == [str, str]
+
+    @pytest.mark.parametrize("writer", [WRITER, WRITER_REGISTERED])
+    def test_no_parameter_of_either_writer_is_a_mapped_orm_row(self, writer):
+        assert _mapped_parameters(getattr(crud_grants.GrantsDB, writer)) == []
+
+    def test_a_signature_carrying_a_row_is_reported_control(self):
+        """The control: a walk that found nothing would pass the two cases above."""
+        def _widened(*, user_id: UUID, identity_row: ExternalIdentity) -> None: ...
+
+        assert _mapped_parameters(_widened) == ["identity_row"]
 
 
 class TestTheActivationSitsBetweenTheTwoVendorCalls:

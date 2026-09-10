@@ -20,7 +20,7 @@ from nativespeaker.api.tables import (
     UserMonthlyUsage,
     monthly_period_for,
 )
-from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, NativeClaimProvider
+from nativespeaker.api.tables.identities import IdentityProvider, NativeClaimProvider
 
 
 def _effective_grants_statement(user_id: UUID, evaluated_at: datetime):
@@ -144,7 +144,11 @@ class GrantsDB:
 
     async def activate_anonymous_device_grant(self, *,
                                               user_id: UUID,
-                                              identity_row: ExternalIdentity,
+                                              # The verified pair only, never the barrier's row: that
+                                              # one is detached, and `stored` below is what every test
+                                              # and every mutation here reads.
+                                              issuer: str,
+                                              subject: str,
                                               # The platform whose attestation this caller actually
                                               # ran, never a constant: 06 step 7 refuses an Android
                                               # claim recorded as an Apple one as a workaround.
@@ -163,8 +167,7 @@ class GrantsDB:
                 raise MissingUsageRowError(grant.id)
 
         # A plain re-read, never `lock_identity_and_user`: a user-row lock ahead of the grant locks is forbidden.
-        stored = await IdentitiesDB(self.session).resolve_existing(issuer=identity_row.issuer,
-                                                                   subject=identity_row.subject)
+        stored = await IdentitiesDB(self.session).resolve_existing(issuer=issuer, subject=subject)
         if stored is None or stored.provider is not IdentityProvider.anonymous:
             return ActivationOutcome.refused
         if (stored.native_claim_platform is not None
@@ -218,7 +221,10 @@ class GrantsDB:
 
     async def activate_registered_account_grant(self, *,
                                                 user_id: UUID,
-                                                identity_row: ExternalIdentity,
+                                                # The verified pair only, for the reason the anonymous
+                                                # writer above gives: the barrier's row is detached.
+                                                issuer: str,
+                                                subject: str,
                                                 tier_id: str,
                                                 evaluated_at: datetime) -> ActivationOutcome:
         """Take both lock tiers, re-decide the destination, and write it: a conversion, or a new grant."""
@@ -231,8 +237,7 @@ class GrantsDB:
             locked_usage[grant.id] = await self.lock_usage(grant.id)
 
         # A plain re-read, never `lock_identity_and_user`: a user-row lock ahead of the grant locks is forbidden.
-        stored = await IdentitiesDB(self.session).resolve_existing(issuer=identity_row.issuer,
-                                                                   subject=identity_row.subject)
+        stored = await IdentitiesDB(self.session).resolve_existing(issuer=issuer, subject=subject)
         # Tested positively, so a NULL or any future provider member is refused on this same branch.
         if stored is None or stored.provider not in (IdentityProvider.google, IdentityProvider.apple):
             return ActivationOutcome.refused

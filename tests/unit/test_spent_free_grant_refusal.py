@@ -74,7 +74,8 @@ def _with_registered_row(monkeypatch, present: bool, asked: list) -> None:
 
 async def _claim(writer: GrantsDB, identity_row: ExternalIdentity) -> ActivationOutcome:
     return await writer.activate_registered_account_grant(user_id=identity_row.user_id,
-                                                          identity_row=identity_row,
+                                                          issuer=identity_row.issuer,
+                                                          subject=identity_row.subject,
                                                           tier_id=TIER_ID,
                                                           evaluated_at=EVALUATED_AT)
 

@@ -22,7 +22,6 @@ from nativespeaker.api.crud.grants import (
     _effective_grants_statement,
     _usage_statement,
 )
-from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.services.subscriptions import SubscriptionsService
 from nativespeaker.api.tables.grants import FREE_GRANT_SOURCES, AccessGrant, AccessGrantSource
 from nativespeaker.api.tables.identities import NativeClaimProvider
@@ -324,12 +323,10 @@ async def activation_statements(_schema_db_uri):
     factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
     try:
         async with factory() as session:
-            identity_row = await IdentitiesDB(session).resolve_existing(issuer=issuer,
-                                                                       subject=subject)
             # Everything above is setup; only what the writer itself issues is the subject of this fixture.
             recorded.clear()
             outcome = await GrantsDB(session).activate_anonymous_device_grant(
-                user_id=user_id, identity_row=identity_row,
+                user_id=user_id, issuer=issuer, subject=subject,
                 claim_platform=NativeClaimProvider.ios_devicecheck,
                 tier_id=tier_id, evaluated_at=evaluated_at)
             await session.rollback()
@@ -451,12 +448,10 @@ async def _registered_writer_run(schema_db_uri: str, *, holding_anonymous_grant:
     factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
     try:
         async with factory() as session:
-            identity_row = await IdentitiesDB(session).resolve_existing(issuer=issuer,
-                                                                       subject=subject)
             # Everything above is setup; only what the writer itself issues is the subject of this fixture.
             recorded.clear()
             outcome = await GrantsDB(session).activate_registered_account_grant(
-                user_id=user_id, identity_row=identity_row,
+                user_id=user_id, issuer=issuer, subject=subject,
                 tier_id=tier_id, evaluated_at=evaluated_at)
             await session.rollback()
         yield {"statements": list(recorded), "outcome": outcome}
@@ -577,13 +572,14 @@ class _Account:
     """A seeded account, an open session, and the instant the writer is driven at."""
     session: SQLModelAsyncSession
     user_id: uuid.UUID
-    identity_row: object
+    issuer: str
+    subject: str
     tier_id: str
     evaluated_at: datetime
 
     async def activate(self):
         return await GrantsDB(self.session).activate_registered_account_grant(
-            user_id=self.user_id, identity_row=self.identity_row,
+            user_id=self.user_id, issuer=self.issuer, subject=self.subject,
             tier_id=self.tier_id, evaluated_at=self.evaluated_at)
 
     async def activate_anonymous(
@@ -591,7 +587,7 @@ class _Account:
         """The other free-grant writer, on the same seed, the same session and the same instant.
         The platform is a parameter because 06 step 7 refuses material from the other one."""
         return await GrantsDB(self.session).activate_anonymous_device_grant(
-            user_id=self.user_id, identity_row=self.identity_row,
+            user_id=self.user_id, issuer=self.issuer, subject=self.subject,
             claim_platform=claim_platform,
             tier_id=self.tier_id, evaluated_at=self.evaluated_at)
 
@@ -648,9 +644,7 @@ async def _account_holding(schema_db_uri: str, rows: tuple[_Row, ...],
     factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
     try:
         async with factory() as session:
-            identity_row = await IdentitiesDB(session).resolve_existing(issuer=issuer,
-                                                                       subject=subject)
-            yield _Account(session=session, user_id=user_id, identity_row=identity_row,
+            yield _Account(session=session, user_id=user_id, issuer=issuer, subject=subject,
                            tier_id=tier_id, evaluated_at=instant - evaluated_before)
             await session.rollback()
     finally:
@@ -729,7 +723,8 @@ class TestTheRegisteredWriterNamesWhyItRefused:
                     uuid.uuid4(), account.user_id, account.tier_id)
 
             racing = _Account(session=_CommitsBeforeTheFlush(account.session, commit_the_winner),
-                              user_id=account.user_id, identity_row=account.identity_row,
+                              user_id=account.user_id, issuer=account.issuer,
+                              subject=account.subject,
                               tier_id=account.tier_id, evaluated_at=account.evaluated_at)
             try:
                 assert await racing.activate() is ActivationOutcome.lost_race

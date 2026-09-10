@@ -209,7 +209,8 @@ class AuthService:
 
         outcome = await self.grants_db.activate_anonymous_device_grant(
             user_id=identity.user.id,
-            identity_row=identity.identity,
+            issuer=identity.issuer,
+            subject=identity.subject,
             # The attestation this arm actually ran, which is what the writer pins: the DeviceCheck
             # read above is the only one on this route, and an Android arm would name its own.
             claim_platform=NativeClaimProvider.ios_devicecheck,
@@ -280,7 +281,8 @@ class AuthService:
 
         outcome = await self.grants_db.activate_registered_account_grant(
             user_id=identity.user.id,
-            identity_row=identity.identity,
+            issuer=identity.issuer,
+            subject=identity.subject,
             tier_id=REGISTERED_TIER_ID,
             evaluated_at=self.evaluated_at)
         wrote = await self._settle(identity, outcome)

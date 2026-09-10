@@ -128,7 +128,7 @@ class _RecordingGrants:
         self.session.in_transaction = True
         return self.prior_free_grant
 
-    async def activate(self, *, user_id, identity_row, tier_id, evaluated_at,
+    async def activate(self, *, user_id, issuer, subject, tier_id, evaluated_at,
                        claim_platform=None) -> ActivationOutcome:
         # One double for both writers, and only the anonymous one pins a platform: the default is
         # what lets the registered writer, which has no attestation to name, share this recorder.
