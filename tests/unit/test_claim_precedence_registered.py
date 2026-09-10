@@ -312,6 +312,23 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert devicecheck.read_calls == []
         assert devicecheck.write_calls == []
 
+    def test_a_grant_marked_active_outside_this_window_is_refused_and_still_consumes(
+            self, client, store, account, grants, devicecheck):
+        """The convertible grant plus a row the one-active index sees and this window cannot: the
+        conversion would be refused by that index, so this fails closed rather than racing it."""
+        identity_row, _ = account
+        grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant)]
+        grants.marked_active = [_a_grant(AccessGrantSource.subscription)]
+        store.row = _issued(bound_to=identity_row.id)
+
+        response = _claim(client)
+
+        assert response.status_code == 403
+        assert response.json() == REFUSED
+        assert store.consume_calls == 1
+        assert grants.activates == 0
+        assert devicecheck.read_calls == []
+
     def test_the_new_grant_reaches_the_writer_after_one_read_and_one_write(
             self, client, store, account, grants, devicecheck):
         identity_row, _ = account

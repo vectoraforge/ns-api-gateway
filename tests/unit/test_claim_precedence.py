@@ -458,6 +458,22 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert grants.activates == 0
         assert devicecheck.read_calls == []
 
+    def test_a_grant_marked_active_outside_its_term_is_refused_and_still_consumes(
+            self, client, store, account, grants, devicecheck):
+        """The row the mark-only read finds and the effective read cannot: the insert would be
+        refused by the one-active index, so this fails closed rather than racing it."""
+        identity_row, _ = account
+        grants.marked_active = [_a_grant(AccessGrantSource.anonymous_device_grant)]
+        store.row = _issued_row(bound_to=identity_row.id)
+
+        response = _claim(client)
+
+        assert response.status_code == 403
+        assert response.json() == REFUSED
+        assert store.consume_calls == 1
+        assert grants.activates == 0
+        assert devicecheck.read_calls == []
+
     def test_a_spent_device_slot_is_refused_and_still_consumes(self, client, store, account,
                                                                grants, devicecheck):
         identity_row, _ = account
