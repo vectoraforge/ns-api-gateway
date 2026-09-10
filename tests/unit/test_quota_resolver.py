@@ -354,10 +354,11 @@ class TestTheLockingStatements:
 
 class TestEveryLockedReadIsKeyedOnWhatTheOneBeforeItNamed:
     """WR-121. The entity of a statement is not its key, and `TestTheLockingStatements` above reads
-    the compiled text alone -- which renders every bound value as a placeholder. This is the
-    writing path: a wrong key here locks and spends another tenant's grant, against
-    SHARED-INVARIANTS § Identity and ownership ("business data is keyed only by `core.users.id`").
-    The read-only sibling states the same property in `test_sync_resolver.py`."""
+    the compiled text alone -- which renders every bound value as a placeholder."""
+
+    # This is the writing path: a wrong key here locks and spends another tenant's grant, against
+    # SHARED-INVARIANTS § Identity and ownership ("business data is keyed only by `core.users.id`").
+    # The read-only sibling states the same property in `test_sync_resolver.py`.
 
     @staticmethod
     async def _three_reads() -> tuple[AccessGrant, _StubSession]:
