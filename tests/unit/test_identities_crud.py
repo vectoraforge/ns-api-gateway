@@ -244,6 +244,19 @@ class TestTheResolutionStatement:
         assert "external_identities.subject" in where
         assert "identity_state" not in where and "active" not in where
 
+    async def test_the_join_predicate_is_the_link_alone_and_filters_nothing(self):
+        """WR-120: the two cases around this one read only the text after `WHERE`, and a state
+        filter added to the JOIN ... ON sits before it. One extra term there turns every blocked
+        account's `BlockedUser` 403 into an `IdentityUnresolvable` 500 -- the row drops out of the
+        join, `user` is None, and D-05's two leaves collapse to one. Asserted as an equality
+        rather than an absence, because the whole statement names both state columns in its
+        SELECT list, so `not in` over it can say nothing."""
+        _identity, session = await _resolve(_row())
+        on_clause = str(session.statements[0]).split("LEFT OUTER JOIN core.users ON", 1)[1]
+
+        assert on_clause.split("WHERE", 1)[0].strip() == (
+            "core.external_identities.user_id = core.users.id")
+
     async def test_the_state_columns_are_read_in_python_not_filtered_in_sql(self):
         """Filtering in SQL would collapse the two unavailable outcomes and put them on different paths."""
         session = await _drive(_row(identity_state=IdentityState.historical))
