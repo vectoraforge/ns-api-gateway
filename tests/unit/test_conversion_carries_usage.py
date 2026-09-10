@@ -98,11 +98,13 @@ def _with_usage(monkeypatch, usage: UserMonthlyUsage | None) -> None:
 
 
 async def _convert(writer: GrantsDB, identity_row: ExternalIdentity) -> ActivationOutcome:
-    return await writer.activate_registered_account_grant(user_id=identity_row.user_id,
-                                                          issuer=identity_row.issuer,
-                                                          subject=identity_row.subject,
-                                                          tier_id=TIER_ID,
-                                                          evaluated_at=EVALUATED_AT)
+    """The writer's outcome alone: no case here refuses, so the arm it would name is unread."""
+    outcome, _ = await writer.activate_registered_account_grant(user_id=identity_row.user_id,
+                                                                issuer=identity_row.issuer,
+                                                                subject=identity_row.subject,
+                                                                tier_id=TIER_ID,
+                                                                evaluated_at=EVALUATED_AT)
+    return outcome
 
 
 class TestTheConversionCarriesTheCountersAcross:

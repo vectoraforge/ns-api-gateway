@@ -523,6 +523,15 @@ class ClaimRefused(AppError):
     status = 403
     code = "operation_not_allowed"
 
+    def __init__(self, *args, cause: str | None = None, **kwargs) -> None:
+        # A closed-set label of ours, as `ProviderLookupError` carries: which arm refused, and
+        # never a client or provider value. It reaches `log_fields` alone and no response body.
+        self.cause = cause
+        super().__init__(*args, **kwargs)
+
+    def log_fields(self) -> dict[str, str | None]:
+        return {} if self.cause is None else {"cause": self.cause}
+
 
 class ClaimantNotAnonymous(ClaimRefused):
     """The stored identity row is registered, so the anonymous claim is not the route that serves it."""
@@ -557,6 +566,15 @@ class RestoreRefused(AppError):
     # The 404 is declared here and nowhere below, so the refusal cannot become an enumeration oracle.
     status = 404
     code = "restore_not_found"
+
+    def __init__(self, *args, cause: str | None = None, **kwargs) -> None:
+        # A closed-set label of ours, on the terms `ClaimRefused` carries one: it reaches
+        # `log_fields` alone, and the 404 body stays identical across every branch.
+        self.cause = cause
+        super().__init__(*args, **kwargs)
+
+    def log_fields(self) -> dict[str, str | None]:
+        return {} if self.cause is None else {"cause": self.cause}
 
 
 class RestoreSubscriptionNotEntitled(RestoreRefused):

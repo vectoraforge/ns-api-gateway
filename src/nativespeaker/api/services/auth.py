@@ -207,7 +207,7 @@ class AuthService:
         if state.bit0:
             raise DeviceGrantExhausted(stage="devicecheck_read", cause="already_set")
 
-        outcome = await self.grants_db.activate_anonymous_device_grant(
+        outcome, refusal = await self.grants_db.activate_anonymous_device_grant(
             user_id=identity.user.id,
             issuer=identity.issuer,
             subject=identity.subject,
@@ -216,7 +216,7 @@ class AuthService:
             claim_platform=NativeClaimProvider.ios_devicecheck,
             tier_id=ANONYMOUS_TIER_ID,
             evaluated_at=self.evaluated_at)
-        wrote = await self._settle(identity, outcome)
+        wrote = await self._settle(identity, outcome, refusal)
         # The invariants place remote work strictly before the transaction opens or after it commits,
         # and only the second is safe for the write: nothing in this product clears an Apple bit, so a
         # crash between an earlier write and this commit burns the device's one slot with no grant.
@@ -279,13 +279,13 @@ class AuthService:
             if state.bit1:
                 raise DeviceGrantExhausted(stage="devicecheck_read", cause="already_set")
 
-        outcome = await self.grants_db.activate_registered_account_grant(
+        outcome, refusal = await self.grants_db.activate_registered_account_grant(
             user_id=identity.user.id,
             issuer=identity.issuer,
             subject=identity.subject,
             tier_id=REGISTERED_TIER_ID,
             evaluated_at=self.evaluated_at)
-        wrote = await self._settle(identity, outcome)
+        wrote = await self._settle(identity, outcome, refusal)
         # As on the anonymous claim: the grant is durable before Apple is told, because nothing clears
         # an Apple bit and a crash before this commit would burn the slot with nothing granted.
         await self.session.commit()
@@ -303,19 +303,22 @@ class AuthService:
                 # Total, and not `AppError`, for the reason the anonymous claim above gives.
                 logger.error("devicecheck_bit_write_failed", failure=type(failure).__name__)
 
-    async def _settle(self, identity: LinkedIdentity, outcome: ActivationOutcome) -> bool:
+    async def _settle(self, identity: LinkedIdentity, outcome: ActivationOutcome,
+                      cause: str | None) -> bool:
         """Answer for what the writer did, and report whether this attempt is the one that wrote it:
-        a race re-reads the winner's row, and a refusal raises."""
+        a race re-reads the winner's row, and a refusal raises carrying the arm that refused."""
         if outcome is ActivationOutcome.activated:
             return True
         # The writer's transaction is unusable either way, and the read below needs a fresh one.
         await self.session.rollback()
-        if outcome is ActivationOutcome.lost_race and await self.grants_db.read_effective_grants(
-                identity.user.id, self.evaluated_at):
-            # The loser answers exactly as the repeat does, because the winner's row is there to
-            # read -- but it wrote nothing, and an irreversible vendor write is not its to make.
-            return False
-        raise ClaimRefusedUnderLock
+        if outcome is ActivationOutcome.lost_race:
+            if await self.grants_db.read_effective_grants(identity.user.id, self.evaluated_at):
+                # The loser answers exactly as the repeat does, because the winner's row is there
+                # to read -- but it wrote nothing, and an irreversible vendor write is not its to make.
+                return False
+            # Named apart from the writer's refusals: this one really is a race, and the eight below are not.
+            raise ClaimRefusedUnderLock(cause="lost_race_without_a_readable_grant")
+        raise ClaimRefusedUnderLock(cause=cause)
 
     async def _apply_create_user(self, identity: Identity,
                                  facts: VerifiedProviderIdentity) -> IdentityProvider:

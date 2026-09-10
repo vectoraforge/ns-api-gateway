@@ -410,9 +410,16 @@ class TestTheSixClaimArmsAnswerOneThingAndLogSix:
 
     @pytest.mark.parametrize("arm", CLAIM_ARMS, ids=lambda c: c.__name__)
     def test_no_arm_can_carry_anything_into_its_log_line(self, arm):
-        """No `__init__` and no fields: the class name is the whole vocabulary these carry."""
+        """No `__init__` of its own, and nothing in the line unless the base's `cause` is given."""
         assert "__init__" not in vars(arm)
         assert arm().log_fields() == {}
+
+    @pytest.mark.parametrize("arm", CLAIM_ARMS, ids=lambda c: c.__name__)
+    def test_the_base_s_cause_is_the_one_channel_and_it_moves_no_body(self, arm):
+        """WR-62: nine refusals shared one field-less line, so which arm fired was unreadable."""
+        named = arm(cause="an_arm_of_the_writer")
+        assert named.log_fields() == {"cause": "an_arm_of_the_writer"}
+        assert (named.status, named.code) == (403, "operation_not_allowed")
 
     def test_the_six_are_six_distinct_log_events_and_one_client_answer(self):
         events = [camel_to_snake(arm.__name__) for arm in CLAIM_ARMS]
@@ -437,9 +444,16 @@ class TestTheRestoreArmsAnswerOneThingAndDeclareNothingBelowTheBase:
 
     @pytest.mark.parametrize("arm", RESTORE_ARMS, ids=lambda c: c.__name__)
     def test_no_arm_can_carry_anything_into_its_log_line(self, arm):
-        """No `__init__` and no fields: the class name is the whole vocabulary these carry."""
+        """No `__init__` of its own, and nothing in the line unless the base's `cause` is given."""
         assert "__init__" not in vars(arm)
         assert arm().log_fields() == {}
+
+    @pytest.mark.parametrize("arm", RESTORE_ARMS, ids=lambda c: c.__name__)
+    def test_the_base_s_cause_is_the_one_channel_and_it_moves_no_body(self, arm):
+        """The claim's channel once more: four restore refusals shared one field-less line."""
+        named = arm(cause="an_arm_of_the_service")
+        assert named.log_fields() == {"cause": "an_arm_of_the_service"}
+        assert (named.status, named.code) == (404, "restore_not_found")
 
     def test_the_unserved_store_refusal_answers_the_claim_routes_own_body(self):
         """D-01: an unserved store name is the same 403 body the claim refusals answer with."""

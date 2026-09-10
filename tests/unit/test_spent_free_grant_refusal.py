@@ -72,12 +72,24 @@ def _with_registered_row(monkeypatch, present: bool, asked: list) -> None:
     monkeypatch.setattr(GrantsDB, "holds_grant_of_source", holds_grant_of_source)
 
 
-async def _claim(writer: GrantsDB, identity_row: ExternalIdentity) -> ActivationOutcome:
+async def _activate(writer: GrantsDB,
+                    identity_row: ExternalIdentity) -> tuple[ActivationOutcome, str | None]:
+    """The writer's own pair: what it did, and the arm it names when what it did was refuse."""
     return await writer.activate_registered_account_grant(user_id=identity_row.user_id,
                                                           issuer=identity_row.issuer,
                                                           subject=identity_row.subject,
                                                           tier_id=TIER_ID,
                                                           evaluated_at=EVALUATED_AT)
+
+
+async def _claim(writer: GrantsDB, identity_row: ExternalIdentity) -> ActivationOutcome:
+    outcome, _ = await _activate(writer, identity_row)
+    return outcome
+
+
+async def _cause(writer: GrantsDB, identity_row: ExternalIdentity) -> str | None:
+    _, cause = await _activate(writer, identity_row)
+    return cause
 
 
 class TestASpentSlotWithNoRegisteredRowIsARefusal:
@@ -117,3 +129,27 @@ class TestARegisteredRowThisWindowDidNotSeeIsStillARace:
         await _claim(writer, identity_row)
 
         assert asked == [AccessGrantSource.registered_account_grant]
+
+
+class TestEachRefusalNamesTheArmThatFiredIt:
+    """WR-62: `refused` carried no label, so nine conditions left one identical, field-less line."""
+
+    async def test_the_spent_slot_names_itself(self, writer, identity_row, monkeypatch):
+        _with_registered_row(monkeypatch, present=False, asked=[])
+
+        assert await _cause(writer, identity_row) == "spent_slot_without_a_registered_grant"
+
+    async def test_a_claimant_this_route_does_not_serve_names_a_different_arm(self, writer,
+                                                                             identity_row,
+                                                                             monkeypatch):
+        """Two refusals, two labels: without them an operator reads the same line for both."""
+        identity_row.provider = IdentityProvider.anonymous
+        _with_registered_row(monkeypatch, present=False, asked=[])
+
+        assert await _cause(writer, identity_row) == "identity_not_registered"
+
+    async def test_a_lost_race_names_no_arm_control(self, writer, identity_row, monkeypatch):
+        """The control: the label belongs to the refusals, and a race is not one of them."""
+        _with_registered_row(monkeypatch, present=True, asked=[])
+
+        assert await _cause(writer, identity_row) is None

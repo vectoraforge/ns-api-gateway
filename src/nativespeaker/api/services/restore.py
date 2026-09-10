@@ -64,7 +64,7 @@ class RestoreService:
         # two comparable at all.
         tier_read = None if stored is None else stored.tier_id
         if status not in ENTITLED_STATUSES:
-            raise RestoreSubscriptionNotEntitled
+            raise RestoreSubscriptionNotEntitled(cause="status_not_entitled")
 
         # The captured instant stands in where the store gave no purchase date for this term, and
         # caps it where it did: `10-restore-subscription.md:84(3)` requires `starts_at <= now`, and
@@ -96,12 +96,13 @@ class RestoreService:
         # The whole row under the grant locks, because the webhooks own the status and the tier
         # alike and the grant written below carries both from this plain, pre-lock read.
         settled = await self.subscriptions_db.read_subscription(proof.provider, proof.external_id)
-        if settled is not None and (settled.status != status
-                                    or (tier_read is not None
-                                        and settled.tier_id != tier_read)):
-            # Refused whichever way either moved, never rewritten: the term below was read for the
-            # status this decided, and the allowance charged is the tier the row carried with it.
-            raise RestoreSubscriptionNotEntitled
+        if settled is not None and settled.status != status:
+            # Refused whichever way it moved, never rewritten: the term below was read for the
+            # status this decided.
+            raise RestoreSubscriptionNotEntitled(cause="status_moved_under_the_locks")
+        if settled is not None and tier_read is not None and settled.tier_id != tier_read:
+            # The allowance the grant below charges against is the tier the row carried with it.
+            raise RestoreSubscriptionNotEntitled(cause="tier_moved_under_the_locks")
 
         # At most one row answers: an entitled write supersedes this subscription's active grants first.
         recorded_term = [grant.ends_at for grant in marked_active
@@ -115,7 +116,7 @@ class RestoreService:
             # No open term entitles nothing, whatever the canonical row still says. With
             # `starts_at` capped at this instant, this arm also refuses every term that would trip
             # the row's own `CHECK (ends_at IS NULL OR ends_at > starts_at)`.
-            raise RestoreSubscriptionNotEntitled
+            raise RestoreSubscriptionNotEntitled(cause="term_closed")
 
         if stored is None:
             # Adoption-with-creation: written unowned, so the one owner write is the update below.
@@ -205,7 +206,7 @@ class RestoreService:
             # The winner was another attempt of this same account, so its rows are there to read.
             return
         # Every other state the winner could have left is one this account may not restore from.
-        raise RestoreSubscriptionNotEntitled
+        raise RestoreSubscriptionNotEntitled(cause="another_account_won_the_race")
 
     async def _verify(self, provider: PurchaseProvider,
                       restore_proof: str) -> RestoredSubscription:

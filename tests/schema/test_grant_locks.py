@@ -325,7 +325,7 @@ async def activation_statements(_schema_db_uri):
         async with factory() as session:
             # Everything above is setup; only what the writer itself issues is the subject of this fixture.
             recorded.clear()
-            outcome = await GrantsDB(session).activate_anonymous_device_grant(
+            outcome, _ = await GrantsDB(session).activate_anonymous_device_grant(
                 user_id=user_id, issuer=issuer, subject=subject,
                 claim_platform=NativeClaimProvider.ios_devicecheck,
                 tier_id=tier_id, evaluated_at=evaluated_at)
@@ -450,7 +450,7 @@ async def _registered_writer_run(schema_db_uri: str, *, holding_anonymous_grant:
         async with factory() as session:
             # Everything above is setup; only what the writer itself issues is the subject of this fixture.
             recorded.clear()
-            outcome = await GrantsDB(session).activate_registered_account_grant(
+            outcome, _ = await GrantsDB(session).activate_registered_account_grant(
                 user_id=user_id, issuer=issuer, subject=subject,
                 tier_id=tier_id, evaluated_at=evaluated_at)
             await session.rollback()
@@ -578,18 +578,21 @@ class _Account:
     evaluated_at: datetime
 
     async def activate(self):
-        return await GrantsDB(self.session).activate_registered_account_grant(
+        """The outcome alone: the arm the writer names is asserted in the unit suites."""
+        outcome, _ = await GrantsDB(self.session).activate_registered_account_grant(
             user_id=self.user_id, issuer=self.issuer, subject=self.subject,
             tier_id=self.tier_id, evaluated_at=self.evaluated_at)
+        return outcome
 
     async def activate_anonymous(
             self, claim_platform: NativeClaimProvider = NativeClaimProvider.ios_devicecheck):
         """The other free-grant writer, on the same seed, the same session and the same instant.
         The platform is a parameter because 06 step 7 refuses material from the other one."""
-        return await GrantsDB(self.session).activate_anonymous_device_grant(
+        outcome, _ = await GrantsDB(self.session).activate_anonymous_device_grant(
             user_id=self.user_id, issuer=self.issuer, subject=self.subject,
             claim_platform=claim_platform,
             tier_id=self.tier_id, evaluated_at=self.evaluated_at)
+        return outcome
 
     async def claim_platform(self) -> str | None:
         """The pin the identity row carries, read back as the column's own text."""

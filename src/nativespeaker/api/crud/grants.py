@@ -154,8 +154,10 @@ class GrantsDB:
                                               # claim recorded as an Apple one as a workaround.
                                               claim_platform: NativeClaimProvider,
                                               tier_id: str,
-                                              evaluated_at: datetime) -> ActivationOutcome:
-        """Take both lock tiers, then write the grant, its usage row and the identity marker."""
+                                              evaluated_at: datetime
+                                              ) -> tuple[ActivationOutcome, str | None]:
+        """Take both lock tiers, then write the grant, its usage row and the identity marker.
+        The second member names the arm that refused, and is `None` on every other outcome."""
         # First and ascending by id: this set contains the effective one, so one grant-tier order holds.
         marked_active = await self.lock_active_grants(user_id)
         grants = await self.lock_effective_grants(user_id, evaluated_at)
@@ -169,25 +171,25 @@ class GrantsDB:
         # A plain re-read, never `lock_identity_and_user`: a user-row lock ahead of the grant locks is forbidden.
         stored = await IdentitiesDB(self.session).resolve_existing(issuer=issuer, subject=subject)
         if stored is None or stored.provider is not IdentityProvider.anonymous:
-            return ActivationOutcome.refused
+            return ActivationOutcome.refused, "identity_not_anonymous"
         if (stored.native_claim_platform is not None
                 and stored.native_claim_platform is not claim_platform):
             # 06 step 7: the platform is pinned at the identity's first verified attestation, and
             # material from the other platform is refused thereafter. Read before any mutation, so
             # a refusal leaves the session with nothing pending.
-            return ActivationOutcome.refused
+            return ActivationOutcome.refused, "platform_pinned_to_another"
         if len(grants) > 1:
             # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
             raise MultipleEffectiveGrantsError(len(grants), user_id)
         if any(grant.source is AccessGrantSource.anonymous_device_grant for grant in grants):
             # The repeat under the lock, and the only branch here whose row is there to be read back.
-            return ActivationOutcome.lost_race
+            return ActivationOutcome.lost_race, None
         if grants or marked_active or stored.free_grant_consumed_at is not None:
             # `marked_active` and not `grants` alone: a row this window cannot see still refuses the insert below.
-            return ActivationOutcome.refused
+            return ActivationOutcome.refused, "active_grant_or_spent_slot"
         if await self.has_prior_free_grant(user_id):
             # No conversion exists on this route, so no loser lands here and nothing is left to re-read.
-            return ActivationOutcome.refused
+            return ActivationOutcome.refused, "prior_free_grant"
 
         activated = AccessGrant(user_id=user_id,
                                 tier_id=tier_id,
@@ -216,8 +218,8 @@ class GrantsDB:
             if not is_unique_violation(violation):
                 # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                 raise
-            return ActivationOutcome.lost_race
-        return ActivationOutcome.activated
+            return ActivationOutcome.lost_race, None
+        return ActivationOutcome.activated, None
 
     async def activate_registered_account_grant(self, *,
                                                 user_id: UUID,
@@ -226,8 +228,10 @@ class GrantsDB:
                                                 issuer: str,
                                                 subject: str,
                                                 tier_id: str,
-                                                evaluated_at: datetime) -> ActivationOutcome:
-        """Take both lock tiers, re-decide the destination, and write it: a conversion, or a new grant."""
+                                                evaluated_at: datetime
+                                                ) -> tuple[ActivationOutcome, str | None]:
+        """Take both lock tiers, re-decide the destination, and write it: a conversion, or a new grant.
+        The second member names the arm that refused, and is `None` on every other outcome."""
         # First and ascending by id: this set contains the effective one, so one grant-tier order holds.
         marked_active = await self.lock_active_grants(user_id)
         grants = await self.lock_effective_grants(user_id, evaluated_at)
@@ -240,7 +244,7 @@ class GrantsDB:
         stored = await IdentitiesDB(self.session).resolve_existing(issuer=issuer, subject=subject)
         # Tested positively, so a NULL or any future provider member is refused on this same branch.
         if stored is None or stored.provider not in (IdentityProvider.google, IdentityProvider.apple):
-            return ActivationOutcome.refused
+            return ActivationOutcome.refused, "identity_not_registered"
 
         if len(grants) > 1:
             # A tripwire, not a recovery branch: read before the source tests below, which would
@@ -250,13 +254,13 @@ class GrantsDB:
         held = [grant.source for grant in grants]
         if AccessGrantSource.registered_account_grant in held:
             # The repeat under the lock, and the one branch here whose row is there to be read back.
-            return ActivationOutcome.lost_race
+            return ActivationOutcome.lost_race, None
         if any(source is not AccessGrantSource.anonymous_device_grant for source in held):
-            return ActivationOutcome.refused
+            return ActivationOutcome.refused, "other_grant_held"
         superseded = grants[0] if grants else None
         # A row the one-active index sees and this window cannot: the insert below would be refused.
         if [grant for grant in marked_active if superseded is None or grant.id != superseded.id]:
-            return ActivationOutcome.refused
+            return ActivationOutcome.refused, "unseen_active_grant"
         # History by source and status, never `free_grant_consumed_at`, which the conversion already carries.
         if superseded is None and await self.has_prior_free_grant(user_id):
             # `_prior_free_grant_statement` carries no status predicate, so this state is reached
@@ -266,12 +270,12 @@ class GrantsDB:
                                                 AccessGrantSource.registered_account_grant):
                 # The conversion race loser: a row this window did not see, and the one row the
                 # caller's re-read can answer with.
-                return ActivationOutcome.lost_race
+                return ActivationOutcome.lost_race, None
             # The spent slot: nothing took a locked row away, so there is no winner's row to re-read.
-            return ActivationOutcome.refused
+            return ActivationOutcome.refused, "spent_slot_without_a_registered_grant"
         # The lifetime index's own question, which one revoked registered row is enough to answer.
         if await self.holds_grant_of_source(user_id, AccessGrantSource.registered_account_grant):
-            return ActivationOutcome.refused
+            return ActivationOutcome.refused, "registered_grant_held"
 
         carried = None
         if superseded is not None:
@@ -292,7 +296,7 @@ class GrantsDB:
                 if not is_unique_violation(violation):
                     # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                     raise
-                return ActivationOutcome.lost_race
+                return ActivationOutcome.lost_race, None
 
         activated = AccessGrant(user_id=user_id,
                                 tier_id=tier_id,
@@ -323,5 +327,5 @@ class GrantsDB:
             if not is_unique_violation(violation):
                 # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                 raise
-            return ActivationOutcome.lost_race
-        return ActivationOutcome.activated
+            return ActivationOutcome.lost_race, None
+        return ActivationOutcome.activated, None

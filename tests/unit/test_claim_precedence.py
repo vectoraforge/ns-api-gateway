@@ -98,6 +98,8 @@ class _RecordingGrants:
         # The platform each activation named, so the pin is asserted rather than assumed.
         self.claim_platforms: list = []
         self.outcome = ActivationOutcome.activated
+        # The arm the writer says refused, which the refusal's one log line carries.
+        self.cause: str | None = None
         # What the loser's re-read finds after its rollback, which is the winner's row and not its own.
         self.won_by: list[AccessGrant] | None = None
         self.reads = 0
@@ -129,7 +131,7 @@ class _RecordingGrants:
         return self.prior_free_grant
 
     async def activate(self, *, user_id, issuer, subject, tier_id, evaluated_at,
-                       claim_platform=None) -> ActivationOutcome:
+                       claim_platform=None) -> tuple[ActivationOutcome, str | None]:
         # One double for both writers, and only the anonymous one pins a platform: the default is
         # what lets the registered writer, which has no attestation to name, share this recorder.
         self.activates += 1
@@ -137,7 +139,7 @@ class _RecordingGrants:
         self.timeline.append("activate")
         # The writer takes both lock tiers and flushes, so the transaction is open from here.
         self.session.in_transaction = True
-        return self.outcome
+        return self.outcome, self.cause
 
 
 class _ScriptedDeviceCheck:
@@ -511,6 +513,42 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert response.json() == REFUSED
         assert store.consume_calls == 1
         assert grants.activates == 1
+
+    def test_the_refusal_names_the_writer_s_arm_in_its_one_log_line(self, client, store, account,
+                                                                     grants, devicecheck,
+                                                                     monkeypatch):
+        """WR-62: nine refusals left the same field-less `claim_refused_under_lock`, so a platform
+        pin and a lost race read identically. One line still, and now it says which."""
+        records: list[dict] = []
+        monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.warning",
+                            lambda event, **fields: records.append({"event": event} | fields))
+        identity_row, _ = account
+        grants.outcome = ActivationOutcome.refused
+        grants.cause = "platform_pinned_to_another"
+        store.row = _issued_row(bound_to=identity_row.id)
+
+        response = _claim(client)
+
+        assert response.status_code == 403
+        assert [(line["event"], line.get("cause")) for line in records] == [
+            ("claim_refused_under_lock", "platform_pinned_to_another")]
+
+    def test_a_race_the_re_read_cannot_answer_is_named_apart_from_those_refusals(
+            self, client, store, account, grants, devicecheck, monkeypatch):
+        """The one arm the writer does not name: the service supplies it, and it is the only
+        `claim_refused_under_lock` that really was a race."""
+        records: list[dict] = []
+        monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.warning",
+                            lambda event, **fields: records.append({"event": event} | fields))
+        identity_row, _ = account
+        grants.outcome = ActivationOutcome.lost_race
+        grants.won_by = []
+        store.row = _issued_row(bound_to=identity_row.id)
+
+        response = _claim(client)
+
+        assert response.status_code == 403
+        assert [line.get("cause") for line in records] == ["lost_race_without_a_readable_grant"]
 
     def test_a_lost_race_whose_re_read_finds_nothing_is_refused_rather_than_reported_as_a_grant(
             self, client, store, account, grants, devicecheck):
