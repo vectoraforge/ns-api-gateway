@@ -15,7 +15,7 @@ from nativespeaker.api.errors import (
 )
 from nativespeaker.api.tables.identities import IdentityProvider, IdentityState
 
-from .conftest import seed_identity
+from .conftest import LogSpy, seed_identity, spy_on
 
 pytestmark = pytest.mark.e2e
 
@@ -29,35 +29,16 @@ _ROUTER_LOGGER = "nativespeaker.api.routers.auth.logger"
 _HANDLER_LOGGER = "nativespeaker.api.app.error_handlers.logger"
 
 
-class _LogSpy:
-    """A recording spy on a module's own logger, so "which record, once" stays observable."""
-
-    def __init__(self) -> None:
-        self.entries: list[tuple[str, dict]] = []
-
-    def record(self, event: str, **fields) -> None:
-        self.entries.append((event, fields))
-
-
-def _spy_on(monkeypatch, targets: tuple[str, ...], levels: tuple[str, ...]) -> _LogSpy:
-    """A spy, not `capture_logs`: the module-level logger caches its binding, so capture sees nothing."""
-    spy = _LogSpy()
-    for target in targets:
-        for level in levels:
-            monkeypatch.setattr(f"{target}.{level}", spy.record)
-    return spy
-
-
 @pytest.fixture
-def info_records(monkeypatch) -> _LogSpy:
+def info_records(monkeypatch) -> LogSpy:
     """Every INFO record the router writes, and nothing else."""
-    return _spy_on(monkeypatch, (_ROUTER_LOGGER,), ("info",))
+    return spy_on(monkeypatch, (_ROUTER_LOGGER,), ("info",))
 
 
 @pytest.fixture
-def route_records(monkeypatch) -> _LogSpy:
+def route_records(monkeypatch) -> LogSpy:
     """Every INFO and WARNING record the router and the error handler write, in order."""
-    return _spy_on(monkeypatch, (_ROUTER_LOGGER, _HANDLER_LOGGER), ("info", "warning"))
+    return spy_on(monkeypatch, (_ROUTER_LOGGER, _HANDLER_LOGGER), ("info", "warning"))
 
 
 @pytest_asyncio.fixture(loop_scope="module")

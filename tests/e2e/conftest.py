@@ -52,6 +52,27 @@ from nativespeaker.api.tables import (
 REGISTERED_TIER_ID = "registered"
 
 
+class LogSpy:
+    """A recording spy on a module's own logger, so "which record, once" stays observable."""
+
+    def __init__(self) -> None:
+        self.entries: list[tuple[str, dict]] = []
+
+    def record(self, event: str, **fields) -> None:
+        self.entries.append((event, fields))
+
+
+def spy_on(monkeypatch, targets: tuple[str, ...], levels: tuple[str, ...]) -> LogSpy:
+    """A spy, not `capture_logs`: the module-level logger caches its binding, so capture sees nothing.
+    Here rather than in each module: which loggers and which levels a route spies on is what
+    differs between them, and the spy itself never was."""
+    spy = LogSpy()
+    for target in targets:
+        for level in levels:
+            monkeypatch.setattr(f"{target}.{level}", spy.record)
+    return spy
+
+
 @pytest.fixture(scope="session")
 def _app_config():
     """Load app config once -- single source of truth for DB URL, Firebase keys, etc."""

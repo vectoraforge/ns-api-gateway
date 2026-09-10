@@ -1,8 +1,6 @@
 """The App Store notification callback, end to end through the real router against a real database."""
-import ast
 import inspect
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -13,7 +11,6 @@ from sqlalchemy import func
 from sqlmodel import col, select
 from unit.conftest import make_token
 
-import nativespeaker.api
 from nativespeaker.api.app.dependencies import verify_app_store_notification
 from nativespeaker.api.auth import app_store
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
@@ -26,6 +23,14 @@ from nativespeaker.api.tables import (
     SubscriptionEvent,
     SubscriptionStatus,
     User,
+)
+
+from .conftest import LogSpy, spy_on
+from .refusal_sites import (
+    COMPUTED,
+    REFUSAL_FILES,
+    files_raising_the_refusal,
+    raised_refusal_stages,
 )
 
 pytestmark = pytest.mark.e2e
@@ -61,47 +66,6 @@ KNOWN_STATUSES = frozenset({"OK", "VERIFICATION_FAILURE", "INVALID_APP_IDENTIFIE
 _REFUSAL_SOURCES = (inspect.getsource(verify_app_store_notification),
                     inspect.getsource(app_store))
 
-# The application package on disk, read as text so the scan below imports nothing.
-_PACKAGE = Path(nativespeaker.api.__file__).parent
-
-# Every file of the package that raises the refusal, so one appearing elsewhere fails the control
-# below rather than shrinking both sides of the equality it guards.
-_REFUSAL_FILES = frozenset({"app/dependencies.py", "auth/app_store.py", "auth/google_play.py"})
-
-# What a `stage=` that is not a literal leaves behind: the library's own `VerificationStatus.name`.
-_COMPUTED = "<computed at the raise site>"
-
-
-def _called_name(node: ast.Call) -> str | None:
-    """The callee's own name, whether it was called bare or through its module."""
-    func = node.func
-    return func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
-
-
-def _refusal_calls(source: str) -> list[ast.Call]:
-    """Every `NotificationRejected(...)` call one module's source makes."""
-    return [node for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.Call) and _called_name(node) == "NotificationRejected"]
-
-
-def _files_raising_the_refusal() -> set[str]:
-    """Every file of the application package carrying a `NotificationRejected(...)` call."""
-    return {path.relative_to(_PACKAGE).as_posix() for path in _PACKAGE.rglob("*.py")
-            if _refusal_calls(path.read_text())}
-
-
-def _raised_refusal_stages() -> set[str]:
-    """Every `NotificationRejected(stage=...)` the Apple path raises, read from its own source."""
-    stages = set()
-    for source in _REFUSAL_SOURCES:
-        for node in _refusal_calls(source):
-            for keyword in node.keywords:
-                if keyword.arg == "stage":
-                    stages.add(keyword.value.value
-                               if isinstance(keyword.value, ast.Constant) else _COMPUTED)
-    return stages
-
-
 # Every reachable arm, written out rather than derived, so the control below can disagree with the
 # module's own raise sites. Deriving it from `VerificationStatus` was how the two stages the seam
 # raises outside that enum came to have no case at all.
@@ -126,47 +90,28 @@ _LOGGERS = ("nativespeaker.api.app.error_handlers.logger",
             "nativespeaker.api.services.subscriptions.logger")
 
 
-class _LogSpy:
-    """A recording spy on a module's own logger, so "which record, once" stays observable."""
-
-    def __init__(self) -> None:
-        self.entries: list[tuple[str, dict]] = []
-
-    def record(self, event: str, **fields) -> None:
-        self.entries.append((event, fields))
-
-
-def _spy_on(monkeypatch, targets: tuple[str, ...], levels: tuple[str, ...]) -> _LogSpy:
-    """A spy, not `capture_logs`: the module-level logger caches its binding, so capture sees nothing."""
-    spy = _LogSpy()
-    for target in targets:
-        for level in levels:
-            monkeypatch.setattr(f"{target}.{level}", spy.record)
-    return spy
-
-
 @pytest.fixture
-def refusal_records(monkeypatch) -> _LogSpy:
+def refusal_records(monkeypatch) -> LogSpy:
     """Every WARNING record the handler writes, which is the level a refusal is recorded at."""
-    return _spy_on(monkeypatch, (_LOGGERS[0],), ("warning",))
+    return spy_on(monkeypatch, (_LOGGERS[0],), ("warning",))
 
 
 @pytest.fixture
-def error_records(monkeypatch) -> _LogSpy:
+def error_records(monkeypatch) -> LogSpy:
     """Every ERROR record the handler writes, and nothing else."""
-    return _spy_on(monkeypatch, (_LOGGERS[0],), ("error",))
+    return spy_on(monkeypatch, (_LOGGERS[0],), ("error",))
 
 
 @pytest.fixture
-def info_records(monkeypatch) -> _LogSpy:
+def info_records(monkeypatch) -> LogSpy:
     """Every INFO record the service writes, and nothing else."""
-    return _spy_on(monkeypatch, (_LOGGERS[1],), ("info",))
+    return spy_on(monkeypatch, (_LOGGERS[1],), ("info",))
 
 
 @pytest.fixture
-def captured_records(monkeypatch) -> _LogSpy:
+def captured_records(monkeypatch) -> LogSpy:
     """One list holding every record either module writes at any level, for the hygiene walk."""
-    return _spy_on(monkeypatch, _LOGGERS, ("info", "warning", "error"))
+    return spy_on(monkeypatch, _LOGGERS, ("info", "warning", "error"))
 
 
 @pytest_asyncio.fixture(loop_scope="module")
@@ -318,16 +263,16 @@ class TestEveryVerificationFailureAnswersTheOneBody:
         seam's own raise sites are read, so a stage raised outside that enum cannot be missed --
         `notification_without_identity` was, because both sides were read off the enum."""
         assert {status.name for status in VerificationStatus} == KNOWN_STATUSES
-        raised = _raised_refusal_stages()
+        raised = raised_refusal_stages(_REFUSAL_SOURCES)
         # The one computed stage is `failure.status.name`, so it stands for every member of the
         # library's enum but `OK`; the literal ones stand only for themselves.
-        assert _COMPUTED in raised
-        assert set(REFUSAL_STAGES) == (raised - {_COMPUTED}) | (KNOWN_STATUSES - {"OK"})
+        assert COMPUTED in raised
+        assert set(REFUSAL_STAGES) == (raised - {COMPUTED}) | (KNOWN_STATUSES - {"OK"})
 
     async def test_no_raise_site_lives_where_neither_route_control_reads_it(self):
         """The second control: a refusal raised in a file `_REFUSAL_SOURCES` misses would shrink
         both sides of the equality above instead of failing it."""
-        assert _files_raising_the_refusal() == _REFUSAL_FILES
+        assert files_raising_the_refusal() == REFUSAL_FILES
 
     async def test_a_refused_payload_writes_nothing(
             self, webhook_client, scripted_app_store_notifications, _db_transaction):
