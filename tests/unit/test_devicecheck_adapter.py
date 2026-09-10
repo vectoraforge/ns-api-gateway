@@ -289,6 +289,7 @@ class TestTheParseArms:
         assert len(recorder.requests) == 1
 
 
+@pytest.mark.timing
 class TestTheAttemptsAreSeparatedInTime:
     """WR-21: the budget was spent inside a few milliseconds, so it bought nothing against a blip."""
 

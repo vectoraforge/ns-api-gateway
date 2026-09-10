@@ -153,6 +153,7 @@ class TestAttemptCountsPerOutcome:
         assert identity is ANONYMOUS
 
 
+@pytest.mark.timing
 class TestTheAttemptsAreSeparatedInTime:
     """WR-21: the budget was spent inside a few milliseconds, so it bought nothing against a blip."""
 
