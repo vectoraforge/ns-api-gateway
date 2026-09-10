@@ -174,8 +174,8 @@ async def lifespan(app: FastAPI):
             logger.warning("app_store_configuration_absent",
                            consequence="POST /webhooks/app-store refuses every notification until "
                                        "this pod is restarted with the App Store bundle id, "
-                                       "environment, product map, app id and root certificate "
-                                       "available in this environment")
+                                       "environment, product map, app id (production only) and "
+                                       "root certificate available in this environment")
         # Set unconditionally, so the route set is the same in every environment.
         app.state.app_store_notifications = AppStoreNotifications(verifier=app_store_verifier,
                                                                   products=config.app_store.products)
