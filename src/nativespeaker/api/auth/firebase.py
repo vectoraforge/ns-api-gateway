@@ -43,7 +43,8 @@ def build_admin_apps(config) -> dict[str, firebase_admin.App]:
     if credential is None:
         logger.warning("firebase_admin_credential_absent",
                        consequence="user creation fails closed as verification_temporarily_unavailable "
-                                   "until Application Default Credentials are available in this environment")
+                                   "until this pod is restarted with Application Default Credentials "
+                                   "available in this environment")
         return {}
     # Explicit projectId and name, never inferred: with no [DEFAULT] app a forgotten app= fails loudly.
     app = firebase_admin.initialize_app(

@@ -159,8 +159,9 @@ async def lifespan(app: FastAPI):
         if not (config.devicecheck.key_id and config.devicecheck.team_id and devicecheck_key):
             logger.warning("devicecheck_credential_absent",
                            consequence="the anonymous grant claim fails closed as "
-                                       "verification_temporarily_unavailable until the DeviceCheck key id, "
-                                       "team id and private key are available in this environment")
+                                       "verification_temporarily_unavailable until this pod is restarted "
+                                       "with the DeviceCheck key id, team id and private key available "
+                                       "in this environment")
         devicecheck_client = httpx.AsyncClient(timeout=DEVICECHECK_HTTP_TIMEOUT_SECONDS)
         app.state.devicecheck_adapter = AppleDeviceCheck(key_id=config.devicecheck.key_id,
                                                          team_id=config.devicecheck.team_id,
@@ -171,9 +172,9 @@ async def lifespan(app: FastAPI):
         if app_store_verifier is None:
             logger.warning("app_store_configuration_absent",
                            consequence="POST /webhooks/app-store fails closed as "
-                                       "verification_temporarily_unavailable until the App Store bundle "
-                                       "id, environment, app id and root certificate are available in "
-                                       "this environment")
+                                       "verification_temporarily_unavailable until this pod is restarted "
+                                       "with the App Store bundle id, environment, app id and root "
+                                       "certificate available in this environment")
         # Set unconditionally, so the route set is the same in every environment.
         app.state.app_store_notifications = AppStoreNotifications(verifier=app_store_verifier,
                                                                   products=config.app_store.products)
@@ -183,10 +184,10 @@ async def lifespan(app: FastAPI):
         if (google_push_verifier is None or play_credential is None
                 or not config.google_play.package_name or not config.google_play.products):
             logger.warning("google_play_configuration_absent",
-                           consequence="POST /webhooks/google-play/rtdn refuses every delivery "
-                                       "until the Play package name, product map, push audience, "
-                                       "push service account and Application Default Credentials "
-                                       "are available in this environment")
+                           consequence="POST /webhooks/google-play/rtdn refuses every delivery until "
+                                       "this pod is restarted with the Play package name, product map, "
+                                       "push audience, push service account and Application Default "
+                                       "Credentials available in this environment")
         play_client = httpx.AsyncClient(timeout=PLAY_HTTP_TIMEOUT_SECONDS)
         # Set unconditionally, so the route set is the same in every environment.
         app.state.google_push_tokens = PubSubPushTokens(verifier=google_push_verifier)
