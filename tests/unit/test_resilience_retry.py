@@ -416,11 +416,22 @@ class _StatusOnly(Exception):
         self.status_code = status_code
 
 
+# Listed here rather than derived from `_TRANSIENT_STATUSES`, so a status leaving the production set
+# fails a case instead of quietly removing one. WR-122: parametrised over itself, shrinking the set
+# to `{408}` -- which reclassifies an OpenAI 429/500/502/503/504 as permanent, never retried and
+# never counted by the breaker -- left every case in this file green.
+RETRY_ELIGIBLE = (408, 409, 429, 500, 502, 503, 504)
+
+
 class TestTheStatusClassificationIsNamedOnce:
     """WR-24. The set decides whether the breaker counts a failure, so a second copy that drifts
     would silently split classification -- and the shadowed copy would be the invisible one."""
 
-    @pytest.mark.parametrize("status", sorted(_TRANSIENT_STATUSES))
+    def test_the_set_is_exactly_the_statuses_worth_retrying(self):
+        """The membership itself, which the parametrised case below cannot state about its own source."""
+        assert _TRANSIENT_STATUSES == frozenset(RETRY_ELIGIBLE)
+
+    @pytest.mark.parametrize("status", RETRY_ELIGIBLE)
     def test_a_retry_eligible_status_is_transient(self, status):
         assert _is_transient_error(_StatusOnly(status))
 
