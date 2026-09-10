@@ -376,6 +376,8 @@ class TestTheThreeAppleFailureArms:
         # The slot is spent, so the write that would spend it again is never attempted.
         assert scripted_devicecheck_adapter.write_calls == []
         assert await _row_counts(_db_transaction, user.id) == (0, 0)
+        # The one-way marker `_row_counts` never reads: setting it denies this account its free grant.
+        assert (await _identity_of(_db_transaction, subject)).free_grant_consumed_at is None
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
     async def test_a_token_apple_refuses_is_a_proof_rejection(
@@ -394,6 +396,8 @@ class TestTheThreeAppleFailureArms:
         assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
         assert scripted_devicecheck_adapter.write_calls == []
         assert await _row_counts(_db_transaction, user.id) == (0, 0)
+        # The one-way marker `_row_counts` never reads: setting it denies this account its free grant.
+        assert (await _identity_of(_db_transaction, subject)).free_grant_consumed_at is None
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
     async def test_an_exhausted_apple_budget_is_temporarily_unavailable_and_writes_nothing(
@@ -412,4 +416,6 @@ class TestTheThreeAppleFailureArms:
         assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN] * DEVICECHECK_ATTEMPTS
         assert scripted_devicecheck_adapter.write_calls == []
         assert await _row_counts(_db_transaction, user.id) == (0, 0)
+        # The one-way marker `_row_counts` never reads: setting it denies this account its free grant.
+        assert (await _identity_of(_db_transaction, subject)).free_grant_consumed_at is None
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
