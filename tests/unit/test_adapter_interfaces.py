@@ -55,10 +55,8 @@ class TestTheOutcomeVocabularyLeftTheSeam:
 
 class TestNoProviderDependency:
     """No `firebase_admin` in `sys.modules` after importing any auth module but `firebase`.
-
     Package-wide is not assertable as one import: `auth/__init__.py` exposes nothing, so importing
-    `adapters` loads no sibling and says nothing about them. The set is read off the directory
-    instead, so a module added later is covered without editing this file."""
+    `adapters` loads no sibling and says nothing about the rest. The set is read off the directory."""
 
     @pytest.mark.parametrize("sdk_free_module", SDK_FREE_MODULES)
     def test_importing_the_module_does_not_import_firebase_admin(self, sdk_free_module):
