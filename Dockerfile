@@ -39,4 +39,7 @@ USER appuser
 EXPOSE 8000
 
 # No HEALTHCHECK: the kubelet does not read one, and the chart already probes /health/ready.
-CMD ["uvicorn", "nativespeaker.api.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Split from the flags, so `deployment.yaml` can replace them alone: a port hardcoded in one CMD
+# left uvicorn on 8000 while `container.port` moved the containerPort and both probes with it.
+ENTRYPOINT ["uvicorn", "nativespeaker.api.app.main:app"]
+CMD ["--host", "0.0.0.0", "--port", "8000"]

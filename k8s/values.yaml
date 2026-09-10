@@ -30,8 +30,8 @@ resources:
     memory: 512Mi
 
 probes:
-  # No `port`: both probes dial the container port by its name `http`, so `container.port` is the
-  # one place the port is set and moving it cannot leave a probe on the old number.
+  # No `port`: both probes dial the container port by its name `http`, and `deployment.yaml` passes
+  # `container.port` to uvicorn itself, so moving it cannot leave the process or a probe behind.
   readiness:
     path: /health/ready
     initialDelaySeconds: 5

@@ -42,6 +42,10 @@ spec:
         # refuses with a message naming nothing.
         image: "{{ required "image.repository must be set" .Values.image.repository }}:{{ required "image.tag must be set" .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
+        # The image's ENTRYPOINT is uvicorn and its CMD is these flags, so this is what makes
+        # `container.port` real: without it the process listens on the image's own 8000 and every
+        # probe below dials the moved number.
+        args: ["--host", "0.0.0.0", "--port", "{{ .Values.container.port }}"]
         ports:
         - name: http
           containerPort: {{ .Values.container.port }}
