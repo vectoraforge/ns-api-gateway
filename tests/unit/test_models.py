@@ -16,7 +16,7 @@ from nativespeaker.api.schemas.api import (
     MessageRequest,
     MessageResponse,
 )
-from nativespeaker.api.schemas.auth import CompletionRequest, GrantClaimRequest
+from nativespeaker.api.schemas.auth import CompletionRequest, GrantClaimRequest, RestoreRequest
 from nativespeaker.api.schemas.llm import (
     AnalyzeInput,
     AnalyzeResponse,
@@ -335,16 +335,31 @@ def _bound_of(model, field: str) -> int:
                 if getattr(rule, "max_length", None) is not None)
 
 
+# The longest store name this route serves, which is the whole range `provider` has to cover.
+REALISTIC_STORE_NAME = len("google_play")
+
+# One standalone Apple JWS signed transaction: one certificate chain, not the three an envelope
+# carries. `schemas/webhooks.py` puts chain material for all three copies at roughly 12 KB, and the
+# two nested ones pay a second 4/3 inflation, so a single un-nested copy plus its payload lands
+# near this. Assumed from that arithmetic rather than measured, as `REALISTIC_DEVICE_TOKEN` is.
+REALISTIC_RESTORE_PROOF = 4 * 1024
+
 # Every string an authenticated auth body carries, with the real value each one must stay above.
 _BOUNDED_AUTH_FIELDS = [
     (CompletionRequest, "challenge_id", {}, CHALLENGE_ID_CHARACTERS),
     (GrantClaimRequest, "challenge_id", {"device_token": "t"}, CHALLENGE_ID_CHARACTERS),
     (GrantClaimRequest, "device_token", {"challenge_id": "c"}, REALISTIC_DEVICE_TOKEN),
+    # WR-123: the restore body was in no test at all, and its proof is the same kind of value as
+    # `device_token` -- the client's Apple transaction or Play purchase token, relayed verbatim to
+    # the store by `RestoreService.restore`, one of them into a URL path segment.
+    (RestoreRequest, "provider", {"restore_proof": "p"}, REALISTIC_STORE_NAME),
+    (RestoreRequest, "restore_proof", {"provider": "apple"}, REALISTIC_RESTORE_PROOF),
 ]
 
 
 class TestTheAuthBodyStringsAreBounded:
-    """WR-24. `device_token` is relayed verbatim to Apple, and `challenge_id` costs a store lookup."""
+    """WR-24. `device_token` and `restore_proof` are relayed verbatim to the store, and
+    `challenge_id` costs a store lookup."""
 
     @pytest.mark.parametrize("model,field,other,realistic", _BOUNDED_AUTH_FIELDS)
     def test_an_oversized_value_is_refused(self, model, field, other, realistic):
