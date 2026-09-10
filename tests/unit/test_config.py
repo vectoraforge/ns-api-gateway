@@ -718,6 +718,30 @@ class TestEveryAdcFailureCostsOneRouteAndNotTheBoot:
         monkeypatch.setattr(google.auth, "default", lambda *a, **k: (supplied, "a-project"))
         assert _play_credential() is supplied
 
+    def _warnings(self, monkeypatch, failure: str) -> list[str]:
+        """The events one read logs while `google.auth.default()` raises `failure`."""
+        recorded: list[str] = []
+        monkeypatch.setattr("nativespeaker.api.app.lifespan.logger.warning",
+                            lambda event, **_fields: recorded.append(event))
+
+        def raising(*_args, **_kwargs):
+            raise getattr(google.auth.exceptions, failure)(f"{failure} in this test")
+
+        monkeypatch.setattr(google.auth, "default", raising)
+        assert _play_credential() is None
+        return recorded
+
+    @pytest.mark.parametrize("failure", ["RefreshError", "TransportError",
+                                         "MutualTLSChannelError"])
+    def test_a_badly_answered_read_is_told_apart_from_absence(self, monkeypatch, failure):
+        """WR-51: an operator repairs absence, and the next call's rebuild repairs this one, so
+        the boot line that names the missing settings is the wrong line for it."""
+        assert self._warnings(monkeypatch, failure) == ["play_credential_warm_up_failed"]
+
+    def test_an_absent_credential_keeps_its_one_boot_line_and_gains_no_second(self, monkeypatch):
+        """The control on 44 D-14: absence is already named by `google_play_configuration_absent`."""
+        assert self._warnings(monkeypatch, "DefaultCredentialsError") == []
+
 
 _ASSIGNMENT = re.compile(r"^#?\s*([A-Z][A-Z0-9_]*)=(.*)$")
 

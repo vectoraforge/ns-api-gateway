@@ -165,9 +165,18 @@ def _play_credential():
     """ADC scoped for the Play Developer API, or `None` if the environment supplies none."""
     try:
         credential, _project = google.auth.default(scopes=[PLAY_SCOPE])
+    except google.auth.exceptions.DefaultCredentialsError:
+        # The environment supplies none, which is the absence 44 D-14 warns about at boot.
+        return None
     except google.auth.exceptions.GoogleAuthError:
-        # The whole family, not just an absent credential: `google.auth.default()` also raises
-        # `RefreshError` and `TransportError` when the metadata server answers badly at pod start.
+        # The rest of the family: `google.auth.default()` raises `RefreshError` and
+        # `TransportError` when the metadata server answers badly. Told apart from absence,
+        # because the values are here and the next call rebuilds through this same function.
+        logger.warning("play_credential_warm_up_failed",
+                       consequence="POST /webhooks/google-play/rtdn and the google_play arm of "
+                                   "POST /auth/restore-subscription answer 503 until Google's "
+                                   "metadata server answers again, which the next call retries "
+                                   "without a restart")
         return None
     return credential
 
@@ -245,6 +254,9 @@ async def lifespan(app: FastAPI):
             build=lambda: build_google_push_verifier(config.google_play))
         app.state.play_subscriptions = PlayDeveloperSubscriptions(
             credential=play_credential,
+            # A metadata-server blip at boot is transient, so the credential is rebuilt rather than
+            # cached as absent, as the push verifier above is. An unconfigured pod answers None again.
+            build=_play_credential,
             client=play_client,
             products=config.google_play.products)
 

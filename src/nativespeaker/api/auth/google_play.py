@@ -47,6 +47,10 @@ PLAY_HTTP_TIMEOUT_SECONDS = 8
 # checked on a route outside the gateway's JWT policy, so this is what bounds its cost per burst.
 PUSH_VERIFIER_REBUILD_INTERVAL_SECONDS = 30.0
 
+# The floor under the Play credential's rebuild rate. The rebuild reads the metadata server in the
+# threadpool `get_identity` shares, so this is what bounds its cost while that server is away.
+PLAY_CREDENTIAL_REBUILD_INTERVAL_SECONDS = 30.0
+
 # The two Play statuses that say this purchase token is gone, which no later attempt can change.
 _GONE_STATUSES = frozenset({404, 410})
 
@@ -271,12 +275,33 @@ class CappedRefreshRequest(google.auth.transport.requests.Request):
 class PlayDeveloperSubscriptions:
     """The `purchases.subscriptionsv2.get` read, signed per call with this deployment's credential."""
 
-    def __init__(self, *, credential, client: httpx.AsyncClient,
-                 products: dict[str, str]) -> None:
+    def __init__(self, *, credential, build: Callable[[], object] | None = None,
+                 rebuild_interval_seconds: float = PLAY_CREDENTIAL_REBUILD_INTERVAL_SECONDS,
+                 client: httpx.AsyncClient, products: dict[str, str]) -> None:
         self._credential = credential
+        self._build = build
+        self._rebuild_lock = asyncio.Lock()
+        self._rebuild_interval = rebuild_interval_seconds
+        # Zero and not the clock: the first call after a failed warm-up rebuilds at once.
+        self._next_rebuild = 0.0
         self._client = client
         # Server-controlled reference data, never a value the store supplied.
         self._products = products
+
+    async def _credential_in_hand(self) -> bool:
+        """Report whether a credential is held, rebuilding once if boot could not read one."""
+        build = self._build
+        if self._credential is None and build is not None:
+            # Off the loop, because the builder reads the metadata server: a bad answer at boot is
+            # transient, and an unconfigured deployment answers None again for free.
+            async with self._rebuild_lock:
+                # Re-read under the lock: a rival that just built one leaves nothing to do here.
+                if self._credential is None and time.monotonic() >= self._next_rebuild:
+                    # Stamped before the read, so the callers held up behind it do not each
+                    # inherit the right to make one of their own the moment it fails.
+                    self._next_rebuild = time.monotonic() + self._rebuild_interval
+                    self._credential = await run_in_threadpool(build)
+        return self._credential is not None
 
     # `evaluated_at` is passed, never read from a clock here: a second reading would let a term
     # cross between `_status_for` and the grant writer's `ends_at`.
@@ -284,7 +309,7 @@ class PlayDeveloperSubscriptions:
                    notification_uuid: str, signed_at: datetime | None,
                    evaluated_at: datetime) -> VerifiedNotification | None:
         """Read this subscription's live state from Play, or answer `None` for a gone token."""
-        if self._credential is None:
+        if not await self._credential_in_hand():
             raise Unavailable(stage="play_subscriptions_read")
         if not package_name or not _names_one_path_segment(package_name):
             # An absent or dot-only name addresses a URL naming no application, whose 404 would
@@ -343,7 +368,7 @@ class PlayDeveloperSubscriptions:
         """Read the state of one client-presented purchase token, or raise the refusal it earned."""
         # Each refusal is classified here, so this path answers 503 where the webhook answers 500.
         # `UnmappedStoreProduct` is the one exception, and it is re-raised by name below.
-        if self._credential is None:
+        if not await self._credential_in_hand():
             raise Unavailable(stage=RESTORE_UNCONFIGURED_STAGE)
         if not package_name or not _names_one_path_segment(package_name):
             # An absent or dot-only application name is an unusable deployment, never a refusal.

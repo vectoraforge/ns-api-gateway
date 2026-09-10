@@ -25,7 +25,9 @@ from nativespeaker.api.app.lifespan import build_google_push_verifier
 from nativespeaker.api.auth.google_play import (
     GOOGLE_ISSUER,
     GOOGLE_JWKS_URL,
+    PLAY_CREDENTIAL_REBUILD_INTERVAL_SECONDS,
     PLAY_HTTP_TIMEOUT_SECONDS,
+    RESTORE_UNCONFIGURED_STAGE,
     RESTORE_UNPARSEABLE_STAGE,
     CappedRefreshRequest,
     PlayDeveloperSubscriptions,
@@ -132,10 +134,14 @@ _UNSET = object()
 
 
 def _play_reader(handler, *, products: dict[str, str] | None = None,
-                 credential=_UNSET) -> PlayDeveloperSubscriptions:
+                 credential=_UNSET, build=None,
+                 rebuild_interval_seconds: float = PLAY_CREDENTIAL_REBUILD_INTERVAL_SECONDS,
+                 ) -> PlayDeveloperSubscriptions:
     """The real Play read class over a stubbed transport and a captured instant."""
     return PlayDeveloperSubscriptions(
         credential=_FakeCredential() if credential is _UNSET else credential,
+        build=build,
+        rebuild_interval_seconds=rebuild_interval_seconds,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         products={PRODUCT_ID: TIER_ID} if products is None else products)
 
@@ -508,9 +514,11 @@ class TestTheEntitlementDecisionUsesTheInstantTheRequestCaptured:
         assert notification.status is expected
 
     def test_the_class_holds_no_clock_of_its_own_to_fall_back_to(self):
-        """Read off the signature: a surviving source would let a later edit silently use it again."""
+        """Read off the signature: a surviving source would let a later edit silently use it again.
+        `rebuild_interval_seconds` is a monotonic floor and names no date a term can be read from."""
         parameters = set(inspect.signature(PlayDeveloperSubscriptions.__init__).parameters)
-        assert parameters == {"self", "credential", "client", "products"}
+        assert parameters == {"self", "credential", "build", "rebuild_interval_seconds",
+                              "client", "products"}
 
     async def test_the_dependency_forwards_the_solver_resolved_instant_to_the_read(self):
         """The other half: the instant reaches the adapter through the dependency, not by hand."""
@@ -727,6 +735,98 @@ class TestAnUnconfiguredCredentialIsNeverAcknowledged:
                                                             expiry=UNEXPIRED)))
 
         assert await _read_through(reader) is not None
+
+
+class _RecordingCredentialBuild:
+    """The ADC read as a double: it counts its calls and answers whatever the case last set."""
+
+    def __init__(self, credential=None) -> None:
+        self.credential = credential
+        self.calls = 0
+
+    def __call__(self):
+        """One rebuild attempt, which answers `None` for as long as the environment does."""
+        self.calls += 1
+        return self.credential
+
+
+class TestACredentialBootCouldNotReadIsRebuiltRatherThanCachedForThePodsLife:
+    """WR-51: a metadata-server blip at boot answered 503 for every later delivery and every
+    later google_play restore, with both probes green and nothing recovering without a restart."""
+
+    def _live_reader(self, **kwargs) -> PlayDeveloperSubscriptions:
+        """A reader whose transport answers one ordinary active subscription."""
+        return _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_ACTIVE",
+                                                          expiry=UNEXPIRED)), **kwargs)
+
+    async def test_the_next_restore_read_rebuilds_the_credential_boot_could_not_read(self):
+        build = _RecordingCredentialBuild(_FakeCredential())
+        reader = self._live_reader(credential=None, build=build)
+
+        restored = await reader.read_for_restore(package_name=PACKAGE_NAME,
+                                                 purchase_token=PURCHASE_TOKEN,
+                                                 evaluated_at=EVALUATED_AT)
+
+        assert (restored.tier_id, build.calls) == (TIER_ID, 1)
+
+    async def test_the_rebuilt_credential_serves_the_webhook_read_and_is_read_once(self):
+        build = _RecordingCredentialBuild(_FakeCredential())
+        reader = self._live_reader(credential=None, build=build)
+
+        assert await _read_through(reader) is not None
+        assert await _read_through(reader) is not None
+        assert build.calls == 1, "one rebuild serving both deliveries"
+
+    async def test_an_environment_supplying_none_again_is_the_503_it_was(self):
+        """The control: recovery is a retry, never a read no credential ever signed."""
+        reader = _play_reader(_never_reached, credential=None,
+                              build=_RecordingCredentialBuild())
+
+        with pytest.raises(Unavailable) as refusal:
+            await reader.read_for_restore(package_name=PACKAGE_NAME,
+                                          purchase_token=PURCHASE_TOKEN,
+                                          evaluated_at=EVALUATED_AT)
+
+        assert refusal.value.stage == RESTORE_UNCONFIGURED_STAGE
+
+    async def test_a_rebuild_that_answered_none_is_not_retried_within_the_interval(self):
+        """The rate floor: nothing else records that a rebuild was just attempted and failed."""
+        build = _RecordingCredentialBuild()
+        reader = _play_reader(_never_reached, credential=None, build=build)
+
+        for _ in range(5):
+            with pytest.raises(Unavailable):
+                await _read_through(reader)
+
+        assert build.calls == 1, "the first delivery's attempt, and none of the four behind it"
+
+    async def test_one_burst_of_callers_shares_a_single_rebuild(self):
+        """The lock: with the floor at zero it is the only thing parting eight concurrent callers."""
+        build = _RecordingCredentialBuild(_FakeCredential())
+        reader = self._live_reader(credential=None, build=build, rebuild_interval_seconds=0.0)
+
+        await asyncio.gather(*(_read_through(reader) for _ in range(8)))
+
+        assert build.calls == 1, "one rebuild for the burst, and not one per caller"
+
+    async def test_the_interval_elapsing_still_recovers_the_route(self):
+        """The floor delays the retry and never cancels it, as the push verifier's does."""
+        build = _RecordingCredentialBuild()
+        reader = self._live_reader(credential=None, build=build, rebuild_interval_seconds=0.0)
+
+        with pytest.raises(Unavailable):
+            await _read_through(reader)
+        build.credential = _FakeCredential()
+
+        assert await _read_through(reader) is not None
+        assert build.calls == 2, "the refused attempt, then the one that recovered the route"
+
+    async def test_a_pod_wired_without_a_builder_keeps_the_answer_boot_gave_it(self):
+        """The control on the seam: an absent builder is the old behaviour exactly."""
+        reader = _play_reader(_never_reached, credential=None)
+
+        with pytest.raises(Unavailable):
+            await _read_through(reader)
 
 
 class _RecordingSession:

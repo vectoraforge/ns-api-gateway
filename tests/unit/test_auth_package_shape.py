@@ -18,7 +18,9 @@ AUTH_PACKAGE = Path(auth_package.__file__).parent
 # `AttributeError` inside a handler.
 # 25, 69: `google_play.CappedRefreshRequest` and its `__call__`, which cap the credential refresh
 # at the module's own timeout instead of google-auth's 120-second default (44 WR-01).
-CURRENT = (8, 25, 69)
+# 70: `PlayDeveloperSubscriptions._credential_in_hand`, the lazy rebuild that keeps a metadata
+# server blip at boot from disabling the Play read for the pod's whole life (45 WR-51).
+CURRENT = (8, 25, 70)
 
 
 def _measure(directory: Path) -> tuple[int, int, int]:
