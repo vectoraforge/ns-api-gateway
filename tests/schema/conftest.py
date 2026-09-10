@@ -29,6 +29,9 @@ _DB_DEFAULTS = {
 # A database name cannot be bound as a parameter, so CREATE/DROP DATABASE interpolate it behind this guard.
 _SAFE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 
+# The only hosts this suite may create and drop databases on; NS_SCHEMA_TEST_ALLOW_REMOTE opts out.
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
 
 def _env(name: str) -> str:
     """Read a DB_* variable, falling back to its .env.example default."""
@@ -46,6 +49,13 @@ def dsn_for(database: str) -> str:
 
 def admin_dsn() -> str:
     """DSN for the configured DB_NAME database -- used only to CREATE and DROP scratch databases."""
+    # The one DSN that CREATE DATABASE and DROP DATABASE ... WITH (FORCE) are executed on, and
+    # pytest-dotenv loads whatever `.env` names into the environment before collection. A shape
+    # check on the scratch name says nothing about the server, so a non-loopback host is refused.
+    host = _env("DB_HOST")
+    if host not in _LOCAL_HOSTS and not os.environ.get("NS_SCHEMA_TEST_ALLOW_REMOTE"):
+        msg = f"refusing to create and drop scratch databases on {host!r}"
+        raise RuntimeError(msg)
     return dsn_for(_env("DB_NAME"))
 
 
