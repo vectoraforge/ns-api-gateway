@@ -50,10 +50,15 @@ PUSH_VERIFIER_REBUILD_INTERVAL_SECONDS = 30.0
 # The two Play statuses that say this purchase token is gone, which no later attempt can change.
 _GONE_STATUSES = frozenset({404, 410})
 
+# Play's answer for a purchase token it cannot read, and for one that names another application.
+# The credential and the scope answer 401 and 403, so this status is the caller's alone.
+_UNUSABLE_TOKEN_STATUS = 400
+
 # The stage labels the restore read answers with, and its whole log vocabulary. One label for each
-# repair an operator can make, because every one of these arms answers the same 503 to the client.
+# repair, because the client is told only 503 or 403 and the label is the whole diagnosis.
 RESTORE_READ_STAGE = "play_restore_read"
 RESTORE_TOKEN_GONE_STAGE = "play_token_gone"
+RESTORE_TOKEN_UNUSABLE_STAGE = "play_restore_token_unusable"
 RESTORE_UNCONFIGURED_STAGE = "play_restore_unconfigured"
 RESTORE_PACKAGE_STAGE = "play_restore_package_unusable"
 RESTORE_TRANSPORT_STAGE = "play_restore_transport"
@@ -358,9 +363,13 @@ class PlayDeveloperSubscriptions:
             # A gone token is a rejected proof, not a server failure. The package name travels in
             # the URL path, so a token of another application answers 404 and arrives here too.
             raise ProofRejected(stage=RESTORE_TOKEN_GONE_STAGE)
+        if response.status_code == _UNUSABLE_TOKEN_STATUS:
+            # Play's answer for a token that does not parse, or that names another application:
+            # the caller's proof, never this deployment's credential, and no retry changes it.
+            raise ProofRejected(stage=RESTORE_TOKEN_UNUSABLE_STAGE)
         if response.status_code // 100 != 2:
-            # Our own two words, never Play's status: a 4xx is a credential or scope an operator
-            # repairs, and a 5xx is Play's own outage, which is waited out rather than repaired.
+            # Our own two words, never Play's status: the 401 and 403 left here are a credential or
+            # scope an operator repairs, and a 5xx is Play's own outage, which is waited out.
             raise Unavailable(stage=RESTORE_READ_STAGE,
                               cause="refused" if response.status_code // 100 == 4 else "failed")
 

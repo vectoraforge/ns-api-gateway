@@ -71,8 +71,9 @@ EVALUATED_AT = datetime(2026, 6, 1, tzinfo=UTC)
 PACKAGE_NAME = "com.nativespeaker.app"
 
 # The stages the Play restore read answers with, which are its whole label vocabulary: one per
-# repair, because every arm below the gone token answers the client the same 503.
+# repair, because the client is told only 503 or 403 and the stage is the whole diagnosis.
 GONE_STAGE = "play_token_gone"
+TOKEN_UNUSABLE_STAGE = "play_restore_token_unusable"
 READ_STAGE = "play_restore_read"
 UNCONFIGURED_STAGE = "play_restore_unconfigured"
 PACKAGE_STAGE = "play_restore_package_unusable"
@@ -368,7 +369,8 @@ class TestThePlayRequestUrlIsConfinedToOneResource:
 
 
 class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
-    """D-05: a gone token is a rejected proof, and every other failure is a 503 the app retries."""
+    """D-05: a gone token is a rejected proof, as is a token Play cannot read; every other
+    failure is a 503 the app retries."""
 
     @pytest.mark.parametrize("status_code", [404, 410])
     async def test_a_gone_purchase_token_is_a_rejected_proof(self, status_code):
@@ -380,7 +382,20 @@ class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
         assert refusal.value.stage == GONE_STAGE
         assert refusal.value.status == 403
 
-    @pytest.mark.parametrize("status_code,cause", [(400, "refused"), (401, "refused"),
+    async def test_a_token_play_cannot_read_is_a_rejected_proof(self):
+        """WR-36: Play answers 400 for a token that does not parse and for one naming another
+        application. No later attempt changes either, so `verification_temporarily_unavailable`
+        would ask a well-behaved client to retry a proof that can never verify."""
+        reader = _play_reader(_answering({"error": {"status": "INVALID_ARGUMENT"}}, 400))
+
+        with pytest.raises(ProofRejected) as refusal:
+            await _restore_through(reader)
+
+        assert (refusal.value.stage, refusal.value.status) == (TOKEN_UNUSABLE_STAGE, 403)
+        # Its own stage: a support reading of a rejected proof is not the gone token's reading.
+        assert refusal.value.stage != GONE_STAGE
+
+    @pytest.mark.parametrize("status_code,cause", [(401, "refused"),
                                                    (403, "refused"), (429, "refused"),
                                                    (500, "failed"), (502, "failed"),
                                                    (503, "failed")])
