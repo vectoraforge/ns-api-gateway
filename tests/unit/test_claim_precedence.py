@@ -53,6 +53,24 @@ REFUSED = {"code": "operation_not_allowed"}
 CHALLENGE_REQUIRED = {"code": "challenge_required"}
 
 
+class _WarningSpy:
+    """Stands in for the handler's whole `logger`; only the level a refusal is recorded at exists."""
+
+    def __init__(self, records: list[dict]) -> None:
+        self.records = records
+
+    def warning(self, event, **fields) -> None:
+        self.records.append({"event": event} | fields)
+
+
+def _handler_warnings(monkeypatch) -> list[dict]:
+    """The whole `logger` name, never its level attributes: structlog's lazy proxy builds those on
+    demand, so monkeypatch's undo would freeze one onto the proxy for the rest of the session."""
+    records: list[dict] = []
+    monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger", _WarningSpy(records))
+    return records
+
+
 class _StubSession:
     """Records transaction boundaries and refuses queries: a statement here means a write ran unstubbed."""
 
@@ -519,9 +537,7 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
                                                                      monkeypatch):
         """WR-62: nine refusals left the same field-less `claim_refused_under_lock`, so a platform
         pin and a lost race read identically. One line still, and now it says which."""
-        records: list[dict] = []
-        monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.warning",
-                            lambda event, **fields: records.append({"event": event} | fields))
+        records = _handler_warnings(monkeypatch)
         identity_row, _ = account
         grants.outcome = ActivationOutcome.refused
         grants.cause = "platform_pinned_to_another"
@@ -537,9 +553,7 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
             self, client, store, account, grants, devicecheck, monkeypatch):
         """The one arm the writer does not name: the service supplies it, and it is the only
         `claim_refused_under_lock` that really was a race."""
-        records: list[dict] = []
-        monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.warning",
-                            lambda event, **fields: records.append({"event": event} | fields))
+        records = _handler_warnings(monkeypatch)
         identity_row, _ = account
         grants.outcome = ActivationOutcome.lost_race
         grants.won_by = []

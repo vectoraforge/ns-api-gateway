@@ -64,14 +64,21 @@ class LogSpy:
         self.entries.append((event, fields))
 
 
+class _SpyLogger:
+    """Stands in for a module's whole `logger`; only the levels a route spies on are recorded."""
+
+    def __init__(self, spy: LogSpy, levels: tuple[str, ...]) -> None:
+        for level in levels:
+            setattr(self, level, spy.record)
+
+
 def spy_on(monkeypatch, targets: tuple[str, ...], levels: tuple[str, ...]) -> LogSpy:
     """A spy, not `capture_logs`: the module-level logger caches its binding, so capture sees nothing.
-    Here rather than in each module: which loggers and which levels a route spies on is what
-    differs between them, and the spy itself never was."""
+    The whole `logger` name is replaced, never its level attributes: structlog's lazy proxy builds
+    those on demand, so monkeypatch's undo would freeze one onto the proxy for the whole session."""
     spy = LogSpy()
     for target in targets:
-        for level in levels:
-            monkeypatch.setattr(f"{target}.{level}", spy.record)
+        monkeypatch.setattr(target, _SpyLogger(spy, levels))
     return spy
 
 
