@@ -1,6 +1,6 @@
-"""What `upsert_subscription` writes over a stub session: the store clock, and the owner.
-The out-of-order guard compares against `core.subscriptions.store_signed_at`, so what moves that
-column is what that guard can see; the owner is written by a statement carrying its own rule.
+"""The `SubscriptionsDB` statements one delivery issues, over a stub session: the store clock and
+the owner `upsert_subscription` writes, and the replay key `read_event` is keyed on. The
+out-of-order guard reads `core.subscriptions.store_signed_at`, so what moves it is what it sees.
 """
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid7
@@ -17,6 +17,11 @@ OWNER = uuid7()
 
 T1 = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
 T2 = T1 + timedelta(minutes=5)
+
+NOTIFICATION_UUID = "notification-uuid-under-test"
+
+# The whole difference between a locking and a non-locking read, as PostgreSQL receives it.
+LOCK_CLAUSE = " FOR UPDATE"
 
 
 class _StubResult:
@@ -55,6 +60,11 @@ class _StubSession:
 def _compiled(statement) -> str:
     """The statement as PostgreSQL would receive it -- the dialect that actually runs it."""
     return str(statement.compile(dialect=postgresql.dialect()))
+
+
+def _bound(statement) -> list:
+    """The values the statement carries, which the compiled text renders only as placeholders."""
+    return list(statement.compile(dialect=postgresql.dialect()).params.values())
 
 
 def _stored(store_signed_at: datetime | None, user_id: UUID | None = OWNER) -> Subscription:
@@ -173,3 +183,36 @@ class TestAnUnownedRowIsTakenConditionally:
         assert outcome is WriteOutcome.lost_race
         # Nothing after the refused claim ran: no flush, and the owner is left as it was read.
         assert (session.flushes, row.user_id) == (0, None)
+
+
+@pytest.mark.asyncio
+class TestTheReplayKeyIsApplesNotificationUuid:
+    """`08-webhook-app-store.md`:44 keys the whole replay contract on the notification UUID, so a
+    read keyed on anything coarser swallows redeliveries this route has never applied."""
+
+    async def test_the_statement_is_keyed_on_the_uuid_column(self):
+        """The column, not only the value: a predicate moved to `event_type` carries the same bind."""
+        session = _StubSession(None)
+
+        await SubscriptionsDB(session).read_event(NOTIFICATION_UUID)
+
+        assert len(session.statements) == 1
+        assert "audit.subscription_events.notification_uuid = " in _compiled(session.statements[0])
+
+    async def test_the_key_it_carries_is_the_one_the_caller_named(self):
+        """The predicate is not enough on its own: the compiled text renders its value as a placeholder."""
+        session = _StubSession(None)
+
+        await SubscriptionsDB(session).read_event(NOTIFICATION_UUID)
+
+        assert _bound(session.statements[0]) == [NOTIFICATION_UUID]
+
+    async def test_it_reads_the_event_table_and_takes_no_lock(self):
+        """A lock here would hold every redelivery behind the grant locks the replay arm skips."""
+        session = _StubSession(None)
+
+        await SubscriptionsDB(session).read_event(NOTIFICATION_UUID)
+
+        compiled = _compiled(session.statements[0])
+        assert "audit.subscription_events" in compiled
+        assert LOCK_CLAUSE not in compiled
