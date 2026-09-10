@@ -302,6 +302,18 @@ class TestTheSinglePurchaseArms:
         assert purchase["purchase_user_id"] == owner
         assert writer.upserts[0]["user_id"] == owner
 
+    async def test_the_two_store_ids_land_in_their_own_columns(self, session, writer):
+        """D-08 fixes `external_id` as Apple's `originalTransactionId`, and an operator matches an
+        App Store Connect record on these two, so the per-term id is not the lifecycle key."""
+        service = _service(session, writer, uuid7())
+        notification = _notification(attribution_token=TOKEN)
+
+        await service.ingest(notification)
+
+        purchase = writer.inserted[0]
+        assert purchase["store_original_transaction_id"] == notification.external_id
+        assert purchase["store_transaction_id"] == notification.transaction_id
+
     async def test_a_token_bound_to_nobody_records_the_purchase_unowned(self, session, writer):
         """An unattributed purchase is recorded honestly; restore is the only path that links it later."""
         service = _service(session, writer, None)
