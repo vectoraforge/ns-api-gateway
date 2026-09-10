@@ -288,19 +288,43 @@ def relation_of(statement: str) -> str:
     return found.group(1) if found else statement
 
 
-@pytest_asyncio.fixture
-async def activation_statements(_schema_db_uri):
-    """Every statement GrantsDB.activate_anonymous_device_grant issued, in order, against a real database."""
+def writes(statements: list[str]) -> list[str]:
+    """Only the statements that change a row, which is the control on every lock-tier count below."""
+    return [statement for statement in statements if statement.startswith(("INSERT", "UPDATE"))]
+
+
+def plain_identity_re_reads(statements: list[str]) -> list[str]:
+    """Every non-locking SELECT of the identity row, which is the revalidation each writer owes."""
+    # A SELECT, because a writer that marks the identity row emits an UPDATE naming the same relation,
+    # and a filter without this clause counts that UPDATE as a second re-read on every writing arm.
+    return [statement for statement in statements
+            if statement.startswith("SELECT") and "core.external_identities" in statement
+            and "FOR UPDATE" not in statement]
+
+
+def assert_one_plain_identity_re_read(captured: dict) -> None:
+    """One non-locking re-read of the identity row, on an arm that provably wrote something."""
+    statements = captured["statements"]
+    re_reads = plain_identity_re_reads(statements)
+    assert len(re_reads) == 1, f"expected one plain identity re-read, got {statements}"
+    assert captured["outcome"] is ActivationOutcome.activated
+    assert writes(statements), f"the writer must have written on this arm, got {statements}"
+
+
+@contextlib.asynccontextmanager
+async def _anonymous_writer_run(schema_db_uri: str, *, holding_grant: bool):
+    """Drive GrantsDB.activate_anonymous_device_grant once, recording every statement it issues."""
     subject = f"lock-order-{uuid.uuid4().hex[:10]}"
     issuer = f"ns-lock-order-{uuid.uuid4().hex[:10]}"
 
-    setup = await asyncpg.connect(_schema_db_uri)
+    setup = await asyncpg.connect(schema_db_uri)
     try:
         user_id = await insert_user(setup)
         tier_id = await insert_tier(setup)
-        # A held `manual` grant with its usage row, so both tiers have a real row to lock and to order.
-        grant_id = await insert_grant(setup, user_id=user_id, tier_id=tier_id, source="manual")
-        await insert_usage(setup, grant_id=grant_id)
+        if holding_grant:
+            # A held `manual` grant with its usage row, so both tiers have a real row to lock and to order.
+            grant_id = await insert_grant(setup, user_id=user_id, tier_id=tier_id, source="manual")
+            await insert_usage(setup, grant_id=grant_id)
         await setup.execute(
             "INSERT INTO core.external_identities "
             "(id, user_id, issuer, subject, provider, identity_state, created_at, updated_at) "
@@ -309,7 +333,7 @@ async def activation_statements(_schema_db_uri):
     finally:
         await setup.close()
 
-    engine = create_async_engine(_schema_db_uri.replace(_ASYNCPG_PREFIX, _SQLALCHEMY_PREFIX, 1))
+    engine = create_async_engine(schema_db_uri.replace(_ASYNCPG_PREFIX, _SQLALCHEMY_PREFIX, 1))
     recorded: list[str] = []
 
     @event.listens_for(engine.sync_engine, "before_cursor_execute")
@@ -333,15 +357,30 @@ async def activation_statements(_schema_db_uri):
         yield {"statements": list(recorded), "outcome": outcome}
     finally:
         await engine.dispose()
-        cleanup = await asyncpg.connect(_schema_db_uri)
+        cleanup = await asyncpg.connect(schema_db_uri)
         try:
-            await cleanup.execute("DELETE FROM core.user_monthly_usage WHERE grant_id = $1", grant_id)
+            await cleanup.execute("DELETE FROM core.user_monthly_usage WHERE grant_id IN "
+                                  "(SELECT id FROM core.access_grants WHERE user_id = $1)", user_id)
             await cleanup.execute("DELETE FROM core.access_grants WHERE user_id = $1", user_id)
             await cleanup.execute("DELETE FROM core.external_identities WHERE issuer = $1", issuer)
             await cleanup.execute("DELETE FROM core.users WHERE id = $1", user_id)
             await cleanup.execute("DELETE FROM core.access_tiers WHERE id = $1", tier_id)
         finally:
             await cleanup.close()
+
+
+@pytest_asyncio.fixture
+async def activation_statements(_schema_db_uri):
+    """The anonymous writer driven on a caller already holding a grant, so it refuses and writes nothing."""
+    async with _anonymous_writer_run(_schema_db_uri, holding_grant=True) as run:
+        yield run
+
+
+@pytest_asyncio.fixture
+async def anonymous_activated_statements(_schema_db_uri):
+    """The anonymous writer on a clean account: it activates, so the writing arm is the subject."""
+    async with _anonymous_writer_run(_schema_db_uri, holding_grant=False) as run:
+        yield run
 
 
 @pytest.mark.asyncio
@@ -372,8 +411,7 @@ class TestTheActivationAddsNoThirdLockTier:
     async def test_the_identity_row_is_revalidated_by_a_plain_re_read(self, activation_statements):
         """The control: the writer issues more statements than it locks, so the count above is not vacuously small."""
         statements = activation_statements["statements"]
-        re_reads = [statement for statement in statements
-                    if "core.external_identities" in statement and "FOR UPDATE" not in statement]
+        re_reads = plain_identity_re_reads(statements)
         assert len(re_reads) == 1, f"expected one plain identity re-read, got {statements}"
         assert activation_statements["outcome"] is ActivationOutcome.refused
         # The control that matters: `False` must come from the held-grant check, not from a rejected insert,
@@ -381,13 +419,27 @@ class TestTheActivationAddsNoThirdLockTier:
         assert not [statement for statement in statements if statement.startswith("INSERT")], \
             f"the writer must stop at the held grant and write nothing, got {statements}"
 
+    async def test_the_activating_arm_locks_the_grant_tier_alone(self,
+                                                                 anonymous_activated_statements):
+        """The arm the held-grant fixture never reaches: it inserts the grant, its usage row and the
+        identity marker, and a third tier taken on that path is the SHARED-INVARIANTS:33 breach."""
+        locked = locking(anonymous_activated_statements["statements"])
+        taken = [relation_of(statement) for statement in locked]
+        # A clean account holds nothing in either tier, so `FOR UPDATE` locks no row and the indexes arbitrate.
+        assert taken == ["core.access_grants", "core.access_grants"]
+        assert "core.external_identities" not in taken
+        assert "core.users" not in taken
+        # Every grant-tier read, not the first alone: an unordered second one is a second order.
+        for statement in locked[:2]:
+            assert "ORDER BY core.access_grants.id ASC" in statement
+
+    async def test_the_activating_arm_revalidates_the_identity_row_by_a_plain_re_read(
+            self, anonymous_activated_statements):
+        """The control the refused arm cannot give: this arm provably wrote, so the count is not vacuous."""
+        assert_one_plain_identity_re_read(anonymous_activated_statements)
+
 
 # The registered writer, whose two destinations are captured on the same terms as the anonymous one above.
-
-
-def writes(statements: list[str]) -> list[str]:
-    """Only the statements that change a row, which is the control on every lock-tier count below."""
-    return [statement for statement in statements if statement.startswith(("INSERT", "UPDATE"))]
 
 
 def first_index(statements: list[str], prefix: str) -> int:
@@ -396,18 +448,6 @@ def first_index(statements: list[str], prefix: str) -> int:
         if statement.startswith(prefix):
             return position
     return -1
-
-
-def assert_one_plain_identity_re_read(captured: dict) -> None:
-    """One non-locking re-read of the identity row, on an arm that provably wrote something."""
-    statements = captured["statements"]
-    # A SELECT, because the writer also marks the identity row and that UPDATE names the same relation.
-    re_reads = [statement for statement in statements
-                if statement.startswith("SELECT") and "core.external_identities" in statement
-                and "FOR UPDATE" not in statement]
-    assert len(re_reads) == 1, f"expected one plain identity re-read, got {statements}"
-    assert captured["outcome"] is ActivationOutcome.activated
-    assert writes(statements), f"the writer must have written on this arm, got {statements}"
 
 
 @contextlib.asynccontextmanager
