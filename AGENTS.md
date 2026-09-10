@@ -35,6 +35,10 @@ feature it serves.
 - `auth/` — external-SDK seams: `adapters.py`, `app_store.py`,
   `devicecheck.py`, `firebase.py`, `google_play.py`, `jwt_verifier.py`, and
   the verified notification both store seams fill, `store_notifications.py`.
+- `app/` — process wiring: `main.py`, `lifespan.py`, `dependencies.py`,
+  `error_handlers.py`.
+- The package root — the modules every package above may import:
+  `config.py`, `errors.py`, `logs.py`, `resilience.py`.
 
 A router may call `crud/` directly. Introduce a `services/` class when the
 router body would otherwise become too big or complicated: a service is earned
@@ -50,9 +54,10 @@ The rule binds new code; leave the existing services as they are.
 
 Four exceptions, each a rule and not a story:
 
-1. `errors.py` owns the client-visible error response shape, the statuses, the
-   copy and the handlers. Nothing about errors moves to `schemas/`. Ground:
-   `SHARED-INVARIANTS.md` § Errors — one shared registry.
+1. `errors.py` owns the client-visible error response shape, the statuses and
+   the copy; `app/error_handlers.py` owns the handlers and their registration.
+   Nothing about errors moves to `schemas/`. Ground: `SHARED-INVARIANTS.md`
+   § Errors — one shared registry.
 2. `BoundedReason` stays in `auth/jwt_verifier.py`. Moving it to `schemas/`
    creates an import cycle, because `errors.py` imports it.
 3. `commit()` and `rollback()` are transaction boundaries and therefore
