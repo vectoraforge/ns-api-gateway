@@ -110,6 +110,12 @@ def anonymous_firebase_credential(_app_lifespan, _app_config):
     user left behind is permanent, and one accumulates per run."""
     if not _admin_credential_configured():
         pytest.skip(_NO_ADMIN_CREDENTIAL)
+    # The app the lifespan already built, reached by its documented name -- never a second one.
+    # Resolved before the signUp, as google_linked_firebase_credential does: `get_app` raises
+    # `ValueError` when no app carries that name, and the guard above answers a different question
+    # (a findable credential, not a registered app). Between the user starting to exist and the try
+    # that deletes it nothing may raise, or the minted user is permanent in this shared project.
+    admin_app = firebase_admin.get_app(name=f"issuer:{_app_config.jwt.issuer}")
     resp = httpx.post(
         f"https://identitytoolkit.googleapis.com/v1/accounts:signUp"
         f"?key={_identity_toolkit_key(_app_config)}",
@@ -119,8 +125,6 @@ def anonymous_firebase_credential(_app_lifespan, _app_config):
     data = resp.json()
     # Subscripting rather than .get(): if returnSecureToken were ever ignored, this fails loudly.
     local_id = data["localId"]
-    # The app the lifespan already built, reached by its documented name -- never a second one.
-    admin_app = firebase_admin.get_app(name=f"issuer:{_app_config.jwt.issuer}")
     try:
         yield data["idToken"], local_id
     finally:
