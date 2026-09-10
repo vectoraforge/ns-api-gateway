@@ -146,24 +146,24 @@ class AppStoreNotifications:
             # Refused, never acknowledged: the lifecycle key this notification is written under is absent.
             raise NotificationRejected(stage="transaction_without_original_id")
 
+        renewal = None
+        if data.signedRenewalInfo is not None:
+            try:
+                renewal = self._verifier.verify_and_decode_renewal_info(data.signedRenewalInfo)
+            except VerificationException as failure:
+                raise NotificationRejected(stage=failure.status.name) from failure
+            except Exception as failure:
+                raise NotificationRejected(stage="payload_unstructurable") from failure
+
+        # Below the last verification arm: a 500 raised above it makes Apple retry a payload that
+        # can never verify, for its whole schedule.
         status = None if data.status is None else _APPLE_STATUSES.get(data.status)
         if status is None:
-            # A status value present but outside Apple's own enum. The named class carries the log
-            # line this module cannot write itself, so Apple's retries are visible.
+            # A status present but outside Apple's own enum; the named class carries the log line.
             raise UnknownStoreSubscriptionStatus(PurchaseProvider.apple)
-        tier_id = self._tier_for(transaction.productId)
 
-        if data.signedRenewalInfo is None:
-            return _crossed(payload, transaction, None, status=status, tier_id=tier_id)
-
-        try:
-            renewal = self._verifier.verify_and_decode_renewal_info(data.signedRenewalInfo)
-        except VerificationException as failure:
-            raise NotificationRejected(stage=failure.status.name) from failure
-        except Exception as failure:
-            raise NotificationRejected(stage="payload_unstructurable") from failure
-
-        return _crossed(payload, transaction, renewal, status=status, tier_id=tier_id)
+        return _crossed(payload, transaction, renewal, status=status,
+                        tier_id=self._tier_for(transaction.productId))
 
     def verify_transaction(self, signed_transaction: str,
                            evaluated_at: datetime) -> RestoredSubscription:

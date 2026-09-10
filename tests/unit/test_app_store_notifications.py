@@ -28,6 +28,7 @@ from nativespeaker.api.errors import (
     ProofRejected,
     Unavailable,
     UnknownStoreSubscriptionStatus,
+    UnmappedStoreProduct,
 )
 from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
 from unit.test_google_play_notifications import (
@@ -243,6 +244,7 @@ def _envelope(chain: _Chain, *, notification_type: str | None = "SUBSCRIBED",
 def _notifications(chain: _Chain, *, root_certificates: list[bytes] | None = None,
                    environment: Environment = Environment.SANDBOX,
                    bundle_id: str = BUNDLE_ID,
+                   products: dict[str, str] | None = None,
                    app_apple_id: int | None = APP_APPLE_ID) -> AppStoreNotifications:
     """The real seam over a real verifier; only the configured root changes for the control."""
     verifier = SignedDataVerifier(
@@ -251,7 +253,8 @@ def _notifications(chain: _Chain, *, root_certificates: list[bytes] | None = Non
         environment=environment,
         bundle_id=bundle_id,
         app_apple_id=app_apple_id)
-    return AppStoreNotifications(verifier=verifier, products={PRODUCT_ID: TIER_ID})
+    return AppStoreNotifications(verifier=verifier,
+                                 products={PRODUCT_ID: TIER_ID} if products is None else products)
 
 
 def _full(chain: _Chain, **overrides) -> str:
@@ -642,6 +645,34 @@ class TestTheNestedPayloadsAreVerifiedOnTheirOwn:
             _notifications(chain).verify(_mint(chain, envelope))
 
         assert refusal.value.stage == "VERIFICATION_FAILURE"
+
+
+class TestEveryBusinessRuleRunsBelowTheLastVerification:
+    """WR-21: `_tier_for` and the status map both raise an `InternalError`, so running either above
+    the renewal verification answered 500 -- Apple's multi-day retry -- for an unverifiable payload."""
+
+    def test_an_unmapped_product_under_an_unverifiable_renewal_is_a_refusal(self, chain):
+        envelope = _mint(chain, _envelope(chain, transaction=_transaction(),
+                                          renewal=_renewal(environment="Production")))
+
+        with pytest.raises(NotificationRejected) as refusal:
+            _notifications(chain, products={}).verify(envelope)
+
+        assert refusal.value.stage == "INVALID_ENVIRONMENT"
+
+    def test_an_unknown_status_under_an_unverifiable_renewal_is_a_refusal(self, chain):
+        envelope = _mint(chain, _envelope(chain, transaction=_transaction(), status=99,
+                                          renewal=_renewal(environment="Production")))
+
+        with pytest.raises(NotificationRejected) as refusal:
+            _notifications(chain).verify(envelope)
+
+        assert refusal.value.stage == "INVALID_ENVIRONMENT"
+
+    def test_an_unmapped_product_still_raises_once_everything_verifies_control(self, chain):
+        """The control: D-14 and D-21 keep the 500 an operator's missing map line earns."""
+        with pytest.raises(UnmappedStoreProduct):
+            _notifications(chain, products={}).verify(_full(chain))
 
 
 class TestAnAbsentVerifierFailsClosedOnUse:
