@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlmodel import col, select
 from unit.conftest import TEST_ISSUER, make_token
 
+from nativespeaker.api.app.dependencies import get_evaluated_at
 from nativespeaker.api.auth.google_play import GRACE_STATE
 from nativespeaker.api.auth.store_notifications import RestoredSubscription
 from nativespeaker.api.errors import ProofRejected
@@ -88,6 +89,19 @@ async def restore_client(_app_lifespan, stub_verifier):
     transport = ASGITransport(app=_app_lifespan)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+@pytest.fixture
+def pinned_evaluation_instant(_app_lifespan):
+    """The instant this request captures, pinned so a seam reading the clock a second time records
+    a value that differs from it: SHARED-INVARIANTS binds every time-dependent value to the one
+    captured evaluation time, and only a pinned instant makes a second reading observable."""
+    instant = datetime.now(UTC).replace(microsecond=424242)
+    _app_lifespan.dependency_overrides[get_evaluated_at] = lambda: instant
+    try:
+        yield instant
+    finally:
+        _app_lifespan.dependency_overrides.pop(get_evaluated_at)
 
 
 def _auth(subject: str = SUBJECT) -> dict[str, str]:
@@ -204,7 +218,8 @@ class TestTheSameAccountAppleRestore:
     """The one path this slice serves: the caller's account already owns the subscription named."""
 
     async def test_a_verified_proof_attaches_the_paid_grant_and_the_body_reports_it(
-            self, restore_client, _db_transaction, scripted_app_store_notifications):
+            self, restore_client, _db_transaction, scripted_app_store_notifications,
+            pinned_evaluation_instant):
         user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
                                       provider=IdentityProvider.google)
         external_id = f"e2e-restore-{uuid4()}"
@@ -221,6 +236,10 @@ class TestTheSameAccountAppleRestore:
         assert body["entitlement"]["tier_id"] == PAID_TIER_ID
         assert body["identity_provider"] == "google"
         assert answered.headers["Cache-Control"] == "no-store"
+        # The proof and the instant it was checked at: the check is made with the request's one
+        # captured instant, so a call site reading the clock again records a different value here.
+        assert scripted_app_store_notifications.restore_calls == [(RESTORE_PROOF,
+                                                                  pinned_evaluation_instant)]
 
     async def test_the_one_grant_it_wrote_is_the_subscription_grant_and_its_usage_row(
             self, restore_client, _db_transaction, scripted_app_store_notifications):
@@ -696,7 +715,8 @@ class TestTheSameAccountGooglePlayRestore:
     """The second store on the same path: the purchase token is both the proof and the external id."""
 
     async def test_a_live_purchase_token_attaches_the_paid_grant_and_the_body_reports_it(
-            self, restore_client, _db_transaction, scripted_play_subscriptions):
+            self, restore_client, _db_transaction, scripted_play_subscriptions,
+            pinned_evaluation_instant):
         user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
                                       provider=IdentityProvider.google)
         purchase_token = f"e2e-play-restore-{uuid4()}"
@@ -713,9 +733,11 @@ class TestTheSameAccountGooglePlayRestore:
         assert body["entitlement"]["status"] == "active"
         assert body["entitlement"]["tier_id"] == PAID_TIER_ID
         assert answered.headers["Cache-Control"] == "no-store"
-        # The proof itself is the token the read was made with, and the package name is the config's.
-        assert [call["purchase_token"] for call in
-                scripted_play_subscriptions.restore_calls] == [purchase_token]
+        # The proof itself is the token the read was made with, and the instant is the request's
+        # own: a read made at a freshly-taken clock reading records a value that is not the pinned one.
+        assert [(call["purchase_token"], call["evaluated_at"]) for call in
+                scripted_play_subscriptions.restore_calls] == [(purchase_token,
+                                                                pinned_evaluation_instant)]
 
     async def test_the_one_grant_it_wrote_is_the_subscription_grant_and_its_usage_row(
             self, restore_client, _db_transaction, scripted_play_subscriptions):

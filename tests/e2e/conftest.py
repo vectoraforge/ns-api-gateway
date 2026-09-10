@@ -312,7 +312,9 @@ class FakeAppStoreNotifications:
         # The restore proof is a second entry point, so it carries a second scripted answer.
         self.restore_answer: BaseException | RestoredSubscription | None = None
         self.calls: list[str] = []
-        self.restore_calls: list[str] = []
+        # The pair, never the artifact alone: SHARED-INVARIANTS binds this seam to the request's
+        # one captured instant, so a case can only see a second clock read if the instant is here.
+        self.restore_calls: list[tuple[str, datetime]] = []
 
     def script(self, answer: BaseException | VerifiedNotification) -> None:
         """Raise-or-return: a scripted exception is raised, a scripted notification is returned."""
@@ -331,7 +333,7 @@ class FakeAppStoreNotifications:
 
     def verify_transaction(self, signed_transaction: str,
                            evaluated_at: datetime) -> RestoredSubscription:
-        self.restore_calls.append(signed_transaction)
+        self.restore_calls.append((signed_transaction, evaluated_at))
         if isinstance(self.restore_answer, BaseException):
             raise self.restore_answer
         assert self.restore_answer is not None, "the seam was called before a case scripted it"
