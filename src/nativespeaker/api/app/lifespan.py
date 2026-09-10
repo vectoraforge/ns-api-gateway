@@ -123,11 +123,17 @@ def build_db_engine(db: DatabaseConfig) -> AsyncEngine:
     # next request to draw that connection raises out of the CRUD layer as an opaque 500, and on a
     # chat route it does so after `QuotaService.charge` has already committed a spent credit. With
     # `max_overflow=0`, up to `pool_size` requests in a row can hit it, and nothing retries.
+    # `hide_parameters`, because almost every write here binds a secret: the single-use challenge
+    # handle, the DeviceCheck token, the user email, and the Play purchase token inside
+    # `notification_uuid`. A `StatementError` renders its bound parameters in `__str__`, and any one
+    # that escapes the CRUD layer reaches `generic_error_handler`, which logs the whole chain. The
+    # SQL text is kept: it names columns, never values.
     return create_async_engine(db.url,
                                pool_size=db.pool_size,
                                max_overflow=0,
                                pool_pre_ping=True,
-                               pool_recycle=_DB_POOL_RECYCLE_SECONDS)
+                               pool_recycle=_DB_POOL_RECYCLE_SECONDS,
+                               hide_parameters=True)
 
 
 def _play_credential():

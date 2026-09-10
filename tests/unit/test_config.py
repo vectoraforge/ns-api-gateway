@@ -14,6 +14,7 @@ import yaml
 from jwt.exceptions import PyJWTError
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import StatementError
 
 from nativespeaker.api.app.lifespan import (
     _DB_POOL_RECYCLE_SECONDS,
@@ -425,6 +426,32 @@ class TestThePoolChecksAConnectionBeforeHandingItOut:
     def test_the_pool_still_has_no_overflow_control(self):
         """The control: a builder that ignored its arguments would pass both cases above."""
         assert (self._engine().pool.size(), self._engine().pool._max_overflow) == (5, 0)
+
+
+class TestAFailedStatementCarriesNoBoundParameterIntoTheLogs:
+    """CR-20. A `StatementError` renders its bound parameters, and every one that escapes the CRUD
+    layer is logged whole by `generic_error_handler`. The challenge handle, the DeviceCheck token
+    and the Play purchase token are all bound values, and the log store is aggregated and kept."""
+
+    def _engine(self):
+        return build_db_engine(DatabaseConfig(host="db.internal", port=5432, user="u",
+                                              password="p", name="n"))  # ty: ignore[invalid-argument-type]
+
+    def test_the_engine_hides_its_bound_parameters(self):
+        assert self._engine().sync_engine.hide_parameters is True
+
+    def test_a_rendered_statement_error_names_the_columns_but_not_the_values(self):
+        """The property the flag exists for, read off a real exception rather than off the flag."""
+        failure = StatementError(
+            message="duplicate key value violates unique constraint",
+            statement="INSERT INTO core.auth_challenges (challenge_id) VALUES ($1)",
+            params={"challenge_id": "CHALLENGE-HANDLE-SECRET"},
+            orig=Exception("duplicate key"),
+            hide_parameters=self._engine().sync_engine.hide_parameters)
+
+        assert "CHALLENGE-HANDLE-SECRET" not in str(failure)
+        # The SQL text is deliberately kept: it names columns, and an operator needs it.
+        assert "core.auth_challenges" in str(failure)
 
 
 class TestTheLoggingLevelIsAPerDeploymentLever:
