@@ -7,8 +7,9 @@ from nativespeaker.api.tables import monthly_period_for
 REPO = Path(__file__).resolve().parents[2]
 SRC = REPO / "src" / "nativespeaker"
 
-# The format string every usage row's `monthly_period` is written through.
-FORMAT = '"%Y-%m"'
+# The format string every usage row's `monthly_period` is written through, in all three spellings
+# a second copy could take: no quote-style rule is configured, so either quoting is legal here.
+SPELLINGS = ('"%Y-%m"', "'%Y-%m'", ":%Y-%m}")
 DERIVATION = SRC / "api" / "tables" / "grants.py"
 
 
@@ -41,7 +42,8 @@ class TestTheDerivationIsWrittenExactlyOnce:
     """Five copies is what let two of them each claim to be the only one; the claim is now checkable."""
 
     def _files_formatting_a_period(self) -> list[Path]:
-        return sorted(path for path in SRC.rglob("*.py") if FORMAT in path.read_text())
+        return sorted(path for path in SRC.rglob("*.py")
+                      if any(spelling in path.read_text() for spelling in SPELLINGS))
 
     def test_only_the_one_function_formats_a_period(self):
         assert self._files_formatting_a_period() == [DERIVATION]
@@ -49,3 +51,17 @@ class TestTheDerivationIsWrittenExactlyOnce:
     def test_the_walk_reads_the_whole_package_control(self):
         """The control: a walk that found no file at all would pass the case above on an empty list."""
         assert len(list(SRC.rglob("*.py"))) > 20
+
+    def test_no_spelling_of_the_derivation_hides_from_the_walk_control(self):
+        """The control: matching one quoting only, a second copy spelled either of the other two
+        stood beside the derivation and the case above still read it as the only one."""
+        copies = ('    return evaluated_at.astimezone(UTC).strftime("%Y-%m")',
+                  "    return evaluated_at.astimezone(UTC).strftime('%Y-%m')",
+                  '    return f"{evaluated_at.astimezone(UTC):%Y-%m}"')
+
+        assert all(any(spelling in copy for spelling in SPELLINGS) for copy in copies)
+
+    def test_the_neighbouring_timestamp_format_is_not_one_of_them_control(self):
+        """The mirror: `logs.py` formats a whole datetime, which none of the three may claim."""
+        assert not any(spelling in '    TimeStamper(fmt="%Y-%m-%d %H:%M:%S", utc=True)'
+                       for spelling in SPELLINGS)
