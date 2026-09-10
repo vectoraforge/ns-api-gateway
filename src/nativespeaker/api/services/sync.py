@@ -52,10 +52,7 @@ class SyncService:
             # Fail closed: a missing tier row is neither a zero allowance nor an unbounded one.
             raise UnknownTierError(grant.tier_id, grant.id)
 
-        # A count from an earlier period is selected past, never assigned away: this read must not
-        # roll over. Ordered for the reason `QuotaService.charge` gives: a stored period ahead of
-        # this request's own is the month the row counts, and reading it as `!=` reported zero used
-        # against a counter the charge will spend from.
+        # Selected past, never rolled over: a stored period ahead of this one is the month it counts.
         used = 0 if usage.monthly_period < period else usage.monthly_used
 
         return Entitlement(type=EntitlementType(grant.source.value),

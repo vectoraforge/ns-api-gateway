@@ -130,11 +130,7 @@ class ChatService:
             await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
             ai_message = await self.ask_llm(chat=chat, message=human_message, admitted=admitted)
 
-        # Re-read in the transaction that writes: the read above ended at the commit, and a delete
-        # of this chat committed across the provider call leaves the two message inserts below
-        # pointing at no `core.chats` row. The foreign key is not an `AppError`, so that landed on
-        # the generic handler as an opaque 500 -- after the credit was spent. The caller gets the
-        # same 404 it would have got a moment earlier instead.
+        # Re-read in the transaction that writes: a delete across the provider call orphans the inserts below.
         if await self.chats_db.get_chat(chat_id, user_id) is None:
             raise InvalidChatError(chat_id)
 

@@ -20,10 +20,7 @@ from nativespeaker.api.tables import monthly_period_for
 
 logger = structlog.get_logger()
 
-# The ceiling on the shared `Retry-After`. An absent grant becomes effective the instant a claim or
-# a restore commits -- both write `starts_at=evaluated_at`, which the shared effective predicate
-# reads on the very next request -- so the raw rollover strands a caller who has just paid for up
-# to a month. An early retry on the exhausted branch is refused again and grants nothing.
+# The ceiling on the shared `Retry-After`: a grant is effective the instant a claim or restore commits.
 RETRY_AFTER_CEILING_SECONDS = 300
 
 
@@ -47,10 +44,7 @@ class QuotaService:
 
     async def charge(self, *, user_id: UUID, evaluated_at: datetime) -> None:
         """Spend one unit of `user_id`'s allowance, or raise. Commits on success."""
-        # One value for both refusal branches: SHARED-INVARIANTS requires the header on a 429, and
-        # requires the branches within a class to stay indistinguishable. Capped rather than the
-        # raw rollover, for the reason the ceiling states: an absent grant does change before the
-        # period does, so the rollover is a floor under one branch only.
+        # One value for both refusal branches, which SHARED-INVARIANTS keeps indistinguishable.
         retry_after_seconds = min(seconds_until_rollover(evaluated_at),
                                   RETRY_AFTER_CEILING_SECONDS)
 
@@ -68,8 +62,6 @@ class QuotaService:
 
                 if len(grants) > 1:
                     # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
-                    # No line of its own: the class declares `log_level = ERROR`, so the shared
-                    # handler records it once under its own name, as `services/sync.py` already relies on.
                     raise MultipleEffectiveGrantsError(len(grants), user_id)
 
                 grant = grants[0]

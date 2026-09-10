@@ -58,10 +58,7 @@ class SubscriptionsService:
         marked_active = ([] if owner is None
                          else await self.subscriptions_db.lock_grants(owner))
 
-        # The read above took no lock, so a restore committed since can have adopted or moved this
-        # subscription. Re-read the owner under the grant locks: writing against an account this
-        # path did not lock supersedes nothing, and an expiry would commit leaving the real owner
-        # holding an active grant no later delivery is guaranteed to end.
+        # Re-read under the grant locks: a restore committed since can have adopted or moved this row.
         settled_owner = await self.subscriptions_db.read_owner(notification.provider,
                                                                notification.external_id)
         if settled_owner is not None and settled_owner != owner:
@@ -75,13 +72,7 @@ class SubscriptionsService:
             # The replay: the store's own key is already recorded, so this delivery writes nothing.
             return
 
-        # Read under the grant locks for the reason the owner is: the pre-lock read took no lock, so
-        # a concurrent delivery can have committed a newer store clock since. Comparing against the
-        # clock that read saw lets an older payload through the guard and downgrade the buyer.
-        # The whole row, and every conjunct below read off it: gating on the pre-lock `stored`
-        # skipped the guard entirely when the rival's insert is what that read missed -- the two
-        # deliveries carry different `notification_uuid`s, so the replay arm does not catch it
-        # either, and the older payload then overwrote a status the store had already moved on.
+        # The whole row under the grant locks: the pre-lock read misses a rival's newer clock, or its insert.
         settled = await self.subscriptions_db.read_subscription(notification.provider,
                                                                  notification.external_id)
         # The tier as of the locks, never the pre-lock snapshot: this row is the one written against.
@@ -115,20 +106,13 @@ class SubscriptionsService:
 
         # The store's own word, read live or from the signed envelope: never derived here.
         status = notification.status
-        # The captured instant stands in where the store gave no purchase date for this term, and
-        # caps it where it did: a store date ahead of this server's clock writes a grant the shared
-        # effective predicate never reads, while it still holds the buyer's one-active slot.
+        # Clamped to the captured instant: a later store date writes a grant nothing reads.
         starts_at = min(notification.purchased_at or self.evaluated_at, self.evaluated_at)
         term_ends_at = term_end_for(status, notification)
         if status in ENTITLED_STATUSES and (term_ends_at is None
                                             or term_ends_at <= starts_at
                                             or term_ends_at <= self.evaluated_at):
-            # An entitled status whose term is absent, inverted, or already closed would insert a
-            # grant `_effective_grants_statement` never reads, or trip the row's own CHECK -- and
-            # because an entitled write supersedes every grant the buyer holds first, it would take
-            # the one-active slot and leave the account with nothing effective and no way back.
-            # The term must be open at the instant this delivery is evaluated, which is what
-            # `RestoreService.restore` requires of the same shape; the store resends.
+            # An absent, inverted or closed term would take the buyer's one-active slot and grant nothing.
             logger.error("store_notification_without_term", event_type=notification.event_type)
             raise InternalError
         subscription, outcome = await self.subscriptions_db.upsert_subscription(
@@ -180,9 +164,7 @@ class SubscriptionsService:
         try:
             await self.session.commit()
         except IntegrityError:
-            # The two entitlement keys on `core.access_grants` are DEFERRABLE INITIALLY DEFERRED, so
-            # this statement is the only place they are evaluated. A violation here is the same lost
-            # race every flush above classifies, and it earns the same line rather than a traceback.
+            # The two entitlement keys are DEFERRABLE, so this statement is where they are evaluated.
             await self._settle(WriteOutcome.lost_race, notification)
 
     async def _settle(self, outcome: WriteOutcome,

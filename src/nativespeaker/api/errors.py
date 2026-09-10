@@ -524,8 +524,7 @@ class ClaimRefused(AppError):
     code = "operation_not_allowed"
 
     def __init__(self, *args, cause: str | None = None, **kwargs) -> None:
-        # A closed-set label of ours, as `ProviderLookupError` carries: which arm refused, and
-        # never a client or provider value. It reaches `log_fields` alone and no response body.
+        # A closed-set label of ours, as `ProviderLookupError` carries: never a client or provider value.
         self.cause = cause
         super().__init__(*args, **kwargs)
 
@@ -568,8 +567,7 @@ class RestoreRefused(AppError):
     code = "restore_not_found"
 
     def __init__(self, *args, cause: str | None = None, **kwargs) -> None:
-        # A closed-set label of ours, on the terms `ClaimRefused` carries one: it reaches
-        # `log_fields` alone, and the 404 body stays identical across every branch.
+        # A closed-set label of ours, on the terms `ClaimRefused` carries one: it reaches `log_fields` alone.
         self.cause = cause
         super().__init__(*args, **kwargs)
 

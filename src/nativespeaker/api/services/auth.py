@@ -50,9 +50,7 @@ logger = structlog.get_logger()
 # The write seam of the shared sequence: it returns the provider the transaction settled on.
 Write = Callable[[Identity, VerifiedProviderIdentity], Awaitable[IdentityProvider]]
 
-# The post-claim seam of the shared sequence: whatever it returns is what the completion returns.
-# Generic in the identity too, so a linked-only seam keeps `LinkedIdentity` through the shared
-# sequence rather than widening back to `Identity` and losing the two rows it proved.
+# The post-claim seam, generic in the identity so a linked-only seam keeps its `LinkedIdentity`.
 type PostClaim[I, T] = Callable[[I], Awaitable[T]]
 
 # The seeded `core.access_tiers` row an anonymous device grant points at.
@@ -197,9 +195,7 @@ class AuthService:
         if await self.grants_db.read_active_grants(identity.user.id):
             raise ActiveGrantOutsideItsTerm
 
-        # Ends the preflight's read transaction and returns the pooled connection, so no request
-        # holds one across the Apple round trip. Safe because every statement above is a plain read,
-        # and `activate_*` opens a fresh transaction and re-takes every lock itself.
+        # Ends the preflight's read transaction, so no pooled connection is held across the Apple call.
         await self.session.rollback()
 
         # One token for both calls: the bit the read decided on is the bit the write below sets.
@@ -217,25 +213,17 @@ class AuthService:
             tier_id=ANONYMOUS_TIER_ID,
             evaluated_at=self.evaluated_at)
         wrote = await self._settle(identity, outcome, refusal)
-        # The invariants place remote work strictly before the transaction opens or after it commits,
-        # and only the second is safe for the write: nothing in this product clears an Apple bit, so a
-        # crash between an earlier write and this commit burns the device's one slot with no grant.
+        # Committed before Apple is told: nothing clears a bit, so a crash after that write burns the slot.
         await self.session.commit()
 
         # Guarded by `wrote`: a race lost to a grant of any other source must not burn this device's slot.
         if wrote:
-            # Fail-open by design, and it never becomes the answer: the grant above is durable, so a
-            # failure here costs the device bit alone. Raised, it made a claim that fully succeeded
-            # answer 503, and the retry it invites takes the repeat arm and never reaches this call.
             # bit1 is carried forward, never fabricated: Apple writes both bits in this one call.
             try:
                 await write_bits_with_retry(self.devicecheck, device_token,
                                             bit0=True, bit1=state.bit1)
             except Exception as failure:
-                # A closed-set label only: the class name, never the token and never Apple's body.
-                # Total, and not `AppError`: the seam classifies only `httpx.HTTPError` and a missing
-                # key, so a signing failure or a closed client would otherwise escape to a 500 and
-                # make the answer exactly what the comment above says it can never be.
+                # Fail-open and total, and a closed-set label: never the token and never Apple's body.
                 logger.error("devicecheck_bit_write_failed", failure=type(failure).__name__)
 
     async def _claim_registered_grant(self, identity: LinkedIdentity, *, device_token: str) -> None:
@@ -292,8 +280,6 @@ class AuthService:
 
         # Both conditions, and not the read alone: a race lost to a conversion spends no device slot.
         if state is not None and wrote:
-            # Fail-open by design, and it never becomes the answer: the grant above is durable, so
-            # a failure here costs the device bit alone, as on the anonymous claim.
             # bit0 is carried forward, never fabricated: Apple writes both bits in this one call.
             try:
                 await write_bits_with_retry(self.devicecheck, device_token,
@@ -379,9 +365,6 @@ class AuthService:
 
         if provider_uid is not None:
             # 02 step 11: the provider account is a second reservation, and it earns its own answer.
-            # Without this read the routine case -- a new subject for a provider account another
-            # subject already holds -- would take the insert's `(issuer, subject)` arm and send the
-            # caller to /auth/sync, which resolves nothing for a subject that was never linked.
             holder = await self.identities_db.resolve_provider_account(issuer=identity.issuer,
                                                                        provider=provider,
                                                                        provider_uid=provider_uid)

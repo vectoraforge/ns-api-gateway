@@ -60,17 +60,12 @@ class RestoreService:
         # D-06: a row that exists decides with its own status, because canonical state is the
         # webhooks'; where none exists the proof's own status decides instead.
         status = proof.status if stored is None else stored.status
-        # Copied out before the re-read below refreshes `stored` in place, which is what makes the
-        # two comparable at all.
+        # Copied out before the re-read below refreshes `stored` in place, which is what makes them comparable.
         tier_read = None if stored is None else stored.tier_id
         if status not in ENTITLED_STATUSES:
             raise RestoreSubscriptionNotEntitled(cause="status_not_entitled")
 
-        # The captured instant stands in where the store gave no purchase date for this term, and
-        # caps it where it did: `10-restore-subscription.md:84(3)` requires `starts_at <= now`, and
-        # a store date ahead of this server's clock wrote a grant the shared effective predicate
-        # never reads while it still held the one-active slot. Clamped here rather than at the
-        # write, so the term check below is made against the value the row will carry.
+        # Clamped to the captured instant, which `10-restore-subscription.md:84(3)` requires of it.
         starts_at = min(proof.purchased_at or self.evaluated_at, self.evaluated_at)
 
         token = proof.attribution_token
@@ -93,12 +88,10 @@ class RestoreService:
         accounts = [destination] if current_owner is None else [current_owner, destination]
         marked_active = await self.subscriptions_db.lock_grants_of(accounts)
 
-        # The whole row under the grant locks, because the webhooks own the status and the tier
-        # alike and the grant written below carries both from this plain, pre-lock read.
+        # The whole row under the grant locks: the webhooks own the status and the tier alike.
         settled = await self.subscriptions_db.read_subscription(proof.provider, proof.external_id)
         if settled is not None and settled.status != status:
-            # Refused whichever way it moved, never rewritten: the term below was read for the
-            # status this decided.
+            # Refused whichever way it moved, never rewritten: the term below is read for this status.
             raise RestoreSubscriptionNotEntitled(cause="status_moved_under_the_locks")
         if settled is not None and tier_read is not None and settled.tier_id != tier_read:
             # The allowance the grant below charges against is the tier the row carried with it.
@@ -113,18 +106,11 @@ class RestoreService:
         # row, and adoption-with-creation, where nothing but the proof has seen this subscription.
         term_ends_at = recorded_term[0] if recorded_term else term_end_for(status, proof)
         if term_ends_at is None or term_ends_at <= self.evaluated_at:
-            # No open term entitles nothing, whatever the canonical row still says. With
-            # `starts_at` capped at this instant, this arm also refuses every term that would trip
-            # the row's own `CHECK (ends_at IS NULL OR ends_at > starts_at)`.
+            # No open term entitles nothing, whatever the canonical row still says.
             raise RestoreSubscriptionNotEntitled(cause="term_closed")
 
         if stored is None:
-            # Adoption-with-creation: written unowned, so the one owner write is the update below.
-            # Insert-only: a row a webhook committed since the read above is a lost race, never an
-            # update, because canonical status is the webhooks' and this proof may already be stale.
-            # Taken under the grant locks: the flush below holds the lifecycle pair's unique-index
-            # slot until this transaction ends, and holding that slot ahead of the grant rows would
-            # invert `SubscriptionsService.ingest`'s order and deadlock the buy-then-restore race.
+            # Insert-only and written unowned: a row a webhook committed since the read above is a lost race.
             stored, outcome = await self.subscriptions_db.insert_subscription(
                 provider=proof.provider,
                 external_id=proof.external_id,
@@ -185,9 +171,7 @@ class RestoreService:
         try:
             await self.session.commit()
         except IntegrityError:
-            # The two entitlement keys on `core.access_grants` are DEFERRABLE INITIALLY DEFERRED, so
-            # this statement is the only place they are evaluated. A violation here is the same lost
-            # race every flush above classifies, and it earns the same line rather than a traceback.
+            # The two entitlement keys are DEFERRABLE, so this statement is where they are evaluated.
             await self._settle(WriteOutcome.lost_race, proof)
 
     def _this_month(self) -> date:
