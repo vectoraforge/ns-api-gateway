@@ -22,6 +22,10 @@ REFUSAL_FILES = APP_STORE_REFUSAL_FILES | GOOGLE_PLAY_REFUSAL_FILES
 # the library's own `VerificationStatus.name` on the Apple path and a bounded reason on the Google one.
 COMPUTED = "<computed at the raise site>"
 
+# What a call shape this scan cannot read leaves behind. It is in no route's expected set, so a
+# refusal raised positionally breaks the equality instead of being absorbed by `COMPUTED`.
+UNREADABLE = "<a raise site this scan cannot read>"
+
 
 def _called_name(node: ast.Call) -> str | None:
     """The callee's own name, whether it was called bare or through its module."""
@@ -36,11 +40,14 @@ def refusal_calls(source: str) -> list[ast.Call]:
 
 
 def _stage_of(node: ast.Call) -> str:
-    """The literal stage one raise site names, or the marker for a stage computed there."""
+    """The literal stage one raise site names, the marker for one computed there, or the marker
+    for a call shape carrying no readable `stage=` at all."""
     for keyword in node.keywords:
         if keyword.arg == "stage":
             return (keyword.value.value if isinstance(keyword.value, ast.Constant) else COMPUTED)
-    return COMPUTED
+    # Fail closed: positional and starred arguments name a stage this scan cannot read, and
+    # reading one as nothing at all is how an uncovered arm passes both controls.
+    return UNREADABLE
 
 
 def files_raising_the_refusal() -> set[str]:
