@@ -189,6 +189,31 @@ class TestTheStateMap:
         assert (await _read(state, expiry=UNEXPIRED)).status is not SubscriptionStatus.revoked
 
 
+class TestThePlayReadReportsTheNotificationValueType:
+    """Every field of the value type the whole RTDN ingestion is derived from, read at once.
+    The status alone leaves the other eleven free to be dropped, and one of them is load-bearing."""
+
+    async def test_the_read_carries_every_field_the_ingestion_derives_from(self):
+        notification = await _read("SUBSCRIPTION_STATE_ACTIVE", expiry=UNEXPIRED)
+
+        assert notification.provider is PurchaseProvider.google_play
+        # The three the dependency passed in, carried through untouched.
+        assert notification.notification_uuid == NOTIFICATION_KEY
+        assert notification.event_type == EVENT_TYPE
+        # The RTDN envelope's own instant: the out-of-order guard reads this field and no other.
+        assert notification.signed_at == SIGNED_AT
+        # D-10: the purchase token is the only handle `subscriptionsv2.get` accepts.
+        assert notification.external_id == PURCHASE_TOKEN
+        assert notification.transaction_id == ORDER_ID
+        assert notification.product_id == PRODUCT_ID
+        assert notification.tier_id == TIER_ID
+        assert notification.attribution_token == ATTRIBUTION_TOKEN
+        assert notification.status is SubscriptionStatus.active
+        assert notification.purchased_at == PURCHASED_AT
+        assert notification.expires_at == UNEXPIRED
+        assert notification.grace_period_expires_at is None
+
+
 class TestTheGraceWindowGoogleDoesNotName:
     """Google carries no grace field, so in grace the line item's own expiry ends the window."""
 

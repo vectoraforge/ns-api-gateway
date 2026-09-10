@@ -53,6 +53,7 @@ from unit.test_google_play_notifications import (
 )
 from unit.test_google_play_notifications import (
     PURCHASE_TOKEN,
+    PURCHASED_AT,
     UNEXPIRED,
     _answering,
     _FakeCredential,
@@ -252,6 +253,8 @@ class TestThePlayReadReportsTheRestoreValueType:
         assert restored.tier_id == PLAY_TIER_ID
         assert restored.attribution_token == PLAY_ATTRIBUTION_TOKEN
         assert restored.status is SubscriptionStatus.active
+        # The store's own start date, which the grant writer clamps this term's `starts_at` to.
+        assert restored.purchased_at == PURCHASED_AT
         assert restored.expires_at == UNEXPIRED
 
     async def test_the_status_comes_from_the_state_map_the_webhook_already_uses(self):
