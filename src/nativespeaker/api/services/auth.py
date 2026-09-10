@@ -212,7 +212,8 @@ class AuthService:
             claim_platform=NativeClaimProvider.ios_devicecheck,
             tier_id=ANONYMOUS_TIER_ID,
             evaluated_at=self.evaluated_at)
-        wrote = await self._settle(identity, outcome, refusal)
+        wrote = await self._settle(identity, outcome, refusal,
+                                   source=AccessGrantSource.anonymous_device_grant)
         # Committed before Apple is told: nothing clears a bit, so a crash after that write burns the slot.
         await self.session.commit()
 
@@ -273,7 +274,8 @@ class AuthService:
             subject=identity.subject,
             tier_id=REGISTERED_TIER_ID,
             evaluated_at=self.evaluated_at)
-        wrote = await self._settle(identity, outcome, refusal)
+        wrote = await self._settle(identity, outcome, refusal,
+                                   source=AccessGrantSource.registered_account_grant)
         # As on the anonymous claim: the grant is durable before Apple is told, because nothing clears
         # an Apple bit and a crash before this commit would burn the slot with nothing granted.
         await self.session.commit()
@@ -290,7 +292,7 @@ class AuthService:
                 logger.error("devicecheck_bit_write_failed", failure=type(failure).__name__)
 
     async def _settle(self, identity: LinkedIdentity, outcome: ActivationOutcome,
-                      cause: str | None) -> bool:
+                      cause: str | None, *, source: AccessGrantSource) -> bool:
         """Answer for what the writer did, and report whether this attempt is the one that wrote it:
         a race re-reads the winner's row, and a refusal raises carrying the arm that refused."""
         if outcome is ActivationOutcome.activated:
@@ -298,10 +300,18 @@ class AuthService:
         # The writer's transaction is unusable either way, and the read below needs a fresh one.
         await self.session.rollback()
         if outcome is ActivationOutcome.lost_race:
-            if await self.grants_db.read_effective_grants(identity.user.id, self.evaluated_at):
-                # The loser answers exactly as the repeat does, because the winner's row is there
-                # to read -- but it wrote nothing, and an irreversible vendor write is not its to make.
+            held = await self.grants_db.read_effective_grants(identity.user.id, self.evaluated_at)
+            # `source`, and never the mere existence of a row: `ix_access_grants_one_active_per_user`
+            # arbitrates every source, so a subscription or manual writer wins this insert too.
+            if any(grant.source is source for grant in held):
+                # The loser answers exactly as the repeat does, because the winner wrote the grant
+                # this attempt tried to write -- but it wrote nothing, and an irreversible vendor
+                # write is not its to make.
                 return False
+            if held:
+                # D-09(b), and 07 step 2(b): an active grant of another source is the refusal the
+                # preflight gives, so losing the index to one must not answer 200 instead.
+                raise ClaimRefusedUnderLock(cause="lost_race_to_another_source")
             # Named apart from the writer's refusals: this one really is a race, and the eight below are not.
             raise ClaimRefusedUnderLock(cause="lost_race_without_a_readable_grant")
         raise ClaimRefusedUnderLock(cause=cause)

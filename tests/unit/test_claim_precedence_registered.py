@@ -434,6 +434,23 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         # write, and nothing in this product ever clears an Apple bit.
         assert devicecheck.write_calls == []
 
+    def test_a_race_lost_to_another_source_is_the_refusal_the_preflight_gives(
+            self, client, store, account, grants, devicecheck, session):
+        """WR-60: the one-active index arbitrates every source, so a subscription writer wins this
+        insert too -- and D-09(b) answers a held subscription grant with 403, never with 200."""
+        identity_row, _ = account
+        grants.outcome = ActivationOutcome.lost_race
+        grants.won_by = [_a_grant(AccessGrantSource.subscription)]
+        store.row = _issued(bound_to=identity_row.id)
+
+        response = _claim(client)
+
+        assert response.status_code == 403
+        assert response.json() == REFUSED
+        assert store.consume_calls == 1
+        assert session.rollbacks >= 1
+        assert devicecheck.write_calls == []
+
     def test_a_refused_write_rolls_back_answers_four_hundred_and_three_and_refreshes_nothing(
             self, client, store, account, grants, devicecheck, session):
         """WR-03: the write was impossible, so there is no row to read back and no 200 to give."""
@@ -616,6 +633,11 @@ def _race_lost_with_nothing_to_read(identity_row, grants, devicecheck) -> None:
     grants.won_by = []
 
 
+def _race_lost_to_another_source(identity_row, grants, devicecheck) -> None:
+    grants.outcome = ActivationOutcome.lost_race
+    grants.won_by = [_a_grant(AccessGrantSource.subscription)]
+
+
 def _new_grant(identity_row, grants, devicecheck) -> None:
     return None
 
@@ -623,7 +645,7 @@ def _new_grant(identity_row, grants, devicecheck) -> None:
 POST_CLAIM_OUTCOMES = (_anonymous_claimant, _other_source_held, _free_grant_already_consumed,
                        _repeat, _conversion, _marked_outside_its_term, _device_spent,
                        _proof_refused, _apple_unavailable, _race_lost, _write_refused,
-                       _race_lost_with_nothing_to_read, _new_grant)
+                       _race_lost_with_nothing_to_read, _race_lost_to_another_source, _new_grant)
 
 
 class TestTheConsumptionCounterIsOneForEveryPostClaimOutcome:

@@ -532,6 +532,22 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         # slot on a grant this attempt did not write, and nothing here ever clears an Apple bit.
         assert devicecheck.write_calls == []
 
+    def test_a_race_lost_to_another_source_is_the_refusal_the_preflight_gives(
+            self, client, store, account, grants, devicecheck):
+        """WR-60: the one-active index arbitrates every source, so a subscription writer wins this
+        insert too -- and the preflight answers a held subscription grant with 403, never 200."""
+        identity_row, _ = account
+        grants.outcome = ActivationOutcome.lost_race
+        grants.won_by = [_a_grant(AccessGrantSource.subscription)]
+        store.row = _issued_row(bound_to=identity_row.id)
+
+        response = _claim(client)
+
+        assert response.status_code == 403
+        assert response.json() == REFUSED
+        assert store.consume_calls == 1
+        assert devicecheck.write_calls == []
+
     def test_a_refused_write_answers_four_hundred_and_three_and_still_consumes(
             self, client, store, account, grants, devicecheck):
         """WR-03: the write was impossible, so there is no row to read back and no 200 to give."""
@@ -767,13 +783,19 @@ def _race_lost_with_nothing_to_read(identity_row, grants, devicecheck) -> None:
     grants.won_by = []
 
 
+def _race_lost_to_another_source(identity_row, grants, devicecheck) -> None:
+    grants.outcome = ActivationOutcome.lost_race
+    grants.won_by = [_a_grant(AccessGrantSource.subscription)]
+
+
 def _success(identity_row, grants, devicecheck) -> None:
     return None
 
 
 POST_CLAIM_OUTCOMES = (_registered, _slot_spent, _prior_free_grant, _other_source_held, _repeat,
                        _marked_outside_its_term, _device_spent, _proof_refused, _apple_unavailable,
-                       _race_lost, _write_refused, _race_lost_with_nothing_to_read, _success)
+                       _race_lost, _write_refused, _race_lost_with_nothing_to_read,
+                       _race_lost_to_another_source, _success)
 
 
 class TestTheConsumptionCounterIsOneForEveryPostClaimOutcome:
