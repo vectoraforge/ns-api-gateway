@@ -287,11 +287,15 @@ class TestGetExamples:
 
         assert exc_info.value.lang == "fr"
 
-    def test_empty_list(self, service):
+    def test_a_configured_key_with_no_examples_answers_with_an_empty_list(self, service):
+        """WR-62: `create_chat` accepts any configured key, so refusing one here made the two routes
+        disagree on the one membership question -- and named the key as supported while refusing it."""
         service.examples["en"] = []
 
-        with pytest.raises(UnsupportedLanguageError):
-            service.get_examples("en")
+        result = service.get_examples("en")
+
+        assert (result.lang, result.examples) == ("en", [])
+        assert "en" in service.supported_languages
 
 
 class TestTheLlmHistoryIsOrdered:

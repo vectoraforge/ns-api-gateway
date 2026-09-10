@@ -170,7 +170,8 @@ class ChatService:
         await self.session.commit()
 
     def get_examples(self, lang: str) -> ExamplesResponse:
-        examples = self.examples.get(lang, [])
-        if not examples:
+        # Membership, never truthiness: `supported_languages` is the configured keys, so testing the
+        # value refused a key `create_chat` accepts while naming it as supported in the same refusal.
+        if lang not in self.examples:
             raise UnsupportedLanguageError(lang, self.supported_languages)
-        return ExamplesResponse(lang=lang, examples=examples)
+        return ExamplesResponse(lang=lang, examples=self.examples[lang])
