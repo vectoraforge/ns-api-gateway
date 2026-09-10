@@ -26,10 +26,10 @@ _MAPPED_TABLES = tuple(sorted(
     key=lambda model: model.__name__))
 
 def _mints_a_uuid_key(model) -> bool:
-    """Selected on the mapped column, never on the annotation. WR-124: the filter read
-    `model_fields["id"].annotation is UUID`, and the idiomatic server-shaped spelling
-    `id: UUID | None = Field(default=None, primary_key=True)` annotates `UUID | None` -- so the
-    one spelling the unminted-key bug arrives in was the one dropped from the walk."""
+    """Selected on the mapped column, never on the annotation."""
+    # WR-124: the filter read `model_fields["id"].annotation is UUID`, and the idiomatic
+    # server-shaped spelling `id: UUID | None = Field(default=None, primary_key=True)` annotates
+    # `UUID | None` -- so the one spelling the unminted-key bug arrives in was dropped from the walk.
     columns = list(model.__table__.primary_key.columns)
     # Named `id`, so `UserMonthlyUsage`'s `grant_id` -- a UUID key this package never mints, because
     # it is the grant's own id -- stays out rather than reaching a field that does not exist.
