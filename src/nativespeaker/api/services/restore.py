@@ -60,6 +60,9 @@ class RestoreService:
         # D-06: a row that exists decides with its own status, because canonical state is the
         # webhooks'; where none exists the proof's own status decides instead.
         status = proof.status if stored is None else stored.status
+        # Copied out before the re-read below refreshes `stored` in place, which is what makes the
+        # two comparable at all.
+        tier_read = None if stored is None else stored.tier_id
         if status not in ENTITLED_STATUSES:
             raise RestoreSubscriptionNotEntitled
 
@@ -90,16 +93,14 @@ class RestoreService:
         accounts = [destination] if current_owner is None else [current_owner, destination]
         marked_active = await self.subscriptions_db.lock_grants_of(accounts)
 
-        # The status above came from a plain read taken before any lock, and the term below was
-        # derived from it. Re-read it under the grant locks, as `SubscriptionsService.ingest`
-        # re-reads the owner and for the same reason: the webhooks own canonical state, and one
-        # that revoked or expired this subscription inside the window leaves this path writing an
-        # entitled grant against a row that no longer entitles anything -- caught, if at all, by
-        # the deferred entitlement key at COMMIT, as an opaque 500.
-        settled_status = await self.subscriptions_db.read_status(proof.provider, proof.external_id)
-        if settled_status is not None and settled_status != status:
-            # Refused whichever way it moved: the term below is read for the status this decided,
-            # so an entitled status that merely changed spelling carries a window nothing checked.
+        # The whole row under the grant locks, because the webhooks own the status and the tier
+        # alike and the grant written below carries both from this plain, pre-lock read.
+        settled = await self.subscriptions_db.read_subscription(proof.provider, proof.external_id)
+        if settled is not None and (settled.status != status
+                                    or (tier_read is not None
+                                        and settled.tier_id != tier_read)):
+            # Refused whichever way either moved, never rewritten: the term below was read for the
+            # status this decided, and the allowance charged is the tier the row carried with it.
             raise RestoreSubscriptionNotEntitled
 
         # At most one row answers: an entitled write supersedes this subscription's active grants first.

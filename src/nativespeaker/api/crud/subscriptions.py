@@ -118,18 +118,6 @@ class SubscriptionsDB:
                                                        col(Subscription.external_id) == external_id)
         return (await self.session.exec(statement)).first()
 
-    async def read_status(self, provider: PurchaseProvider,
-                          external_id: str) -> SubscriptionStatus | None:
-        """The status the canonical row carries right now, or `None`, taking no lock."""
-        # A column select for the reason `read_owner` gives: the identity map would answer a row
-        # already loaded with the value that read saw, which is the staleness this asks about.
-        statement = select(Subscription.status).where(col(Subscription.provider) == provider,
-                                                      col(Subscription.external_id) == external_id)
-        settled = (await self.session.exec(statement)).first()
-        # Coerced for the reason `VerifiedNotification.__post_init__` gives: the caller compares
-        # this against a `SubscriptionStatus`, and a bare column value answers by value only.
-        return None if settled is None else SubscriptionStatus(settled)
-
     async def read_purchase(self, provider: PurchaseProvider,
                             external_id: str) -> StorePurchase | None:
         """The recorded purchase for the lifecycle pair, or `None`, taking no lock."""

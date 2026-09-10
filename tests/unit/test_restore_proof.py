@@ -638,10 +638,6 @@ class _InsertOnlyRecorder:
     async def read_purchase(self, provider, external_id):
         return None
 
-    async def read_status(self, provider, external_id):
-        # No canonical row on this branch, so the re-read under the locks finds no status either.
-        return None
-
     async def lock_grants_of(self, user_ids):
         self.calls.append("lock_grants_of")
         return []
@@ -702,19 +698,24 @@ class _CommittingSession(_CountingSession):
 class _GrantRecorder:
     """The subscriptions crud as a recorder, on the branch that reaches the grant writer directly."""
 
-    def __init__(self, destination, settled_status=SubscriptionStatus.active) -> None:
+    def __init__(self, destination, settled_status=SubscriptionStatus.active,
+                 settled_tier: str = TIER_ID) -> None:
         self.granted: list[dict] = []
         self._settled_status = settled_status
+        self._settled_tier = settled_tier
+        self.reads = 0
         self._stored = SimpleNamespace(id=uuid4(), user_id=destination, tier_id=TIER_ID,
                                        status=SubscriptionStatus.active,
                                        last_cross_account_transfer_month=None)
 
     async def read_subscription(self, provider, external_id):
+        # The second call is the re-read under the grant locks, and `populate_existing` refreshes
+        # the same row in place: what a case moves out from under the restore, it moves here.
+        self.reads += 1
+        if self.reads > 1:
+            self._stored.status = self._settled_status
+            self._stored.tier_id = self._settled_tier
         return self._stored
-
-    async def read_status(self, provider, external_id):
-        # What the canonical row says under the grant locks, which a case moves out from under it.
-        return self._settled_status
 
     async def read_purchase(self, provider, external_id):
         # Not `None`, so the purchase insert is skipped and the grant writer is the one write.
@@ -729,13 +730,14 @@ class _GrantRecorder:
 
 
 async def _same_account_restore(purchased_at, settled_status=SubscriptionStatus.active,
-                                session: _CommittingSession | None = None
+                                session: _CommittingSession | None = None,
+                                settled_tier: str = TIER_ID
                                 ) -> tuple[_GrantRecorder, _CommittingSession]:
     """One same-account restore of a proof carrying `purchased_at`, against a canonical row whose
-    status under the grant locks is `settled_status`, over `session` or a plain one."""
+    status and tier under the grant locks are `settled_status` and `settled_tier`."""
     session = _CommittingSession() if session is None else session
     caller = _caller()
-    recorder = _GrantRecorder(caller.user.id, settled_status)
+    recorder = _GrantRecorder(caller.user.id, settled_status, settled_tier)
     proof = RestoredSubscription(provider=PurchaseProvider.apple,
                                  external_id=ORIGINAL_TRANSACTION_ID,
                                  product_id=PRODUCT_ID,
@@ -813,6 +815,23 @@ class TestTheStatusIsReReadUnderTheGrantLocksBeforeAnythingIsWritten:
         recorder, session = await _same_account_restore(EVALUATED_AT - timedelta(days=1))
 
         assert len(recorder.granted) == 1
+        assert session.commits == 1
+
+
+class TestTheTierIsReReadUnderTheGrantLocksAsWell:
+    """WR-60: only the status was re-read, so the grant was written at the pre-lock tier."""
+
+    async def test_a_tier_that_moved_under_the_locks_is_refused_with_nothing_written(self):
+        """A tier-change webhook committed inside the window was silently reverted: the restore
+        superseded the buyer's grants and re-inserted one at the tier its pre-lock read saw."""
+        with pytest.raises(RestoreSubscriptionNotEntitled):
+            await _same_account_restore(EVALUATED_AT - timedelta(days=1),
+                                        settled_tier="another-tier")
+
+    async def test_a_tier_that_still_agrees_is_the_one_written_control(self):
+        recorder, session = await _same_account_restore(EVALUATED_AT - timedelta(days=1))
+
+        assert recorder.granted[0]["tier_id"] == TIER_ID
         assert session.commits == 1
 
 
