@@ -220,6 +220,7 @@ async def read_bits_with_retry(adapter: DeviceCheckAdapter, device_token: str) -
     return await _retrying(_read_exhausted)(adapter.read_bits, device_token)
 
 
+# Blind on both bits: Apple has no compare-and-swap, so a carried-forward bit can overwrite a newer value.
 async def write_bits_with_retry(adapter: DeviceCheckAdapter, device_token: str, *,
                                 bit0: bool, bit1: bool) -> None:
     """Call the adapter's update up to `DEVICECHECK_ATTEMPTS` times; return on confirmation or raise."""
