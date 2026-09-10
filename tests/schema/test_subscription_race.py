@@ -75,11 +75,19 @@ async def clean_up(harness: _Harness) -> None:
 
 
 class _RacedSession(_RacingSession):
-    """The claim race's session, plus the SQLSTATE its violation carried."""
+    """The claim race's session, plus the SQLSTATE its violation carried and a write barrier."""
 
-    def __init__(self, session, before_first_flush=None) -> None:
+    def __init__(self, session, before_first_flush=None, before_first_write=None) -> None:
         super().__init__(session, before_first_flush)
         self.sqlstate: str | None = None
+        self._before_first_write = before_first_write
+
+    async def exec(self, statement, *args, **kwargs):
+        """Hold at the first statement that writes; everything before it is what this attempt read."""
+        if self._before_first_write is not None and not getattr(statement, "is_select", False):
+            hook, self._before_first_write = self._before_first_write, None
+            await hook()
+        return await self._session.exec(statement, *args, **kwargs)
 
     async def flush(self, *args, **kwargs):
         try:
@@ -102,6 +110,8 @@ class _Attempt:
     sqlstate: str | None = None
     integrity_at_flush: bool = False
     integrity_at_commit: bool = False
+    # The committed store clock this delivery decided against, read at the write barrier below.
+    clock_seen_at_barrier: datetime | None = None
     # Every write the writer emits goes through one of these, so zero means the attempt wrote nothing.
     flushes: int = 0
 
@@ -117,7 +127,8 @@ def status_of(attempt: _Attempt) -> int:
 
 
 def notification_for(harness: _Harness, *, store_key: str = "one", tier_id: str = TIER_ID,
-                     provider: PurchaseProvider = PurchaseProvider.apple) -> VerifiedNotification:
+                     provider: PurchaseProvider = PurchaseProvider.apple,
+                     signed_at: datetime | None = None) -> VerifiedNotification:
     """One verified, unattributed delivery on this test's private keys."""
     # The key is this test's own, not the Google composite: its stability is the ingestion file's subject.
     return _notification(external_id=harness.external_id,
@@ -126,13 +137,16 @@ def notification_for(harness: _Harness, *, store_key: str = "one", tier_id: str 
                          provider=provider,
                          purchased_at=NOW - _A_MONTH,
                          expires_at=NOW + _A_MONTH,
+                         # Defaulted to the purchase instant by the builder, as every case above wants.
+                         signed_at=signed_at,
                          notification_uuid=f"{harness.uuid_prefix}-{store_key}")
 
 
-async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=None) -> _Attempt:
+async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=None,
+                      before_first_write=None) -> _Attempt:
     """Drive the production ingestion once, on its own session and connection, as one request does."""
     async with harness.factory() as real_session:
-        session = _RacedSession(real_session, before_first_flush)
+        session = _RacedSession(real_session, before_first_flush, before_first_write)
         service = SubscriptionsService(db=session, evaluated_at=NOW)
         try:
             await service.ingest(attempt.notification)
@@ -327,3 +341,99 @@ class TestTwoStoreKeysForOneLifecyclePairCommitOnce:
         loser = raced["by_role"]["lost_at_flush"]
         assert loser.sqlstate == "23505"
         assert type(loser.result) is InternalError
+
+
+# The three clocks WR-10 is about: what the settled row already said, and the two deliveries that
+# raced over it. Both are newer than the settled one, so the out-of-order guard passes for both.
+CLOCK_SETTLED = NOW - timedelta(hours=2)
+CLOCK_OLDER = NOW - timedelta(hours=1)
+CLOCK_NEWER = NOW - timedelta(minutes=30)
+
+
+async def seed_settled_lifecycle(harness: _Harness, *, store_signed_at: datetime) -> None:
+    """Commit the canonical row and its purchase row, which is the state both unique indexes go quiet in."""
+    async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
+        await conn.execute(
+            text("INSERT INTO core.subscriptions (id, user_id, provider, external_id, tier_id, "
+                 "status, store_signed_at, created_at, updated_at) VALUES "
+                 "(:id, NULL, 'google_play', :lifecycle, :tier, 'expired', :clock, :now, :now)"),
+            {"id": uuid.uuid4(), "lifecycle": harness.external_id, "tier": TIER_ID,
+             "clock": store_signed_at, "now": NOW})
+        # The second row is what makes this a race and not an insert pair: with it recorded,
+        # `insert_purchase` is skipped, so `UNIQUE (provider, external_id)` arbitrates nothing.
+        await conn.execute(
+            text("INSERT INTO core.store_purchases (id, provider, identity_value, external_id, "
+                 "purchase_user_id, resolved_token_value, created_at) VALUES "
+                 "(:id, 'google_play', :identity, :lifecycle, NULL, NULL, :now)"),
+            {"id": uuid.uuid4(), "identity": str(uuid.uuid4()),
+             "lifecycle": harness.external_id, "now": NOW})
+
+
+async def settled_clock(harness: _Harness) -> datetime | None:
+    """The store clock the canonical row carries now, read on a connection of its own."""
+    return await scalar(harness,
+                        "SELECT store_signed_at FROM core.subscriptions WHERE external_id = :key",
+                        {"key": harness.external_id})
+
+
+def clock_barrier(harness: _Harness, attempt: _Attempt, mine: asyncio.Event,
+                  theirs: asyncio.Event):
+    """Record the committed clock this delivery decided against, then wait for its partner."""
+
+    async def hold() -> None:
+        attempt.clock_seen_at_barrier = await settled_clock(harness)
+        mine.set()
+        await asyncio.wait_for(theirs.wait(), timeout=BARRIER_TIMEOUT_SECONDS)
+
+    return hold
+
+
+@pytest.mark.asyncio
+class TestTwoDeliveriesCarryingDifferentStoreClocksCommitOnce:
+    """WR-10. Newest-wins is decided by re-reading the canonical row, and that row is never locked:
+    an unattributed subscription takes no grant lock at all, so nothing serialized the two writes
+    and the older delivery could land last, moving the clock backwards over the newer state."""
+
+    @pytest_asyncio.fixture
+    async def raced(self, harness):
+        """Two deliveries of one purchase token, released once both have read and neither has written."""
+        await seed_settled_lifecycle(harness, store_signed_at=CLOCK_SETTLED)
+        older = _Attempt(name="older", notification=google_notification_for(
+            harness, store_key="older", signed_at=CLOCK_OLDER))
+        newer = _Attempt(name="newer", notification=google_notification_for(
+            harness, store_key="newer", signed_at=CLOCK_NEWER))
+        older_ready, newer_ready = asyncio.Event(), asyncio.Event()
+        await asyncio.gather(
+            run_attempt(harness, older,
+                        before_first_write=clock_barrier(harness, older, older_ready,
+                                                         newer_ready)),
+            run_attempt(harness, newer,
+                        before_first_write=clock_barrier(harness, newer, newer_ready,
+                                                         older_ready)))
+        return {"older": older, "newer": newer}
+
+    async def test_both_deliveries_decided_against_the_settled_clock(self, raced):
+        """The premise: neither saw the other's write, so the guard passed for both and both applied."""
+        assert [raced["older"].clock_seen_at_barrier,
+                raced["newer"].clock_seen_at_barrier] == [CLOCK_SETTLED, CLOCK_SETTLED]
+
+    async def test_exactly_one_delivery_lost_the_race(self, raced):
+        """Both committing is the defect: the row would then carry whichever wrote last."""
+        assert sorted(status_of(attempt)
+                      for attempt in (raced["older"], raced["newer"])) == [200, 500]
+
+    async def test_the_loser_answers_the_five_hundred_that_makes_pubsub_redeliver(self, raced):
+        loser = next(attempt for attempt in (raced["older"], raced["newer"])
+                     if status_of(attempt) == 500)
+        assert type(loser.result) is InternalError
+
+    async def test_the_settled_clock_is_the_winners_and_never_the_last_writers(self, harness,
+                                                                               raced):
+        """The point of the whole guard: the clock this row carries is the one that won it."""
+        winner = next(attempt for attempt in (raced["older"], raced["newer"])
+                      if status_of(attempt) == 200)
+        assert await settled_clock(harness) == winner.notification.signed_at
+
+    async def test_only_the_winners_event_row_was_recorded(self, harness, raced):
+        """The loser rolled back whole: its event row is not left behind to block the redelivery."""
+        assert await counts(harness) == (1, 1, 1)

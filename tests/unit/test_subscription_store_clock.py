@@ -89,6 +89,8 @@ async def _upsert(stored: Subscription, *, signed_at: datetime | None,
         tier_id=tier_id,
         status=status,
         signed_at=signed_at,
+        # The clock the service's out-of-order guard decided on, as `ingest` passes it.
+        clock_read=stored.store_signed_at,
         evaluated_at=T2)
 
 
@@ -152,6 +154,8 @@ async def _adopt(*, claimed: bool) -> tuple[Subscription, WriteOutcome, _StubSes
         tier_id=PAID_TIER_ID,
         status=SubscriptionStatus.active,
         signed_at=T2,
+        # The clock the service's out-of-order guard decided on, as `ingest` passes it.
+        clock_read=T1,
         evaluated_at=T2)
     return row, outcome, session
 
@@ -183,6 +187,73 @@ class TestAnUnownedRowIsTakenConditionally:
         assert outcome is WriteOutcome.lost_race
         # Nothing after the refused claim ran: no flush, and the owner is left as it was read.
         assert (session.flushes, row.user_id) == (0, None)
+
+
+async def _write_over(stored: Subscription, *, clock_read: datetime | None,
+                      signed_at: datetime | None = T2,
+                      status: SubscriptionStatus = SubscriptionStatus.grace_period,
+                      claimed: bool = True) -> tuple[Subscription, WriteOutcome, _StubSession]:
+    """Run the real crud method over an owned stored row, keeping the statements it issued."""
+    session = _StubSession(stored, claimed=claimed)
+    row, outcome = await SubscriptionsDB(session).upsert_subscription(
+        provider=PurchaseProvider.apple,
+        external_id=EXTERNAL_ID,
+        user_id=OWNER,
+        tier_id=PAID_TIER_ID,
+        status=status,
+        signed_at=signed_at,
+        clock_read=clock_read,
+        evaluated_at=T2)
+    return row, outcome, session
+
+
+@pytest.mark.asyncio
+class TestTheCanonicalRowIsTakenOnTheClockItWasReadAt:
+    """WR-10: this row is never locked and a buyer with no grant marked active takes no grant lock
+    either, so an update keyed on the id alone let two deliveries of one lifecycle key be
+    last-writer-wins -- and the older one could land last, moving the clock backwards."""
+
+    async def test_the_write_is_conditional_on_the_clock_the_caller_read(self):
+        _, _, session = await _write_over(_stored(T1), clock_read=T1)
+
+        updates = [_compiled(statement) for statement in session.statements
+                   if _compiled(statement).startswith("UPDATE")]
+        assert updates and "store_signed_at IS NOT DISTINCT FROM" in updates[0]
+
+    async def test_the_predicate_carries_the_clock_the_caller_named(self):
+        """The predicate is not enough on its own: a second read of the row would compile the same."""
+        _, _, session = await _write_over(_stored(T1), clock_read=T1)
+
+        update = next(statement for statement in session.statements
+                      if _compiled(statement).startswith("UPDATE"))
+        assert T1 in _bound(update)
+
+    async def test_it_takes_no_lock_of_its_own(self):
+        """43 D-16: the write lock this statement holds is the whole mechanism, and `FOR UPDATE`
+        here would be a lock tier the two writers do not share."""
+        _, _, session = await _write_over(_stored(T1), clock_read=T1)
+
+        update = next(statement for statement in session.statements
+                      if _compiled(statement).startswith("UPDATE"))
+        assert LOCK_CLAUSE not in _compiled(update)
+
+    async def test_a_rival_that_moved_the_clock_first_is_a_lost_race(self):
+        """Zero rows means the row no longer reads what the guard decided on: the store resends."""
+        row, outcome, session = await _write_over(_stored(T1), clock_read=T1, claimed=False)
+
+        assert outcome is WriteOutcome.lost_race
+        # Nothing after the refused take ran: no flush, and the state is left as it was read.
+        assert (session.flushes, row.status) == (0, SubscriptionStatus.active)
+
+    async def test_a_delivery_that_records_nothing_takes_the_row_at_all_control(self):
+        """The control on the condition: a redelivery that writes nothing must not queue behind
+        the row lock, or every replay would wait on whatever delivery is mid-flight."""
+        _, outcome, session = await _write_over(_stored(T1), clock_read=T1, signed_at=T1,
+                                                status=SubscriptionStatus.active)
+
+        assert outcome is WriteOutcome.replayed
+        assert [statement for statement in session.statements
+                if _compiled(statement).startswith("UPDATE")] == []
 
 
 @pytest.mark.asyncio

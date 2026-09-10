@@ -695,12 +695,16 @@ class TestADeliveryThatCommitsInTheWindowSupersedesThisOne:
 async def _upsert(writer, external_id: str, *, signed_at=NOW,
                   status=SubscriptionStatus.active) -> tuple[Subscription, WriteOutcome]:
     """One canonical write through the recorder, with the fields every case here holds fixed."""
+    stored = writer.subscriptions.get((PurchaseProvider.apple, external_id))
     return await writer.upsert_subscription(provider=PurchaseProvider.apple,
                                             external_id=external_id,
                                             user_id=RESTORER,
                                             tier_id=PAID_TIER_ID,
                                             status=status,
                                             signed_at=signed_at,
+                                            # The clock the guard read, as `ingest` passes it.
+                                            clock_read=(None if stored is None
+                                                        else stored.store_signed_at),
                                             evaluated_at=NOW)
 
 

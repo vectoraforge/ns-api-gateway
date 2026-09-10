@@ -126,6 +126,9 @@ class SubscriptionsService:
             tier_id=tier_id,
             status=status,
             signed_at=notification.signed_at,
+            # The clock the guard above decided on, and not a third reading of the row: the writer
+            # takes it only where it still reads that, so a rival that moved it since wins.
+            clock_read=None if settled is None else settled.store_signed_at,
             evaluated_at=self.evaluated_at)
         await self._settle(outcome, notification)
 

@@ -65,6 +65,18 @@ def _claim_owner_statement(subscription_id: UUID, owner_read: UUID | None,
             .execution_options(synchronize_session=False))
 
 
+def _hold_clock_statement(subscription_id: UUID, clock_read: datetime | None,
+                          evaluated_at: datetime):
+    """The conditional touch that takes the row only where its store clock still reads as read."""
+    return (update(Subscription)
+            .where(col(Subscription.id) == subscription_id,
+                   # Nullable, so equality would not match the NULL a read saw.
+                   col(Subscription.store_signed_at).is_not_distinct_from(clock_read))
+            .values(updated_at=evaluated_at)
+            # No synchronization, so this emits one statement and reads nothing back.
+            .execution_options(synchronize_session=False))
+
+
 def _purchase_statement(provider: PurchaseProvider, external_id: str):
     """The `core.store_purchases` row for the lifecycle pair its UNIQUE constraint keys."""
     return select(StorePurchase).where(col(StorePurchase.provider) == provider,
@@ -168,10 +180,11 @@ class SubscriptionsDB:
                                   tier_id: str,
                                   status: SubscriptionStatus,
                                   signed_at: datetime | None,
+                                  clock_read: datetime | None,
                                   evaluated_at: datetime) -> tuple[Subscription, WriteOutcome]:
         """Update the existing canonical row in place, or insert one, and flush it.
-        An owner is taken by the same conditional statement `claim_subscription_owner` emits, so a
-        restore that adopted the row since the read above is a lost race rather than an overwrite."""
+        Both the owner and the store clock are taken conditionally, on what the caller read: this
+        row is never locked, so an update keyed on the id alone is last-writer-wins over a rival."""
         stored = await self.read_subscription(provider, external_id)
         outcome = WriteOutcome.applied
         if stored is None:
@@ -206,12 +219,25 @@ class SubscriptionsDB:
                     evaluated_at=evaluated_at)
                 if not claimed:
                     return stored, WriteOutcome.lost_race
-            if signed_at is not None and (stored.store_signed_at is None
-                                          or signed_at > stored.store_signed_at):
-                # Moved whatever the comparison below decides: the out-of-order guard reads this
-                # clock, so a delivery carrying no state change but a newer one must still move it.
-                # Only ever advanced by a payload that carries one: an absent date clears nothing.
-                stored.store_signed_at = signed_at
+            moves_clock = signed_at is not None and (stored.store_signed_at is None
+                                                     or signed_at > stored.store_signed_at)
+            if not settled or moves_clock:
+                # The same rule as the claim above, for the same reason and one column over. The
+                # flush below is keyed on the id alone, so without this two deliveries of one
+                # lifecycle key are last-writer-wins on `status`, `tier_id` and the clock itself,
+                # and the older one can land last. A match also takes this row's write lock for
+                # the rest of the transaction, which is what makes the mutations below the last
+                # word; no `FOR UPDATE`, and after the grant locks, so 43 D-16's order still holds.
+                if not await self.hold_subscription_clock(subscription_id=stored.id,
+                                                          clock_read=clock_read,
+                                                          evaluated_at=evaluated_at):
+                    return stored, WriteOutcome.lost_race
+            # Moved whatever the comparison below decides: the out-of-order guard reads this
+            # clock, so a delivery carrying no state change but a newer one must still move it.
+            # Only ever advanced by a payload that carries one: an absent date clears nothing.
+            advanced = signed_at if moves_clock else None
+            if advanced is not None:
+                stored.store_signed_at = advanced
                 stored.updated_at = evaluated_at
             if settled:
                 # The lifecycle row already says this, so a repeat event carries no change to record.
@@ -245,6 +271,15 @@ class SubscriptionsDB:
             values["last_cross_account_transfer_month"] = transfer_month
         # The caller must re-read the row: this never refreshes a `Subscription` already loaded.
         statement = _claim_owner_statement(subscription_id, owner_read, month_read, values)
+        return (await self.session.exec(statement)).rowcount == 1
+
+    async def hold_subscription_clock(self, *, subscription_id: UUID,
+                                      clock_read: datetime | None,
+                                      evaluated_at: datetime) -> bool:
+        """Take the canonical row where its store clock still says what the caller decided on.
+        Takes no `FOR UPDATE` (43 D-16): the write lock this statement itself holds until the
+        transaction ends is what serializes the writes behind it, and the row count is the answer."""
+        statement = _hold_clock_statement(subscription_id, clock_read, evaluated_at)
         return (await self.session.exec(statement)).rowcount == 1
 
     async def insert_purchase(self, *,
