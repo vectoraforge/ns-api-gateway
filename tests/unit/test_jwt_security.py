@@ -205,17 +205,17 @@ class TestValidToken:
 
 
 class TestVerifiedClaims:
-    """The accepted value object carries the verified (iss, sub), and a payload only when one was pinned."""
+    """The accepted value object carries the verified (iss, sub) and nothing else."""
 
-    def test_carries_the_two_verified_claims_and_the_pinned_payload(self):
-        assert sorted(VerifiedClaims.__dataclass_fields__) == ["issuer", "payload", "subject"]
+    def test_carries_the_two_verified_claims_and_no_other_field(self):
+        """WR-22: the pinned-claims branch attached the whole decoded token, which no caller read
+        and which re-widened this type back to the claim set the narrowing exists to drop."""
+        assert sorted(VerifiedClaims.__dataclass_fields__) == ["issuer", "subject"]
 
     def test_fields(self):
         claims = VerifiedClaims(issuer=TEST_ISSUER, subject="abc123")
         assert claims.issuer == TEST_ISSUER
         assert claims.subject == "abc123"
-        # Absent for every caller that pinned no required claim, which is every caller but Google's.
-        assert claims.payload is None
 
     def test_frozen(self):
         claims = VerifiedClaims(issuer=TEST_ISSUER, subject="abc123")

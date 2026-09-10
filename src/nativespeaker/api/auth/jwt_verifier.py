@@ -72,8 +72,6 @@ class VerifiedClaims:
     """Exactly the verified `iss` and `sub`, never reconstructed from transport metadata."""
     issuer: str
     subject: str
-    # Carried only for a caller that pinned required claims; every other caller reads `None`.
-    payload: dict | None = None
 
 
 # A bounded reason is never client-visible: it reaches the security log and nowhere else.
@@ -248,7 +246,4 @@ class JWTVerifier:
                 # the one distinction `.env.example` promises the operator this field carries.
                 return None, BoundedReason.required_claim_mismatch
 
-        claims, reason = claims_from_payload(payload)
-        if claims is None:
-            return None, reason
-        return VerifiedClaims(issuer=claims.issuer, subject=claims.subject, payload=payload), None
+        return claims_from_payload(payload)
