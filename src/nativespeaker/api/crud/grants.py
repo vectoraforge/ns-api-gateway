@@ -95,7 +95,11 @@ class GrantsDB:
                                     evaluated_at: datetime) -> list[AccessGrant]:
         """Lock and return every effective grant for `user_id` at `evaluated_at`, ascending by id."""
         # No eager-loading option here: Postgres rejects FOR UPDATE combined with the join those emit.
-        statement = _effective_grants_statement(user_id, evaluated_at).with_for_update()
+        # `populate_existing` for the reason `SubscriptionsDB.read_subscription` gives: without it a
+        # row already in this session's identity map is answered with the values the earlier read
+        # saw, so the revalidation under the lock decides on a snapshot a rival has already replaced.
+        statement = (_effective_grants_statement(user_id, evaluated_at)
+                     .with_for_update().execution_options(populate_existing=True))
         return list((await self.session.exec(statement)).all())
 
     async def read_effective_grants(self, user_id: UUID,
@@ -107,13 +111,17 @@ class GrantsDB:
     async def lock_active_grants(self, user_id: UUID) -> list[AccessGrant]:
         """Lock and return every grant of `user_id` the one-active index sees, ascending by id."""
         # No eager-loading option here: Postgres rejects FOR UPDATE combined with the join those emit.
-        statement = _active_grants_statement(user_id).with_for_update()
+        # `populate_existing` for the reason `lock_effective_grants` gives above.
+        statement = (_active_grants_statement(user_id)
+                     .with_for_update().execution_options(populate_existing=True))
         return list((await self.session.exec(statement)).all())
 
     async def lock_active_grants_of(self, user_ids: list[UUID]) -> list[AccessGrant]:
         """Lock and return every grant of `user_ids` the one-active index sees, ascending by id."""
         # No eager-loading option here: Postgres rejects FOR UPDATE combined with the join those emit.
-        statement = _active_grants_of_statement(user_ids).with_for_update()
+        # `populate_existing` for the reason `lock_effective_grants` gives above.
+        statement = (_active_grants_of_statement(user_ids)
+                     .with_for_update().execution_options(populate_existing=True))
         return list((await self.session.exec(statement)).all())
 
     async def read_active_grants(self, user_id: UUID) -> list[AccessGrant]:
@@ -127,12 +135,17 @@ class GrantsDB:
 
     async def lock_usage(self, grant_id: UUID) -> UserMonthlyUsage | None:
         """Lock and return `grant_id`'s usage row, or `None`. Second in the lock order and never first."""
-        statement = _usage_statement(grant_id).with_for_update()
+        # `populate_existing` for the reason `lock_effective_grants` gives above.
+        statement = (_usage_statement(grant_id)
+                     .with_for_update().execution_options(populate_existing=True))
         return (await self.session.exec(statement)).first()
 
     async def read_usage(self, grant_id: UUID) -> UserMonthlyUsage | None:
         """Return `grant_id`'s usage row, or `None`, taking no lock."""
-        return (await self.session.exec(_usage_statement(grant_id))).first()
+        # `populate_existing` for the same reason: `write_subscription_grant` reads `monthly_used`
+        # through this to decide what the new grant carries, and the row is usually already loaded.
+        statement = _usage_statement(grant_id).execution_options(populate_existing=True)
+        return (await self.session.exec(statement)).first()
 
     async def monthly_credits(self, tier_id: str) -> int | None:
         statement = select(AccessTier.monthly_credits).where(col(AccessTier.id) == tier_id)
