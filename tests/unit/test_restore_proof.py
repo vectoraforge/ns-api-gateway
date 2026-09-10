@@ -670,7 +670,7 @@ class _InsertOnlyRecorder:
     async def read_purchase(self, provider, external_id):
         return None
 
-    async def lock_grants_of(self, user_ids):
+    async def lock_grants_of(self, user_ids, *, counted_for):
         self.calls.append("lock_grants_of")
         return []
 
@@ -753,7 +753,7 @@ class _GrantRecorder:
         # Not `None`, so the purchase insert is skipped and the grant writer is the one write.
         return SimpleNamespace(id=uuid4(), resolved_token_value=None)
 
-    async def lock_grants_of(self, user_ids):
+    async def lock_grants_of(self, user_ids, *, counted_for):
         return []
 
     async def write_subscription_grant(self, **fields):
@@ -955,7 +955,7 @@ class _GraceRecorder(_GrantRecorder):
                                               user_id=destination,
                                               ends_at=ends_at)])
 
-    async def lock_grants_of(self, user_ids):
+    async def lock_grants_of(self, user_ids, *, counted_for):
         return self._locked
 
 

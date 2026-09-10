@@ -87,7 +87,8 @@ class RestoreService:
 
         # One statement for every account this restore touches: a move also takes from the old owner.
         accounts = [destination] if current_owner is None else [current_owner, destination]
-        marked_active = await self.subscriptions_db.lock_grants_of(accounts)
+        marked_active = await self.subscriptions_db.lock_grants_of(
+            accounts, counted_for=destination)
 
         # The whole row under the grant locks: the webhooks own the status and the tier alike.
         settled = await self.subscriptions_db.read_subscription(proof.provider, proof.external_id)

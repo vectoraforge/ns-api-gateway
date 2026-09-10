@@ -71,8 +71,8 @@ class _StubSession:
         self.flushes += 1
 
 
-class _WarningSpy:
-    """Stands in for the writer's whole `logger`; only the level this loss is recorded at exists."""
+class _LogSpy:
+    """Stands in for the writer's whole `logger`; the two levels a loss is recorded at exist."""
 
     def __init__(self, records: list[dict]) -> None:
         self.records = records
@@ -80,12 +80,15 @@ class _WarningSpy:
     def warning(self, event, **fields) -> None:
         self.records.append({"event": event} | fields)
 
+    def error(self, event, **fields) -> None:
+        self.records.append({"event": event} | fields)
 
-def _writer_warnings(monkeypatch) -> list[dict]:
+
+def _writer_records(monkeypatch) -> list[dict]:
     """The whole `logger` name, never its level attributes: structlog's lazy proxy builds those on
     demand, so monkeypatch's undo would freeze one onto the proxy for the rest of the session."""
     records: list[dict] = []
-    monkeypatch.setattr("nativespeaker.api.crud.subscriptions.logger", _WarningSpy(records))
+    monkeypatch.setattr("nativespeaker.api.crud.subscriptions.logger", _LogSpy(records))
     return records
 
 
@@ -351,7 +354,7 @@ class TestAnOperatorsGrantIsNotEndedSilently:
     async def test_a_superseded_manual_grant_is_named_in_one_warning(self, monkeypatch):
         issued = _grant(source=AccessGrantSource.manual, subscription_id=None, ends_at=None)
         session = _StubSession(_usage(issued, monthly_period=THIS_MONTH, monthly_used=0))
-        records = _writer_warnings(monkeypatch)
+        records = _writer_records(monkeypatch)
 
         await _write(session, [issued])
 
@@ -365,7 +368,7 @@ class TestAnOperatorsGrantIsNotEndedSilently:
         subscription's own rows, so a manual grant is neither ended nor recorded."""
         issued = _grant(source=AccessGrantSource.manual, subscription_id=None, ends_at=None)
         session = _StubSession()
-        records = _writer_warnings(monkeypatch)
+        records = _writer_records(monkeypatch)
 
         await _write(session, [issued], status=SubscriptionStatus.revoked)
 
@@ -376,7 +379,7 @@ class TestAnOperatorsGrantIsNotEndedSilently:
         free = _grant(source=AccessGrantSource.anonymous_device_grant, subscription_id=None,
                       ends_at=None, tier_id=FREE_TIER_ID)
         session = _StubSession(_usage(free, monthly_period=THIS_MONTH, monthly_used=0))
-        records = _writer_warnings(monkeypatch)
+        records = _writer_records(monkeypatch)
 
         await _write(session, [free])
 
@@ -419,7 +422,7 @@ class TestTheSecondLockTierRefusesAnAbsentUsageRow:
         session = _LockStubSession([held], None)
 
         with pytest.raises(MissingUsageRowError) as failure:
-            await SubscriptionsDB(session).lock_grants_of([DESTINATION])
+            await SubscriptionsDB(session).lock_grants_of([DESTINATION], counted_for=DESTINATION)
 
         assert failure.value.grant_id == held.id
 
@@ -428,7 +431,7 @@ class TestTheSecondLockTierRefusesAnAbsentUsageRow:
         held = _grant(subscription_id=SUBSCRIPTION_A)
         session = _LockStubSession([held], _usage(held, monthly_period=THIS_MONTH, monthly_used=0))
 
-        assert await SubscriptionsDB(session).lock_grants_of([DESTINATION]) == [held]
+        assert await SubscriptionsDB(session).lock_grants_of([DESTINATION], counted_for=DESTINATION) == [held]
 
     async def test_the_usage_tier_is_taken_after_the_grant_tier_control(self):
         """The control: a refusal that preceded the grant-tier read would invert the lock order."""
@@ -436,6 +439,35 @@ class TestTheSecondLockTierRefusesAnAbsentUsageRow:
         session = _LockStubSession([held], None)
 
         with pytest.raises(MissingUsageRowError):
-            await SubscriptionsDB(session).lock_grants_of([DESTINATION])
+            await SubscriptionsDB(session).lock_grants_of([DESTINATION], counted_for=DESTINATION)
 
         assert session.reads == 2
+
+    async def test_a_break_in_the_source_account_is_recorded_and_refuses_nothing(self, monkeypatch):
+        """WR-21: on a move `write_subscription_grant` reads the counter of the destination alone,
+        so an absent usage row in the account the subscription is taken from denies that
+        destination nothing. The row is still locked, because the lock order requires it."""
+        theirs = _grant(user_id=OLD_OWNER, subscription_id=SUBSCRIPTION_A)
+        session = _LockStubSession([theirs], None)
+        records = _writer_records(monkeypatch)
+
+        locked = await SubscriptionsDB(session).lock_grants_of([OLD_OWNER, DESTINATION],
+                                                               counted_for=DESTINATION)
+
+        assert locked == [theirs]
+        assert session.reads == 2
+        assert records == [{"event": "source_grant_without_usage_row",
+                            "grant_id": str(theirs.id),
+                            "user_id": str(OLD_OWNER)}]
+
+    async def test_the_destinations_own_break_still_refuses_control(self, monkeypatch):
+        """The control: the narrowing above is the other account's rows and not the whole check."""
+        held = _grant(user_id=DESTINATION, subscription_id=SUBSCRIPTION_A)
+        session = _LockStubSession([held], None)
+        records = _writer_records(monkeypatch)
+
+        with pytest.raises(MissingUsageRowError):
+            await SubscriptionsDB(session).lock_grants_of([OLD_OWNER, DESTINATION],
+                                                          counted_for=DESTINATION)
+
+        assert records == []

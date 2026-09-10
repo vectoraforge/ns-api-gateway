@@ -96,10 +96,12 @@ class SubscriptionsDB:
         # order can never take two different sets. The second tier used to follow the effective
         # subset here and the whole active set there, which left a row this writer supersedes with
         # its usage row unlocked.
-        return await self.lock_grants_of([user_id])
+        return await self.lock_grants_of([user_id], counted_for=user_id)
 
-    async def lock_grants_of(self, user_ids: list[UUID]) -> list[AccessGrant]:
-        """Take both lock tiers for one or two accounts at once and return every grant marked active."""
+    async def lock_grants_of(self, user_ids: list[UUID], *,
+                             counted_for: UUID) -> list[AccessGrant]:
+        """Take both lock tiers for one or two accounts at once and return every grant marked active.
+        `counted_for` is the account whose monthly counter the write under these locks carries."""
         # One statement for the pair, so the grant tier stays one ascending order and never two.
         marked_active = await self.grants_db.lock_active_grants_of(user_ids)
         for grant in marked_active:
@@ -107,8 +109,13 @@ class SubscriptionsDB:
             # `write_subscription_grant` supersedes.
             usage = await self.grants_db.lock_usage(grant.id)
             if usage is None:
-                # Fail closed, never mint: refused here, no row is written and no lock is spent.
-                raise MissingUsageRowError(grant.id)
+                if grant.user_id == counted_for:
+                    # Fail closed, never mint: refused here, no row is written and no lock is spent.
+                    raise MissingUsageRowError(grant.id)
+                # `write_subscription_grant` reads no counter of the other account on a move, so a
+                # break there is recorded and never a refusal for the account that presented a proof.
+                logger.error("source_grant_without_usage_row", grant_id=str(grant.id),
+                             user_id=str(grant.user_id))
         return marked_active
 
     async def read_event(self, notification_uuid: str) -> SubscriptionEvent | None:
