@@ -8,6 +8,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from nativespeaker.api.auth.adapters import FirebaseAdminAdapter
+from nativespeaker.api.auth.devicecheck import DeviceCheckAdapter
 from nativespeaker.api.auth.google_play import (
     developer_notification_from,
     instant_from_millis,
@@ -148,15 +149,17 @@ def get_firebase_adapter(request: Request) -> FirebaseAdminAdapter:
     return request.app.state.firebase_adapter
 
 
-def get_devicecheck_adapter(request: Request):
-    """The device-gate seam the lifespan built, deliberately unannotated."""
+def get_devicecheck_adapter(request: Request) -> DeviceCheckAdapter:
+    """The device-gate seam the lifespan built, declared like its Firebase sibling above."""
+    # Annotated for the reason `devicecheck.py` gives at its two retry helpers: unannotated, the
+    # Protocol binds nowhere on the wiring path and catches no wrong-shaped double.
     return request.app.state.devicecheck_adapter
 
 
 def get_auth_service(db: AsyncSession = Depends(get_db),
                      challenge_store: ChallengesDB = Depends(get_challenge_store),
                      adapter=Depends(get_firebase_adapter),
-                     devicecheck=Depends(get_devicecheck_adapter),
+                     devicecheck: DeviceCheckAdapter = Depends(get_devicecheck_adapter),
                      evaluated_at: datetime = Depends(get_evaluated_at)) -> AuthService:
     return AuthService(db=db,
                        challenge_store=challenge_store,
