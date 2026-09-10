@@ -3,7 +3,7 @@ The store call's place in the request is measured here too: it runs before the s
 Untested by construction: only whether the two stores' live artifacts match their declared shapes."""
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -948,6 +948,74 @@ class TestTheTermIsReadFromWhateverDecidedTheStatus:
         term check was loosened -- with nothing recording the window, nothing entitles anything."""
         with pytest.raises(RestoreSubscriptionNotEntitled):
             await _grace_restore(None)
+
+
+class _UnownedRecorder(_GrantRecorder):
+    """The canonical row no account owns yet, which is the one state that runs the owner claim."""
+
+    def __init__(self, destination, *, claim_wins: bool = True,
+                 winner_owner: UUID | None = None) -> None:
+        super().__init__(destination)
+        self._stored.user_id = None
+        self._claim_wins = claim_wins
+        # What the re-read after the rollback finds, which is what the winner left behind.
+        self._winner_owner = winner_owner
+        self.claims: list[dict] = []
+
+    async def claim_subscription_owner(self, **fields) -> bool:
+        self.claims.append(fields)
+        # The statement writes the owner it matched on, and zero rows means the winner wrote theirs.
+        self._stored.user_id = fields["destination"] if self._claim_wins else self._winner_owner
+        return self._claim_wins
+
+
+def _adoption_restore(*, claim_wins: bool = True, winner_is_caller: bool = False):
+    """One restore of an unowned row, built but not run: the refusing case reads the recorder
+    afterwards, which a helper that ran the restore itself could not hand back."""
+    session = _CommittingSession()
+    caller = _caller()
+    recorder = _UnownedRecorder(caller.user.id, claim_wins=claim_wins,
+                                winner_owner=caller.user.id if winner_is_caller else uuid4())
+    service = _service(session, _ScriptedAppStore(session, _restored()))
+    service.subscriptions_db = recorder
+    service.purchases_db = _NoAttribution()
+    return service, caller, recorder, session
+
+
+class TestALostAdoptionClaimIsAnsweredAsTheWinnerLeftIt:
+    """The claim's row count is the whole answer, and zero rows rolls back and re-reads rather
+    than writing a grant against a row another account now owns."""
+
+    async def test_a_claim_the_same_account_already_won_returns_without_raising(self):
+        """The winner was another attempt of this same account, so its rows are there to read."""
+        service, caller, recorder, session = _adoption_restore(claim_wins=False,
+                                                               winner_is_caller=True)
+
+        await service.restore(identity=caller, provider=PurchaseProvider.apple,
+                              restore_proof="a-signed-transaction")
+
+        assert (recorder.granted, session.rollbacks, session.commits) == ([], 1, 0)
+
+    async def test_a_claim_another_account_won_is_not_this_accounts_to_restore_from(self):
+        """Every other state the winner could have left refuses, and refuses having written nothing."""
+        service, caller, recorder, session = _adoption_restore(claim_wins=False)
+
+        with pytest.raises(RestoreSubscriptionNotEntitled):
+            await service.restore(identity=caller, provider=PurchaseProvider.apple,
+                                  restore_proof="a-signed-transaction")
+
+        assert (recorder.granted, session.rollbacks, session.commits) == ([], 1, 0)
+
+    async def test_a_claim_this_restore_wins_adopts_the_row_control(self):
+        """The control: adoption takes the row and spends none of D-10's month cap doing it."""
+        service, caller, recorder, session = _adoption_restore()
+
+        await service.restore(identity=caller, provider=PurchaseProvider.apple,
+                              restore_proof="a-signed-transaction")
+
+        assert (recorder.claims[0]["owner_read"], recorder.claims[0]["transfer_month"]) == (None,
+                                                                                            None)
+        assert (len(recorder.granted), session.commits, session.rollbacks) == (1, 1, 0)
 
 
 class _AddingSession:
