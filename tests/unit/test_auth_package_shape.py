@@ -16,7 +16,9 @@ AUTH_PACKAGE = Path(auth_package.__file__).parent
 # 68: `StoreNotificationVerifier.verify_transaction`, the second member `RestoreService` calls of
 # the seam it is now annotated against, so a double that omits it is a type error rather than an
 # `AttributeError` inside a handler.
-CURRENT = (8, 24, 68)
+# 25, 69: `google_play.CappedRefreshRequest` and its `__call__`, which cap the credential refresh
+# at the module's own timeout instead of google-auth's 120-second default (44 WR-01).
+CURRENT = (8, 25, 69)
 
 
 def _measure(directory: Path) -> tuple[int, int, int]:

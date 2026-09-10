@@ -24,7 +24,9 @@ from nativespeaker.api.app.lifespan import build_google_push_verifier
 from nativespeaker.api.auth.google_play import (
     GOOGLE_ISSUER,
     GOOGLE_JWKS_URL,
+    PLAY_HTTP_TIMEOUT_SECONDS,
     RESTORE_UNPARSEABLE_STAGE,
+    CappedRefreshRequest,
     PlayDeveloperSubscriptions,
     PubSubPushTokens,
     developer_notification_from,
@@ -696,6 +698,68 @@ class TestAnUnconfiguredCredentialIsNeverAcknowledged:
                                                             expiry=UNEXPIRED)))
 
         assert await _read_through(reader) is not None
+
+
+class _RecordingSession:
+    """A `requests` session that answers 200 and records the timeout each call asked for."""
+
+    def __init__(self) -> None:
+        self.timeouts: list[float | None] = []
+
+    def request(self, method, url, data=None, headers=None, timeout=None, **kwargs):
+        """Google's transport calls this one method; only the timeout is read back."""
+        self.timeouts.append(timeout)
+        return SimpleNamespace(status_code=200, headers={}, content=b"{}")
+
+    def close(self) -> None:
+        """`Request.__del__` closes its session, so the double owes one."""
+
+
+class _RefreshingCredential:
+    """ADC that is stale once, recording the transport the read handed its refresh."""
+
+    token = "play-access-token"
+
+    def __init__(self) -> None:
+        self.valid = False
+        self.transports: list[object] = []
+
+    def refresh(self, request):
+        """Succeed, keeping the transport so the case can measure what it was given."""
+        self.transports.append(request)
+        self.valid = True
+
+
+class TestTheCredentialRefreshIsCapped:
+    """WR-01: `Request.__call__` defaults to 120 s and `jwt_grant` passes no timeout of its own,
+    so an uncapped refresh holds one thread of the pool `get_identity` shares, retried."""
+
+    def test_a_refresh_call_naming_no_timeout_is_sent_with_the_modules_cap(self):
+        """The transport's own behaviour, not its signature: the cap reaches `session.request`."""
+        session = _RecordingSession()
+
+        CappedRefreshRequest(session=session)("https://oauth2.googleapis.com/token", "POST")
+
+        assert session.timeouts == [PLAY_HTTP_TIMEOUT_SECONDS]
+
+    def test_a_caller_that_names_its_own_timeout_still_wins(self):
+        """The cap is a default and never an override: google-auth may pass a shorter one."""
+        session = _RecordingSession()
+
+        CappedRefreshRequest(session=session)("https://oauth2.googleapis.com/token", "POST",
+                                              None, None, 1.5)
+
+        assert session.timeouts == [1.5]
+
+    async def test_the_read_refreshes_a_stale_credential_through_the_capped_transport(self):
+        """The wiring: a bare `Request()` here would carry google-auth's 120 s instead."""
+        credential = _RefreshingCredential()
+        reader = _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_ACTIVE",
+                                                            expiry=UNEXPIRED)),
+                              credential=credential)
+
+        assert await _read_through(reader) is not None
+        assert [type(one) for one in credential.transports] == [CappedRefreshRequest]
 
 
 class TestAZoneLessStampIsClassifiedRatherThanRaised:

@@ -231,6 +231,17 @@ class PubSubPushTokens:
             raise NotificationRejected(stage=str(reason))
 
 
+class CappedRefreshRequest(google.auth.transport.requests.Request):
+    """The credential refresh transport, capped at this module's own timeout.
+    `Request.__call__` defaults to 120 s and `jwt_grant` passes no timeout of its own, so an
+    uncapped refresh holds one thread of the pool `get_identity` shares for minutes, retried."""
+
+    def __call__(self, url, method="GET", body=None, headers=None,
+                 timeout=PLAY_HTTP_TIMEOUT_SECONDS, **kwargs):
+        """One capped refresh call; an explicit `timeout` from the library still wins."""
+        return super().__call__(url, method, body, headers, timeout, **kwargs)
+
+
 class PlayDeveloperSubscriptions:
     """The `purchases.subscriptionsv2.get` read, signed per call with this deployment's credential."""
 
@@ -376,8 +387,9 @@ class PlayDeveloperSubscriptions:
         A refused refresh leaves as `GoogleAuthError`, which both entry points catch."""
         if not self._credential.valid:
             # `refresh` is synchronous and can block on a token fetch, so it never runs on the loop.
-            await run_in_threadpool(self._credential.refresh,
-                                    google.auth.transport.requests.Request())
+            # Capped like the httpx client and the JWKS client: this is the one call that holds a
+            # real OS thread, and google-auth's own default would hold it for 120 s per attempt.
+            await run_in_threadpool(self._credential.refresh, CappedRefreshRequest())
         # Escaping confines each value to one segment, except dots, which both entry points refuse.
         return await self._client.get(
             PLAY_URL.format(package_name=quote(package_name, safe=""),
