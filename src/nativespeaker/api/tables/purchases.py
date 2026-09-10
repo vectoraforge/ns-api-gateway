@@ -75,7 +75,9 @@ class SubscriptionEvent(SQLModel, table=True):
     subscription_id: UUID = Field(foreign_key="core.subscriptions.id")
     # Plain text, not an enum: a store type this build does not know is recorded, never refused.
     event_type: str = Field()
-    notification_uuid: str = Field(unique=True)
+    # Deliberately not `unique=True`: the table's rule is the migration's own `NOT NULL UNIQUE`,
+    # and `is_unique_violation` is what reads its refusal.
+    notification_uuid: str = Field()
     old_tier_id: str | None = Field(default=None, foreign_key="core.access_tiers.id")
     new_tier_id: str | None = Field(default=None, foreign_key="core.access_tiers.id")
     created_at: datetime = Field(sa_type=DateTimeType)

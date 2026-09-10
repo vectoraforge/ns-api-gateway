@@ -29,7 +29,8 @@ class AuthChallenge(SQLModel, table=True):
     # Logs correlate on this row id; the public `challenge_id` below is never logged.
     id: UUID = Field(default_factory=uuid7, primary_key=True)
     # A secret capability handle: body-only transport, never in a URL, a log, a trace, or error text.
-    challenge_id: str = Field(unique=True)
+    # Deliberately not `unique=True`: the table's rule is the migration's own `NOT NULL UNIQUE`.
+    challenge_id: str = Field()
     operation: AuthOperation = Field(sa_type=AuthOperationType)
     # Exactly one of this and the pre-auth pair below is populated.
     bound_external_identity_id: UUID | None = Field(default=None,

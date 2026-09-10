@@ -4,6 +4,7 @@ mirrored by nothing -- a `create_all` bootstrap would build a database the inven
 """
 from uuid import UUID, uuid7
 
+from sqlalchemy import UniqueConstraint
 from sqlalchemy import inspect as sa_inspect
 from sqlmodel import SQLModel
 
@@ -37,6 +38,24 @@ class TestTheMetadataDeclaresNoIndex:
                     for name, table in TABLES.items() if table.indexes}
 
         assert declared == {}
+
+
+class TestTheMetadataDeclaresNoUniquenessRule:
+    """WR-41. `Field(unique=True)` files a `UniqueConstraint` and no `Index`, so the case above
+    walked past three of them; the migration is the only place a uniqueness rule is stated."""
+
+    def test_no_mapped_table_declares_one(self):
+        declared = sorted(f"{name}.{column.name}"
+                          for name, table in TABLES.items()
+                          for constraint in table.constraints
+                          if isinstance(constraint, UniqueConstraint)
+                          for column in constraint.columns)
+
+        assert declared == []
+
+    def test_the_constraints_are_there_to_walk_control(self):
+        """The control: a walk that saw no constraint at all would pass the case above."""
+        assert any(table.constraints for table in TABLES.values())
 
 
 class TestTheMetadataDeclaresNoDeleteAction:
