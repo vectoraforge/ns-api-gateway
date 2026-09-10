@@ -16,16 +16,26 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
+from nativespeaker.api.auth.store_notifications import RestoredSubscription
 from nativespeaker.api.crud.grants import (
     ActivationOutcome,
     GrantsDB,
     _effective_grants_statement,
     _usage_statement,
 )
+from nativespeaker.api.services.restore import RestoreService
 from nativespeaker.api.services.subscriptions import SubscriptionsService
+from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
 from nativespeaker.api.tables.grants import FREE_GRANT_SOURCES, AccessGrant, AccessGrantSource
 from nativespeaker.api.tables.identities import NativeClaimProvider
-from schema.helpers import insert_grant, insert_tier, insert_usage, insert_user
+from schema.helpers import (
+    insert_grant,
+    insert_subscription,
+    insert_tier,
+    insert_usage,
+    insert_user,
+)
+from schema.test_restore_race import _ScriptedAppStore, identity_of
 from schema.test_subscription_ingestion import _clean, _notification
 
 pytestmark = pytest.mark.schema
@@ -996,3 +1006,112 @@ class TestTheSubscriptionWriterAddsNoThirdLockTier:
         """The control: a writer that issued nothing would satisfy both counts above vacuously."""
         assert writes(ingestion_statements["statements"])
         assert writes(unattributed_statements["statements"])
+
+
+# The restore, captured on the same terms as the four above and never from a mirrored literal.
+
+
+@contextlib.asynccontextmanager
+async def _restore_move_run(schema_db_uri: str):
+    """Drive RestoreService.restore once for a move, recording every statement the writer issues.
+    A move is the one restore that names two accounts, so it is the one that can order two ways."""
+    setup = await asyncpg.connect(schema_db_uri)
+    try:
+        tier_id = await insert_tier(setup)
+        old_owner = await insert_user(setup)
+        destination = await insert_user(setup)
+        external_id = f"restore-locks-{uuid.uuid4().hex[:12]}"
+        subscription_id = await insert_subscription(setup, external_id=external_id,
+                                                    tier_id=tier_id, user_id=old_owner)
+        # One held grant with its usage row in each account, so both tiers have a real row to take
+        # and the usage tier below is counted per grant rather than per account.
+        for user_id, source, names in ((old_owner, "subscription", subscription_id),
+                                       (destination, "manual", None)):
+            grant_id = await insert_grant(setup, user_id=user_id, tier_id=tier_id, source=source,
+                                          subscription_id=names)
+            await insert_usage(setup, grant_id=grant_id)
+            await setup.execute("UPDATE core.access_grants SET starts_at = $2, ends_at = $3"
+                                " WHERE id = $1", grant_id,
+                                datetime.now(UTC) - timedelta(hours=1),
+                                datetime.now(UTC) + timedelta(days=30))
+    finally:
+        await setup.close()
+
+    engine = create_async_engine(schema_db_uri.replace(_ASYNCPG_PREFIX, _SQLALCHEMY_PREFIX, 1))
+    recorded: list[str] = []
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def record(conn, cursor, statement, parameters, context, executemany):  # noqa: ARG001
+        recorded.append(" ".join(statement.split()))
+
+    evaluated_at = datetime.now(UTC)
+    proof = RestoredSubscription(provider=PurchaseProvider.apple, external_id=external_id,
+                                 product_id="com.nativespeaker.subscription.monthly",
+                                 tier_id=tier_id, attribution_token=None,
+                                 status=SubscriptionStatus.active,
+                                 purchased_at=evaluated_at - timedelta(days=30),
+                                 expires_at=evaluated_at + timedelta(days=30),
+                                 grace_period_expires_at=None)
+    factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            # Everything above is setup; only what the restore itself issues is this fixture's subject.
+            recorded.clear()
+            await RestoreService(db=session, evaluated_at=evaluated_at,
+                                 app_store=_ScriptedAppStore(proof),
+                                 # Never read: this run names the Apple store.
+                                 play=None,
+                                 package_name="com.nativespeaker.app").restore(
+                                     identity_of(destination), PurchaseProvider.apple,
+                                     "a-signed-transaction-the-scripted-seam-accepts")
+            await session.commit()
+        yield {"statements": list(recorded)}
+    finally:
+        await engine.dispose()
+        cleanup = await asyncpg.connect(schema_db_uri)
+        try:
+            await _clean(cleanup, user_id=None, tier_id=tier_id)
+            for user_id in (old_owner, destination):
+                await cleanup.execute("DELETE FROM core.users WHERE id = $1", user_id)
+            await cleanup.execute("DELETE FROM core.access_tiers WHERE id = $1", tier_id)
+        finally:
+            await cleanup.close()
+
+
+@pytest_asyncio.fixture
+async def move_statements(_schema_db_uri):
+    """The restore driven as a move, which is the only writer D-08 gives two accounts to lock."""
+    async with _restore_move_run(_schema_db_uri) as run:
+        yield run
+
+
+@pytest.mark.asyncio
+class TestTheRestoreLocksBothAccountsInOneAscendingStatement:
+    """WR-80, D-08. The move is the one writer that names two accounts, so it is the one that can
+    take the grant tier in two orders. Two orders between two movers is the deadlock, and the
+    single ascending statement is what prevents it -- proven from the statements it emits."""
+
+    async def test_the_move_takes_the_grant_tier_first_then_the_usage_rows(self, move_statements):
+        taken = locking(move_statements["statements"])
+        assert [relations_of(statement) for statement in taken] == [["core.access_grants"],
+                                                                    ["core.user_monthly_usage"],
+                                                                    ["core.user_monthly_usage"]]
+        # The ORDER BY is the lock order itself, not presentation, so it is asserted with the tier.
+        assert "ORDER BY core.access_grants.id ASC" in taken[0]
+
+    async def test_both_accounts_grant_rows_are_taken_in_one_statement(self, move_statements):
+        """Two grant-tier statements are two orders, whatever each one of them orders by."""
+        taken = locking(move_statements["statements"])
+        grant_tier = [statement for statement in taken if "core.access_grants" in statement]
+        assert len(grant_tier) == 1
+        assert "core.access_grants.user_id IN (" in grant_tier[0]
+
+    async def test_the_move_adds_no_third_lock_tier(self, move_statements):
+        """Two, and never a third: a restore that locks the subscription row fails here."""
+        taken = [relation for statement in locking(move_statements["statements"])
+                 for relation in relations_of(statement)]
+        assert set(taken) == {"core.access_grants", "core.user_monthly_usage"}
+
+    async def test_the_move_wrote_something(self, move_statements):
+        """The control: a restore that issued nothing would satisfy every count above vacuously."""
+        assert writes(move_statements["statements"])
