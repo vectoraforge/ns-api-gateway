@@ -2,8 +2,9 @@
 A field that declares either states a second version of the schema, and `SQLModel.metadata` is
 mirrored by nothing -- a `create_all` bootstrap would build a database the inventory suite fails on.
 """
-from uuid import UUID, uuid7
+from uuid import uuid7
 
+import sqlalchemy
 from sqlalchemy import UniqueConstraint
 from sqlalchemy import inspect as sa_inspect
 from sqlmodel import SQLModel
@@ -24,9 +25,19 @@ _MAPPED_TABLES = tuple(sorted(
      and getattr(exported, "__table__", None) is not None),
     key=lambda model: model.__name__))
 
-_UUID_KEYED_TABLES = tuple(model for model in _MAPPED_TABLES
-                           if "id" in model.model_fields
-                           and model.model_fields["id"].annotation is UUID)
+def _mints_a_uuid_key(model) -> bool:
+    """Selected on the mapped column, never on the annotation. WR-124: the filter read
+    `model_fields["id"].annotation is UUID`, and the idiomatic server-shaped spelling
+    `id: UUID | None = Field(default=None, primary_key=True)` annotates `UUID | None` -- so the
+    one spelling the unminted-key bug arrives in was the one dropped from the walk."""
+    columns = list(model.__table__.primary_key.columns)
+    # Named `id`, so `UserMonthlyUsage`'s `grant_id` -- a UUID key this package never mints, because
+    # it is the grant's own id -- stays out rather than reaching a field that does not exist.
+    return (len(columns) == 1 and columns[0].name == "id"
+            and isinstance(columns[0].type, sqlalchemy.Uuid))
+
+
+_UUID_KEYED_TABLES = tuple(model for model in _MAPPED_TABLES if _mints_a_uuid_key(model))
 
 
 class TestTheMetadataDeclaresNoIndex:
@@ -100,8 +111,12 @@ class TestEveryUuidPrimaryKeyMintsItsOwnValue:
         assert unminted == []
 
     def test_the_walk_sees_the_tables_control(self):
-        """The control: an empty walk would pass the case above without reading a field."""
-        assert {model.__name__ for model in _UUID_KEYED_TABLES} >= {"Chat", "Message", "User"}
+        """The control: an empty walk would pass the case above without reading a field, and three
+        names would leave six of the nine unprotected -- which is how WR-124 stayed invisible."""
+        assert {model.__name__ for model in _UUID_KEYED_TABLES} == {
+            "AccessGrant", "AuthChallenge", "Chat", "ExternalIdentity", "Message",
+            "StorePurchase", "Subscription", "SubscriptionEvent", "User",
+        }
 
 
 class TestTheOnlyRelationshipIsTheOneAQueryEagerLoads:
