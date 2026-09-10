@@ -151,14 +151,17 @@ def anonymous_firebase_credential(_app_lifespan, _app_config):
         f"?key={_identity_toolkit_key(_app_config)}",
         json={"returnSecureToken": True},
     )
-    resp.raise_for_status()
-    data = resp.json()
-    # Subscripting rather than .get(): if returnSecureToken were ever ignored, this fails loudly.
-    local_id = data["localId"]
+    local_id = None
+    # Opened where the user starts existing: signUp has already minted it by the time the body parses.
     try:
+        resp.raise_for_status()
+        data = resp.json()
+        # Subscripting rather than .get(): if returnSecureToken were ever ignored, this fails loudly.
+        local_id = data["localId"]
         yield data["idToken"], local_id
     finally:
-        auth.delete_user(local_id, app=admin_app)
+        if local_id is not None:
+            auth.delete_user(local_id, app=admin_app)
 
 
 def _google_id_token() -> str:
@@ -196,14 +199,12 @@ def google_linked_firebase_credential(_app_lifespan, _app_config):
     signup = httpx.post(f"https://identitytoolkit.googleapis.com/v1/accounts:signUp"
                         f"?key={api_key}",
                         json={"returnSecureToken": True})
-    signup.raise_for_status()
-    anonymous = signup.json()
-    local_id = anonymous["localId"]
-
-    # The try opens where the user starts existing, not where it is yielded: the link below is the
-    # step most likely to fail -- it is the one depending on three hand-provisioned secrets -- and
-    # the project is shared, so a user abandoned here is permanent and one accumulates per run.
+    local_id = None
+    # Opened where the user starts existing, parse included: an abandoned user here is permanent.
     try:
+        signup.raise_for_status()
+        anonymous = signup.json()
+        local_id = anonymous["localId"]
         link = httpx.post(f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp"
                           f"?key={api_key}",
                           json={"postBody": f"id_token={google_id_token}&providerId=google.com",
@@ -216,7 +217,8 @@ def google_linked_firebase_credential(_app_lifespan, _app_config):
         assert linked["localId"] == local_id
         yield linked["idToken"], local_id
     finally:
-        auth.delete_user(local_id, app=admin_app)
+        if local_id is not None:
+            auth.delete_user(local_id, app=admin_app)
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
