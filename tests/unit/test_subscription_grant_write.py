@@ -308,7 +308,8 @@ class TestALapsedTermIsNeverBroughtBackByIngestion:
 
         outcome = await _write(session, [])
 
-        assert (outcome, session.added) == (WriteOutcome.applied, [])
+        # `replayed`, because this write ended no grant and inserted none.
+        assert (outcome, session.added) == (WriteOutcome.replayed, [])
 
     async def test_the_winning_subscriptions_live_grant_is_left_alone(self):
         """A later notification about the newest-wins loser must not take the winner's grant."""
@@ -320,7 +321,7 @@ class TestALapsedTermIsNeverBroughtBackByIngestion:
 
         outcome = await _write(session, [winner])
 
-        assert (outcome, session.added) == (WriteOutcome.applied, [])
+        assert (outcome, session.added) == (WriteOutcome.replayed, [])
         assert (winner.status, winner.ends_at) == (AccessGrantStatus.active, TERM_END)
 
     async def test_a_first_verified_purchase_still_inserts_control(self):

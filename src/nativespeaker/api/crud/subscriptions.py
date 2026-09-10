@@ -365,7 +365,8 @@ class SubscriptionsDB:
         # This term lapsed and this caller may not bring it back, so no grant is ended and none inserted.
         if (entitled and not held and not may_reactivate
                 and await self.grants_db.has_prior_subscription_grant(subscription_id)):
-            return WriteOutcome.applied
+            # Nothing ended and nothing inserted, which is what `replayed` names.
+            return WriteOutcome.replayed
 
         # Every grant the destination holds goes, the free one too: `ix_access_grants_one_active_per_user` allows one.
         # The old owner's grant for another subscription is not this write's to end.
