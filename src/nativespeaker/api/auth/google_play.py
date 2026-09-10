@@ -1,6 +1,8 @@
 """The Google Play integration: the Pub/Sub push token, the RTDN body, and the live subscription read.
 Log labels come from a closed set: the purchase token, the push token and every Play value are excluded."""
+import asyncio
 import base64
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
@@ -40,6 +42,10 @@ PLAY_URL = ("https://androidpublisher.googleapis.com/androidpublisher/v3/applica
 
 # A per-request option because every call sends one bearer and reads one subscription.
 PLAY_HTTP_TIMEOUT_SECONDS = 8
+
+# The floor under the push verifier's rebuild rate. The rebuild runs before any credential is
+# checked on a route outside the gateway's JWT policy, so this is what bounds its cost per burst.
+PUSH_VERIFIER_REBUILD_INTERVAL_SECONDS = 30.0
 
 # The two Play statuses that say this purchase token is gone, which no later attempt can change.
 _GONE_STATUSES = frozenset({404, 410})
@@ -212,16 +218,31 @@ class PubSubPushTokens:
     # The declared seam, never the concrete class: this class reads nothing of the verifier but
     # `verify`, and a Protocol nothing is typed against catches no wrong-shaped double at all.
     def __init__(self, *, verifier: TokenVerifier | None,
-                 build: Callable[[], TokenVerifier | None] | None = None) -> None:
+                 build: Callable[[], TokenVerifier | None] | None = None,
+                 rebuild_interval_seconds: float = PUSH_VERIFIER_REBUILD_INTERVAL_SECONDS) -> None:
         self._verifier = verifier
         self._build = build
+        self._rebuild_lock = asyncio.Lock()
+        self._rebuild_interval = rebuild_interval_seconds
+        # Zero and not the clock: the first delivery after a failed warm-up rebuilds at once.
+        self._next_rebuild = 0.0
 
     async def verify(self, bearer: str) -> None:
         """Accept one Google-signed push token, or raise."""
-        if self._verifier is None and self._build is not None:
+        build = self._build
+        if self._verifier is None and build is not None:
             # Off the loop, because the builder fetches Google's key set: an unreachable endpoint
             # at boot is transient, and an unconfigured deployment answers None again for free.
-            self._verifier = await run_in_threadpool(self._build)
+            # Serialized and rate-floored, because this runs before the bearer is examined at all:
+            # unguarded, one burst of junk tokens spends the whole threadpool `get_identity` shares
+            # on its own concurrent fetches, and re-pays that cost for as long as Google is away.
+            async with self._rebuild_lock:
+                # Re-read under the lock: a rival that just built one leaves nothing to do here.
+                if self._verifier is None and time.monotonic() >= self._next_rebuild:
+                    # Stamped before the fetch, so the callers held up behind it do not each
+                    # inherit the right to make one of their own the moment it fails.
+                    self._next_rebuild = time.monotonic() + self._rebuild_interval
+                    self._verifier = await run_in_threadpool(build)
         if self._verifier is None:
             raise Unavailable(stage="google_push_verify")
 

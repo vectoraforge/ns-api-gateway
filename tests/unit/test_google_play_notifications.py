@@ -2,6 +2,7 @@
 A throwaway keypair mints the push tokens and an `httpx.MockTransport` answers the Play read.
 Untested by construction: only whether Google's live tokens and answers match Google's own shapes."""
 import ast
+import asyncio
 import base64
 import inspect
 import json
@@ -1071,3 +1072,44 @@ class TestAWarmUpFailureIsRetriedRatherThanCachedForThePodsLife:
         with pytest.raises(Unavailable):
             await tokens.verify(_push_token())
         assert len(jwks) == 0
+
+
+class TestTheRebuildIsSerializedAndFloored:
+    """WR-02: the rebuild runs before the bearer is examined at all, on one of the two routes
+    outside the gateway's JWT policy, so unguarded one burst pays a blocking fetch per delivery."""
+
+    async def test_one_burst_of_deliveries_shares_a_single_rebuild(self, jwks):
+        """Every caller reaches the guard before the first fetch returns, so only the lock parts them."""
+        jwks.fetch_delay = 0.02
+        tokens = PubSubPushTokens(verifier=None,
+                                  build=lambda: build_google_push_verifier(_play_config()))
+
+        await asyncio.gather(*(tokens.verify(_push_token()) for _ in range(8)))
+
+        assert len(jwks) == 1, "one rebuild for the burst, and not one per delivery"
+
+    async def test_a_rebuild_that_failed_is_not_retried_within_the_interval(self, jwks):
+        """The rate floor: nothing else records that a rebuild was just attempted and failed."""
+        jwks.error = urllib.error.URLError("the JWKS endpoint is unreachable")
+        tokens = PubSubPushTokens(verifier=None,
+                                  build=lambda: build_google_push_verifier(_play_config()))
+
+        for _ in range(5):
+            with pytest.raises(Unavailable):
+                await tokens.verify(_push_token())
+
+        assert len(jwks) == 1, "the first delivery's attempt, and none of the four behind it"
+
+    async def test_the_interval_elapsing_still_recovers_the_route(self, jwks):
+        """WR-41's intent, kept: the floor delays the retry and never cancels it."""
+        jwks.error = urllib.error.URLError("the JWKS endpoint is unreachable")
+        tokens = PubSubPushTokens(verifier=None,
+                                  build=lambda: build_google_push_verifier(_play_config()),
+                                  rebuild_interval_seconds=0.0)
+
+        with pytest.raises(Unavailable):
+            await tokens.verify(_push_token())
+        jwks.error = None
+
+        assert await tokens.verify(_push_token()) is None
+        assert len(jwks) == 2, "the refused attempt, then the one that recovered the route"
