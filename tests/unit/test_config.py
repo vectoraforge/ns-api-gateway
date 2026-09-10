@@ -1,3 +1,4 @@
+import contextlib
 import inspect
 import os
 import re
@@ -19,6 +20,7 @@ from sqlalchemy.exc import StatementError
 from nativespeaker.api.app.lifespan import (
     _DB_POOL_RECYCLE_SECONDS,
     _play_credential,
+    _prove_database_reachable,
     build_app_store_verifier,
     build_db_engine,
     build_jwt_verifier,
@@ -452,6 +454,39 @@ class TestAFailedStatementCarriesNoBoundParameterIntoTheLogs:
         assert "CHALLENGE-HANDLE-SECRET" not in str(failure)
         # The SQL text is deliberately kept: it names columns, and an operator needs it.
         assert "core.auth_challenges" in str(failure)
+
+
+class _ReachableEngine:
+    """A stand-in for the one engine: `connect()` is the only member the boot check touches."""
+
+    def connect(self):
+        return contextlib.nullcontext()
+
+
+class TestBootProvesTheDatabaseBeforeThePodReportsReady:
+    """WR-21. `create_async_engine` connects lazily and `/health/ready` answers a static 200, so a
+    rollout carrying a wrong DB_HOST or a rotated DB_PASSWORD passed both probes, completed, and
+    terminated the last working pod. Fatal for the reason `build_jwt_verifier` is fatal."""
+
+    _UNREACHABLE = DatabaseConfig(host="127.0.0.1", port=1, user="u",
+                                  password="pw-SECRET", name="n")  # ty: ignore[invalid-argument-type]
+
+    async def test_an_unreachable_database_stops_boot_and_names_itself(self):
+        with pytest.raises(RuntimeError, match="database unreachable at 127.0.0.1:1/n"):
+            await _prove_database_reachable(build_db_engine(self._UNREACHABLE), self._UNREACHABLE)
+
+    async def test_the_failure_it_raises_carries_no_credential(self):
+        """`DatabaseConfig.url` renders the password, so the message names host, port and database."""
+        with pytest.raises(RuntimeError) as failure:
+            await _prove_database_reachable(build_db_engine(self._UNREACHABLE), self._UNREACHABLE)
+
+        assert "pw-SECRET" not in str(failure.value)
+
+    async def test_a_reachable_database_lets_boot_continue(self):
+        """The control: a check that raised unconditionally would pass both cases above."""
+        engine = _ReachableEngine()
+
+        assert await _prove_database_reachable(engine, self._UNREACHABLE) is None  # ty: ignore[invalid-argument-type]
 
 
 class TestTheLoggingLevelIsAPerDeploymentLever:

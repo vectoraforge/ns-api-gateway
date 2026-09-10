@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -47,6 +48,11 @@ logger = structlog.get_logger()
 #: Well inside every managed-Postgres and NAT idle timeout this service could sit behind, so a
 #: connection is retired before the far end drops it rather than after.
 _DB_POOL_RECYCLE_SECONDS = 1800
+
+#: The cap on the one boot connection below. asyncpg's own default is 60 seconds and the chart
+#: ships no `startupProbe`, so an unbounded connect to a blackholed host would let the liveness
+#: probe kill the pod before boot named the reason it was failing.
+_DB_CONNECT_TIMEOUT_SECONDS = 8.0
 
 # Two arms and no case transform, so the two library members that skip verification stay unreachable.
 _STORE_ENVIRONMENTS = {StoreEnvironment.sandbox: Environment.SANDBOX,
@@ -136,6 +142,25 @@ def build_db_engine(db: DatabaseConfig) -> AsyncEngine:
                                hide_parameters=True)
 
 
+async def _prove_database_reachable(engine: AsyncEngine, db: DatabaseConfig) -> None:
+    """One connection, opened and dropped, so the pod is not Ready before anything reached Postgres."""
+    # Fatal, like `build_jwt_verifier` and unlike the two store builders: a pod that cannot reach
+    # Postgres has nothing to be Ready for, and `/health/ready` answers a static 200 that will never
+    # say so. `create_async_engine` connects lazily, so without this a rollout carrying a wrong
+    # DB_HOST or a rotated DB_PASSWORD passes both probes, completes its rolling update, and
+    # terminates the last working pod. Boot-time only: a blip afterwards never reaches this line, so
+    # a running pod is never restarted by it and the rollout simply halts on the previous ReplicaSet.
+    try:
+        async with asyncio.timeout(_DB_CONNECT_TIMEOUT_SECONDS):
+            async with engine.connect():
+                pass
+    except Exception as failure:
+        # Host and port, never the URL: `DatabaseConfig.url` renders the password. Measured: none of
+        # the three real failures (refused, wrong password, unreachable) carries it in its own text.
+        raise RuntimeError(f"database unreachable at {db.host}:{db.port}/{db.name}: "
+                           f"{type(failure).__name__}: {failure}") from failure
+
+
 def _play_credential():
     """ADC scoped for the Play Developer API, or `None` if the environment supplies none."""
     try:
@@ -222,6 +247,7 @@ async def lifespan(app: FastAPI):
             products=config.google_play.products)
 
         db_engine = build_db_engine(config.db)
+        await _prove_database_reachable(db_engine, config.db)
         app.state.session_factory = async_sessionmaker(db_engine, class_=SQLModelAsyncSession,
                                                        expire_on_commit=False)
 
