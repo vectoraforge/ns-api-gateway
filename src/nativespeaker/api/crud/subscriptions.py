@@ -363,8 +363,10 @@ class SubscriptionsDB:
         period = monthly_period_for(evaluated_at)
         # The allowance is a UTC calendar month's, not a store term's, so a supersession inside one month carries it.
         carried = 0
-        # This account's own rows only: on a move `superseded` also holds the old owner's.
-        mine = [grant for grant in superseded if grant.user_id == user_id]
+        # This account's own paid rows only: on a move `superseded` also holds the old owner's, and
+        # `08-webhook-app-store.md`:38 forbids a free tier's count ever reaching the paid counter.
+        mine = [grant for grant in superseded
+                if grant.user_id == user_id and grant.source is AccessGrantSource.subscription]
         if len(mine) > 1:
             # A tripwire, not a tie-break: `ix_access_grants_one_active_per_user` leaves at most one
             # of them for this user, and keeping the last row's count would erase a higher one and

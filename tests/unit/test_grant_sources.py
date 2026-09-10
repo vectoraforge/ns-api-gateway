@@ -273,8 +273,8 @@ class TestTheSubscriptionGrantHasExactlyOneWriter:
     def test_the_one_site_is_inside_the_crud_subscription_writer(self):
         """Not merely in the right module: in the one function the two lock tiers are taken for."""
         writer = _function(CRUD_SUBSCRIPTIONS.read_text(), WRITER_SUBSCRIPTION)
-        # Two: the held-term filter, and the one construction of the grant row.
-        assert sum(_names_the_member(node, MEMBER_SUBSCRIPTION) for node in ast.walk(writer)) == 2
+        # Three: the held-term filter, WR-60's carry filter, and the one construction of the grant row.
+        assert sum(_names_the_member(node, MEMBER_SUBSCRIPTION) for node in ast.walk(writer)) == 3
 
     def test_only_the_recorded_modules_name_the_member_at_all(self):
         naming = {path.relative_to(SRC).as_posix() for path in _modules()
