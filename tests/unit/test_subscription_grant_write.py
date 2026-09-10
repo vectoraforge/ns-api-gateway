@@ -242,6 +242,17 @@ class TestTheMonthsCountSurvivesATermChangeInsideIt:
 
         assert _minted(session) == [45]
 
+    async def test_a_free_grants_count_is_never_carried_into_the_paid_counter(self):
+        """`08-webhook-app-store.md`:38 seeds the paid counter at zero, so the month a buyer spent
+        on the free tier is not a debt their first paid term inherits."""
+        free = _grant(source=AccessGrantSource.anonymous_device_grant, subscription_id=None,
+                      ends_at=None, tier_id=FREE_TIER_ID)
+        session = _StubSession(_usage(free, monthly_period=THIS_MONTH, monthly_used=45))
+
+        await _write(session, [free])
+
+        assert _minted(session) == [0]
+
     async def test_a_supersession_from_an_earlier_month_still_starts_at_zero_control(self):
         """The control: the rule is the calendar month, so a renewal across the boundary is fresh
         and 43-04's ratified `its fresh usage row` still describes what a renewal does."""
