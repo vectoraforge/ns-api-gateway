@@ -586,12 +586,21 @@ class _Account:
             user_id=self.user_id, identity_row=self.identity_row,
             tier_id=self.tier_id, evaluated_at=self.evaluated_at)
 
-    async def activate_anonymous(self):
-        """The other free-grant writer, on the same seed, the same session and the same instant."""
+    async def activate_anonymous(
+            self, claim_platform: NativeClaimProvider = NativeClaimProvider.ios_devicecheck):
+        """The other free-grant writer, on the same seed, the same session and the same instant.
+        The platform is a parameter because 06 step 7 refuses material from the other one."""
         return await GrantsDB(self.session).activate_anonymous_device_grant(
             user_id=self.user_id, identity_row=self.identity_row,
-            claim_platform=NativeClaimProvider.ios_devicecheck,
+            claim_platform=claim_platform,
             tier_id=self.tier_id, evaluated_at=self.evaluated_at)
+
+    async def claim_platform(self) -> str | None:
+        """The pin the identity row carries, read back as the column's own text."""
+        pinned = await self.session.exec(text(
+            "SELECT native_claim_platform::text FROM core.external_identities "
+            "WHERE user_id = :user_id").bindparams(user_id=self.user_id))
+        return pinned.one()[0]
 
     async def grants(self) -> list[tuple[str, str]]:
         """Every grant row of this account as a sorted (source, status) pair list."""
@@ -761,6 +770,20 @@ class TestTheAnonymousWriterNamesWhyItRefused:
         async with _account_holding(_schema_db_uri, (_Row("anonymous_device_grant"),),
                                     provider="anonymous") as account:
             assert await account.activate_anonymous() is ActivationOutcome.lost_race
+
+    async def test_material_from_the_other_platform_is_refused_once_the_pin_is_set(
+            self, _schema_db_uri):
+        """06 step 7: the pin is immutable, so the other platform's material is refused and
+        restamps nothing. The refusal, not a lost race: with the guard gone this same state
+        answers `lost_race`, because the first claim's row is an active `anonymous_device_grant`."""
+        async with _account_holding(_schema_db_uri, (), provider="anonymous") as account:
+            assert await account.activate_anonymous() is ActivationOutcome.activated
+
+            refused = await account.activate_anonymous(NativeClaimProvider.android_play_integrity)
+
+            assert refused is ActivationOutcome.refused
+            assert await account.grants() == [("anonymous_device_grant", "active")]
+            assert await account.claim_platform() == "ios_devicecheck"
 
 
 @pytest.mark.asyncio
