@@ -731,6 +731,19 @@ class TestTheCommittedEnvExampleCannotCrashABoot:
         assert all(key.isupper() for key in shipped)
 
 
+class TestTheAdcPlaceholderCannotShadowAGcloudSession:
+    """WR-03. An explicit path outranks the well-known session file, so an uncommented
+    placeholder turned a working credential into a 503 on every account-creation route."""
+
+    def test_the_adc_path_ships_commented_out(self):
+        path = REPOSITORY_ROOT / ".env.example"
+
+        assert [line for line in path.read_text().splitlines()
+                if line.startswith("GOOGLE_APPLICATION_CREDENTIALS=")] == []
+        # The control: the placeholder is still shipped, so the assertion above is not vacuous.
+        assert "GOOGLE_APPLICATION_CREDENTIALS" in _assignments(path)
+
+
 class TestTheDsnSurvivesAPasswordCarryingUrlDelimiters:
     """WR-01. An f-string DSN re-partitioned on `@ / : ? #`, sending the credential to another host."""
 
