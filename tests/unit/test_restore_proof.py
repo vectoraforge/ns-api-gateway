@@ -74,6 +74,17 @@ UNPARSEABLE_STAGE = "play_restore_unparseable"
 # The fixed part of the read path, which every caller-supplied value must be measured against.
 PLAY_TOKENS_PATH = f"/androidpublisher/v3/applications/{PACKAGE_NAME}/purchases/subscriptionsv2/tokens/"
 
+# PostgreSQL's `foreign_key_violation`. The two DEFERRABLE INITIALLY DEFERRED entitlement keys are
+# foreign keys, so this -- never `23505` -- is the code COMMIT evaluates them into.
+DEFERRED_KEY_VIOLATION = "23503"
+
+
+class _Orig(Exception):
+    """The DBAPI exception SQLAlchemy wraps, carrying the one attribute the writer reads."""
+
+    def __init__(self, sqlstate: str) -> None:
+        self.sqlstate = sqlstate
+
 
 @pytest.fixture(scope="module")
 def chain() -> _Chain:
@@ -776,10 +787,13 @@ def race_warnings(monkeypatch) -> list[tuple[str, dict]]:
 class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
     """WR-62: the grant keys are DEFERRABLE INITIALLY DEFERRED, so COMMIT is their only evaluation."""
 
-    async def test_a_violation_at_commit_is_the_lost_race_the_flushes_report(self, race_warnings):
+    async def test_a_deferred_foreign_key_at_commit_is_the_lost_race_the_flushes_report(
+            self, race_warnings):
         """It reached `unhandled_exception` with a full traceback for a state this file's other
         writers report as an ordinary race in one line."""
-        session = _CommittingSession(IntegrityError("COMMIT", {}, Exception("23503")))
+        # The deferred keys' own code, carried on the attribute every classifier reads: an exception
+        # whose code lives only in its message states nothing, and passes whatever the arm does.
+        session = _CommittingSession(IntegrityError("COMMIT", {}, _Orig(DEFERRED_KEY_VIOLATION)))
 
         with pytest.raises(InternalError):
             await _same_account_restore(EVALUATED_AT - timedelta(days=1), session=session)
@@ -788,6 +802,18 @@ class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
         assert (session.commits, session.rollbacks) == (1, 1)
         # The line itself. `InternalError.log_level` is None, so the shared handler writes nothing
         # for the 500: delete this call and the refusal is completely silent to an operator.
+        assert race_warnings == [("restore_grant_race_lost", {"provider": "apple"})]
+
+    async def test_a_violation_carrying_no_readable_code_at_commit_is_the_lost_race_too(
+            self, race_warnings):
+        """Deliberate: every writer already flushed and classified its own statements, so COMMIT
+        evaluates the deferred pair alone and this arm asks the classifier nothing."""
+        session = _CommittingSession(IntegrityError("COMMIT", {}, None))
+
+        with pytest.raises(InternalError):
+            await _same_account_restore(EVALUATED_AT - timedelta(days=1), session=session)
+
+        assert (session.commits, session.rollbacks) == (1, 1)
         assert race_warnings == [("restore_grant_race_lost", {"provider": "apple"})]
 
     async def test_a_restore_that_wins_reports_no_race_control(self, race_warnings):
@@ -922,13 +948,6 @@ class TestTheTermIsReadFromWhateverDecidedTheStatus:
         term check was loosened -- with nothing recording the window, nothing entitles anything."""
         with pytest.raises(RestoreSubscriptionNotEntitled):
             await _grace_restore(None)
-
-
-class _Orig(Exception):
-    """The DBAPI exception SQLAlchemy wraps, carrying the one attribute the writer reads."""
-
-    def __init__(self, sqlstate: str) -> None:
-        self.sqlstate = sqlstate
 
 
 class _AddingSession:
