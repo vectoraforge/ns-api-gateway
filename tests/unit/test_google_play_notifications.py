@@ -586,17 +586,20 @@ class TestTheLineItemCountIsMadeVisible:
         assert play_logs.records("error") == [("google_play_unexpected_line_item_count",
                                                {"count": len(line_items)})]
 
-    async def test_the_restore_read_refuses_the_same_shape(self, play_logs):
-        """The second caller of `_product_of`, which did not exist when this was first filed."""
+    async def test_the_restore_read_refuses_it_as_a_body_it_cannot_read(self, play_logs):
+        """WR-35: the second caller of `_product_of` answers the app, so this count is the 503
+        every other unreadable 2xx earns there and never the webhook's 500."""
         reader = _play_reader(_answering({"subscriptionState": "SUBSCRIPTION_STATE_ACTIVE",
                                           "startTime": PURCHASED_AT.isoformat(),
                                           "lineItems": []}))
 
-        with pytest.raises(InternalError):
+        with pytest.raises(Unavailable) as refusal:
             await reader.read_for_restore(package_name=PACKAGE_NAME,
                                           purchase_token=PURCHASE_TOKEN,
                                           evaluated_at=EVALUATED_AT)
 
+        assert (refusal.value.stage, refusal.value.status) == (RESTORE_UNPARSEABLE_STAGE, 503)
+        # The operator line is unchanged: the count is still named, whichever answer the caller gets.
         assert play_logs.records("error") == [("google_play_unexpected_line_item_count",
                                                {"count": 0})]
 

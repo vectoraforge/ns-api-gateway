@@ -336,8 +336,8 @@ class PlayDeveloperSubscriptions:
     async def read_for_restore(self, *, package_name: str, purchase_token: str,
                                evaluated_at: datetime) -> RestoredSubscription:
         """Read the state of one client-presented purchase token, or raise the refusal it earned."""
-        # Classified here and never by a caught base class, which would turn `UnmappedStoreProduct`
-        # into a 503.
+        # Each refusal is classified here, so this path answers 503 where the webhook answers 500.
+        # `UnmappedStoreProduct` is the one exception, and it is re-raised by name below.
         if self._credential is None:
             raise Unavailable(stage=RESTORE_UNCONFIGURED_STAGE)
         if not package_name or not _names_one_path_segment(package_name):
@@ -370,7 +370,15 @@ class PlayDeveloperSubscriptions:
             # A 2xx this build cannot read is as unusable as no answer at all. The cause is
             # dropped rather than chained: its text carries the Play values this module excludes.
             raise Unavailable(stage=RESTORE_UNPARSEABLE_STAGE) from None
-        product_id, tier_id, expiry = self._product_of(subscription)
+        try:
+            product_id, tier_id, expiry = self._product_of(subscription)
+        except UnmappedStoreProduct:
+            # D-11: an unmapped product is an operator error and stays a 500 on both paths.
+            raise
+        except InternalError:
+            # A line item count this build cannot read is as unusable as a body it cannot parse,
+            # and the webhook's 500 is not an answer this route gives the app.
+            raise Unavailable(stage=RESTORE_UNPARSEABLE_STAGE) from None
         # Google carries no separate grace field, so in grace this expiry is the end of the window.
         in_grace = subscription.subscriptionState == GRACE_STATE
         identifiers = subscription.externalAccountIdentifiers
