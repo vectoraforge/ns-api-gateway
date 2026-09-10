@@ -423,10 +423,10 @@ class TestTheConflictArm:
         recorded = writer.purchases[(PurchaseProvider.apple, external_id)]
         assert refusal.value.log_fields() == {"provider": "apple",
                                               "purchase_id": str(recorded.id)}
-        # The lifecycle key is the Google purchase token on the other path, so it is not admissible.
-        assert external_id not in repr(refusal.value.log_fields())
-        assert TOKEN not in repr(refusal.value.log_fields())
-        assert OTHER_TOKEN not in repr(refusal.value.log_fields())
+        # The message reaches an operator too, and the lifecycle key is the Google purchase token
+        # on the other path, so neither it nor either presented value is admissible in one.
+        for secret in (external_id, TOKEN, OTHER_TOKEN):
+            assert secret not in str(refusal.value)
 
     async def test_a_later_delivery_without_a_token_is_no_conflict(self, session, writer):
         """A notification presenting nothing disagrees with nothing, so an attributed row survives it."""
