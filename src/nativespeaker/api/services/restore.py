@@ -17,6 +17,7 @@ from nativespeaker.api.crud.subscriptions import (
     SubscriptionsDB,
     WriteOutcome,
 )
+from nativespeaker.api.crud.violations import is_unique_violation
 from nativespeaker.api.errors import (
     InternalError,
     RestoreAttributionMismatch,
@@ -172,8 +173,17 @@ class RestoreService:
         # Deliberate commit: the caller reads the sync body, so 200 must mean the rows are durable.
         try:
             await self.session.commit()
-        except IntegrityError:
-            # The two entitlement keys are DEFERRABLE, so this statement is where they are evaluated.
+        except IntegrityError as violation:
+            # The two entitlement keys are DEFERRABLE, so this statement is where they are
+            # evaluated -- and both of them are FOREIGN KEYs, which is the one class a lost race
+            # is never made of. Classified here as every flush already classifies its own.
+            if not is_unique_violation(violation):
+                # A deferred foreign key or a CHECK is a broken invariant, never a race this lost.
+                # Named before the re-raise: `InternalError` logs nothing, so reported as a race
+                # this failure reached no log line at all and repeated on every retry.
+                logger.error("restore_commit_refused",
+                             sqlstate=getattr(violation.orig, "sqlstate", None))
+                raise
             await self._settle(WriteOutcome.lost_race, proof)
 
     def _this_month(self) -> date:

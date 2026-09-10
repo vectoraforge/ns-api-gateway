@@ -802,45 +802,78 @@ def race_warnings(monkeypatch) -> list[tuple[str, dict]]:
     return entries
 
 
-class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
-    """WR-62: the grant keys are DEFERRABLE INITIALLY DEFERRED, so COMMIT is their only evaluation."""
+@pytest.fixture
+def commit_errors(monkeypatch) -> list[tuple[str, dict]]:
+    """A spy on the same logger's error level, for the refusals that are not races at all."""
+    entries: list[tuple[str, dict]] = []
+    monkeypatch.setattr("nativespeaker.api.services.restore.logger.error",
+                        lambda event, **kwargs: entries.append((event, kwargs)))
+    return entries
 
-    async def test_a_deferred_foreign_key_at_commit_is_the_lost_race_the_flushes_report(
-            self, race_warnings):
-        """It reached `unhandled_exception` with a full traceback for a state this file's other
-        writers report as an ordinary race in one line."""
+
+class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
+    """WR-11: COMMIT is the deferred pair's only evaluation, and both of them are FOREIGN KEYs --
+    23503, which is the one class `is_unique_violation` exists to re-raise. Read as a lost race,
+    a deterministic writer bug was retried forever with nothing in any log line naming it."""
+
+    async def test_a_deferred_foreign_key_at_commit_is_not_read_as_a_race(self, race_warnings,
+                                                                          commit_errors):
+        """The cause survives: only the `IntegrityError` names the constraint that refused."""
         # The deferred keys' own code, carried on the attribute every classifier reads: an exception
         # whose code lives only in its message states nothing, and passes whatever the arm does.
         session = _CommittingSession(IntegrityError("COMMIT", {}, _Orig(DEFERRED_KEY_VIOLATION)))
+
+        with pytest.raises(IntegrityError) as refused:
+            await _same_account_restore(EVALUATED_AT - timedelta(days=1), session=session)
+
+        assert refused.value.orig.sqlstate == DEFERRED_KEY_VIOLATION
+        # `get_db` rolls back on the way out, so this arm does not spend a rollback of its own.
+        assert (session.commits, session.rollbacks) == (1, 0)
+        assert race_warnings == []
+
+    async def test_the_refusal_names_the_code_the_constraint_carried(self, race_warnings,
+                                                                      commit_errors):
+        """`InternalError.log_level` is None, so before this line the failure was wholly silent."""
+        session = _CommittingSession(IntegrityError("COMMIT", {}, _Orig(DEFERRED_KEY_VIOLATION)))
+
+        with pytest.raises(IntegrityError):
+            await _same_account_restore(EVALUATED_AT - timedelta(days=1), session=session)
+
+        assert commit_errors == [("restore_commit_refused",
+                                  {"sqlstate": DEFERRED_KEY_VIOLATION})]
+
+    async def test_a_violation_carrying_no_readable_code_is_refused_too(self, race_warnings,
+                                                                        commit_errors):
+        """Fail-closed, exactly as `is_unique_violation` reads it: no code is not a race."""
+        session = _CommittingSession(IntegrityError("COMMIT", {}, None))
+
+        with pytest.raises(IntegrityError):
+            await _same_account_restore(EVALUATED_AT - timedelta(days=1), session=session)
+
+        assert commit_errors == [("restore_commit_refused", {"sqlstate": None})]
+        assert race_warnings == []
+
+    async def test_a_unique_violation_at_commit_is_still_the_lost_race(self, race_warnings,
+                                                                       commit_errors):
+        """The control on the classification: COMMIT flushes too, so a unique index can refuse a
+        write the arms above never reached, and that one code is the race a retry recovers from."""
+        session = _CommittingSession(IntegrityError("COMMIT", {}, _Orig(UNIQUE_VIOLATION)))
 
         with pytest.raises(InternalError):
             await _same_account_restore(EVALUATED_AT - timedelta(days=1), session=session)
 
         # The winner's rows are what a retry reads, so the refused transaction is rolled back first.
         assert (session.commits, session.rollbacks) == (1, 1)
-        # The line itself. `InternalError.log_level` is None, so the shared handler writes nothing
-        # for the 500: delete this call and the refusal is completely silent to an operator.
         assert race_warnings == [("restore_grant_race_lost", {"provider": "apple"})]
+        assert commit_errors == []
 
-    async def test_a_violation_carrying_no_readable_code_at_commit_is_the_lost_race_too(
-            self, race_warnings):
-        """Deliberate: every writer already flushed and classified its own statements, so COMMIT
-        evaluates the deferred pair alone and this arm asks the classifier nothing."""
-        session = _CommittingSession(IntegrityError("COMMIT", {}, None))
-
-        with pytest.raises(InternalError):
-            await _same_account_restore(EVALUATED_AT - timedelta(days=1), session=session)
-
-        assert (session.commits, session.rollbacks) == (1, 1)
-        assert race_warnings == [("restore_grant_race_lost", {"provider": "apple"})]
-
-    async def test_a_restore_that_wins_reports_no_race_control(self, race_warnings):
-        """The control: a line written unconditionally would pass the case above and page on
+    async def test_a_restore_that_wins_reports_neither_control(self, race_warnings, commit_errors):
+        """The control: a line written unconditionally would pass the cases above and page on
         every ordinary restore."""
         recorder, session = await _same_account_restore(EVALUATED_AT - timedelta(days=1))
 
         assert (len(recorder.granted), session.commits) == (1, 1)
-        assert race_warnings == []
+        assert (race_warnings, commit_errors) == ([], [])
 
 
 class TestTheStatusIsReReadUnderTheGrantLocksBeforeAnythingIsWritten:

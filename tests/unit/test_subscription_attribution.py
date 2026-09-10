@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
+from nativespeaker.api.crud.violations import UNIQUE_VIOLATION
 from nativespeaker.api.errors import AttributionConflict, InternalError
 from nativespeaker.api.services.subscriptions import SubscriptionsService
 from nativespeaker.api.tables import (
@@ -812,29 +813,64 @@ def race_warnings(monkeypatch) -> list[tuple[str, dict]]:
     return entries
 
 
+@pytest.fixture
+def commit_errors(monkeypatch) -> list[tuple[str, dict]]:
+    """A spy on the same logger's error level, for the refusals that are not races at all."""
+    entries: list[tuple[str, dict]] = []
+    monkeypatch.setattr("nativespeaker.api.services.subscriptions.logger.error",
+                        lambda event, **kwargs: entries.append((event, kwargs)))
+    return entries
+
+
 @pytest.mark.asyncio
 class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
-    """WR-62: the grant keys are DEFERRABLE INITIALLY DEFERRED, so COMMIT is their only evaluation."""
+    """WR-11: COMMIT is the deferred pair's only evaluation, and both of them are FOREIGN KEYs --
+    23503, which is the one class `is_unique_violation` exists to re-raise. Read as a lost race,
+    a deterministic writer bug was redelivered until retention with nothing naming it anywhere."""
 
-    async def test_a_deferred_foreign_key_at_commit_is_the_lost_race_the_flushes_report(
-            self, writer, race_warnings):
+    async def test_a_deferred_foreign_key_at_commit_is_not_read_as_a_race(
+            self, writer, race_warnings, commit_errors):
+        """The cause survives: only the `IntegrityError` names the constraint that refused."""
         session = _RefusingSession()
         service = _service(session, writer, ORIGINAL_BUYER)
 
-        with pytest.raises(InternalError):
+        with pytest.raises(IntegrityError) as refused:
             await service.ingest(_notification(attribution_token=TOKEN))
 
-        assert session.commits == 1
-        assert session.rollbacks == 1
-        # The line itself. `InternalError.log_level` is None, so the shared handler writes nothing
-        # for the 500: delete this call and the refusal is completely silent to an operator.
-        assert race_warnings == [("store_notification_race_lost", {"provider": "apple"})]
+        assert refused.value.orig.sqlstate == DEFERRED_KEY_VIOLATION
+        # `get_db` rolls back on the way out, so this arm does not spend a rollback of its own.
+        assert (session.commits, session.rollbacks) == (1, 0)
+        assert race_warnings == []
 
-    async def test_a_violation_carrying_no_readable_code_at_commit_is_the_lost_race_too(
-            self, writer, race_warnings):
-        """Deliberate: every writer already flushed and classified its own statements, so COMMIT
-        evaluates the deferred pair alone and this arm asks the classifier nothing."""
+    async def test_the_refusal_names_the_code_the_constraint_carried(
+            self, writer, race_warnings, commit_errors):
+        """`InternalError.log_level` is None, so before this line the failure was wholly silent."""
+        session = _RefusingSession()
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        with pytest.raises(IntegrityError):
+            await service.ingest(_notification(attribution_token=TOKEN))
+
+        assert commit_errors == [("store_notification_commit_refused",
+                                  {"sqlstate": DEFERRED_KEY_VIOLATION})]
+
+    async def test_a_violation_carrying_no_readable_code_is_refused_too(
+            self, writer, race_warnings, commit_errors):
+        """Fail-closed, exactly as `is_unique_violation` reads it: no code is not a race."""
         session = _RefusingSession(sqlstate=None)
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        with pytest.raises(IntegrityError):
+            await service.ingest(_notification(attribution_token=TOKEN))
+
+        assert commit_errors == [("store_notification_commit_refused", {"sqlstate": None})]
+        assert race_warnings == []
+
+    async def test_a_unique_violation_at_commit_is_still_the_lost_race(
+            self, writer, race_warnings, commit_errors):
+        """The control on the classification: COMMIT flushes too, so a unique index can refuse a
+        write the arms above never reached, and that one code is the race the resend recovers from."""
+        session = _RefusingSession(sqlstate=UNIQUE_VIOLATION)
         service = _service(session, writer, ORIGINAL_BUYER)
 
         with pytest.raises(InternalError):
@@ -842,17 +878,18 @@ class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
 
         assert (session.commits, session.rollbacks) == (1, 1)
         assert race_warnings == [("store_notification_race_lost", {"provider": "apple"})]
+        assert commit_errors == []
 
-    async def test_an_ingest_that_wins_reports_no_race_control(self, session, writer,
-                                                               race_warnings):
-        """The control: a line written unconditionally would pass the case above and page on
+    async def test_an_ingest_that_wins_reports_neither_control(self, session, writer,
+                                                               race_warnings, commit_errors):
+        """The control: a line written unconditionally would pass the cases above and page on
         every ordinary notification."""
         service = _service(session, writer, ORIGINAL_BUYER)
 
         await service.ingest(_notification(attribution_token=TOKEN))
 
         assert session.commits == 1
-        assert race_warnings == []
+        assert (race_warnings, commit_errors) == ([], [])
 
 
 @pytest.mark.asyncio
