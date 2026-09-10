@@ -33,7 +33,9 @@ DEVICECHECK_BACKOFF_BASE_SECONDS = 0.1
 DEVICECHECK_BACKOFF_MAX_SECONDS = 0.5
 
 # Apple answers HTTP 200 with one of these plain-text bodies when the device's bits were never set.
-_NEVER_SET_BODIES = frozenset({"Failed to find bit state", "Bit State Not Found"})
+# Casefolded, like `_DEVICE_TOKEN_FAULT` below: both literal sets are [ASSUMED] from secondary
+# sources, so neither may turn on Apple's choice of capitalisation.
+_NEVER_SET_BODIES = frozenset({"failed to find bit state", "bit state not found"})
 
 # The phrase Apple's 400 bodies carry when the fault is in the caller's device token ("Missing or
 # incorrectly formatted device token payload", "Unable to verify device token") and never when it is
@@ -138,7 +140,7 @@ def _reject_or_retry(response: httpx.Response, *, stage: str) -> None:
 
 def _parse_bit_state(response: httpx.Response, *, stage: str) -> BitState:
     """Classify a query response in the one order that lets nothing fall through to a default."""
-    body = response.text.strip()
+    body = response.text.strip().casefold()
     if body in _NEVER_SET_BODIES and response.status_code // 100 != 5:
         # The eligible first-ever claim, read before any JSON call because the body is plain text --
         # and ahead of the status, because Apple is widely observed carrying this body on 400 as

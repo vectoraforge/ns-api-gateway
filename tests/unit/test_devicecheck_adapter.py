@@ -34,8 +34,11 @@ UPDATE_TOKEN = "update-token-under-test"
 # A handle-shaped string the transaction id must never equal: the handle is a secret capability.
 HANDLE = "Zm9vYmFyYmF6cXV4MTIzNA"
 
-# Both bodies Apple is reported to answer 200 with when the device's bits were never set.
-NEVER_SET_BODIES = ("Failed to find bit state", "Bit State Not Found")
+# Both bodies Apple is reported to answer 200 with when the device's bits were never set, each in a
+# second capitalisation: the literals are [ASSUMED] from secondary sources, so a case drift must not
+# turn the one state the free grant is issued for into a permanent 503.
+NEVER_SET_BODIES = ("Failed to find bit state", "failed to find bit state",
+                    "Bit State Not Found", "BIT STATE NOT FOUND")
 
 # The pair the two wrong mounts are cut from: the public half, and the passphrase-wrapped private half.
 MISMOUNTED = ec.generate_private_key(ec.SECP256R1())
