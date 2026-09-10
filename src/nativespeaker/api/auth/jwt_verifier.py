@@ -110,7 +110,12 @@ def claims_from_payload(payload: dict) -> VerificationResult:
     subject = payload.get("sub")
     if not subject:
         return None, BoundedReason.empty_subject
-    return VerifiedClaims(issuer=str(payload["iss"]), subject=str(subject)), None
+    issuer = payload.get("iss")
+    if not issuer:
+        # Fetched like `sub` rather than subscripted: `verify`'s callers sit outside its `try`, so a
+        # `KeyError` here escapes every guard and 500s a caller owed a 401.
+        return None, _MISSING_CLAIM_REASONS["iss"]
+    return VerifiedClaims(issuer=str(issuer), subject=str(subject)), None
 
 
 class JWTVerifier:

@@ -18,6 +18,7 @@ from nativespeaker.api.auth.jwt_verifier import (
     BoundedReason,
     JWTVerifier,
     VerifiedClaims,
+    claims_from_payload,
 )
 from unit.conftest import (
     PRIVATE_KEY_PEM,
@@ -354,6 +355,30 @@ class TestAnAbsentClaimIsNotLabelledAsForgery:
 
         assert rejected(real_verifier, make_token("u", private_key=other_pem)) is (
             BoundedReason.bad_signature)
+
+
+class TestClaimsFromPayloadIsTotalOnEveryShape:
+    """WR-24. `verify` calls this after its `try` closes, so a raise here escapes every guard and
+    500s a caller owed a 401; the module documents itself as reusable, so a new caller gets it too."""
+
+    @pytest.mark.parametrize("payload, reason", [
+        ({"sub": "u"}, BoundedReason.issuer_mismatch),
+        ({"sub": "u", "iss": ""}, BoundedReason.issuer_mismatch),
+        ({"iss": TEST_ISSUER}, BoundedReason.empty_subject),
+        ({"iss": TEST_ISSUER, "sub": ""}, BoundedReason.empty_subject),
+    ], ids=["iss_absent", "iss_empty", "sub_absent", "sub_empty"])
+    def test_a_missing_claim_is_a_bounded_reason_and_never_an_exception(self, payload, reason):
+        assert claims_from_payload(payload) == (None, reason)
+
+    def test_an_absent_issuer_carries_the_label_the_decoder_would_have_given_it(self):
+        """The two paths agree: this one and `_MISSING_CLAIM_REASONS` name the same reason."""
+        assert claims_from_payload({"sub": "u"})[1] is _MISSING_CLAIM_REASONS["iss"]
+
+    def test_a_complete_payload_still_yields_its_claims_control(self):
+        """The control: returning a reason for everything would pass the cases above."""
+        claims, reason = claims_from_payload({"iss": TEST_ISSUER, "sub": "u"})
+
+        assert (claims, reason) == (VerifiedClaims(issuer=TEST_ISSUER, subject="u"), None)
 
 
 class TestTheJwksTransportIsNotHitPerRequest:
