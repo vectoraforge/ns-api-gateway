@@ -264,11 +264,10 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         await breaker.record_failure()
         await breaker.record_failure()
         await breaker.before_call()
-        await breaker.record_failure()
         await breaker.record_success(straggler)
         await breaker.record_failure()
 
-        # Two trips: the original one, then the reopen the two fresh failures earned.
+        # Two trips: the original one, then the reopen the one fresh failure earned half-open.
         assert await breaker.current_generation() == straggler + 2
 
     async def test_a_success_stamped_after_the_reset_still_clears_the_tally(self):
@@ -280,7 +279,6 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         await breaker.record_failure()
         await breaker.before_call()
         fresh = await breaker.current_generation()
-        await breaker.record_failure()
         await breaker.record_success(fresh)
         await breaker.record_failure()
 
@@ -294,6 +292,20 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
             await policy.ainvoke(operation, ADMITTED)
 
         assert (spy.checks, operation.calls) == (MAX_ATTEMPTS - 1, MAX_ATTEMPTS)
+
+    async def test_one_failure_after_the_reset_window_reopens_the_breaker(self):
+        """WR-01: clearing the whole tally made a still-down provider serve `failure_threshold`
+        full retry chains per reset window, so most of an outage ran closed."""
+        breaker = CircuitBreaker(failure_threshold=5, reset_seconds=0)
+        for _ in range(5):
+            await breaker.record_failure()
+        reopened_from = await breaker.current_generation()
+
+        await breaker.before_call()
+        await breaker.record_failure()
+
+        # The reopen the single failure earned; clearing the tally would leave the counter here.
+        assert await breaker.current_generation() == reopened_from + 1
 
 
 class TestFailureAccounting:

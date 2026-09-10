@@ -57,7 +57,8 @@ class CircuitBreaker:
             elapsed = time.monotonic() - self._opened_at
             if elapsed >= self._reset_seconds:
                 self._opened_at = None
-                self._failure_count = 0
+                # Half-open: one failure reopens, rather than a whole fresh tally of the threshold.
+                self._failure_count = self._failure_threshold - 1
                 return
             retry_after = max(1, int(self._reset_seconds - elapsed))
             raise CircuitOpenError(retry_after)
