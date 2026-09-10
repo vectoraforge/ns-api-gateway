@@ -1,4 +1,5 @@
-"""Exact-set object inventory, index predicates, and the absence of the legacy structures."""
+"""Exact-set object inventory: enums, tables, columns, index names, index keys and predicates,
+foreign-key delete actions, and the absence of the legacy structures."""
 import pytest
 
 pytestmark = pytest.mark.schema
@@ -67,6 +68,39 @@ USERS_COLUMNS = """
 SELECT column_name FROM information_schema.columns
 WHERE table_schema = 'core' AND table_name = 'users'
 ORDER BY ordinal_position
+"""
+
+# Every column of every table, not `core.users` alone: a column added or dropped elsewhere, or a
+# NOT NULL or a DEFAULT changed on one, was invisible to this whole inventory.
+COLUMNS = r"""
+SELECT n.nspname || '.' || c.relname || '.' || a.attname AS name,
+       format_type(a.atttypid, a.atttypmod)
+         || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END
+         || COALESCE(CASE WHEN a.attgenerated <> '' THEN ' GENERATED ' ELSE ' DEFAULT ' END
+                     || btrim(regexp_replace(pg_get_expr(d.adbin, d.adrelid), '\s+', ' ', 'g')), '')
+         AS spec
+FROM pg_attribute a
+JOIN pg_class c     ON c.oid = a.attrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+WHERE n.nspname IN ('core', 'audit') AND c.relkind = 'r'
+  AND a.attnum > 0 AND NOT a.attisdropped
+"""
+
+# The key columns and the uniqueness flag, which the index-name set above says nothing about: an
+# index re-keyed or stripped of UNIQUE while keeping its name and its predicate matched everything.
+INDEX_KEYS = """
+SELECT i.relname AS index_name,
+       CASE WHEN ix.indisunique THEN 'UNIQUE ' ELSE '' END
+         || '(' || (SELECT string_agg(pg_get_indexdef(ix.indexrelid, k.ord::int, true), ', '
+                                      ORDER BY k.ord)
+                    FROM generate_series(1, ix.indnkeyatts) WITH ORDINALITY AS k(pos, ord))
+         || ')' AS key
+FROM pg_index ix
+JOIN pg_class i     ON i.oid = ix.indexrelid
+JOIN pg_class c     ON c.oid = ix.indrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname IN ('core', 'audit')
 """
 
 # pg_get_expr renders enum casts relative to search_path, so it is pinned and the expected strings stay literal.
@@ -191,6 +225,162 @@ EXPECTED_USERS_COLUMNS = [
     "id", "email", "display_name", "registered_at", "active", "created_at", "updated_at"
 ]
 
+# Read out of pg_catalog on a live apply under PINNED_SEARCH_PATH, never transcribed from the
+# migration; the enum casts inside the generated columns turn on that pin.
+EXPECTED_COLUMNS = {
+    "audit.subscription_events.created_at": "timestamp with time zone NOT NULL",
+    "audit.subscription_events.event_type": "text NOT NULL",
+    "audit.subscription_events.id": "uuid NOT NULL",
+    "audit.subscription_events.new_tier_id": "text",
+    "audit.subscription_events.notification_uuid": "text NOT NULL",
+    "audit.subscription_events.old_tier_id": "text",
+    "audit.subscription_events.subscription_id": "uuid NOT NULL",
+    "core.access_grants.active_subscription_grant_subscription_id": (
+        "uuid GENERATED CASE WHEN ((source = 'subscription'::core.access_grant_source) AND (status = "
+        "'active'::core.access_grant_status)) THEN subscription_id ELSE NULL::uuid END"
+    ),
+    "core.access_grants.active_subscription_grant_user_id": (
+        "uuid GENERATED CASE WHEN ((source = 'subscription'::core.access_grant_source) AND (status = "
+        "'active'::core.access_grant_status)) THEN user_id ELSE NULL::uuid END"
+    ),
+    "core.access_grants.created_at": "timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    "core.access_grants.ends_at": "timestamp with time zone",
+    "core.access_grants.id": "uuid NOT NULL",
+    "core.access_grants.source": "core.access_grant_source NOT NULL",
+    "core.access_grants.starts_at": "timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    "core.access_grants.status": "core.access_grant_status NOT NULL DEFAULT 'active'::core.access_grant_status",
+    "core.access_grants.subscription_id": "uuid",
+    "core.access_grants.tier_id": "text NOT NULL",
+    "core.access_grants.updated_at": "timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    "core.access_grants.user_id": "uuid NOT NULL",
+    "core.access_tiers.created_at": "timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    "core.access_tiers.id": "text NOT NULL",
+    "core.access_tiers.monthly_credits": "integer NOT NULL",
+    "core.access_tiers.updated_at": "timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    "core.auth_challenges.bound_external_identity_id": "uuid",
+    "core.auth_challenges.challenge_id": "text NOT NULL",
+    "core.auth_challenges.claimed_at": "timestamp with time zone",
+    "core.auth_challenges.consumed_at": "timestamp with time zone",
+    "core.auth_challenges.created_at": "timestamp with time zone NOT NULL",
+    "core.auth_challenges.expires_at": "timestamp with time zone NOT NULL",
+    "core.auth_challenges.id": "uuid NOT NULL",
+    "core.auth_challenges.operation": "core.auth_operation NOT NULL",
+    "core.auth_challenges.preauth_issuer": "text",
+    "core.auth_challenges.preauth_subject": "text",
+    "core.chats.created_at": "timestamp with time zone NOT NULL",
+    "core.chats.id": "uuid NOT NULL",
+    "core.chats.lang": "text",
+    "core.chats.title": "text NOT NULL",
+    "core.chats.user_id": "uuid NOT NULL",
+    "core.external_identities.created_at": "timestamp with time zone NOT NULL",
+    "core.external_identities.free_grant_consumed_at": "timestamp with time zone",
+    "core.external_identities.historical_at": "timestamp with time zone",
+    "core.external_identities.id": "uuid NOT NULL",
+    "core.external_identities.identity_state": "core.identity_state NOT NULL DEFAULT 'active'::core.identity_state",
+    "core.external_identities.issuer": "text NOT NULL",
+    "core.external_identities.native_claim_platform": "core.native_claim_provider",
+    "core.external_identities.provider": "core.identity_provider NOT NULL",
+    "core.external_identities.provider_uid": "text",
+    "core.external_identities.subject": "text NOT NULL",
+    "core.external_identities.updated_at": "timestamp with time zone NOT NULL",
+    "core.external_identities.user_id": "uuid NOT NULL",
+    "core.manual_grant_issuances.case_id": "text NOT NULL",
+    "core.manual_grant_issuances.created_at": "timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    "core.manual_grant_issuances.grant_id": "uuid NOT NULL",
+    "core.manual_grant_issuances.operator": "text NOT NULL",
+    "core.manual_grant_issuances.reason": "text NOT NULL",
+    "core.manual_grant_issuances.user_id": "uuid NOT NULL",
+    "core.messages.chat_id": "uuid NOT NULL",
+    "core.messages.content": "jsonb NOT NULL",
+    "core.messages.created_at": "timestamp with time zone NOT NULL",
+    "core.messages.id": "uuid NOT NULL",
+    "core.messages.role": "core.chat_role NOT NULL",
+    "core.store_purchase_tokens.created_at": "timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    "core.store_purchase_tokens.identity_value": "text NOT NULL",
+    "core.store_purchase_tokens.provider": "core.subscription_provider NOT NULL",
+    "core.store_purchase_tokens.user_id": "uuid NOT NULL",
+    "core.store_purchases.created_at": "timestamp with time zone NOT NULL",
+    "core.store_purchases.external_id": "text NOT NULL",
+    "core.store_purchases.id": "uuid NOT NULL",
+    "core.store_purchases.identity_value": "text NOT NULL",
+    "core.store_purchases.provider": "core.subscription_provider NOT NULL",
+    "core.store_purchases.purchase_user_id": "uuid",
+    "core.store_purchases.resolved_token_value": "text",
+    "core.store_purchases.store_original_transaction_id": "text",
+    "core.store_purchases.store_transaction_id": "text",
+    "core.subscriptions.created_at": "timestamp with time zone NOT NULL",
+    "core.subscriptions.external_id": "text NOT NULL",
+    "core.subscriptions.id": "uuid NOT NULL",
+    "core.subscriptions.last_cross_account_transfer_month": "date",
+    "core.subscriptions.product_entitled_subscription_id": (
+        "uuid GENERATED CASE WHEN (status = ANY (ARRAY['active'::core.subscription_status, "
+        "'grace_period'::core.subscription_status])) THEN id ELSE NULL::uuid END"
+    ),
+    "core.subscriptions.provider": "core.subscription_provider NOT NULL",
+    "core.subscriptions.restore_bound_user_id": "uuid",
+    "core.subscriptions.status": "core.subscription_status NOT NULL",
+    "core.subscriptions.store_signed_at": "timestamp with time zone",
+    "core.subscriptions.tier_id": "text NOT NULL",
+    "core.subscriptions.updated_at": "timestamp with time zone NOT NULL",
+    "core.subscriptions.user_id": "uuid",
+    "core.user_monthly_usage.created_at": "timestamp with time zone NOT NULL",
+    "core.user_monthly_usage.grant_id": "uuid NOT NULL",
+    "core.user_monthly_usage.monthly_period": "text NOT NULL",
+    "core.user_monthly_usage.monthly_used": "integer NOT NULL DEFAULT 0",
+    "core.user_monthly_usage.updated_at": "timestamp with time zone NOT NULL",
+    "core.users.active": "boolean NOT NULL DEFAULT true",
+    "core.users.created_at": "timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    "core.users.display_name": "text",
+    "core.users.email": "text",
+    "core.users.id": "uuid NOT NULL",
+    "core.users.registered_at": "timestamp with time zone",
+    "core.users.updated_at": "timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP",
+}
+
+EXPECTED_INDEX_KEYS = {
+    "access_grants_pkey": "UNIQUE (id)",
+    "access_tiers_pkey": "UNIQUE (id)",
+    "auth_challenges_challenge_id_key": "UNIQUE (challenge_id)",
+    "auth_challenges_pkey": "UNIQUE (id)",
+    "chats_pkey": "UNIQUE (id)",
+    "external_identities_issuer_subject_key": "UNIQUE (issuer, subject)",
+    "external_identities_pkey": "UNIQUE (id)",
+    "external_identities_user_id_key": "UNIQUE (user_id)",
+    "ix_access_grants_one_active_per_user": "UNIQUE (user_id)",
+    "ix_access_grants_one_free_grant_per_user_source": "UNIQUE (user_id, source)",
+    "ix_access_grants_one_per_subscription": "UNIQUE (subscription_id)",
+    "ix_access_grants_subscription": "(subscription_id)",
+    "ix_access_grants_user_active": "(user_id, status, starts_at, ends_at)",
+    "ix_auth_challenges_expires_at": "(expires_at)",
+    "ix_chats_user_id": "(user_id)",
+    "ix_external_identities_provider": "(provider)",
+    "ix_external_identities_provider_account": "UNIQUE (issuer, provider, provider_uid)",
+    "ix_external_identities_user_active": "(user_id, identity_state)",
+    "ix_external_identities_user_id": "(user_id)",
+    "ix_messages_chat_id": "(chat_id)",
+    "ix_store_purchase_tokens_user_id": "(user_id)",
+    "ix_store_purchases_provider_identity_value": "(provider, identity_value)",
+    "ix_store_purchases_purchase_user_id": "(purchase_user_id)",
+    "ix_subscription_events_subscription_id": "(subscription_id)",
+    "ix_subscriptions_provider_external_id": "UNIQUE (provider, external_id)",
+    "ix_subscriptions_user_id": "(user_id)",
+    "ix_users_registered_at": "(registered_at)",
+    "manual_grant_issuances_grant_id_key": "UNIQUE (grant_id)",
+    "manual_grant_issuances_pkey": "UNIQUE (case_id)",
+    "messages_pkey": "UNIQUE (id)",
+    "store_purchase_tokens_provider_identity_value_key": "UNIQUE (provider, identity_value)",
+    "store_purchase_tokens_user_id_provider_key": "UNIQUE (user_id, provider)",
+    "store_purchases_pkey": "UNIQUE (id)",
+    "store_purchases_provider_external_id_key": "UNIQUE (provider, external_id)",
+    "subscription_events_notification_uuid_key": "UNIQUE (notification_uuid)",
+    "subscription_events_pkey": "UNIQUE (id)",
+    "subscriptions_id_user_id_key": "UNIQUE (id, user_id)",
+    "subscriptions_pkey": "UNIQUE (id)",
+    "subscriptions_product_entitled_subscription_id_key": "UNIQUE (product_entitled_subscription_id)",
+    "user_monthly_usage_pkey": "UNIQUE (grant_id)",
+    "users_pkey": "UNIQUE (id)",
+}
+
 ENUM_CASES = sorted(EXPECTED_ENUM_LABELS.items())
 PREDICATE_CASES = sorted(EXPECTED_INDEX_PREDICATES.items())
 
@@ -273,6 +463,39 @@ async def fetch_delete_actions(conn) -> dict[str, str]:
     """Every foreign key in core and audit, keyed by its referencing table and columns."""
     rows = await conn.fetch(FK_DELETE_ACTIONS)
     return {f"{row['table_name']}({row['columns']})": row["delete_action"] for row in rows}
+
+
+class TestColumns:
+    """Every column of every table, with its type, its NOT NULL and its default or generation."""
+
+    async def test_the_column_set_is_exact(self, conn):
+        actual = {row["name"] for row in await conn.fetch(COLUMNS)}
+        assert_exact_set(actual, set(EXPECTED_COLUMNS), "the core and audit column set")
+
+    async def test_every_column_spec_matches_capture(self, conn):
+        """The type, the nullability and the default together: a widened column keeps its name."""
+        await conn.execute(f"SET search_path TO {PINNED_SEARCH_PATH}")
+        actual = {row["name"]: row["spec"] for row in await conn.fetch(COLUMNS)}
+        differing = {name: (spec, EXPECTED_COLUMNS.get(name))
+                     for name, spec in actual.items()
+                     if EXPECTED_COLUMNS.get(name) != spec}
+        assert not differing, f"column specs differ (found, expected): {differing}"
+
+
+class TestIndexKeys:
+    """The key columns behind the index names, which the name set and the predicates never reach."""
+
+    async def test_the_indexed_name_set_is_exact(self, conn):
+        actual = {row["index_name"] for row in await conn.fetch(INDEX_KEYS)}
+        assert_exact_set(actual, set(EXPECTED_INDEX_KEYS), "the indexed name set")
+
+    async def test_every_index_key_matches_capture(self, conn):
+        """`ix_access_grants_one_active_per_user` widened to (user_id, tier_id) fails here alone."""
+        actual = {row["index_name"]: row["key"] for row in await conn.fetch(INDEX_KEYS)}
+        differing = {name: (key, EXPECTED_INDEX_KEYS.get(name))
+                     for name, key in actual.items()
+                     if EXPECTED_INDEX_KEYS.get(name) != key}
+        assert not differing, f"index keys differ (found, expected): {differing}"
 
 
 class TestForeignKeyDeleteActions:
