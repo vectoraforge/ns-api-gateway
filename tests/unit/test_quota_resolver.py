@@ -127,6 +127,11 @@ def _compiled(statement) -> str:
     return str(statement.compile(dialect=postgresql.dialect()))
 
 
+def _bound(statement) -> list:
+    """The values the statement carries, which the compiled text renders only as placeholders."""
+    return list(statement.compile(dialect=postgresql.dialect()).params.values())
+
+
 class TestNoEffectiveGrant:
     """An allowance of 0 is read across the whole flow, so the existing 429 contract answers."""
 
@@ -345,6 +350,40 @@ class TestTheLockingStatements:
         """A NULL `ends_at` is legal and effective forever."""
         session = await self._admitted_session()
         assert "core.access_grants.ends_at IS NULL" in _compiled(session.statements[0])
+
+
+class TestEveryLockedReadIsKeyedOnWhatTheOneBeforeItNamed:
+    """WR-121. The entity of a statement is not its key, and `TestTheLockingStatements` above reads
+    the compiled text alone -- which renders every bound value as a placeholder. This is the
+    writing path: a wrong key here locks and spends another tenant's grant, against
+    SHARED-INVARIANTS § Identity and ownership ("business data is keyed only by `core.users.id`").
+    The read-only sibling states the same property in `test_sync_resolver.py`."""
+
+    @staticmethod
+    async def _three_reads() -> tuple[AccessGrant, _StubSession]:
+        grant, usage = _one_effective_grant()
+        return grant, await _consume(grants=(grant,), usage=usage)
+
+    async def test_the_grant_lock_is_keyed_on_the_caller_the_handler_named(self):
+        _grant_row, session = await self._three_reads()
+        assert USER_ID in _bound(session.statements[0])
+
+    async def test_both_grant_bounds_carry_the_one_captured_instant(self):
+        """One instant, not a second clock reading: the period the counter rolls over on and the
+        term the grant is selected by must be decided against the same moment."""
+        _grant_row, session = await self._three_reads()
+        instants = [value for value in _bound(session.statements[0]) if isinstance(value, datetime)]
+
+        assert instants == [EVALUATED_AT, EVALUATED_AT]
+
+    async def test_the_usage_lock_is_keyed_on_the_grant_the_first_lock_returned(self):
+        grant, session = await self._three_reads()
+        assert grant.id in _bound(session.statements[1])
+
+    async def test_the_allowance_read_is_keyed_on_that_grants_own_tier(self):
+        """The count is compared against this grant's allowance; another tier's is another product."""
+        grant, session = await self._three_reads()
+        assert grant.tier_id in _bound(session.statements[2])
 
 
 class TestGrantThenUsageOrder:
