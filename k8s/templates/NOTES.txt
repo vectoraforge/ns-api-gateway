@@ -40,5 +40,6 @@ The monthly allowance is not a gateway concern: the backend charges it per acces
 Application Default Credentials: set `serviceAccountName` to a KSA annotated for Workload
 Identity, or `credentials.googleCredentialsSecretName` to a Secret holding an ADC JSON. Firebase
 Admin and the Play Developer API both authenticate through ADC, so with neither set the pod
-becomes Ready and every account-creation route answers 503, both probes still pass, and the only
-signal is one warning line at boot.
+becomes Ready and every account-creation route, plus the `google_play` arm of
+`POST /auth/restore-subscription`, answers 503. Both probes still pass, and the only signal is
+one warning line at boot.

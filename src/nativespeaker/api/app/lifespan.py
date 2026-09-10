@@ -212,10 +212,11 @@ async def lifespan(app: FastAPI):
         # The product map too, as the Play arm below tests it: a map serving nothing has no other signal.
         if app_store_verifier is None or not config.app_store.products:
             logger.warning("app_store_configuration_absent",
-                           consequence="POST /webhooks/app-store refuses every notification until "
-                                       "this pod is restarted with the App Store bundle id, "
-                                       "environment, product map, app id (production only) and "
-                                       "root certificate available in this environment")
+                           consequence="POST /webhooks/app-store refuses every notification and "
+                                       "POST /auth/restore-subscription refuses every apple "
+                                       "restore until this pod is restarted with the App Store "
+                                       "bundle id, environment, product map, app id (production "
+                                       "only) and root certificate available in this environment")
         # Set unconditionally, so the route set is the same in every environment.
         app.state.app_store_notifications = AppStoreNotifications(verifier=app_store_verifier,
                                                                   products=config.app_store.products)
@@ -225,10 +226,11 @@ async def lifespan(app: FastAPI):
         if (google_push_pins(config.google_play) is None or play_credential is None
                 or not config.google_play.package_name or not config.google_play.products):
             logger.warning("google_play_configuration_absent",
-                           consequence="POST /webhooks/google-play/rtdn refuses every delivery until "
-                                       "this pod is restarted with the Play package name, product map, "
-                                       "push audience, push service account and Application Default "
-                                       "Credentials available in this environment")
+                           consequence="POST /webhooks/google-play/rtdn refuses every delivery and "
+                                       "POST /auth/restore-subscription refuses every google_play "
+                                       "restore until this pod is restarted with the Play package "
+                                       "name, product map, push audience, push service account and "
+                                       "Application Default Credentials available in this environment")
         elif google_push_verifier is None:
             # Told apart from the absence above, which this configuration is not: the values are here.
             logger.warning("google_push_verifier_warm_up_failed",
