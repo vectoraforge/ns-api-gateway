@@ -107,6 +107,17 @@ async def _usage_of(factory, grant_id) -> UserMonthlyUsage:
             .where(col(UserMonthlyUsage.grant_id) == grant_id))).one()
 
 
+async def _mark_free_grant_consumed(factory, subject: str, spent_at: datetime) -> None:
+    """Write the marker the anonymous claim leaves, which `seed_grant` alone cannot put on the row."""
+    async with factory() as session:
+        identity = (await session.exec(
+            select(ExternalIdentity).where(col(ExternalIdentity.issuer) == TEST_ISSUER,
+                                           col(ExternalIdentity.subject) == subject))).one()
+        identity.free_grant_consumed_at = spent_at
+        session.add(identity)
+        await session.commit()
+
+
 async def _identity_of(factory, subject: str) -> ExternalIdentity:
     async with factory() as session:
         return (await session.exec(
@@ -228,6 +239,11 @@ class TestTheConversionOfAnActiveAnonymousGrant:
                                         status=AccessGrantStatus.active,
                                         monthly_period=period, monthly_used=7,
                                         starts_at=datetime.now(UTC) - timedelta(hours=1))
+        # WR-80: the state the real conversion starts from. `activate_anonymous_device_grant` sets
+        # this marker for every anonymous grant it writes, so `seed_grant` alone left this case on
+        # the `is None` arm of the writer -- the one arm production can never reach.
+        spent_at = datetime.now(UTC) - timedelta(hours=2)
+        await _mark_free_grant_consumed(_db_transaction, subject, spent_at)
 
         handle = await _issue(claim_client, subject)
         claim = await _claim(claim_client, subject, handle)
@@ -266,6 +282,9 @@ class TestTheConversionOfAnActiveAnonymousGrant:
         assert (new_usage.monthly_period, new_usage.monthly_used) == (old_usage.monthly_period,
                                                                       old_usage.monthly_used)
         assert (new_usage.monthly_period, new_usage.monthly_used) == (period, 7)
+        # D-10: the conversion spends no new slot, so the instant the anonymous claim recorded is
+        # the one that stands -- never overwritten with this request's instant.
+        assert (await _identity_of(_db_transaction, subject)).free_grant_consumed_at == spent_at
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
 
