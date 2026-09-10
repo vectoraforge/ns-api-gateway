@@ -10,6 +10,7 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from e2e.conftest import seed_identity
+from nativespeaker.api.crud.challenges import CHALLENGE_TTL_SECONDS
 from nativespeaker.api.errors import ChallengeConsumed, ChallengeIdentityMismatch
 from nativespeaker.api.schemas.auth import Identity
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
@@ -173,9 +174,18 @@ class TestTheClaimIsTheOnlyPlaceExpiryIsEvaluated:
         handle, _ = await issue(_db_transaction, store, now=now)
         async with _db_transaction() as session:
             claimed = await store.claim(session, challenge_id=handle,
-                                        now=now + timedelta(seconds=299))
+                                        now=now + timedelta(seconds=CHALLENGE_TTL_SECONDS - 1))
             await session.commit()
         assert claimed is True
+
+    async def test_a_row_claimed_exactly_at_its_expiry_is_refused(self, store, _db_transaction):
+        """`expires_at > now` is strict, so the instant of expiry is already too late. Without this
+        an inclusive comparison passes every other case in this class."""
+        now = datetime.now(UTC)
+        handle, expires_at = await issue(_db_transaction, store, now=now)
+        async with _db_transaction() as session:
+            assert await store.claim(session, challenge_id=handle, now=expires_at) is False
+            await session.commit()
 
 
 @pytest.mark.asyncio(loop_scope="module")
