@@ -24,7 +24,7 @@ from nativespeaker.api.tables.grants import (
 )
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 
-from .conftest import seed_grant, seed_identity
+from .conftest import seed_grant, seed_identity, spy_on
 
 pytestmark = pytest.mark.e2e
 
@@ -593,3 +593,37 @@ class TestTheThreeAppleFailureArms:
         assert await _row_counts(_db_transaction, user.id) == (0, 0)
         assert (await _identity_of(_db_transaction, subject)).free_grant_consumed_at is None
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
+
+
+@pytest.mark.asyncio(loop_scope="module")
+class TestAFailedBitWriteAfterTheGrantIsDurable:
+    """WR-83: the grant commits before Apple is told, so Apple's refusal is logged and not answered."""
+
+    async def test_a_failed_bit_write_still_answers_the_granted_body_and_records_it_once(
+            self, claim_client, _db_transaction, scripted_devicecheck_adapter, monkeypatch):
+        """D-01: bit1 stays clear, which is a burned slot -- but it is the service's problem, never
+        the caller's, because nothing in this product can clear an Apple bit back."""
+        spy = spy_on(monkeypatch, ("nativespeaker.api.services.auth.logger",), ("error",))
+        subject = "e2e-claim-registered-write-failed"
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
+                                      provider=IdentityProvider.google)
+        scripted_devicecheck_adapter.script_write(
+            RetryableDeviceCheckError("scripted write failure"))
+
+        handle = await _issue(claim_client, subject)
+        claim = await _claim(claim_client, subject, handle)
+
+        assert claim.status_code == 200, claim.text
+        assert claim.json()["entitlement"]["type"] == "registered_account_grant"
+        # Durable before Apple was asked: the rows survive the vendor failure that followed them.
+        assert await _row_counts(_db_transaction, user.id) == (1, 1)
+        assert (await _identity_of(_db_transaction, subject)).free_grant_consumed_at is not None
+        assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
+        assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
+        assert scripted_devicecheck_adapter.write_calls == [(DEVICE_TOKEN, False, True)
+                                                            ] * DEVICECHECK_ATTEMPTS
+        # One record, not one per attempt: the retry budget is spent inside the swallowed call.
+        assert [event for event, _ in spy.entries] == ["devicecheck_bit_write_failed"]
+        # A closed-set label only: neither the device token nor Apple's body reaches the record.
+        assert DEVICE_TOKEN not in repr(spy.entries)
+        assert "scripted write failure" not in repr(spy.entries)
