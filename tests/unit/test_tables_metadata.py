@@ -4,6 +4,7 @@ mirrored by nothing -- a `create_all` bootstrap would build a database the inven
 """
 from uuid import UUID, uuid7
 
+from sqlalchemy import inspect as sa_inspect
 from sqlmodel import SQLModel
 
 # Imported for the registration alone: a model no module imported is in no metadata.
@@ -82,6 +83,19 @@ class TestEveryUuidPrimaryKeyMintsItsOwnValue:
     def test_the_walk_sees_the_tables_control(self):
         """The control: an empty walk would pass the case above without reading a field."""
         assert {model.__name__ for model in _UUID_KEYED_TABLES} >= {"Chat", "Message", "User"}
+
+
+class TestTheOnlyRelationshipIsTheOneAQueryEagerLoads:
+    """WR-42. A lazy load inside an `AsyncSession` raises `MissingGreenlet` rather than returning a
+    row, so a mapped relationship is readable only where a query eager-loads it."""
+
+    def test_the_package_declares_exactly_the_relationship_the_chat_read_selectin_loads(self):
+        declared = {f"{model.__name__}.{name}"
+                    for model in _MAPPED_TABLES
+                    for name in sa_inspect(model).relationships.keys()}
+
+        # `ChatsDB.get_chat` carries `selectinload(Chat.messages)`; a second entry here has no such read path.
+        assert declared == {"Chat.messages"}
 
 
 class TestTheWalkFires:

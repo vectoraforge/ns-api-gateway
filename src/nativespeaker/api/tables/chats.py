@@ -7,8 +7,6 @@ from sqlalchemy import DateTime, Enum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 
-from nativespeaker.api.tables.users import User
-
 
 class ChatRole(StrEnum):
     human = "human"
@@ -51,7 +49,6 @@ class Chat(SQLModel, table=True):
         passive_deletes=True,
         # `Message.id` is uuid7, so ascending id is chronological.
         sa_relationship_kwargs={"order_by": "Message.id"})
-    user: User = Relationship()
 
     @property
     def ai_messages(self):
