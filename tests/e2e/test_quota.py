@@ -59,7 +59,11 @@ class TestNoEffectiveGrant:
             self, async_client, linked_firebase_identity, own_chat, path, body):
         """The 429 is the shared `{code: ...}` shape -- not a 500, and not a bespoke payload."""
         response = await async_client.post(path.format(chat_id=own_chat), json=body)
-        assert list(response.json().keys()) == ["code"]
+
+        # WR-84: the status and the code, not the key list alone. A 500 `{"code": "internal_error"}`
+        # -- the very body this docstring rules out -- has the same one key and passed here.
+        assert response.status_code == 429, response.text
+        assert response.json() == {"code": "quota_exceeded"}
 
     async def test_a_not_yet_started_grant_is_no_grant(self, async_client,
                                                        linked_firebase_identity,
