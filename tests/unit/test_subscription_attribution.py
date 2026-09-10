@@ -22,6 +22,9 @@ from nativespeaker.api.tables import (
 
 PAID_TIER_ID = "paid"
 
+# A second seeded tier, so a tier that moves inside the window moves to something nameable.
+OTHER_TIER_ID = "registered"
+
 # One obviously synthetic attribution token, and a second that disagrees with it.
 TOKEN = "a-synthetic-attribution-token"
 OTHER_TOKEN = "a-different-synthetic-attribution-token"
@@ -222,6 +225,7 @@ def writer() -> _RecordingSubscriptions:
 
 def _seed_owned(writer, owner: UUID, *, external_id: str | None = None,
                 store_signed_at: datetime | None = None,
+                tier_id: str = PAID_TIER_ID,
                 status: SubscriptionStatus = SubscriptionStatus.active) -> str:
     """Put one already-owned canonical row in the writer, as a restore leaves it; return its key."""
     external_id = external_id or f"original-{uuid4()}"
@@ -229,7 +233,7 @@ def _seed_owned(writer, owner: UUID, *, external_id: str | None = None,
         provider=PurchaseProvider.apple,
         external_id=external_id,
         user_id=owner,
-        tier_id=PAID_TIER_ID,
+        tier_id=tier_id,
         status=status,
         store_signed_at=store_signed_at,
         created_at=NOW,
@@ -518,6 +522,49 @@ class TestARestoreThatCommitsInTheWindowIsRefused:
 
         assert writer.locked == [RESTORER]
         assert [grant["user_id"] for grant in writer.granted] == [RESTORER]
+        assert session.commits == 1
+
+
+@pytest.mark.asyncio
+class TestTheAppendedEventNamesTheTierTheLocksSettledOn:
+    """WR-61: `old_tier_id` was copied out of the pre-lock read, which the under-lock read replaced."""
+
+    async def test_a_tier_a_rival_moved_in_the_window_is_the_transition_recorded(self, session,
+                                                                                 writer):
+        """The audit trail is what an operator reconstructs a disputed subscription from, so a
+        transition out of a tier the row no longer carried is worse there than no value at all."""
+        external_id = _seed_owned(writer, RESTORER)
+        writer.rival = lambda: _seed_owned(writer, RESTORER, external_id=external_id,
+                                           tier_id=OTHER_TIER_ID)
+        service = _service(session, writer, None)
+
+        await service.ingest(_notification(external_id=external_id, event_type="DID_RENEW"))
+
+        assert [event["old_tier_id"] for event in writer.appended] == [OTHER_TIER_ID]
+        assert session.commits == 1
+
+    async def test_a_row_the_unlocked_read_missed_entirely_still_names_its_tier(self, session,
+                                                                               writer):
+        """The rival's insert is what that read missed, so the pre-lock snapshot recorded NULL."""
+        external_id = f"original-{uuid4()}"
+        writer.rival = lambda: _seed_owned(writer, RESTORER, external_id=external_id,
+                                           tier_id=OTHER_TIER_ID)
+        service = _service(session, writer, RESTORER)
+
+        await service.ingest(_notification(attribution_token=TOKEN, external_id=external_id,
+                                           event_type="DID_RENEW"))
+
+        assert [event["old_tier_id"] for event in writer.appended] == [OTHER_TIER_ID]
+        assert session.commits == 1
+
+    async def test_a_tier_no_rival_touched_is_still_the_one_recorded_control(self, session, writer):
+        """The control: the re-read must not turn every ordinary delivery's transition into a no-op."""
+        external_id = _seed_owned(writer, RESTORER)
+        service = _service(session, writer, None)
+
+        await service.ingest(_notification(external_id=external_id, event_type="DID_RENEW"))
+
+        assert [event["old_tier_id"] for event in writer.appended] == [PAID_TIER_ID]
         assert session.commits == 1
 
 

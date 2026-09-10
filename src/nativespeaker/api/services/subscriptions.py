@@ -50,7 +50,6 @@ class SubscriptionsService:
 
         stored = await self.subscriptions_db.read_subscription(notification.provider,
                                                                notification.external_id)
-        old_tier_id = None if stored is None else stored.tier_id
         # A plain read, never a lock: a subscription-row lock would sit ahead of the grant locks below.
         # The crud's D-09 rule, restated: the owner the writer will keep is the owner locked here.
         owner = (stored.user_id if stored is not None and stored.user_id is not None else user_id)
@@ -85,6 +84,8 @@ class SubscriptionsService:
         # either, and the older payload then overwrote a status the store had already moved on.
         settled = await self.subscriptions_db.read_subscription(notification.provider,
                                                                  notification.external_id)
+        # The tier as of the locks, never the pre-lock snapshot: this row is the one written against.
+        old_tier_id = None if settled is None else settled.tier_id
         if (settled is not None and settled.store_signed_at is not None
                 and notification.signed_at is not None
                 and notification.signed_at < settled.store_signed_at):
