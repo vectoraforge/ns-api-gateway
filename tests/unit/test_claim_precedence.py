@@ -512,6 +512,9 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert response.status_code == 200
         assert store.consume_calls == 1
         assert grants.activates == 1
+        # WR-46: the winner may be a grant of any source, so bit0 would spend this device's one
+        # slot on a grant this attempt did not write, and nothing here ever clears an Apple bit.
+        assert devicecheck.write_calls == []
 
     def test_a_refused_write_answers_four_hundred_and_three_and_still_consumes(
             self, client, store, account, grants, devicecheck):
@@ -574,6 +577,8 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert response.status_code == 403
         assert response.json() == REFUSED
         assert store.consume_calls == 1
+        # WR-46 again: this attempt wrote nothing, so it has no slot of its own to spend.
+        assert devicecheck.write_calls == []
 
     def test_the_successful_claim_consumes_exactly_once(self, client, store, account, grants,
                                                         devicecheck):
