@@ -99,10 +99,10 @@ class _RefusingSession(_StubSession):
 class _UpsertResult:
     """One row and one row count: what the writer's read and its conditional owner update ask for."""
 
-    def __init__(self, row: Subscription | None) -> None:
+    def __init__(self, row: Subscription | None, rowcount: int = 1) -> None:
         self._row = row
-        # The claim's whole answer. One, because nothing else writes this row inside a case here.
-        self.rowcount = 1
+        # The claim's whole answer: zero is the restore that took this unowned row first.
+        self.rowcount = rowcount
 
     def first(self) -> Subscription | None:
         return self._row
@@ -112,12 +112,13 @@ class _UpsertSession:
     """The one-row session `SubscriptionsDB.upsert_subscription` runs over, so this file measures
     against the real writer rather than a restatement of it."""
 
-    def __init__(self, stored: Subscription | None) -> None:
+    def __init__(self, stored: Subscription | None, claim_wins: bool = True) -> None:
         self._stored = stored
+        self._claim_wins = claim_wins
         self.added: list = []
 
     async def exec(self, statement) -> _UpsertResult:  # noqa: ARG002
-        return _UpsertResult(self._stored)
+        return _UpsertResult(self._stored, 1 if self._claim_wins else 0)
 
     def add(self, instance) -> None:
         self.added.append(instance)
@@ -144,6 +145,9 @@ class _RecordingSubscriptions:
         # What the canonical row says once the locks are held. `None` follows the stored row; a case
         # sets it to model a restore that committed between the unlocked read and the locks.
         self.settled_owner: UUID | None = None
+        # Whether the writer's own conditional owner claim takes the unowned row. A case sets it
+        # False for the restore that adopted the row between this delivery's read and its update.
+        self.claim_wins = True
         # A rival delivery committing between the unlocked read and the locks. It is run once,
         # immediately after the unlocked `read_subscription`, so the second, under-lock read
         # answers with the row it left behind -- which is how the staleness arises in production.
@@ -188,7 +192,7 @@ class _RecordingSubscriptions:
         # copy this replaces moved the store clock backwards where production only ever advances it
         # -- the exact column the service's own out-of-order guard reads -- and answered `applied`
         # where production answers `replayed` or, since the conditional owner claim, `lost_race`.
-        session = _UpsertSession(self.subscriptions.get(key))
+        session = _UpsertSession(self.subscriptions.get(key), self.claim_wins)
         stored, outcome = await SubscriptionsDB(session).upsert_subscription(**fields)
         self.subscriptions[key] = stored
         return stored, outcome
@@ -817,6 +821,38 @@ class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
         await service.ingest(_notification(attribution_token=TOKEN))
 
         assert session.commits == 1
+        assert race_warnings == []
+
+
+@pytest.mark.asyncio
+class TestTheUpsertsOwnLostClaimIsAnsweredByTheService:
+    """WR-49: the writer answers `lost_race` when a restore adopted the row first, and `ingest`
+    settles that outcome exactly as it settles every other writer's."""
+
+    async def test_a_restore_that_took_the_unowned_row_first_refuses_this_delivery(
+            self, session, writer, race_warnings):
+        writer.claim_wins = False
+        external_id = _seed_owned(writer, None)
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        with pytest.raises(InternalError):
+            await service.ingest(_notification(attribution_token=TOKEN, external_id=external_id))
+
+        assert session.rollbacks == 1
+        # Settled at the upsert, so neither the purchase row nor the grant behind it was reached.
+        assert (writer.inserted, writer.granted, session.commits) == ([], [], 0)
+        assert race_warnings == [("store_notification_race_lost", {"provider": "apple"})]
+
+    async def test_a_claim_this_delivery_wins_records_the_owner_control(self, session, writer,
+                                                                        race_warnings):
+        """The control: the row count is the whole answer, so the winning claim must still write."""
+        external_id = _seed_owned(writer, None)
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        await service.ingest(_notification(attribution_token=TOKEN, external_id=external_id))
+
+        assert writer.granted[0]["user_id"] == ORIGINAL_BUYER
+        assert (session.commits, session.rollbacks) == (1, 0)
         assert race_warnings == []
 
 
