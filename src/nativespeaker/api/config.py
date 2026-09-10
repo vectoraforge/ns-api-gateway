@@ -102,9 +102,16 @@ class AppStoreConfig(BaseModel):
     @field_validator("app_apple_id", mode="before")
     @classmethod
     def _numeric_or_absent(cls, value):
-        """Keep an int or an all-digit string, and read anything else as absent."""
-        return value if isinstance(value, int) or (isinstance(value, str)
-                                                   and value.isdigit()) else None
+        """Keep an int or a string `int()` parses, and read anything else as absent."""
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        # The parse that runs next, not `str.isdigit`, which is true of superscripts `int()` refuses.
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     @field_validator("environment", mode="before")
     @classmethod

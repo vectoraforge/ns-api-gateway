@@ -685,6 +685,13 @@ class TestAMalformedAppStoreValueCostsTheRouteAndNotTheBoot:
 
         assert build_app_store_verifier(degraded) is None
 
+    @pytest.mark.parametrize("value", ["\u00b2", "\u2081", "1" * 4301, True])
+    def test_a_value_int_refuses_degrades_too(self, value):
+        """WR-03: `str.isdigit` is true of these, so the guard used to hand them to pydantic."""
+        store = AppStoreConfig(app_apple_id=value)  # ty: ignore[invalid-argument-type]
+
+        assert store.app_apple_id is None
+
     def test_a_well_formed_pair_still_parses_and_builds_a_verifier_control(self):
         """The control: a validator that degraded everything would pass both cases above."""
         store = AppStoreConfig(bundle_id="com.nativespeaker.app",
