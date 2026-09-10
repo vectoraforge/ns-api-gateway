@@ -118,15 +118,19 @@ def _schema_db_uri():
 async def conn(_schema_db_uri):
     """Connection to the migrated scratch database, inside a transaction that always rolls back."""
     connection = await asyncpg.connect(_schema_db_uri)
-    tx = connection.transaction()
-    await tx.start()
+    # `tx.start()` inside the try: it raises on a server at its connection limit or a lost socket,
+    # and a connection opened outside the guard is one leaked for the rest of the session.
     try:
-        yield connection
-    finally:
+        tx = connection.transaction()
+        await tx.start()
         try:
-            await tx.rollback()
-        except Exception:  # a deferred-constraint failure has already aborted it
-            pass
+            yield connection
+        finally:
+            try:
+                await tx.rollback()
+            except Exception:  # a deferred-constraint failure has already aborted it
+                pass
+    finally:
         await connection.close()
 
 
