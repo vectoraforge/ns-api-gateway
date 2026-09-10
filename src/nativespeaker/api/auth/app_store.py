@@ -142,7 +142,7 @@ class AppStoreNotifications:
             # The raw int, never `status`: the typed attribute is also None for an unknown value.
             return _crossed(payload, None, None, status=SubscriptionStatus.expired, tier_id=None)
 
-        status = _APPLE_STATUSES.get(data.status)
+        status = None if data.status is None else _APPLE_STATUSES.get(data.status)
         if status is None:
             # A status value present but outside Apple's own enum. The named class carries the log
             # line this module cannot write itself, so Apple's retries are visible.

@@ -112,12 +112,13 @@ def _shared_body(device_token: str) -> dict:
             "timestamp": int(datetime.now(UTC).timestamp() * 1000)}
 
 
-def _decoded(response: httpx.Response) -> object | None:
-    """The response body as JSON, or `None` when it does not decode."""
+def _decoded(response: httpx.Response) -> dict[str, object] | None:
+    """The response body as a JSON object, or `None` when it is neither."""
     try:
-        return response.json()
+        payload = response.json()
     except ValueError:
         return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _reject_or_retry(response: httpx.Response, *, stage: str) -> None:
@@ -148,7 +149,7 @@ def _parse_bit_state(response: httpx.Response, *, stage: str) -> BitState:
     _reject_or_retry(response, stage=stage)
 
     payload = _decoded(response)
-    if not isinstance(payload, dict):
+    if payload is None:
         raise RetryableDeviceCheckError("unrecognised body")
     bit0, bit1 = payload.get("bit0"), payload.get("bit1")
     if not isinstance(bit0, bool) or not isinstance(bit1, bool):
