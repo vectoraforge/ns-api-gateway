@@ -349,11 +349,63 @@ class TestTwoAdoptersOfOneSubscriptionCommitOneGrant:
         assert 400 <= status_of(loser) < 500
         assert status_of(loser) == 404
 
-    async def test_any_violation_the_loser_saw_was_the_unique_one(self, raced):
-        """42-07: 23505 is the only integrity code a lost race may carry, and none is also correct."""
+    async def test_the_loser_saw_no_violation_at_all_because_the_update_arbitrated(self, raced):
+        """D-08: the UPDATE refused this attempt before any write, so no integrity code reached it.
+        `is None`, not `in (None, "23505")`: a code is recorded only inside an `IntegrityError`
+        handler that also raises a flag, so the wider form could not fail once the flags are False."""
         loser = raced["by_role"]["lost"]
-        assert loser.sqlstate in (None, "23505")
+        assert loser.sqlstate is None
         assert (loser.integrity_at_flush, loser.integrity_at_commit) == (False, False)
+
+
+@pytest.mark.asyncio
+class TestTheUniqueIndexArbitratesWhereTheOwnerUpdateCannot:
+    """The backstop the class above names, on the one path that reaches it: 23505 and nothing else."""
+
+    @pytest_asyncio.fixture
+    async def raced(self, harness):
+        """One account restoring two subscriptions at once: each claims a row of its own, so the
+        conditional owner UPDATE refuses neither and `ix_access_grants_one_active_per_user` decides."""
+        destination = await commit_account(harness)
+        second_key = f"{harness.external_id}-second"
+        first_id = await commit_subscription(harness)
+        second_id = await commit_subscription(harness, external_id=second_key)
+        first = _Attempt(name="first", user_id=destination)
+        second = _Attempt(name="second", user_id=destination)
+        first_ready, second_ready = asyncio.Event(), asyncio.Event()
+        await asyncio.gather(
+            run_attempt(harness, first, proof_for(harness),
+                        barrier_for(harness, first, first_id, first_ready, second_ready)),
+            run_attempt(harness, second, proof_for(harness, external_id=second_key),
+                        barrier_for(harness, second, second_id, second_ready, first_ready)))
+        return {"attempts": (first, second), "destination": destination,
+                "subscription_ids": (first_id, second_id),
+                "by_role": {role_of(attempt): attempt for attempt in (first, second)}}
+
+    async def test_no_owner_update_refused_either_attempt(self, raced):
+        """The premise: both rows were unowned at the barrier, and each attempt claims a different one."""
+        assert [attempt.owner_seen_at_barrier for attempt in raced["attempts"]] == [None, None]
+        assert raced["subscription_ids"][0] != raced["subscription_ids"][1]
+
+    async def test_exactly_one_attempt_lost(self, raced):
+        assert set(raced["by_role"]) == {"won", "lost"}
+
+    async def test_the_loser_carries_the_unique_violation_and_carries_it_at_the_flush(self, raced):
+        """42-07: 23505 is the only integrity code a lost race may carry, on the path that has one.
+        A writer that began reading a foreign-key or CHECK violation as a lost race fails here."""
+        loser = raced["by_role"]["lost"]
+        assert loser.sqlstate == "23505"
+        assert (loser.integrity_at_flush, loser.integrity_at_commit) == (True, False)
+
+    async def test_the_loser_answers_the_retryable_five_hundred(self, raced):
+        """A lost race tells the client nothing and invites the retry that reads the winner's rows."""
+        assert status_of(raced["by_role"]["lost"]) == 500
+
+    async def test_the_account_is_left_holding_exactly_one_active_grant(self, harness, raced):
+        """The index's whole rule: two would mean it never fired, zero that both attempts rolled back."""
+        active = [row for row in await grants_of(harness, raced["destination"])
+                  if str(row[1]) == "active"]
+        assert len(active) == 1
 
 
 @pytest.mark.asyncio
