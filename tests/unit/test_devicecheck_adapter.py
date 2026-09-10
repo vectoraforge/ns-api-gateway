@@ -5,6 +5,7 @@ import inspect
 import json
 import time
 import typing
+from collections.abc import Callable
 
 import httpx
 import jwt as pyjwt
@@ -22,6 +23,7 @@ from nativespeaker.api.auth.devicecheck import (
     AppleDeviceCheck,
     BitState,
     DeviceCheckAdapter,
+    RetryableDeviceCheckError,
     read_bits_with_retry,
     read_private_key,
     write_bits_with_retry,
@@ -77,7 +79,13 @@ class Recorder:
         return self.requests[index].headers["Authorization"].removeprefix("Bearer ")
 
 
-def _adapter(recorder: Recorder, private_key: str, *, key_id: str | None = KEY_ID,
+def _unreachable(_request: httpx.Request) -> httpx.Response:
+    """A transport that never answers, which is the failure `_post` converts to its marker."""
+    raise httpx.ConnectError("the DeviceCheck endpoint is unreachable")
+
+
+def _adapter(recorder: Callable[[httpx.Request], httpx.Response], private_key: str, *,
+             key_id: str | None = KEY_ID,
              team_id: str | None = TEAM_ID, key: str | None = "") -> AppleDeviceCheck:
     """The real adapter over a mock transport; certificate verification is never touched."""
     client = httpx.AsyncClient(transport=httpx.MockTransport(recorder))
@@ -292,6 +300,39 @@ class TestTheParseArms:
                                         bit0=True, bit1=False)
 
         assert len(recorder.requests) == 1
+
+
+class TestATransportFailureIsRetryableAndNamesOnlyItsClass:
+    """41-01-SUMMARY:204 states this conversion as shipped and nothing drove it: an escaping
+    `httpx.ConnectError` is no `AppError`, so a blip skipped the rollback arm and 500'd."""
+
+    async def test_a_connect_failure_becomes_the_marker_the_retry_predicate_targets(self,
+                                                                                    private_key):
+        with pytest.raises(RetryableDeviceCheckError) as raised:
+            await _adapter(_unreachable, private_key).read_bits(QUERY_TOKEN)
+
+        assert str(raised.value) == "ConnectError"
+
+    async def test_the_marker_carries_neither_the_device_token_nor_the_endpoint(self, private_key):
+        """`httpx`'s own message quotes the request, and this one is signed for a named device."""
+        with pytest.raises(RetryableDeviceCheckError) as raised:
+            await _adapter(_unreachable, private_key).read_bits(QUERY_TOKEN)
+
+        assert QUERY_TOKEN not in str(raised.value)
+        assert DEVICECHECK_HOST not in str(raised.value)
+
+    async def test_the_read_budget_is_spent_and_then_answered_as_unavailable(self, private_key):
+        with pytest.raises(Unavailable) as refusal:
+            await read_bits_with_retry(_adapter(_unreachable, private_key), QUERY_TOKEN)
+
+        assert refusal.value.stage == "devicecheck_read"
+
+    async def test_the_write_budget_is_spent_and_then_answered_as_unavailable(self, private_key):
+        with pytest.raises(Unavailable) as refusal:
+            await write_bits_with_retry(_adapter(_unreachable, private_key), UPDATE_TOKEN,
+                                        bit0=True, bit1=False)
+
+        assert refusal.value.stage == "devicecheck_write"
 
 
 @pytest.mark.timing
