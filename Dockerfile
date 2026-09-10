@@ -29,8 +29,10 @@ ENV PATH="/app/.venv/bin:$PATH"
 COPY config ./config/
 
 # Create non-root user for security. uid 1000 matches the chart's `runAsUser`.
-RUN useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app
+# No `chown -R`: nothing under /app is written at runtime and `uv sync` writes world-readable
+# files, so the process reads its own code without owning it -- and changing every file's owner
+# copied the whole virtualenv up into a second image layer.
+RUN useradd -m -u 1000 appuser
 
 USER appuser
 

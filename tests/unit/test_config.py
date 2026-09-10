@@ -731,6 +731,19 @@ class TestTheCommittedEnvExampleCannotCrashABoot:
         assert all(key.isupper() for key in shipped)
 
 
+class TestTheImageNeverGivesTheProcessOwnershipOfItsOwnCode:
+    """WR-04. A recursive chown made the runtime user the owner of its own interpreter and
+    site-packages, and copied the whole virtualenv up into a second image layer."""
+
+    def test_no_dockerfile_instruction_changes_an_owner(self):
+        shipped = (REPOSITORY_ROOT / "Dockerfile").read_text().splitlines()
+        instructions = [line for line in shipped if not line.lstrip().startswith("#")]
+
+        assert not [line for line in instructions if "chown" in line]
+        # The control: the non-root user is still created, so the assertion above is not vacuous.
+        assert any("useradd -m -u 1000 appuser" in line for line in instructions)
+
+
 class TestTheAdcPlaceholderCannotShadowAGcloudSession:
     """WR-03. An explicit path outranks the well-known session file, so an uncommented
     placeholder turned a working credential into a 503 on every account-creation route."""
