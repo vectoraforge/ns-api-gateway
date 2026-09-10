@@ -384,10 +384,8 @@ class TestTheProviderStageRejections:
     def test_a_replay_after_a_success_mints_no_second_account(
             self, client, store, rejections, creator, fake_firebase_adapter):
         """The success side of `test_a_replay_after_a_rejection_...`: one handle, one account.
-
-        The outcome, not a mechanism. Two independent things refuse the replay -- the claim gate
-        and the binding the spend clears -- so this fails only once both are gone. The case above
-        is what pins the spend itself."""
+        The outcome, not a mechanism: the claim gate and the cleared binding both refuse the
+        replay, so this fails only once both are gone. The case above pins the spend itself."""
         store.row = _issued_row()
         fake_firebase_adapter.script(VerifiedProviderIdentity(provider=IdentityProvider.google,
                                                               provider_uid="google-uid-1",
