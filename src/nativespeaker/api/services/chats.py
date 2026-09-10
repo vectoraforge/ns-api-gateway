@@ -101,6 +101,12 @@ class ChatService:
             await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
             ai_message = await self.ask_llm(chat, human_message, admitted)
 
+        # Re-read in the transaction that writes, as `send_message` re-reads its chat below: the
+        # count above was taken before the commit that ended its transaction and before the provider
+        # round trip, so every concurrent request on an account one below the limit passed it.
+        if await self.chats_db.count_chats(user_id) >= self.chats_limit:
+            raise ChatHistoryLimitError(self.chats_limit)
+
         chat.messages.append(human_message)
         chat.messages.append(ai_message)
         self.chats_db.create_chat(chat)

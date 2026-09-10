@@ -99,6 +99,21 @@ class TestCreateChat:
         assert exc_info.value.max_messages == 50
 
     @pytest.mark.asyncio
+    async def test_a_chat_that_reached_the_limit_across_the_provider_call_is_not_inserted(
+            self, service, mock_chats_db):
+        """WR-63: the guard and the insert are separated by a commit and an LLM round trip, and
+        nothing in the database caps the count, so the last read before the insert is the guard."""
+        service.llm_service.ainvoke.return_value = {"resolved_mode": "analyze", "response": "OK",
+                                                    "issues": [], "suggestions": []}
+        # 49 when the request arrives, 50 by the time it comes back from the provider.
+        mock_chats_db.count_chats.side_effect = [49, 50]
+
+        with pytest.raises(ChatHistoryLimitError):
+            await service.create_chat(phrase="Test", user_id=TEST_USER_ID, lang="en")
+
+        mock_chats_db.create_chat.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_new_chat_llm_error(self, service, mock_chats_db):
         llm_exc = PermanentLLMError("LLM API error")
         service.llm_service.ainvoke.side_effect = llm_exc
