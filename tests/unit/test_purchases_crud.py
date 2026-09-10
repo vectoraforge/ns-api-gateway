@@ -1,4 +1,5 @@
-"""The per-store token read: complete or raising, one statement, no lock, and no token in the message."""
+"""The two `core.store_purchase_tokens` reads: the per-store token read, complete or raising
+with no token in its message, and the attribution read, keyed on the store and the token."""
 from uuid import uuid7
 
 import pytest
@@ -21,20 +22,26 @@ SEEDED = {PurchaseProvider.apple: APPLE_TOKEN, PurchaseProvider.google_play: GOO
 
 
 class _StubResult:
-    """The rows a two-column select returns: `(provider, identity_value)` tuples, not model instances."""
+    """The two shapes these reads ask for: the token read's `(provider, identity_value)` rows, and
+    the one owner the attribution read takes off its single column."""
 
-    def __init__(self, rows):
+    def __init__(self, rows, owner=None):
         self._rows = list(rows)
+        self._owner = owner
 
     def all(self):
         return list(self._rows)
+
+    def first(self):
+        return self._owner
 
 
 class _StubSession:
     """Stands in for the request session, keeping every statement it was asked to run."""
 
-    def __init__(self, tokens):
+    def __init__(self, tokens, owner=None):
         self._tokens = dict(tokens)
+        self._owner = owner
         self.statements = []
 
     @property
@@ -43,7 +50,7 @@ class _StubSession:
 
     async def exec(self, statement):
         self.statements.append(statement)
-        return _StubResult(self._tokens.items())
+        return _StubResult(self._tokens.items(), self._owner)
 
 
 def _compiled(statement) -> str:
@@ -156,3 +163,32 @@ class TestTheReadIsScopedToOneOwner:
         _, session = await _read(SEEDED)
 
         assert _bound(session.statements[0]) == [USER_ID]
+
+
+async def _resolved(provider, identity_value):
+    """The attribution read's answer, and the session that carries the statement it issued."""
+    session = _StubSession(SEEDED, owner=USER_ID)
+    return await PurchasesDB(session).resolve_user(provider, identity_value), session
+
+
+class TestTheAttributionReadIsKeyedOnTheStoreAndTheToken:
+    """`08-webhook-app-store.md`:37 keys attribution on the store provider and the lifetime token,
+    with no identity-kind dimension, so one store's token never resolves the other store's binding."""
+
+    async def test_the_statement_carries_both_halves_of_the_key(self):
+        """The predicates are not enough on their own: the compiled text renders both as placeholders."""
+        _, session = await _resolved(PurchaseProvider.apple, APPLE_TOKEN)
+
+        assert _bound(session.statements[0]) == [PurchaseProvider.apple, APPLE_TOKEN]
+
+    async def test_the_bound_owner_is_the_answer(self):
+        owner, _ = await _resolved(PurchaseProvider.apple, APPLE_TOKEN)
+
+        assert owner == USER_ID
+
+    async def test_the_read_takes_one_unlocked_statement(self):
+        """A lock here would serialise every ingestion behind the grant locks it is read before."""
+        _, session = await _resolved(PurchaseProvider.google_play, GOOGLE_TOKEN)
+
+        assert session.executed == 1
+        assert LOCK_CLAUSE not in _compiled(session.statements[0])
