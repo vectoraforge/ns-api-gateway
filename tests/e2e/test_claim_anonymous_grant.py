@@ -189,6 +189,13 @@ async def _grants_of(factory, user_id) -> list[AccessGrant]:
             .order_by(col(AccessGrant.id).asc()))).all())
 
 
+async def _usage_of(factory, grant_id) -> UserMonthlyUsage:
+    async with factory() as session:
+        return (await session.exec(
+            select(UserMonthlyUsage)
+            .where(col(UserMonthlyUsage.grant_id) == grant_id))).one()
+
+
 async def _identity_of(factory, subject: str) -> ExternalIdentity:
     async with factory() as session:
         return (await session.exec(
@@ -221,6 +228,9 @@ class TestTheRepeatIsIdempotent:
         assert first.status_code == 200, first.text
         after_first = await _row_counts(_db_transaction, user.id)
         assert after_first == (1, 1)
+        # The rows themselves, not their count: "writes nothing" is what this case is named for.
+        granted = (await _grants_of(_db_transaction, user.id))[0]
+        usage_before = await _usage_of(_db_transaction, granted.id)
 
         # Cleared rather than re-created: the repeat's own call count is what the next assertion reads.
         scripted_devicecheck_adapter.read_calls.clear()
@@ -237,6 +247,12 @@ class TestTheRepeatIsIdempotent:
         assert scripted_devicecheck_adapter.read_calls == []
         assert scripted_devicecheck_adapter.write_calls == []
         assert await _row_counts(_db_transaction, user.id) == after_first
+        unchanged = (await _grants_of(_db_transaction, user.id))[0]
+        assert (unchanged.id, unchanged.status, unchanged.ends_at, unchanged.updated_at) == (
+            granted.id, granted.status, granted.ends_at, granted.updated_at)
+        usage_after = await _usage_of(_db_transaction, granted.id)
+        assert (usage_after.monthly_period, usage_after.monthly_used, usage_after.updated_at) == (
+            usage_before.monthly_period, usage_before.monthly_used, usage_before.updated_at)
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
 
