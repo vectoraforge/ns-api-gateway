@@ -415,9 +415,11 @@ class TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach:
         assert await _account_snapshot(_db_transaction, user.id) == before
 
     async def test_a_term_ending_at_the_captured_instant_is_not_open(
-            self, restore_client, _db_transaction, scripted_app_store_notifications):
-        """The closed side of the boundary, named as a term a moment past rather than read
-        from the service's own clock."""
+            self, restore_client, _db_transaction, scripted_app_store_notifications,
+            pinned_evaluation_instant):
+        """The closed side of the boundary at the instant itself: the predicate is `<=`, so a term
+        ending exactly when the request was evaluated is over. Only a pinned instant names that
+        equality, because a live clock never lands on it."""
         user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
                                       provider=IdentityProvider.google)
         external_id = f"e2e-boundary-{uuid4()}"
@@ -425,8 +427,7 @@ class TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach:
                                 tier_id=PAID_TIER_ID)
         before = await _four_counts(_db_transaction, user.id, external_id)
         scripted_app_store_notifications.script_restore(
-            _proof(external_id,
-                   expires_at=datetime.now(UTC) - timedelta(milliseconds=1)))
+            _proof(external_id, expires_at=pinned_evaluation_instant))
 
         refused = await _restore(restore_client)
 
