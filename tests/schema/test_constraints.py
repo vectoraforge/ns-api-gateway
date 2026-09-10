@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
+from nativespeaker.api.services.auth import ANONYMOUS_TIER_ID, REGISTERED_TIER_ID
 from schema.helpers import insert_grant, insert_tier, insert_usage, insert_user
 
 pytestmark = pytest.mark.schema
@@ -449,6 +450,20 @@ class TestAccessTierConstraints:
 
         assert await conn.fetchval(
             "SELECT monthly_credits FROM core.access_tiers WHERE id = $1", tier_id) == 0
+
+
+class TestTheTierSizingInvariantTheConversionRelisOn:
+    """`GrantsDB.activate_registered_account_grant` carries `monthly_used` across a conversion
+    unclamped, which is safe only while the registered allowance is at least the anonymous one."""
+
+    async def test_the_registered_allowance_is_never_below_the_anonymous_one(self, conn):
+        seeded = dict(await conn.fetch(
+            "SELECT id, monthly_credits FROM core.access_tiers WHERE id = ANY($1::text[])",
+            [ANONYMOUS_TIER_ID, REGISTERED_TIER_ID]))
+
+        # Both keys asserted first: a renamed seed row would otherwise make the comparison vacuous.
+        assert set(seeded) == {ANONYMOUS_TIER_ID, REGISTERED_TIER_ID}
+        assert seeded[REGISTERED_TIER_ID] >= seeded[ANONYMOUS_TIER_ID]
 
 
 class TestStorePurchaseConstraints:

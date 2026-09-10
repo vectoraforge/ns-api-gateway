@@ -301,7 +301,8 @@ class GrantsDB:
                                 created_at=evaluated_at,
                                 updated_at=evaluated_at)
         self.session.add(activated)
-        # The carried period and count are safe because the registered tier's allowance is the larger one.
+        # Carried unclamped, which `test_constraints.py::TestTheTierSizingInvariantTheConversionRelisOn`
+        # is what holds: the registered allowance is read off the applied seed and never the smaller one.
         self.session.add(UserMonthlyUsage(
             grant_id=activated.id,
             monthly_period=(monthly_period_for(evaluated_at) if carried is None
