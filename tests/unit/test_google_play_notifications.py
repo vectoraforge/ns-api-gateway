@@ -407,6 +407,13 @@ class TestThePackageNameCheck:
         with pytest.raises(NotificationRejected):
             await _verify(_push(_rtdn(**SUBSCRIPTION_BODY)), package_name=None)
 
+    async def test_an_empty_configured_package_refuses_a_delivery_that_names_none_either(self):
+        """WR-02: `GOOGLE_PLAY_PACKAGE_NAME=` parses to `""`, which an equality alone reads as a match."""
+        with pytest.raises(NotificationRejected) as refusal:
+            await _verify(_push(_rtdn(packageName="", **SUBSCRIPTION_BODY)), package_name="")
+
+        assert refusal.value.stage == "package_name_mismatch"
+
     async def test_the_configured_package_reaches_the_play_read_with_this_token(self):
         play = _RecordingPlay()
 

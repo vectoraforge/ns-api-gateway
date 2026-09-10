@@ -214,7 +214,9 @@ async def verify_google_play_notification(
     if subscription is None:
         return None
 
-    if notification.packageName != request.app.state.config.google_play.package_name:
+    expected_package = request.app.state.config.google_play.package_name
+    # Truthiness first, like every sibling optional setting: an empty value is absent, not a match.
+    if not expected_package or notification.packageName != expected_package:
         # Refused before the Play call: this delivery names an application this deployment does not serve.
         raise NotificationRejected(stage="package_name_mismatch")
 
