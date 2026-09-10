@@ -15,7 +15,9 @@ from schema.helpers import insert_tier
 
 MIGRATIONS = pathlib.Path(__file__).parents[2] / "migrations"
 POGO_SCHEMA = "api"  # matches [tool.pogo] schema
-SCHEMA_TEST_DB = "ns_schema_test"
+# Per-session, not a fixed constant: setup drops the name WITH (FORCE), which terminates every other
+# connection to it, so two runs against one server would kill each other mid-test.
+SCHEMA_TEST_DB = f"ns_schema_test_{os.getpid()}"
 
 # Defaults so the suite runs with DB_* unset; DB_NAME falls back to the maintenance database, which exists.
 _DB_DEFAULTS = {

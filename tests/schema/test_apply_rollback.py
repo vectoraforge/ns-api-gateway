@@ -1,4 +1,6 @@
 """One migration file, a clean apply from empty, and a clean rollback through pogo's own path."""
+import os
+
 import asyncpg
 import pytest
 from pogo_core.util import testing as pogo_testing
@@ -8,8 +10,9 @@ from schema.helpers import insert_grant, insert_user
 
 pytestmark = pytest.mark.schema
 
-# Its own scratch database so the rollback proof cannot disturb the session fixture's.
-ROLLBACK_TEST_DB = "ns_schema_test_rollback"
+# Its own scratch database so the rollback proof cannot disturb the session fixture's, and
+# per-session for the reason `SCHEMA_TEST_DB` gives: this one is force-dropped too.
+ROLLBACK_TEST_DB = f"ns_schema_test_rollback_{os.getpid()}"
 
 NAMESPACES = "SELECT count(*) FROM pg_namespace WHERE nspname IN ('core', 'audit')"
 
