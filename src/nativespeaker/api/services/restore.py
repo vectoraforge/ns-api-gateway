@@ -103,10 +103,12 @@ class RestoreService:
                          if stored is not None
                          and grant.source is AccessGrantSource.subscription
                          and grant.subscription_id == stored.id]
-        # The proof is the term's source only where no grant records one: adoption of an unowned
-        # row, and adoption-with-creation, where nothing but the proof has seen this subscription.
-        term_ends_at = recorded_term[0] if recorded_term else term_end_for(status, proof)
-        if term_ends_at is None or term_ends_at <= self.evaluated_at:
+        # The recorded term comes first, because a webhook verified it.
+        # A closed one is not read as the answer: the renewal notification can be late, and the
+        # signed proof is then the newer word for the same subscription.
+        term_ends_at = next((end for end in (*recorded_term, term_end_for(status, proof))
+                             if end is not None and end > self.evaluated_at), None)
+        if term_ends_at is None:
             # No open term entitles nothing, whatever the canonical row still says.
             raise RestoreSubscriptionNotEntitled(cause="term_closed")
 

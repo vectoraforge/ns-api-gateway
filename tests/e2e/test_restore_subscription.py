@@ -218,6 +218,17 @@ async def _usage_of(factory, grant_id) -> UserMonthlyUsage:
             .where(col(UserMonthlyUsage.grant_id) == grant_id))).one()
 
 
+async def _close_term(factory, grant_id, *, mark: AccessGrantStatus) -> None:
+    """Put the grant's term in the past under the mark the webhook has got round to writing."""
+    async with factory() as session:
+        grant = (await session.exec(
+            select(AccessGrant).where(col(AccessGrant.id) == grant_id))).one()
+        grant.ends_at = datetime.now(UTC) - TERM_ENDED_AGO
+        grant.status = mark
+        session.add(grant)
+        await session.commit()
+
+
 async def _spend(factory, grant_id, used: int) -> None:
     """Charge the grant's counter, so a reset by a repeat restore is visible rather than invisible."""
     async with factory() as session:
@@ -474,6 +485,37 @@ class TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach:
         grants = await _grants_of(_db_transaction, user.id)
         assert [grant.status for grant in grants] == [AccessGrantStatus.active]
         assert grants[0].ends_at == window_ends
+
+    @pytest.mark.parametrize(("mark", "carried"),
+                             [(AccessGrantStatus.active, 4), (AccessGrantStatus.expired, 0)])
+    async def test_a_closed_recorded_term_never_outranks_a_current_proof_under_either_mark(
+            self, restore_client, _db_transaction, scripted_app_store_notifications, mark, carried):
+        """CR-01: the recorded term answers only while it is open. Between a term ending and the
+        store's renewal notification arriving the grant still reads active with a closed term, and
+        the subscriber must not be refused for the mark a webhook has not written yet."""
+        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
+                                      provider=IdentityProvider.google)
+        external_id = f"e2e-closed-recorded-term-{uuid4()}"
+        await seed_subscription(_db_transaction, external_id=external_id, user_id=user.id,
+                                tier_id=PAID_TIER_ID)
+        scripted_app_store_notifications.script_restore(_proof(external_id))
+        assert (await _restore(restore_client)).status_code == 200
+        first = (await _grants_of(_db_transaction, user.id))[0]
+        await _spend(_db_transaction, first.id, 4)
+        await _close_term(_db_transaction, first.id, mark=mark)
+
+        renewed = _proof(external_id)
+        scripted_app_store_notifications.script_restore(renewed)
+        answered = await _restore(restore_client)
+
+        assert answered.status_code == 200, answered.text
+        assert answered.json()["entitlement"]["tier_id"] == PAID_TIER_ID
+        live = [grant for grant in await _grants_of(_db_transaction, user.id)
+                if grant.status is AccessGrantStatus.active]
+        assert [grant.ends_at for grant in live] == [renewed.expires_at]
+        # The still-active row is superseded, so this month's count follows it to the new term;
+        # a row a webhook already expired is outside the locked set and carries nothing.
+        assert (await _usage_of(_db_transaction, live[0].id)).monthly_used == carried
 
     async def test_a_dead_proof_refuses_where_nothing_records_the_term_and_replays_where_one_does(
             self, restore_client, _db_transaction, scripted_app_store_notifications):
