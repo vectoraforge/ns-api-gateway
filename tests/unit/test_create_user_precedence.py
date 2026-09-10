@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
     get_challenge_store,
-    get_db,
     get_devicecheck_adapter,
     get_firebase_adapter,
     get_identity,
@@ -66,6 +65,12 @@ class _StubSession:
         self.commits = 0
         self.rollbacks = 0
         self.refreshed: list[object] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc) -> bool:
+        return False
 
     async def commit(self) -> None:
         self.commits += 1
@@ -136,17 +141,8 @@ def client(store, session, identity, creator, fake_firebase_adapter):
     register_exception_handlers(app)
 
     app.dependency_overrides[get_identity] = lambda: identity
-    # An async generator, not a plain callable: `get_db` releases the read transaction itself, and a
-    # callable has no `try`/`except` to do it with. Mirrors `app/dependencies.py::get_db` exactly.
-    async def _db():
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-
-    app.dependency_overrides[get_db] = _db
+    # `get_db` is left un-overridden and reads only this: a mirror of it drifted from the real one.
+    app.state.session_factory = lambda: session
     app.dependency_overrides[get_challenge_store] = lambda: store
     app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
     # Declared by `get_auth_service` for every auth route; this app has no lifespan to build one.

@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
     get_challenge_store,
-    get_db,
     get_devicecheck_adapter,
     get_firebase_adapter,
     get_identity,
@@ -143,16 +142,8 @@ def client(store, session, identity, grants, devicecheck):
 
     app.dependency_overrides[get_identity] = lambda: identity
 
-    # An async generator, not a plain callable: `get_db` releases the read transaction itself.
-    async def _db():
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-
-    app.dependency_overrides[get_db] = _db
+    # `get_db` is left un-overridden and reads only this: a mirror of it drifted from the real one.
+    app.state.session_factory = lambda: session
     app.dependency_overrides[get_challenge_store] = lambda: store
     app.dependency_overrides[get_firebase_adapter] = lambda: None
     app.dependency_overrides[get_devicecheck_adapter] = lambda: devicecheck
