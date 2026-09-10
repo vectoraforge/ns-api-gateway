@@ -256,6 +256,13 @@ class PlayDeveloperSubscriptions:
         """Read this subscription's live state from Play, or answer `None` for a gone token."""
         if self._credential is None:
             raise Unavailable(stage="play_subscriptions_read")
+        if not package_name or not _names_one_path_segment(package_name):
+            # The same guard `read_for_restore` applies, and a deployment fault like it: an absent
+            # or dot-only application name addresses a URL naming no application, whose 404 reads
+            # here as a gone token. Refused loudly, because acknowledging drops the delivery for
+            # good -- Pub/Sub never redelivers an acknowledged message.
+            logger.error("google_play_unusable_package_name")
+            raise InternalError
         if not _names_one_path_segment(purchase_token):
             # The same guard `read_for_restore` applies to the same value, hoisted because both
             # entry points reach the same `_get`. `quote` leaves a dot unescaped and httpx removes
@@ -386,7 +393,7 @@ class PlayDeveloperSubscriptions:
             # `refresh` is synchronous and can block on a token fetch, so it never runs on the loop.
             await run_in_threadpool(self._credential.refresh,
                                     google.auth.transport.requests.Request())
-        # Escaping confines each value to one segment, except dots, which `read_for_restore` refuses.
+        # Escaping confines each value to one segment, except dots, which both entry points refuse.
         return await self._client.get(
             PLAY_URL.format(package_name=quote(package_name, safe=""),
                             purchase_token=quote(purchase_token, safe="")),

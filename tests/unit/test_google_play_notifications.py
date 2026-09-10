@@ -502,6 +502,23 @@ class TestBothEntryPointsGuardTheValueTheyPutInThePath:
                                  signed_at=SIGNED_AT, evaluated_at=EVALUATED_AT) is None
         assert play_logs.records("error") == [("google_play_unusable_purchase_token", {})]
 
+    @pytest.mark.parametrize("package_name", ["", ".", "..", "..."])
+    async def test_a_package_name_that_names_no_path_segment_is_refused_and_never_acknowledged(
+            self, package_name, play_logs):
+        """WR-25: only the token half was hoisted into `read`. A dot-only application name is a
+        deployment fault, and acknowledging it drops every RTDN Pub/Sub will ever send."""
+        def _never(_request):
+            raise AssertionError("an unusable package name must not reach Play")
+
+        reader = _play_reader(_never)
+
+        with pytest.raises(InternalError):
+            await reader.read(package_name=package_name, purchase_token=PURCHASE_TOKEN,
+                              event_type=EVENT_TYPE, notification_uuid=NOTIFICATION_KEY,
+                              signed_at=SIGNED_AT, evaluated_at=EVALUATED_AT)
+
+        assert play_logs.records("error") == [("google_play_unusable_package_name", {})]
+
     async def test_a_real_token_still_reaches_play(self, play_logs):
         """The control: a guard that refused everything would pass every case above."""
         reader = _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_ACTIVE",
