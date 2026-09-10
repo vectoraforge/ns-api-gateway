@@ -309,6 +309,9 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert response.status_code == 200
         assert store.consume_calls == 1
         assert grants.activates == 1
+        # WR-101: the conversion's own destination tier. The `entitlement` in the response is the
+        # post-commit sync stub's hand-built one, so it answers the same whatever was written.
+        assert grants.tiers == ["registered"]
         assert devicecheck.read_calls == []
         assert devicecheck.write_calls == []
 
@@ -361,6 +364,9 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert response.json()["entitlement"]["type"] == "registered_account_grant"
         assert store.consume_calls == 1
         assert grants.activates == 1
+        # WR-101: the registered tier carries 50 credits and the anonymous one 10, and the line
+        # above is answered by the sync stub rather than by what the writer was asked to write.
+        assert grants.tiers == ["registered"]
         assert devicecheck.read_calls == [DEVICE_TOKEN]
         # bit0 carried forward from the query, never fabricated.
         assert devicecheck.write_calls == [(DEVICE_TOKEN, False, True)]

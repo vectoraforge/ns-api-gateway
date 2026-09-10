@@ -120,6 +120,10 @@ class _RecordingGrants:
         self.activates = 0
         # The platform each activation named, so the pin is asserted rather than assumed.
         self.claim_platforms: list = []
+        # WR-101: the tier each activation named. Dropped, the writer could be handed the anonymous
+        # tier's 10-credit allowance on the registered route and every unit case stayed green,
+        # because the entitlement in the response is the post-commit sync stub's, not the writer's.
+        self.tiers: list[str] = []
         self.outcome = ActivationOutcome.activated
         # The arm the writer says refused, which the refusal's one log line carries.
         self.cause: str | None = None
@@ -159,6 +163,7 @@ class _RecordingGrants:
         # what lets the registered writer, which has no attestation to name, share this recorder.
         self.activates += 1
         self.claim_platforms.append(claim_platform)
+        self.tiers.append(tier_id)
         self.timeline.append("activate")
         # The writer takes both lock tiers and flushes, so the transaction is open from here.
         self.session.in_transaction = True
@@ -623,6 +628,9 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert response.json()["entitlement"]["type"] == "anonymous_device_grant"
         assert store.consume_calls == 1
         assert grants.activates == 1
+        # The tier the writer was told to write, which the response's own entitlement -- read back
+        # through the post-commit sync seam -- cannot report.
+        assert grants.tiers == ["anonymous"]
         assert devicecheck.read_calls == [DEVICE_TOKEN]
         # bit1 carried forward from the query, never fabricated.
         assert devicecheck.write_calls == [(DEVICE_TOKEN, True, False)]
