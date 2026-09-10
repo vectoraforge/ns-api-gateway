@@ -99,8 +99,9 @@ async def clean_up(harness: _Harness) -> None:
 class _RecordingSession(_RacingSession):
     """The claim race's session, plus the SQLSTATE its violation carried at either boundary."""
 
-    def __init__(self, session, before_first_update=None, before_first_commit=None) -> None:
-        super().__init__(session, None, before_first_commit)
+    def __init__(self, session, before_first_update=None, before_first_commit=None,
+                 before_first_flush=None) -> None:
+        super().__init__(session, before_first_flush, before_first_commit)
         self._before_first_update = before_first_update
         self.updates = 0
         self.sqlstate: str | None = None
@@ -222,10 +223,12 @@ def identity_of(user_id: uuid.UUID) -> Identity:
 
 
 async def run_attempt(harness: _Harness, attempt: _Attempt, proof: RestoredSubscription,
-                      before_first_update=None, before_first_commit=None) -> _Attempt:
+                      before_first_update=None, before_first_commit=None,
+                      before_first_flush=None) -> _Attempt:
     """Drive the production restore once, on its own session and connection, as one request does."""
     async with harness.factory() as real_session:
-        session = _RecordingSession(real_session, before_first_update, before_first_commit)
+        session = _RecordingSession(real_session, before_first_update, before_first_commit,
+                                    before_first_flush)
         service = RestoreService(db=session, evaluated_at=NOW,
                                  app_store=_ScriptedAppStore(proof),
                                  # Never read: every attempt of this file names the Apple store.
@@ -360,7 +363,9 @@ class TestTwoAdoptersOfOneSubscriptionCommitOneGrant:
 
 @pytest.mark.asyncio
 class TestTheUniqueIndexArbitratesWhereTheOwnerUpdateCannot:
-    """The backstop the class above names, on the one path that reaches it: 23505 and nothing else."""
+    """The grant backstop the class above names, where the owner UPDATE refuses nobody: 23505 and
+    nothing else. WR-82: this is not the only 23505 path a restore has. The create branch races
+    `ix_subscriptions_provider_external_id`, and the class below is that one."""
 
     @pytest_asyncio.fixture
     async def raced(self, harness):
@@ -406,6 +411,53 @@ class TestTheUniqueIndexArbitratesWhereTheOwnerUpdateCannot:
         active = [row for row in await grants_of(harness, raced["destination"])
                   if str(row[1]) == "active"]
         assert len(active) == 1
+
+
+@pytest.mark.asyncio
+class TestTheCreateBranchLosesToAWebhookThatCommittedFirst:
+    """WR-82, D-06. The adoption-with-creation branch is the restore's second 23505 path: no
+    canonical row at the plain read, and a webhook commits one before the insert flushes.
+    `ix_subscriptions_provider_external_id` arbitrates here, not the grant index and not the UPDATE."""
+
+    @pytest_asyncio.fixture
+    async def lost(self, harness):
+        """No canonical row to read, and one committed from a second connection at the insert's flush."""
+        destination = await commit_account(harness)
+        attempt = _Attempt(name="creator", user_id=destination)
+        committed: list[uuid.UUID] = []
+
+        async def commit_the_webhooks_row() -> None:
+            committed.append(await commit_subscription(harness))
+
+        await run_attempt(harness, attempt, proof_for(harness),
+                          before_first_flush=commit_the_webhooks_row)
+        return {"attempt": attempt, "destination": destination,
+                "subscription_id": committed[0]}
+
+    async def test_the_rival_row_was_committed_before_the_insert_flushed(self, lost):
+        """The premise: a hook that never ran would leave the insert unopposed and every case vacuous."""
+        assert lost["attempt"].flushes == 1
+
+    async def test_the_lost_create_carries_the_unique_violation_at_its_flush(self, lost):
+        """The lifecycle index refused the insert, so the code arrives at the flush and not at COMMIT."""
+        attempt = lost["attempt"]
+        assert attempt.sqlstate == "23505"
+        assert (attempt.integrity_at_flush, attempt.integrity_at_commit) == (True, False)
+
+    async def test_the_lost_create_answers_the_retryable_five_hundred(self, lost):
+        """A lost race tells the client nothing and invites the retry that reads the winner's row."""
+        assert status_of(lost["attempt"]) == 500
+
+    async def test_exactly_one_canonical_row_holds_the_lifecycle_key(self, harness, lost):
+        """Two would mean the index never fired; the winner's row is the one a retry then reads."""
+        rows = await read(harness,
+                          "SELECT id FROM core.subscriptions WHERE external_id = :key",
+                          {"key": harness.external_id})
+        assert [row[0] for row in rows] == [lost["subscription_id"]]
+
+    async def test_the_lost_create_left_the_account_no_grant(self, harness, lost):
+        """The rollback is what makes the retry clean: a grant written here would be an orphan."""
+        assert await grants_of(harness, lost["destination"]) == []
 
 
 @pytest.mark.asyncio
