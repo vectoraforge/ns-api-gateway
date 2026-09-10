@@ -8,7 +8,12 @@ import pytest
 
 from nativespeaker.api.crud.grants import ActivationOutcome, GrantsDB
 from nativespeaker.api.crud.identities import IdentitiesDB
-from nativespeaker.api.tables import AccessGrantSource
+from nativespeaker.api.tables import (
+    AccessGrant,
+    AccessGrantSource,
+    AccessGrantStatus,
+    UserMonthlyUsage,
+)
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 
 EVALUATED_AT = datetime(2026, 9, 9, 12, tzinfo=UTC)
@@ -62,6 +67,39 @@ def writer(identity_row, monkeypatch) -> GrantsDB:
     monkeypatch.setattr(GrantsDB, "has_prior_free_grant", has_prior_free_grant)
     monkeypatch.setattr(IdentitiesDB, "resolve_existing", resolve_existing)
     return GrantsDB(_AddingSession())  # ty: ignore[invalid-argument-type]
+
+
+def _a_grant(source: AccessGrantSource) -> AccessGrant:
+    """One active grant row, shaped as a lock tier hands one back."""
+    return AccessGrant(user_id=uuid4(),
+                       tier_id=TIER_ID,
+                       source=source,
+                       status=AccessGrantStatus.active,
+                       starts_at=EVALUATED_AT,
+                       created_at=EVALUATED_AT,
+                       updated_at=EVALUATED_AT)
+
+
+def _locks_returning(monkeypatch, *, effective=(), marked_active=()) -> None:
+    """Rescript the two lock tiers the `writer` fixture leaves empty, plus the usage lock a
+    non-empty effective set makes the writer take before it decides anything."""
+
+    async def lock_effective(self, user_id, evaluated_at):
+        return list(effective)
+
+    async def lock_active(self, user_id):
+        return list(marked_active)
+
+    async def lock_usage(self, grant_id):
+        return UserMonthlyUsage(grant_id=grant_id,
+                                monthly_period="2026-09",
+                                monthly_used=0,
+                                created_at=EVALUATED_AT,
+                                updated_at=EVALUATED_AT)
+
+    monkeypatch.setattr(GrantsDB, "lock_effective_grants", lock_effective)
+    monkeypatch.setattr(GrantsDB, "lock_active_grants", lock_active)
+    monkeypatch.setattr(GrantsDB, "lock_usage", lock_usage)
 
 
 def _with_registered_row(monkeypatch, present: bool, asked: list) -> None:
@@ -147,6 +185,38 @@ class TestEachRefusalNamesTheArmThatFiredIt:
         _with_registered_row(monkeypatch, present=False, asked=[])
 
         assert await _cause(writer, identity_row) == "identity_not_registered"
+
+    async def test_a_held_grant_of_another_source_names_its_own_arm(self, writer, identity_row,
+                                                                    monkeypatch):
+        """D-09(b): a `subscription` or `manual` grant is waited out, and it is not a spent slot.
+        WR-125: three of the five arms were pinned nowhere under `tests/`, so replacing all three
+        labels with `None` -- collapsing three operator log lines back into one field-less
+        `claim_refused` -- left every case in this file and its four siblings green."""
+        _locks_returning(monkeypatch, effective=[_a_grant(AccessGrantSource.subscription)])
+        _with_registered_row(monkeypatch, present=False, asked=[])
+
+        assert await _cause(writer, identity_row) == "other_grant_held"
+
+    async def test_a_row_this_window_never_locked_names_its_own_arm(self, writer, identity_row,
+                                                                    monkeypatch):
+        """A row `ix_access_grants_one_active_per_user` sees and the effective read does not: the
+        insert would be refused by that index, so the writer fails closed rather than racing it."""
+        _locks_returning(monkeypatch,
+                         marked_active=[_a_grant(AccessGrantSource.anonymous_device_grant)])
+        _with_registered_row(monkeypatch, present=False, asked=[])
+
+        assert await _cause(writer, identity_row) == "unseen_active_grant"
+
+    async def test_a_lifetime_registered_row_on_the_conversion_arm_names_its_own_arm(
+            self, writer, identity_row, monkeypatch):
+        """D-09(e) on the conversion arm, where it is the only guard: `has_prior_free_grant` is
+        true of every conversion, so the lifetime `(user_id, source)` question -- which one revoked
+        registered row is enough to answer -- is what refuses a second registered slot here."""
+        _locks_returning(monkeypatch,
+                         effective=[_a_grant(AccessGrantSource.anonymous_device_grant)])
+        _with_registered_row(monkeypatch, present=True, asked=[])
+
+        assert await _cause(writer, identity_row) == "registered_grant_held"
 
     async def test_a_lost_race_names_no_arm_control(self, writer, identity_row, monkeypatch):
         """The control: the label belongs to the refusals, and a race is not one of them."""
