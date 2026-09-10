@@ -1,6 +1,7 @@
 """The Google Play integration: the Pub/Sub push token, the RTDN body, and the live subscription read.
 Log labels come from a closed set: the purchase token, the push token and every Play value are excluded."""
 import base64
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
 from urllib.parse import quote
@@ -210,11 +211,17 @@ class PubSubPushTokens:
 
     # The declared seam, never the concrete class: this class reads nothing of the verifier but
     # `verify`, and a Protocol nothing is typed against catches no wrong-shaped double at all.
-    def __init__(self, *, verifier: TokenVerifier | None) -> None:
+    def __init__(self, *, verifier: TokenVerifier | None,
+                 build: Callable[[], TokenVerifier | None] | None = None) -> None:
         self._verifier = verifier
+        self._build = build
 
     async def verify(self, bearer: str) -> None:
         """Accept one Google-signed push token, or raise."""
+        if self._verifier is None and self._build is not None:
+            # Off the loop, because the builder fetches Google's key set: an unreachable endpoint
+            # at boot is transient, and an unconfigured deployment answers None again for free.
+            self._verifier = await run_in_threadpool(self._build)
         if self._verifier is None:
             raise Unavailable(stage="google_push_verify")
 

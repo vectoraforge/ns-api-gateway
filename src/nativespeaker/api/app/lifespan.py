@@ -76,16 +76,25 @@ def build_app_store_verifier(store: AppStoreConfig) -> SignedDataVerifier | None
                               app_apple_id=store.app_apple_id)
 
 
-def build_google_push_verifier(play: GooglePlayConfig) -> JWTVerifier | None:
-    """The Pub/Sub push-token verifier, or `None` when this deployment cannot build one."""
+def google_push_pins(play: GooglePlayConfig) -> tuple[str, str] | None:
+    """The audience and push identity the token is pinned to, or `None` when either is absent."""
     if not (play.push_audience and play.push_service_account_email):
         return None
+    return play.push_audience, play.push_service_account_email
+
+
+def build_google_push_verifier(play: GooglePlayConfig) -> JWTVerifier | None:
+    """The Pub/Sub push-token verifier, or `None` when this deployment cannot build one."""
+    pins = google_push_pins(play)
+    if pins is None:
+        return None
+    audience, service_account = pins
     try:
         return JWTVerifier(jwks_url=GOOGLE_JWKS_URL,
-                           audience=play.push_audience,
+                           audience=audience,
                            issuer=GOOGLE_ISSUER,
                            # The audience alone is a value the deployer chose, so the push identity is pinned too.
-                           required_claims={"email": play.push_service_account_email,
+                           required_claims={"email": service_account,
                                             "email_verified": True})
     except PyJWTError:
         # The warm-up fetch raises on an unreachable JWKS, and one route's 503 beats a dead pod.
@@ -182,16 +191,25 @@ async def lifespan(app: FastAPI):
 
         google_push_verifier = build_google_push_verifier(config.google_play)
         play_credential = _play_credential()
-        if (google_push_verifier is None or play_credential is None
+        if (google_push_pins(config.google_play) is None or play_credential is None
                 or not config.google_play.package_name or not config.google_play.products):
             logger.warning("google_play_configuration_absent",
                            consequence="POST /webhooks/google-play/rtdn refuses every delivery until "
                                        "this pod is restarted with the Play package name, product map, "
                                        "push audience, push service account and Application Default "
                                        "Credentials available in this environment")
+        elif google_push_verifier is None:
+            # Told apart from the absence above, which this configuration is not: the values are here.
+            logger.warning("google_push_verifier_warm_up_failed",
+                           consequence="POST /webhooks/google-play/rtdn refuses every delivery until "
+                                       "Google's key set is reachable again, which the next delivery "
+                                       "retries without a restart")
         play_client = httpx.AsyncClient(timeout=PLAY_HTTP_TIMEOUT_SECONDS)
         # Set unconditionally, so the route set is the same in every environment.
-        app.state.google_push_tokens = PubSubPushTokens(verifier=google_push_verifier)
+        app.state.google_push_tokens = PubSubPushTokens(
+            verifier=google_push_verifier,
+            # A JWKS blip at boot is transient, so the verifier is rebuilt rather than cached as absent.
+            build=lambda: build_google_push_verifier(config.google_play))
         app.state.play_subscriptions = PlayDeveloperSubscriptions(
             credential=play_credential,
             client=play_client,

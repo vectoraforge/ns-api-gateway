@@ -936,3 +936,46 @@ class TestTheJwksWarmUpGuard:
     def test_an_unconfigured_value_answers_none_without_a_fetch(self, absent, jwks):
         assert build_google_push_verifier(_play_config(**{absent: None})) is None
         assert len(jwks) == 0, "an unconfigured deployment must not reach for Google's keys"
+
+
+class TestAWarmUpFailureIsRetriedRatherThanCachedForThePodsLife:
+    """WR-41: a two-second JWKS blip at boot answered 503 for every later delivery, and the
+    deliveries Pub/Sub gives up on are the renewals and revocations nothing else reports."""
+
+    async def test_the_next_delivery_rebuilds_the_verifier_boot_could_not_build(self, jwks):
+        jwks.error = urllib.error.URLError("the JWKS endpoint is unreachable")
+        tokens = PubSubPushTokens(verifier=build_google_push_verifier(_play_config()),
+                                  build=lambda: build_google_push_verifier(_play_config()))
+        jwks.error = None
+
+        assert await tokens.verify(_push_token()) is None
+
+    async def test_the_rebuilt_verifier_is_kept_rather_than_rebuilt_per_delivery(self, jwks):
+        jwks.error = urllib.error.URLError("the JWKS endpoint is unreachable")
+        tokens = PubSubPushTokens(verifier=build_google_push_verifier(_play_config()),
+                                  build=lambda: build_google_push_verifier(_play_config()))
+        jwks.error = None
+
+        await tokens.verify(_push_token())
+        await tokens.verify(_push_token())
+
+        assert len(jwks) == 2, "the failed warm-up, then one rebuild serving both deliveries"
+
+    async def test_a_key_set_still_unreachable_is_the_503_it_was(self, jwks):
+        """The control: recovery is a retry, never an admission of a token nothing verified."""
+        jwks.error = urllib.error.URLError("the JWKS endpoint is unreachable")
+        tokens = PubSubPushTokens(verifier=None,
+                                  build=lambda: build_google_push_verifier(_play_config()))
+
+        with pytest.raises(Unavailable):
+            await tokens.verify(_push_token())
+
+    async def test_an_unconfigured_deployment_rebuilds_without_reaching_for_the_keys(self, jwks):
+        """The control: absent settings are not transient, so the rebuild costs no fetch at all."""
+        tokens = PubSubPushTokens(verifier=None,
+                                  build=lambda: build_google_push_verifier(
+                                      _play_config(push_audience=None)))
+
+        with pytest.raises(Unavailable):
+            await tokens.verify(_push_token())
+        assert len(jwks) == 0
