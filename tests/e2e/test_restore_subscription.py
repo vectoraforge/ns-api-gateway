@@ -10,7 +10,7 @@ from sqlmodel import col, select
 from unit.conftest import TEST_ISSUER, make_token
 
 from nativespeaker.api.app.dependencies import get_evaluated_at
-from nativespeaker.api.auth.google_play import GRACE_STATE
+from nativespeaker.api.auth.google_play import GRACE_STATE, RESTORE_TOKEN_GONE_STAGE
 from nativespeaker.api.auth.store_notifications import RestoredSubscription
 from nativespeaker.api.errors import ProofRejected
 from nativespeaker.api.tables.grants import (
@@ -30,10 +30,12 @@ from nativespeaker.api.tables.purchases import (
 
 from .conftest import (
     GOOGLE_PRODUCT_ID,
+    LogSpy,
     play_subscription_body,
     seed_grant,
     seed_identity,
     seed_subscription,
+    spy_on,
 )
 
 pytestmark = pytest.mark.e2e
@@ -71,7 +73,15 @@ RESTORE_NOT_FOUND_BODY = b'{"code":"restore_not_found"}'
 TRANSFER_REJECTED_BODY = b'{"code":"restore_transfer_rejected"}'
 
 # The three Apple arms the library refuses on: the chain, the application and the environment.
+# They reach the route as one exception class and one body, so the stage each carries is asserted
+# in the log below -- without that the three are one arm run three times.
 APPLE_REJECTION_STAGES = ("VERIFICATION_FAILURE", "INVALID_APP_IDENTIFIER", "INVALID_ENVIRONMENT")
+
+# The stage the Play seam's own classifier attaches to a gone token, which is the fourth cause.
+PLAY_REJECTION_STAGE = RESTORE_TOKEN_GONE_STAGE
+
+# The one record a refused proof leaves, written by the handler at the level `ProofRejected` declares.
+_HANDLER_LOGGER = "nativespeaker.api.app.error_handlers.logger"
 
 # A month out, so the written term is unambiguously open at the instant every case runs.
 TERM_REMAINING = timedelta(days=30)
@@ -89,6 +99,12 @@ async def restore_client(_app_lifespan, stub_verifier):
     transport = ASGITransport(app=_app_lifespan)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+@pytest.fixture
+def refusal_records(monkeypatch) -> LogSpy:
+    """Every WARNING record the handler writes, which is the level a refused proof is recorded at."""
+    return spy_on(monkeypatch, (_HANDLER_LOGGER,), ("warning",))
 
 
 @pytest.fixture
@@ -768,7 +784,7 @@ class TestEveryRejectedProofOfBothStoresAnswersOneBody:
 
     async def test_the_four_arms_answer_bodies_equal_to_each_other_and_write_nothing(
             self, restore_client, _db_transaction, scripted_app_store_notifications,
-            real_google_play_seam):
+            real_google_play_seam, refusal_records):
         user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
                                       provider=IdentityProvider.google)
         before = await _row_counts(_db_transaction, user.id)
@@ -785,6 +801,11 @@ class TestEveryRejectedProofOfBothStoresAnswersOneBody:
         assert [answer.status_code for answer in answers] == [403, 403, 403, 403]
         # Compared as one set of raw bodies, so an arm that says more than the others fails here.
         assert {answer.content for answer in answers} == {PROOF_REJECTED_BODY}
+        # The distinguishing detail exists, and only in the log: `stage` reaches no response, so
+        # without this the four causes are one cause driven four times and the class proves nothing.
+        assert [(event, fields["stage"]) for event, fields in refusal_records.entries] == [
+            *(("proof_rejected", stage) for stage in APPLE_REJECTION_STAGES),
+            ("proof_rejected", PLAY_REJECTION_STAGE)]
         assert await _row_counts(_db_transaction, user.id) == before
 
     async def test_a_gone_token_reached_play_and_wrote_nothing(
