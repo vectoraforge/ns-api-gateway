@@ -96,9 +96,8 @@ def _reads_the_enum(node: ast.AST, aliases: frozenset[str]) -> bool:
 
 def _undecidable_sites(source: str) -> list[int]:
     """Every site this walk cannot rule on: a grant built from `**fields`, a `source=` handed an
-    indirection, and any `getattr` on the enum. Reported rather than passed over as absent --
-    passing over is how a second writer spelled any of these would arrive with every count above
-    still green."""
+    indirection, and any `getattr` on the enum. Reported rather than passed over as absent, which
+    is how a second writer spelled any of these would arrive with every count above still green."""
     tree, aliases = _tree_and_aliases(source)
     found = []
     for node in ast.walk(tree):
