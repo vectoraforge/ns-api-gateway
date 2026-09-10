@@ -43,9 +43,14 @@ PLAY_HTTP_TIMEOUT_SECONDS = 8
 # The two Play statuses that say this purchase token is gone, which no later attempt can change.
 _GONE_STATUSES = frozenset({404, 410})
 
-# The two stage labels the restore read answers with, and its whole log vocabulary.
+# The stage labels the restore read answers with, and its whole log vocabulary. One label for each
+# repair an operator can make, because every one of these arms answers the same 503 to the client.
 RESTORE_READ_STAGE = "play_restore_read"
 RESTORE_TOKEN_GONE_STAGE = "play_token_gone"
+RESTORE_UNCONFIGURED_STAGE = "play_restore_unconfigured"
+RESTORE_PACKAGE_STAGE = "play_restore_package_unusable"
+RESTORE_TRANSPORT_STAGE = "play_restore_transport"
+RESTORE_UNPARSEABLE_STAGE = "play_restore_unparseable"
 
 # The envelope fields every RTDN carries, so the rest of the set names the bodies it carries.
 _ENVELOPE_FIELDS = frozenset({"version", "packageName", "eventTimeMillis"})
@@ -308,10 +313,10 @@ class PlayDeveloperSubscriptions:
         # `UnmappedStoreProduct` is an `InternalError` and a caught base would turn an
         # operator configuration error into a 503.
         if self._credential is None:
-            raise Unavailable(stage=RESTORE_READ_STAGE)
+            raise Unavailable(stage=RESTORE_UNCONFIGURED_STAGE)
         if not package_name or not _names_one_path_segment(package_name):
             # An absent or dot-only application name is an unusable deployment, never a refusal.
-            raise Unavailable(stage=RESTORE_READ_STAGE)
+            raise Unavailable(stage=RESTORE_PACKAGE_STAGE)
         if not _names_one_path_segment(purchase_token):
             # No live purchase token is dots alone, so this is a rejected proof and never a read.
             raise ProofRejected(stage=RESTORE_TOKEN_GONE_STAGE)
@@ -321,21 +326,24 @@ class PlayDeveloperSubscriptions:
         except (httpx.HTTPError, google.auth.exceptions.GoogleAuthError) as failure:
             # The app retries later, so a transport failure is a 503 and never the webhook's 500.
             # A refused credential refresh is the same outcome, reached without any httpx error.
-            raise Unavailable(stage=RESTORE_READ_STAGE) from failure
+            raise Unavailable(stage=RESTORE_TRANSPORT_STAGE) from failure
 
         if response.status_code in _GONE_STATUSES:
             # A gone token is a rejected proof, not a server failure. The package name travels in
             # the URL path, so a token of another application answers 404 and arrives here too.
             raise ProofRejected(stage=RESTORE_TOKEN_GONE_STAGE)
         if response.status_code // 100 != 2:
-            raise Unavailable(stage=RESTORE_READ_STAGE)
+            # Our own two words, never Play's status: a 4xx is a credential or scope an operator
+            # repairs, and a 5xx is Play's own outage, which is waited out rather than repaired.
+            raise Unavailable(stage=RESTORE_READ_STAGE,
+                              cause="refused" if response.status_code // 100 == 4 else "failed")
 
         try:
             subscription = PlaySubscription.model_validate(response.json())
         except ValueError:
             # A 2xx this build cannot read is as unusable as no answer at all. The cause is
             # dropped rather than chained: its text carries the Play values this module excludes.
-            raise Unavailable(stage=RESTORE_READ_STAGE) from None
+            raise Unavailable(stage=RESTORE_UNPARSEABLE_STAGE) from None
         product_id, tier_id, expiry = self._product_of(subscription)
         # Google carries no separate grace field, so in grace this expiry is the end of the window.
         in_grace = subscription.subscriptionState == GRACE_STATE

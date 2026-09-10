@@ -62,9 +62,14 @@ EVALUATED_AT = datetime(2026, 6, 1, tzinfo=UTC)
 # The application name the dependency passes in production; the Apple check never reads it.
 PACKAGE_NAME = "com.nativespeaker.app"
 
-# The two stages the Play restore read answers with, which are its whole label vocabulary.
+# The stages the Play restore read answers with, which are its whole label vocabulary: one per
+# repair, because every arm below the gone token answers the client the same 503.
 GONE_STAGE = "play_token_gone"
 READ_STAGE = "play_restore_read"
+UNCONFIGURED_STAGE = "play_restore_unconfigured"
+PACKAGE_STAGE = "play_restore_package_unusable"
+TRANSPORT_STAGE = "play_restore_transport"
+UNPARSEABLE_STAGE = "play_restore_unparseable"
 
 # The fixed part of the read path, which every caller-supplied value must be measured against.
 PLAY_TOKENS_PATH = f"/androidpublisher/v3/applications/{PACKAGE_NAME}/purchases/subscriptionsv2/tokens/"
@@ -327,7 +332,7 @@ class TestThePlayRequestUrlIsConfinedToOneResource:
             await reader.read_for_restore(package_name="..", purchase_token=PURCHASE_TOKEN,
                                           evaluated_at=EVALUATED_AT)
 
-        assert refusal.value.stage == READ_STAGE
+        assert refusal.value.stage == PACKAGE_STAGE
         assert sent == []
 
     async def test_a_token_carrying_dots_among_other_characters_is_still_read_control(self):
@@ -354,8 +359,11 @@ class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
         assert refusal.value.stage == GONE_STAGE
         assert refusal.value.status == 403
 
-    @pytest.mark.parametrize("status_code", [400, 401, 403, 429, 500, 502, 503])
-    async def test_every_other_non_2xx_status_is_temporarily_unavailable(self, status_code):
+    @pytest.mark.parametrize("status_code,cause", [(400, "refused"), (401, "refused"),
+                                                   (403, "refused"), (429, "refused"),
+                                                   (500, "failed"), (502, "failed"),
+                                                   (503, "failed")])
+    async def test_every_other_non_2xx_status_is_temporarily_unavailable(self, status_code, cause):
         reader = _play_reader(_answering({"error": {"status": "UNAVAILABLE"}}, status_code))
 
         with pytest.raises(Unavailable) as refusal:
@@ -363,6 +371,8 @@ class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
 
         assert refusal.value.stage == READ_STAGE
         assert refusal.value.status == 503
+        # Play's own status never travels; the class this deployment repairs by hand does.
+        assert refusal.value.log_fields() == {"stage": READ_STAGE, "cause": cause}
 
     async def test_a_transport_failure_is_temporarily_unavailable(self):
         def _unreachable(_request):
@@ -371,7 +381,7 @@ class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
         with pytest.raises(Unavailable) as refusal:
             await _restore_through(_play_reader(_unreachable))
 
-        assert refusal.value.stage == READ_STAGE
+        assert refusal.value.stage == TRANSPORT_STAGE
 
     async def test_a_refused_credential_refresh_is_temporarily_unavailable(self):
         """WR-11: a `GoogleAuthError` is no `httpx` failure, so the transport arm alone misses it."""
@@ -382,7 +392,7 @@ class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
         with pytest.raises(Unavailable) as refusal:
             await _restore_through(reader)
 
-        assert refusal.value.stage == READ_STAGE
+        assert refusal.value.stage == TRANSPORT_STAGE
 
     async def test_a_2xx_carrying_no_json_is_temporarily_unavailable(self):
         """WR-11: an intermediary's HTML page reaches this read as a `200` the app must retry."""
@@ -391,7 +401,7 @@ class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
         with pytest.raises(Unavailable) as refusal:
             await _restore_through(reader)
 
-        assert refusal.value.stage == READ_STAGE
+        assert refusal.value.stage == UNPARSEABLE_STAGE
 
     async def test_a_2xx_this_build_cannot_read_carries_no_play_value_into_its_refusal(self):
         """WR-11: pydantic echoes the rejected input, so the cause is dropped and not chained."""
@@ -400,7 +410,7 @@ class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
         with pytest.raises(Unavailable) as refusal:
             await _restore_through(reader)
 
-        assert refusal.value.stage == READ_STAGE
+        assert refusal.value.stage == UNPARSEABLE_STAGE
         assert refusal.value.__cause__ is None
 
     async def test_an_absent_credential_is_unavailable_and_reaches_no_transport(self):
@@ -416,7 +426,7 @@ class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
         with pytest.raises(Unavailable) as refusal:
             await _restore_through(reader)
 
-        assert refusal.value.stage == READ_STAGE
+        assert refusal.value.stage == UNCONFIGURED_STAGE
 
     async def test_an_unmapped_play_product_is_the_operator_error_and_not_a_503(self):
         """Pitfall 1: this class is an `InternalError`, so a caught base class would hide it here."""

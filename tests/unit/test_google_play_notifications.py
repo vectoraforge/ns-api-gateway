@@ -24,7 +24,7 @@ from nativespeaker.api.app.lifespan import build_google_push_verifier
 from nativespeaker.api.auth.google_play import (
     GOOGLE_ISSUER,
     GOOGLE_JWKS_URL,
-    RESTORE_READ_STAGE,
+    RESTORE_UNPARSEABLE_STAGE,
     PlayDeveloperSubscriptions,
     PubSubPushTokens,
     developer_notification_from,
@@ -651,7 +651,7 @@ class TestAZoneLessStampIsClassifiedRatherThanRaised:
                                           purchase_token=PURCHASE_TOKEN,
                                           evaluated_at=EVALUATED_AT)
 
-        assert refusal.value.stage == RESTORE_READ_STAGE
+        assert refusal.value.stage == RESTORE_UNPARSEABLE_STAGE
 
     async def test_the_same_term_carrying_an_offset_is_read_normally_control(self, play_logs):
         """The control: the offset is the whole requirement, and a canceled term still resolves."""
