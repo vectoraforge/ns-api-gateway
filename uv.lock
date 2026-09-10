@@ -387,6 +387,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/e9/eb/c6c2478d8a8d633460be40e2a8a6f8f429171997a35a96f81d3b680dec83/google_auth-2.49.1-py3-none-any.whl", hash = "sha256:195ebe3dca18eddd1b3db5edc5189b76c13e96f29e73043b923ebcf3f1a860f7", size = 240737, upload-time = "2026-03-12T19:30:53.159Z" },
 ]
 
+[package.optional-dependencies]
+requests = [
+    { name = "requests" },
+]
+
 [[package]]
 name = "google-cloud-core"
 version = "2.5.0"
@@ -871,7 +876,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "firebase-admin" },
-    { name = "google-auth" },
+    { name = "google-auth", extra = ["requests"] },
     { name = "greenlet" },
     { name = "httpx" },
     { name = "langchain" },
@@ -911,7 +916,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=46,<47" },
     { name = "fastapi", specifier = "==0.135.1" },
     { name = "firebase-admin", specifier = ">=7.3.0" },
-    { name = "google-auth", specifier = ">=2.49" },
+    { name = "google-auth", extras = ["requests"], specifier = ">=2.49" },
     { name = "greenlet", specifier = ">=3.0" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "langchain", specifier = "==1.2.13" },

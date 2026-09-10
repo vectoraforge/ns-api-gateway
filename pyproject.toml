@@ -28,7 +28,12 @@ dependencies = [
     "structlog>=25.5",
     "app-store-server-library>=3.0.0",
     "firebase-admin>=7.3.0",
-    "google-auth>=2.49",
+    # The `requests` extra for the same reason: `auth/google_play.py` imports
+    # `google.auth.transport.requests` at module scope, whose own body starts `import requests`,
+    # and bare `google-auth` declares neither. `requests` reaches this environment only through
+    # `app-store-server-library` and `firebase-admin`'s `cachecontrol` -- two edges this project
+    # does not control, and the import is on the boot path, so losing either is a CrashLoopBackOff.
+    "google-auth[requests]>=2.49",
     "tenacity>=9.1.4",
     "httpx >=0.28",
 ]
