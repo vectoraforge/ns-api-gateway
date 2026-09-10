@@ -289,10 +289,14 @@ class TestEveryVerificationFailureAnswersTheOneBody:
         """The route never reads an Authorization header, so a good token buys a bad payload nothing."""
         scripted_app_store_notifications.script(
             NotificationRejected(stage="VERIFICATION_FAILURE"))
+        firebase_bearer = make_token(sub="store-callback-subject")
+        claims, _reason = stub_verifier.verify(firebase_bearer)
+        # The control: a token the application itself would not admit proves nothing about leakage.
+        assert claims is not None
 
         response = await webhook_client.post(
             PATH, json={"signedPayload": ENVELOPE},
-            headers={"Authorization": f"Bearer {make_token(sub='store-callback-subject')}"})
+            headers={"Authorization": f"Bearer {firebase_bearer}"})
 
         assert response.status_code == 401
         assert response.content == REJECTED_BODY
