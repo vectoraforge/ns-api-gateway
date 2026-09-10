@@ -138,7 +138,7 @@ class AppStoreNotifications:
             # types that carry a transaction but name no subscription: CONSUMPTION_REQUEST,
             # ONE_TIME_CHARGE, EXTERNAL_PURCHASE_TOKEN, RESCIND_CONSENT. The transaction is dropped
             # with it: `core.subscriptions.status` is NOT NULL, and inventing `expired` here would
-            # end a live subscriber's grant. Verified and unwritable, exactly as line 98 above.
+            # end a live subscriber's grant. Verified and unwritable, exactly as the data-less arm above.
             # The raw int, never `status`: the typed attribute is also None for an unknown value.
             return _crossed(payload, None, None, status=SubscriptionStatus.expired, tier_id=None)
 

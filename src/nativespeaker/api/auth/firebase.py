@@ -159,9 +159,9 @@ class FirebaseAdminLookup:
             # `None` on the anonymous arm, whatever the record still carries: a record with no
             # provider entry has no address this read may attribute to it (`adapters.py:17`).
             # Firebase leaves the record-level `email` populated after a client unlinks its last
-            # provider, and copied onto the account `crud/identities.py:155` then refuses to
-            # overwrite it -- so a genuine upgrade kept the stale address forever, on a route tree
-            # `04-users-me.md:53` gives no repair path.
+            # provider, and copied onto the account `crud/identities.py::IdentitiesDB.upgrade_identity`
+            # then refuses to overwrite it (its `if user.email is None:` guard) -- so a genuine upgrade
+            # kept the stale address forever, on a route tree `04-users-me.md:53` gives no repair path.
             email=(None if provider is IdentityProvider.anonymous
                    else _verified_email(email, email_verified)))
 

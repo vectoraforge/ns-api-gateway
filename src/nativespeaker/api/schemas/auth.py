@@ -38,7 +38,7 @@ class GrantClaimRequest(BaseModel):
     challenge_id: str = Field(..., min_length=1, max_length=64)
     # One token for the read and the write: two would let the bit read name a different device.
     # Bounded well above a real DeviceCheck token, because this value is relayed verbatim into the
-    # body this service posts to Apple (`devicecheck.py:93`), at this service's expense and inside
+    # body this service posts to Apple (`devicecheck.py::_shared_body`), at this service's expense and inside
     # its own 8-second timeout. Envoy's body limit is another layer and bounds no single field.
     device_token: str = Field(..., min_length=1, max_length=4096)
 
