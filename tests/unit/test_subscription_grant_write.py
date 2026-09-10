@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid7
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
 from nativespeaker.api.errors import MissingUsageRowError
@@ -400,16 +401,29 @@ class _LockStubResult:
 
 
 class _LockStubSession:
-    """Answers the first read with the locked grant rows and every read after it with one usage row."""
+    """Answers the first read with the locked grant rows and every read after it with one usage row.
+    Keeps each statement, because the lock and the order are in the statement and in no answer."""
 
     def __init__(self, grants: list[AccessGrant], usage: UserMonthlyUsage | None) -> None:
         self.grants = grants
         self.usage = usage
         self.reads = 0
+        self.statements: list = []
 
-    async def exec(self, statement):  # noqa: ARG002
+    async def exec(self, statement):
+        self.statements.append(statement)
         self.reads += 1
         return _LockStubResult(self.grants if self.reads == 1 else self.usage)
+
+
+def _compiled(statement) -> str:
+    """The statement as PostgreSQL would receive it -- the dialect that actually runs it."""
+    return str(statement.compile(dialect=postgresql.dialect()))
+
+
+def _locked_accounts(statement) -> set:
+    """The accounts the statement locks. The compiled text shows the list only as a placeholder."""
+    return set(statement.compile(dialect=postgresql.dialect()).params["user_id_1"])
 
 
 @pytest.mark.asyncio
@@ -471,3 +485,40 @@ class TestTheSecondLockTierRefusesAnAbsentUsageRow:
                                                           counted_for=DESTINATION)
 
         assert records == []
+
+
+@pytest.mark.asyncio
+class TestTheGrantTierLockIsOneAscendingStatement:
+    """WR-65: D-08 and SHARED-INVARIANTS give the grant tier the first lock and one ascending
+    order. Both live in the statement, so no answer and no read count can show either of them."""
+
+    async def test_the_grant_tier_locks_and_orders_ascending_by_id(self):
+        held = _grant(subscription_id=SUBSCRIPTION_A)
+        session = _LockStubSession([held], _usage(held, monthly_period=THIS_MONTH, monthly_used=0))
+
+        await SubscriptionsDB(session).lock_grants_of([OLD_OWNER, DESTINATION],
+                                                      counted_for=DESTINATION)
+
+        sql = _compiled(session.statements[0])
+        assert "FOR UPDATE" in sql
+        assert "ORDER BY core.access_grants.id ASC" in sql
+
+    async def test_both_accounts_are_taken_in_one_statement(self):
+        """Two statements are two orders, and two orders between two movers is the deadlock."""
+        held = _grant(subscription_id=SUBSCRIPTION_A)
+        session = _LockStubSession([held], _usage(held, monthly_period=THIS_MONTH, monthly_used=0))
+
+        await SubscriptionsDB(session).lock_grants_of([OLD_OWNER, DESTINATION],
+                                                      counted_for=DESTINATION)
+
+        sql = _compiled(session.statements[0])
+        assert "core.access_grants.user_id IN (" in sql
+        assert _locked_accounts(session.statements[0]) == {OLD_OWNER, DESTINATION}
+
+    async def test_the_usage_tier_locks_too(self):
+        held = _grant(subscription_id=SUBSCRIPTION_A)
+        session = _LockStubSession([held], _usage(held, monthly_period=THIS_MONTH, monthly_used=0))
+
+        await SubscriptionsDB(session).lock_grants_of([DESTINATION], counted_for=DESTINATION)
+
+        assert "FOR UPDATE" in _compiled(session.statements[1])
