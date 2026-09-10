@@ -43,6 +43,14 @@ class SubscriptionsService:
             logger.error("store_notification_without_tier", event_type=notification.event_type)
             raise InternalError
 
+        # Asked before a lock is spent: the store's replay key reads a row no lock protects, and a
+        # replay writes nothing, so a redelivery must not take the buyer's grant and usage rows.
+        if await self.subscriptions_db.read_event(notification.notification_uuid) is not None:
+            # The read above opened a transaction; given back here rather than at the teardown,
+            # which `get_db` runs only after the response is on the wire.
+            await self.session.rollback()
+            return
+
         token = notification.attribution_token
         # Read before the transaction writes, so no token read happens under a lock.
         user_id = (None if token is None
@@ -67,10 +75,6 @@ class SubscriptionsService:
             # The generic 500 a lost race earns: the store resends, and the resend locks the owner
             # the restore settled on.
             raise InternalError
-
-        if await self.subscriptions_db.read_event(notification.notification_uuid) is not None:
-            # The replay: the store's own key is already recorded, so this delivery writes nothing.
-            return
 
         # The whole row under the grant locks: the pre-lock read misses a rival's newer clock, or its insert.
         settled = await self.subscriptions_db.read_subscription(notification.provider,

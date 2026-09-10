@@ -532,6 +532,21 @@ class TestARestoreThatCommitsInTheWindowIsRefused:
         assert writer.granted == []
         assert session.commits == 0
 
+    async def test_a_replay_takes_no_lock_and_gives_its_read_transaction_back(self, session,
+                                                                              writer):
+        """WR-61: `get_db` runs its teardown only after the response is on the wire, so a lock or a
+        transaction still held on return survives the 200 the store is answered with."""
+        notification = _notification()
+        writer.events[notification.notification_uuid] = {"already": "recorded"}
+        _seed_owned(writer, ORIGINAL_BUYER, external_id=notification.external_id)
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        await service.ingest(notification)
+
+        assert writer.locked == []
+        assert writer.timeline == []
+        assert (session.commits, session.rollbacks) == (0, 1)
+
     async def test_an_owner_that_did_not_move_writes_exactly_as_before(self, session, writer):
         """The control: the guard reads the same owner the locks were taken on and changes nothing."""
         external_id = _seed_owned(writer, RESTORER)
