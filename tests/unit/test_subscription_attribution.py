@@ -35,6 +35,10 @@ NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
 RESTORER = uuid7()
 ORIGINAL_BUYER = uuid7()
 
+# PostgreSQL's `foreign_key_violation`. The two DEFERRABLE INITIALLY DEFERRED entitlement keys are
+# foreign keys, so this -- never `23505` -- is the code COMMIT evaluates them into.
+DEFERRED_KEY_VIOLATION = "23503"
+
 
 def _notification(**overrides) -> VerifiedNotification:
     """One verified subscription notification; `overrides` replaces any field a case cares about."""
@@ -72,12 +76,24 @@ class _StubSession:
         raise AssertionError(f"the ingestion path issued a query of its own: {statement!r}")
 
 
+class _Orig(Exception):
+    """The DBAPI exception SQLAlchemy wraps, carrying the one attribute the writer reads."""
+
+    def __init__(self, sqlstate: str) -> None:
+        self.sqlstate = sqlstate
+
+
 class _RefusingSession(_StubSession):
     """The stub session whose commit raises what the deferred entitlement keys raise at COMMIT."""
 
+    def __init__(self, sqlstate: str | None = DEFERRED_KEY_VIOLATION) -> None:
+        super().__init__()
+        # Carried on the attribute every classifier reads; `None` is the unreadable violation.
+        self._orig = None if sqlstate is None else _Orig(sqlstate)
+
     async def commit(self) -> None:
         self.commits += 1
-        raise IntegrityError("COMMIT", {}, Exception("23503"))
+        raise IntegrityError("COMMIT", {}, self._orig)
 
 
 class _UpsertResult:
@@ -765,8 +781,8 @@ def race_warnings(monkeypatch) -> list[tuple[str, dict]]:
 class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
     """WR-62: the grant keys are DEFERRABLE INITIALLY DEFERRED, so COMMIT is their only evaluation."""
 
-    async def test_a_violation_at_commit_is_the_lost_race_the_flushes_report(self, writer,
-                                                                            race_warnings):
+    async def test_a_deferred_foreign_key_at_commit_is_the_lost_race_the_flushes_report(
+            self, writer, race_warnings):
         session = _RefusingSession()
         service = _service(session, writer, ORIGINAL_BUYER)
 
@@ -777,6 +793,19 @@ class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
         assert session.rollbacks == 1
         # The line itself. `InternalError.log_level` is None, so the shared handler writes nothing
         # for the 500: delete this call and the refusal is completely silent to an operator.
+        assert race_warnings == [("store_notification_race_lost", {"provider": "apple"})]
+
+    async def test_a_violation_carrying_no_readable_code_at_commit_is_the_lost_race_too(
+            self, writer, race_warnings):
+        """Deliberate: every writer already flushed and classified its own statements, so COMMIT
+        evaluates the deferred pair alone and this arm asks the classifier nothing."""
+        session = _RefusingSession(sqlstate=None)
+        service = _service(session, writer, ORIGINAL_BUYER)
+
+        with pytest.raises(InternalError):
+            await service.ingest(_notification(attribution_token=TOKEN))
+
+        assert (session.commits, session.rollbacks) == (1, 1)
         assert race_warnings == [("store_notification_race_lost", {"provider": "apple"})]
 
     async def test_an_ingest_that_wins_reports_no_race_control(self, session, writer,
