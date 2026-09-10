@@ -318,10 +318,10 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
     def test_a_spent_registered_slot_refuses_the_conversion_and_still_consumes(
             self, client, store, account, grants, devicecheck):
         """WR-100: D-09(e) on the conversion arm, where it is the only guard -- the `held == []`
-        arm is covered by `has_prior_free_grant` as well, and this one by nothing else. The
-        recorder field that drives it (`grant_of_source`) was assigned by no test in the tree, so
-        disabling the service's `holds_grant_of_source` guard left this whole module green while an
-        account whose registered slot is already spent converted its anonymous grant a second time."""
+        arm is covered by `has_prior_free_grant` as well, and this one by nothing else."""
+        # The recorder field that drives it (`grant_of_source`) was assigned by no test in the
+        # tree, so disabling the service's `holds_grant_of_source` guard left this whole module
+        # green while an account whose registered slot is spent converted its grant a second time.
         identity_row, _ = account
         grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant)]
         grants.grant_of_source = {AccessGrantSource.registered_account_grant}
