@@ -54,6 +54,10 @@ from nativespeaker.api.tables import (
 REGISTERED_TIER_ID = "registered"
 
 
+def _discard(event: str, **fields) -> None:
+    """A level the case did not declare: bound so the caller runs on, recorded by nobody."""
+
+
 class LogSpy:
     """A recording spy on a module's own logger, so "which record, once" stays observable."""
 
@@ -64,12 +68,19 @@ class LogSpy:
         self.entries.append((event, fields))
 
 
+# Every level a structlog logger answers to, so the stand-in below is never missing one.
+_ALL_LEVELS = ("debug", "info", "warning", "error", "critical", "exception")
+
+
 class _SpyLogger:
     """Stands in for a module's whole `logger`; only the levels a route spies on are recorded."""
 
     def __init__(self, spy: LogSpy, levels: tuple[str, ...]) -> None:
-        for level in levels:
-            setattr(self, level, spy.record)
+        for level in _ALL_LEVELS:
+            # Every level is bound, and only the declared ones reach the spy: an unanticipated line
+            # at another level used to raise `AttributeError` inside the handler that wrote it,
+            # which reaches the case as an unrelated 500 rather than as the extra record it is.
+            setattr(self, level, spy.record if level in levels else _discard)
 
 
 def spy_on(monkeypatch, targets: tuple[str, ...], levels: tuple[str, ...]) -> LogSpy:
