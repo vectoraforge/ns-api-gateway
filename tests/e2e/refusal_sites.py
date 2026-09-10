@@ -32,8 +32,10 @@ def refusal_calls(source: str) -> list[ast.Call]:
 
 def files_raising_the_refusal() -> set[str]:
     """Every file of the application package carrying a `NotificationRejected(...)` call."""
+    # `encoding="utf-8"`, never the locale's: three files of the package carry non-ASCII bytes, so
+    # an ASCII locale makes this scan raise before the controls reading it can compare anything.
     return {path.relative_to(_PACKAGE).as_posix() for path in _PACKAGE.rglob("*.py")
-            if refusal_calls(path.read_text())}
+            if refusal_calls(path.read_text(encoding="utf-8"))}
 
 
 def raised_refusal_stages(sources: tuple[str, ...]) -> set[str]:
