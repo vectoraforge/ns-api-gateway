@@ -41,8 +41,10 @@ async def app_error_handler(_: Request, exc: Exception) -> JSONResponse:
         # which is the exception the thread is currently handling. That is only `exc` when Starlette
         # reached this handler from its own `except`; the three adapters below call it directly with
         # a freshly constructed exception, where the ambient one is a different failure or none.
+        # `level`, never `exc.log_level`: the clamp above is the level this record is written at,
+        # so it is the level the traceback decision is made against too.
         record(camel_to_snake(type(exc).__name__),
-               exc_info=exc if exc.log_level >= logging.ERROR else False, **exc.log_fields())
+               exc_info=exc if level >= logging.ERROR else False, **exc.log_fields())
     return JSONResponse(status_code=exc.status,
                         content=ErrorResponse(code=exc.code).model_dump(),
                         headers=exc.extra_headers())

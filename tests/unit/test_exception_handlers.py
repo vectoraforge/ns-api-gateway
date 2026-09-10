@@ -1,3 +1,4 @@
+import logging
 from functools import partial
 from typing import cast
 from uuid import uuid7
@@ -598,6 +599,32 @@ class TestEveryServiceOutage503LeavesOneLineOfItsOwn:
             await app_error_handler(None, given)
 
         assert levels.entries[0][1]["exc_info"] is given
+
+
+class TestALevelOutsideTheFiveIsClampedOnceAndReadOnce:
+    """WR-23: the clamp picks which logger writes the record, so it picks the traceback too."""
+
+    @pytest.fixture
+    def levels(self, monkeypatch) -> _WarningSpy:
+        spy = _WarningSpy()
+        for level in ("warning", "error"):
+            monkeypatch.setattr(f"nativespeaker.api.app.error_handlers.logger.{level}",
+                                partial(spy.record, level=level))
+        return spy
+
+    async def test_a_house_level_below_error_is_written_at_error_carrying_its_traceback(self,
+                                                                                        levels):
+        """Read raw, `exc.log_level` stripped the traceback off the highest-severity line this
+        handler writes -- the one combination the clamp above it exists to prevent."""
+        exc = QueueFullError(30)
+        # On the instance, never a subclass: a synthetic `AppError` would join `_family` for the
+        # rest of the session and the error-tree cases read that walk.
+        exc.log_level = logging.INFO + 5
+
+        await app_error_handler(None, exc)
+
+        assert [(name, fields["level"], fields["exc_info"])
+                for name, fields in levels.entries] == [("queue_full_error", "error", exc)]
 
 
 class TestARejectedBodyValueNeverReachesTheLog:
