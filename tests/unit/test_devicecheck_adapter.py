@@ -14,6 +14,8 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
 from nativespeaker.api.auth.devicecheck import (
     DEVICECHECK_ATTEMPTS,
+    DEVICECHECK_BACKOFF_BASE_SECONDS,
+    DEVICECHECK_BACKOFF_MAX_SECONDS,
     DEVICECHECK_HOST,
     QUERY_PATH,
     UPDATE_PATH,
@@ -296,9 +298,22 @@ class TestTheParseArms:
 class TestTheAttemptsAreSeparatedInTime:
     """WR-21: the budget was spent inside a few milliseconds, so it bought nothing against a blip."""
 
-    # `wait_exponential(0.1, exp_base=2, max=0.5)` sleeps 0.2s then 0.4s. The floor is well under
-    # that and well over the microseconds `wait_none()` costs, so it neither flakes nor passes unfixed.
-    FLOOR_SECONDS = 0.3
+    # tenacity's gap is `multiplier * exp_base ** (attempt - 1)`, clamped at the configured max,
+    # so `wait_exponential(0.1, exp_base=2, max=0.5)` sleeps 0.1s and then 0.2s -- 0.3s over an
+    # exhausted budget, not the 0.6s this comment used to claim. The floor keeps real headroom
+    # under that total, because a wall clock can only measure the sum and an `asyncio.sleep` may
+    # return inside one clock resolution; the arithmetic case below is what pins the sum itself.
+    # Written as a number rather than derived from the base, so shrinking the base back towards
+    # zero -- the WR-21 regression this class exists to catch -- still fails here.
+    FLOOR_SECONDS = 0.25
+
+    def test_the_configured_gaps_are_the_two_this_floor_was_measured_against(self):
+        """A wall clock cannot tell 0.3s of backoff from a 0.3s stall, so the policy is stated here."""
+        gaps = [min(DEVICECHECK_BACKOFF_BASE_SECONDS * 2 ** attempt, DEVICECHECK_BACKOFF_MAX_SECONDS)
+                for attempt in range(DEVICECHECK_ATTEMPTS - 1)]
+
+        assert gaps == [0.1, 0.2]
+        assert sum(gaps) > self.FLOOR_SECONDS
 
     async def test_an_exhausted_read_budget_waits_between_its_attempts(self, private_key):
         recorder = Recorder(*[httpx.Response(503) for _ in range(DEVICECHECK_ATTEMPTS)])
