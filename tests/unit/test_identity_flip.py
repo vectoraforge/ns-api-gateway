@@ -114,6 +114,14 @@ class TestTheFlipSetsWhereUnsetAndNeverOverwrites:
 
         assert user.registered_at == NOW
 
+    async def test_an_unset_email_takes_the_verified_address(self):
+        """The other half of step 07: a NULL address is filled from the provider's own record."""
+        identity_row, user = _account()
+
+        await _flip(_StubSession(), identity_row, user)
+
+        assert user.email == EMAIL
+
     async def test_a_stored_registration_instant_survives_the_repair(self):
         """The flip doubles as the idempotent repair for a crash-stranded upgrade; it re-registers nobody."""
         identity_row, user = _account(registered_at=REGISTERED_AT)
