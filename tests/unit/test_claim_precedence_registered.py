@@ -312,6 +312,27 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert devicecheck.read_calls == []
         assert devicecheck.write_calls == []
 
+    def test_a_spent_registered_slot_refuses_the_conversion_and_still_consumes(
+            self, client, store, account, grants, devicecheck):
+        """WR-100: D-09(e) on the conversion arm, where it is the only guard -- the `held == []`
+        arm is covered by `has_prior_free_grant` as well, and this one by nothing else. The
+        recorder field that drives it (`grant_of_source`) was assigned by no test in the tree, so
+        disabling the service's `holds_grant_of_source` guard left this whole module green while an
+        account whose registered slot is already spent converted its anonymous grant a second time."""
+        identity_row, _ = account
+        grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant)]
+        grants.grant_of_source = {AccessGrantSource.registered_account_grant}
+        store.row = _issued(bound_to=identity_row.id)
+
+        response = _claim(client)
+
+        assert response.status_code == 403
+        assert response.json() == REFUSED
+        assert store.consume_calls == 1
+        assert grants.activates == 0
+        assert devicecheck.read_calls == []
+        assert devicecheck.write_calls == []
+
     def test_a_grant_marked_active_outside_this_window_is_refused_and_still_consumes(
             self, client, store, account, grants, devicecheck):
         """The convertible grant plus a row the one-active index sees and this window cannot: the
@@ -606,6 +627,12 @@ def _marked_outside_its_term(identity_row, grants, devicecheck) -> None:
     grants.marked_active = [_a_grant(AccessGrantSource.subscription)]
 
 
+def _registered_slot_spent(identity_row, grants, devicecheck) -> None:
+    # The convertible grant, plus the lifetime registered row D-09(e) refuses it against.
+    grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant)]
+    grants.grant_of_source = {AccessGrantSource.registered_account_grant}
+
+
 def _device_spent(identity_row, grants, devicecheck) -> None:
     devicecheck.script(BitState(bit0=False, bit1=True))
 
@@ -643,9 +670,10 @@ def _new_grant(identity_row, grants, devicecheck) -> None:
 
 
 POST_CLAIM_OUTCOMES = (_anonymous_claimant, _other_source_held, _free_grant_already_consumed,
-                       _repeat, _conversion, _marked_outside_its_term, _device_spent,
-                       _proof_refused, _apple_unavailable, _race_lost, _write_refused,
-                       _race_lost_with_nothing_to_read, _race_lost_to_another_source, _new_grant)
+                       _repeat, _conversion, _marked_outside_its_term, _registered_slot_spent,
+                       _device_spent, _proof_refused, _apple_unavailable, _race_lost,
+                       _write_refused, _race_lost_with_nothing_to_read,
+                       _race_lost_to_another_source, _new_grant)
 
 
 class TestTheConsumptionCounterIsOneForEveryPostClaimOutcome:
