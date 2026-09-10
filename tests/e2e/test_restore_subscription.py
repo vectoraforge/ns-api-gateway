@@ -29,6 +29,7 @@ from nativespeaker.api.tables.purchases import (
 )
 
 from .conftest import (
+    GOOGLE_PACKAGE_NAME,
     GOOGLE_PRODUCT_ID,
     LogSpy,
     play_subscription_body,
@@ -774,14 +775,14 @@ class TestTheSameAccountGooglePlayRestore:
     """The second store on the same path: the purchase token is both the proof and the external id."""
 
     async def test_a_live_purchase_token_attaches_the_paid_grant_and_the_body_reports_it(
-            self, restore_client, _db_transaction, scripted_play_subscriptions,
+            self, restore_client, _db_transaction, scripted_google_play,
             pinned_evaluation_instant):
         user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
                                       provider=IdentityProvider.google)
         purchase_token = f"e2e-play-restore-{uuid4()}"
         await seed_subscription(_db_transaction, external_id=purchase_token, user_id=user.id,
                                 provider=PurchaseProvider.google_play, tier_id=PAID_TIER_ID)
-        scripted_play_subscriptions.script_restore(_play_proof(purchase_token))
+        scripted_google_play.script_restore(_play_proof(purchase_token))
 
         answered = await _restore(restore_client, provider="google_play",
                                   restore_proof=purchase_token)
@@ -792,11 +793,13 @@ class TestTheSameAccountGooglePlayRestore:
         assert body["entitlement"]["status"] == "active"
         assert body["entitlement"]["tier_id"] == PAID_TIER_ID
         assert answered.headers["Cache-Control"] == "no-store"
-        # The proof itself is the token the read was made with, and the instant is the request's
-        # own: a read made at a freshly-taken clock reading records a value that is not the pinned one.
-        assert [(call["purchase_token"], call["evaluated_at"]) for call in
-                scripted_play_subscriptions.restore_calls] == [(purchase_token,
-                                                                pinned_evaluation_instant)]
+        # WR-81: the application name is the configured one, the proof itself is the token the read
+        # was made with, and the instant is the request's own. A read made at a freshly-taken clock
+        # reading records a value that is not the pinned one, and a read made under any other
+        # application name is answered 403 by Google for every paying Android customer.
+        assert [(call["package_name"], call["purchase_token"], call["evaluated_at"]) for call in
+                scripted_google_play.restore_calls] == [(GOOGLE_PACKAGE_NAME, purchase_token,
+                                                         pinned_evaluation_instant)]
 
     async def test_the_one_grant_it_wrote_is_the_subscription_grant_and_its_usage_row(
             self, restore_client, _db_transaction, scripted_play_subscriptions):
