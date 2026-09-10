@@ -105,6 +105,9 @@ class ChatService:
         # count above was taken before the commit that ended its transaction and before the provider
         # round trip, so every concurrent request on an account one below the limit passed it.
         if await self.chats_db.count_chats(user_id) >= self.chats_limit:
+            # The credit is committed and the provider has answered, so this line is the only
+            # record that the discarded answer was paid for.
+            logger.warning("charged_answer_discarded", user_id=str(user_id), branch="create_chat")
             raise ChatHistoryLimitError(self.chats_limit)
 
         chat.messages.append(human_message)
@@ -138,6 +141,9 @@ class ChatService:
 
         # Re-read in the transaction that writes: a delete across the provider call orphans the inserts below.
         if await self.chats_db.get_chat(chat_id, user_id) is None:
+            # The credit is committed and the provider has answered, so this line is the only
+            # record that the discarded answer was paid for.
+            logger.warning("charged_answer_discarded", user_id=str(user_id), branch="send_message")
             raise InvalidChatError(chat_id)
 
         chat.messages.append(human_message)
