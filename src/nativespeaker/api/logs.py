@@ -11,7 +11,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 _EXCLUDED_PATHS = frozenset({"/health/ready"})
 
-# Pinned below the configured level, on one criterion: a library that logs a request body, a
+# Capped at no lower than WARNING, on one criterion: a library that logs a request body, a
 # request line or SQL. `openai` logs the whole chat-completion body at DEBUG, an admitted level.
 # `uvicorn.access` is the duplicate of the line `RequestLoggingMiddleware` writes below, and it
 # honours neither `_EXCLUDED_PATHS` nor the structured format.
@@ -61,7 +61,12 @@ def setup_logging(log_level: str,
     root.setLevel(log_level.upper())
 
     for name in _QUIETED_LIBRARIES:
-        logging.getLogger(name).setLevel(logging.WARNING)
+        # A ceiling, never a floor. A level set on a child outranks the root in both directions: at
+        # LOG_LEVEL=ERROR a flat WARNING would raise these nine above the application's own loggers,
+        # so an operator cutting noise during an incident would lose `notification_rejected` and its
+        # `stage` and keep the httpx and SQL chatter. `root.level`, not the argument, because
+        # `setLevel` above is what turned the name into a number.
+        logging.getLogger(name).setLevel(max(logging.WARNING, root.level))
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):

@@ -274,6 +274,24 @@ class TestRaisingTheLevelNeverOpensAContentChannel:
         assert logging.getLogger("nativespeaker.api").getEffectiveLevel() == logging.DEBUG
 
 
+class TestQuietingALibraryNeverRaisesItAboveTheApplication:
+    """WR-20. A level set on a child outranks the root in both directions, so the flat WARNING pin
+    inverted the signal at LOG_LEVEL=ERROR: an operator cutting noise during an incident lost the
+    application's own WARNING vocabulary and kept the nine libraries' chatter."""
+
+    @pytest.mark.parametrize("name", _QUIETED_LIBRARIES)
+    def test_a_quieted_library_never_outranks_the_configured_level(self, name):
+        setup_logging(log_level="ERROR")
+
+        assert logging.getLogger(name).getEffectiveLevel() >= logging.ERROR
+
+    def test_the_pin_is_still_a_ceiling_below_warning(self):
+        """The control: a pin that simply followed the root would open `openai`'s body at DEBUG."""
+        setup_logging(log_level="DEBUG")
+
+        assert logging.getLogger("openai").getEffectiveLevel() >= logging.WARNING
+
+
 class TestOnlyOneAccessLineIsWrittenPerRequest:
     """WR-03. Uvicorn gives `uvicorn.access` its own handler and `propagate=False`, so clearing the
     root handlers left a second, unstructured line per request that ignored `_EXCLUDED_PATHS`."""
