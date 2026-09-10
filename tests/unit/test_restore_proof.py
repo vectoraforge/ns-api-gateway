@@ -758,10 +758,13 @@ class _GrantRecorder:
     """The subscriptions crud as a recorder, on the branch that reaches the grant writer directly."""
 
     def __init__(self, destination, settled_status=SubscriptionStatus.active,
-                 settled_tier: str = TIER_ID) -> None:
+                 settled_tier: str = TIER_ID, *, purchase_recorded: bool = True) -> None:
         self.granted: list[dict] = []
+        self.purchases: list[dict] = []
         self._settled_status = settled_status
         self._settled_tier = settled_tier
+        self._purchase_recorded = purchase_recorded
+        self.destination = destination
         self.reads = 0
         self._stored = SimpleNamespace(id=uuid4(), user_id=destination, tier_id=TIER_ID,
                                        status=SubscriptionStatus.active,
@@ -777,8 +780,15 @@ class _GrantRecorder:
         return self._stored
 
     async def read_purchase(self, provider, external_id):
-        # Not `None`, so the purchase insert is skipped and the grant writer is the one write.
+        # A row, so the purchase insert is skipped and the grant writer is the one write.
+        # `None` puts the restore on the branch that writes `core.store_purchases` itself.
+        if not self._purchase_recorded:
+            return None
         return SimpleNamespace(id=uuid4(), resolved_token_value=None)
+
+    async def insert_purchase(self, **fields):
+        self.purchases.append(fields)
+        return WriteOutcome.applied
 
     async def lock_grants_of(self, user_ids, *, counted_for):
         return []
@@ -790,13 +800,16 @@ class _GrantRecorder:
 
 async def _same_account_restore(purchased_at, settled_status=SubscriptionStatus.active,
                                 session: _CommittingSession | None = None,
-                                settled_tier: str = TIER_ID
+                                settled_tier: str = TIER_ID, *,
+                                purchase_recorded: bool = True,
+                                attributed_to_caller: bool = False
                                 ) -> tuple[_GrantRecorder, _CommittingSession]:
     """One same-account restore of a proof carrying `purchased_at`, against a canonical row whose
     status and tier under the grant locks are `settled_status` and `settled_tier`."""
     session = _CommittingSession() if session is None else session
     caller = _caller()
-    recorder = _GrantRecorder(caller.user.id, settled_status, settled_tier)
+    recorder = _GrantRecorder(caller.user.id, settled_status, settled_tier,
+                              purchase_recorded=purchase_recorded)
     proof = RestoredSubscription(provider=PurchaseProvider.apple,
                                  external_id=ORIGINAL_TRANSACTION_ID,
                                  product_id=PRODUCT_ID,
@@ -808,11 +821,62 @@ async def _same_account_restore(purchased_at, settled_status=SubscriptionStatus.
                                  grace_period_expires_at=None)
     service = _service(session, _ScriptedAppStore(session, proof))
     service.subscriptions_db = recorder
-    service.purchases_db = _NoAttribution()
+    service.purchases_db = (_AttributedToTheCaller(caller.user.id) if attributed_to_caller
+                            else _NoAttribution())
 
     await service.restore(identity=caller, provider=PurchaseProvider.apple,
                           restore_proof="a-signed-transaction")
     return recorder, session
+
+
+class _AttributedToTheCaller:
+    """The purchases read answering that the store recorded this proof against the caller's own
+    account, which is the branch where the deferred key has a binding row to point at."""
+
+    def __init__(self, destination) -> None:
+        self._destination = destination
+
+    async def resolve_user(self, provider, token):
+        return self._destination
+
+
+class TestTheFirstRestoreOfAnUnrecordedPurchaseWritesItsRow:
+    """WR-67: no purchase row for the pair, so the restore writes `core.store_purchases` itself.
+    `resolved_token_value` is one half of a DEFERRABLE INITIALLY DEFERRED pair, so a value set
+    where no binding row exists is refused at COMMIT and the client is told only 500."""
+
+    async def test_a_token_that_binds_to_nobody_points_the_deferred_key_at_nothing(self):
+        recorder, session = await _same_account_restore(EVALUATED_AT - timedelta(days=1),
+                                                        purchase_recorded=False)
+
+        assert session.commits == 1
+        written = recorder.purchases[0]
+        assert written["purchase_user_id"] is None
+        assert written["resolved_token_value"] is None
+        # NOT NULL, and the store gave a token, so the generated stand-in is not the one written.
+        assert written["identity_value"] == ATTRIBUTION_TOKEN
+        assert written["external_id"] == ORIGINAL_TRANSACTION_ID
+        assert written["store_original_transaction_id"] == ORIGINAL_TRANSACTION_ID
+        # A signed transaction names no per-term id, so this column stays empty on this path.
+        assert written["store_transaction_id"] is None
+        assert written["provider"] is PurchaseProvider.apple
+
+    async def test_a_token_that_binds_to_the_caller_names_the_binding_it_has(self):
+        """The other half of the pair: a resolved token has a row to point at, so the key is set."""
+        recorder, session = await _same_account_restore(EVALUATED_AT - timedelta(days=1),
+                                                        purchase_recorded=False,
+                                                        attributed_to_caller=True)
+
+        assert session.commits == 1
+        written = recorder.purchases[0]
+        assert written["purchase_user_id"] == recorder.destination
+        assert written["resolved_token_value"] == ATTRIBUTION_TOKEN
+
+    async def test_a_recorded_purchase_is_never_written_twice_control(self):
+        """The control: the two cases above are the unrecorded branch and not every restore."""
+        recorder, _ = await _same_account_restore(EVALUATED_AT - timedelta(days=1))
+
+        assert recorder.purchases == []
 
 
 async def _grant_written(purchased_at) -> dict:
