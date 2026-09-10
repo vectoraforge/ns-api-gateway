@@ -308,8 +308,10 @@ class SubscriptionsDB:
                                        tier_id: str,
                                        starts_at: datetime,
                                        ends_at: datetime | None,
+                                       may_reactivate: bool,
                                        evaluated_at: datetime) -> WriteOutcome:
-        """Supersede the buyer's held grants and insert this term's, under locks `lock_grants` took."""
+        """Supersede the buyer's held grants and insert this term's, under locks `lock_grants` took.
+        `may_reactivate` is restore's alone: ingestion passes False and writes nothing for a lapsed term."""
         entitled = status in ENTITLED_STATUSES
         held = [grant for grant in marked_active
                 if grant.source is AccessGrantSource.subscription
@@ -321,6 +323,11 @@ class SubscriptionsDB:
         if entitled and [grant for grant in held
                          if grant.ends_at == ends_at and grant.tier_id == tier_id]:
             return WriteOutcome.replayed
+
+        # This term lapsed and this caller may not bring it back, so no grant is ended and none inserted.
+        if (entitled and not held and not may_reactivate
+                and await self.grants_db.has_prior_subscription_grant(subscription_id)):
+            return WriteOutcome.applied
 
         # Every grant the destination holds goes, the free one too: `ix_access_grants_one_active_per_user` allows one.
         # The old owner's grant for another subscription is not this write's to end.

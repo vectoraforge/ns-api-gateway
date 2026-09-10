@@ -162,6 +162,8 @@ class SubscriptionsService:
                 starts_at=starts_at,
                 # The term checked above, and never a second reading of it that could drift from it.
                 ends_at=term_ends_at,
+                # Ingestion never reactivates: restore is the only path back to a lapsed grant.
+                may_reactivate=False,
                 evaluated_at=self.evaluated_at), notification)
 
         # Deliberate commit: the store reads the status code, so 200 must mean the rows are durable.

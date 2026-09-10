@@ -164,6 +164,8 @@ class RestoreService:
             starts_at=starts_at,
             # The term checked above, and never a second reading of it that could drift from it.
             ends_at=term_ends_at,
+            # The user-invoked path, which is the one reactivation belongs to.
+            may_reactivate=True,
             evaluated_at=self.evaluated_at)
         await self._settle(outcome, proof)
 

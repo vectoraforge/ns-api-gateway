@@ -44,17 +44,24 @@ class _StubResult:
 
 
 class _StubSession:
-    """Collects what the writer added, answers the one usage read, and counts flushes and reads."""
+    """Collects what the writer added, answers the grant and usage reads, and counts each of them."""
 
-    def __init__(self, usage: UserMonthlyUsage | None = None) -> None:
+    def __init__(self, usage: UserMonthlyUsage | None = None,
+                 prior: AccessGrant | None = None) -> None:
         self.added: list = []
         self.flushes = 0
-        self.reads = 0
+        self.usage_reads = 0
+        self.grant_reads = 0
         # The usage row `lock_grants` already locked, read back to carry the month's count across.
         self._usage = usage
+        # A grant this subscription already had, at any status, which is the lapse guard's question.
+        self._prior = prior
 
-    async def exec(self, statement):  # noqa: ARG002
-        self.reads += 1
+    async def exec(self, statement):
+        if statement.column_descriptions[0]["entity"] is AccessGrant:
+            self.grant_reads += 1
+            return _StubResult(self._prior)
+        self.usage_reads += 1
         return _StubResult(self._usage)
 
     def add(self, instance) -> None:
@@ -93,6 +100,7 @@ def _grant(*, user_id=DESTINATION, source=AccessGrantSource.subscription,
 
 async def _write(session: _StubSession, marked_active: list[AccessGrant], *,
                  subscription_id=SUBSCRIPTION_B,
+                 may_reactivate=False,
                  status=SubscriptionStatus.active) -> WriteOutcome:
     """Run the real writer for one term of `subscription_id` over the rows the caller locked."""
     return await SubscriptionsDB(session).write_subscription_grant(
@@ -103,6 +111,7 @@ async def _write(session: _StubSession, marked_active: list[AccessGrant], *,
         tier_id=PAID_TIER_ID,
         starts_at=NOW,
         ends_at=TERM_END,
+        may_reactivate=may_reactivate,
         evaluated_at=NOW)
 
 
@@ -233,7 +242,7 @@ class TestTheMonthsCountSurvivesATermChangeInsideIt:
 
         await _write(session, [theirs])
 
-        assert (_minted(session), session.reads) == ([0], 0)
+        assert (_minted(session), session.usage_reads) == ([0], 0)
 
     async def test_a_superseded_grant_with_no_usage_row_fails_closed(self):
         """CR-29: SHARED-INVARIANTS refuses a missing usage row for an existing grant, and reading
@@ -255,6 +264,53 @@ class TestTheMonthsCountSurvivesATermChangeInsideIt:
             await _write(session, [own])
 
         assert session.added == []
+
+
+@pytest.mark.asyncio
+class TestALapsedTermIsNeverBroughtBackByIngestion:
+    """CR-60: `08-webhook-app-store.md`:42 gives reactivation to restore alone, so an entitled
+    notification about a subscription whose grant is already gone writes no grant at all."""
+
+    async def test_an_entitled_notification_after_a_lapse_inserts_nothing(self):
+        """EXPIRED then DID_RENEW on one subscription: the buyer waits for a restore."""
+        lapsed = _grant(subscription_id=SUBSCRIPTION_B)
+        lapsed.status = AccessGrantStatus.expired
+        session = _StubSession(prior=lapsed)
+
+        outcome = await _write(session, [])
+
+        assert (outcome, session.added) == (WriteOutcome.applied, [])
+
+    async def test_the_winning_subscriptions_live_grant_is_left_alone(self):
+        """A later notification about the newest-wins loser must not take the winner's grant."""
+        winner = _grant(subscription_id=SUBSCRIPTION_A)
+        loser = _grant(subscription_id=SUBSCRIPTION_B)
+        loser.status = AccessGrantStatus.expired
+        session = _StubSession(_usage(winner, monthly_period=THIS_MONTH, monthly_used=0),
+                               prior=loser)
+
+        outcome = await _write(session, [winner])
+
+        assert (outcome, session.added) == (WriteOutcome.applied, [])
+        assert (winner.status, winner.ends_at) == (AccessGrantStatus.active, TERM_END)
+
+    async def test_a_first_verified_purchase_still_inserts_control(self):
+        """The control: a subscription that never had a grant is a purchase, not a lapse."""
+        session = _StubSession()
+
+        outcome = await _write(session, [])
+
+        assert (outcome, len(session.added)) == (WriteOutcome.applied, 2)
+
+    async def test_restore_may_bring_the_lapsed_term_back_control(self):
+        """The control: `may_reactivate` is the whole difference between the two callers."""
+        lapsed = _grant(subscription_id=SUBSCRIPTION_B)
+        lapsed.status = AccessGrantStatus.expired
+        session = _StubSession(prior=lapsed)
+
+        outcome = await _write(session, [], may_reactivate=True)
+
+        assert (outcome, len(session.added)) == (WriteOutcome.applied, 2)
 
 
 class _LockStubResult:

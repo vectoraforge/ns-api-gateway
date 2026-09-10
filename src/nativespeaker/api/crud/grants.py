@@ -68,6 +68,12 @@ def _grants_of_source_statement(user_id: UUID, source: AccessGrantSource):
                                      col(AccessGrant.source) == source)
 
 
+def _prior_subscription_grant_statement(subscription_id: UUID):
+    """Every grant ever written for one subscription, in any status."""
+    # No status predicate: an expired term is what proves this subscription already had its grant.
+    return select(AccessGrant).where(col(AccessGrant.subscription_id) == subscription_id)
+
+
 def _prior_free_grant_statement(user_id: UUID):
     """Every free-source grant `user_id` has ever held, in any status."""
     # No status predicate: the index this mirrors has none, so expiry never reopens the lifetime slot.
@@ -154,6 +160,11 @@ class GrantsDB:
     async def has_prior_free_grant(self, user_id: UUID) -> bool:
         """Whether `user_id` has ever held a free-source grant, taking no lock."""
         return (await self.session.exec(_prior_free_grant_statement(user_id))).first() is not None
+
+    async def has_prior_subscription_grant(self, subscription_id: UUID) -> bool:
+        """Whether one subscription has ever had a grant, in any status, taking no lock."""
+        statement = _prior_subscription_grant_statement(subscription_id)
+        return (await self.session.exec(statement)).first() is not None
 
     async def activate_anonymous_device_grant(self, *,
                                               user_id: UUID,
