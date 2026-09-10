@@ -212,6 +212,22 @@ class TestTheVerifiedNotificationReachesCommittedRows:
         assert events[0].event_type == "SUBSCRIBED"
         assert events[0].new_tier_id == PAID_TIER_ID
 
+    async def test_the_two_store_ids_land_in_their_own_columns(
+            self, webhook_client, scripted_app_store_notifications, _db_transaction):
+        """Read back out of `core.store_purchases`, because the two ids are only ever told apart
+        there: D-08 fixes the lifecycle key as Apple's `originalTransactionId`, and an operator
+        matches an App Store Connect record on the per-term `transactionId` beside it."""
+        notification = _notification()
+        scripted_app_store_notifications.script(notification)
+
+        response = await webhook_client.post(PATH, json={"signedPayload": ENVELOPE})
+
+        assert response.status_code == 200, response.text
+        purchases = await _purchases_of(_db_transaction, notification.external_id)
+        assert len(purchases) == 1
+        assert purchases[0].store_original_transaction_id == notification.external_id
+        assert purchases[0].store_transaction_id == notification.transaction_id
+
     async def test_the_seam_received_the_posted_envelope_untouched(
             self, webhook_client, scripted_app_store_notifications):
         scripted_app_store_notifications.script(_notification())

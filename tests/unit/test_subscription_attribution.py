@@ -303,9 +303,10 @@ class TestTheSinglePurchaseArms:
         assert purchase["purchase_user_id"] == owner
         assert writer.upserts[0]["user_id"] == owner
 
-    async def test_the_two_store_ids_land_in_their_own_columns(self, session, writer):
-        """D-08 fixes `external_id` as Apple's `originalTransactionId`, and an operator matches an
-        App Store Connect record on these two, so the per-term id is not the lifecycle key."""
+    async def test_the_two_store_ids_are_passed_in_their_own_arguments(self, session, writer):
+        """D-08 fixes `external_id` as Apple's `originalTransactionId`, so the per-term id is not
+        the lifecycle key. The service's half alone: which column each lands in is the writer's,
+        pinned by `test_app_store_webhook.py::test_the_two_store_ids_land_in_their_own_columns`."""
         service = _service(session, writer, uuid7())
         notification = _notification(attribution_token=TOKEN)
 
