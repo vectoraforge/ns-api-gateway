@@ -284,7 +284,8 @@ class TestOneVerifiedPushReachesACommittedRow:
         events = await _events_of(_db_transaction, _replay_key(purchase_token))
         assert len(events) == 1
         assert events[0].event_type == str(SUBSCRIPTION_PURCHASED)
-        assert events[0].new_tier_id == PAID_TIER_ID
+        # The first delivery for this key moved the row off nothing, so the audit row says so.
+        assert (events[0].old_tier_id, events[0].new_tier_id) == (None, PAID_TIER_ID)
 
     async def test_the_play_read_asked_for_the_configured_package_and_this_token(
             self, webhook_client, real_google_play_seam, _db_transaction):

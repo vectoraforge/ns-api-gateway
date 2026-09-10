@@ -38,6 +38,10 @@ PATH = "/webhooks/app-store"
 # The tier the migration seeds for a paid subscription, and the one the configured map targets.
 PAID_TIER_ID = "paid"
 
+# A second seeded tier for the one case that moves a subscription off `paid`; that it differs is
+# the whole property, because `audit.subscription_events` records the two sides of a transition.
+OTHER_TIER_ID = "registered"
+
 # The one body every verification failure answers with, compared by equality so a richer field fails here.
 REJECTED = {"code": "auth_required"}
 
@@ -211,6 +215,27 @@ class TestTheVerifiedNotificationReachesCommittedRows:
         assert events[0].subscription_id == subscriptions[0].id
         assert events[0].event_type == "SUBSCRIBED"
         assert events[0].new_tier_id == PAID_TIER_ID
+
+    async def test_a_tier_change_records_the_tier_the_row_moved_off(
+            self, webhook_client, scripted_app_store_notifications, _db_transaction):
+        """`old_tier_id` is the half a NULL alone cannot pin, and the audit row is what an operator
+        reconstructs a disputed subscription from: a second delivery moves the tier, so the two
+        columns of that row must differ."""
+        external_id = f"original-{uuid4()}"
+        opened = _notification(external_id=external_id)
+        moved = _notification(external_id=external_id, tier_id=OTHER_TIER_ID)
+
+        for notification in (opened, moved):
+            scripted_app_store_notifications.script(notification)
+            response = await webhook_client.post(PATH, json={"signedPayload": ENVELOPE})
+            assert response.status_code == 200, response.text
+
+        assert [(event.old_tier_id, event.new_tier_id) for event
+                in await _events_of(_db_transaction, opened.notification_uuid)] == [
+                    (None, PAID_TIER_ID)]
+        assert [(event.old_tier_id, event.new_tier_id) for event
+                in await _events_of(_db_transaction, moved.notification_uuid)] == [
+                    (PAID_TIER_ID, OTHER_TIER_ID)]
 
     async def test_the_two_store_ids_land_in_their_own_columns(
             self, webhook_client, scripted_app_store_notifications, _db_transaction):
