@@ -23,12 +23,8 @@ FIREBASE_HTTP_TIMEOUT_SECONDS = 8
 # The whole budget for one lookup: the initial call plus up to two more, spent on retryable outcomes only.
 FIREBASE_LOOKUP_ATTEMPTS = 3
 
-# The gap between attempts, in `resilience.py`'s own shape: `multiplier * 2 ** (attempt
-# - 1)`, clamped. Without it tenacity waits `wait_none()` and both budgets are spent inside a few
-# milliseconds -- three calls into the same instant of a Firebase blip, which buys nothing and
-# triples this service's call rate exactly while the provider is degraded. Sub-second, and far
-# below the LLM path's seconds, because the budget here is already three 8-second timeouts deep:
-# past that the caller is gone, so an idle wait spends what is left of its patience on nothing.
+# Sub-second, because the budget below is already three 8-second timeouts deep; without a gap at
+# all tenacity spends both budgets inside one instant of a Firebase blip.
 FIREBASE_BACKOFF_BASE_SECONDS = 0.1
 FIREBASE_BACKOFF_MAX_SECONDS = 0.5
 
@@ -60,11 +56,8 @@ def _application_default_credential() -> credentials.ApplicationDefault | None:
     try:
         google.auth.default()
     except google.auth.exceptions.GoogleAuthError:
-        # The whole family, not just an absent credential: `google.auth.default()` also raises
-        # `RefreshError` and `TransportError` when the metadata server answers but answers badly,
-        # a routine transient at pod start. Caught narrowly, those escaped `build_admin_apps` and
-        # `lifespan` and crashlooped the pod, under a docstring promising the opposite. Every ADC
-        # failure is one outcome here: user creation answers 503 and the pod still serves.
+        # The whole family, not just an absent credential: this call also raises `RefreshError`
+        # and `TransportError` when the metadata server answers badly at pod start.
         return None
     logger.info("firebase_admin_using_application_default_credentials")
     return credentials.ApplicationDefault()
@@ -101,11 +94,7 @@ class FirebaseAdminLookup:
             auth.revoke_refresh_tokens(subject, app=app)
         except auth.UserNotFoundError:
             # Definitive, spends no retry budget, and listed before the FirebaseError it subclasses.
-            # `RevocationUnconfirmed`, never `UserNotFound`: this call is made past the barrier on a
-            # subject whose token already verified, and `auth_required` there tells a client its
-            # credential is bad and to sign in again -- a loop, for an account that no longer exists.
-            # It also hides an integrity break, an active identity row naming a vanished uid, behind
-            # a routine 401. A vanished provider account is a definitive non-confirmation.
+            # `RevocationUnconfirmed`, never `UserNotFound`: a vanished account is a non-confirmation.
             logger.error("firebase_revoke_not_found")
             raise RevocationUnconfirmed(stage="subject_absent") from None
         except ValueError:
@@ -137,12 +126,7 @@ class FirebaseAdminLookup:
             raise UserNotFound(stage="provider_lookup") from None
         except ValueError:
             # Definitive, exactly as in `_revoke`: the SDK validates the uid before it sends the
-            # request, and a providerData shape materialized off a response already in hand
-            # re-derives the same way next time. Retrying it spends the whole budget on three
-            # identical guaranteed failures. The client-visible answer is the same 503 the
-            # exhausted budget would have reached, so only the wasted calls are gone.
-            # The SDK's own message embeds the uid and the raw provider record, so it is not
-            # admissible here -- the same rule `_revoke` states for the identical exception type.
+            # request, and its message embeds the uid, so no detail is logged.
             logger.warning("firebase_provider_data_malformed")
             raise Unavailable(stage="provider_lookup") from None
         except google.auth.exceptions.GoogleAuthError as error:
@@ -157,12 +141,8 @@ class FirebaseAdminLookup:
         return VerifiedProviderIdentity(
             provider=provider,
             provider_uid=provider_uid,
-            # `None` on the anonymous arm, whatever the record still carries: a record with no
-            # provider entry has no address this read may attribute to it (`adapters.py:17`).
-            # Firebase leaves the record-level `email` populated after a client unlinks its last
-            # provider, and copied onto the account `crud/identities.py::IdentitiesDB.upgrade_identity`
-            # then refuses to overwrite it (its `if user.email is None:` guard) -- so a genuine upgrade
-            # kept the stale address forever, on a route tree `04-users-me.md:53` gives no repair path.
+            # `None` on the anonymous arm, whatever the record still carries: Firebase leaves the
+            # record-level `email` populated after a client unlinks its last provider.
             email=(None if provider is IdentityProvider.anonymous
                    else _verified_email(email, email_verified)))
 

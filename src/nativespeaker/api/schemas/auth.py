@@ -12,9 +12,8 @@ from nativespeaker.api.tables.users import User
 
 class ChallengeRequest(BaseModel):
     """The issuance body. `operation` is a plain `str`, never a Literal: an unissuable value is the handler's 400."""
-    # Bounded well above every member of core.auth_operation, because the handler's refusal log carries this value.
-    # No `min_length`: the empty string must stay one of the many 400s, indistinguishable from every other
-    # unissuable value, and a 422 for it alone would make it distinguishable.
+    # Bounded well above every member of core.auth_operation, because the refusal log carries it.
+    # No `min_length`: a 422 for the empty string alone would make it distinguishable.
     operation: str = Field(..., max_length=64)
 
 
@@ -26,10 +25,8 @@ class PrepareResponse(BaseModel):
 
 class CompletionRequest(BaseModel):
     """The completion body: the handle obtained from `/auth/challenge`, and nothing else."""
-    # Required and non-empty, so an unusable handle is the framework's 422 rather than a not-found 409.
-    # The length counts characters, so a padded handle stays a distinct value and reaches the store untrimmed.
-    # Bounded well above the 22 characters `ChallengesDB.new_challenge_id` mints: anything longer is
-    # a guaranteed miss, and unbounded it was a guaranteed miss that still cost a store lookup.
+    # Required and non-empty, so an unusable handle is the framework's 422 and not a not-found 409.
+    # Bounded well above the 22 characters `new_challenge_id` mints: anything longer is a sure miss.
     challenge_id: str = Field(..., min_length=1, max_length=64)
 
 
@@ -37,9 +34,7 @@ class GrantClaimRequest(BaseModel):
     """The body both grant claims share: the handle, and the DeviceCheck token naming the device."""
     challenge_id: str = Field(..., min_length=1, max_length=64)
     # One token for the read and the write: two would let the bit read name a different device.
-    # Bounded well above a real DeviceCheck token, because this value is relayed verbatim into the
-    # body this service posts to Apple (`devicecheck.py::_shared_body`), at this service's expense and inside
-    # its own 8-second timeout. Envoy's body limit is another layer and bounds no single field.
+    # Bounded well above a real one, because it is relayed verbatim into a call this service pays for.
     device_token: str = Field(..., min_length=1, max_length=4096)
 
 
@@ -113,9 +108,7 @@ class Identity:
 @dataclass(frozen=True, slots=True)
 class LinkedIdentity(Identity):
     """The same pair once the linked check has run: both rows are present by construction."""
-    # `resolve` sets the two together or neither, so the invariant already held -- but only as prose,
-    # which the checker cannot carry. Stated as a type, a linked-only path dereferences both rows
-    # without an `assert` that `python -O` strips, and a user-only pair is a checker error rather
-    # than an `AttributeError` rendered as the generic 500.
+    # `resolve` sets the two together or neither; stated as a type, a user-only pair is a checker
+    # error rather than an `AttributeError` rendered as the generic 500.
     user: User
     identity: ExternalIdentity

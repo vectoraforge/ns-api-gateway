@@ -25,9 +25,8 @@ from jwt.types import Options
 logger = structlog.get_logger()
 
 
-# Exactly the closed set spec 11 names, and never a null. The first three separate the three
-# populations the invalid_external_jwt spike alert is labelled by -- clients that send nothing,
-# clients that send garbage, and an actor forging signatures -- so collapsing them blinds it.
+# The first three stay separate because the spike alert is labelled by them: nothing sent,
+# garbage sent, and a forged signature.
 class BoundedReason(StrEnum):
     """Rejection reasons for logs and metric labels; all of them surface the same copy to the client."""
     missing_token = "missing_token"
@@ -38,16 +37,13 @@ class BoundedReason(StrEnum):
     audience_mismatch = "audience_mismatch"
     expired = "expired"
     empty_subject = "empty_subject"
-    # The ninth, and the one no barrier rejection can carry: only a caller that pinned
-    # `required_claims` runs the comparison that returns it. The specs close
-    # `invalid_external_jwt` over the eight above, and name them as a minimum rather than a
-    # total (`00-overview-and-shared-contracts.md`: "including at least").
+    # The one no barrier rejection can carry: only a caller that pinned `required_claims`
+    # runs the comparison that returns it.
     required_claim_mismatch = "required_claim_mismatch"
 
 
-#: The decode rules, module-level so a test double substituting only the key lookup imports them
-#: rather than restating them: a copy is what lets production widen while the suite stays green.
-#: RS256 alone, so `alg: none` and HS256-over-the-public-key fail before any check runs.
+#: Module-level so a test double substituting only the key lookup imports them rather than
+#: restating them; RS256 alone, so `alg: none` and HS256-over-the-public-key fail first.
 DECODE_ALGORITHMS = ["RS256"]
 DEFAULT_LEEWAY = 30
 DECODE_OPTIONS: Options = {"require": ["exp", "iat", "aud", "iss", "sub"]}
@@ -94,9 +90,8 @@ def bounded_reason_for(exc: PyJWTError) -> BoundedReason:
         return BoundedReason.expired
     if isinstance(exc, MissingRequiredClaimError):
         return _MISSING_CLAIM_REASONS.get(exc.claim, BoundedReason.malformed)
-    # A token that is not a token: too few segments, an unreadable header or body, bad padding.
-    # `InvalidSignatureError` is excluded because it subclasses `DecodeError` and is a real forgery,
-    # and `PyJWKClientError` because an unknown key id is not a `DecodeError` at all.
+    # A token that is not a token; `InvalidSignatureError` is excluded because it subclasses
+    # `DecodeError` and is a real forgery.
     if isinstance(exc, DecodeError) and not isinstance(exc, InvalidSignatureError):
         return BoundedReason.malformed
     # Everything else: signature failure, algorithm confusion, unknown key id.
@@ -145,14 +140,8 @@ class JWTVerifier:
         self._unknown_kids: OrderedDict[str, float] = OrderedDict()
         # `verify` runs on the worker threadpool, so an unsynchronized dict would escape as a 500.
         self._cache_lock = threading.Lock()
-        # Warm the JWKS cache, and fail fast at startup if the endpoint is unusable.
-        # Wrapped so that both callers can guard this constructor on one exception class, each with
-        # its own policy: `build_google_push_verifier` answers `None` and costs one route a 503,
-        # `build_jwt_verifier` re-raises naming the endpoint and stops the pod.
-        # `PyJWKClient.fetch_data` converts `URLError` and `TimeoutError` alone: a 2xx whose body is
-        # not JSON leaves a `json.JSONDecodeError`, and one that parses to a non-object leaves an
-        # `AttributeError`, neither of which is a `PyJWTError`. Only the class name travels: the
-        # message of either embeds the JWKS URL or the body the endpoint answered with.
+        # Warm the JWKS cache, and fail fast at startup if the endpoint is unusable; wrapped so
+        # both callers can guard this constructor on one exception class.
         try:
             self._jwks_client.get_signing_keys()
         except PyJWTError:
@@ -209,28 +198,19 @@ class JWTVerifier:
                                  leeway=self._leeway,
                                  options=DECODE_OPTIONS)
         except PyJWKClientError as exc:
-            # Named here because nothing else can: the bounded reason set is closed at eight values
-            # and carries no `jwks_unavailable`, so an outage rejects the whole fleet labelled
-            # `bad_signature` and the spike alert reads it as mass forgery. Every `PyJWKClientError`
-            # but the key-id miss earns the line, not the connection subclass alone: PyJWT raises
-            # the plain class for a reachable endpoint that answered a non-object ("did not return a
-            # JSON object") and for one whose set holds no signing key ("did not contain any signing
-            # keys") -- a botched rotation and a proxy in the way, and both are the same fleet-wide
-            # outage. Only the class name, never the exception text: it embeds the JWKS URL.
+            # Every `PyJWKClientError` but the key-id miss earns the line; the class name only,
+            # because the exception text embeds the JWKS URL.
             if _DEFINITIVE_KID_MISS not in str(exc):
                 logger.error("jwks_endpoint_unusable", failure=type(exc).__name__)
-            # A key id this endpoint does not serve is the token's fault, not the endpoint's, so it
-            # is the one arm that caches. An outage records no `kid`: caching it would prolong it.
+            # The one arm that caches: a key id this endpoint does not serve is the token's fault.
             elif cache_key is not None:
                 self._record_unknown(cache_key)
             return None, bounded_reason_for(exc)
         except PyJWTError as exc:
             return None, bounded_reason_for(exc)
         except Exception as failure:
-            # What makes "never raises" structural -- an escape would 500 a caller owed a 401.
-            # Logged as the same outage, because that is what reaches here: `fetch_data` converts
-            # `URLError` and `TimeoutError` alone, so an HTML error page served at 200 arrives as a
-            # bare `json.JSONDecodeError` -- the constructor's warm-up wrapper already names it.
+            # What makes "never raises" structural -- an escape would 500 a caller owed a 401 --
+            # and the same outage, because an HTML page served at 200 arrives as a JSON decode error.
             logger.error("jwks_endpoint_unusable", failure=type(failure).__name__)
             return None, BoundedReason.bad_signature
 
@@ -239,11 +219,8 @@ class JWTVerifier:
 
         for claim, expected in self._required_claims.items():
             if payload.get(claim) != expected:
-                # Its own reason, not `bad_signature`. The answer is `auth_required` either way and
-                # the reason is never client-visible, so naming the class of failure discloses
-                # nothing -- while collapsing it leaves a mistyped push identity in this
-                # deployment's own configuration indistinguishable from a forged token, which is
-                # the one distinction `.env.example` promises the operator this field carries.
+                # Its own reason, not `bad_signature`: collapsing it leaves a mistyped push identity
+                # in this deployment's own configuration indistinguishable from a forged token.
                 return None, BoundedReason.required_claim_mismatch
 
         return claims_from_payload(payload)

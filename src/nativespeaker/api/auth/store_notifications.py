@@ -27,12 +27,8 @@ class VerifiedNotification:
     grace_period_expires_at: datetime | None
 
     def __post_init__(self) -> None:
-        # The declared type made true. Readers ask this field two ways -- by identity
-        # (`crud/subscriptions.py::SubscriptionsDB.write_subscription_grant`, `term_end_for` below) and by value
-        # (`ENTITLED_STATUSES`) -- and a raw store string answers those two questions
-        # differently: it is correctly not entitled and silently not revoked. Coerced once here,
-        # so both spellings agree, and a value outside the five raises rather than recording a
-        # store withdrawal as an ordinary expiry.
+        # The declared type made true: readers ask this field by identity and by value alike, and
+        # a raw store string is correctly not entitled and silently not revoked.
         object.__setattr__(self, "status", SubscriptionStatus(self.status))
 
 

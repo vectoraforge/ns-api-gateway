@@ -22,9 +22,7 @@ def _extract_status_code(exc: Exception) -> int | None:
     return None
 
 
-# The retry-eligible statuses, named once. A second copy is what lets the two drift apart, and the
-# split would be invisible: this predicate decides whether the circuit breaker counts a failure,
-# which decides whether the whole fleet answers 503.
+# The retry-eligible statuses, named once: a second copy would decide the fleet's 503 on its own.
 _TRANSIENT_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
 
 
@@ -44,9 +42,8 @@ class CircuitBreaker:
         self._reset_seconds = reset_seconds
         self._failure_count = 0
         self._opened_at: float | None = None
-        # Bumped on every trip, so an attempt can stamp the state it began under. "Open right now"
-        # is not that state: `before_call`'s elapsed arm clears `_opened_at` while an attempt
-        # admitted before the trip is still in flight.
+        # Bumped on every trip, so an attempt can stamp the state it began under; "open right
+        # now" is not that state, because the elapsed arm clears `_opened_at` under an attempt.
         self._generation = 0
         self._lock = asyncio.Lock()
 
@@ -72,19 +69,15 @@ class CircuitBreaker:
         async with self._lock:
             if generation != self._generation:
                 # An attempt in flight when the breaker tripped predates it, so its answer says
-                # nothing about the provider now. Stamped rather than read from `_opened_at`: one
-                # retry chain outlives `circuit_breaker_reset_seconds`, so by the time such an
-                # answer lands the elapsed arm has already cleared `_opened_at` and the straggler
-                # would zero a tally accumulated entirely after the reset.
+                # nothing about the provider now.
                 return
             self._failure_count = 0
 
     async def record_failure(self, generation: int) -> None:
         async with self._lock:
             if generation != self._generation or self._opened_at is not None:
-                # Stamped, not read: `before_call`'s elapsed arm primes the tally at
-                # `_failure_threshold - 1`, so a failure from before the trip reopened the
-                # breaker on its own and the whole fleet paid another reset window of 503.
+                # The same guard, because the elapsed arm primes the tally at `threshold - 1` and
+                # one straggler failure would reopen the breaker on its own.
                 return
             self._failure_count += 1
             if self._failure_count >= self._failure_threshold:
@@ -123,11 +116,8 @@ class LLMExecutionGate:
             yield
 
 
-# The one value `Admitted.proof` may carry. A token is proof of admission only because this object
-# cannot be reached from outside the module, so a hand-built `Admitted` carries something else and
-# `ainvoke` refuses it. Without this, the token was a name rather than a guarantee: `Admitted()` was
-# spellable anywhere, and a caller that spelled it took no in-flight slot, so the `queue_size` bound
-# and its `QueueFullError` never fired for it.
+# The one value `Admitted.proof` may carry: module-private, so a hand-built token carries
+# something else and `ainvoke` refuses it.
 _ADMISSION = object()
 
 
@@ -180,11 +170,8 @@ class ResiliencePolicy:
         async def attempt() -> Any:
             """One attempt, already triaged: everything `_should_retry` reads is decided here."""
             nonlocal attempted
-            # Per attempt, not once at admission: a provider declared dead mid-flight costs one
-            # attempt. Never on the first one, though: the permit above is an unbounded wait, so
-            # re-deciding here what `admission()` already decided refuses a request that has made
-            # no provider call while its caller's quota charge -- committed against the admission
-            # verdict -- stands. A charged request always reaches the provider at least once.
+            # Per attempt, not once at admission, and never on the first: a charged request always
+            # reaches the provider at least once, on the verdict `admission()` gave.
             if attempted:
                 await self._circuit_breaker.before_call()
             attempted = True
@@ -199,9 +186,8 @@ class ResiliencePolicy:
             except Exception as e:
                 # Everything reaching here came out of `operation` itself, so every classification is the provider's.
                 if _is_transient_error(e):
-                    # Counted only on this arm: the classification is the provider's, but the cause
-                    # of a permanent rejection is the request -- one user's phrase refused by the
-                    # content policy would otherwise open the breaker on everybody.
+                    # Counted only on this arm: the cause of a permanent rejection is the request,
+                    # and one user's refused phrase would otherwise open the breaker on everybody.
                     await self._circuit_breaker.record_failure(generation)
                     raise TransientLLMError(str(e)) from e
                 raise PermanentLLMError(str(e)) from e

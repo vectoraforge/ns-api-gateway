@@ -46,11 +46,7 @@ def _instant(milliseconds: int | None) -> datetime | None:
     try:
         return datetime.fromtimestamp(milliseconds / 1000, UTC)
     except (ValueError, OverflowError, OSError):
-        # Every Apple stamp is an unbounded int in the library, and a value past year 9999 raised
-        # out of the dependency onto the generic 500 -- the answer that makes Apple resend this same
-        # body on its whole retry schedule. Out of range is as unusable as absent, and every field
-        # this feeds is optional; an entitled status left with no term is still refused by
-        # `SubscriptionsService.ingest`, so dropping the stamp fails closed.
+        # Out of range is as unusable as absent, and every field this stamp feeds is optional.
         return None
 
 
@@ -107,18 +103,11 @@ class AppStoreNotifications:
         except VerificationException as failure:
             raise NotificationRejected(stage=failure.status.name) from failure
         except Exception as failure:
-            # The library structures the decoded object outside its own guard, so a field of the
-            # wrong JSON type leaves a cattrs error rather than a `VerificationException`. Spec 08
-            # calls that a malformed payload -- a 401, never the 500 Apple retries for days. Every
-            # arm below is the same call and needs the same second arm.
+            # The library structures the payload outside its own guard, so a mistyped field leaves a cattrs error.
             raise NotificationRejected(stage="payload_unstructurable") from failure
 
         if not payload.notificationUUID or not payload.rawNotificationType:
-            # Both are Optional in the library and neither is required by the verification, which
-            # checks the chain, the bundle id, the app id and the environment and nothing else.
-            # Refused before any write: both reach a NOT NULL column in `audit.subscription_events`,
-            # and a null uuid also silently disarms the replay guard `SubscriptionsService.ingest`
-            # runs on it -- `WHERE notification_uuid = NULL` matches nothing, so it never fires.
+            # Both are Optional in the library, and the verification requires neither.
             raise NotificationRejected(stage="notification_without_identity")
 
         data = payload.data
@@ -134,12 +123,7 @@ class AppStoreNotifications:
             raise NotificationRejected(stage="payload_unstructurable") from failure
 
         if data.rawStatus is None:
-            # `status` is the state of an *auto-renewable subscription*, and Apple omits it for the
-            # types that carry a transaction but name no subscription: CONSUMPTION_REQUEST,
-            # ONE_TIME_CHARGE, EXTERNAL_PURCHASE_TOKEN, RESCIND_CONSENT. The transaction is dropped
-            # with it: `core.subscriptions.status` is NOT NULL, and inventing `expired` here would
-            # end a live subscriber's grant. Verified and unwritable, exactly as the data-less arm above.
-            # The raw int, never `status`: the typed attribute is also None for an unknown value.
+            # The raw int, never `status`: the typed attribute is None for an unknown value too.
             return _crossed(payload, None, None, status=SubscriptionStatus.expired, tier_id=None)
 
         if transaction.originalTransactionId is None:
@@ -155,8 +139,7 @@ class AppStoreNotifications:
             except Exception as failure:
                 raise NotificationRejected(stage="payload_unstructurable") from failure
 
-        # Below the last verification arm: a 500 raised above it makes Apple retry a payload that
-        # can never verify, for its whole schedule.
+        # Below the last verification arm: a 500 above it makes Apple retry a payload that cannot verify.
         status = None if data.status is None else _APPLE_STATUSES.get(data.status)
         if status is None:
             # A status present but outside Apple's own enum; the named class carries the log line.

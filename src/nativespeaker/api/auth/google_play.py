@@ -80,11 +80,8 @@ class PlayExternalAccountIdentifiers(BaseModel):
 class PlaySubscriptionLineItem(BaseModel):
     """One line item of a Play subscription: the product bought, and when its term ends."""
     productId: str | None = None
-    # Optional as defensive typing only: Play gives every entitled term an end, so no producer sends None here.
-    # Aware, never a bare `datetime`: a zone-less stamp parses into a naive value that only detonates
-    # later, as a `TypeError` inside `_status_for`'s comparison against the captured instant, past
-    # both read paths' `except ValueError` arms. Declared aware, it is the `ValidationError` those
-    # arms already classify -- and no naive value ever reaches a grant's `ends_at`.
+    # Optional as defensive typing only: Play gives every entitled term an end.
+    # Aware, never a bare `datetime`: a naive value would detonate later, inside `_status_for`.
     expiryTime: AwareDatetime | None = None
 
 
@@ -137,15 +134,11 @@ class PlaySubscriptionSource(Protocol):
 def developer_notification_from(data: str) -> DeveloperNotification | None:
     """The decoded RTDN, or `None` when this verified message carries an unusable body."""
     if not data:
-        # Pub/Sub permits an attributes-only message, so this is a routine delivery carrying no
-        # RTDN, not a breached bound. It acknowledges at INFO; recording it at ERROR under the
-        # bound's name pages an operator for a console publish.
+        # Pub/Sub permits an attributes-only message, so this is routine and not a breached bound.
         logger.info("google_play_message_without_data")
         return None
     if len(data) > PUBSUB_DATA_LIMIT:
-        # Out of range is as unusable as undecodable, and it answers the same way: a body past
-        # the bound is not an RTDN. The length alone reaches the log; the body is Google's and
-        # this module logs no value of theirs.
+        # Out of range is as unusable as undecodable; the length alone reaches the log.
         logger.error("google_play_message_out_of_range", length=len(data))
         return None
     try:
@@ -170,11 +163,8 @@ def instant_from_millis(milliseconds: int) -> datetime | None:
     try:
         return datetime.fromtimestamp(milliseconds / 1000, UTC)
     except (ValueError, OverflowError, OSError):
-        # `eventTimeMillis` is an unbounded int, and a value past year 9999 raised out of the
-        # dependency onto the generic 500 -- which is the answer that makes Pub/Sub redeliver this
-        # same body until retention expires. Out of range is as unusable as undecodable, and it
-        # answers the same way: `signed_at` is optional on every path that reads it, so the
-        # delivery still resolves and this one acknowledges. The value never reaches the log.
+        # Out of range is as unusable as undecodable, and `signed_at` is optional on every path
+        # that reads it; the value itself never reaches the log.
         logger.error("google_play_event_time_out_of_range")
         return None
 
@@ -211,8 +201,6 @@ def _status_for(state: str, expiry: datetime | None,
         # Canceled but not expired is still a paid term: Google says so in the field's own text.
         return (SubscriptionStatus.active if expiry is not None and expiry > evaluated_at
                 else SubscriptionStatus.expired)
-    # `revoked` is unreachable on this path: `subscriptionsv2` publishes no revocation signal, and
-    # a revoked subscription reports SUBSCRIPTION_STATE_EXPIRED with the reason in its event type.
     # Every unlisted value is unentitled, so a state this build has never seen never grants.
     return _STATES.get(state, SubscriptionStatus.expired)
 
@@ -246,10 +234,8 @@ class PlayDeveloperSubscriptions:
         # Server-controlled reference data, never a value the store supplied.
         self._products = products
 
-    # `evaluated_at` is passed, never read from a clock here: FastAPI's per-request dependency
-    # cache only sees solver-resolved dependencies, so a clock called from inside this class would
-    # give `_status_for` a different instant from the one the grant writer computes `ends_at`
-    # against, and a term crossing between the two commits an active grant outside its own term.
+    # `evaluated_at` is passed, never read from a clock here: a second reading would let a term
+    # cross between `_status_for` and the grant writer's `ends_at`.
     async def read(self, *, package_name: str, purchase_token: str, event_type: str,
                    notification_uuid: str, signed_at: datetime | None,
                    evaluated_at: datetime) -> VerifiedNotification | None:
@@ -257,17 +243,13 @@ class PlayDeveloperSubscriptions:
         if self._credential is None:
             raise Unavailable(stage="play_subscriptions_read")
         if not package_name or not _names_one_path_segment(package_name):
-            # The same guard `read_for_restore` applies, and a deployment fault like it: an absent
-            # or dot-only application name addresses a URL naming no application, whose 404 reads
-            # here as a gone token. Refused loudly, because acknowledging drops the delivery for
-            # good -- Pub/Sub never redelivers an acknowledged message.
+            # An absent or dot-only name addresses a URL naming no application, whose 404 would
+            # read here as a gone token; refused loudly, because acknowledging drops the delivery.
             logger.error("google_play_unusable_package_name")
             raise InternalError
         if not _names_one_path_segment(purchase_token):
-            # The same guard `read_for_restore` applies to the same value, hoisted because both
-            # entry points reach the same `_get`. `quote` leaves a dot unescaped and httpx removes
-            # a dot segment, so `..` addresses a different Play URL and `` addresses the collection.
-            # `None`, never a raise: this route acknowledges, and there is nothing here to read.
+            # `quote` leaves a dot unescaped and httpx removes a dot segment, so `..` addresses a
+            # different Play URL; `None`, never a raise, because there is nothing here to read.
             logger.error("google_play_unusable_purchase_token")
             return None
 
@@ -284,9 +266,8 @@ class PlayDeveloperSubscriptions:
         try:
             subscription = PlaySubscription.model_validate(response.json())
         except ValueError as failure:
-            # Both a non-JSON 2xx and a body this build cannot read arrive as `ValueError`.
-            # The class name alone: the body, and pydantic's echo of it, carry Play's own values,
-            # so the cause is dropped rather than chained into the handler's traceback.
+            # Both a non-JSON 2xx and a body this build cannot read arrive as `ValueError`; the
+            # class name alone, because the body and pydantic's echo of it carry Play's own values.
             logger.error("google_play_read_unparseable", failure=type(failure).__name__)
             raise InternalError from None
 
@@ -316,9 +297,8 @@ class PlayDeveloperSubscriptions:
     async def read_for_restore(self, *, package_name: str, purchase_token: str,
                                evaluated_at: datetime) -> RestoredSubscription:
         """Read the state of one client-presented purchase token, or raise the refusal it earned."""
-        # The answer is classified here and never by a caught base class, because
-        # `UnmappedStoreProduct` is an `InternalError` and a caught base would turn an
-        # operator configuration error into a 503.
+        # Classified here and never by a caught base class, which would turn `UnmappedStoreProduct`
+        # into a 503.
         if self._credential is None:
             raise Unavailable(stage=RESTORE_UNCONFIGURED_STAGE)
         if not package_name or not _names_one_path_segment(package_name):
@@ -372,10 +352,8 @@ class PlayDeveloperSubscriptions:
     def _product_of(self, subscription: PlaySubscription) -> tuple[str, str, datetime | None]:
         """The line item's product, the tier it maps to, and the end of its term."""
         if len(subscription.lineItems) != 1:
-            # Refused before any write: both the tier and the term of the grant are read off this
-            # one element, Google documents no ordering for the list, and an upgrade transition or
-            # a second base plan makes element zero a guess. The count is ours; no Play value is
-            # logged. An empty list is the same refusal: there is nothing to read the term from.
+            # Refused before any write: the tier and the term are read off this one element, and
+            # Google documents no ordering, so element zero of a longer list is a guess.
             logger.error("google_play_unexpected_line_item_count",
                          count=len(subscription.lineItems))
             raise InternalError

@@ -23,26 +23,17 @@ DEVICECHECK_HTTP_TIMEOUT_SECONDS = 8
 # The whole budget for one call: the initial request plus up to two more, spent on retryable outcomes only.
 DEVICECHECK_ATTEMPTS = 3
 
-# The gap between attempts, in `resilience.py`'s own shape: `multiplier * 2 ** (attempt
-# - 1)`, clamped. Without it tenacity waits `wait_none()` and spends the whole budget inside a few
-# milliseconds -- three requests into the same instant of an Apple blip, which buys nothing and
-# triples this service's call rate exactly while the provider is degraded. Sub-second, and far
-# below the LLM path's seconds, because the budget here is already three 8-second timeouts deep:
-# past that the caller is gone, so an idle wait spends what is left of its patience on nothing.
+# Sub-second, because the budget below is already three 8-second timeouts deep; without a gap at
+# all tenacity spends all three attempts inside one instant of an Apple blip.
 DEVICECHECK_BACKOFF_BASE_SECONDS = 0.1
 DEVICECHECK_BACKOFF_MAX_SECONDS = 0.5
 
-# Apple answers HTTP 200 with one of these plain-text bodies when the device's bits were never set.
-# Casefolded, like `_DEVICE_TOKEN_FAULT` below: both literal sets are [ASSUMED] from secondary
-# sources, so neither may turn on Apple's choice of capitalisation.
+# Apple's plain-text bodies for a device whose bits were never set, casefolded because both
+# literal sets are [ASSUMED] from secondary sources.
 _NEVER_SET_BODIES = frozenset({"failed to find bit state", "bit state not found"})
 
-# The phrase Apple's 400 bodies carry when the fault is in the caller's device token ("Missing or
-# incorrectly formatted device token payload", "Unable to verify device token") and never when it is
-# in the request this service built ("Invalid or missing timestamp", "Invalid or missing transaction
-# id", "Missing or badly formatted authorization"). A phrase rather than a table of exact bodies,
-# because these literals are [ASSUMED] from secondary sources (41-RESEARCH.md A3): an unrecognised
-# 400 has to fall to the retry arm below, never to a 403 that accuses the caller's device.
+# The phrase Apple's 400 bodies carry when the fault is the caller's device token and never when it
+# is the request this service built; a phrase, because the exact bodies are [ASSUMED].
 _DEVICE_TOKEN_FAULT = "device token"
 
 
@@ -79,18 +70,11 @@ def read_private_key(path: str | None) -> str | None:
         return None
     try:
         text = pem.read_text()
-        # Parsed once, here, so a key that is present but unusable is the same absent state an
-        # unset path is: a 503 on the claim and one boot warning. Unparsed, it reached `jwt.encode`
-        # instead and raised out of the retry frame onto the generic 500 on every claim, with the
-        # pod reporting healthy. The exception is dropped rather than logged: its text quotes the
-        # file's own bytes.
+        # Parsed once, here, so a present but unusable key is the same absent state an unset path is.
         jwt.encode({}, text, algorithm="ES256")
     except Exception:
-        # Every exception, because this is a classifier with two outcomes and no caller can act on
-        # the distinction: `prepare_key` loads a public PEM successfully and fails at `.sign()` with
-        # `AttributeError`, and a passphrase-wrapped `.p8` fails with `TypeError`. Both are outside
-        # `(OSError, ValueError, PyJWTError)`, and both raised out of `lifespan` into a crashloop of
-        # the whole pod -- the outcome this parse exists to prevent.
+        # Every exception: a public PEM fails at `.sign()` with `AttributeError` and a
+        # passphrase-wrapped `.p8` with `TypeError`, both outside `(OSError, ValueError, PyJWTError)`.
         return None
     return text
 
@@ -130,9 +114,7 @@ def _reject_or_retry(response: httpx.Response, *, stage: str) -> None:
             # Definitive: Apple refused the token itself, so no further attempt can change the answer.
             raise ProofRejected(stage=stage, cause="rejected")
         # Apple faults the request this service built, not the caller's proof: a skewed pod clock
-        # alone earns "Invalid or missing timestamp" on every call. Spec 06:83 reserves
-        # `proof_rejected` for vendor *material* failures, so this arm retries and then answers the
-        # 503 -- a fault of ours never tells a client its device is bad.
+        # alone earns "Invalid or missing timestamp" on every call.
         raise RetryableDeviceCheckError("status 400")
     if response.status_code // 100 != 2:
         raise RetryableDeviceCheckError(f"status {response.status_code}")
@@ -142,11 +124,8 @@ def _parse_bit_state(response: httpx.Response, *, stage: str) -> BitState:
     """Classify a query response in the one order that lets nothing fall through to a default."""
     body = response.text.strip().casefold()
     if body in _NEVER_SET_BODIES and response.status_code // 100 != 5:
-        # The eligible first-ever claim, read before any JSON call because the body is plain text --
-        # and ahead of the status, because Apple is widely observed carrying this body on 400 as
-        # well as on the documented 200. Classified by status first, the one case the free grant
-        # exists for was answered `proof_rejected` and the feature granted nothing to anybody.
-        # A 5xx is excluded so an outage page that happens to echo this text cannot mint a grant.
+        # Read ahead of the status, because Apple is widely observed carrying this body on 400 as
+        # well as on the documented 200; a 5xx is excluded so an outage page cannot mint a grant.
         return BitState(bit0=False, bit1=False)
     _reject_or_retry(response, stage=stage)
 
