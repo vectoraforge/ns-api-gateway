@@ -233,6 +233,13 @@ class _AcceptingTokens:
         return None
 
 
+class _RefusingTokens:
+    """A push token that does not verify, which is what makes the ordering below observable."""
+
+    async def verify(self, bearer: str) -> None:
+        raise NotificationRejected(stage="bad_signature")
+
+
 class _UncallablePlay:
     """A Play seam that fails its case if reached, which is what "makes no Play call" means here."""
 
@@ -317,6 +324,21 @@ class TestTheUndecodableBody:
 
     def test_the_decoder_itself_answers_none_rather_than_raising(self, play_logs):
         assert developer_notification_from("this is not base64 at all!!") is None
+
+
+class TestTheTokenIsCheckedBeforeTheBodyIsParsed:
+    """A forged body must never be decoded, so the refusal comes from the token and nothing else."""
+
+    async def test_an_unverifiable_token_refuses_before_the_body_is_decoded(self, play_logs):
+        body = PubSubPushRequest(message={"messageId": "2280000000000003",
+                                          "data": "this is not base64 at all!!"})
+
+        with pytest.raises(NotificationRejected) as refusal:
+            await _verify(body, tokens=_RefusingTokens())
+
+        assert refusal.value.stage == "bad_signature"
+        # The decode's own ERROR line is what a body parsed ahead of the token check would leave.
+        assert play_logs.records("error") == []
 
 
 class TestTheEmptyBodyAndTheBreachedBoundAreRecordedApart:
