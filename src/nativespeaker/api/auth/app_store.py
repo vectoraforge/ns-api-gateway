@@ -46,7 +46,6 @@ def _instant(milliseconds: int | None) -> datetime | None:
     try:
         return datetime.fromtimestamp(milliseconds / 1000, UTC)
     except (ValueError, OverflowError, OSError):
-        # Out of range is as unusable as absent, and every field this stamp feeds is optional.
         return None
 
 
@@ -103,11 +102,9 @@ class AppStoreNotifications:
         except VerificationException as failure:
             raise NotificationRejected(stage=failure.status.name) from failure
         except Exception as failure:
-            # The library structures the payload outside its own guard, so a mistyped field leaves a cattrs error.
             raise NotificationRejected(stage="payload_unstructurable") from failure
 
         if not payload.notificationUUID or not payload.rawNotificationType:
-            # Both are Optional in the library, and the verification requires neither.
             raise NotificationRejected(stage="notification_without_identity")
 
         data = payload.data
@@ -123,11 +120,9 @@ class AppStoreNotifications:
             raise NotificationRejected(stage="payload_unstructurable") from failure
 
         if data.rawStatus is None:
-            # The raw int, never `status`: the typed attribute is None for an unknown value too.
             return _crossed(payload, None, None, status=SubscriptionStatus.expired, tier_id=None)
 
         if transaction.originalTransactionId is None:
-            # Refused, never acknowledged: the lifecycle key this notification is written under is absent.
             raise NotificationRejected(stage="transaction_without_original_id")
 
         renewal = None
@@ -139,10 +134,9 @@ class AppStoreNotifications:
             except Exception as failure:
                 raise NotificationRejected(stage="payload_unstructurable") from failure
 
-        # Below the last verification arm: a 500 above it makes Apple retry a payload that cannot verify.
+        # Keep this check below the last verification arm. A 500 above it makes Apple retry a bad payload.
         status = None if data.status is None else _APPLE_STATUSES.get(data.status)
         if status is None:
-            # A status present but outside Apple's own enum; the named class carries the log line.
             raise UnknownStoreSubscriptionStatus(PurchaseProvider.apple)
 
         return _crossed(payload, transaction, renewal, status=status,

@@ -238,8 +238,6 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
         async def _handler(chat_id: str,
                            who: LinkedIdentity = Depends(get_linked_identity),
                            admitted: Identity = Depends(get_identity)):
-            # `get_linked_identity` narrows rather than passes through, so the two are not one
-            # object; sharing both resolved rows is what says the resolution happened once.
             same = who.user is admitted.user and who.identity is admitted.identity
             return {"same": same, "user": str(who.user.id)}
 
@@ -254,5 +252,4 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
         assert response.status_code == 200, response.json()
         assert counts["verify"] == 1, f"the JWT was verified {counts['verify']} times"
         assert counts["query"] == 1, f"identity was resolved {counts['query']} times"
-        # Both declarations were served by the one cached resolution, not by two equal ones.
         assert response.json()["same"] is True

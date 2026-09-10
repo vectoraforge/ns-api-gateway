@@ -44,10 +44,6 @@ def get_config(request: Request) -> AppConfig:
 
 async def get_db(request: Request) -> AsyncGenerator[AsyncSession]:
     """The request session: it rolls back on the way out, and never commits."""
-    # FastAPI resumes this generator on the request's inner exit stack, which `fastapi/routing.py`
-    # closes only after `await response(...)`. A commit written here would therefore run once the
-    # body is on the wire, where its failure reaches nobody -- the caller reads 200 for a
-    # transaction that rolled back. Every write commits in its own service or handler instead.
     async with request.app.state.session_factory() as session:
         try:
             yield session
@@ -59,7 +55,6 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession]:
 # `auto_error=False`: our own code raises, so the rejection keeps its class, code and log event.
 _bearer = HTTPBearer(auto_error=False)
 
-#: The raw ASGI field name. ASGI lowercases every field name, so differently-cased duplicates fold into it.
 _AUTHORIZATION = b"authorization"
 
 
@@ -67,14 +62,11 @@ async def get_identity(request: Request,
                        credential: HTTPAuthorizationCredentials | None = Depends(_bearer),
                        ) -> Identity:
     """Accept the token and resolve the identity it names -- once per request."""
-    # Counted on the raw scope before any value is read: the merged view returns the first field
-    # value and hides the rest, so a second Authorization field would otherwise win by position.
+    # Count on the raw scope. The merged view shows the first field value and hides a second one.
     if sum(1 for name, _value in request.scope["headers"] if name == _AUTHORIZATION) > 1:
         raise InvalidExternalJwt(bounded_reason=BoundedReason.duplicate_authorization)
 
     if credential is None:
-        # `HTTPBearer` also answers `None` for a non-Bearer scheme and an empty token, which spec 01
-        # §1.1 calls `malformed`; only zero field values are `missing_token`.
         presented = request.headers.get("authorization") is not None
         raise InvalidExternalJwt(bounded_reason=BoundedReason.malformed if presented
                                  else BoundedReason.missing_token)
@@ -83,8 +75,6 @@ async def get_identity(request: Request,
     claims, reason = await run_in_threadpool(request.app.state.jwt_verifier.verify,
                                              credential.credentials)
     if claims is None:
-        # `verify` is typed to allow `(None, None)`, and a null label would reach the log as the
-        # string "None" -- a population the spike alert cannot name.
         raise InvalidExternalJwt(bounded_reason=reason or BoundedReason.bad_signature)
 
     # Its own short session, closed before the handler: Depends(get_db) would hold it across the provider call.
@@ -97,8 +87,6 @@ async def get_identity(request: Request,
 # Declared, never called directly: FastAPI's cache only sees solver-resolved deps, so a direct call re-verifies.
 async def get_linked_identity(identity: Identity = Depends(get_identity)) -> LinkedIdentity:
     """The resolved user and identity row; rejects an unlinked caller with 403."""
-    # Both rows, not just the user: a user-only pair is the unresolvable state, and it fails closed
-    # here rather than as an `AttributeError` eight handlers deep.
     if identity.user is None or identity.identity is None:
         raise PreAuthIdentityNotAllowed
     return LinkedIdentity(issuer=identity.issuer, subject=identity.subject,
@@ -132,8 +120,6 @@ def get_chat_service(request: Request,
                        chats_limit=config.chats_limit,
                        messages_limit=config.messages_limit,
                        quota_service=quota_service,
-                       # The solver-resolved instant, never a second `now()`: the quota charge
-                       # below it is a time-dependent write.
                        evaluated_at=evaluated_at)
 
 
@@ -151,8 +137,6 @@ def get_firebase_adapter(request: Request) -> FirebaseAdminAdapter:
 
 def get_devicecheck_adapter(request: Request) -> DeviceCheckAdapter:
     """The device-gate seam the lifespan built, declared like its Firebase sibling above."""
-    # Annotated for the reason `devicecheck.py` gives at its two retry helpers: unannotated, the
-    # Protocol binds nowhere on the wiring path and catches no wrong-shaped double.
     return request.app.state.devicecheck_adapter
 
 
@@ -218,7 +202,6 @@ async def verify_google_play_notification(
         return None
 
     expected_package = request.app.state.config.google_play.package_name
-    # Truthiness first, like every sibling optional setting: an empty value is absent, not a match.
     if not expected_package or notification.packageName != expected_package:
         # Refused before the Play call: this delivery names an application this deployment does not serve.
         raise NotificationRejected(stage="package_name_mismatch")
@@ -232,8 +215,6 @@ async def verify_google_play_notification(
                                                notification.eventTimeMillis, event_type),
         # Google's own instant for the event, which is what the out-of-order guard compares.
         signed_at=instant_from_millis(notification.eventTimeMillis),
-        # Solver-resolved, so the adapter's entitlement decision and `SubscriptionsService`'s
-        # grant write are made at the one instant FastAPI cached for this request.
         evaluated_at=evaluated_at)
 
 

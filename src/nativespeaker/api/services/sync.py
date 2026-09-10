@@ -17,7 +17,6 @@ from nativespeaker.api.tables import monthly_period_for
 class SyncService:
 
     def __init__(self, db: AsyncSession, evaluated_at: datetime) -> None:
-        # Only the reads: SYNC-02 writes nothing, so this service holds no session of its own.
         self.grants_db = GrantsDB(db)
         # One instant for this request; nothing below it reads the clock again.
         self.evaluated_at = evaluated_at
@@ -52,7 +51,7 @@ class SyncService:
             # Fail closed: a missing tier row is neither a zero allowance nor an unbounded one.
             raise UnknownTierError(grant.tier_id, grant.id)
 
-        # Selected past, never rolled over: a stored period ahead of this one is the month it counts.
+        # A stored period ahead of this month keeps its own count.
         used = 0 if usage.monthly_period < period else usage.monthly_used
 
         return Entitlement(type=EntitlementType(grant.source.value),

@@ -127,8 +127,6 @@ class TestSyncWaitsOnNoLock:
             assert usage is not None, \
                 "control: the holder must also hold the usage row, second in the lock order"
 
-            # The charge itself, uncommitted: without this write the count sync reports is the seeded
-            # one either way, and the assertion below cannot tell READ COMMITTED from a dirty read.
             usage.monthly_used += 1
             await holder.flush()
 
@@ -141,7 +139,6 @@ class TestSyncWaitsOnNoLock:
         assert entitlement.monthly_credits == MONTHLY_CREDITS
         # The holder's work is uncommitted, and READ COMMITTED cannot see it: the pre-charge count is the only answer.
         assert entitlement.monthly_used == SEEDED_USED
-        # And the rolled-back charge never landed, so the count above was not simply the committed one.
         assert await stored_usage(harness) == SEEDED_USED
 
     async def test_a_charge_is_not_blocked_by_an_open_sync_read(self, harness):

@@ -312,20 +312,14 @@ class TestStorePurchaseTokenMapping:
         assert sorted(provider_type.enums) == ["apple", "google_play"]
 
 
-# Apple's body alone. WR-25 moved Google's bound into `developer_notification_from`, because
-# Pub/Sub redelivers every non-2xx and a 422 here is a message the subscription never clears.
 _BOUNDED_WEBHOOK_FIELDS = [
     (AppStoreNotificationRequest, "signedPayload", {}, APP_STORE_ENVELOPE_LIMIT),
 ]
 
-# The upper end of the range a real V2 notification occupies, certificate chain included.
 REALISTIC_APP_STORE_ENVELOPE = 24 * 1024
 
-# What `ChallengesDB.new_challenge_id` actually mints: 16 CSPRNG bytes, base64url, unpadded.
 CHALLENGE_ID_CHARACTERS = len(new_challenge_id())
 
-# The upper end of the range a real DeviceCheck token occupies, measured nowhere but assumed
-# generously: Apple documents no ceiling, so the bound is a flood stop and not a format check.
 REALISTIC_DEVICE_TOKEN = 1024
 
 
@@ -335,23 +329,14 @@ def _bound_of(model, field: str) -> int:
                 if getattr(rule, "max_length", None) is not None)
 
 
-# The longest store name this route serves, which is the whole range `provider` has to cover.
 REALISTIC_STORE_NAME = len("google_play")
 
-# One standalone Apple JWS signed transaction: one certificate chain, not the three an envelope
-# carries. `schemas/webhooks.py` puts chain material for all three copies at roughly 12 KB, and the
-# two nested ones pay a second 4/3 inflation, so a single un-nested copy plus its payload lands
-# near this. Assumed from that arithmetic rather than measured, as `REALISTIC_DEVICE_TOKEN` is.
 REALISTIC_RESTORE_PROOF = 4 * 1024
 
-# Every string an authenticated auth body carries, with the real value each one must stay above.
 _BOUNDED_AUTH_FIELDS = [
     (CompletionRequest, "challenge_id", {}, CHALLENGE_ID_CHARACTERS),
     (GrantClaimRequest, "challenge_id", {"device_token": "t"}, CHALLENGE_ID_CHARACTERS),
     (GrantClaimRequest, "device_token", {"challenge_id": "c"}, REALISTIC_DEVICE_TOKEN),
-    # WR-123: the restore body was in no test at all, and its proof is the same kind of value as
-    # `device_token` -- the client's Apple transaction or Play purchase token, relayed verbatim to
-    # the store by `RestoreService.restore`, one of them into a URL path segment.
     (RestoreRequest, "provider", {"restore_proof": "p"}, REALISTIC_STORE_NAME),
     (RestoreRequest, "restore_proof", {"provider": "apple"}, REALISTIC_RESTORE_PROOF),
 ]
@@ -445,10 +430,7 @@ class TestTheUnauthenticatedWebhookBodiesAreBounded:
 
     def test_a_body_at_the_bound_still_reaches_the_decoder(self):
         """The control: a bound off by one here would drop every genuine RTDN at the ceiling."""
-        # Padded inside the envelope so the encoded text lands exactly on the bound. That is the
-        # one length a `>` and a `>=` disagree about; an eighty-byte body measures neither.
         envelope = {"packageName": "com.example", "eventTimeMillis": 1, "pad": ""}
-        # 3 decoded bytes per 4 encoded characters, so this many decode to exactly the bound.
         decoded_limit = PUBSUB_DATA_LIMIT // 4 * 3
         envelope["pad"] = "a" * (decoded_limit - len(json.dumps(envelope).encode()))
         payload = b64encode(json.dumps(envelope).encode()).decode()

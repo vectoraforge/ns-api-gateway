@@ -28,8 +28,6 @@ from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import IdentityProvider
 
-# The challenge-store fake is imported rather than copied: two drifting fakes of one conditional
-# update is the hazard, and that update is the system's only serialization point.
 from .conftest import TEST_ISSUER
 from .conftest import FakeChallengeStore as _FakeChallengeStore
 
@@ -141,7 +139,6 @@ def client(store, session, identity, creator, fake_firebase_adapter):
     register_exception_handlers(app)
 
     app.dependency_overrides[get_identity] = lambda: identity
-    # `get_db` is left un-overridden and reads only this: a mirror of it drifted from the real one.
     app.state.session_factory = lambda: session
     app.dependency_overrides[get_challenge_store] = lambda: store
     app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
@@ -371,8 +368,6 @@ class TestTheProviderStageRejections:
         assert creator.calls[0]["provider"] is IdentityProvider.google
         assert creator.calls[0]["provider_uid"] == "google-uid-1"
         assert creator.calls[0]["email"] == "someone@example.test"
-        # Spent on success as on every rejection: a handle still live after an account was created
-        # is a replayable capability. Every rejection arm below asserts this; success owns it too.
         assert store.consume_calls == 1
         assert store.row.consumed_at is not None
         assert store.row.preauth_subject is None
@@ -393,8 +388,6 @@ class TestTheProviderStageRejections:
         assert first.status_code == 200
         _assert_challenge_required(second)
         assert rejections.results == ["challenge_consumed"]
-        # The second attempt performs no work at all: neither the provider nor the creator is
-        # reached again, so no second account exists to be reconciled.
         assert len(creator.calls) == 1
         assert len(fake_firebase_adapter.calls) == 1
 

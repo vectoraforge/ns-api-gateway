@@ -44,11 +44,8 @@ class SubscriptionsService:
             logger.error("store_notification_without_tier", event_type=notification.event_type)
             raise InternalError
 
-        # Asked before a lock is spent: the store's replay key reads a row no lock protects, and a
-        # replay writes nothing, so a redelivery must not take the buyer's grant and usage rows.
         if await self.subscriptions_db.read_event(notification.notification_uuid) is not None:
-            # The read above opened a transaction; given back here rather than at the teardown,
-            # which `get_db` runs only after the response is on the wire.
+            # The rollback releases the transaction now, because `get_db` closes it after the response.
             await self.session.rollback()
             return
 
@@ -67,20 +64,14 @@ class SubscriptionsService:
         marked_active = ([] if owner is None
                          else await self.subscriptions_db.lock_grants(owner))
 
-        # Re-read under the grant locks: a restore committed since can have adopted or moved this row.
         settled_owner = await self.subscriptions_db.read_owner(notification.provider,
                                                                notification.external_id)
         if settled_owner is not None and settled_owner != owner:
-            # Labels come from a closed set only: the store's own name, never a payload value.
             logger.warning("store_notification_owner_moved", provider=str(notification.provider))
-            # The generic 500 a lost race earns: the store resends, and the resend locks the owner
-            # the restore settled on.
             raise InternalError
 
-        # The whole row under the grant locks: the pre-lock read misses a rival's newer clock, or its insert.
         settled = await self.subscriptions_db.read_subscription(notification.provider,
                                                                  notification.external_id)
-        # The tier as of the locks, never the pre-lock snapshot: this row is the one written against.
         old_tier_id = None if settled is None else settled.tier_id
         if (settled is not None and settled.store_signed_at is not None
                 and notification.signed_at is not None
@@ -111,13 +102,11 @@ class SubscriptionsService:
 
         # The store's own word, read live or from the signed envelope: never derived here.
         status = notification.status
-        # Clamped to the captured instant: a later store date writes a grant nothing reads.
         starts_at = min(notification.purchased_at or self.evaluated_at, self.evaluated_at)
         term_ends_at = term_end_for(status, notification)
         if status in ENTITLED_STATUSES and (term_ends_at is None
                                             or term_ends_at <= starts_at
                                             or term_ends_at <= self.evaluated_at):
-            # An absent, inverted or closed term would take the buyer's one-active slot and grant nothing.
             logger.error("store_notification_without_term", event_type=notification.event_type)
             raise InternalError
         subscription, outcome = await self.subscriptions_db.upsert_subscription(
@@ -127,8 +116,6 @@ class SubscriptionsService:
             tier_id=tier_id,
             status=status,
             signed_at=notification.signed_at,
-            # The clock the guard above decided on, and not a third reading of the row: the writer
-            # takes it only where it still reads that, so a rival that moved it since wins.
             clock_read=None if settled is None else settled.store_signed_at,
             evaluated_at=self.evaluated_at)
         await self._settle(outcome, notification)
@@ -164,9 +151,7 @@ class SubscriptionsService:
                 marked_active=marked_active,
                 tier_id=tier_id,
                 starts_at=starts_at,
-                # The term checked above, and never a second reading of it that could drift from it.
                 ends_at=term_ends_at,
-                # Ingestion never reactivates: restore is the only path back to a lapsed grant.
                 may_reactivate=False,
                 evaluated_at=self.evaluated_at), notification)
 
@@ -174,13 +159,8 @@ class SubscriptionsService:
         try:
             await self.session.commit()
         except IntegrityError as violation:
-            # The two entitlement keys are DEFERRABLE, so this statement is where they are
-            # evaluated -- and both of them are FOREIGN KEYs, which is the one class a lost race
-            # is never made of. Classified here as every flush already classifies its own.
+            # The entitlement keys are DEFERRABLE, so the commit is where they fail.
             if not is_unique_violation(violation):
-                # A deferred foreign key or a CHECK is a broken invariant, never a race this lost.
-                # Named before the re-raise: `InternalError` logs nothing, so reported as a race
-                # this failure reached no log line at all and repeated until message retention.
                 logger.error("store_notification_commit_refused",
                              sqlstate=getattr(violation.orig, "sqlstate", None))
                 raise

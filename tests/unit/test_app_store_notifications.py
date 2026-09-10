@@ -189,8 +189,6 @@ def _mint(chain: _Chain, payload: dict, *,
 def _transaction(*, bundle_id: str = BUNDLE_ID, environment: str = "Sandbox",
                  revocation_date: int | None = None, expires_in: timedelta = timedelta(days=30),
                  original_transaction_id: str | None = ORIGINAL_TRANSACTION_ID,
-                 # The instant this payload is dated against. A caller that names one decides the
-                 # status itself, instead of leaving it to the wall clock the default reads.
                  now: datetime | None = None) -> dict:
     """The nested transaction payload, verified on its own bundle id and environment."""
     now = datetime.now(UTC) if now is None else now
@@ -231,8 +229,6 @@ def _envelope(chain: _Chain, *, notification_type: str | None = "SUBSCRIBED",
     if renewal is not None:
         data["signedRenewalInfo"] = _mint(chain, renewal)
     envelope: dict = {"version": "2.0", "data": data}
-    # `None` omits the field, exactly as an absent one arrives: both are Optional in the library
-    # and the verification requires neither, so a verified envelope can carry neither.
     if notification_type is not None:
         envelope["notificationType"] = notification_type
     if notification_uuid is not None:
@@ -418,7 +414,6 @@ class TestApplesFiveStatusesStillMapOneToOne:
             _mint(chain, _envelope(chain, notification_type="CONSUMPTION_REQUEST",
                                    transaction=_transaction(), status=None)))
 
-        # The `ingest` no-op path verbatim: nothing a subscription row needs crosses the seam.
         assert (verified.external_id, verified.product_id, verified.tier_id) == (None, None, None)
         assert verified.event_type == "CONSUMPTION_REQUEST"
 

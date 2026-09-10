@@ -70,10 +70,8 @@ def _hold_clock_statement(subscription_id: UUID, clock_read: datetime | None,
     """The conditional touch that takes the row only where its store clock still reads as read."""
     return (update(Subscription)
             .where(col(Subscription.id) == subscription_id,
-                   # Nullable, so equality would not match the NULL a read saw.
                    col(Subscription.store_signed_at).is_not_distinct_from(clock_read))
             .values(updated_at=evaluated_at)
-            # No synchronization, so this emits one statement and reads nothing back.
             .execution_options(synchronize_session=False))
 
 
@@ -92,10 +90,6 @@ class SubscriptionsDB:
 
     async def lock_grants(self, user_id: UUID) -> list[AccessGrant]:
         """Take both lock tiers for one buyer and return every grant row marked active."""
-        # The one-account case of the statement below, so the two writers behind one written lock
-        # order can never take two different sets. The second tier used to follow the effective
-        # subset here and the whole active set there, which left a row this writer supersedes with
-        # its usage row unlocked.
         return await self.lock_grants_of([user_id], counted_for=user_id)
 
     async def lock_grants_of(self, user_ids: list[UUID], *,
@@ -105,15 +99,11 @@ class SubscriptionsDB:
         # One statement for the pair, so the grant tier stays one ascending order and never two.
         marked_active = await self.grants_db.lock_active_grants_of(user_ids)
         for grant in marked_active:
-            # Second in the lock order, always after the grant rows, and over the same set
-            # `write_subscription_grant` supersedes.
             usage = await self.grants_db.lock_usage(grant.id)
             if usage is None:
                 if grant.user_id == counted_for:
-                    # Fail closed, never mint: refused here, no row is written and no lock is spent.
                     raise MissingUsageRowError(grant.id)
-                # `write_subscription_grant` reads no counter of the other account on a move, so a
-                # break there is recorded and never a refusal for the account that presented a proof.
+                # A move reads no counter of the other account, so a break there is a log and not a refusal.
                 logger.error("source_grant_without_usage_row", grant_id=str(grant.id),
                              user_id=str(grant.user_id))
         return marked_active
@@ -125,17 +115,13 @@ class SubscriptionsDB:
     async def read_subscription(self, provider: PurchaseProvider,
                                 external_id: str) -> Subscription | None:
         """The canonical row as of now for the lifecycle pair, or `None`, taking no lock."""
-        # `populate_existing` for the reason `read_owner` gives: without it a row already in the
-        # identity map is answered with the values the first read saw, so a second read under the
-        # locks decides on a snapshot a concurrent commit has already replaced.
+        # Keep populate_existing. Without it the identity map gives the values of the first read.
         statement = _subscription_statement(provider, external_id).execution_options(
             populate_existing=True)
         return (await self.session.exec(statement)).first()
 
     async def read_owner(self, provider: PurchaseProvider, external_id: str) -> UUID | None:
         """The owner the canonical row carries right now, or `None`, taking no lock."""
-        # A column select, not an entity load: the identity map would answer a row already loaded
-        # with the value that read saw, which is exactly the staleness this asks about.
         statement = select(Subscription.user_id).where(col(Subscription.provider) == provider,
                                                        col(Subscription.external_id) == external_id)
         return (await self.session.exec(statement)).first()
@@ -207,21 +193,13 @@ class SubscriptionsDB:
         else:
             # D-09: the token attributes an unowned row only, and restore alone changes an owner.
             owner = stored.user_id if stored.user_id is not None else user_id
-            # Read before the claim below writes it: the whole question this arm answers is whether
-            # the row already said what this delivery carries, and the claim changes that answer.
             settled = (stored.tier_id, stored.status, stored.user_id) == (tier_id, status, owner)
             if stored.user_id is None and owner is not None:
-                # The row is unowned and this token resolved a buyer. This row is never locked, so
-                # only the sibling's `user_id IS NOT DISTINCT FROM` predicate makes the rule above
-                # true of the statement that is emitted; an ORM update keyed on the id alone
-                # overwrites the owner a restore settled in the window since the read.
                 claimed = await self.claim_subscription_owner(
                     subscription_id=stored.id,
-                    # Unowned and unmoved: what the read above saw, and what the sibling asks for.
                     owner_read=None,
                     month_read=stored.last_cross_account_transfer_month,
                     destination=owner,
-                    # Adoption, never a move: D-10's month cap is spent by restore alone.
                     transfer_month=None,
                     evaluated_at=evaluated_at)
                 if not claimed:
@@ -229,19 +207,10 @@ class SubscriptionsDB:
             moves_clock = signed_at is not None and (stored.store_signed_at is None
                                                      or signed_at > stored.store_signed_at)
             if not settled or moves_clock:
-                # The same rule as the claim above, for the same reason and one column over. The
-                # flush below is keyed on the id alone, so without this two deliveries of one
-                # lifecycle key are last-writer-wins on `status`, `tier_id` and the clock itself,
-                # and the older one can land last. A match also takes this row's write lock for
-                # the rest of the transaction, which is what makes the mutations below the last
-                # word; no `FOR UPDATE`, and after the grant locks, so 43 D-16's order still holds.
                 if not await self.hold_subscription_clock(subscription_id=stored.id,
                                                           clock_read=clock_read,
                                                           evaluated_at=evaluated_at):
                     return stored, WriteOutcome.lost_race
-            # Moved whatever the comparison below decides: the out-of-order guard reads this
-            # clock, so a delivery carrying no state change but a newer one must still move it.
-            # Only ever advanced by a payload that carries one: an absent date clears nothing.
             advanced = signed_at if moves_clock else None
             if advanced is not None:
                 stored.store_signed_at = advanced
@@ -253,9 +222,7 @@ class SubscriptionsDB:
                 # Updated in place, never flipped and re-inserted: one row per lifecycle pair is the index's rule.
                 stored.tier_id = tier_id
                 stored.status = status
-                # Repeats the column a successful claim above already wrote, under the row lock that
-                # statement holds until this transaction ends: the callers read this attribute.
-                stored.user_id = owner
+                stored.user_id = owner  # The claim above writes the column. The callers read this attribute.
                 stored.updated_at = evaluated_at
 
         return await self._flush_or_lose(stored, outcome)
@@ -269,9 +236,6 @@ class SubscriptionsDB:
                                        evaluated_at: datetime) -> bool:
         """Set the owner where the row still says what the pre-transaction read saw.
         Takes no lock on `core.subscriptions`; the row count is the whole answer."""
-        # Annotated, never inferred from the two seed entries: the mapping carries three column
-        # types, and a `DATE` column taking the `datetime` the inference allows would silently
-        # change what the D-10 month cap compares.
         values: dict[str, object] = {"user_id": destination, "updated_at": evaluated_at}
         if transfer_month is not None:
             # A move alone gives one: adoption leaves the column exactly as it found it.
@@ -369,10 +333,8 @@ class SubscriptionsDB:
                          if grant.ends_at == ends_at and grant.tier_id == tier_id]:
             return WriteOutcome.replayed
 
-        # This term lapsed and this caller may not bring it back, so no grant is ended and none inserted.
         if (entitled and not held and not may_reactivate
                 and await self.grants_db.has_prior_subscription_grant(subscription_id)):
-            # Nothing ended and nothing inserted, which is what `replayed` names.
             return WriteOutcome.replayed
 
         # Every grant the destination holds goes, the free one too: `ix_access_grants_one_active_per_user` allows one.
@@ -381,15 +343,10 @@ class SubscriptionsDB:
                        if grant.user_id == user_id or grant.subscription_id == subscription_id]
                       if entitled else held)
         # Revoked only where the store withdrew this subscription; every other end of a term is an expiry.
-        # Identity here and value in `ENTITLED_STATUSES` above, which agree because both value types
-        # coerce `status` in `__post_init__`; without that a raw store string would be read as
-        # not entitled by one line and not revoked by this one.
         ended = (AccessGrantStatus.revoked if status is SubscriptionStatus.revoked
                  else AccessGrantStatus.expired)
         for grant in superseded:
             if grant.source is AccessGrantSource.manual:
-                # `08-webhook-app-store.md`:40 does not name this source and D-18 gives no way back,
-                # so the id `core.manual_grant_issuances.grant_id` keys the case by is recorded.
                 logger.warning("manual_grant_superseded", grant_id=str(grant.id),
                                source=grant.source)
             grant.status = ended
@@ -412,21 +369,14 @@ class SubscriptionsDB:
             return WriteOutcome.applied if superseded else WriteOutcome.replayed
 
         period = monthly_period_for(evaluated_at)
-        # The allowance is a UTC calendar month's, not a store term's, so a supersession inside one month carries it.
         carried = 0
-        # This account's own paid rows only: on a move `superseded` also holds the old owner's, and
-        # `08-webhook-app-store.md`:38 forbids a free tier's count ever reaching the paid counter.
         mine = [grant for grant in superseded
                 if grant.user_id == user_id and grant.source is AccessGrantSource.subscription]
         if len(mine) > 1:
-            # A tripwire, not a tie-break: `ix_access_grants_one_active_per_user` leaves at most one
-            # of them for this user, and keeping the last row's count would erase a higher one and
-            # hand the account free credits. The same fail-closed answer the sibling readers give.
             raise MultipleEffectiveGrantsError(len(mine), user_id)
         for grant in mine:
             usage = await self.grants_db.read_usage(grant.id)
             if usage is None:
-                # Fail closed, never mint: a grant with no usage row is a failed write, not a fresh allowance.
                 raise MissingUsageRowError(grant.id)
             if usage.monthly_period == period:
                 carried = usage.monthly_used

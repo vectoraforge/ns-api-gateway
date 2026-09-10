@@ -37,8 +37,6 @@ from nativespeaker.api.tables.identities import (
 )
 from nativespeaker.api.tables.users import User
 
-# The challenge-store fake is imported rather than copied: two drifting fakes of one conditional
-# update is the hazard, and that update is the system's only serialization point.
 from .conftest import TEST_ISSUER
 from .conftest import FakeChallengeStore as _FakeChallengeStore
 
@@ -77,8 +75,6 @@ class _StubSession:
         self.timeline = timeline
         self.commits = 0
         self.rollbacks = 0
-        # A real session holds one open from its first statement until the next boundary, so every
-        # recorded read sets this as well as the writer: a preflight read checks a connection out too.
         self.in_transaction = False
         # The rows `get_identity` resolved on its own closed session, which this session never held.
         self.detached = detached
@@ -118,14 +114,9 @@ class _RecordingGrants:
         self.grant_of_source: set[AccessGrantSource] = set()
         self.prior_free_grant = False
         self.activates = 0
-        # The platform each activation named, so the pin is asserted rather than assumed.
         self.claim_platforms: list = []
-        # WR-101: the tier each activation named. Dropped, the writer could be handed the anonymous
-        # tier's 10-credit allowance on the registered route and every unit case stayed green,
-        # because the entitlement in the response is the post-commit sync stub's, not the writer's.
         self.tiers: list[str] = []
         self.outcome = ActivationOutcome.activated
-        # The arm the writer says refused, which the refusal's one log line carries.
         self.cause: str | None = None
         # What the loser's re-read finds after its rollback, which is the winner's row and not its own.
         self.won_by: list[AccessGrant] | None = None
@@ -133,8 +124,6 @@ class _RecordingGrants:
 
     async def read_effective(self, user_id: UUID, evaluated_at: datetime) -> list[AccessGrant]:
         self.timeline.append("read_effective_grants")
-        # A read opens the transaction as surely as a write does: SQLAlchemy autobegins on the
-        # first statement, and the connection stays checked out until the next boundary.
         self.session.in_transaction = True
         # Every read after the first is the loser's re-read, taken in the transaction the rollback opened.
         answer = self.won_by if self.reads and self.won_by is not None else self.held
@@ -159,8 +148,6 @@ class _RecordingGrants:
 
     async def activate(self, *, user_id, issuer, subject, tier_id, evaluated_at,
                        claim_platform=None) -> tuple[ActivationOutcome, str | None]:
-        # One double for both writers, and only the anonymous one pins a platform: the default is
-        # what lets the registered writer, which has no attestation to name, share this recorder.
         self.activates += 1
         self.claim_platforms.append(claim_platform)
         self.tiers.append(tier_id)
@@ -273,7 +260,6 @@ def client(store, session, identity, grants, devicecheck):
 
     app.dependency_overrides[get_identity] = lambda: identity
 
-    # `get_db` is left un-overridden and reads only this: a mirror of it drifted from the real one.
     app.state.session_factory = lambda: session
     app.dependency_overrides[get_challenge_store] = lambda: store
     app.dependency_overrides[get_firebase_adapter] = lambda: None
@@ -533,8 +519,6 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert response.status_code == 200
         assert store.consume_calls == 1
         assert grants.activates == 1
-        # WR-46: the winner may be a grant of any source, so bit0 would spend this device's one
-        # slot on a grant this attempt did not write, and nothing here ever clears an Apple bit.
         assert devicecheck.write_calls == []
 
     def test_a_race_lost_to_another_source_is_the_refusal_the_preflight_gives(
@@ -553,8 +537,6 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert response.json() == REFUSED
         assert store.consume_calls == 1
         assert devicecheck.write_calls == []
-        # WR-80: the two lost-race arms are one class and one body, so the cause is all that tells
-        # them apart -- and without this the whole arm deletes with the suite green.
         assert [(line["event"], line.get("cause")) for line in records] == [
             ("claim_refused_under_lock", "lost_race_to_another_source")]
 
@@ -619,7 +601,6 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert response.status_code == 403
         assert response.json() == REFUSED
         assert store.consume_calls == 1
-        # WR-46 again: this attempt wrote nothing, so it has no slot of its own to spend.
         assert devicecheck.write_calls == []
 
     def test_the_successful_claim_consumes_exactly_once(self, client, store, account, grants,
@@ -633,8 +614,6 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert response.json()["entitlement"]["type"] == "anonymous_device_grant"
         assert store.consume_calls == 1
         assert grants.activates == 1
-        # The tier the writer was told to write, which the response's own entitlement -- read back
-        # through the post-commit sync seam -- cannot report.
         assert grants.tiers == ["anonymous"]
         assert devicecheck.read_calls == [DEVICE_TOKEN]
         # bit1 carried forward from the query, never fabricated.
@@ -765,7 +744,6 @@ def _repeat(identity_row, grants, devicecheck) -> None:
 
 
 def _marked_outside_its_term(identity_row, grants, devicecheck) -> None:
-    # A row the one-active index sees and the effective read does not, so only the status read finds it.
     grants.marked_active = [_a_grant(AccessGrantSource.anonymous_device_grant)]
 
 

@@ -198,7 +198,6 @@ class QuotaExceededError(RateLimited):
     code = "quota_exceeded"
 
     def __init__(self, *args, retry_after_seconds: int | None = None) -> None:
-        # Every branch raising this class passes the same value, so the header names no branch.
         self.retry_after_seconds = retry_after_seconds
         super().__init__(*args)
 
@@ -217,15 +216,12 @@ class TransientLLMError(AnalysisError):
     """All retries failed on a transient LLM error; `__cause__` holds the last one."""
     status = 503
     code = "service_unavailable"
-    # No `log_level`: the parent's ERROR is what puts `__cause__` in the record. Answering 503
-    # silently would leave a whole-product outage recorded as an access line and nothing else.
 
 
 class PermanentLLMError(AnalysisError):
     """The LLM call failed with a non-transient error; `__cause__` holds it."""
     status = 503
     code = "service_unavailable"
-    # No `log_level`, for the same reason as its sibling: the cause is the only record of why.
 
 
 class MissingUsageRowError(InternalError):
@@ -289,7 +285,6 @@ class UnmappedStoreProduct(InternalError):
 
 class UnknownStoreSubscriptionStatus(InternalError):
     """A verified store payload whose status is outside the provider's own enum."""
-    # A named class rather than a logger: the Apple adapter carries attribution tokens and holds none.
     log_level = logging.ERROR
 
     def __init__(self, provider: PurchaseProvider) -> None:
@@ -297,7 +292,6 @@ class UnknownStoreSubscriptionStatus(InternalError):
         super().__init__(f"{provider.value} reported a status outside its own enum")
 
     def log_fields(self) -> dict[str, str | None]:
-        # The store's own name, which is a closed set; the payload named no value that may be logged.
         return {"provider": str(self.provider)}
 
 
@@ -320,7 +314,6 @@ class AttributionConflict(InternalError):
 
 class QueueFullError(ServiceUnavailable):
     """The LLM queue is full."""
-    # Declared, not inherited: saturation is an operational event, not the bare framework 503.
     log_level = logging.WARNING
 
     def __init__(self, retry_after_seconds: int):
@@ -333,7 +326,6 @@ class QueueFullError(ServiceUnavailable):
 
 class CircuitOpenError(ServiceUnavailable):
     """The LLM circuit breaker is open."""
-    # Declared, not inherited: a tripped breaker is an operational event an operator alerts on.
     log_level = logging.WARNING
 
     def __init__(self, retry_after_seconds: int):
@@ -353,15 +345,11 @@ class InvalidExternalJwt(AppError):
     code = "auth_required"
 
     def __init__(self, *, bounded_reason: BoundedReason) -> None:
-        # Never `None`: spec 11 closes the reason set at eight named values, and a null label is
-        # not one of them -- it would be a population the spike alert cannot name.
         self.bounded_reason = bounded_reason
         super().__init__(f"invalid external jwt: {bounded_reason}")
 
     def extra_headers(self) -> dict[str, str]:
         # RFC 6750 §3.1: a request carrying no credential gets the bare challenge, no error code.
-        # Keyed on the one reason that means no credential was presented; a duplicated or garbage
-        # Authorization field did present one, so it earns `invalid_token` like a failed signature.
         if self.bounded_reason is BoundedReason.missing_token:
             return {"WWW-Authenticate": "Bearer"}
         return {"WWW-Authenticate": 'Bearer error="invalid_token"'}
@@ -382,8 +370,6 @@ class IdentityUnresolvable(AppError):
     # Declared rather than inherited, so the walk can tell a deliberate 500 from a leaf that forgot.
     status = 500
     code = "internal_error"
-    # A broken foreign key, recorded like every other integrity break in this module: at ERROR,
-    # which is also what carries the stack that names the read.
     log_level = logging.ERROR
 
 
@@ -524,7 +510,6 @@ class ClaimRefused(AppError):
     code = "operation_not_allowed"
 
     def __init__(self, *args, cause: str | None = None, **kwargs) -> None:
-        # A closed-set label of ours, as `ProviderLookupError` carries: never a client or provider value.
         self.cause = cause
         super().__init__(*args, **kwargs)
 
@@ -567,7 +552,6 @@ class RestoreRefused(AppError):
     code = "restore_not_found"
 
     def __init__(self, *args, cause: str | None = None, **kwargs) -> None:
-        # A closed-set label of ours, on the terms `ClaimRefused` carries one: it reaches `log_fields` alone.
         self.cause = cause
         super().__init__(*args, **kwargs)
 
@@ -589,7 +573,6 @@ class RestoreProviderUnknown(AppError):
     # The claim refusals' own answer, reused: an unserved store name is a refusal, not a bad body.
     status = 403
     code = "operation_not_allowed"
-    # Silent: the route logs this rejection itself, with the rejected store name.
     log_level = None
 
 

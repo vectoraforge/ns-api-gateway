@@ -37,12 +37,7 @@ async def app_error_handler(_: Request, exc: Exception) -> JSONResponse:
         # structlog's filtering logger indexes the five standard levels and raises on any other.
         level = exc.log_level if exc.log_level in _LOGGABLE else logging.ERROR
         record = getattr(logger, logging.getLevelName(level).lower())
-        # `exc` itself, never `True`: structlog resolves `True` to `sys.exc_info()` at render time,
-        # which is the exception the thread is currently handling. That is only `exc` when Starlette
-        # reached this handler from its own `except`; the three adapters below call it directly with
-        # a freshly constructed exception, where the ambient one is a different failure or none.
-        # `level`, never `exc.log_level`: the clamp above is the level this record is written at,
-        # so it is the level the traceback decision is made against too.
+        # Give `exc_info` the exception. structlog resolves `True` to the ambient exception, which can differ.
         record(camel_to_snake(type(exc).__name__),
                exc_info=exc if level >= logging.ERROR else False, **exc.log_fields())
     return JSONResponse(status_code=exc.status,
@@ -55,8 +50,6 @@ async def validation_error_handler(request: Request, exc: Exception) -> JSONResp
     A rejected value can be a live secret -- a challenge handle in a malformed body reaches
     this handler intact -- so only `loc` and `type` are logged, and `input` never is."""
     assert isinstance(exc, RequestValidationError)
-    # WARNING, not ERROR: a body that failed its schema is the client's mistake, and `ValidationError`
-    # already declares itself silent so this one line is all a 422 leaves.
     logger.warning("validation_error",
                    failures=[{"loc": ".".join(str(part) for part in error.get("loc", ())),
                               "type": error.get("type", "unknown")}
@@ -78,9 +71,6 @@ async def http_exception_handler(request: Request, exc: Exception) -> JSONRespon
 
 async def generic_error_handler(request: Request, exc: Exception) -> JSONResponse:
     """The last resort, named the way every other event is named."""
-    # snake_case like the other thirty-nine, and like the class-derived names D-02 made the
-    # vocabulary: this is the highest-severity event the service emits, and a dashboard or alert
-    # joining on the event name would have been the one to drop it silently.
     logger.error("unhandled_exception", exc_info=exc)
     return await app_error_handler(request, InternalError())
 

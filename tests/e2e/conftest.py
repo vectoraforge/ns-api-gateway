@@ -68,7 +68,6 @@ class LogSpy:
         self.entries.append((event, fields))
 
 
-# Every level a structlog logger answers to, so the stand-in below is never missing one.
 _ALL_LEVELS = ("debug", "info", "warning", "error", "critical", "exception")
 
 
@@ -77,9 +76,6 @@ class _SpyLogger:
 
     def __init__(self, spy: LogSpy, levels: tuple[str, ...]) -> None:
         for level in _ALL_LEVELS:
-            # Every level is bound, and only the declared ones reach the spy: an unanticipated line
-            # at another level used to raise `AttributeError` inside the handler that wrote it,
-            # which reaches the case as an unrelated 500 rather than as the extra record it is.
             setattr(self, level, spy.record if level in levels else _discard)
 
 
@@ -101,8 +97,6 @@ def _app_config():
 
 def _identity_toolkit_key(config) -> str:
     """The Identity Toolkit key, unwrapped once. Secret in the config, and read only here."""
-    # The loud failure lives here rather than in the config: no request path reads this value,
-    # so an absent key is a broken test environment and never a broken deployment.
     api_key = config.jwt.api_key
     assert api_key is not None, "JWT_API_KEY env var required for e2e tests"
     return api_key.get_secret_value()
@@ -124,8 +118,6 @@ def firebase_token(_app_config):
     resp.raise_for_status()
     data = resp.json()
     token = data["idToken"]
-    # Assigned, never `setdefault`: `test_user_id` must be the subject of the token this fixture
-    # returned, and a stale value carried in by `.env` would silently decouple the two.
     os.environ["FIREBASE_TEST_USER_ID"] = data["localId"]
     return token
 
@@ -142,8 +134,7 @@ _NO_ADMIN_CREDENTIAL = (
 
 
 # firebase_token signs in with a password, whose providerData the classifier rejects; only signUp is anonymous.
-# Module-scoped, not session-scoped, so the minted user can be deleted through the Admin app the
-# lifespan built: that app is torn down with the lifespan, and a session fixture outlives it.
+# The scope is module, not session: the lifespan tears down the Admin app this fixture deletes through.
 @pytest.fixture(scope="module")
 def anonymous_firebase_credential(_app_lifespan, _app_config):
     """A genuinely anonymous Firebase user, minted for real; yields (id_token, local_id), or skips.
@@ -151,11 +142,6 @@ def anonymous_firebase_credential(_app_lifespan, _app_config):
     user left behind is permanent, and one accumulates per run."""
     if not _admin_credential_configured():
         pytest.skip(_NO_ADMIN_CREDENTIAL)
-    # The app the lifespan already built, reached by its documented name -- never a second one.
-    # Resolved before the signUp, as google_linked_firebase_credential does: `get_app` raises
-    # `ValueError` when no app carries that name, and the guard above answers a different question
-    # (a findable credential, not a registered app). Between the user starting to exist and the try
-    # that deletes it nothing may raise, or the minted user is permanent in this shared project.
     admin_app = firebase_admin.get_app(name=f"issuer:{_app_config.jwt.issuer}")
     resp = httpx.post(
         f"https://identitytoolkit.googleapis.com/v1/accounts:signUp"
@@ -163,11 +149,10 @@ def anonymous_firebase_credential(_app_lifespan, _app_config):
         json={"returnSecureToken": True},
     )
     local_id = None
-    # Opened where the user starts existing: signUp has already minted it by the time the body parses.
+    # The try opens here because signUp already minted the user. A leaked user is permanent.
     try:
         resp.raise_for_status()
         data = resp.json()
-        # Subscripting rather than .get(): if returnSecureToken were ever ignored, this fails loudly.
         local_id = data["localId"]
         yield data["idToken"], local_id
     finally:
@@ -211,7 +196,7 @@ def google_linked_firebase_credential(_app_lifespan, _app_config):
                         f"?key={api_key}",
                         json={"returnSecureToken": True})
     local_id = None
-    # Opened where the user starts existing, parse included: an abandoned user here is permanent.
+    # The try opens here because signUp already minted the user. A leaked user is permanent.
     try:
         signup.raise_for_status()
         anonymous = signup.json()
@@ -224,7 +209,6 @@ def google_linked_firebase_credential(_app_lifespan, _app_config):
                                 "idToken": anonymous["idToken"]})
         link.raise_for_status()
         linked = link.json()
-        # Linking rather than signing in is the whole point: no second Firebase user may appear.
         assert linked["localId"] == local_id
         yield linked["idToken"], local_id
     finally:
@@ -238,7 +222,6 @@ async def _app_lifespan():
     root = logging.getLogger()
     original_handlers = root.handlers[:]
     original_level = root.level
-    # The lifespan calls `setup_logging`, which clears the root handlers and pins these nine.
     original_levels = {name: logging.getLogger(name).level for name in _QUIETED_LIBRARIES}
     try:
         async with app.router.lifespan_context(app):
@@ -366,8 +349,6 @@ class FakeAppStoreNotifications:
         # The restore proof is a second entry point, so it carries a second scripted answer.
         self.restore_answer: BaseException | RestoredSubscription | None = None
         self.calls: list[str] = []
-        # The pair, never the artifact alone: SHARED-INVARIANTS binds this seam to the request's
-        # one captured instant, so a case can only see a second clock read if the instant is here.
         self.restore_calls: list[tuple[str, datetime]] = []
 
     def script(self, answer: BaseException | VerifiedNotification) -> None:

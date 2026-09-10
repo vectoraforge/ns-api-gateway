@@ -179,9 +179,6 @@ class TestTheNewRegisteredGrantHappyPath:
         assert body["entitlement"]["current_period"]
 
         assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
-        # Sets bit1, names the device that was read, and leaves the never-set bit0 as it found it.
-        # A never-set device cannot tell a carried bit0 from a hard-coded False, so the case below
-        # is where the carry-forward itself is proved.
         assert scripted_devicecheck_adapter.write_calls == [(DEVICE_TOKEN, False, True)]
 
         grants = await _grants_of(_db_transaction, user.id)
@@ -210,7 +207,6 @@ class TestTheNewRegisteredGrantHappyPath:
         subject = "e2e-claim-registered-carries-bit0"
         user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
                                       provider=IdentityProvider.google)
-        # A device that already spent its anonymous slot; bit1 is what this path gates on.
         scripted_devicecheck_adapter.script(BitState(bit0=True, bit1=False))
 
         handle = await _issue(claim_client, subject)
@@ -218,7 +214,6 @@ class TestTheNewRegisteredGrantHappyPath:
 
         assert claim.status_code == 200, claim.text
         assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
-        # The read's own bit0 reaches the write; a writer hard-coding False would fail here.
         assert scripted_devicecheck_adapter.write_calls == [(DEVICE_TOKEN, True, True)]
         assert await _row_counts(_db_transaction, user.id) == (1, 1)
 
@@ -239,9 +234,7 @@ class TestTheConversionOfAnActiveAnonymousGrant:
                                         status=AccessGrantStatus.active,
                                         monthly_period=period, monthly_used=7,
                                         starts_at=datetime.now(UTC) - timedelta(hours=1))
-        # WR-80: the state the real conversion starts from. `activate_anonymous_device_grant` sets
-        # this marker for every anonymous grant it writes, so `seed_grant` alone left this case on
-        # the `is None` arm of the writer -- the one arm production can never reach.
+        # `activate_anonymous_device_grant` sets this marker, so the real conversion starts from it.
         spent_at = datetime.now(UTC) - timedelta(hours=2)
         await _mark_free_grant_consumed(_db_transaction, subject, spent_at)
 
@@ -282,8 +275,6 @@ class TestTheConversionOfAnActiveAnonymousGrant:
         assert (new_usage.monthly_period, new_usage.monthly_used) == (old_usage.monthly_period,
                                                                       old_usage.monthly_used)
         assert (new_usage.monthly_period, new_usage.monthly_used) == (period, 7)
-        # D-10: the conversion spends no new slot, so the instant the anonymous claim recorded is
-        # the one that stands -- never overwritten with this request's instant.
         assert (await _identity_of(_db_transaction, subject)).free_grant_consumed_at == spent_at
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
@@ -615,15 +606,12 @@ class TestAFailedBitWriteAfterTheGrantIsDurable:
 
         assert claim.status_code == 200, claim.text
         assert claim.json()["entitlement"]["type"] == "registered_account_grant"
-        # Durable before Apple was asked: the rows survive the vendor failure that followed them.
         assert await _row_counts(_db_transaction, user.id) == (1, 1)
         assert (await _identity_of(_db_transaction, subject)).free_grant_consumed_at is not None
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
         assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
         assert scripted_devicecheck_adapter.write_calls == [(DEVICE_TOKEN, False, True)
                                                             ] * DEVICECHECK_ATTEMPTS
-        # One record, not one per attempt: the retry budget is spent inside the swallowed call.
         assert [event for event, _ in spy.entries] == ["devicecheck_bit_write_failed"]
-        # A closed-set label only: neither the device token nor Apple's body reaches the record.
         assert DEVICE_TOKEN not in repr(spy.entries)
         assert "scripted write failure" not in repr(spy.entries)

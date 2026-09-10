@@ -41,8 +41,6 @@ WRITER_SUBSCRIPTION = "write_subscription_grant"
 # Every module under `src/` that names the subscription member off its enum. A new entry is a new site.
 NAMING_MODULES_SUBSCRIPTION = {
     "nativespeaker/api/crud/subscriptions.py",
-    # A reader, never a writer: `RestoreService` picks the term out of the grant the webhook wrote
-    # for this subscription, and the construction-site case above is what keeps it a reader.
     "nativespeaker/api/services/restore.py",
 }
 
@@ -172,8 +170,6 @@ class TestTheRegisteredAccountGrantHasExactlyOneWriter:
     def test_the_one_site_is_inside_the_crud_activation_writer(self):
         """Not merely in the right module: in the one function that takes both lock tiers."""
         writer = _function(CRUD_GRANTS.read_text(), WRITER_REGISTERED)
-        # Four: the in-lock repeat test, the spent-slot question that separates a race from a
-        # refusal, the lifetime index's own question, and the one construction.
         assert sum(_names_the_member(node, MEMBER_REGISTERED) for node in ast.walk(writer)) == 4
 
     def test_only_the_recorded_modules_name_the_member_at_all(self):
@@ -273,7 +269,6 @@ class TestTheSubscriptionGrantHasExactlyOneWriter:
     def test_the_one_site_is_inside_the_crud_subscription_writer(self):
         """Not merely in the right module: in the one function the two lock tiers are taken for."""
         writer = _function(CRUD_SUBSCRIPTIONS.read_text(), WRITER_SUBSCRIPTION)
-        # Three: the held-term filter, WR-60's carry filter, and the one construction of the grant row.
         assert sum(_names_the_member(node, MEMBER_SUBSCRIPTION) for node in ast.walk(writer)) == 3
 
     def test_only_the_recorded_modules_name_the_member_at_all(self):

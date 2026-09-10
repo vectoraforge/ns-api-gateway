@@ -41,7 +41,6 @@ class ExternalIdentity(SQLModel, table=True):
 
     id: UUID = Field(default_factory=uuid7, primary_key=True)
     # ON DELETE RESTRICT in the migration: a user row cannot be deleted out from under its identity row.
-    # Deliberately not `unique=True`: the table's rule is the migration's own `UNIQUE (user_id)`.
     user_id: UUID = Field(foreign_key="core.users.id")
     issuer: str = Field()
     subject: str = Field()

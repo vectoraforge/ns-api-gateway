@@ -23,10 +23,8 @@ ISSUER = "https://securetoken.google.com/test-project"
 SUBJECT = "conversion-subject"
 TIER_ID = "registered"
 
-# The month the writer would stamp on a freshly minted row, which a carried row must not carry.
 FRESH_PERIOD = EVALUATED_AT.strftime("%Y-%m")
 
-# A month the caller already spent credits in, deliberately not the captured instant's month.
 SPENT_PERIOD = "2026-08"
 SPENT_CREDITS = 7
 

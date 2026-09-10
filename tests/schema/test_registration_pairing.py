@@ -7,10 +7,6 @@ import asyncpg
 import pytest
 
 from nativespeaker.api.tables.identities import IdentityProvider
-
-# The production completion and its harness, so the pairing is scanned over rows the application
-# wrote rather than over rows this file invented. The harness is aliased because pytest registers
-# an imported fixture under the name it is bound to here.
 from schema.test_create_atomicity import harness as creation_harness  # noqa: F401
 from schema.test_create_atomicity import run_creation, scalar
 
@@ -37,17 +33,13 @@ _REGISTERED_IDENTITY_ON_AN_UNREGISTERED_USER = (
     "WHERE i.provider <> 'anonymous' AND u.registered_at IS NULL"
 )
 
-# Both scans alias the identity table as `i`, so one suffix keys either of them to a single issuer.
-# Every case appends one: sibling modules COMMIT into this shared scratch database, so an unscoped
-# scan answers for their rows and for collection order rather than for the writer under test.
+# Every scan appends this suffix: sibling modules commit rows into the same scratch database.
 _FOR_ONE_ISSUER = " AND i.issuer = :issuer"
 
 _IDENTITIES_OF_ONE_ISSUER = (
     "SELECT count(*) FROM core.external_identities i WHERE i.issuer = :issuer"
 )
 
-# The same suffix in asyncpg's positional form: the `conn` fixture is a raw connection and the
-# `:issuer` spelling above is SQLAlchemy's, which `scalar` binds for the production-writer class.
 _FOR_ONE_ISSUER_POSITIONAL = " AND i.issuer = $1"
 
 
@@ -115,26 +107,18 @@ class TestTheProductionWriterLeavesNeitherHalf:
     """The pairing over rows `AuthService.complete` committed, which is the only writer that can
     reach the third state: it sets `registered_at` and the identity's provider in one transaction."""
 
-    # Both providers: only the anonymous arm can put a row in the first scan, and only the
-    # registered arm in the second, so one provider leaves half the pairing unexercised.
     @pytest.mark.parametrize("provider", [IdentityProvider.google, IdentityProvider.anonymous])
-    # noqa F811: the parameter is the imported fixture's request, not a second definition of it.
     async def test_a_created_account_satisfies_both_halves(self, creation_harness, provider):  # noqa: F811
         subject = f"pairing-{uuid.uuid4().hex[:8]}"
-        # The table's CHECK ties the two together: provider_uid is NULL exactly for anonymous.
         provider_uid = (None if provider is IdentityProvider.anonymous
                         else f"uid_{uuid.uuid4().hex[:16]}")
 
         result, _, _ = await run_creation(creation_harness, subject=subject,
                                           provider=provider, provider_uid=provider_uid)
 
-        # The premise: the completion committed an account, so the two scans below have a row to
-        # scan. Without it this case would pass as vacuously as an empty table does.
         assert result is provider
         assert await scalar(creation_harness, _IDENTITIES_OF_ONE_ISSUER,
                             {"issuer": creation_harness.issuer}) == 1
-        # Keyed to this case's own issuer: a whole-table count would answer for every other file's
-        # leftovers as well, and could neither fail for this writer nor pass for it.
         assert await scalar(creation_harness, _REGISTERED_USER_ON_AN_ANONYMOUS_IDENTITY + _FOR_ONE_ISSUER,
                             {"issuer": creation_harness.issuer}) == 0
         assert await scalar(creation_harness,

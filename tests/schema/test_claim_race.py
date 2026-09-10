@@ -70,8 +70,6 @@ async def clean_up(harness: _Harness) -> None:
                     "DELETE FROM core.access_grants WHERE user_id = :id"):
                 await conn.execute(text(statement), {"id": user_id})
 
-        # Before the identity rows: core.auth_challenges.bound_external_identity_id references them,
-        # so a challenge left behind here would both block the delete and leak into the scratch database.
         for identity_id in identity_ids:
             await conn.execute(
                 text("DELETE FROM core.auth_challenges WHERE bound_external_identity_id = :id"),
@@ -213,7 +211,6 @@ class _Attempt:
     subject: str
     challenge_row_id: uuid.UUID
     challenge_id: str
-    # The row the challenge is bound to: consuming must leave that binding in place.
     identity_row_id: uuid.UUID
     operation: str = "claim_anonymous_grant"
     # What the call produced: the entitlement read after commit, or the rejection it raised.
@@ -367,7 +364,6 @@ class TestTwoSimultaneousFirstClaimsAllocateOnce:
                 "FROM core.auth_challenges WHERE id = :id",
                 {"id": attempt.challenge_row_id})
             assert rows[0][0] is not None, f"the {attempt.name} attempt left its challenge unconsumed"
-            # The binding is what a replay would be checked against, so consuming must not clear it.
             assert rows[0][1] == attempt.identity_row_id
 
     async def test_the_loser_answers_two_hundred_with_the_winners_entitlement(self, raced):
@@ -458,7 +454,6 @@ class TestTwoSimultaneousRegisteredClaimsAllocateOnce:
                 "FROM core.auth_challenges WHERE id = :id",
                 {"id": attempt.challenge_row_id})
             assert rows[0][0] is not None, f"the {attempt.name} attempt left its challenge unconsumed"
-            # The binding is what a replay would be checked against, so consuming must not clear it.
             assert rows[0][1] == attempt.identity_row_id
 
     async def test_the_loser_answers_two_hundred_with_the_winners_entitlement(self, raced):
@@ -601,7 +596,6 @@ class TestTwoSimultaneousConversionsSupersedeOnce:
                 "FROM core.auth_challenges WHERE id = :id",
                 {"id": attempt.challenge_row_id})
             assert rows[0][0] is not None, f"the {attempt.name} attempt left its challenge unconsumed"
-            # The binding is what a replay would be checked against, so consuming must not clear it.
             assert rows[0][1] == attempt.identity_row_id
 
     async def test_the_loser_answers_two_hundred_with_the_winners_entitlement(self, raced):

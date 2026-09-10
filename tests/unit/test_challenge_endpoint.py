@@ -60,8 +60,6 @@ class _RecordingSession:
         return _EmptyResult()
 
     async def commit(self):
-        # Counted, not refused: the route commits the issued row before it answers, because
-        # `get_db` never commits -- an uncommitted handle would name a row nothing wrote.
         self.commits += 1
 
     async def rollback(self):
@@ -145,7 +143,6 @@ class TestTheIssuableOperations:
         assert store.issued == [AuthOperation(operation)]
         # The member and not the caller's string, so the store never stores what was typed.
         assert all(isinstance(issued, AuthOperation) for issued in store.issued)
-        # The handle names a row, so the row is durable before the caller is told the handle.
         assert session.commits == 1
 
     def test_the_issued_handle_is_not_cacheable(self, client):
@@ -205,7 +202,6 @@ class TestEveryRefusalLeavesNothingBehind:
         assert store.issued == []
         # Issuance resolves no identity of its own, so a statement here would be a new read.
         assert session.statements == []
-        # A refusal reaches no commit either: only the issuing arm has a row to make durable.
         assert session.commits == 0
         assert fake_firebase_adapter.calls == []
 
@@ -256,10 +252,8 @@ class TestTheRefusalOrderDisclosesNothing:
         assert store.issued == []
 
 
-# The bound the field carries, read off the model rather than restated here.
 _OPERATION_LIMIT = ChallengeRequest.model_fields["operation"].metadata[0].max_length
 
-# The longest member of the vocabulary, which the bound must stay well above.
 _LONGEST_OPERATION = max(len(value) for value in _EVERY_OPERATION)
 
 
@@ -281,7 +275,6 @@ class TestTheOperationFieldIsBounded:
                                             json={"operation": "a" * _OPERATION_LIMIT}))
 
 
-# The names a re-introduced list would most likely be built with, beside a display.
 _COLLECTION_BUILDERS = {"frozenset", "set", "list", "tuple", "dict"}
 
 

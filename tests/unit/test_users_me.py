@@ -222,8 +222,6 @@ class TestAnIncompleteAccountIsAnOpaqueFailure:
         with _client_for(identity, _RecordingSession(seeded)) as client:
             response = client.get("/users/me")
 
-        # The name's other half: the refusal renders through the shared handler's own response,
-        # so the header the route sets on the injected one never reaches this body.
         assert "cache-control" not in response.headers
         assert set(response.json()) == {"code"}
         assert APPLE_TOKEN not in response.text

@@ -31,7 +31,6 @@ NEW_GRANT_ARM_GUARD = "held"
 # The local that arm binds, and that the post-commit write is guarded on: `None` means no bit to set.
 STATE_NAME = "state"
 
-# The other name that guard tests: `False` means the race was lost and this attempt wrote no grant.
 WROTE_NAME = "wrote"
 
 # Every name the device-gate seam exposes. None of them may appear inside the crud writer.
@@ -110,8 +109,6 @@ def _guard_of_the_write(claim: ast.AST) -> frozenset[str]:
         if "write_bits_with_retry" not in _called_names(ast.Module(body=node.body,
                                                                    type_ignores=[])):
             continue
-        # Every name the test reads, so a guard of two conditions is reported as both rather than
-        # as the first one: the write is only correct when each of them holds.
         return frozenset(child.id for child in ast.walk(node.test) if isinstance(child, ast.Name))
     return frozenset()
 
@@ -238,8 +235,6 @@ class TestBothVendorCallsPrecedeTheRegisteredActivation:
         assert "read_bits_with_retry" not in outside
         # The control: the conversion still reaches the writer, so the set above is not empty by accident.
         assert WRITER_REGISTERED in outside
-        # WR-64: the read alone is not enough. The race this attempt lost may have been won by a
-        # conversion, which reaches no vendor, so the write also waits on having written the grant.
         assert _guard_of_the_write(claim) == {STATE_NAME, WROTE_NAME}
 
     def test_the_state_the_write_is_guarded_on_is_the_one_the_arm_binds(self):

@@ -34,8 +34,6 @@ logger = structlog.get_logger()
 class RestoreService:
 
     def __init__(self, db: AsyncSession, evaluated_at: datetime,
-                 # Both declared seams, never a concrete class: a Protocol nothing is typed against
-                 # catches no wrong-shaped double, and this service reads two methods of each.
                  app_store: StoreNotificationVerifier, play: PlaySubscriptionSource,
                  package_name: str) -> None:
         self.session = db
@@ -61,12 +59,12 @@ class RestoreService:
         # D-06: a row that exists decides with its own status, because canonical state is the
         # webhooks'; where none exists the proof's own status decides instead.
         status = proof.status if stored is None else stored.status
-        # Copied out before the re-read below refreshes `stored` in place, which is what makes them comparable.
+        # Copy the tier before the re-read below refreshes `stored` in place.
         tier_read = None if stored is None else stored.tier_id
         if status not in ENTITLED_STATUSES:
             raise RestoreSubscriptionNotEntitled(cause="status_not_entitled")
 
-        # Clamped to the captured instant, which `10-restore-subscription.md:84(3)` requires of it.
+        # `10-restore-subscription.md:84(3)` requires the clamp to the captured instant.
         starts_at = min(proof.purchased_at or self.evaluated_at, self.evaluated_at)
 
         token = proof.attribution_token
@@ -85,36 +83,26 @@ class RestoreService:
             # D-10: one move per subscription per UTC month, refused before any lock and with nothing written.
             raise RestoreTransferRejected
 
-        # One statement for every account this restore touches: a move also takes from the old owner.
         accounts = [destination] if current_owner is None else [current_owner, destination]
         marked_active = await self.subscriptions_db.lock_grants_of(
             accounts, counted_for=destination)
 
-        # The whole row under the grant locks: the webhooks own the status and the tier alike.
         settled = await self.subscriptions_db.read_subscription(proof.provider, proof.external_id)
         if settled is not None and settled.status != status:
-            # Refused whichever way it moved, never rewritten: the term below is read for this status.
             raise RestoreSubscriptionNotEntitled(cause="status_moved_under_the_locks")
         if settled is not None and tier_read is not None and settled.tier_id != tier_read:
-            # The allowance the grant below charges against is the tier the row carried with it.
             raise RestoreSubscriptionNotEntitled(cause="tier_moved_under_the_locks")
 
-        # At most one row answers: an entitled write supersedes this subscription's active grants first.
         recorded_term = [grant.ends_at for grant in marked_active
                          if stored is not None
                          and grant.source is AccessGrantSource.subscription
                          and grant.subscription_id == stored.id]
-        # The recorded term comes first, because a webhook verified it.
-        # A closed one is not read as the answer: the renewal notification can be late, and the
-        # signed proof is then the newer word for the same subscription.
         term_ends_at = next((end for end in (*recorded_term, term_end_for(status, proof))
                              if end is not None and end > self.evaluated_at), None)
         if term_ends_at is None:
-            # No open term entitles nothing, whatever the canonical row still says.
             raise RestoreSubscriptionNotEntitled(cause="term_closed")
 
         if stored is None:
-            # Insert-only and written unowned: a row a webhook committed since the read above is a lost race.
             stored, outcome = await self.subscriptions_db.insert_subscription(
                 provider=proof.provider,
                 external_id=proof.external_id,
@@ -164,11 +152,9 @@ class RestoreService:
             status=status,
             marked_active=marked_active,
             tier_id=tier_id,
-            # The clamped date checked above, and never a second reading of it that could drift.
             starts_at=starts_at,
             # The term checked above, and never a second reading of it that could drift from it.
             ends_at=term_ends_at,
-            # The user-invoked path, which is the one reactivation belongs to.
             may_reactivate=True,
             evaluated_at=self.evaluated_at)
         await self._settle(outcome, proof)
@@ -177,13 +163,8 @@ class RestoreService:
         try:
             await self.session.commit()
         except IntegrityError as violation:
-            # The two entitlement keys are DEFERRABLE, so this statement is where they are
-            # evaluated -- and both of them are FOREIGN KEYs, which is the one class a lost race
-            # is never made of. Classified here as every flush already classifies its own.
+            # The two entitlement keys are DEFERRABLE, so the database evaluates them at COMMIT.
             if not is_unique_violation(violation):
-                # A deferred foreign key or a CHECK is a broken invariant, never a race this lost.
-                # Named before the re-raise: `InternalError` logs nothing, so reported as a race
-                # this failure reached no log line at all and repeated on every retry.
                 logger.error("restore_commit_refused",
                              sqlstate=getattr(violation.orig, "sqlstate", None))
                 raise

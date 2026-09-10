@@ -24,7 +24,6 @@ FREE_TIER_ID = "free"
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
 TERM_END = NOW + timedelta(days=30)
 
-# The month `NOW` falls in, and the one before it: the rule is the calendar month, not the term.
 THIS_MONTH = "2026-09"
 LAST_MONTH = "2026-08"
 
@@ -53,9 +52,7 @@ class _StubSession:
         self.flushes = 0
         self.usage_reads = 0
         self.grant_reads = 0
-        # The usage row `lock_grants` already locked, read back to carry the month's count across.
         self._usage = usage
-        # A grant this subscription already had, at any status, which is the lapse guard's question.
         self._prior = prior
 
     async def exec(self, statement):
@@ -312,7 +309,6 @@ class TestALapsedTermIsNeverBroughtBackByIngestion:
 
         outcome = await _write(session, [])
 
-        # `replayed`, because this write ended no grant and inserted none.
         assert (outcome, session.added) == (WriteOutcome.replayed, [])
 
     async def test_the_winning_subscriptions_live_grant_is_left_alone(self):

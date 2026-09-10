@@ -18,9 +18,7 @@ class PurchasesDB:
         statement = (select(StorePurchaseToken.provider, StorePurchaseToken.identity_value)
                      .where(col(StorePurchaseToken.user_id) == user_id))
         rows = (await self.session.exec(statement)).all()
-        # The key is named as the enum the column stores: a two-column select over a `StrEnum`
-        # column types its first element as a plain string, and the mapping this returns is keyed
-        # by members. Idempotent on a member, so the row's own value is what every key is.
+        # A two-column select types `provider` as a plain string, so the key needs the enum.
         tokens = {PurchaseProvider(provider): value for provider, value in rows}
 
         missing = set(PurchaseProvider) - set(tokens)

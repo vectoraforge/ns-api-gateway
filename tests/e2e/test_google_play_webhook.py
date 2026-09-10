@@ -213,10 +213,6 @@ REFUSALS = (
 REFUSAL_IDS = ["no-credential", "not-a-jwt", "signature", "email", "email-verified", "aud", "iss",
                "expired", "empty-sub", "package-name"]
 
-# The bounded reasons this route's verifier can emit. `missing_token` and `duplicate_authorization`
-# are unreachable here: the credential comes from FastAPI's `HTTPBearer` and never `extract_bearer`,
-# an absent one is answered by `push_credential_absent` before the verifier runs, and no
-# duplicate-header rule runs on this path at all.
 _PUSH_REASONS = frozenset({BoundedReason.bad_signature, BoundedReason.malformed,
                            BoundedReason.issuer_mismatch, BoundedReason.audience_mismatch,
                            BoundedReason.expired, BoundedReason.empty_subject,
@@ -284,7 +280,6 @@ class TestOneVerifiedPushReachesACommittedRow:
         events = await _events_of(_db_transaction, _replay_key(purchase_token))
         assert len(events) == 1
         assert events[0].event_type == str(SUBSCRIPTION_PURCHASED)
-        # The first delivery for this key moved the row off nothing, so the audit row says so.
         assert (events[0].old_tier_id, events[0].new_tier_id) == (None, PAID_TIER_ID)
 
     async def test_the_play_read_asked_for_the_configured_package_and_this_token(
@@ -349,9 +344,6 @@ class TestEveryRefusalAnswersTheOneBody:
     async def test_every_reachable_arm_is_covered_by_one_parameter(self):
         """The control: a narrowed tuple would leave an arm untested while every case above passed."""
         raised = raised_refusal_stages(GOOGLE_PLAY_REFUSAL_FILES)
-        # The one computed stage is the verifier's bounded reason, so it stands for every member
-        # of that set this route can reach -- named in `_PUSH_REASONS`, never the whole enum, two
-        # of whose members no credential taken from `HTTPBearer` can produce.
         assert COMPUTED in raised
         reachable = (raised - {COMPUTED}) | {str(reason) for reason in _PUSH_REASONS}
         assert {stage for _overrides, _package, stage in REFUSALS} == reachable
@@ -423,9 +415,6 @@ class TestTheTwoArmsThatAnswerWithoutWriting:
         assert real_google_play_seam.requests == []
 
 
-# The two failures of the read that each answer the shared 500, which is what makes Pub/Sub redeliver.
-# `AttributionConflict` is not among them: its one raise site is inside the service, which this
-# class never reaches, so scripting it here would assert nothing the class below does not.
 PLAY_FAILURES = (
     InternalError(),
     UnmappedStoreProduct(PurchaseProvider.google_play, UNMAPPED_PRODUCT_ID),
@@ -479,13 +468,11 @@ class TestAChangedAttributionIsRefusedAndNothingIsWritten:
         seam.body = play_subscription_body(
             externalAccountIdentifiers={"obfuscatedExternalAccountId": ATTRIBUTION_TOKEN})
         recorded = await client.post(PATH, json=_push_body(purchase_token), headers=headers)
-        # The control: a first delivery that wrote no purchase row leaves nothing to conflict with.
         assert recorded.status_code == 200, recorded.text
         before = await _counts(factory)
 
         seam.body = play_subscription_body(
             externalAccountIdentifiers={"obfuscatedExternalAccountId": OTHER_ATTRIBUTION_TOKEN})
-        # A later instant, so this is a fresh delivery rather than a replay of the key above.
         conflicting = await client.post(
             PATH, json=_push_body(purchase_token, event_time_millis=EVENT_TIME_MILLIS + 1000),
             headers=headers)
@@ -510,7 +497,6 @@ class TestAChangedAttributionIsRefusedAndNothingIsWritten:
 
         assert conflicting.status_code == 500
         assert await _counts(_db_transaction) == before
-        # The second delivery carries its own replay key, so an accepted conflict would add a row.
         assert await _events_of(_db_transaction, _replay_key(
             purchase_token, event_time_millis=EVENT_TIME_MILLIS + 1000)) == []
         assert len(await _purchases_of(_db_transaction, purchase_token)) == 1

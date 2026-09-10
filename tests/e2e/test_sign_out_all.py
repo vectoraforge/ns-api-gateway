@@ -93,10 +93,6 @@ _UNLINKED_SUBJECT = "sign-out-all-unlinked-subject"
 _RETIRED_SUBJECT = "sign-out-all-retired-subject"
 _BLOCKED_SUBJECT = "sign-out-all-blocked-subject"
 
-# Each rejection the shared barrier owns: the state that causes it, the credential that reaches it,
-# and its class. A subject is carried rather than a signed token, because a param is built when this
-# module is imported at collection and `make_token` expires an hour later: a session that takes that
-# long to reach this module would fail these cases at the JWT check instead of at the barrier.
 _BARRIER_REJECTIONS = (
     pytest.param(None, None, None, InvalidExternalJwt, id="no-credential"),
     pytest.param(None, {"Authorization": "Bearer not-a-signed-token"}, None, InvalidExternalJwt,
@@ -188,7 +184,6 @@ class TestTheThreeRefusals:
         answered = await sign_out_client.post("/auth/sign-out-all", headers=_auth())
 
         assert answered.status_code == 503, answered.text
-        # Never 204: SIGNOUT-02's fail-closed half still binds, and this is not a confirmation.
         assert answered.json() == {"code": "verification_temporarily_unavailable"}
         assert "WWW-Authenticate" not in answered.headers
         # Definitive, so it spends one attempt and no more; a retryable classification would show three.
@@ -258,7 +253,6 @@ class TestEveryBarrierRejectionIsTheOneSyncAnswers:
             await seed_identity(_db_transaction, issuer=TEST_ISSUER,
                                 provider=IdentityProvider.google, **seeding)
         scripted_firebase_adapter.script_revocation(None)
-        # Signed here, so the token's hour starts when the case runs rather than when it was collected.
         headers = raw_headers if subject is None else _auth(subject)
 
         synced = await sign_out_client.post("/auth/sync", headers=headers)
@@ -311,14 +305,8 @@ class TestWhatEachOutcomeWritesDown:
         assert (confirmed.status_code, refused.status_code, rejected.status_code) == (204, 503, 503)
         assert [event for event, _ in route_records.entries] == [
             "sign_out_all_confirmed", "revocation_unconfirmed", "revocation_unconfirmed"]
-        # WR-29: the third call is a vanished provider account, and past the barrier that is a
-        # non-confirmation and never `auth_required`. The two refusals differ in their stage
-        # alone, so the list above alone would pass with the third taking the second's arm.
         assert [fields["stage"] for event, fields in route_records.entries
                 if event == "revocation_unconfirmed"] == ["issuer_selection", "subject_absent"]
-        # Rendered first, as the two webhook twins do: a `str` filter would read only the string
-        # fields, and a UUID, a dict or a row carrying the subject renders it in the final line all
-        # the same. So a field added later cannot slip an identifier past this, whatever its type.
         rendered = repr(route_records.entries)
         for secret in (SUBJECT, identity.provider_uid):
             assert secret not in rendered, f"a log record carries {secret!r}"

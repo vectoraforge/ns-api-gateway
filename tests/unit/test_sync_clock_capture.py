@@ -9,8 +9,6 @@ SRC = REPO / "src"
 SYNC_SERVICE = SRC / "nativespeaker" / "api" / "services" / "sync.py"
 DEPENDENCIES = SRC / "nativespeaker" / "api" / "app" / "dependencies.py"
 
-# The modules a clock can be read from, and the members of each that read one. Both wall-clock and
-# monotonic: a second instant is a second instant whichever source it came from.
 CLOCK_MEMBERS = {"datetime": frozenset({"now", "utcnow", "today"}),
                  "date": frozenset({"today"}),
                  "time": frozenset({"time", "time_ns", "monotonic", "monotonic_ns",
@@ -42,7 +40,6 @@ def _clock_reads(node: ast.AST, aliases: dict[str, str] | None = None) -> list[a
         if not isinstance(n, ast.Attribute):
             continue
         base = n.value
-        # `datetime.datetime.now` as well as `datetime.now`.
         name = (base.attr if isinstance(base, ast.Attribute)
                 else base.id if isinstance(base, ast.Name) else None)
         if n.attr in CLOCK_MEMBERS.get(aliases.get(name, name), ()):

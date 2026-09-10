@@ -36,8 +36,6 @@ from unit.error_tree import fresh_interpreter
 ISSUER = "https://securetoken.google.com/test-project"
 SUBJECT = "subject-under-test"
 
-# Each case carries the one code its class must answer with, as `REJECTION_CASES` below does: two
-# of these codes share a status with another, so a status alone proves nothing about the contract.
 CASES = [
     ("missing_token", InvalidExternalJwt(bounded_reason=BoundedReason.missing_token), 401, "auth_required"),
     ("invalid_token", InvalidExternalJwt(bounded_reason=BoundedReason.bad_signature), 401, "auth_required"),
@@ -124,7 +122,6 @@ def test_handler(handler_client, name, exc, expected_status, expected_code):
     assert response.status_code == expected_status
     body = response.json()
     assert list(body.keys()) == ["code"], f"Expected only 'code' key, got {list(body.keys())}"
-    # Equality, never membership: a shared set accepts the code of any other case at the same status.
     assert body["code"] == expected_code
 
 
@@ -288,9 +285,6 @@ def generator_session_client():
     app = FastAPI()
     register_exception_handlers(app)
     session = _RollbackRecordingSession()
-    # WR-06: the real dependency rather than a line-for-line copy of it. `get_db` reads only this
-    # attribute, and this is the suite whose stated subject is its rollback arm -- against a mirror,
-    # deleting that arm from `app/dependencies.py` left the whole unit suite green.
     app.state.session_factory = lambda: session
 
     @app.get("/consuming")
@@ -419,8 +413,6 @@ class TestAnAccountUnavailableArmTravelsTheWholeErrorPath:
         assert [event for event, _ in warnings.entries] == list(ADMISSION_ARMS)
         for _, fields in warnings.entries:
             assert set(fields) == {"exc_info"}
-
-
 
 
 class TestStartupFailsClosedOnATreeDefect:
@@ -617,8 +609,7 @@ class TestALevelOutsideTheFiveIsClampedOnceAndReadOnce:
         """Read raw, `exc.log_level` stripped the traceback off the highest-severity line this
         handler writes -- the one combination the clamp above it exists to prevent."""
         exc = QueueFullError(30)
-        # On the instance, never a subclass: a synthetic `AppError` would join `_family` for the
-        # rest of the session and the error-tree cases read that walk.
+        # Set this on the instance. A subclass joins `_family` and changes the error-tree cases.
         exc.log_level = logging.INFO + 5
 
         await app_error_handler(None, exc)
@@ -636,7 +627,6 @@ class TestARejectedBodyValueNeverReachesTheLog:
     def errors(self, monkeypatch) -> _WarningSpy:
         """A spy, not `capture_logs`: the module-level logger caches its binding, so capture sees nothing here."""
         spy = _WarningSpy()
-        # The handler records the rejected body at WARNING; this is still the line under test.
         monkeypatch.setattr("nativespeaker.api.app.error_handlers.logger.warning", spy.record)
         return spy
 

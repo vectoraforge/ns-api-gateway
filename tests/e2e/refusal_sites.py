@@ -6,24 +6,15 @@ from pathlib import Path
 
 import nativespeaker.api
 
-# The application package on disk, read as text so the scan below imports nothing.
 _PACKAGE = Path(nativespeaker.api.__file__).parent
 
-# The package files each route's refusals are raised in, scanned whole. `app/dependencies.py`
-# carries the dependency raises, so a refusal added anywhere in it reaches the Play route's control.
 APP_STORE_REFUSAL_FILES = frozenset({"auth/app_store.py"})
 GOOGLE_PLAY_REFUSAL_FILES = frozenset({"app/dependencies.py", "auth/google_play.py"})
 
-# Derived from the two, never hand-listed: a refusal in a file neither route scans fails the
-# control that reads this rather than shrinking both sides of the equality it guards.
 REFUSAL_FILES = APP_STORE_REFUSAL_FILES | GOOGLE_PLAY_REFUSAL_FILES
 
-# What a `stage=` that is not a literal leaves behind: a value computed at the raise site, which is
-# the library's own `VerificationStatus.name` on the Apple path and a bounded reason on the Google one.
 COMPUTED = "<computed at the raise site>"
 
-# What a call shape this scan cannot read leaves behind. It is in no route's expected set, so a
-# refusal raised positionally breaks the equality instead of being absorbed by `COMPUTED`.
 UNREADABLE = "<a raise site this scan cannot read>"
 
 
@@ -45,15 +36,12 @@ def _stage_of(node: ast.Call) -> str:
     for keyword in node.keywords:
         if keyword.arg == "stage":
             return (keyword.value.value if isinstance(keyword.value, ast.Constant) else COMPUTED)
-    # Fail closed: positional and starred arguments name a stage this scan cannot read, and
-    # reading one as nothing at all is how an uncovered arm passes both controls.
     return UNREADABLE
 
 
 def files_raising_the_refusal() -> set[str]:
     """Every file of the application package carrying a `NotificationRejected(...)` call."""
-    # `encoding="utf-8"`, never the locale's: three files of the package carry non-ASCII bytes, so
-    # an ASCII locale makes this scan raise before the controls reading it can compare anything.
+    # The package files carry non-ASCII bytes. Read them with utf-8, not the locale encoding.
     return {path.relative_to(_PACKAGE).as_posix() for path in _PACKAGE.rglob("*.py")
             if refusal_calls(path.read_text(encoding="utf-8"))}
 

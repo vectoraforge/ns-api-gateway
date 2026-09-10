@@ -80,9 +80,6 @@ class TestTheAnonymousDeviceGrantHappyPath:
         assert body["entitlement"]["current_period"]
 
         assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
-        # Sets bit0, names the device that was read, and leaves the never-set bit1 as it found it.
-        # A never-set device cannot tell a carried bit1 from a hard-coded False, so the case below
-        # is where the carry-forward itself is proved.
         assert scripted_devicecheck_adapter.write_calls == [(DEVICE_TOKEN, True, False)]
 
         async with _db_transaction() as session:
@@ -121,7 +118,6 @@ class TestTheAnonymousDeviceGrantHappyPath:
         subject = "e2e-claim-carries-bit1"
         user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
                                       provider=IdentityProvider.anonymous)
-        # A device that already spent its registered slot; bit0 is what this path gates on.
         scripted_devicecheck_adapter.script(BitState(bit0=False, bit1=True))
 
         handle = await _issue(claim_client, subject)
@@ -129,7 +125,6 @@ class TestTheAnonymousDeviceGrantHappyPath:
 
         assert claim.status_code == 200, claim.text
         assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
-        # The read's own bit1 reaches the write; a writer hard-coding False would fail here.
         assert scripted_devicecheck_adapter.write_calls == [(DEVICE_TOKEN, True, True)]
         assert await _row_counts(_db_transaction, user.id) == (1, 1)
 
@@ -228,7 +223,6 @@ class TestTheRepeatIsIdempotent:
         assert first.status_code == 200, first.text
         after_first = await _row_counts(_db_transaction, user.id)
         assert after_first == (1, 1)
-        # The rows themselves, not their count: "writes nothing" is what this case is named for.
         granted = (await _grants_of(_db_transaction, user.id))[0]
         usage_before = await _usage_of(_db_transaction, granted.id)
 
@@ -392,7 +386,6 @@ class TestTheThreeAppleFailureArms:
         # The slot is spent, so the write that would spend it again is never attempted.
         assert scripted_devicecheck_adapter.write_calls == []
         assert await _row_counts(_db_transaction, user.id) == (0, 0)
-        # The one-way marker `_row_counts` never reads: setting it denies this account its free grant.
         assert (await _identity_of(_db_transaction, subject)).free_grant_consumed_at is None
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
@@ -412,7 +405,6 @@ class TestTheThreeAppleFailureArms:
         assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN]
         assert scripted_devicecheck_adapter.write_calls == []
         assert await _row_counts(_db_transaction, user.id) == (0, 0)
-        # The one-way marker `_row_counts` never reads: setting it denies this account its free grant.
         assert (await _identity_of(_db_transaction, subject)).free_grant_consumed_at is None
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
@@ -432,6 +424,5 @@ class TestTheThreeAppleFailureArms:
         assert scripted_devicecheck_adapter.read_calls == [DEVICE_TOKEN] * DEVICECHECK_ATTEMPTS
         assert scripted_devicecheck_adapter.write_calls == []
         assert await _row_counts(_db_transaction, user.id) == (0, 0)
-        # The one-way marker `_row_counts` never reads: setting it denies this account its free grant.
         assert (await _identity_of(_db_transaction, subject)).free_grant_consumed_at is None
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None

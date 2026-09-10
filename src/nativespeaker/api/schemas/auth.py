@@ -12,9 +12,7 @@ from nativespeaker.api.tables.users import User
 
 class ChallengeRequest(BaseModel):
     """The issuance body. `operation` is a plain `str`, never a Literal: an unissuable value is the handler's 400."""
-    # Bounded well above every member of core.auth_operation, because the refusal log carries it.
-    # No `min_length`: a 422 for the empty string alone would make it distinguishable.
-    operation: str = Field(..., max_length=64)
+    operation: str = Field(..., max_length=64)  # No `min_length`: the empty string must be a 400, not a 422.
 
 
 class PrepareResponse(BaseModel):
@@ -25,8 +23,6 @@ class PrepareResponse(BaseModel):
 
 class CompletionRequest(BaseModel):
     """The completion body: the handle obtained from `/auth/challenge`, and nothing else."""
-    # Required and non-empty, so an unusable handle is the framework's 422 and not a not-found 409.
-    # Bounded well above the 22 characters `new_challenge_id` mints: anything longer is a sure miss.
     challenge_id: str = Field(..., min_length=1, max_length=64)
 
 
@@ -34,7 +30,6 @@ class GrantClaimRequest(BaseModel):
     """The body both grant claims share: the handle, and the DeviceCheck token naming the device."""
     challenge_id: str = Field(..., min_length=1, max_length=64)
     # One token for the read and the write: two would let the bit read name a different device.
-    # Bounded well above a real one, because it is relayed verbatim into a call this service pays for.
     device_token: str = Field(..., min_length=1, max_length=4096)
 
 
@@ -108,7 +103,5 @@ class Identity:
 @dataclass(frozen=True, slots=True)
 class LinkedIdentity(Identity):
     """The same pair once the linked check has run: both rows are present by construction."""
-    # `resolve` sets the two together or neither; stated as a type, a user-only pair is a checker
-    # error rather than an `AttributeError` rendered as the generic 500.
     user: User
     identity: ExternalIdentity

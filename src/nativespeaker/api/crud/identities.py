@@ -62,7 +62,7 @@ class IdentitiesDB:
     async def resolve_provider_account(self, *, issuer: str, provider: IdentityProvider,
                                        provider_uid: str) -> ExternalIdentity | None:
         """The row holding the provider account, or `None`. Not the race arbiter, and never to be one."""
-        # The reservation spans historical rows too, exactly as the partial unique index does.
+        # The query finds historical rows too, the same as the partial unique index.
         statement = select(ExternalIdentity).where(col(ExternalIdentity.issuer) == issuer,
                                                    col(ExternalIdentity.provider) == provider,
                                                    col(ExternalIdentity.provider_uid) == provider_uid)
@@ -85,7 +85,6 @@ class IdentitiesDB:
 
     async def user_by_id(self, user_id: UUID) -> User | None:
         """The user an identity row points at, or `None`."""
-        # Never `UUID | None`: a nullable parameter would compile to `id IS NULL` and match no row.
         return (await self.session.exec(select(User).where(col(User.id) == user_id))).first()
 
     async def insert_account(self, *,
@@ -100,41 +99,28 @@ class IdentitiesDB:
                     created_at=evaluated_at,
                     updated_at=evaluated_at)
         self.session.add(user)
-        # Outside the arm below: `core.users` carries no uniqueness this insert can lose, so a
-        # violation here is a broken invariant and belongs on the internal-error path.
         await self.session.flush()
 
         self.session.add(ExternalIdentity(user_id=user.id,
                                           issuer=identity.issuer,
                                           subject=identity.subject,
                                           provider=provider,
-                                          # NULL for anonymous, never a sentinel: the CHECK requires it.
                                           provider_uid=provider_uid,
                                           identity_state=IdentityState.active,
                                           created_at=evaluated_at,
                                           updated_at=evaluated_at))
 
-        # One per store, minted eagerly. A fresh `uuid4()` derived from nothing, so it correlates nothing.
         for store in PurchaseProvider:
             self.session.add(StorePurchaseToken(user_id=user.id,
                                                 provider=store,
                                                 identity_value=str(uuid4()),
                                                 created_at=evaluated_at))
 
-        # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
         try:
             await self.session.flush()
         except IntegrityError as conflict:
-            # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
             if not is_unique_violation(conflict):
-                # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                 raise
-            # Three uniqueness rules are reachable here, not one: `(issuer, subject)`, the partial
-            # `ix_external_identities_provider_account` over `(issuer, provider, provider_uid)`, and
-            # `core.store_purchase_tokens`' own. 37.4 D-06 collapses all of them into this single
-            # answer rather than resolving which one the winner took. The cost is bounded to the
-            # race: `create_user`'s pre-check still earns the provider account its own 403 for every
-            # caller that does not lose a flush to a concurrent completion.
             raise IdentityAlreadyLinked() from conflict
         return user.id
 
@@ -153,8 +139,6 @@ class IdentitiesDB:
         identity_row.provider_uid = provider_uid
         identity_row.updated_at = evaluated_at
         if user.registered_at is None:
-            # 02 step 07 sets it where it is NULL: a stored instant is the record, and the repair
-            # path this flip doubles as never restamps it.
             user.registered_at = evaluated_at
         user.updated_at = evaluated_at
         if user.email is None:
@@ -165,9 +149,7 @@ class IdentitiesDB:
         try:
             await self.session.flush()
         except IntegrityError as conflict:
-            # The unique indexes are the arbiter; the constraint is never named and the message never parsed.
             if not is_unique_violation(conflict):
-                # Not a unique violation: a CHECK or a foreign key is a broken invariant, never a race this lost.
                 raise
             raise ProviderAccountAlreadyLinked(identity_row_id=identity_row_id,
                                                stored_provider=stored_provider,

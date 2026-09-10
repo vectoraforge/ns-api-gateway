@@ -22,7 +22,6 @@ def _extract_status_code(exc: Exception) -> int | None:
     return None
 
 
-# The retry-eligible statuses, named once: a second copy would decide the fleet's 503 on its own.
 _TRANSIENT_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
 
 
@@ -31,8 +30,6 @@ def _is_transient_error(exc: Exception) -> bool:
         return True
     if isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)):
         return True
-    # No `APIStatusError` arm: it read the same status off the same exception and compared it against
-    # the same set, so the wider check below already answers for it and answered first either way.
     return _extract_status_code(exc) in _TRANSIENT_STATUSES
 
 
@@ -42,8 +39,6 @@ class CircuitBreaker:
         self._reset_seconds = reset_seconds
         self._failure_count = 0
         self._opened_at: float | None = None
-        # Bumped on every trip, so an attempt can stamp the state it began under; "open right
-        # now" is not that state, because the elapsed arm clears `_opened_at` under an attempt.
         self._generation = 0
         self._lock = asyncio.Lock()
 
@@ -54,8 +49,7 @@ class CircuitBreaker:
             elapsed = time.monotonic() - self._opened_at
             if elapsed >= self._reset_seconds:
                 self._opened_at = None
-                # Half-open: one failure reopens, rather than a whole fresh tally of the threshold.
-                self._failure_count = self._failure_threshold - 1
+                self._failure_count = self._failure_threshold - 1  # Half-open: one failure reopens the breaker.
                 return
             retry_after = max(1, int(self._reset_seconds - elapsed))
             raise CircuitOpenError(retry_after)
@@ -68,16 +62,12 @@ class CircuitBreaker:
     async def record_success(self, generation: int) -> None:
         async with self._lock:
             if generation != self._generation:
-                # An attempt in flight when the breaker tripped predates it, so its answer says
-                # nothing about the provider now.
                 return
             self._failure_count = 0
 
     async def record_failure(self, generation: int) -> None:
         async with self._lock:
             if generation != self._generation or self._opened_at is not None:
-                # The same guard, because the elapsed arm primes the tally at `threshold - 1` and
-                # one straggler failure would reopen the breaker on its own.
                 return
             self._failure_count += 1
             if self._failure_count >= self._failure_threshold:
@@ -116,8 +106,6 @@ class LLMExecutionGate:
             yield
 
 
-# The one value `Admitted.proof` may carry: module-private, so a hand-built token carries
-# something else and `ainvoke` refuses it.
 _ADMISSION = object()
 
 
@@ -162,21 +150,15 @@ class ResiliencePolicy:
     async def ainvoke(self, operation: Callable[[], Awaitable], admitted: Admitted) -> Any:
         """Run `operation` under one provider permit, the timeout and the retry policy, on the caller's admission."""
         if admitted.proof is not _ADMISSION:
-            # A programming error, not a runtime condition: the only way here is a caller that built
-            # its own token instead of entering `admission()`, and so holds no in-flight slot.
             raise RuntimeError("ainvoke was given a token `admission()` did not mint")
         attempted = False
 
         async def attempt() -> Any:
             """One attempt, already triaged: everything `_should_retry` reads is decided here."""
             nonlocal attempted
-            # Per attempt, not once at admission, and never on the first: a charged request always
-            # reaches the provider at least once, on the verdict `admission()` gave.
             if attempted:
                 await self._circuit_breaker.before_call()
             attempted = True
-            # Stamped here, immediately before the provider call: a trip after this instant makes
-            # this attempt's answer a straggler's, and both arms below discard a straggler's answer.
             generation = await self._circuit_breaker.current_generation()
             try:
                 result = await asyncio.wait_for(operation(), timeout=self._timeout_seconds)
@@ -186,8 +168,6 @@ class ResiliencePolicy:
             except Exception as e:
                 # Everything reaching here came out of `operation` itself, so every classification is the provider's.
                 if _is_transient_error(e):
-                    # Counted only on this arm: the cause of a permanent rejection is the request,
-                    # and one user's refused phrase would otherwise open the breaker on everybody.
                     await self._circuit_breaker.record_failure(generation)
                     raise TransientLLMError(str(e)) from e
                 raise PermanentLLMError(str(e)) from e

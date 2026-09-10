@@ -38,13 +38,9 @@ UPDATE_TOKEN = "update-token-under-test"
 # A handle-shaped string the transaction id must never equal: the handle is a secret capability.
 HANDLE = "Zm9vYmFyYmF6cXV4MTIzNA"
 
-# Both bodies Apple is reported to answer 200 with when the device's bits were never set, each in a
-# second capitalisation: the literals are [ASSUMED] from secondary sources, so a case drift must not
-# turn the one state the free grant is issued for into a permanent 503.
 NEVER_SET_BODIES = ("Failed to find bit state", "failed to find bit state",
                     "Bit State Not Found", "BIT STATE NOT FOUND")
 
-# The pair the two wrong mounts are cut from: the public half, and the passphrase-wrapped private half.
 MISMOUNTED = ec.generate_private_key(ec.SECP256R1())
 
 
@@ -223,8 +219,6 @@ class TestTheParseArms:
             self, body, private_key):
         """WR-20: a drifted pod clock alone earns the first of these on every call, and spec 06:83
         reserves `proof_rejected` for vendor *material* failures."""
-        # The undocumented body lands here too: the literals are assumptions, so this is the arm
-        # an unrecognised 400 must fall to rather than a 403 accusing the caller's device.
         recorder = Recorder(*[httpx.Response(400, text=body) for _ in range(DEVICECHECK_ATTEMPTS)])
 
         with pytest.raises(Unavailable):
@@ -339,14 +333,7 @@ class TestATransportFailureIsRetryableAndNamesOnlyItsClass:
 class TestTheAttemptsAreSeparatedInTime:
     """WR-21: the budget was spent inside a few milliseconds, so it bought nothing against a blip."""
 
-    # tenacity's gap is `multiplier * exp_base ** (attempt - 1)`, clamped at the configured max,
-    # so `wait_exponential(0.1, exp_base=2, max=0.5)` sleeps 0.1s and then 0.2s -- 0.3s over an
-    # exhausted budget, not the 0.6s this comment used to claim. The floor keeps real headroom
-    # under that total, because a wall clock can only measure the sum and an `asyncio.sleep` may
-    # return inside one clock resolution; the arithmetic case below is what pins the sum itself.
-    # Written as a number rather than derived from the base, so shrinking the base back towards
-    # zero -- the WR-21 regression this class exists to catch -- still fails here.
-    FLOOR_SECONDS = 0.25
+    FLOOR_SECONDS = 0.25  # A literal, not derived from the base, so a shrunk base still fails here.
 
     def test_the_configured_gaps_are_the_two_this_floor_was_measured_against(self):
         """A wall clock cannot tell 0.3s of backoff from a 0.3s stall, so the policy is stated here."""

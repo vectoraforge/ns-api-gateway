@@ -9,7 +9,6 @@ from sqlalchemy import UniqueConstraint
 from sqlalchemy import inspect as sa_inspect
 from sqlmodel import SQLModel
 
-# Imported for the registration alone: a model no module imported is in no metadata.
 import nativespeaker.api.tables
 from nativespeaker.api.tables.grants import AccessGrant, AccessTier, UserMonthlyUsage
 
@@ -17,8 +16,6 @@ TABLES = SQLModel.metadata.tables
 
 _ENTITLEMENT_TABLES = (AccessTier, AccessGrant, UserMonthlyUsage)
 
-# Every mapped model the package exports, read off the package namespace rather than restated,
-# so a table added later is walked without this file being edited.
 _MAPPED_TABLES = tuple(sorted(
     (exported for exported in vars(nativespeaker.api.tables).values()
      if isinstance(exported, type) and issubclass(exported, SQLModel)
@@ -27,12 +24,7 @@ _MAPPED_TABLES = tuple(sorted(
 
 def _mints_a_uuid_key(model) -> bool:
     """Selected on the mapped column, never on the annotation."""
-    # WR-124: the filter read `model_fields["id"].annotation is UUID`, and the idiomatic
-    # server-shaped spelling `id: UUID | None = Field(default=None, primary_key=True)` annotates
-    # `UUID | None` -- so the one spelling the unminted-key bug arrives in was dropped from the walk.
     columns = list(model.__table__.primary_key.columns)
-    # Named `id`, so `UserMonthlyUsage`'s `grant_id` -- a UUID key this package never mints, because
-    # it is the grant's own id -- stays out rather than reaching a field that does not exist.
     return (len(columns) == 1 and columns[0].name == "id"
             and isinstance(columns[0].type, sqlalchemy.Uuid))
 
@@ -128,7 +120,6 @@ class TestTheOnlyRelationshipIsTheOneAQueryEagerLoads:
                     for model in _MAPPED_TABLES
                     for name in sa_inspect(model).relationships.keys()}
 
-        # `ChatsDB.get_chat` carries `selectinload(Chat.messages)`; a second entry here has no such read path.
         assert declared == {"Chat.messages"}
 
 

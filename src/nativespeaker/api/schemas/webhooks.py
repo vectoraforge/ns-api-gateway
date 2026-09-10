@@ -1,10 +1,7 @@
 """The store-callback request bodies. Each field keeps its store's camelCase spelling as sent."""
 from pydantic import BaseModel, Field
 
-# Apple sends its certificate chain three times in one envelope, so a real V2 notification lands
-# in the 18-24 KB range.
 APP_STORE_ENVELOPE_LIMIT = 65536
-# An RTDN is a few hundred bytes of base64, so this payload keeps the tighter bound of its own.
 PUBSUB_DATA_LIMIT = 16384
 
 
@@ -17,9 +14,7 @@ class AppStoreNotificationRequest(BaseModel):
 
 class PubSubPushMessage(BaseModel):
     """The Pub/Sub message this push carries: the RTDN as base64 text, and nothing else."""
-    # No `messageId` and no bound here: Pub/Sub acknowledges 2xx alone, so anything pydantic
-    # refuses is a 422 this subscription retries forever. `developer_notification_from` bounds it.
-    data: str = ""
+    data: str = ""  # Do not bound this field. Pub/Sub retries every 422 forever.
 
 
 class PubSubPushRequest(BaseModel):

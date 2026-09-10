@@ -294,11 +294,9 @@ class TestTheRevocation:
         with pytest.raises(RevocationUnconfirmed) as raised:
             await adapter.revoke_refresh_tokens(ISSUER, SUBJECT)
         assert raised.value.stage == "subject_absent"
-        # Never a 401: telling a client with a verified token to re-authenticate is a loop.
         assert (raised.value.status, raised.value.code) == (503,
                                                             "verification_temporarily_unavailable")
         assert not isinstance(raised.value, UserNotFound)
-        # Definitive, so it must not be the retry marker either: another call answers the same.
         assert not isinstance(raised.value, RetryableLookupError)
 
     async def test_the_provider_lookup_still_answers_the_401_arm_control(self, adapter):
@@ -345,8 +343,6 @@ class TestTheEmailRuleIsAppliedInsideTheRead:
     """The two-condition copy rule: absent, empty after stripping, or unverified each withholds the address."""
 
     async def test_a_non_empty_verified_address_is_copied(self, adapter, get_user_calls):
-        # A classified record throughout this class: the anonymous arm withholds every address on
-        # its own (WR-23 below), so measuring the copy rule there would measure nothing.
         get_user_calls(_record((GOOGLE,), email="a@b.test", email_verified=True))
         identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
         assert identity.email == "a@b.test"
@@ -384,7 +380,6 @@ class TestTheEmailRuleIsAppliedInsideTheRead:
                                                                           get_user_calls):
         """WR-23: Firebase leaves `email` populated after a client unlinks its last provider, and
         the copied address then blocked the real one at upgrade with no route to repair it."""
-        # `adapters.py:17`: a record with no provider entry has no address to attribute to it.
         get_user_calls(StubUserRecord(provider_data=(), email="a@b.test", email_verified=True))
 
         identity = await adapter.get_user_provider_data(ISSUER, SUBJECT)
@@ -443,7 +438,6 @@ class TestFailureMapping:
             await lookup_with_retry(adapter, ISSUER, SUBJECT)
 
         assert raised.value.stage == "provider_lookup"
-        # The point of the change: one call, never the three a retryable classification would spend.
         assert len(calls) == 1
 
     async def test_user_not_found_is_not_swallowed_by_the_firebase_error_arm(self, adapter,
@@ -488,8 +482,6 @@ class TestNoProviderTextLeaks:
         with pytest.raises(Unavailable):
             await lookup_with_retry(adapter, ISSUER, SUBJECT)
 
-        # Equality over the whole list, so the record really fired and it carries no field at all:
-        # an emptied `detail=` would leave the key behind, and a `str` filter would not see it.
         assert firebase_logs == [("firebase_provider_data_malformed", {})]
 
     async def test_the_internal_marker_does_carry_it_for_the_log(self, adapter, get_user_calls):
@@ -498,7 +490,6 @@ class TestNoProviderTextLeaks:
         with pytest.raises(RetryableLookupError) as raised:
             await adapter.get_user_provider_data(ISSUER, SUBJECT)
         assert PROVIDER_TEXT in str(raised.value)
-
 
 
 # The whole accept set. Three shapes, no fourth.
@@ -591,8 +582,6 @@ class TestNeitherDeletedConceptSurvivesInTheCode:
         from nativespeaker.api.auth import firebase
         source = Path(firebase.__file__).read_text()
         docstring = ast.get_docstring(ast.parse(source), clean=False)
-        # A removed docstring is a source with nothing to strip, not a `TypeError` that reports
-        # neither the condition this case tests nor the one that actually held.
         code = source if docstring is None else source.replace(docstring, "", 1)
         assert name not in code
 

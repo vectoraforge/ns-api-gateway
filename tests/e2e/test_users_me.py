@@ -207,7 +207,6 @@ class TestTheRequestChangesNothing:
         response = await async_client.get("/users/me")
 
         assert response.status_code == 200, response.text
-        # Table state, never the absence of a COMMIT: a read that dirtied the session would still show here.
         assert await _account_snapshot(_db_transaction, user.id) == before
 
     async def test_a_repeated_request_answers_the_same_bytes_over_the_same_rows(

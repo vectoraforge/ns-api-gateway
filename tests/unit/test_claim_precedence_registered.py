@@ -32,9 +32,6 @@ from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvid
 from nativespeaker.api.tables.users import User
 
 from .conftest import TEST_ISSUER
-
-# The scaffolding is imported rather than copied: two drifting fakes of one conditional update is
-# the hazard, and that update is the system's only serialization point.
 from .conftest import FakeChallengeStore as _FakeChallengeStore
 from .test_claim_precedence import (
     CHALLENGE_REQUIRED,
@@ -143,7 +140,6 @@ def client(store, session, identity, grants, devicecheck):
 
     app.dependency_overrides[get_identity] = lambda: identity
 
-    # `get_db` is left un-overridden and reads only this: a mirror of it drifted from the real one.
     app.state.session_factory = lambda: session
     app.dependency_overrides[get_challenge_store] = lambda: store
     app.dependency_overrides[get_firebase_adapter] = lambda: None
@@ -310,8 +306,6 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert response.status_code == 200
         assert store.consume_calls == 1
         assert grants.activates == 1
-        # WR-101: the conversion's own destination tier. The `entitlement` in the response is the
-        # post-commit sync stub's hand-built one, so it answers the same whatever was written.
         assert grants.tiers == ["registered"]
         assert devicecheck.read_calls == []
         assert devicecheck.write_calls == []
@@ -320,9 +314,6 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
             self, client, store, account, grants, devicecheck):
         """WR-100: D-09(e) on the conversion arm, where it is the only guard -- the `held == []`
         arm is covered by `has_prior_free_grant` as well, and this one by nothing else."""
-        # The recorder field that drives it (`grant_of_source`) was assigned by no test in the
-        # tree, so disabling the service's `holds_grant_of_source` guard left this whole module
-        # green while an account whose registered slot is spent converted its grant a second time.
         identity_row, _ = account
         grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant)]
         grants.grant_of_source = {AccessGrantSource.registered_account_grant}
@@ -365,8 +356,6 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert response.json()["entitlement"]["type"] == "registered_account_grant"
         assert store.consume_calls == 1
         assert grants.activates == 1
-        # WR-101: the registered tier carries 50 credits and the anonymous one 10, and the line
-        # above is answered by the sync stub rather than by what the writer was asked to write.
         assert grants.tiers == ["registered"]
         assert devicecheck.read_calls == [DEVICE_TOKEN]
         # bit0 carried forward from the query, never fabricated.
@@ -457,9 +446,6 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert session.rollbacks >= 1
         # The caller's rows came from a closed session, so a refresh on this arm is the 500 this pins.
         assert session.refresh_calls == []
-        # WR-64: the winner may have converted its own anonymous grant, which spends no device slot.
-        # Setting bit1 here burns this device's one registered slot for a grant this attempt did not
-        # write, and nothing in this product ever clears an Apple bit.
         assert devicecheck.write_calls == []
 
     def test_a_race_lost_to_another_source_is_the_refusal_the_preflight_gives(
@@ -479,8 +465,6 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert store.consume_calls == 1
         assert session.rollbacks >= 1
         assert devicecheck.write_calls == []
-        # WR-80: the two lost-race arms are one class and one body, so the cause is all that tells
-        # them apart -- and without this the whole arm deletes with the suite green.
         assert [(line["event"], line.get("cause")) for line in records] == [
             ("claim_refused_under_lock", "lost_race_to_another_source")]
 
@@ -633,14 +617,11 @@ def _conversion(identity_row, grants, devicecheck) -> None:
 
 
 def _marked_outside_its_term(identity_row, grants, devicecheck) -> None:
-    # The convertible grant, plus a row the one-active index sees and this window cannot: the
-    # marked row carries an id absent from `held`, which is what the branch filters on.
     grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant)]
     grants.marked_active = [_a_grant(AccessGrantSource.subscription)]
 
 
 def _registered_slot_spent(identity_row, grants, devicecheck) -> None:
-    # The convertible grant, plus the lifetime registered row D-09(e) refuses it against.
     grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant)]
     grants.grant_of_source = {AccessGrantSource.registered_account_grant}
 

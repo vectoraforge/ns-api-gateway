@@ -6,8 +6,7 @@ from pydantic import BaseModel, Field, SecretStr, field_validator, model_validat
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
 
-# The levels both libraries share: `logging` also admits FATAL, WARN and NOTSET, which
-# `structlog.make_filtering_bound_logger` has no entry for and crashloops the pod at startup.
+# Do not add FATAL, WARN or NOTSET. structlog has no entry for them and the pod crashloops at startup.
 _SUPPORTED_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
 LogLevel = StrEnum("LogLevel", {name: name for name in _SUPPORTED_LEVELS})
 
@@ -58,9 +57,6 @@ class ResilienceConfig(BaseModel):
 
 class JWTConfig(BaseModel):
     project_id: str = Field(description="GCP project ID")
-    # Optional and secret. No request path reads it: the e2e harness alone mints tokens with it,
-    # and that harness already asserts on its own that it is present. A required value would make
-    # every deployment carry a credential it never uses, and a plain `str` renders in any model dump.
     api_key: SecretStr | None = Field(default=None, description="GCP API key, e2e harness only")
     jwks_url: str = Field(default="https://www.googleapis.com/service_accounts/v1/jwk/"
                                   "securetoken@system.gserviceaccount.com")
@@ -86,11 +82,6 @@ class AppStoreConfig(BaseModel):
     app_apple_id: int | None = Field(default=None, description="The app's App Store ID, required in production")
     # No default: a typed member, never free text, because two library values skip signature verification.
     environment: StoreEnvironment | None = Field(default=None, description="The store environment")
-    # `None` rather than a literal path: the vendored root (D-10) lives in the config tree, so its
-    # location is `EnvironmentConfig.config_dir`'s to say. A literal here was resolved against the
-    # process working directory instead, so `CONFIG_DIR=/etc/ns/config/` moved `config.yaml` and
-    # left the certificate behind -- and the route then answered 503 for the life of the deployment
-    # behind a warning that reads exactly like an unconfigured one.
     root_certificate_path: str | None = Field(default=None,
                                               description="Path to the Apple root CA in DER form; "
                                                           "defaults to `config_dir`'s vendored copy")
@@ -107,7 +98,6 @@ class AppStoreConfig(BaseModel):
             return None
         if isinstance(value, int):
             return value
-        # The parse that runs next, not `str.isdigit`, which is true of superscripts `int()` refuses.
         try:
             return int(value)
         except (TypeError, ValueError):
@@ -136,9 +126,6 @@ class GooglePlayConfig(BaseModel):
 
 class OpenAIConfig(BaseModel):
     """The chat provider's credential, named as a field so its absence is this application's error."""
-    # Required and secret, like `DatabaseConfig.password`. Unlike every other credential here it was
-    # ambient: `init_chat_model` read `OPENAI_API_KEY` from the environment itself, so an unset value
-    # crashlooped the pod with an `OpenAIError` naming no setting of this service.
     api_key: SecretStr = Field(description="OpenAI API key")
 
 
@@ -152,12 +139,8 @@ class AppConfig(BaseConfig):
     log_level: LogLevel = Field(default=LogLevel.INFO)  # type: ignore
 
     model: ModelConfig = Field(default_factory=ModelConfig)
-    # Required, for the same reason as `db` and `jwt` below: the process cannot serve a chat
-    # without it, so an absent `OPENAI_API_KEY` must stop boot with a line naming this block.
     openai: OpenAIConfig
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
-    # Required, not `default_factory`: a factory call on a wholly absent block reports the leaf
-    # names with no path -- five `Field required` lines, none of which says "db".
     db: DatabaseConfig
     jwt: JWTConfig
     devicecheck: DeviceCheckConfig = Field(default_factory=DeviceCheckConfig)
@@ -170,7 +153,6 @@ class AppConfig(BaseConfig):
     examples: dict[str, list[str]]
 
 
-#: Apple's vendored root CA (D-10), relative to the config tree that carries it.
 _APPLE_ROOT_CERTIFICATE = Path("certs") / "AppleRootCA-G3.cer"
 
 
@@ -178,8 +160,6 @@ def _mapping(path: Path) -> dict:
     """One YAML document as a mapping, or a failure naming the file that is not one."""
     loaded = yaml.safe_load(path.read_text())
     if not isinstance(loaded, dict):
-        # Unchecked, an empty or all-comments file reaches pydantic as `None` and crashloops the
-        # pod with an error naming neither the file nor the problem.
         raise ValueError(f"{path} does not contain a YAML mapping")
     return loaded
 
@@ -198,8 +178,6 @@ class EnvironmentConfig(BaseConfig):
         prompt_path = self.config_dir / self.prompt_filename
         examples_path = self.config_dir / self.examples_filename
         mapping = _mapping(config_path)
-        # `prompt` and `examples` come from the two sibling files: declaring either in
-        # `config.yaml` reaches the call below as a duplicate keyword and a bare `TypeError`.
         collided = mapping.keys() & {"prompt", "examples"}
         if collided:
             raise ValueError(f"{config_path} declares {sorted(collided)}, which come from "
@@ -208,9 +186,7 @@ class EnvironmentConfig(BaseConfig):
                                     prompt=prompt_path.read_text(),
                                     examples=_mapping(examples_path))
         if self.app_config.app_store.root_certificate_path is None:
-            # Filled after construction, never into `mapping`: a value passed to `AppConfig` is
-            # init_settings and would outrank `APP_STORE_ROOT_CERTIFICATE_PATH`, which is the one
-            # way to point this somewhere other than the config tree.
+            # Set the path after construction. A value in `mapping` outranks APP_STORE_ROOT_CERTIFICATE_PATH.
             self.app_config.app_store.root_certificate_path = str(self.config_dir
                                                                   / _APPLE_ROOT_CERTIFICATE)
         return self

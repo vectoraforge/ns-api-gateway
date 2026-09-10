@@ -72,8 +72,6 @@ EVALUATED_AT = datetime(2026, 6, 1, tzinfo=UTC)
 # The application name the dependency passes in production; the Apple check never reads it.
 PACKAGE_NAME = "com.nativespeaker.app"
 
-# The stages the Play restore read answers with, which are its whole label vocabulary: one per
-# repair, because the client is told only 503 or 403 and the stage is the whole diagnosis.
 GONE_STAGE = "play_token_gone"
 TOKEN_UNUSABLE_STAGE = "play_restore_token_unusable"
 READ_STAGE = "play_restore_read"
@@ -85,8 +83,6 @@ UNPARSEABLE_STAGE = "play_restore_unparseable"
 # The fixed part of the read path, which every caller-supplied value must be measured against.
 PLAY_TOKENS_PATH = f"/androidpublisher/v3/applications/{PACKAGE_NAME}/purchases/subscriptionsv2/tokens/"
 
-# PostgreSQL's `foreign_key_violation`. The two DEFERRABLE INITIALLY DEFERRED entitlement keys are
-# foreign keys, so this -- never `23505` -- is the code COMMIT evaluates them into.
 DEFERRED_KEY_VIOLATION = "23503"
 
 
@@ -132,8 +128,6 @@ class TestTheRealChainVerifiesTheRestoreProof:
         assert restored.product_id == PRODUCT_ID
         assert restored.tier_id == TIER_ID
         assert restored.attribution_token == ATTRIBUTION_TOKEN
-        # WR-66: the two dates are the captured instant's, so the term this module reads about is
-        # the one the module declares and never one the wall clock moved under it.
         assert restored.purchased_at == EVALUATED_AT
         assert restored.expires_at == EVALUATED_AT + timedelta(days=30)
 
@@ -266,7 +260,6 @@ class TestThePlayReadReportsTheRestoreValueType:
         assert restored.tier_id == PLAY_TIER_ID
         assert restored.attribution_token == PLAY_ATTRIBUTION_TOKEN
         assert restored.status is SubscriptionStatus.active
-        # The store's own start date, which the grant writer clamps this term's `starts_at` to.
         assert restored.purchased_at == PURCHASED_AT
         assert restored.expires_at == UNEXPIRED
 
@@ -404,7 +397,6 @@ class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
             await _restore_through(reader)
 
         assert (refusal.value.stage, refusal.value.status) == (TOKEN_UNUSABLE_STAGE, 403)
-        # Its own stage: a support reading of a rejected proof is not the gone token's reading.
         assert refusal.value.stage != GONE_STAGE
 
     @pytest.mark.parametrize("status_code,cause", [(401, "refused"),
@@ -419,7 +411,6 @@ class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
 
         assert refusal.value.stage == READ_STAGE
         assert refusal.value.status == 503
-        # Play's own status never travels; the class this deployment repairs by hand does.
         assert refusal.value.log_fields() == {"stage": READ_STAGE, "cause": cause}
 
     async def test_a_transport_failure_is_temporarily_unavailable(self):
@@ -731,8 +722,6 @@ class TestTheCreateBranchNeverOverwritesARowCommittedSinceItsRead:
             await service.restore(identity=_caller(), provider=PurchaseProvider.apple,
                                   restore_proof="a-signed-transaction")
 
-        # The order is part of the claim: the grant locks come first, so the unique-index slot the
-        # insert holds is never taken ahead of them, and `SubscriptionsService.ingest` agrees.
         assert recorder.calls == ["lock_grants_of", "insert_subscription"]
 
 
@@ -771,8 +760,6 @@ class _GrantRecorder:
                                        last_cross_account_transfer_month=None)
 
     async def read_subscription(self, provider, external_id):
-        # The second call is the re-read under the grant locks, and `populate_existing` refreshes
-        # the same row in place: what a case moves out from under the restore, it moves here.
         self.reads += 1
         if self.reads > 1:
             self._stored.status = self._settled_status
@@ -780,8 +767,6 @@ class _GrantRecorder:
         return self._stored
 
     async def read_purchase(self, provider, external_id):
-        # A row, so the purchase insert is skipped and the grant writer is the one write.
-        # `None` puts the restore on the branch that writes `core.store_purchases` itself.
         if not self._purchase_recorded:
             return None
         return SimpleNamespace(id=uuid4(), resolved_token_value=None)
@@ -853,11 +838,9 @@ class TestTheFirstRestoreOfAnUnrecordedPurchaseWritesItsRow:
         written = recorder.purchases[0]
         assert written["purchase_user_id"] is None
         assert written["resolved_token_value"] is None
-        # NOT NULL, and the store gave a token, so the generated stand-in is not the one written.
         assert written["identity_value"] == ATTRIBUTION_TOKEN
         assert written["external_id"] == ORIGINAL_TRANSACTION_ID
         assert written["store_original_transaction_id"] == ORIGINAL_TRANSACTION_ID
-        # A signed transaction names no per-term id, so this column stays empty on this path.
         assert written["store_transaction_id"] is None
         assert written["provider"] is PurchaseProvider.apple
 
@@ -913,15 +896,12 @@ class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
     async def test_a_deferred_foreign_key_at_commit_is_not_read_as_a_race(self, race_warnings,
                                                                           commit_errors):
         """The cause survives: only the `IntegrityError` names the constraint that refused."""
-        # The deferred keys' own code, carried on the attribute every classifier reads: an exception
-        # whose code lives only in its message states nothing, and passes whatever the arm does.
         session = _CommittingSession(IntegrityError("COMMIT", {}, _Orig(DEFERRED_KEY_VIOLATION)))
 
         with pytest.raises(IntegrityError) as refused:
             await _same_account_restore(EVALUATED_AT - timedelta(days=1), session=session)
 
         assert refused.value.orig.sqlstate == DEFERRED_KEY_VIOLATION
-        # `get_db` rolls back on the way out, so this arm does not spend a rollback of its own.
         assert (session.commits, session.rollbacks) == (1, 0)
         assert race_warnings == []
 
@@ -956,7 +936,6 @@ class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
         with pytest.raises(InternalError):
             await _same_account_restore(EVALUATED_AT - timedelta(days=1), session=session)
 
-        # The winner's rows are what a retry reads, so the refused transaction is rolled back first.
         assert (session.commits, session.rollbacks) == (1, 1)
         assert race_warnings == [("restore_grant_race_lost", {"provider": "apple"})]
         assert commit_errors == []
@@ -1028,7 +1007,6 @@ class TestTheRestoredGrantNeverBeginsAfterTheInstantThatWroteIt:
         assert granted["starts_at"] == EVALUATED_AT
 
 
-# The window the webhook recorded when it wrote `grace_period`, which no client proof can restate.
 GRACE_WINDOW_ENDS = EVALUATED_AT + timedelta(days=14)
 
 
@@ -1038,7 +1016,6 @@ class _GraceRecorder(_GrantRecorder):
 
     def __init__(self, destination, ends_at: datetime | None) -> None:
         super().__init__(destination, SubscriptionStatus.grace_period)
-        # The row the webhook left: the pre-lock read and the read under the locks agree on it.
         self._stored.status = SubscriptionStatus.grace_period
         self._locked = ([] if ends_at is None
                         else [SimpleNamespace(source=AccessGrantSource.subscription,
@@ -1063,10 +1040,7 @@ async def _grace_restore(ends_at: datetime | None) -> tuple[_GraceRecorder, _Com
                                  attribution_token=ATTRIBUTION_TOKEN,
                                  status=SubscriptionStatus.expired,
                                  purchased_at=EVALUATED_AT - timedelta(days=31),
-                                 # The paid term, lapsed: what put the subscription into grace.
                                  expires_at=EVALUATED_AT - timedelta(days=1),
-                                 # Apple's grace window lives in the renewal payload, and a bare
-                                 # signed transaction carries none, so this is never anything else.
                                  grace_period_expires_at=None)
     service = _service(session, _ScriptedAppStore(session, proof))
     service.subscriptions_db = recorder
@@ -1103,13 +1077,11 @@ class _UnownedRecorder(_GrantRecorder):
         super().__init__(destination)
         self._stored.user_id = None
         self._claim_wins = claim_wins
-        # What the re-read after the rollback finds, which is what the winner left behind.
         self._winner_owner = winner_owner
         self.claims: list[dict] = []
 
     async def claim_subscription_owner(self, **fields) -> bool:
         self.claims.append(fields)
-        # The statement writes the owner it matched on, and zero rows means the winner wrote theirs.
         self._stored.user_id = fields["destination"] if self._claim_wins else self._winner_owner
         return self._claim_wins
 

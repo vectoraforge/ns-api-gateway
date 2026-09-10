@@ -24,9 +24,6 @@ FOLLOWUP = {"message": "Can you explain more?"}
 QUOTA_ROUTES = [("/chats", PHRASE), ("/chats/{chat_id}", FOLLOWUP)]
 QUOTA_ROUTE_IDS = ["create_chat", "send_message"]
 
-# The other six routes, each with the status that proves the route itself ran: a request rejected
-# before the handler charges nothing for the wrong reason, and would leave this case green.
-# GET/DELETE on an unknown chat id answer 404, which is irrelevant to the counter.
 UNCHARGED_ROUTES = [("GET", "/", 200),
                     ("GET", "/health/ready", 200),
                     ("GET", "/examples?lang=en", 200),
@@ -60,8 +57,6 @@ class TestNoEffectiveGrant:
         """The 429 is the shared `{code: ...}` shape -- not a 500, and not a bespoke payload."""
         response = await async_client.post(path.format(chat_id=own_chat), json=body)
 
-        # WR-84: the status and the code, not the key list alone. A 500 `{"code": "internal_error"}`
-        # -- the very body this docstring rules out -- has the same one key and passed here.
         assert response.status_code == 429, response.text
         assert response.json() == {"code": "quota_exceeded"}
 
@@ -143,7 +138,6 @@ class TestTheOtherSixRoutesConsumeNothing:
 
         response = await async_client.request(method, path)
 
-        # The handler must have run: a 422 or a 403 spends nothing for a reason this case is not about.
         assert response.status_code == expected, response.text
         assert [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)] == [0]
 
@@ -170,8 +164,6 @@ class TestTheAllowanceIsSpent:
 
         response = await async_client.post("/chats", json=PHRASE)
 
-        # WR-90: the status the case is about. Any non-charging failure -- a 401 at the barrier, a
-        # 500 from the fail-closed usage branch -- leaves the counter here too.
         assert response.status_code == 429, response.text
         assert response.json()["code"] == "quota_exceeded"
         rows = await usage_rows(_db_transaction, grant.id)
@@ -228,7 +220,6 @@ class TestAGrantWithNoUsageRow:
 
         response = await async_client.post("/chats", json=PHRASE)
 
-        # WR-90: as above -- an empty usage table is also what a 401 or a 422 leaves behind.
         assert response.status_code == 500, response.text
         assert await usage_rows(_db_transaction, grant.id) == []
 
@@ -301,12 +292,8 @@ class TestACorrectPhraseIsServedAndCharged:
 
         assert response.status_code == 200, response.text
         content = response.json()["content"]
-        # The two keys and their type, never the verdict: whether the model reports an issue for a
-        # correct sentence is the provider's decision at temperature 0.3, and the 500 this case is
-        # named for was a missing key, not a non-empty list.
         assert isinstance(content["issues"], list)
         assert isinstance(content["suggestions"], list)
-        # Charged, as the class says: that half is this repository's, not the provider's.
         assert [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)] == [1]
 
 

@@ -10,16 +10,6 @@ from nativespeaker.api import auth as auth_package
 AUTH_PACKAGE = Path(auth_package.__file__).parent
 
 # What it measures now: modules, classes, functions.
-# 65: `store_notifications.term_end_for`, the one spelling of the term both write paths read.
-# 66, 67: the two `__post_init__` coercions that make the declared `status` type true, so the
-# identity and value comparisons its readers use cannot answer one field two ways.
-# 68: `StoreNotificationVerifier.verify_transaction`, the second member `RestoreService` calls of
-# the seam it is now annotated against, so a double that omits it is a type error rather than an
-# `AttributeError` inside a handler.
-# 25, 69: `google_play.CappedRefreshRequest` and its `__call__`, which cap the credential refresh
-# at the module's own timeout instead of google-auth's 120-second default (44 WR-01).
-# 70: `PlayDeveloperSubscriptions._credential_in_hand`, the lazy rebuild that keeps a metadata
-# server blip at boot from disabling the Play read for the pod's whole life (45 WR-51).
 CURRENT = (8, 25, 70)
 
 

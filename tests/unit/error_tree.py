@@ -10,12 +10,9 @@ from nativespeaker.api.errors import AppError, ErrorCode, _family
 
 _TESTS_ROOT = Path(__file__).resolve().parent.parent
 
-# `subprocess.run` inherits `os.environ` but not pytest's own `sys.path` insertions.
 _SUBPROCESS_PATH = os.pathsep.join(
     entry for entry in (str(_TESTS_ROOT), os.environ.get("PYTHONPATH")) if entry)
 
-#: Generous, because the child imports the whole app; a hung child must still name a failing case
-#: rather than block the session until CI kills the job with nothing reported.
 SUBPROCESS_TIMEOUT_SECONDS = 120
 
 

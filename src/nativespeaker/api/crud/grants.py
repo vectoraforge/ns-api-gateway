@@ -70,7 +70,6 @@ def _grants_of_source_statement(user_id: UUID, source: AccessGrantSource):
 
 def _prior_subscription_grant_statement(subscription_id: UUID):
     """Every grant ever written for one subscription, in any status."""
-    # No status predicate: an expired term is what proves this subscription already had its grant.
     return select(AccessGrant).where(col(AccessGrant.subscription_id) == subscription_id)
 
 
@@ -101,9 +100,7 @@ class GrantsDB:
                                     evaluated_at: datetime) -> list[AccessGrant]:
         """Lock and return every effective grant for `user_id` at `evaluated_at`, ascending by id."""
         # No eager-loading option here: Postgres rejects FOR UPDATE combined with the join those emit.
-        # `populate_existing` for the reason `SubscriptionsDB.read_subscription` gives: without it a
-        # row already in this session's identity map is answered with the values the earlier read
-        # saw, so the revalidation under the lock decides on a snapshot a rival has already replaced.
+        # populate_existing reads the row again, because the identity map holds the old values.
         statement = (_effective_grants_statement(user_id, evaluated_at)
                      .with_for_update().execution_options(populate_existing=True))
         return list((await self.session.exec(statement)).all())
@@ -117,7 +114,6 @@ class GrantsDB:
     async def lock_active_grants(self, user_id: UUID) -> list[AccessGrant]:
         """Lock and return every grant of `user_id` the one-active index sees, ascending by id."""
         # No eager-loading option here: Postgres rejects FOR UPDATE combined with the join those emit.
-        # `populate_existing` for the reason `lock_effective_grants` gives above.
         statement = (_active_grants_statement(user_id)
                      .with_for_update().execution_options(populate_existing=True))
         return list((await self.session.exec(statement)).all())
@@ -125,7 +121,6 @@ class GrantsDB:
     async def lock_active_grants_of(self, user_ids: list[UUID]) -> list[AccessGrant]:
         """Lock and return every grant of `user_ids` the one-active index sees, ascending by id."""
         # No eager-loading option here: Postgres rejects FOR UPDATE combined with the join those emit.
-        # `populate_existing` for the reason `lock_effective_grants` gives above.
         statement = (_active_grants_of_statement(user_ids)
                      .with_for_update().execution_options(populate_existing=True))
         return list((await self.session.exec(statement)).all())
@@ -141,15 +136,12 @@ class GrantsDB:
 
     async def lock_usage(self, grant_id: UUID) -> UserMonthlyUsage | None:
         """Lock and return `grant_id`'s usage row, or `None`. Second in the lock order and never first."""
-        # `populate_existing` for the reason `lock_effective_grants` gives above.
         statement = (_usage_statement(grant_id)
                      .with_for_update().execution_options(populate_existing=True))
         return (await self.session.exec(statement)).first()
 
     async def read_usage(self, grant_id: UUID) -> UserMonthlyUsage | None:
         """Return `grant_id`'s usage row, or `None`, taking no lock."""
-        # `populate_existing` for the same reason: `write_subscription_grant` reads `monthly_used`
-        # through this to decide what the new grant carries, and the row is usually already loaded.
         statement = _usage_statement(grant_id).execution_options(populate_existing=True)
         return (await self.session.exec(statement)).first()
 
@@ -168,28 +160,18 @@ class GrantsDB:
 
     async def activate_anonymous_device_grant(self, *,
                                               user_id: UUID,
-                                              # The verified pair only, never the barrier's row: that
-                                              # one is detached, and `stored` below is what every test
-                                              # and every mutation here reads.
                                               issuer: str,
                                               subject: str,
-                                              # The platform whose attestation this caller actually
-                                              # ran, never a constant: 06 step 7 refuses an Android
-                                              # claim recorded as an Apple one as a workaround.
                                               claim_platform: NativeClaimProvider,
                                               tier_id: str,
                                               evaluated_at: datetime
                                               ) -> tuple[ActivationOutcome, str | None]:
         """Take both lock tiers, then write the grant, its usage row and the identity marker.
         The second member names the arm that refused, and is `None` on every other outcome."""
-        # First and ascending by id: this set contains the effective one, so one grant-tier order holds.
         marked_active = await self.lock_active_grants(user_id)
         grants = await self.lock_effective_grants(user_id, evaluated_at)
         for grant in grants:
             if await self.lock_usage(grant.id) is None:
-                # Fail closed, never mint, exactly as the registered sibling and `lock_grants_of` do:
-                # `None` is a grant whose usage row was never written, and tolerating it here reports
-                # the breakage from a later request against some other grant id.
                 raise MissingUsageRowError(grant.id)
 
         # A plain re-read, never `lock_identity_and_user`: a user-row lock ahead of the grant locks is forbidden.
@@ -198,9 +180,6 @@ class GrantsDB:
             return ActivationOutcome.refused, "identity_not_anonymous"
         if (stored.native_claim_platform is not None
                 and stored.native_claim_platform is not claim_platform):
-            # 06 step 7: the platform is pinned at the identity's first verified attestation, and
-            # material from the other platform is refused thereafter. Read before any mutation, so
-            # a refusal leaves the session with nothing pending.
             return ActivationOutcome.refused, "platform_pinned_to_another"
         if len(grants) > 1:
             # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
@@ -209,7 +188,6 @@ class GrantsDB:
             # The repeat under the lock, and the only branch here whose row is there to be read back.
             return ActivationOutcome.lost_race, None
         if grants or marked_active or stored.free_grant_consumed_at is not None:
-            # `marked_active` and not `grants` alone: a row this window cannot see still refuses the insert below.
             return ActivationOutcome.refused, "active_grant_or_spent_slot"
         if await self.has_prior_free_grant(user_id):
             # No conversion exists on this route, so no loser lands here and nothing is left to re-read.
@@ -229,8 +207,6 @@ class GrantsDB:
                                           updated_at=evaluated_at))
         stored.free_grant_consumed_at = evaluated_at
         if stored.native_claim_platform is None:
-            # Set where unset: the pin is the record of the first attestation, and the guard above
-            # is what refuses a later claim from the other platform rather than restamping it.
             stored.native_claim_platform = claim_platform
         stored.updated_at = evaluated_at
 
@@ -247,8 +223,6 @@ class GrantsDB:
 
     async def activate_registered_account_grant(self, *,
                                                 user_id: UUID,
-                                                # The verified pair only, for the reason the anonymous
-                                                # writer above gives: the barrier's row is detached.
                                                 issuer: str,
                                                 subject: str,
                                                 tier_id: str,
@@ -271,8 +245,6 @@ class GrantsDB:
             return ActivationOutcome.refused, "identity_not_registered"
 
         if len(grants) > 1:
-            # A tripwire, not a recovery branch: read before the source tests below, which would
-            # otherwise rank sources against each other. A partial unique index makes it unreachable.
             raise MultipleEffectiveGrantsError(len(grants), user_id)
 
         held = [grant.source for grant in grants]
@@ -287,15 +259,9 @@ class GrantsDB:
             return ActivationOutcome.refused, "unseen_active_grant"
         # History by source and status, never `free_grant_consumed_at`, which the conversion already carries.
         if superseded is None and await self.has_prior_free_grant(user_id):
-            # `_prior_free_grant_statement` carries no status predicate, so this state is reached
-            # with no concurrency at all: an anonymous grant a subscription expired, whose own term
-            # then lapsed, leaves the account holding nothing and its lifetime slot spent.
             if await self.holds_grant_of_source(user_id,
                                                 AccessGrantSource.registered_account_grant):
-                # The conversion race loser: a row this window did not see, and the one row the
-                # caller's re-read can answer with.
                 return ActivationOutcome.lost_race, None
-            # The spent slot: nothing took a locked row away, so there is no winner's row to re-read.
             return ActivationOutcome.refused, "spent_slot_without_a_registered_grant"
         # The lifetime index's own question, which one revoked registered row is enough to answer.
         if await self.holds_grant_of_source(user_id, AccessGrantSource.registered_account_grant):
@@ -305,9 +271,6 @@ class GrantsDB:
         if superseded is not None:
             carried = locked_usage.get(superseded.id)
             if carried is None:
-                # Fail closed, never mint: a grant with no usage row is a failed write, and reading
-                # it as a fresh allowance hands the account free credits. `carried is None` below
-                # means "no superseded grant" alone, which is the only case it is correct for.
                 raise MissingUsageRowError(superseded.id)
             superseded.status = AccessGrantStatus.expired
             superseded.ends_at = evaluated_at
@@ -329,8 +292,6 @@ class GrantsDB:
                                 created_at=evaluated_at,
                                 updated_at=evaluated_at)
         self.session.add(activated)
-        # Carried unclamped, which `test_constraints.py::TestTheTierSizingInvariantTheConversionRelisOn`
-        # is what holds: the registered allowance is read off the applied seed and never the smaller one.
         self.session.add(UserMonthlyUsage(
             grant_id=activated.id,
             monthly_period=(monthly_period_for(evaluated_at) if carried is None

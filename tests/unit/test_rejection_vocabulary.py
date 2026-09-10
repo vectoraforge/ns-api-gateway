@@ -89,7 +89,6 @@ EVENT_NAMES = frozenset({
     "unknown_tier_error",
     "missing_purchase_token_error",
     "unmapped_store_product",
-    # WR-03: the Apple adapter holds no logger, so this class carries the line for it.
     "unknown_store_subscription_status",
     "attribution_conflict",
     "queue_full_error",

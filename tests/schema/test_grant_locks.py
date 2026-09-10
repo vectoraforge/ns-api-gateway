@@ -43,7 +43,6 @@ pytestmark = pytest.mark.schema
 
 def _issuable(statement) -> str:
     """One production statement as the literal SQL a raw asyncpg connection can issue."""
-    # `literal_binds`, because a raw connection carries none of the session's bound values.
     return str(statement.compile(dialect=postgresql.asyncpg.dialect(),
                                  compile_kwargs={"literal_binds": True}))
 
@@ -66,14 +65,9 @@ class TestTheIssuedStatementsAreProductionsOwn:
     def test_the_grant_lock_carries_the_lock_the_order_and_no_cap(self):
         issued = _lock_grants(uuid.uuid4())
 
-        # The lock and its order are the whole subject of the cases below: dropped or reversed in
-        # production, the deadlock case would deadlock nothing and still pass.
         assert "FOR UPDATE" in issued
         assert "ORDER BY core.access_grants.id ASC" in issued
-        # No cap: a second effective grant must reach the caller rather than be picked over, and a
-        # LIMIT 1 would also shrink the lock the statement takes to one row.
         assert "LIMIT" not in issued
-        # The four terms of the shared effective predicate, so a narrowed or widened one fails here.
         for term in ("core.access_grants.user_id = ",
                      "core.access_grants.status = ",
                      "core.access_grants.starts_at <= ",
@@ -85,7 +79,6 @@ class TestTheIssuedStatementsAreProductionsOwn:
         issued = _lock_usage(uuid.uuid4())
 
         assert "FOR UPDATE" in issued
-        # Keyed on the whole primary key, which is what makes it the second lock and not a range.
         assert "core.user_monthly_usage.grant_id = " in issued
 
 
@@ -95,7 +88,6 @@ _WAIT = "5s"
 # Short on purpose: the blocking cases assert a lock is NOT available, so the timeout is their instrument.
 _NO_WAIT = "500ms"
 
-# How long A keeps the fixed-order locks before releasing them, in the no-deadlock control.
 _A_HOLDS_FOR_SECONDS = 0.2
 
 
@@ -253,8 +245,6 @@ class TestTheLockOrderIsLoadBearing:
                 f"the fixed order must not deadlock or time out, got {outcomes}"
             asked_at, acquired_at, rows = outcomes[0]
             assert released_at is not None, "A never reached its release, so B waited on nothing"
-            # Measured against A's own release rather than a fixed margin: B asked while A still
-            # held the row and got it only afterwards, however late the loop got round to either.
             assert asked_at < released_at < acquired_at, \
                 (f"B did not block on A's grant lock: asked at {asked_at:.3f}, "
                  f"A released at {released_at:.3f}, B acquired at {acquired_at:.3f}")
@@ -283,12 +273,8 @@ PINNED_SEARCH_PATH = '"$user", public'
 
 _SOURCE_LITERAL = re.compile(r"'([a-z_]+)'::core\.access_grant_source")
 
-# Every row-lock spelling, not the one literal: `FOR NO KEY UPDATE` and `FOR SHARE` lock a row too,
-# and a substring test for "FOR UPDATE" drops a third tier taken with either from the count entirely.
 _LOCK_CLAUSE = re.compile(r"FOR (?:NO KEY )?UPDATE|FOR (?:KEY )?SHARE")
 
-# Every relation a statement draws rows from, not the first: `FROM core.access_grants JOIN
-# core.external_identities ... FOR UPDATE` locks both, and reading only the first hides the second.
 _RELATIONS = re.compile(r"\b(?:FROM|JOIN|,)\s+((?:core|audit)\.[a-z_]+)")
 
 
@@ -299,8 +285,7 @@ def locking(statements: list[str]) -> list[str]:
 
 def relations_of(statement: str) -> list[str]:
     """Every core or audit relation a statement draws rows from, which for a lock is the tiers it takes."""
-    # The whole statement where none matched, so an unreadable one fails the assertion loudly
-    # instead of contributing an empty list that every membership check passes.
+    # An unreadable statement returns itself, so the assertion fails and no empty list passes.
     return sorted(set(_RELATIONS.findall(statement))) or [statement]
 
 
@@ -336,8 +321,6 @@ def writes(statements: list[str]) -> list[str]:
 
 def plain_identity_re_reads(statements: list[str]) -> list[str]:
     """Every non-locking SELECT of the identity row, which is the revalidation each writer owes."""
-    # A SELECT, because a writer that marks the identity row emits an UPDATE naming the same relation,
-    # and a filter without this clause counts that UPDATE as a second re-read on every writing arm.
     return [statement for statement in statements
             if statement.startswith("SELECT") and "core.external_identities" in statement
             and "FOR UPDATE" not in statement]
@@ -363,7 +346,6 @@ async def _anonymous_writer_run(schema_db_uri: str, *, holding_grant: bool):
         user_id = await insert_user(setup)
         tier_id = await insert_tier(setup)
         if holding_grant:
-            # A held `manual` grant with its usage row, so both tiers have a real row to lock and to order.
             grant_id = await insert_grant(setup, user_id=user_id, tier_id=tier_id, source="manual")
             await insert_usage(setup, grant_id=grant_id)
         await setup.execute(
@@ -432,12 +414,9 @@ class TestTheActivationAddsNoThirdLockTier:
     async def test_the_writer_locks_the_grant_rows_then_their_usage_rows(self, activation_statements):
         """The ORDER BY is the lock order itself, not presentation, so it is asserted with the tier."""
         taken = locking(activation_statements["statements"])
-        # Two grant-tier reads, the one-active set first: it contains the effective subset the
-        # second one takes, so one grant-tier order holds across both.
         assert [relations_of(statement) for statement in taken] == [["core.access_grants"],
                                                                     ["core.access_grants"],
                                                                     ["core.user_monthly_usage"]]
-        # Every grant-tier read, not the first alone: an unordered second one is a second order.
         for statement in taken[:2]:
             assert "ORDER BY core.access_grants.id ASC" in statement
 
@@ -466,13 +445,11 @@ class TestTheActivationAddsNoThirdLockTier:
         """The arm the held-grant fixture never reaches: it inserts the grant, its usage row and the
         identity marker, and a third tier taken on that path is the SHARED-INVARIANTS:33 breach."""
         locked = locking(anonymous_activated_statements["statements"])
-        # A clean account holds nothing in either tier, so `FOR UPDATE` locks no row and the indexes arbitrate.
         assert [relations_of(statement) for statement in locked] == [["core.access_grants"],
                                                                      ["core.access_grants"]]
         taken = [relation for statement in locked for relation in relations_of(statement)]
         assert "core.external_identities" not in taken
         assert "core.users" not in taken
-        # Every grant-tier read, not the first alone: an unordered second one is a second order.
         for statement in locked[:2]:
             assert "ORDER BY core.access_grants.id ASC" in statement
 
@@ -480,9 +457,6 @@ class TestTheActivationAddsNoThirdLockTier:
             self, anonymous_activated_statements):
         """The control the refused arm cannot give: this arm provably wrote, so the count is not vacuous."""
         assert_one_plain_identity_re_read(anonymous_activated_statements)
-
-
-# The registered writer, whose two destinations are captured on the same terms as the anonymous one above.
 
 
 def first_index(statements: list[str], prefix: str) -> int:
@@ -579,7 +553,6 @@ class TestTheRegisteredWriterAddsNoThirdLockTier:
         assert [relations_of(statement) for statement in taken] == [["core.access_grants"],
                                                                     ["core.access_grants"],
                                                                     ["core.user_monthly_usage"]]
-        # Every grant-tier read, not the first alone: an unordered second one is a second order.
         for statement in taken[:2]:
             assert "ORDER BY core.access_grants.id ASC" in statement
 
@@ -601,7 +574,6 @@ class TestTheRegisteredWriterAddsNoThirdLockTier:
         taken = [relation for statement in locked for relation in relations_of(statement)]
         assert "core.external_identities" not in taken
         assert "core.users" not in taken
-        # Every grant-tier read, not the first alone: an unordered second one is a second order.
         for statement in locked[:2]:
             assert "ORDER BY core.access_grants.id ASC" in statement
 
@@ -708,7 +680,6 @@ async def _account_holding(schema_db_uri: str, rows: tuple[_Row, ...],
     try:
         user_id = await insert_user(setup)
         tier_id = await insert_tier(setup)
-        # NULL for anonymous and a value for every other provider, which is the table's own CHECK.
         provider_uid = None if provider == "anonymous" else f"{provider}-uid-{subject}"
         await setup.execute(
             "INSERT INTO core.external_identities "
@@ -982,8 +953,6 @@ class TestTheSubscriptionWriterAddsNoThirdLockTier:
                                                                             ingestion_statements):
         """The ORDER BY is the lock order itself, not presentation, so it is asserted with the tier."""
         taken = locking(ingestion_statements["statements"])
-        # One grant-tier read: the whole one-active set, which is the set `write_subscription_grant`
-        # supersedes, so the usage tier behind it covers every row this writer touches.
         assert [relations_of(statement) for statement in taken] == [["core.access_grants"],
                                                                     ["core.user_monthly_usage"]]
         assert "ORDER BY core.access_grants.id ASC" in taken[0]
@@ -1008,9 +977,6 @@ class TestTheSubscriptionWriterAddsNoThirdLockTier:
         assert writes(unattributed_statements["statements"])
 
 
-# The restore, captured on the same terms as the four above and never from a mirrored literal.
-
-
 @contextlib.asynccontextmanager
 async def _restore_move_run(schema_db_uri: str):
     """Drive RestoreService.restore once for a move, recording every statement the writer issues.
@@ -1023,8 +989,6 @@ async def _restore_move_run(schema_db_uri: str):
         external_id = f"restore-locks-{uuid.uuid4().hex[:12]}"
         subscription_id = await insert_subscription(setup, external_id=external_id,
                                                     tier_id=tier_id, user_id=old_owner)
-        # One held grant with its usage row in each account, so both tiers have a real row to take
-        # and the usage tier below is counted per grant rather than per account.
         for user_id, source, names in ((old_owner, "subscription", subscription_id),
                                        (destination, "manual", None)):
             grant_id = await insert_grant(setup, user_id=user_id, tier_id=tier_id, source=source,
@@ -1055,11 +1019,9 @@ async def _restore_move_run(schema_db_uri: str):
     factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
     try:
         async with factory() as session:
-            # Everything above is setup; only what the restore itself issues is this fixture's subject.
             recorded.clear()
             await RestoreService(db=session, evaluated_at=evaluated_at,
                                  app_store=_ScriptedAppStore(proof),
-                                 # Never read: this run names the Apple store.
                                  play=None,
                                  package_name="com.nativespeaker.app").restore(
                                      identity_of(destination), PurchaseProvider.apple,
@@ -1096,7 +1058,6 @@ class TestTheRestoreLocksBothAccountsInOneAscendingStatement:
         assert [relations_of(statement) for statement in taken] == [["core.access_grants"],
                                                                     ["core.user_monthly_usage"],
                                                                     ["core.user_monthly_usage"]]
-        # The ORDER BY is the lock order itself, not presentation, so it is asserted with the tier.
         assert "ORDER BY core.access_grants.id ASC" in taken[0]
 
     async def test_both_accounts_grant_rows_are_taken_in_one_statement(self, move_statements):

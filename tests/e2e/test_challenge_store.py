@@ -25,8 +25,6 @@ SUBJECT = "challenge-store-subject"
 CONTENDERS = 8
 
 
-# Module-scoped because `_contended_challenge` below is class-scoped and cannot depend on anything
-# narrower; the value is one attribute of the module-scoped lifespan, so every case still sees it.
 @pytest.fixture(scope="module")
 def store(_app_lifespan):
     """The store the real lifespan constructed, so the wiring is exercised."""
@@ -72,24 +70,16 @@ async def row_count(factory) -> int:
                        col(ExternalIdentity.issuer) == ISSUER)))
 
 
-# WR-85: `scope`, not just `loop_scope`. `loop_scope` names the event loop only, so `scope` stayed
-# `function` and the eight-way race ran once per case -- three independent races, of which
-# `test_no_contender_raised` judged its own and never the one the two cases below inspect. It also
-# built three eight-connection engines against the shared PostgreSQL where one was intended.
 @pytest_asyncio.fixture(scope="class", loop_scope="module")
 async def _contended_challenge(_app_lifespan, store):
     """One committed challenge and CONTENDERS connections from a second engine, since the shared one is serial."""
     config = _app_lifespan.state.config
     engine = create_async_engine(config.db.url, pool_size=CONTENDERS + 2, max_overflow=0)
     factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
-    # WR-91: the `try` opens where the engine starts existing, not at the `yield`. `issue` commits a
-    # row and the gather holds ten connections against `max_overflow=0`, so a raise before the
-    # `yield` used to leave both behind -- and the undisposed pool then fails unrelated modules.
     try:
         now = datetime.now(UTC)
         handle, _ = await issue(factory, store, now=now)
 
-        # Each contender checks a connection out and then waits, so the barrier releases eight live transactions.
         barrier = asyncio.Barrier(CONTENDERS)
 
         async def contend() -> bool:
@@ -104,9 +94,6 @@ async def _contended_challenge(_app_lifespan, store):
                                        return_exceptions=True)
         yield handle, results, factory
     finally:
-        # These rows are committed, so they outlive the per-test transaction and must be removed
-        # here. Keyed on this module's issuer rather than on `handle`: a run interrupted before this
-        # block leaves its row behind for good, and the next run is what has to sweep it.
         async with factory() as session:
             await session.exec(delete(AuthChallenge)  # ty: ignore[invalid-argument-type]
                                .where(col(AuthChallenge.preauth_issuer) == ISSUER))

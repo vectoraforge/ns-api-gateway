@@ -23,9 +23,6 @@ KNOWN_KID = "test-key-1"
 FETCH_DELAY = 0.4
 HEARTBEAT_INTERVAL = 0.01
 
-# The share of the ideal tick count an unstarved loop must still deliver. Derived from the window
-# each case actually observed rather than pinned as an integer: `asyncio.sleep` drifts on an
-# oversubscribed runner, and this is the one wall-clock-dependent measurement in the suite.
 UNSTARVED_TICK_FRACTION = 0.1
 
 
@@ -190,8 +187,6 @@ async def test_the_harness_detects_a_starved_loop(verifier, transport):
     assert claims is None and reason is not None
     assert finished - started >= FETCH_DELAY
     ticks = heartbeat.ticks_between(started, finished)
-    # Kept absolute: load pushes a starved count down, never up, so this bound cannot go flaky --
-    # and it must stay under the case above's floor for the two to partition the outcome.
     assert ticks <= 2, f"the harness cannot register a starved loop: it counted {ticks} ticks"
     assert ticks < heartbeat.unstarved_floor(started, finished), \
         "the starved bound and the unstarved floor overlap, so neither case discriminates"
@@ -210,8 +205,6 @@ async def test_a_credential_less_request_never_reaches_the_jwks_transport(probe_
 
 def unusable_jwks_bodies() -> dict[str, bytes]:
     """The three reachable-endpoint failures, each measured against PyJWT rather than assumed."""
-    # `PyJWKClientError` for the middle two; the first is a bare `json.JSONDecodeError`, because
-    # `fetch_data` converts `URLError` and `TimeoutError` alone. All three are one outage to a fleet.
     key = RSAAlgorithm(RSAAlgorithm.SHA256).prepare_key(PUBLIC_KEY_PEM)
     encryption_only = dict(json.loads(RSAAlgorithm.to_jwk(key)), kid=KNOWN_KID, use="enc", alg="RS256")
     return {"an error page served at 200": b"<html>502 Bad Gateway</html>",
@@ -236,7 +229,6 @@ class TestAnOutageNamesItselfInTheOperatorLog:
 
         claims, reason = verifier.verify(make_token("u", headers={"kid": "unrecognised-outage"}))
 
-        # The label and the body must not move: an outage is not a client-visible condition.
         assert claims is None and reason is BoundedReason.bad_signature
         assert errors == ["jwks_endpoint_unusable"]
 

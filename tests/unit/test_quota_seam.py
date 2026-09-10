@@ -388,8 +388,6 @@ class TestNoConnectionIsHeldAcrossTheProviderCall:
 
         await service.create_chat(phrase=PHRASE, user_id=TEST_USER_ID, lang="en")
 
-        # The trailing commit is WR-51's: the credit is already spent when this returns, so the
-        # chat rows are made durable by the service, which is the only path that commits them.
         assert events == ["request_committed", "session_opened", "session_committed",
                           "session_closed", "provider_called", "request_committed"]
 
@@ -448,7 +446,6 @@ class TestAdmissionCannotBeBypassed:
             await policy.ainvoke(operation, Admitted(object()))
 
         assert calls == 0
-        # The control on the assertion above: a refusal that had taken a slot would read the same.
         assert policy._gate._slots.qsize() == free_slots
 
     async def test_admission_mints_the_only_token_the_gate_accounts_for(self):
@@ -567,14 +564,12 @@ class TestNoRequestThatNeverReachedTheProviderIsBilled:
             service.create_chat(phrase=PHRASE, user_id=TEST_USER_ID, lang="en"))
         await _settle()
 
-        # Charged, and now waiting for a permit. Every other caller trips the breaker meanwhile.
         assert (usage.monthly_used, llm.calls) == (1, 0)
         llm.policy._circuit_breaker._opened_at = time.monotonic()
 
         semaphore.release()
         await request
 
-        # The spent credit bought a provider call, not a 503 with nothing behind it.
         assert llm.calls == 1
         assert usage.monthly_used == 1
 

@@ -10,8 +10,6 @@ from schema.helpers import insert_grant, insert_user
 
 pytestmark = pytest.mark.schema
 
-# Its own scratch database so the rollback proof cannot disturb the session fixture's, and
-# per-session for the reason `SCHEMA_TEST_DB` gives: this one is force-dropped too.
 ROLLBACK_TEST_DB = f"ns_schema_test_rollback_{os.getpid()}"
 
 NAMESPACES = "SELECT count(*) FROM pg_namespace WHERE nspname IN ('core', 'audit')"
@@ -115,8 +113,6 @@ class TestHarnessIsolation:
         finally:
             await observer.close()
 
-        # The premise: the row is there on this connection, so the zero above is isolation and
-        # never a mistyped id.
         assert await conn.fetchval("SELECT count(*) FROM core.access_grants WHERE id = $1",
                                    grant_id) == 1
         assert seen == 0, "a seeded row was visible outside its own transaction"

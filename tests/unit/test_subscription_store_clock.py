@@ -20,7 +20,6 @@ T2 = T1 + timedelta(minutes=5)
 
 NOTIFICATION_UUID = "notification-uuid-under-test"
 
-# The whole difference between a locking and a non-locking read, as PostgreSQL receives it.
 LOCK_CLAUSE = " FOR UPDATE"
 
 
@@ -28,7 +27,6 @@ class _StubResult:
 
     def __init__(self, row, rowcount: int):
         self._row = row
-        # The conditional owner update answers with a row count and nothing else.
         self.rowcount = rowcount
 
     def first(self):
@@ -40,7 +38,6 @@ class _StubSession:
 
     def __init__(self, stored: Subscription | None, claimed: bool = True):
         self._stored = stored
-        # What the conditional owner update finds: one row, or none because a restore won it.
         self._claimed = claimed
         self.flushes = 0
         self.added: list = []
@@ -89,7 +86,6 @@ async def _upsert(stored: Subscription, *, signed_at: datetime | None,
         tier_id=tier_id,
         status=status,
         signed_at=signed_at,
-        # The clock the service's out-of-order guard decided on, as `ingest` passes it.
         clock_read=stored.store_signed_at,
         evaluated_at=T2)
 
@@ -154,7 +150,6 @@ async def _adopt(*, claimed: bool) -> tuple[Subscription, WriteOutcome, _StubSes
         tier_id=PAID_TIER_ID,
         status=SubscriptionStatus.active,
         signed_at=T2,
-        # The clock the service's out-of-order guard decided on, as `ingest` passes it.
         clock_read=T1,
         evaluated_at=T2)
     return row, outcome, session
@@ -185,7 +180,6 @@ class TestAnUnownedRowIsTakenConditionally:
         row, outcome, session = await _adopt(claimed=False)
 
         assert outcome is WriteOutcome.lost_race
-        # Nothing after the refused claim ran: no flush, and the owner is left as it was read.
         assert (session.flushes, row.user_id) == (0, None)
 
 
@@ -242,7 +236,6 @@ class TestTheCanonicalRowIsTakenOnTheClockItWasReadAt:
         row, outcome, session = await _write_over(_stored(T1), clock_read=T1, claimed=False)
 
         assert outcome is WriteOutcome.lost_race
-        # Nothing after the refused take ran: no flush, and the state is left as it was read.
         assert (session.flushes, row.status) == (0, SubscriptionStatus.active)
 
     async def test_a_delivery_that_records_nothing_takes_the_row_at_all_control(self):

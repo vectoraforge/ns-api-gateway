@@ -84,7 +84,6 @@ class CountingRevoker:
 # Every revocation answer the policy must not retry: a confirmation and three terminal rejections.
 REVOCATION_DEFINITIVE = [
     (None, "a confirmed revocation"),
-    # WR-29: a vanished account is a definitive non-confirmation, never a bad credential.
     (RevocationUnconfirmed(stage="subject_absent"), "the provider stated the account does not exist"),
     (RevocationUnconfirmed(stage="issuer_selection"), "no app is configured for the issuer"),
     (RevocationUnconfirmed(stage="subject_rejected"), "the SDK refused the uid before sending"),
@@ -159,13 +158,7 @@ class TestAttemptCountsPerOutcome:
 class TestTheAttemptsAreSeparatedInTime:
     """WR-21: the budget was spent inside a few milliseconds, so it bought nothing against a blip."""
 
-    # tenacity's gap is `multiplier * exp_base ** (attempt - 1)`, clamped at the configured max,
-    # so `wait_exponential(0.1, exp_base=2, max=0.5)` sleeps 0.1s and then 0.2s -- 0.3s over an
-    # exhausted budget, not the 0.6s this comment used to claim. The floor keeps real headroom
-    # under that total, because a wall clock can only measure the sum and an `asyncio.sleep` may
-    # return inside one clock resolution; the arithmetic case below is what pins the sum itself.
-    # Written as a number rather than derived from the base, so shrinking the base back towards
-    # zero -- the WR-21 regression this class exists to catch -- still fails here.
+    # Write this floor as a number. A floor derived from the base cannot catch a base that shrinks.
     FLOOR_SECONDS = 0.25
 
     def test_the_configured_gaps_are_the_two_this_floor_was_measured_against(self):

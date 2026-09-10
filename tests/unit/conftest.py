@@ -84,8 +84,6 @@ class _FixedKeyVerifier:
     def __init__(self):
         self._audience = TEST_PROJECT_ID
         self._issuer = TEST_ISSUER
-        # Imported, never restated: widening production's algorithms, leeway or required claims
-        # must reach this double too, or the cases running against it would stay green through it.
         self._leeway = DEFAULT_LEEWAY
         self._public_key = PUBLIC_KEY_PEM
 
@@ -101,8 +99,6 @@ class _FixedKeyVerifier:
         except pyjwt.PyJWTError as exc:
             return None, bounded_reason_for(exc)
         except Exception:
-            # The same structural "never raises" clause production carries: an escape here would
-            # 500 a caller owed a 401, and a double that can raise proves a weaker property.
             return None, BoundedReason.bad_signature
 
         return claims_from_payload(payload)
@@ -116,8 +112,6 @@ def make_test_verifier() -> _FixedKeyVerifier:
 # Handlers read identity.user.id and nothing else, so the id is the whole contract.
 TEST_SUBJECT = "test-user"
 TEST_USER_ID = uuid7()
-# `LinkedIdentity`, because this is what `get_linked_identity` is overridden with: a plain
-# `Identity` here would stand in for a narrowing the production dependency cannot return.
 TEST_IDENTITY = LinkedIdentity(
     user=User(id=TEST_USER_ID, active=True),
     identity=ExternalIdentity(id=uuid7(),
@@ -162,8 +156,6 @@ def charge_calls(monkeypatch) -> list[UUID]:
 @asynccontextmanager
 async def _granted_admission():
     """A real async context manager, because `ChatService` enters one; an `AsyncMock` attribute is not."""
-    # The token `ResiliencePolicy.admission` mints, not a fresh one: a double yielding any other
-    # value stands in for something the policy would refuse.
     yield Admitted(_ADMISSION)
 
 
@@ -202,8 +194,6 @@ def client(mock_chats_db, service):
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client
-
-
 
 
 ANONYMOUS_IDENTITY = VerifiedProviderIdentity(provider=IdentityProvider.anonymous,

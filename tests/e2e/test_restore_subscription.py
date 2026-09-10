@@ -74,14 +74,10 @@ RESTORE_NOT_FOUND_BODY = b'{"code":"restore_not_found"}'
 TRANSFER_REJECTED_BODY = b'{"code":"restore_transfer_rejected"}'
 
 # The three Apple arms the library refuses on: the chain, the application and the environment.
-# They reach the route as one exception class and one body, so the stage each carries is asserted
-# in the log below -- without that the three are one arm run three times.
 APPLE_REJECTION_STAGES = ("VERIFICATION_FAILURE", "INVALID_APP_IDENTIFIER", "INVALID_ENVIRONMENT")
 
-# The stage the Play seam's own classifier attaches to a gone token, which is the fourth cause.
 PLAY_REJECTION_STAGE = RESTORE_TOKEN_GONE_STAGE
 
-# The one record a refused proof leaves, written by the handler at the level `ProofRejected` declares.
 _HANDLER_LOGGER = "nativespeaker.api.app.error_handlers.logger"
 
 # A month out, so the written term is unambiguously open at the instant every case runs.
@@ -264,8 +260,6 @@ class TestTheSameAccountAppleRestore:
         assert body["entitlement"]["tier_id"] == PAID_TIER_ID
         assert body["identity_provider"] == "google"
         assert answered.headers["Cache-Control"] == "no-store"
-        # The proof and the instant it was checked at: the check is made with the request's one
-        # captured instant, so a call site reading the clock again records a different value here.
         assert scripted_app_store_notifications.restore_calls == [(RESTORE_PROOF,
                                                                   pinned_evaluation_instant)]
 
@@ -384,9 +378,6 @@ class TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach:
 
         assert refused.status_code == 404
         assert refused.content == RESTORE_NOT_FOUND_BODY
-        # The grant count is what carries the truth the report names: the term is the only end this
-        # path could write, so a grant attached here would carry a NULL end -- paid access no store
-        # event can ever end. The caller holds none before, so the count is the whole claim.
         assert await _four_counts(_db_transaction, user.id, external_id) == before
 
     async def test_an_active_proof_carrying_no_expiry_attaches_nothing(
@@ -514,8 +505,6 @@ class TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach:
         live = [grant for grant in await _grants_of(_db_transaction, user.id)
                 if grant.status is AccessGrantStatus.active]
         assert [grant.ends_at for grant in live] == [renewed.expires_at]
-        # The still-active row is superseded, so this month's count follows it to the new term;
-        # a row a webhook already expired is outside the locked set and carries nothing.
         assert (await _usage_of(_db_transaction, live[0].id)).monthly_used == carried
 
     async def test_a_dead_proof_refuses_where_nothing_records_the_term_and_replays_where_one_does(
@@ -523,13 +512,6 @@ class TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach:
         """One dead proof, both answers, the recorded term the only difference: a proof's own
         expiry is not an entitlement input, so it refuses where nothing else records a term and
         replays where the account's own live grant records one."""
-        # `10-restore-subscription.md:65` confirms entitlement "under locked state (statuses
-        # exactly `active` and `grace_period` ...)" and names no proof date, and an Apple original
-        # transaction states the first term's expiry for a subscription now on its tenth -- so the
-        # dead proof below is a currently-subscribed caller, and `:77`(a) makes the repeat
-        # "idempotent success (no owner change, grant keeps its id, usage row stays on the same
-        # `grant_id` ...)": the same writes-nothing guarantee the refusal carries, under the other
-        # status code. CR-02 survives as the first half; CR-25 is the second.
         user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
                                       provider=IdentityProvider.google)
         unrecorded = f"e2e-dead-unrecorded-{uuid4()}"
@@ -540,8 +522,6 @@ class TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach:
 
         refused = await _restore(restore_client)
 
-        # Nothing recorded this subscription's term, so the proof was the only source of one and
-        # a dead one attaches nothing: the account is left holding no grant at all.
         assert refused.status_code == 404
         assert refused.content == RESTORE_NOT_FOUND_BODY
         assert await _row_counts(_db_transaction, user.id) == (0, 0)
@@ -555,13 +535,10 @@ class TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach:
         await _spend(_db_transaction, granted.id, 9)
         before = await _account_snapshot(_db_transaction, user.id)
 
-        # The same dead proof, now against the subscription whose own live grant records the term.
         scripted_app_store_notifications.script_restore(
             _proof(recorded, expires_at=datetime.now(UTC) - TERM_ENDED_AGO))
         replayed = await _restore(restore_client)
 
-        # The slot the grant holds is neither taken nor refreshed: no new row, no new term, and
-        # the counter still carries what the account spent under the grant it already had.
         assert replayed.status_code == 200, replayed.text
         assert await _account_snapshot(_db_transaction, user.id) == before
         assert [grant.id for grant in await _grants_of(_db_transaction, user.id)] == [granted.id]
@@ -793,10 +770,6 @@ class TestTheSameAccountGooglePlayRestore:
         assert body["entitlement"]["status"] == "active"
         assert body["entitlement"]["tier_id"] == PAID_TIER_ID
         assert answered.headers["Cache-Control"] == "no-store"
-        # WR-81: the application name is the configured one, the proof itself is the token the read
-        # was made with, and the instant is the request's own. A read made at a freshly-taken clock
-        # reading records a value that is not the pinned one, and a read made under any other
-        # application name is answered 403 by Google for every paying Android customer.
         assert [(call["package_name"], call["purchase_token"], call["evaluated_at"]) for call in
                 scripted_google_play.restore_calls] == [(GOOGLE_PACKAGE_NAME, purchase_token,
                                                          pinned_evaluation_instant)]
@@ -847,8 +820,6 @@ class TestEveryRejectedProofOfBothStoresAnswersOneBody:
         assert [answer.status_code for answer in answers] == [403, 403, 403, 403]
         # Compared as one set of raw bodies, so an arm that says more than the others fails here.
         assert {answer.content for answer in answers} == {PROOF_REJECTED_BODY}
-        # The distinguishing detail exists, and only in the log: `stage` reaches no response, so
-        # without this the four causes are one cause driven four times and the class proves nothing.
         assert [(event, fields["stage"]) for event, fields in refusal_records.entries] == [
             *(("proof_rejected", stage) for stage in APPLE_REJECTION_STAGES),
             ("proof_rejected", PLAY_REJECTION_STAGE)]

@@ -17,8 +17,7 @@ SOURCE = SOURCE_PATH.read_text()
 TREE = ast.parse(SOURCE)
 
 AUTH_PACKAGE = SOURCE_PATH.parent
-# Every auth module that may never reach the provider SDK. `firebase` is excluded: it imports
-# `firebase_admin` by design, and it is the only module that may.
+# Only `firebase` is excluded: it is the only auth module that may import the provider SDK.
 SDK_FREE_MODULES = tuple(sorted({path.stem for path in AUTH_PACKAGE.glob("*.py")}
                                 - {"__init__", "firebase"}))
 

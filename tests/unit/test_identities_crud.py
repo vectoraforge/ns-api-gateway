@@ -247,10 +247,6 @@ class TestTheResolutionStatement:
     async def test_the_join_predicate_is_the_link_alone_and_filters_nothing(self):
         """WR-120: the two cases around this one read only the text after `WHERE`, and a state
         filter added to the JOIN ... ON sits before it."""
-        # One extra term there turns every blocked account's `BlockedUser` 403 into an
-        # `IdentityUnresolvable` 500 -- the row drops out of the join, `user` is None, and D-05's
-        # two leaves collapse to one. Asserted as an equality rather than an absence, because the
-        # whole statement names both state columns in its SELECT list, so `not in` says nothing.
         _identity, session = await _resolve(_row())
         on_clause = str(session.statements[0]).split("LEFT OUTER JOIN core.users ON", 1)[1]
 
@@ -277,10 +273,6 @@ class TestTheRejectionSaysNothingItWasNotAsked:
         assert camel_to_snake(type(historical).__name__) == "historical_identity"
         assert camel_to_snake(type(blocked).__name__) == "blocked_user"
 
-    # No scalars-only case here: all three of this module's rejections carry no log field at all,
-    # which the three `log_fields() == {}` cases above assert by name, so a loop over their fields
-    # never enters its body. The real scalars-only guard, with constructor arguments that produce
-    # fields, is `test_rejection_vocabulary.py::TestEveryLeafKeepsItsLogFieldsToPlainScalars`.
 
     def test_the_arm_never_reaches_the_client(self):
         """The distinction lives in the security log only; the body carries one field."""

@@ -50,7 +50,6 @@ logger = structlog.get_logger()
 # The write seam of the shared sequence: it returns the provider the transaction settled on.
 Write = Callable[[Identity, VerifiedProviderIdentity], Awaitable[IdentityProvider]]
 
-# The post-claim seam, generic in the identity so a linked-only seam keeps its `LinkedIdentity`.
 type PostClaim[I, T] = Callable[[I], Awaitable[T]]
 
 # The seeded `core.access_tiers` row an anonymous device grant points at.
@@ -177,8 +176,6 @@ class AuthService:
 
         held = await self.grants_db.read_effective_grants(identity.user.id, self.evaluated_at)
         if len(held) > 1:
-            # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
-            # Read before the source test below, which would otherwise rank sources against each other.
             raise MultipleEffectiveGrantsError(len(held), identity.user.id)
         if any(grant.source is AccessGrantSource.anonymous_device_grant for grant in held):
             # The repeat: nothing is written, Apple is never reached, and the entitlement is read after commit.
@@ -195,7 +192,6 @@ class AuthService:
         if await self.grants_db.read_active_grants(identity.user.id):
             raise ActiveGrantOutsideItsTerm
 
-        # Ends the preflight's read transaction, so no pooled connection is held across the Apple call.
         await self.session.rollback()
 
         # One token for both calls: the bit the read decided on is the bit the write below sets.
@@ -207,24 +203,18 @@ class AuthService:
             user_id=identity.user.id,
             issuer=identity.issuer,
             subject=identity.subject,
-            # The attestation this arm actually ran, which is what the writer pins: the DeviceCheck
-            # read above is the only one on this route, and an Android arm would name its own.
             claim_platform=NativeClaimProvider.ios_devicecheck,
             tier_id=ANONYMOUS_TIER_ID,
             evaluated_at=self.evaluated_at)
         wrote = await self._settle(identity, outcome, refusal,
                                    source=AccessGrantSource.anonymous_device_grant)
-        # Committed before Apple is told: nothing clears a bit, so a crash after that write burns the slot.
-        await self.session.commit()
+        await self.session.commit()  # Commit before the Apple write. Nothing clears an Apple bit.
 
-        # Guarded by `wrote`: a race lost to a grant of any other source must not burn this device's slot.
         if wrote:
-            # bit1 is carried forward, never fabricated: Apple writes both bits in this one call.
             try:
                 await write_bits_with_retry(self.devicecheck, device_token,
                                             bit0=True, bit1=state.bit1)
             except Exception as failure:
-                # Fail-open and total, and a closed-set label: never the token and never Apple's body.
                 logger.error("devicecheck_bit_write_failed", failure=type(failure).__name__)
 
     async def _claim_registered_grant(self, identity: LinkedIdentity, *, device_token: str) -> None:
@@ -259,8 +249,6 @@ class AuthService:
             if await self.grants_db.has_prior_free_grant(identity.user.id):
                 raise FreeGrantAlreadyConsumed
 
-            # As on the anonymous claim: the preflight's read transaction ends here, so the pooled
-            # connection is back before the Apple round trip rather than held across it.
             await self.session.rollback()
 
             # One token for both calls: the bit the read decided on is the bit the write below sets.
@@ -280,15 +268,12 @@ class AuthService:
         # an Apple bit and a crash before this commit would burn the slot with nothing granted.
         await self.session.commit()
 
-        # Both conditions, and not the read alone: a race lost to a conversion spends no device slot.
         if state is not None and wrote:
             # bit0 is carried forward, never fabricated: Apple writes both bits in this one call.
             try:
                 await write_bits_with_retry(self.devicecheck, device_token,
                                             bit0=state.bit0, bit1=True)
             except Exception as failure:
-                # A closed-set label only: the class name, never the token and never Apple's body.
-                # Total, and not `AppError`, for the reason the anonymous claim above gives.
                 logger.error("devicecheck_bit_write_failed", failure=type(failure).__name__)
 
     async def _settle(self, identity: LinkedIdentity, outcome: ActivationOutcome,
@@ -301,18 +286,10 @@ class AuthService:
         await self.session.rollback()
         if outcome is ActivationOutcome.lost_race:
             held = await self.grants_db.read_effective_grants(identity.user.id, self.evaluated_at)
-            # `source`, and never the mere existence of a row: `ix_access_grants_one_active_per_user`
-            # arbitrates every source, so a subscription or manual writer wins this insert too.
             if any(grant.source is source for grant in held):
-                # The loser answers exactly as the repeat does, because the winner wrote the grant
-                # this attempt tried to write -- but it wrote nothing, and an irreversible vendor
-                # write is not its to make.
                 return False
             if held:
-                # D-09(b), and 07 step 2(b): an active grant of another source is the refusal the
-                # preflight gives, so losing the index to one must not answer 200 instead.
                 raise ClaimRefusedUnderLock(cause="lost_race_to_another_source")
-            # Named apart from the writer's refusals: this one really is a race, and the eight below are not.
             raise ClaimRefusedUnderLock(cause="lost_race_without_a_readable_grant")
         raise ClaimRefusedUnderLock(cause=cause)
 
@@ -374,12 +351,10 @@ class AuthService:
             await self._reject_existing_identity(existing)
 
         if provider_uid is not None:
-            # 02 step 11: the provider account is a second reservation, and it earns its own answer.
             holder = await self.identities_db.resolve_provider_account(issuer=identity.issuer,
                                                                        provider=provider,
                                                                        provider_uid=provider_uid)
             if holder is not None:
-                # The two providers agree by construction here; the row id is what routes it to support.
                 raise ProviderAccountAlreadyLinked(identity_row_id=holder.id,
                                                    stored_provider=holder.provider,
                                                    live_provider=provider)

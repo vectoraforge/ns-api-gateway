@@ -699,7 +699,6 @@ class TestAGoogleGracePeriodGrantIsEffective:
                                     status=SubscriptionStatus.grace_period,
                                     expires_in=timedelta(days=16), grace_period_in=None)
 
-            # Refused ahead of the first write, so no half of the delivery is durable.
             assert await buyer.counts() == (0, 0, 0, 0)
             assert await buyer.effective() == []
             assert ("error", "store_notification_without_term") in service_logs.calls
@@ -727,9 +726,7 @@ class TestTheDeferrableForeignKeyIsTheBackstop:
 
     async def test_a_grant_left_active_fails_the_commit(self, _schema_db_uri):
         conn = await asyncpg.connect(_schema_db_uri)
-        # Both seeds inside the guard: `conn` is in autocommit, so `insert_tier` is durable the
-        # moment it returns and a raise from `insert_user` would leave the tier row in the
-        # session-scoped database for every later module to see, with the connection leaked too.
+        # Seed inside the guard: `conn` is in autocommit, so a raise leaves the tier row in the shared database.
         tier_id = user_id = None
         try:
             tier_id = await insert_tier(conn)

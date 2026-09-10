@@ -28,8 +28,6 @@ TRANSIENT = TimeoutError
 # Nothing in `_is_transient_error` matches a bare ValueError, so it is permanent by construction.
 PERMANENT = ValueError
 
-# Every case below is about execution rather than admission, which has its own class. The proof is
-# reached through its private name deliberately: a token that can be minted without it is WR-01.
 ADMITTED = Admitted(_ADMISSION)
 
 
@@ -156,7 +154,6 @@ class TestErrorClassification:
             await policy.ainvoke(operation, ADMITTED)
 
         assert operation.calls == 2
-        # One, not two: only the transient attempt said anything about the provider's health.
         assert spy.failures == 1
 
     async def test_an_operation_timeout_is_transient(self, spy, sleeps):
@@ -199,8 +196,6 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         assert sleeps == []
 
     async def test_circuit_open_propagates_unwrapped_and_is_not_retried(self, sleeps):
-        # A real open transition: one transient failure trips a threshold of one, and the retry
-        # then meets the breaker it just opened.
         policy = ResiliencePolicy(make_config(circuit_breaker_failure_threshold=1))
         spy = BreakerSpy(policy)
         with pytest.raises(CircuitOpenError):
@@ -225,8 +220,6 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         with pytest.raises(CircuitOpenError) as caught:
             await policy.ainvoke(operation, ADMITTED)
 
-        # One consultation against one provider call: the first attempt rides the admission
-        # verdict, the second meets the breaker its own failure opened, the third is never reached.
         assert spy.checks == 1
         assert operation.calls == 1
         # The breaker's own refusal is not a provider failure, so the tally is the one genuine failure.
@@ -238,7 +231,6 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
     async def test_a_success_landing_after_the_trip_does_not_close_the_breaker(self):
         """WR-21: one shared breaker serves `pool_size` calls, so a straggler can answer after the trip."""
         breaker = CircuitBreaker(failure_threshold=2, reset_seconds=60)
-        # The straggler stamped its generation before the two failures below and answers after them.
         straggler = await breaker.current_generation()
 
         await _fail(breaker)
@@ -272,7 +264,6 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         await breaker.record_success(straggler)
         await _fail(breaker)
 
-        # Two trips: the original one, then the reopen the one fresh failure earned half-open.
         assert await breaker.current_generation() == straggler + 2
 
     async def test_a_success_stamped_after_the_reset_still_clears_the_tally(self):
@@ -300,7 +291,6 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         await breaker.before_call()
         await breaker.record_failure(straggler)
 
-        # The one trip the two genuine failures earned, and not the second the straggler bought.
         assert await breaker.current_generation() == straggler + 1
 
     async def test_the_full_budget_is_still_spent_while_the_breaker_stays_closed(self, policy, spy, sleeps):
@@ -323,7 +313,6 @@ class TestGateAndBreakerErrorsAreNeverWrapped:
         await breaker.before_call()
         await _fail(breaker)
 
-        # The reopen the single failure earned; clearing the tally would leave the counter here.
         assert await breaker.current_generation() == reopened_from + 1
 
 
@@ -344,7 +333,6 @@ class TestFailureAccounting:
         ((TRANSIENT, "ok"), 1, 1),
         ((TRANSIENT, TRANSIENT, "ok"), 2, 1),
         ((TRANSIENT,), MAX_ATTEMPTS, 0),
-        # A permanent rejection is the request's fault, so it is neither a failure nor a success.
         ((PERMANENT,), 0, 0),
     ])
     async def test_record_failure_fires_once_per_attempt_the_provider_answered_for(
@@ -358,8 +346,6 @@ class TestFailureAccounting:
 
         assert spy.failures == expected_failures
         assert spy.successes == expected_successes
-        # Every attempt but the first still consults the breaker, whether or not its outcome is
-        # recorded on it. The first rides the verdict `admission()` gave (CR-01).
         assert spy.checks == operation.calls - 1
 
     async def test_a_permanent_rejection_never_trips_the_breaker(self, sleeps):
@@ -373,8 +359,6 @@ class TestFailureAccounting:
 
         assert spy.failures == 0
 
-        # The measurement fires: two transient failures on the same policy do open it, and the
-        # third attempt then meets the open breaker instead of the provider.
         with pytest.raises(CircuitOpenError):
             await policy.ainvoke(ScriptedOperation(TRANSIENT), ADMITTED)
         assert spy.failures == 2
@@ -435,10 +419,7 @@ class _StatusOnly(Exception):
         self.status_code = status_code
 
 
-# Listed here rather than derived from `_TRANSIENT_STATUSES`, so a status leaving the production set
-# fails a case instead of quietly removing one. WR-122: parametrised over itself, shrinking the set
-# to `{408}` -- which reclassifies an OpenAI 429/500/502/503/504 as permanent, never retried and
-# never counted by the breaker -- left every case in this file green.
+# Do not derive this tuple from `_TRANSIENT_STATUSES`. A parametrised copy makes every case vacuous.
 RETRY_ELIGIBLE = (408, 409, 429, 500, 502, 503, 504)
 
 

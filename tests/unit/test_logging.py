@@ -24,8 +24,6 @@ def _reset_logging():
     root = logging.getLogger()
     original_handlers = root.handlers[:]
     original_level = root.level
-    # `setup_logging` writes the root's level and the level of every quieted library. Snapshot
-    # both, or the nine library levels a test sets stay pinned for the rest of the session.
     original_levels = {name: logging.getLogger(name).level for name in _QUIETED_LIBRARIES}
     _uncache_module_logger()
     structlog.reset_defaults()
@@ -97,7 +95,6 @@ def test_the_middleware_binds_the_correlation_fields_onto_every_record(_logging_
     assert [sorted(ctx) for ctx in seen] == [["method", "path", "request_id"]] * 2
     assert [ctx["method"] for ctx in seen] == ["GET", "GET"]
     assert [ctx["path"] for ctx in seen] == ["/bound", "/bound"]
-    # A fresh id per request, or correlation groups two requests into one.
     assert uuid.UUID(seen[0]["request_id"]) != uuid.UUID(seen[1]["request_id"])
 
 

@@ -27,8 +27,7 @@ class VerifiedNotification:
     grace_period_expires_at: datetime | None
 
     def __post_init__(self) -> None:
-        # The declared type made true: readers ask this field by identity and by value alike, and
-        # a raw store string is correctly not entitled and silently not revoked.
+        # Readers compare this field by identity. A raw store string must become the enum.
         object.__setattr__(self, "status", SubscriptionStatus(self.status))
 
 
@@ -50,8 +49,6 @@ class RestoredSubscription:
     grace_period_expires_at: datetime | None
 
     def __post_init__(self) -> None:
-        # The same coercion `VerifiedNotification` documents: the restore path reaches the same
-        # two comparison semantics through `write_subscription_grant`.
         object.__setattr__(self, "status", SubscriptionStatus(self.status))
 
 

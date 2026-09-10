@@ -116,8 +116,6 @@ class _HookedSession:
     def __init__(self, session, after_re_resolution=None) -> None:
         self._session = session
         self._after_re_resolution = after_re_resolution
-        # `_complete` commits exactly once before the post-claim work -- the claim -- so the first
-        # read after that commit is the re-resolution, which is where the barrier belongs.
         self._claim_committed = False
 
     async def commit(self, *args, **kwargs):
@@ -146,7 +144,6 @@ class _Attempt:
     identity: Identity
     challenge_row_id: uuid.UUID
     challenge_id: str
-    # What the call produced: the provider it settled on, or the rejection it raised.
     result: IdentityProvider | AppError | None = None
     identities_seen_at_barrier: int | None = None
 
@@ -209,9 +206,6 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
         second = await prepare_attempt(harness, subject=subject, provider=IdentityProvider.apple,
                                        provider_uid=f"apple-uid-{subject}")
 
-        # `NOW` is a constant `test_create_atomicity` and `test_claim_race` COMMIT rows under, into
-        # this same session-scoped scratch database. The two orphan scans below are keyed on it, so
-        # they are differenced against the rows that were already there before this race ran.
         users_before = await user_ids_stamped_now(harness)
 
         first_ready, second_ready = asyncio.Event(), asyncio.Event()
@@ -280,7 +274,6 @@ class TestTwoConcurrentCompletionsProduceExactlyOneAccount:
             "WHERE i.issuer = :issuer AND i.subject = :s",
             {"issuer": harness.issuer, "s": raced["subject"]}) == 2
 
-        # The same restriction the orphan scan above carries, and for the same reason.
         assert await scalar(
             harness,
             "SELECT count(*) FROM core.store_purchase_tokens t "
@@ -346,7 +339,6 @@ class TestRunningTheSameCreationTwiceSequentially:
         return identities, users, tokens
 
     async def test_the_first_run_creates_the_account(self, twice):
-        # The completion returns the provider the transaction settled on, never a rejection.
         assert twice["first"].result is IdentityProvider.google
         assert twice["counts_after_first"] == (1, 1, 2)
 

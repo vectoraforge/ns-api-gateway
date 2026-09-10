@@ -7,8 +7,6 @@ from nativespeaker.api.tables import monthly_period_for
 REPO = Path(__file__).resolve().parents[2]
 SRC = REPO / "src" / "nativespeaker"
 
-# The format string every usage row's `monthly_period` is written through, in all three spellings
-# a second copy could take: no quote-style rule is configured, so either quoting is legal here.
 SPELLINGS = ('"%Y-%m"', "'%Y-%m'", ":%Y-%m}")
 DERIVATION = SRC / "api" / "tables" / "grants.py"
 

@@ -30,10 +30,7 @@ FREE_GRANT_SOURCES = frozenset({AccessGrantSource.anonymous_device_grant,
 
 def monthly_period_for(evaluated_at: datetime) -> str:
     """The UTC calendar month `UserMonthlyUsage.monthly_period` stores, in `YYYY-MM`."""
-    # The only place the period is derived, and always from the request's captured instant.
-    # Converted first: `strftime` reports the stored wall clock, so a non-UTC instant would name
-    # the wrong month and split one allowance across two period strings.
-    return evaluated_at.astimezone(UTC).strftime("%Y-%m")
+    return evaluated_at.astimezone(UTC).strftime("%Y-%m")  # `strftime` reports the stored wall clock.
 
 AccessGrantSourceType = cast(Any, Enum(AccessGrantSource, name='access_grant_source', schema='core'))
 AccessGrantStatusType = cast(Any, Enum(AccessGrantStatus, name='access_grant_status', schema='core'))
@@ -65,10 +62,8 @@ class AccessGrant(SQLModel, table=True):
     tier_id: str = Field(foreign_key="core.access_tiers.id")
     source: AccessGrantSource = Field(sa_type=AccessGrantSourceType)
     status: AccessGrantStatus = Field(sa_type=AccessGrantStatusType, default=AccessGrantStatus.active)
-    # A database CHECK enforces the agreement with `source` in both directions.
     subscription_id: UUID | None = Field(default=None)
-    # No default on any timestamp in this module: the creating transaction owns the clock, so a
-    # forgotten value is a NOT NULL violation rather than a second reading of it.
+    # The timestamps carry no default. The creating transaction owns the clock.
     starts_at: datetime = Field(sa_type=DateTimeType)
     ends_at: datetime | None = Field(sa_type=DateTimeType, default=None)
     created_at: datetime = Field(sa_type=DateTimeType)
@@ -82,7 +77,6 @@ class UserMonthlyUsage(SQLModel, table=True):
     __table_args__ = {"schema": "core"}
 
     grant_id: UUID = Field(foreign_key="core.access_grants.id", primary_key=True)
-    # Free text in YYYY-MM; the database enforces no format.
     monthly_period: str = Field()
     monthly_used: int = Field(default=0)
     created_at: datetime = Field(sa_type=DateTimeType)

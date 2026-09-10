@@ -15,8 +15,7 @@ from schema.helpers import insert_tier
 
 MIGRATIONS = pathlib.Path(__file__).parents[2] / "migrations"
 POGO_SCHEMA = "api"  # matches [tool.pogo] schema
-# Per-session, not a fixed constant: setup drops the name WITH (FORCE), which terminates every other
-# connection to it, so two runs against one server would kill each other mid-test.
+# The name carries the pid: setup drops the database WITH (FORCE) and would kill a parallel run.
 SCHEMA_TEST_DB = f"ns_schema_test_{os.getpid()}"
 
 # Defaults so the suite runs with DB_* unset; DB_NAME falls back to the maintenance database, which exists.
@@ -31,7 +30,6 @@ _DB_DEFAULTS = {
 # A database name cannot be bound as a parameter, so CREATE/DROP DATABASE interpolate it behind this guard.
 _SAFE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 
-# The only hosts this suite may create and drop databases on; NS_SCHEMA_TEST_ALLOW_REMOTE opts out.
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
@@ -51,9 +49,6 @@ def dsn_for(database: str) -> str:
 
 def admin_dsn() -> str:
     """DSN for the configured DB_NAME database -- used only to CREATE and DROP scratch databases."""
-    # The one DSN that CREATE DATABASE and DROP DATABASE ... WITH (FORCE) are executed on, and
-    # pytest-dotenv loads whatever `.env` names into the environment before collection. A shape
-    # check on the scratch name says nothing about the server, so a non-loopback host is refused.
     host = _env("DB_HOST")
     if host not in _LOCAL_HOSTS and not os.environ.get("NS_SCHEMA_TEST_ALLOW_REMOTE"):
         msg = f"refusing to create and drop scratch databases on {host!r}"
@@ -118,8 +113,6 @@ def _schema_db_uri():
 async def conn(_schema_db_uri):
     """Connection to the migrated scratch database, inside a transaction that always rolls back."""
     connection = await asyncpg.connect(_schema_db_uri)
-    # `tx.start()` inside the try: it raises on a server at its connection limit or a lost socket,
-    # and a connection opened outside the guard is one leaked for the rest of the session.
     try:
         tx = connection.transaction()
         await tx.start()

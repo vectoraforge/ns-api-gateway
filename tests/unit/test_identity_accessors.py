@@ -68,8 +68,6 @@ class _ProbeSession:
         self._row = row
         self.statements: list[object] = []
         self.closed = False
-        # The client's own list, never class state: a shared one would carry another request's
-        # session into the two cases that count them, and would survive between tests.
         opened.append(self)
 
     async def __aenter__(self):
@@ -117,7 +115,6 @@ def _client(row=None) -> TestClient:
 
     # Read per request by the dependency, exactly as the real lifespan supplies them.
     app.state.jwt_verifier = make_test_verifier()
-    # Every session this client opens, in order, readable off the client the case drove.
     opened: list[_ProbeSession] = []
     app.state.opened_sessions = opened
     app.state.session_factory = lambda: _ProbeSession(row, opened)
@@ -200,13 +197,9 @@ class TestTheWireArmsRaiseAndTheHandlerRecordsThemOnce:
         return entries
 
     @pytest.mark.parametrize("headers,expected_reason", [
-        # WR-22: the reason the spec names for a request that presented no credential at all.
         ({}, "missing_token"),
         # Well-formed on the wire -- one Bearer credential -- so this is the verifier's own reason.
-        # WR-22: three segments that do not decode is a token's shape, not a forged signature.
         ({"Authorization": "Bearer not.a.jwt"}, "malformed"),
-        # 37.4 WR-01: HTTPBearer refuses these three exactly as it refuses an absent field, and
-        # spec 01 1.1 names all three `malformed` -- a field was presented in every one of them.
         ({"Authorization": "Basic dXNlcjpwYXNz"}, "malformed"),
         ({"Authorization": "Bearer"}, "malformed"),
         ({"Authorization": "zzzzz"}, "malformed"),

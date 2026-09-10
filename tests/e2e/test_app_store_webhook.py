@@ -38,8 +38,6 @@ PATH = "/webhooks/app-store"
 # The tier the migration seeds for a paid subscription, and the one the configured map targets.
 PAID_TIER_ID = "paid"
 
-# A second seeded tier for the one case that moves a subscription off `paid`; that it differs is
-# the whole property, because `audit.subscription_events` records the two sides of a transition.
 OTHER_TIER_ID = "registered"
 
 # The one body every verification failure answers with, compared by equality so a richer field fails here.
@@ -58,15 +56,11 @@ ENVELOPE = "signed-payload-that-only-the-scripted-seam-reads"
 # The product id the Apple seam refuses, because the configured map has no line for it.
 UNMAPPED_PRODUCT_ID = "com.nativespeaker.subscription.unmapped"
 
-# The library's status set as of app-store-server-library 3.0.0, pinned as a literal so a member it
-# adds arrives here as a failure rather than as one more silently-generated parameter below.
 KNOWN_STATUSES = frozenset({"OK", "VERIFICATION_FAILURE", "INVALID_APP_IDENTIFIER",
                             "INVALID_CERTIFICATE", "INVALID_CHAIN_LENGTH", "INVALID_CHAIN",
                             "INVALID_ENVIRONMENT", "RETRYABLE_VERIFICATION_FAILURE"})
 
-# Every reachable arm, written out rather than derived, so the control below can disagree with the
-# module's own raise sites. Deriving it from `VerificationStatus` was how the two stages the seam
-# raises outside that enum came to have no case at all.
+# Do not derive these stages from `VerificationStatus`. The seam raises two stages outside that enum.
 REFUSAL_STAGES = ("VERIFICATION_FAILURE", "INVALID_APP_IDENTIFIER", "INVALID_CERTIFICATE",
                   "INVALID_CHAIN_LENGTH", "INVALID_CHAIN", "INVALID_ENVIRONMENT",
                   "RETRYABLE_VERIFICATION_FAILURE",
@@ -290,7 +284,6 @@ class TestEveryVerificationFailureAnswersTheOneBody:
         assert response.json() == REJECTED
         # On the wire, not after parsing: a field added later fails here rather than becoming an oracle.
         assert response.content == REJECTED_BODY
-        # The distinguishing detail exists, and it exists only in the log the operator reads.
         assert [(event, fields["stage"]) for event, fields in refusal_records.entries] == [
             ("notification_rejected", stage)]
 
@@ -300,8 +293,6 @@ class TestEveryVerificationFailureAnswersTheOneBody:
         `notification_without_identity` was, because both sides were read off the enum."""
         assert {status.name for status in VerificationStatus} == KNOWN_STATUSES
         raised = raised_refusal_stages(APP_STORE_REFUSAL_FILES)
-        # The one computed stage is `failure.status.name`, so it stands for every member of the
-        # library's enum but `OK`; the literal ones stand only for themselves.
         assert COMPUTED in raised
         assert set(REFUSAL_STAGES) == (raised - {COMPUTED}) | (KNOWN_STATUSES - {"OK"})
 
@@ -312,10 +303,6 @@ class TestEveryVerificationFailureAnswersTheOneBody:
 
     async def test_a_refused_payload_writes_nothing(
             self, webhook_client, scripted_app_store_notifications, _db_transaction):
-        # The seam raises instead of returning a notification, so this case names no key: the two
-        # keys a minted `_notification()` would carry reach no code path, and querying them proves
-        # only that a random uuid4 was never written. Count the three tables instead, as the Google
-        # twin does, so a delivery that ingested despite the refusal fails here.
         before = await _counts(_db_transaction)
         scripted_app_store_notifications.script(
             NotificationRejected(stage="VERIFICATION_FAILURE"))
@@ -332,7 +319,6 @@ class TestEveryVerificationFailureAnswersTheOneBody:
             NotificationRejected(stage="VERIFICATION_FAILURE"))
         firebase_bearer = make_token(sub="store-callback-subject")
         claims, _reason = stub_verifier.verify(firebase_bearer)
-        # The control: a token the application itself would not admit proves nothing about leakage.
         assert claims is not None
 
         response = await webhook_client.post(
@@ -395,8 +381,6 @@ class TestTheReplayAndTheEmptyNotificationWriteNothing:
     async def test_an_unmapped_product_answers_500_and_writes_nothing(
             self, webhook_client, scripted_app_store_notifications, _db_transaction, error_records):
         """D-14, D-21. An operator adds the map line and Apple's next retry succeeds; nothing is written."""
-        # The seam raises instead of returning, so this case names no key: count the three tables,
-        # as `test_a_refused_payload_writes_nothing` does, rather than query a uuid4 nothing wrote.
         scripted_app_store_notifications.script(
             UnmappedStoreProduct(PurchaseProvider.apple, UNMAPPED_PRODUCT_ID))
         before = await _counts(_db_transaction)

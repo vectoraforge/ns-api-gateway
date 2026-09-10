@@ -143,8 +143,6 @@ class _RacingSession:
     def __init__(self, session, after_re_resolution) -> None:
         self._session = session
         self._after_re_resolution = after_re_resolution
-        # `_complete` commits exactly once before the post-claim work -- the claim -- so the first
-        # read after that commit is the in-transaction re-resolution, which is where the hook belongs.
         self._claim_committed = False
 
     async def commit(self, *args, **kwargs):
@@ -289,9 +287,7 @@ class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
                                           provider=IdentityProvider.anonymous, provider_uid=None)
         return {"error": result, "users_before": users_before,
                 "identities_before": identities_before, "subject": subject,
-                # The pinned key both the rival row and the rolled-back one carry.
                 "minted": minted,
-                # The rival's owner, so a count over the key can exclude the row the fixture put there.
                 "other_user": other_user}
 
     async def test_a_conflict_on_a_rule_nobody_anticipated_reads_as_already_linked(
@@ -321,8 +317,6 @@ class TestAConflictOnTheAttributionTokenInsertAlsoUndoesTheFirstTwo:
             {"value": str(token_collision["minted"]), "rival": token_collision["other_user"]})
         assert found == 0
 
-        # The control on that zero: the rival row the fixture committed carries the same value, so
-        # the count above found nothing because the row is gone, not because the key matches nothing.
         surviving = await scalar(
             harness,
             "SELECT count(*) FROM core.store_purchase_tokens WHERE identity_value = :value",
@@ -339,7 +333,6 @@ class TestTheHappyPathStillCommitsEverything:
         result, row_id, _ = await run_creation(harness, subject=subject,
                                                provider=IdentityProvider.anonymous,
                                                provider_uid=None)
-        # The completion returns the provider the transaction settled on, never a rejection.
         assert result is IdentityProvider.anonymous
 
         user_id = await scalar(

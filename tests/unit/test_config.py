@@ -57,7 +57,6 @@ _ENV_SECRETS = {
 # The repository root, so a path the application resolves against its own cwd resolves here too.
 REPOSITORY_ROOT = TRACKED_CONFIG.parents[1]
 
-# A URL no case reaches over the network: the transport under `PyJWKClient` is stubbed in every one.
 UNUSABLE_JWKS_URL = "https://jwks.example.invalid/keys"
 
 # The three variables a deployer supplies; the fourth field defaults to the committed root certificate.
@@ -140,8 +139,6 @@ en:
         Path(tmp_dir, "examples.yaml").write_text(examples_content)
 
         env_clean = {k: v for k, v in os.environ.items() if k not in _DOTENV_KEYS}
-        # Stated rather than inherited: `openai.api_key` is required, and a case that read it from
-        # the developer's own environment would pass here and fail in a checkout without one.
         env_clean["OPENAI_API_KEY"] = "sk-test-openai-key"
         with patch.dict(os.environ, env_clean, clear=True):
             # _env_file is on BaseSettings.__init__, but ty sees only the synthesised one.
@@ -177,7 +174,6 @@ class TestAYamlFileThatIsNotAMappingNamesItself:
             Path(tmp_dir, "examples.yaml").write_text(examples)
 
             with patch.dict(os.environ, _ENV_SECRETS, clear=True):
-                # See above: _env_file is invisible to ty's synthesised __init__.
                 EnvironmentConfig(config_dir=Path(tmp_dir),
                                   _env_file=None)  # ty: ignore[unknown-argument]
         finally:
@@ -229,7 +225,6 @@ class TestAnAbsentCredentialBlockIsReportedUnderItsOwnName:
                        if not key.startswith(prefix)}
             with patch.dict(os.environ, without, clear=True):
                 with pytest.raises(ValidationError) as failure:
-                    # See above: _env_file is invisible to ty's synthesised __init__.
                     EnvironmentConfig(config_dir=Path(tmp_dir),
                                       _env_file=None)  # ty: ignore[unknown-argument]
 
@@ -287,7 +282,6 @@ class TestEveryLoggingFieldReachesTheLoggingSetup:
         declared = {name for name in AppConfig.model_fields if "log" in name}
         accepted = set(inspect.signature(setup_logging).parameters)
 
-        # The control: an empty left side would pass this on any signature at all.
         assert declared
         assert declared <= accepted, declared - accepted
 
@@ -345,8 +339,6 @@ class TestTheIdentityToolkitKeyIsOptionalAndSecret:
 
     def test_the_key_never_renders_in_a_dump_or_a_repr(self):
         """`hide_input_in_errors` covers a validation error; a dump and a repr are the other two channels."""
-        # The copied directory its siblings all use: reading the live `config/` would make what
-        # this asserts depend on whatever a developer has there, and skips the `is not None` guard.
         jwt = load_tracked_config({}).jwt
 
         assert jwt.api_key is not None
@@ -414,7 +406,6 @@ class TestThePoolChecksAConnectionBeforeHandingItOut:
     and on a chat route, after the credit is already spent."""
 
     def _engine(self):
-        # No connection is opened by construction, so this reads the pool the lifespan would build.
         return build_db_engine(DatabaseConfig(host="db.internal", port=5432, user="u",
                                               password="p", name="n"))  # ty: ignore[invalid-argument-type]
 
@@ -452,7 +443,6 @@ class TestAFailedStatementCarriesNoBoundParameterIntoTheLogs:
             hide_parameters=self._engine().sync_engine.hide_parameters)
 
         assert "CHALLENGE-HANDLE-SECRET" not in str(failure)
-        # The SQL text is deliberately kept: it names columns, and an operator needs it.
         assert "core.auth_challenges" in str(failure)
 
 
@@ -511,8 +501,6 @@ class TestNoTrackedYamlCarriesKeyMaterial:
 
     def test_no_tracked_yaml_under_config_carries_service_account_material(self):
         files = list(TRACKED_CONFIG.parent.rglob("*.y*ml"))
-        # The control every other walking guard here carries: an empty walk is a pass, so a
-        # renamed `config/` would turn the one committed-credential scan green having read nothing.
         assert files, f"no tracked YAML found under {TRACKED_CONFIG.parent}: the scan checked nothing"
         for path in files:
             text = path.read_text()
@@ -799,14 +787,9 @@ class TestTheCommittedEnvExampleCannotCrashABoot:
         fields = {key.removeprefix("APP_STORE_").lower(): value
                   for key, value in shipped.items() if key.startswith("APP_STORE_")}
 
-        # The control, inline: with no field the lines below read no shipped value at all, which
-        # is what they silently did while the whole block stayed commented.
         assert fields, ".env.example ships no APP_STORE_ assignment: this checked nothing"
         store = AppStoreConfig(**fields)
 
-        # Parsed, not merely constructed. Both validators degrade an unusable placeholder to
-        # `None` instead of raising, so a bare `isinstance` stays green for the very values
-        # CR-04 is about; the file promises these three parse when a deployer uncomments them.
         assert (store.bundle_id,
                 store.app_apple_id,
                 store.environment) == (fields["bundle_id"],
@@ -833,7 +816,6 @@ class TestTheImageNeverGivesTheProcessOwnershipOfItsOwnCode:
         instructions = [line for line in shipped if not line.lstrip().startswith("#")]
 
         assert not [line for line in instructions if "chown" in line]
-        # The control: the non-root user is still created, so the assertion above is not vacuous.
         assert any("useradd -m -u 1000 appuser" in line for line in instructions)
 
 
@@ -846,7 +828,6 @@ class TestTheAdcPlaceholderCannotShadowAGcloudSession:
 
         assert [line for line in path.read_text().splitlines()
                 if line.startswith("GOOGLE_APPLICATION_CREDENTIALS=")] == []
-        # The control: the placeholder is still shipped, so the assertion above is not vacuous.
         assert "GOOGLE_APPLICATION_CREDENTIALS" in _assignments(path)
 
 
@@ -900,7 +881,6 @@ class TestTheIdentityBarrierVerifierFailsFastAndNamesItsEndpoint:
         with pytest.raises(RuntimeError) as raised:
             build_jwt_verifier(self._jwt_config())
 
-        # The whole point of the guard: the bare `PyJWKClientError` names no URL at all.
         assert UNUSABLE_JWKS_URL in str(raised.value)
         assert not isinstance(raised.value, PyJWTError)
 

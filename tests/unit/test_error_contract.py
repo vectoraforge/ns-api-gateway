@@ -122,7 +122,6 @@ class TestOpenAPISchema:
                       for path, methods in schema.get("paths", {}).items()
                       for method, op in methods.items() if isinstance(op, dict)]
 
-        # The control: an empty schema would pass the loop below having checked nothing.
         assert operations
         for path, method, op in operations:
             documented = {int(status) for status in op["responses"]} - {200, 201, 204}

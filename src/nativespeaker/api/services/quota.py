@@ -20,20 +20,16 @@ from nativespeaker.api.tables import monthly_period_for
 
 logger = structlog.get_logger()
 
-# The ceiling on the shared `Retry-After`: a grant is effective the instant a claim or restore commits.
 RETRY_AFTER_CEILING_SECONDS = 300
 
 
 def seconds_until_rollover(evaluated_at: datetime) -> int:
     """Whole seconds from this instant to the UTC month boundary the allowance rolls over on."""
-    # Converted first, as `monthly_period_for` is: `replace` reads the stored wall clock, so a
-    # non-UTC instant would name the boundary of a month other than the one the counter is keyed by.
     instant = evaluated_at.astimezone(UTC)
     december = instant.month == 12
     rollover = instant.replace(year=instant.year + (1 if december else 0),
                                month=1 if december else instant.month + 1,
                                day=1, hour=0, minute=0, second=0, microsecond=0)
-    # Rounded up and floored at one: `Retry-After: 0` invites the immediate retry this refuses.
     return max(math.ceil((rollover - evaluated_at).total_seconds()), 1)
 
 
@@ -44,7 +40,6 @@ class QuotaService:
 
     async def charge(self, *, user_id: UUID, evaluated_at: datetime) -> None:
         """Spend one unit of `user_id`'s allowance, or raise. Commits on success."""
-        # One value for both refusal branches, which SHARED-INVARIANTS keeps indistinguishable.
         retry_after_seconds = min(seconds_until_rollover(evaluated_at),
                                   RETRY_AFTER_CEILING_SECONDS)
 
@@ -74,8 +69,7 @@ class QuotaService:
 
                 period = monthly_period_for(evaluated_at)
 
-                # Ordered, never `!=`: an instant behind the stored period spends that month, never resets it.
-                if usage.monthly_period < period:
+                if usage.monthly_period < period:  # Use "<", never "!=": an old instant must not reset the count.
                     # Rollover runs before the comparison and in the same transaction: no reset commits uncharged.
                     usage.monthly_used = 0
                     usage.monthly_period = period

@@ -59,7 +59,6 @@ def writer(identity_row, monkeypatch) -> GrantsDB:
         return identity_row
 
     async def has_prior_free_grant(self, user_id):
-        # The account spent its lifetime free grant: the statement behind this carries no status.
         return True
 
     monkeypatch.setattr(GrantsDB, "lock_active_grants", lock_active)
@@ -189,9 +188,6 @@ class TestEachRefusalNamesTheArmThatFiredIt:
     async def test_a_held_grant_of_another_source_names_its_own_arm(self, writer, identity_row,
                                                                     monkeypatch):
         """D-09(b): a `subscription` or `manual` grant is waited out, and it is not a spent slot."""
-        # WR-125: three of the five arms were pinned nowhere under `tests/`, so replacing all three
-        # labels with `None` -- collapsing three operator log lines back into one field-less
-        # `claim_refused` -- left every case in this file and its four siblings green.
         _locks_returning(monkeypatch, effective=[_a_grant(AccessGrantSource.subscription)])
         _with_registered_row(monkeypatch, present=False, asked=[])
 

@@ -11,10 +11,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 _EXCLUDED_PATHS = frozenset({"/health/ready"})
 
-# Capped at no lower than WARNING, on one criterion: a library that logs a request body, a
-# request line or SQL. `openai` logs the whole chat-completion body at DEBUG, an admitted level.
-# `uvicorn.access` is the duplicate of the line `RequestLoggingMiddleware` writes below, and it
-# honours neither `_EXCLUDED_PATHS` nor the structured format.
 _QUIETED_LIBRARIES = ("httpx", "httpcore", "sqlalchemy.engine",
                       "openai", "langchain", "langchain_core",
                       "urllib3", "google.auth", "uvicorn.access")
@@ -47,8 +43,6 @@ def setup_logging(log_level: str,
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
                 structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S", utc=True),
-                # `colors` defaults to "not Windows" rather than to `isatty`, so without this every
-                # line carries escape codes into a stderr that is never a terminal.
                 structlog.dev.ConsoleRenderer(colors=False,
                                               exception_formatter=structlog.dev.plain_traceback),
             ],
@@ -61,11 +55,7 @@ def setup_logging(log_level: str,
     root.setLevel(log_level.upper())
 
     for name in _QUIETED_LIBRARIES:
-        # A ceiling, never a floor. A level set on a child outranks the root in both directions: at
-        # LOG_LEVEL=ERROR a flat WARNING would raise these nine above the application's own loggers,
-        # so an operator cutting noise during an incident would lose `notification_rejected` and its
-        # `stage` and keep the httpx and SQL chatter. `root.level`, not the argument, because
-        # `setLevel` above is what turned the name into a number.
+        # Keep the ceiling: a flat WARNING makes these loggers louder than the application at LOG_LEVEL=ERROR.
         logging.getLogger(name).setLevel(max(logging.WARNING, root.level))
 
 
@@ -95,8 +85,6 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         """One access-log line per request, written on the raising exit as well as the ordinary one."""
         if request.url.path in _EXCLUDED_PATHS:
             return
-        # Split at 500, not at 400: an access line at ERROR for a 401 probe or a 404 typo would
-        # page on a client's mistake.
         if status_code >= 500:
             log_method = logger.error
         elif status_code >= 400:

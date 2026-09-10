@@ -356,10 +356,6 @@ class TestEveryLockedReadIsKeyedOnWhatTheOneBeforeItNamed:
     """WR-121. The entity of a statement is not its key, and `TestTheLockingStatements` above reads
     the compiled text alone -- which renders every bound value as a placeholder."""
 
-    # This is the writing path: a wrong key here locks and spends another tenant's grant, against
-    # SHARED-INVARIANTS § Identity and ownership ("business data is keyed only by `core.users.id`").
-    # The read-only sibling states the same property in `test_sync_resolver.py`.
-
     @staticmethod
     async def _three_reads() -> tuple[AccessGrant, _StubSession]:
         grant, usage = _one_effective_grant()
@@ -479,13 +475,11 @@ class TestTheRolloverIsDerivedFromTheCapturedInstant:
 
     def test_the_boundary_instant_itself_never_says_zero(self):
         """A `Retry-After: 0` invites the immediate retry the refusal exists to stop."""
-        # A microsecond before the boundary rounds up to one second, not down to none.
         assert seconds_until_rollover(datetime(2026, 8, 31, 23, 59, 59, 999999, tzinfo=UTC)) == 1
 
     def test_a_non_utc_instant_names_the_boundary_of_the_month_the_counter_is_keyed_by(self):
         """WR-31: `monthly_period_for` converts first, so an unconverted `replace` here would send
         the client back before its own allowance reset."""
-        # 2026-08-31T20:00-05:00 is 2026-09-01T01:00Z: September already, so the boundary is October's.
         instant = datetime(2026, 8, 31, 20, 0, tzinfo=timezone(timedelta(hours=-5)))
         assert monthly_period_for(instant) == "2026-09"
         assert seconds_until_rollover(instant) == 30 * 86400 - 3600

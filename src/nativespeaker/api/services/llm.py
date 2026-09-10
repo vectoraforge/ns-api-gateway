@@ -17,8 +17,6 @@ class LLMService:
                  api_key: SecretStr,
                  resilence_config: ResilienceConfig,
                  system_prompt: str):
-        # Passed, never left ambient: the library would otherwise read `OPENAI_API_KEY` itself and
-        # raise its own error for an absent one, after `AppConfig` had already reported boot healthy.
         self.llm = init_chat_model(model=model_config.name,
                                    api_key=api_key.get_secret_value(),
                                    temperature=model_config.temperature,

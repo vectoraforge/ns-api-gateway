@@ -23,8 +23,6 @@ FIREBASE_HTTP_TIMEOUT_SECONDS = 8
 # The whole budget for one lookup: the initial call plus up to two more, spent on retryable outcomes only.
 FIREBASE_LOOKUP_ATTEMPTS = 3
 
-# Sub-second, because the budget below is already three 8-second timeouts deep; without a gap at
-# all tenacity spends both budgets inside one instant of a Firebase blip.
 FIREBASE_BACKOFF_BASE_SECONDS = 0.1
 FIREBASE_BACKOFF_MAX_SECONDS = 0.5
 
@@ -56,8 +54,6 @@ def _application_default_credential() -> credentials.ApplicationDefault | None:
     try:
         google.auth.default()
     except google.auth.exceptions.GoogleAuthError:
-        # The whole family, not just an absent credential: this call also raises `RefreshError`
-        # and `TransportError` when the metadata server answers badly at pod start.
         return None
     logger.info("firebase_admin_using_application_default_credentials")
     return credentials.ApplicationDefault()
@@ -94,7 +90,6 @@ class FirebaseAdminLookup:
             auth.revoke_refresh_tokens(subject, app=app)
         except auth.UserNotFoundError:
             # Definitive, spends no retry budget, and listed before the FirebaseError it subclasses.
-            # `RevocationUnconfirmed`, never `UserNotFound`: a vanished account is a non-confirmation.
             logger.error("firebase_revoke_not_found")
             raise RevocationUnconfirmed(stage="subject_absent") from None
         except ValueError:
@@ -125,8 +120,6 @@ class FirebaseAdminLookup:
             logger.info("firebase_get_user_not_found")
             raise UserNotFound(stage="provider_lookup") from None
         except ValueError:
-            # Definitive, exactly as in `_revoke`: the SDK validates the uid before it sends the
-            # request, and its message embeds the uid, so no detail is logged.
             logger.warning("firebase_provider_data_malformed")
             raise Unavailable(stage="provider_lookup") from None
         except google.auth.exceptions.GoogleAuthError as error:
@@ -141,8 +134,7 @@ class FirebaseAdminLookup:
         return VerifiedProviderIdentity(
             provider=provider,
             provider_uid=provider_uid,
-            # `None` on the anonymous arm, whatever the record still carries: Firebase leaves the
-            # record-level `email` populated after a client unlinks its last provider.
+            # Firebase keeps the record email after a client unlinks its last provider.
             email=(None if provider is IdentityProvider.anonymous
                    else _verified_email(email, email_verified)))
 

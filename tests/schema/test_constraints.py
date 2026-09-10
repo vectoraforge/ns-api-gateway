@@ -22,8 +22,6 @@ FK_GRANT_SUBSCRIPTION_ENTITLED = "access_grants_active_subscription_grant_subscr
 # Truncated at 63 characters, so "_ac" is all that survives of the second column; still column-derived.
 FK_GRANT_SUBSCRIPTION_OWNER = "access_grants_active_subscription_grant_subscription_id_ac_fkey"
 
-# The two entitlement keys, asked of the catalogue rather than of a rejection: a rejection says
-# only that something refused, never whether it refused at the statement or at COMMIT.
 _DEFERRED_GRANT_FKS = (
     "SELECT conname FROM pg_constraint "
     "WHERE conrelid = 'core.access_grants'::regclass AND contype = 'f' "
@@ -77,8 +75,6 @@ _INSERT_CHALLENGE = (
 @contextlib.asynccontextmanager
 async def _rejects(conn: asyncpg.Connection, exc_type: type[Exception]):
     """A rejected statement aborts the whole transaction, so the savepoint is what keeps a follow-up query possible."""
-    # The deferred cases use it too: `SET CONSTRAINTS ALL IMMEDIATE` moves the check off COMMIT and
-    # onto a statement inside this savepoint, so the fixture's transaction survives to be rolled back.
     await conn.execute("SAVEPOINT rejected_statement")
     with pytest.raises(exc_type) as exc_info:
         yield exc_info
@@ -220,8 +216,6 @@ class TestExternalIdentityConstraints:
         user_id = await insert_user(conn)
         async with _rejects(conn, asyncpg.CheckViolationError):
             await _insert_identity(conn, user_id=user_id, provider="anonymous", provider_uid="uid_not_allowed")
-        # Keyed to the user this case just minted, never the whole table: the scratch database is
-        # shared, and a sibling module's committed rows would fail a table-wide count here.
         assert await conn.fetchval(
             "SELECT count(*) FROM core.external_identities WHERE user_id = $1", user_id) == 0
 
@@ -365,7 +359,6 @@ class TestSubscriptionConstraints:
                 "expired",
                 subscription_id,
             )
-        # The id this case minted, never the whole table: sibling modules commit subscriptions.
         assert await conn.fetchval(
             "SELECT count(*) FROM core.subscriptions WHERE id = $1", subscription_id) == 0
 
@@ -376,9 +369,7 @@ class TestSubscriptionConstraints:
         assert await conn.fetchval(
             "SELECT product_entitled_subscription_id FROM core.subscriptions WHERE id = $1", subscription_id
         ) is None
-        # Outside the rejection block: the deferral is what lets this INSERT succeed, so a
-        # constraint that lost DEFERRABLE INITIALLY DEFERRED raises here instead of inside the
-        # block, where it would be read as the rejection this case is looking for.
+        # Keep this INSERT outside the rejection block. The deferral is what lets it succeed.
         await insert_grant(
             conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
         )
@@ -394,7 +385,6 @@ class TestSubscriptionConstraints:
             "SELECT product_entitled_subscription_id FROM core.subscriptions WHERE id = $1", subscription_id
         ) is None
         # Not a duplicate of E1: a later reader is most likely to widen this one for a card retry.
-        # Outside the block for the reason E1 states: the deferral is what lets this INSERT succeed.
         await insert_grant(
             conn, user_id=user_id, tier_id=tier, source="subscription", subscription_id=subscription_id
         )
@@ -408,7 +398,6 @@ class TestSubscriptionConstraints:
         thief = await insert_user(conn)
         # The subscription stays entitled, so the only constraint left to reject is the ownership FK.
         subscription_id = await _insert_subscription(conn, user_id=owner, tier_id=tier, status="active")
-        # Outside the block for the reason E1 states: the deferral is what lets this INSERT succeed.
         await insert_grant(
             conn, user_id=thief, tier_id=tier, source="subscription", subscription_id=subscription_id
         )
@@ -461,7 +450,6 @@ class TestTheTierSizingInvariantTheConversionRelisOn:
             "SELECT id, monthly_credits FROM core.access_tiers WHERE id = ANY($1::text[])",
             [ANONYMOUS_TIER_ID, REGISTERED_TIER_ID]))
 
-        # Both keys asserted first: a renamed seed row would otherwise make the comparison vacuous.
         assert set(seeded) == {ANONYMOUS_TIER_ID, REGISTERED_TIER_ID}
         assert seeded[REGISTERED_TIER_ID] >= seeded[ANONYMOUS_TIER_ID]
 
@@ -481,7 +469,6 @@ class TestStorePurchaseConstraints:
                 "apple",
                 f"tok_{uuid.uuid4().hex[:16]}",
                 external_id,
-                # Any other token: the column may be NULL or the identity value, and nothing else.
                 f"tok_{uuid.uuid4().hex[:16]}",
             )
 
@@ -553,8 +540,6 @@ class TestAuthChallengeConstraints:
         # or Exception would also pass for a connection failure and prove nothing about the type.
         async with _rejects(conn, asyncpg.exceptions.InvalidTextRepresentationError):
             await _insert_challenge(conn, operation=operation)
-        # The module-private pre-auth subject `_insert_challenge` binds, never the whole table:
-        # sibling modules commit challenges of their own into this shared scratch database.
         assert await conn.fetchval(
             "SELECT count(*) FROM core.auth_challenges WHERE preauth_subject = $1",
             _PREAUTH_SUBJECT) == 0

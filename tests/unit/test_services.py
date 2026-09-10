@@ -105,7 +105,6 @@ class TestCreateChat:
         nothing in the database caps the count, so the last read before the insert is the guard."""
         service.llm_service.ainvoke.return_value = {"resolved_mode": "analyze", "response": "OK",
                                                     "issues": [], "suggestions": []}
-        # 49 when the request arrives, 50 by the time it comes back from the provider.
         mock_chats_db.count_chats.side_effect = [49, 50]
 
         with pytest.raises(ChatHistoryLimitError):
@@ -171,7 +170,6 @@ class TestFollowup:
         `AppError` -- an opaque 500 raised after the credit was already committed."""
         chat_id = uuid4()
         chat = Chat(id=chat_id, title="hello", user_id=TEST_USER_ID)
-        # The second read is the one taken in the transaction that writes.
         mock_chats_db.get_chat.side_effect = [chat, None]
         service.llm_service.ainvoke.return_value = {"resolved_mode": "analyze", "response": "r",
                                                     "issues": [], "suggestions": []}
@@ -409,7 +407,6 @@ class TestADiscardedAnswerTheCallerPaidForIsFindable:
                                                     "response": "ok",
                                                     "issues": [],
                                                     "suggestions": []}
-        # Below the limit before the commit and at it after: the concurrent case the re-read exists for.
         mock_chats_db.count_chats.side_effect = [0, service.chats_limit]
 
         with pytest.raises(ChatHistoryLimitError):
@@ -424,7 +421,6 @@ class TestADiscardedAnswerTheCallerPaidForIsFindable:
         """The same on the other charged route, named apart so the two are distinguishable."""
         chat = Chat(id=uuid4(), user_id=TEST_USER_ID, title="Existing chat")
         service.llm_service.ainvoke.return_value = {"resolved_mode": "follow_up", "response": "ok"}
-        # Present before the commit and gone after: the delete the re-read exists for.
         mock_chats_db.get_chat.side_effect = [chat, None]
 
         with pytest.raises(InvalidChatError):

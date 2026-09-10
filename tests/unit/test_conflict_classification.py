@@ -381,7 +381,6 @@ class TestTheModuleUsesNoSecondRaceArbiter:
         tree = ast.parse(_CREATION_SOURCE)
         caught = _exception_names(tree)
 
-        # The control: the walk must find the handlers, or the check below reads nothing.
         assert caught >= {"conflict", "failure"}, caught
         assert _reads_a_caught_message(tree, caught) == []
 

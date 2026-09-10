@@ -23,8 +23,6 @@ from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.users import User
 
-# The challenge-store fake is imported rather than copied: two drifting fakes of one conditional
-# update is the hazard, and that update is the system's only serialization point.
 from .conftest import TEST_ISSUER
 from .conftest import FakeChallengeStore as _FakeChallengeStore
 
@@ -342,8 +340,6 @@ class TestTheUpgradeCaseMatrix:
         assert rejections.results == ["not_linked",
                                       "provider_transition_not_allowed",
                                       "provider_account_already_linked"]
-        # One client answer, but every refusal that names a row must name the one under test,
-        # or an operator reading the log is sent to the wrong account.
         assert {fields["identity_row_id"] for _, fields in rejections.entries
                 if "identity_row_id" in fields} == {str(identity_row.id)}
 

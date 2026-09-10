@@ -82,8 +82,6 @@ class ChatService:
                           phrase: str,
                           context: str | None = None,
                           lang: str | None = None) -> Message:
-        # Absence is `None` and nothing else here: a truthiness test spelled it two ways and let
-        # the empty string through the one check that names the supported set.
         if lang is not None and lang not in self.supported_languages:
             raise UnsupportedLanguageError(lang, self.supported_languages)
 
@@ -101,20 +99,14 @@ class ChatService:
             await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
             ai_message = await self.ask_llm(chat, human_message, admitted)
 
-        # Re-read in the transaction that writes, as `send_message` re-reads its chat below: the
-        # count above was taken before the commit that ended its transaction and before the provider
-        # round trip, so every concurrent request on an account one below the limit passed it.
+        # Read the count again in the transaction that writes. The count above is stale.
         if await self.chats_db.count_chats(user_id) >= self.chats_limit:
-            # The credit is committed and the provider has answered, so this line is the only
-            # record that the discarded answer was paid for.
             logger.warning("charged_answer_discarded", user_id=str(user_id), branch="create_chat")
             raise ChatHistoryLimitError(self.chats_limit)
 
         chat.messages.append(human_message)
         chat.messages.append(ai_message)
         self.chats_db.create_chat(chat)
-        # Deliberate commit: `charge` above spent a monthly credit in its own session and has already
-        # committed it, so answering before these rows are durable can bill for a chat that never existed.
         await self._commit_the_charged_write(user_id, branch="create_chat")
 
         return ai_message
@@ -139,16 +131,13 @@ class ChatService:
             await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
             ai_message = await self.ask_llm(chat=chat, message=human_message, admitted=admitted)
 
-        # Re-read in the transaction that writes: a delete across the provider call orphans the inserts below.
+        # Read the chat again in the transaction that writes. A delete during the call orphans the inserts.
         if await self.chats_db.get_chat(chat_id, user_id) is None:
-            # The credit is committed and the provider has answered, so this line is the only
-            # record that the discarded answer was paid for.
             logger.warning("charged_answer_discarded", user_id=str(user_id), branch="send_message")
             raise InvalidChatError(chat_id)
 
         chat.messages.append(human_message)
         chat.messages.append(ai_message)
-        # Deliberate commit, as in `create_chat`: the credit is already spent when this returns.
         await self._commit_the_charged_write(user_id, branch="send_message")
 
         return ai_message
@@ -158,7 +147,6 @@ class ChatService:
         try:
             await self.session.commit()
         except Exception:
-            # Logged and re-raised unchanged: the credit is committed, so this line is all that finds the case.
             logger.error("charged_write_failed", user_id=str(user_id), branch=branch)
             raise
 
@@ -178,12 +166,9 @@ class ChatService:
         chats_deleted = await self.chats_db.delete(chat_id, user_id)
         if chats_deleted == 0:
             raise InvalidChatError(chat_id)
-        # Deliberate commit: a 204 states the chat is gone, so it must be gone before the route answers.
         await self.session.commit()
 
     def get_examples(self, lang: str) -> ExamplesResponse:
-        # Membership, never truthiness: `supported_languages` is the configured keys, so testing the
-        # value refused a key `create_chat` accepts while naming it as supported in the same refusal.
         if lang not in self.examples:
             raise UnsupportedLanguageError(lang, self.supported_languages)
         return ExamplesResponse(lang=lang, examples=self.examples[lang])

@@ -110,7 +110,6 @@ class _Attempt:
     sqlstate: str | None = None
     integrity_at_flush: bool = False
     integrity_at_commit: bool = False
-    # The committed store clock this delivery decided against, read at the write barrier below.
     clock_seen_at_barrier: datetime | None = None
     # Every write the writer emits goes through one of these, so zero means the attempt wrote nothing.
     flushes: int = 0
@@ -137,7 +136,6 @@ def notification_for(harness: _Harness, *, store_key: str = "one", tier_id: str 
                          provider=provider,
                          purchased_at=NOW - _A_MONTH,
                          expires_at=NOW + _A_MONTH,
-                         # Defaulted to the purchase instant by the builder, as every case above wants.
                          signed_at=signed_at,
                          notification_uuid=f"{harness.uuid_prefix}-{store_key}")
 
@@ -343,8 +341,6 @@ class TestTwoStoreKeysForOneLifecyclePairCommitOnce:
         assert type(loser.result) is InternalError
 
 
-# The three clocks WR-10 is about: what the settled row already said, and the two deliveries that
-# raced over it. Both are newer than the settled one, so the out-of-order guard passes for both.
 CLOCK_SETTLED = NOW - timedelta(hours=2)
 CLOCK_OLDER = NOW - timedelta(hours=1)
 CLOCK_NEWER = NOW - timedelta(minutes=30)
@@ -359,8 +355,6 @@ async def seed_settled_lifecycle(harness: _Harness, *, store_signed_at: datetime
                  "(:id, NULL, 'google_play', :lifecycle, :tier, 'expired', :clock, :now, :now)"),
             {"id": uuid.uuid4(), "lifecycle": harness.external_id, "tier": TIER_ID,
              "clock": store_signed_at, "now": NOW})
-        # The second row is what makes this a race and not an insert pair: with it recorded,
-        # `insert_purchase` is skipped, so `UNIQUE (provider, external_id)` arbitrates nothing.
         await conn.execute(
             text("INSERT INTO core.store_purchases (id, provider, identity_value, external_id, "
                  "purchase_user_id, resolved_token_value, created_at) VALUES "

@@ -43,23 +43,15 @@ PLAY_URL = ("https://androidpublisher.googleapis.com/androidpublisher/v3/applica
 # A per-request option because every call sends one bearer and reads one subscription.
 PLAY_HTTP_TIMEOUT_SECONDS = 8
 
-# The floor under the push verifier's rebuild rate. The rebuild runs before any credential is
-# checked on a route outside the gateway's JWT policy, so this is what bounds its cost per burst.
 PUSH_VERIFIER_REBUILD_INTERVAL_SECONDS = 30.0
 
-# The floor under the Play credential's rebuild rate. The rebuild reads the metadata server in the
-# threadpool `get_identity` shares, so this is what bounds its cost while that server is away.
 PLAY_CREDENTIAL_REBUILD_INTERVAL_SECONDS = 30.0
 
 # The two Play statuses that say this purchase token is gone, which no later attempt can change.
 _GONE_STATUSES = frozenset({404, 410})
 
-# Play's answer for a purchase token it cannot read, and for one that names another application.
-# The credential and the scope answer 401 and 403, so this status is the caller's alone.
 _UNUSABLE_TOKEN_STATUS = 400
 
-# The stage labels the restore read answers with, and its whole log vocabulary. One label for each
-# repair, because the client is told only 503 or 403 and the label is the whole diagnosis.
 RESTORE_READ_STAGE = "play_restore_read"
 RESTORE_TOKEN_GONE_STAGE = "play_token_gone"
 RESTORE_TOKEN_UNUSABLE_STAGE = "play_restore_token_unusable"
@@ -96,15 +88,12 @@ class PlayExternalAccountIdentifiers(BaseModel):
 class PlaySubscriptionLineItem(BaseModel):
     """One line item of a Play subscription: the product bought, and when its term ends."""
     productId: str | None = None
-    # Optional as defensive typing only: Play gives every entitled term an end.
-    # Aware, never a bare `datetime`: a naive value would detonate later, inside `_status_for`.
     expiryTime: AwareDatetime | None = None
 
 
 class PlaySubscription(BaseModel):
     """The `purchases.subscriptionsv2.get` response, keeping Google's own field names."""
     subscriptionState: str
-    # Aware for the same reason as `expiryTime` above: it is written to `core.subscriptions`.
     startTime: AwareDatetime | None = None
     latestOrderId: str | None = None
     # Parsed and not acted on: an upgrade's old token is the restore route's to read.
@@ -150,11 +139,9 @@ class PlaySubscriptionSource(Protocol):
 def developer_notification_from(data: str) -> DeveloperNotification | None:
     """The decoded RTDN, or `None` when this verified message carries an unusable body."""
     if not data:
-        # Pub/Sub permits an attributes-only message, so this is routine and not a breached bound.
         logger.info("google_play_message_without_data")
         return None
     if len(data) > PUBSUB_DATA_LIMIT:
-        # Out of range is as unusable as undecodable; the length alone reaches the log.
         logger.error("google_play_message_out_of_range", length=len(data))
         return None
     try:
@@ -179,8 +166,6 @@ def instant_from_millis(milliseconds: int) -> datetime | None:
     try:
         return datetime.fromtimestamp(milliseconds / 1000, UTC)
     except (ValueError, OverflowError, OSError):
-        # Out of range is as unusable as undecodable, and `signed_at` is optional on every path
-        # that reads it; the value itself never reaches the log.
         logger.error("google_play_event_time_out_of_range")
         return None
 
@@ -204,7 +189,6 @@ def _play_answer_is_usable(response: httpx.Response) -> bool:
         # Definitive: a token Google says is gone can never resolve, so a retry loops until retention.
         logger.error("google_play_purchase_token_gone", status_code=response.status_code)
         return False
-    # Named before the raise: `InternalError` logs nothing of its own, and the access line says only 500.
     logger.error("google_play_read_refused", status_code=response.status_code)
     # Pub/Sub acknowledges five statuses only, so a failed read is redelivered rather than lost.
     raise InternalError
@@ -224,8 +208,6 @@ def _status_for(state: str, expiry: datetime | None,
 class PubSubPushTokens:
     """The Cloud Pub/Sub push token, verified against Google's keys and pinned to one push identity."""
 
-    # The declared seam, never the concrete class: this class reads nothing of the verifier but
-    # `verify`, and a Protocol nothing is typed against catches no wrong-shaped double at all.
     def __init__(self, *, verifier: TokenVerifier | None,
                  build: Callable[[], TokenVerifier | None] | None = None,
                  rebuild_interval_seconds: float = PUSH_VERIFIER_REBUILD_INTERVAL_SECONDS) -> None:
@@ -233,23 +215,14 @@ class PubSubPushTokens:
         self._build = build
         self._rebuild_lock = asyncio.Lock()
         self._rebuild_interval = rebuild_interval_seconds
-        # Zero and not the clock: the first delivery after a failed warm-up rebuilds at once.
         self._next_rebuild = 0.0
 
     async def verify(self, bearer: str) -> None:
         """Accept one Google-signed push token, or raise."""
         build = self._build
         if self._verifier is None and build is not None:
-            # Off the loop, because the builder fetches Google's key set: an unreachable endpoint
-            # at boot is transient, and an unconfigured deployment answers None again for free.
-            # Serialized and rate-floored, because this runs before the bearer is examined at all:
-            # unguarded, one burst of junk tokens spends the whole threadpool `get_identity` shares
-            # on its own concurrent fetches, and re-pays that cost for as long as Google is away.
             async with self._rebuild_lock:
-                # Re-read under the lock: a rival that just built one leaves nothing to do here.
                 if self._verifier is None and time.monotonic() >= self._next_rebuild:
-                    # Stamped before the fetch, so the callers held up behind it do not each
-                    # inherit the right to make one of their own the moment it fails.
                     self._next_rebuild = time.monotonic() + self._rebuild_interval
                     self._verifier = await run_in_threadpool(build)
         if self._verifier is None:
@@ -282,7 +255,6 @@ class PlayDeveloperSubscriptions:
         self._build = build
         self._rebuild_lock = asyncio.Lock()
         self._rebuild_interval = rebuild_interval_seconds
-        # Zero and not the clock: the first call after a failed warm-up rebuilds at once.
         self._next_rebuild = 0.0
         self._client = client
         # Server-controlled reference data, never a value the store supplied.
@@ -292,19 +264,12 @@ class PlayDeveloperSubscriptions:
         """Report whether a credential is held, rebuilding once if boot could not read one."""
         build = self._build
         if self._credential is None and build is not None:
-            # Off the loop, because the builder reads the metadata server: a bad answer at boot is
-            # transient, and an unconfigured deployment answers None again for free.
             async with self._rebuild_lock:
-                # Re-read under the lock: a rival that just built one leaves nothing to do here.
                 if self._credential is None and time.monotonic() >= self._next_rebuild:
-                    # Stamped before the read, so the callers held up behind it do not each
-                    # inherit the right to make one of their own the moment it fails.
                     self._next_rebuild = time.monotonic() + self._rebuild_interval
                     self._credential = await run_in_threadpool(build)
         return self._credential is not None
 
-    # `evaluated_at` is passed, never read from a clock here: a second reading would let a term
-    # cross between `_status_for` and the grant writer's `ends_at`.
     async def read(self, *, package_name: str, purchase_token: str, event_type: str,
                    notification_uuid: str, signed_at: datetime | None,
                    evaluated_at: datetime) -> VerifiedNotification | None:
@@ -312,21 +277,15 @@ class PlayDeveloperSubscriptions:
         if not await self._credential_in_hand():
             raise Unavailable(stage="play_subscriptions_read")
         if not package_name or not _names_one_path_segment(package_name):
-            # An absent or dot-only name addresses a URL naming no application, whose 404 would
-            # read here as a gone token; refused loudly, because acknowledging drops the delivery.
             logger.error("google_play_unusable_package_name")
             raise InternalError
         if not _names_one_path_segment(purchase_token):
-            # `quote` leaves a dot unescaped and httpx removes a dot segment, so `..` addresses a
-            # different Play URL; `None`, never a raise, because there is nothing here to read.
             logger.error("google_play_unusable_purchase_token")
             return None
 
         try:
             response = await self._get(package_name, purchase_token)
         except (httpx.HTTPError, google.auth.exceptions.GoogleAuthError) as failure:
-            # A refused credential refresh is no more the caller's fault than a reset connection.
-            # The exception's class name, never its text: a URL carrying the purchase token is in there.
             logger.error("google_play_read_transport_failed", failure=type(failure).__name__)
             # A transport failure is the 500 that makes Pub/Sub redeliver this notification.
             raise InternalError from failure
@@ -335,8 +294,6 @@ class PlayDeveloperSubscriptions:
         try:
             subscription = PlaySubscription.model_validate(response.json())
         except ValueError as failure:
-            # Both a non-JSON 2xx and a body this build cannot read arrive as `ValueError`; the
-            # class name alone, because the body and pydantic's echo of it carry Play's own values.
             logger.error("google_play_read_unparseable", failure=type(failure).__name__)
             raise InternalError from None
 
@@ -366,8 +323,6 @@ class PlayDeveloperSubscriptions:
     async def read_for_restore(self, *, package_name: str, purchase_token: str,
                                evaluated_at: datetime) -> RestoredSubscription:
         """Read the state of one client-presented purchase token, or raise the refusal it earned."""
-        # Each refusal is classified here, so this path answers 503 where the webhook answers 500.
-        # `UnmappedStoreProduct` is the one exception, and it is re-raised by name below.
         if not await self._credential_in_hand():
             raise Unavailable(stage=RESTORE_UNCONFIGURED_STAGE)
         if not package_name or not _names_one_path_segment(package_name):
@@ -381,7 +336,6 @@ class PlayDeveloperSubscriptions:
             response = await self._get(package_name, purchase_token)
         except (httpx.HTTPError, google.auth.exceptions.GoogleAuthError) as failure:
             # The app retries later, so a transport failure is a 503 and never the webhook's 500.
-            # A refused credential refresh is the same outcome, reached without any httpx error.
             raise Unavailable(stage=RESTORE_TRANSPORT_STAGE) from failure
 
         if response.status_code in _GONE_STATUSES:
@@ -389,29 +343,20 @@ class PlayDeveloperSubscriptions:
             # the URL path, so a token of another application answers 404 and arrives here too.
             raise ProofRejected(stage=RESTORE_TOKEN_GONE_STAGE)
         if response.status_code == _UNUSABLE_TOKEN_STATUS:
-            # Play's answer for a token that does not parse, or that names another application:
-            # the caller's proof, never this deployment's credential, and no retry changes it.
             raise ProofRejected(stage=RESTORE_TOKEN_UNUSABLE_STAGE)
         if response.status_code // 100 != 2:
-            # Our own two words, never Play's status: the 401 and 403 left here are a credential or
-            # scope an operator repairs, and a 5xx is Play's own outage, which is waited out.
             raise Unavailable(stage=RESTORE_READ_STAGE,
                               cause="refused" if response.status_code // 100 == 4 else "failed")
 
         try:
             subscription = PlaySubscription.model_validate(response.json())
         except ValueError:
-            # A 2xx this build cannot read is as unusable as no answer at all. The cause is
-            # dropped rather than chained: its text carries the Play values this module excludes.
             raise Unavailable(stage=RESTORE_UNPARSEABLE_STAGE) from None
         try:
             product_id, tier_id, expiry = self._product_of(subscription)
         except UnmappedStoreProduct:
-            # D-11: an unmapped product is an operator error and stays a 500 on both paths.
-            raise
+            raise  # D-11: an unmapped product is an operator error and stays a 500 on both paths.
         except InternalError:
-            # A line item count this build cannot read is as unusable as a body it cannot parse,
-            # and the webhook's 500 is not an answer this route gives the app.
             raise Unavailable(stage=RESTORE_UNPARSEABLE_STAGE) from None
         # Google carries no separate grace field, so in grace this expiry is the end of the window.
         in_grace = subscription.subscriptionState == GRACE_STATE
@@ -433,8 +378,6 @@ class PlayDeveloperSubscriptions:
     def _product_of(self, subscription: PlaySubscription) -> tuple[str, str, datetime | None]:
         """The line item's product, the tier it maps to, and the end of its term."""
         if len(subscription.lineItems) != 1:
-            # Refused before any write: the tier and the term are read off this one element, and
-            # Google documents no ordering, so element zero of a longer list is a guess.
             logger.error("google_play_unexpected_line_item_count",
                          count=len(subscription.lineItems))
             raise InternalError
@@ -450,10 +393,7 @@ class PlayDeveloperSubscriptions:
         A refused refresh leaves as `GoogleAuthError`, which both entry points catch."""
         if not self._credential.valid:
             # `refresh` is synchronous and can block on a token fetch, so it never runs on the loop.
-            # Capped like the httpx client and the JWKS client: this is the one call that holds a
-            # real OS thread, and google-auth's own default would hold it for 120 s per attempt.
             await run_in_threadpool(self._credential.refresh, CappedRefreshRequest())
-        # Escaping confines each value to one segment, except dots, which both entry points refuse.
         return await self._client.get(
             PLAY_URL.format(package_name=quote(package_name, safe=""),
                             purchase_token=quote(purchase_token, safe="")),

@@ -23,17 +23,11 @@ DEVICECHECK_HTTP_TIMEOUT_SECONDS = 8
 # The whole budget for one call: the initial request plus up to two more, spent on retryable outcomes only.
 DEVICECHECK_ATTEMPTS = 3
 
-# Sub-second, because the budget below is already three 8-second timeouts deep; without a gap at
-# all tenacity spends all three attempts inside one instant of an Apple blip.
 DEVICECHECK_BACKOFF_BASE_SECONDS = 0.1
 DEVICECHECK_BACKOFF_MAX_SECONDS = 0.5
 
-# Apple's plain-text bodies for a device whose bits were never set, casefolded because both
-# literal sets are [ASSUMED] from secondary sources.
 _NEVER_SET_BODIES = frozenset({"failed to find bit state", "bit state not found"})
 
-# The phrase Apple's 400 bodies carry when the fault is the caller's device token and never when it
-# is the request this service built; a phrase, because the exact bodies are [ASSUMED].
 _DEVICE_TOKEN_FAULT = "device token"
 
 
@@ -70,11 +64,8 @@ def read_private_key(path: str | None) -> str | None:
         return None
     try:
         text = pem.read_text()
-        # Parsed once, here, so a present but unusable key is the same absent state an unset path is.
         jwt.encode({}, text, algorithm="ES256")
-    except Exception:
-        # Every exception: a public PEM fails at `.sign()` with `AttributeError` and a
-        # passphrase-wrapped `.p8` with `TypeError`, both outside `(OSError, ValueError, PyJWTError)`.
+    except Exception:  # A public PEM raises AttributeError and a wrapped .p8 raises TypeError.
         return None
     return text
 
@@ -111,10 +102,7 @@ def _reject_or_retry(response: httpx.Response, *, stage: str) -> None:
     """Raise on the two non-success arms: a 400 naming the token, then everything else retryable."""
     if response.status_code == 400:
         if _DEVICE_TOKEN_FAULT in response.text.casefold():
-            # Definitive: Apple refused the token itself, so no further attempt can change the answer.
             raise ProofRejected(stage=stage, cause="rejected")
-        # Apple faults the request this service built, not the caller's proof: a skewed pod clock
-        # alone earns "Invalid or missing timestamp" on every call.
         raise RetryableDeviceCheckError("status 400")
     if response.status_code // 100 != 2:
         raise RetryableDeviceCheckError(f"status {response.status_code}")
@@ -124,8 +112,7 @@ def _parse_bit_state(response: httpx.Response, *, stage: str) -> BitState:
     """Classify a query response in the one order that lets nothing fall through to a default."""
     body = response.text.strip().casefold()
     if body in _NEVER_SET_BODIES and response.status_code // 100 != 5:
-        # Read ahead of the status, because Apple is widely observed carrying this body on 400 as
-        # well as on the documented 200; a 5xx is excluded so an outage page cannot mint a grant.
+        # The body is read before the status. The 5xx exclusion stops an outage page making a grant.
         return BitState(bit0=False, bit1=False)
     _reject_or_retry(response, stage=stage)
 
@@ -134,8 +121,6 @@ def _parse_bit_state(response: httpx.Response, *, stage: str) -> BitState:
         raise RetryableDeviceCheckError("unrecognised body")
     bit0, bit1 = payload.get("bit0"), payload.get("bit1")
     if not isinstance(bit0, bool) or not isinstance(bit1, bool):
-        # The type is part of the guard: coercing `None` would report a bit clear that Apple
-        # never answered, granting a second free grant and writing a set bit1 away.
         raise RetryableDeviceCheckError("unrecognised body")
     return BitState(bit0=bit0, bit1=bit1)
 
@@ -194,14 +179,11 @@ def _retrying(exhausted) -> AsyncRetrying:
     )
 
 
-# Annotated with the Protocol both consume: unannotated, the one declaration that would catch a
-# wrong-shaped double or a renamed method caught nothing at all.
 async def read_bits_with_retry(adapter: DeviceCheckAdapter, device_token: str) -> BitState:
     """Call the adapter's query up to `DEVICECHECK_ATTEMPTS` times; return the state or raise."""
     return await _retrying(_read_exhausted)(adapter.read_bits, device_token)
 
 
-# Blind on both bits: Apple has no compare-and-swap, so a carried-forward bit can overwrite a newer value.
 async def write_bits_with_retry(adapter: DeviceCheckAdapter, device_token: str, *,
                                 bit0: bool, bit1: bool) -> None:
     """Call the adapter's update up to `DEVICECHECK_ATTEMPTS` times; return on confirmation or raise."""

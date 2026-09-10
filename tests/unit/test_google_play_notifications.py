@@ -129,7 +129,6 @@ def _never_reached(_request: httpx.Request) -> httpx.Response:
     raise AssertionError("this case must not reach Play at all")
 
 
-# A sentinel and not `None`: the default substitutes the fake, so `None` was unsayable here.
 _UNSET = object()
 
 
@@ -203,12 +202,9 @@ class TestThePlayReadReportsTheNotificationValueType:
         notification = await _read("SUBSCRIPTION_STATE_ACTIVE", expiry=UNEXPIRED)
 
         assert notification.provider is PurchaseProvider.google_play
-        # The three the dependency passed in, carried through untouched.
         assert notification.notification_uuid == NOTIFICATION_KEY
         assert notification.event_type == EVENT_TYPE
-        # The RTDN envelope's own instant: the out-of-order guard reads this field and no other.
         assert notification.signed_at == SIGNED_AT
-        # D-10: the purchase token is the only handle `subscriptionsv2.get` accepts.
         assert notification.external_id == PURCHASE_TOKEN
         assert notification.transaction_id == ORDER_ID
         assert notification.product_id == PRODUCT_ID
@@ -380,7 +376,6 @@ class TestTheTokenIsCheckedBeforeTheBodyIsParsed:
             await _verify(body, tokens=_RefusingTokens())
 
         assert refusal.value.stage == "bad_signature"
-        # The decode's own ERROR line is what a body parsed ahead of the token check would leave.
         assert play_logs.records("error") == []
 
 
@@ -407,7 +402,6 @@ class TestAnEventTimeThatNamesNoInstant:
     9999. The escape was a 500, which is the one answer that makes Pub/Sub redeliver this same
     body until retention expires -- the loop `developer_notification_from` exists to stop."""
 
-    # Google's own stamp is milliseconds; these two are far outside `datetime`'s year range.
     OUT_OF_RANGE = (10 ** 18, -10 ** 18)
 
     @pytest.mark.parametrize("millis", OUT_OF_RANGE, ids=["far-future", "far-past"])
@@ -607,7 +601,6 @@ class TestTheLineItemCountIsMadeVisible:
                                           evaluated_at=EVALUATED_AT)
 
         assert (refusal.value.stage, refusal.value.status) == (RESTORE_UNPARSEABLE_STAGE, 503)
-        # The operator line is unchanged: the count is still named, whichever answer the caller gets.
         assert play_logs.records("error") == [("google_play_unexpected_line_item_count",
                                                {"count": 0})]
 
@@ -994,7 +987,6 @@ def _require_list() -> list[str]:
     """The claims `jwt.decode` is told to require: the verifier's own value, never a copy of it."""
     required = DECODE_OPTIONS.get("require")
     assert isinstance(required, list), "the verifier declares no `require` list at all"
-    # Verified to be the value the call actually passes, not merely a constant beside it.
     assert any(keyword.arg == "options" and isinstance(keyword.value, ast.Name)
                and keyword.value.id == "DECODE_OPTIONS"
                for node in ast.walk(ast.parse(VERIFIER_MODULE.read_text()))
@@ -1005,10 +997,6 @@ def _require_list() -> list[str]:
     return required
 
 
-# The eight bounded reasons `invalid_external_jwt` is closed over: `01-foundation.md:260`,
-# `02-create-user.md:85`, `11-sign-out-all.md:80`. `00-overview-and-shared-contracts.md:617`
-# names them as a minimum -- "including at least" -- which is what admits a ninth that only a
-# caller pinning required claims can reach.
 SPEC_REASONS = frozenset({"missing_token", "malformed", "duplicate_authorization",
                           "bad_signature", "issuer_mismatch", "audience_mismatch",
                           "expired", "empty_subject"})
@@ -1023,7 +1011,6 @@ TOKEN_REFUSALS = [
 ]
 TOKEN_REFUSAL_IDS = ["signature", "email", "email-verified", "aud", "iss"]
 
-# The 2xx body a captive portal or a proxy error page answers with, which is not JSON at all.
 NOT_JSON = b"<html>502 Bad Gateway</html>"
 
 
@@ -1081,7 +1068,6 @@ class TestTheClaimPinsArePostDecodeComparisons:
         `required_claims`, so the `is None` guard returns before the comparison that yields it."""
         assert SPEC_REASONS <= set(BoundedReason)
         assert set(BoundedReason) - SPEC_REASONS == {BoundedReason.required_claim_mismatch}
-        # One return site, under the pin. A second would be a word no spec closed over.
         assert VERIFIER_MODULE.read_text().count("BoundedReason.required_claim_mismatch") == 1
 
     def test_email_is_compared_after_decode_rather_than_required(self):

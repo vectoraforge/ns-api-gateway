@@ -34,7 +34,7 @@ class StorePurchaseToken(SQLModel, table=True):
     __tablename__ = "store_purchase_tokens"
     __table_args__ = {"schema": "core"}
 
-    # The table has no database primary key; these two markers are ORM-level, met by UNIQUE (user_id, provider).
+    # The database table has no primary key. These ORM markers map to UNIQUE (user_id, provider).
     user_id: UUID = Field(foreign_key="core.users.id", primary_key=True)
     provider: PurchaseProvider = Field(sa_type=PurchaseProviderType, primary_key=True)
     # Deliberately not `unique=True`: the table's rule is the composite UNIQUE (provider, identity_value).
@@ -75,8 +75,7 @@ class SubscriptionEvent(SQLModel, table=True):
     subscription_id: UUID = Field(foreign_key="core.subscriptions.id")
     # Plain text, not an enum: a store type this build does not know is recorded, never refused.
     event_type: str = Field()
-    # Deliberately not `unique=True`: the table's rule is the migration's own `NOT NULL UNIQUE`,
-    # and `is_unique_violation` is what reads its refusal.
+    # Deliberately not `unique=True`: the table's rule is the migration's own `NOT NULL UNIQUE`.
     notification_uuid: str = Field()
     old_tier_id: str | None = Field(default=None, foreign_key="core.access_tiers.id")
     new_tier_id: str | None = Field(default=None, foreign_key="core.access_tiers.id")

@@ -45,13 +45,8 @@ from nativespeaker.api.services import LLMService
 
 logger = structlog.get_logger()
 
-#: Well inside every managed-Postgres and NAT idle timeout this service could sit behind, so a
-#: connection is retired before the far end drops it rather than after.
 _DB_POOL_RECYCLE_SECONDS = 1800
 
-#: The cap on the one boot connection below. asyncpg's own default is 60 seconds and the chart
-#: ships no `startupProbe`, so an unbounded connect to a blackholed host would let the liveness
-#: probe kill the pod before boot named the reason it was failing.
 _DB_CONNECT_TIMEOUT_SECONDS = 8.0
 
 # Two arms and no case transform, so the two library members that skip verification stay unreachable.
@@ -68,11 +63,8 @@ def build_app_store_verifier(store: AppStoreConfig) -> SignedDataVerifier | None
         return None
     try:
         root_bytes = root.read_bytes()
-        # Parsed and discarded: `SignedDataVerifier` parses its root lazily, so a PEM or a
-        # truncated value would surface only as a 401 on a genuine notification.
-        x509.load_der_x509_certificate(root_bytes)
+        x509.load_der_x509_certificate(root_bytes)  # Parse only. SignedDataVerifier parses its root lazily.
     except (OSError, ValueError):
-        # An unreadable or non-DER root is an unconfigured deployment, not a forged notification.
         return None
     return SignedDataVerifier(root_certificates=[root_bytes],
                               # No network call on the admission path, so `verify` performs no I/O.
@@ -116,24 +108,12 @@ def build_jwt_verifier(jwt: JWTConfig) -> JWTVerifier:
                            leeway=jwt.leeway_seconds,
                            cache_ttl_seconds=jwt.jwks_cache_ttl_seconds)
     except PyJWTError as failure:
-        # Fatal, where the two builders above answer `None`: a pod without this verifier has
-        # nothing to be Ready for. The URL is named because `PyJWKClientError` names none.
         raise RuntimeError(f"JWKS unusable at {jwt.jwks_url}: {failure}") from failure
 
 
 def build_db_engine(db: DatabaseConfig) -> AsyncEngine:
     """The one engine. Named like its three sibling builders so its pool settings are assertable."""
-    # `pool_pre_ping` and `pool_recycle` are not the library's defaults. A pod is long-lived and
-    # this service is almost idle, so a pooled connection sits for hours -- exactly what a managed
-    # Postgres idle timeout, a failover or a NAT expiry kills server-side. Without the ping, the
-    # next request to draw that connection raises out of the CRUD layer as an opaque 500, and on a
-    # chat route it does so after `QuotaService.charge` has already committed a spent credit. With
-    # `max_overflow=0`, up to `pool_size` requests in a row can hit it, and nothing retries.
-    # `hide_parameters`, because almost every write here binds a secret: the single-use challenge
-    # handle, the DeviceCheck token, the user email, and the Play purchase token inside
-    # `notification_uuid`. A `StatementError` renders its bound parameters in `__str__`, and any one
-    # that escapes the CRUD layer reaches `generic_error_handler`, which logs the whole chain. The
-    # SQL text is kept: it names columns, never values.
+    # `hide_parameters` keeps bound secrets out of the `StatementError` text the handlers log.
     return create_async_engine(db.url,
                                pool_size=db.pool_size,
                                max_overflow=0,
@@ -144,19 +124,12 @@ def build_db_engine(db: DatabaseConfig) -> AsyncEngine:
 
 async def _prove_database_reachable(engine: AsyncEngine, db: DatabaseConfig) -> None:
     """One connection, opened and dropped, so the pod is not Ready before anything reached Postgres."""
-    # Fatal, like `build_jwt_verifier` and unlike the two store builders: a pod that cannot reach
-    # Postgres has nothing to be Ready for, and `/health/ready` answers a static 200 that will never
-    # say so. `create_async_engine` connects lazily, so without this a rollout carrying a wrong
-    # DB_HOST or a rotated DB_PASSWORD passes both probes, completes its rolling update, and
-    # terminates the last working pod. Boot-time only: a blip afterwards never reaches this line, so
-    # a running pod is never restarted by it and the rollout simply halts on the previous ReplicaSet.
     try:
         async with asyncio.timeout(_DB_CONNECT_TIMEOUT_SECONDS):
             async with engine.connect():
                 pass
     except Exception as failure:
-        # Host and port, never the URL: `DatabaseConfig.url` renders the password. Measured: none of
-        # the three real failures (refused, wrong password, unreachable) carries it in its own text.
+        # The message names the host and the port because `DatabaseConfig.url` renders the password.
         raise RuntimeError(f"database unreachable at {db.host}:{db.port}/{db.name}: "
                            f"{type(failure).__name__}: {failure}") from failure
 
@@ -166,12 +139,8 @@ def _play_credential():
     try:
         credential, _project = google.auth.default(scopes=[PLAY_SCOPE])
     except google.auth.exceptions.DefaultCredentialsError:
-        # The environment supplies none, which is the absence 44 D-14 warns about at boot.
         return None
     except google.auth.exceptions.GoogleAuthError:
-        # The rest of the family: `google.auth.default()` raises `RefreshError` and
-        # `TransportError` when the metadata server answers badly. Told apart from absence,
-        # because the values are here and the next call rebuilds through this same function.
         logger.warning("play_credential_warm_up_failed",
                        consequence="POST /webhooks/google-play/rtdn and the google_play arm of "
                                    "POST /auth/restore-subscription answer 503 until Google's "
@@ -192,15 +161,12 @@ async def lifespan(app: FastAPI):
 
     app.state.challenge_store = ChallengesDB()
 
-    # Nothing built yet: the `finally` below reaches every one of these on a startup that
-    # failed part-way, where the later names do not exist at all.
     db_engine: AsyncEngine | None = None
     devicecheck_client: httpx.AsyncClient | None = None
     play_client: httpx.AsyncClient | None = None
     firebase_apps: dict[str, firebase_admin.App] = {}
 
     try:
-        # One named Firebase app per configured issuer; an absent credential returns {} and boot proceeds.
         firebase_apps = build_admin_apps(config)
         app.state.firebase_adapter = FirebaseAdminLookup(firebase_apps)
 
@@ -218,7 +184,6 @@ async def lifespan(app: FastAPI):
                                                          client=devicecheck_client)
 
         app_store_verifier = build_app_store_verifier(config.app_store)
-        # The product map too, as the Play arm below tests it: a map serving nothing has no other signal.
         if app_store_verifier is None or not config.app_store.products:
             logger.warning("app_store_configuration_absent",
                            consequence="POST /webhooks/app-store refuses every notification and "
@@ -226,7 +191,6 @@ async def lifespan(app: FastAPI):
                                        "restore until this pod is restarted with the App Store "
                                        "bundle id, environment, product map, app id (production "
                                        "only) and root certificate available in this environment")
-        # Set unconditionally, so the route set is the same in every environment.
         app.state.app_store_notifications = AppStoreNotifications(verifier=app_store_verifier,
                                                                   products=config.app_store.products)
 
@@ -241,21 +205,16 @@ async def lifespan(app: FastAPI):
                                        "name, product map, push audience, push service account and "
                                        "Application Default Credentials available in this environment")
         elif google_push_verifier is None:
-            # Told apart from the absence above, which this configuration is not: the values are here.
             logger.warning("google_push_verifier_warm_up_failed",
                            consequence="POST /webhooks/google-play/rtdn refuses every delivery until "
                                        "Google's key set is reachable again, which the next delivery "
                                        "retries without a restart")
         play_client = httpx.AsyncClient(timeout=PLAY_HTTP_TIMEOUT_SECONDS)
-        # Set unconditionally, so the route set is the same in every environment.
         app.state.google_push_tokens = PubSubPushTokens(
             verifier=google_push_verifier,
-            # A JWKS blip at boot is transient, so the verifier is rebuilt rather than cached as absent.
             build=lambda: build_google_push_verifier(config.google_play))
         app.state.play_subscriptions = PlayDeveloperSubscriptions(
             credential=play_credential,
-            # A metadata-server blip at boot is transient, so the credential is rebuilt rather than
-            # cached as absent, as the push verifier above is. An unconfigured pod answers None again.
             build=_play_credential,
             client=play_client,
             products=config.google_play.products)
@@ -277,8 +236,6 @@ async def lifespan(app: FastAPI):
 
         yield
     finally:
-        # Guarded per step: `dispose()` and `aclose()` both raise on a handle in a bad state, and a
-        # raise here would skip every step below it.
         if db_engine is not None:
             try:
                 await db_engine.dispose()
@@ -291,8 +248,7 @@ async def lifespan(app: FastAPI):
                 except Exception:
                     logger.error("shutdown_step_failed", step="http_client_close", exc_info=True)
 
-        # `firebase_admin` registers named apps process-globally and raises on a repeat, so a
-        # second boot needs these gone.
+        # `firebase_admin` registers named apps process-globally and raises on a repeated name.
         for firebase_app in firebase_apps.values():
             try:
                 firebase_admin.delete_app(firebase_app)

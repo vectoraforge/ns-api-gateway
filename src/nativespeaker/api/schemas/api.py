@@ -6,11 +6,8 @@ from pydantic import BaseModel, Field
 
 class ChatRequest(BaseModel):
     """New chat request."""
-    # Non-empty, so an unusable body is the framework's 422 and never a charged credit.
     phrase: str = Field(..., min_length=1, max_length=4096)
     context: str | None = Field(default=None, max_length=4096)
-    # Non-empty for the reason `phrase` is: the empty string is falsy, so it slipped past the
-    # supported-language check every other value gets and was stored as a chat's language.
     lang: str | None = Field(default=None, min_length=1, max_length=16)
 
 
@@ -24,7 +21,6 @@ class ChatResponse(BaseModel):
 
 class MessageRequest(BaseModel):
     """Followup message in existing chat."""
-    # Non-empty, for the reason `ChatRequest.phrase` is: `send_message` charges before it asks.
     message: str = Field(..., min_length=1, max_length=4096)
 
 

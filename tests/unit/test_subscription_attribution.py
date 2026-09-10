@@ -23,7 +23,6 @@ from nativespeaker.api.tables import (
 
 PAID_TIER_ID = "paid"
 
-# A second seeded tier, so a tier that moves inside the window moves to something nameable.
 OTHER_TIER_ID = "registered"
 
 # One obviously synthetic attribution token, and a second that disagrees with it.
@@ -36,8 +35,6 @@ NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
 RESTORER = uuid7()
 ORIGINAL_BUYER = uuid7()
 
-# PostgreSQL's `foreign_key_violation`. The two DEFERRABLE INITIALLY DEFERRED entitlement keys are
-# foreign keys, so this -- never `23505` -- is the code COMMIT evaluates them into.
 DEFERRED_KEY_VIOLATION = "23503"
 
 
@@ -89,7 +86,6 @@ class _RefusingSession(_StubSession):
 
     def __init__(self, sqlstate: str | None = DEFERRED_KEY_VIOLATION) -> None:
         super().__init__()
-        # Carried on the attribute every classifier reads; `None` is the unreadable violation.
         self._orig = None if sqlstate is None else _Orig(sqlstate)
 
     async def commit(self) -> None:
@@ -102,7 +98,6 @@ class _UpsertResult:
 
     def __init__(self, row: Subscription | None, rowcount: int = 1) -> None:
         self._row = row
-        # The claim's whole answer: zero is the restore that took this unowned row first.
         self.rowcount = rowcount
 
     def first(self) -> Subscription | None:
@@ -132,8 +127,6 @@ class _RecordingSubscriptions:
     """Stands in for the subscription crud calls, keyed as the two tables' unique indexes key them."""
 
     def __init__(self) -> None:
-        # Shared with `_RecordingPurchases`, so the order of the two stands-in's calls is measurable
-        # rather than only their arguments: per-method lists carry no sequence between them.
         self.timeline: list[str] = []
         self.events: dict[str, dict] = {}
         self.purchases: dict[tuple[PurchaseProvider, str], StorePurchase] = {}
@@ -143,15 +136,8 @@ class _RecordingSubscriptions:
         self.appended: list[dict] = []
         self.locked: list[UUID] = []
         self.granted: list[dict] = []
-        # What the canonical row says once the locks are held. `None` follows the stored row; a case
-        # sets it to model a restore that committed between the unlocked read and the locks.
         self.settled_owner: UUID | None = None
-        # Whether the writer's own conditional owner claim takes the unowned row. A case sets it
-        # False for the restore that adopted the row between this delivery's read and its update.
         self.claim_wins = True
-        # A rival delivery committing between the unlocked read and the locks. It is run once,
-        # immediately after the unlocked `read_subscription`, so the second, under-lock read
-        # answers with the row it left behind -- which is how the staleness arises in production.
         self.rival: Callable[[], None] | None = None
 
     async def lock_grants(self, user_id: UUID) -> list:
@@ -189,10 +175,6 @@ class _RecordingSubscriptions:
         self.timeline.append("upsert_subscription")
         self.upserts.append(fields)
         key = (fields["provider"], fields["external_id"])
-        # WR-49: the real writer over a one-row session, never a second statement of its rules. The
-        # copy this replaces moved the store clock backwards where production only ever advances it
-        # -- the exact column the service's own out-of-order guard reads -- and answered `applied`
-        # where production answers `replayed` or, since the conditional owner claim, `lost_race`.
         session = _UpsertSession(self.subscriptions.get(key), self.claim_wins)
         stored, outcome = await SubscriptionsDB(session).upsert_subscription(**fields)
         self.subscriptions[key] = stored
@@ -223,7 +205,6 @@ class _RecordingPurchases:
     """Stands in for the inverse token read, answering with one binding or with none."""
 
     def __init__(self, timeline: list[str], bound: UUID | None = None) -> None:
-        # The writer's list, not its own: the ordering claim is about these two relative to each other.
         self.timeline = timeline
         self.bound = bound
         self.calls: list[tuple[PurchaseProvider, str]] = []
@@ -355,8 +336,6 @@ class TestTheSinglePurchaseArms:
         await service.ingest(_notification(attribution_token=TOKEN))
 
         assert service.purchases_db.calls == [(PurchaseProvider.apple, TOKEN)]
-        # The ordering the name claims, measured on one shared sequence: arguments alone would
-        # stay green with `resolve_user` moved under the grant locks, which is the defect.
         assert "lock_grants" in writer.timeline, "the lock this read must precede never ran"
         assert writer.timeline[0] == "resolve_user", writer.timeline
         assert writer.timeline.index("resolve_user") < writer.timeline.index("lock_grants")
@@ -437,8 +416,6 @@ class TestTheConflictArm:
         recorded = writer.purchases[(PurchaseProvider.apple, external_id)]
         assert refusal.value.log_fields() == {"provider": "apple",
                                               "purchase_id": str(recorded.id)}
-        # The message reaches an operator too, and the lifecycle key is the Google purchase token
-        # on the other path, so neither it nor either presented value is admissible in one.
         for secret in (external_id, TOKEN, OTHER_TOKEN):
             assert secret not in str(refusal.value)
 
@@ -525,7 +502,6 @@ class TestARestoreThatCommitsInTheWindowIsRefused:
             await service.ingest(_notification(external_id=external_id, event_type="EXPIRED",
                                                status=SubscriptionStatus.expired))
 
-        # The account whose grants were locked is the one the write would have gone to.
         assert writer.locked == [ORIGINAL_BUYER]
         assert writer.granted == []
         assert writer.upserts == []
@@ -635,7 +611,6 @@ class TestADeliveryThatCommitsInTheWindowSupersedesThisOne:
                                            status=SubscriptionStatus.expired,
                                            signed_at=NOW + timedelta(hours=1)))
 
-        # The event is recorded on both sides at the tier the row already carries, and nothing else moves.
         assert [event["notification_uuid"] for event in writer.appended] != []
         assert writer.upserts == []
         assert writer.granted == []
@@ -665,7 +640,6 @@ class TestADeliveryThatCommitsInTheWindowSupersedesThisOne:
         writer.rival = lambda: _seed_owned(writer, RESTORER, external_id=external_id,
                                            status=SubscriptionStatus.revoked,
                                            store_signed_at=NOW + timedelta(hours=2))
-        # The same buyer on both deliveries, which is what leaves the owner guard with nothing to say.
         service = _service(session, writer, RESTORER)
 
         await service.ingest(_notification(attribution_token=TOKEN, external_id=external_id,
@@ -704,7 +678,6 @@ async def _upsert(writer, external_id: str, *, signed_at=NOW,
                                             tier_id=PAID_TIER_ID,
                                             status=status,
                                             signed_at=signed_at,
-                                            # The clock the guard read, as `ingest` passes it.
                                             clock_read=(None if stored is None
                                                         else stored.store_signed_at),
                                             evaluated_at=NOW)
@@ -839,7 +812,6 @@ class TestTheDeferredKeysAreClassifiedWhereTheyAreEvaluated:
             await service.ingest(_notification(attribution_token=TOKEN))
 
         assert refused.value.orig.sqlstate == DEFERRED_KEY_VIOLATION
-        # `get_db` rolls back on the way out, so this arm does not spend a rollback of its own.
         assert (session.commits, session.rollbacks) == (1, 0)
         assert race_warnings == []
 
@@ -908,7 +880,6 @@ class TestTheUpsertsOwnLostClaimIsAnsweredByTheService:
             await service.ingest(_notification(attribution_token=TOKEN, external_id=external_id))
 
         assert session.rollbacks == 1
-        # Settled at the upsert, so neither the purchase row nor the grant behind it was reached.
         assert (writer.inserted, writer.granted, session.commits) == ([], [], 0)
         assert race_warnings == [("store_notification_race_lost", {"provider": "apple"})]
 

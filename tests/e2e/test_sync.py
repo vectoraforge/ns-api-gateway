@@ -143,8 +143,6 @@ class TestTwoAbsentEntitlementsAreIndistinguishable:
 
         response = await async_client.post("/auth/sync")
 
-        # The status code and the answer first: `{"code":"internal_error"}` names neither substring
-        # either, so without these two the case passes on the 500 it exists to rule out.
         assert response.status_code == 200, response.text
         assert response.json()["entitlement"]["status"] == EntitlementStatus.none.value
         # Which internal condition applies is the caller's to not know; the public status enum has no such member.
@@ -203,14 +201,12 @@ class TestTheRequestChangesNothing:
         response = await async_client.post("/auth/sync")
 
         assert response.status_code == 200, response.text
-        # The seeded count reaches the wire: without this the whole file passes on a hard-coded zero.
         assert response.json()["entitlement"]["monthly_used"] == _CURRENT_USED
         assert await _entitlement_snapshot(_db_transaction, user.id) == before
 
     async def test_a_stale_period_grant_is_left_untouched(
             self, async_client, _db_transaction, linked_firebase_identity):
         user, _ = linked_firebase_identity
-        # The branch quota resolves by writing: an assignment here must never reach disk from a read.
         await seed_grant(_db_transaction, user_id=user.id,
                          monthly_period=_STALE_PERIOD, monthly_used=_STALE_USED)
         before = await _entitlement_snapshot(_db_transaction, user.id)

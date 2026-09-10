@@ -37,8 +37,6 @@ JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname IN ('core','audit') AND NOT t.tgisinternal
 """
 
-# Keyed on the referencing columns, not on conname: the migration writes no constraint name, so a
-# name is PostgreSQL's own and says nothing about what was declared.
 FK_DELETE_ACTIONS = """
 SELECT n.nspname || '.' || c.relname AS table_name,
        con.confdeltype::text AS delete_action,
@@ -70,8 +68,6 @@ WHERE table_schema = 'core' AND table_name = 'users'
 ORDER BY ordinal_position
 """
 
-# Every column of every table, not `core.users` alone: a column added or dropped elsewhere, or a
-# NOT NULL or a DEFAULT changed on one, was invisible to this whole inventory.
 COLUMNS = r"""
 SELECT n.nspname || '.' || c.relname || '.' || a.attname AS name,
        format_type(a.atttypid, a.atttypmod)
@@ -87,8 +83,6 @@ WHERE n.nspname IN ('core', 'audit') AND c.relkind = 'r'
   AND a.attnum > 0 AND NOT a.attisdropped
 """
 
-# The key columns and the uniqueness flag, which the index-name set above says nothing about: an
-# index re-keyed or stripped of UNIQUE while keeping its name and its predicate matched everything.
 INDEX_KEYS = """
 SELECT i.relname AS index_name,
        CASE WHEN ix.indisunique THEN 'UNIQUE ' ELSE '' END
@@ -189,8 +183,6 @@ EXPECTED_INDEX_PREDICATES = {
     "ix_subscriptions_provider_external_id": None,
 }
 
-# confdeltype as pg_constraint stores it: 'c' CASCADE, 'r' RESTRICT, 'a' NO ACTION -- the three the
-# migration uses. Every entry is one REFERENCES clause of the migration, transcribed in file order.
 EXPECTED_FK_DELETE_ACTIONS = {
     "core.chats(user_id)": "a",
     "core.messages(chat_id)": "c",
@@ -225,8 +217,6 @@ EXPECTED_USERS_COLUMNS = [
     "id", "email", "display_name", "registered_at", "active", "created_at", "updated_at"
 ]
 
-# Read out of pg_catalog on a live apply under PINNED_SEARCH_PATH, never transcribed from the
-# migration; the enum casts inside the generated columns turn on that pin.
 EXPECTED_COLUMNS = {
     "audit.subscription_events.created_at": "timestamp with time zone NOT NULL",
     "audit.subscription_events.event_type": "text NOT NULL",

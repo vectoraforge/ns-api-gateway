@@ -69,8 +69,7 @@ async def issue_challenge(body: ChallengeRequest,
                                                            operation=AuthOperation(body.operation),
                                                            identity=identity,
                                                            now=evaluated_at)
-    # The only write channel: `get_db` never commits, so without this the caller would hold a
-    # handle naming a row no transaction ever wrote. Here a failed commit still reaches the client.
+    # `get_db` never commits. This commit makes the issued row durable before the answer.
     await session.commit()
     # `no-store` rather than `no-cache`: the handle is a secret, and a revalidatable copy is a copy.
     response.headers["Cache-Control"] = "no-store"
@@ -204,6 +203,5 @@ async def sign_out_all(identity: LinkedIdentity = Depends(get_linked_identity),
     # The request-verified pair, never the stored row: the provider is told what this request proved.
     await revoke_with_retry(adapter, identity.issuer, identity.subject)
     # The row id alone: enough to answer "did this account sign out everywhere", and no more.
-    # No `assert` guarding the row: `LinkedIdentity` carries it, and `python -O` strips an assert.
     logger.info("sign_out_all_confirmed", identity_row_id=str(identity.identity.id))
     return Response(status_code=204)
