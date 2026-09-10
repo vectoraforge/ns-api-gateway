@@ -325,9 +325,9 @@ class TestProductionVerifier:
 
     def test_rejects_a_token_issued_in_the_future(self, real_verifier):
         """WR-126: SHARED-INVARIANTS § Wire contract requires `exp`/`iat` temporal validity, and
-        `DECODE_OPTIONS` states only `require` -- so the future-`iat` rejection is PyJWT's default
-        alone. Nothing else in this file would fail if an upgrade, a new `options` entry or a
-        leeway change withdrew it, and `exp` has two leeway cases where `iat` had none."""
+        `DECODE_OPTIONS` states only `require` -- so this rejection is PyJWT's default alone."""
+        # Nothing else in this file would fail if an upgrade, a new `options` entry or a leeway
+        # change withdrew it, and `exp` has two leeway cases where `iat` had none.
         now = time.time()
         token = make_token("u", iat=now + 3600, exp=now + 7200)
 
