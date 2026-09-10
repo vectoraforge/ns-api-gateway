@@ -21,9 +21,16 @@ from nativespeaker.api.errors import (
     Unavailable,
     UnmappedStoreProduct,
 )
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import LinkedIdentity
 from nativespeaker.api.services.restore import RestoreService
-from nativespeaker.api.tables import AccessGrantSource, PurchaseProvider, SubscriptionStatus
+from nativespeaker.api.tables import (
+    AccessGrantSource,
+    ExternalIdentity,
+    IdentityProvider,
+    IdentityState,
+    PurchaseProvider,
+    SubscriptionStatus,
+)
 from nativespeaker.api.tables.users import User
 from unit.test_app_store_notifications import (
     APPLE_ROOT_G3,
@@ -554,9 +561,20 @@ def _service(session: _CountingSession, store: _ScriptedAppStore,
                           package_name=PACKAGE_NAME)
 
 
-def _caller() -> Identity:
-    return Identity(issuer="https://issuer.test", subject="restore-ordering-subject",
-                    user=User(), identity=None)
+ISSUER = "https://issuer.test"
+SUBJECT = "restore-ordering-subject"
+
+
+def _caller() -> LinkedIdentity:
+    """The shape the barrier hands the handler: `resolve` sets the two rows together or neither,
+    so a user standing beside `identity=None` stands in for a state production cannot produce."""
+    user = User()
+    return LinkedIdentity(issuer=ISSUER, subject=SUBJECT, user=user,
+                          identity=ExternalIdentity(user_id=user.id, issuer=ISSUER,
+                                                    subject=SUBJECT,
+                                                    provider=IdentityProvider.google,
+                                                    provider_uid="google-account-restore",
+                                                    identity_state=IdentityState.active))
 
 
 class TestTheStoreCallRunsBeforeTheSessionsFirstStatement:
