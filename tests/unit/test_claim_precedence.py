@@ -538,9 +538,10 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert devicecheck.write_calls == []
 
     def test_a_race_lost_to_another_source_is_the_refusal_the_preflight_gives(
-            self, client, store, account, grants, devicecheck):
+            self, client, store, account, grants, devicecheck, monkeypatch):
         """WR-60: the one-active index arbitrates every source, so a subscription writer wins this
         insert too -- and the preflight answers a held subscription grant with 403, never 200."""
+        records = _handler_warnings(monkeypatch)
         identity_row, _ = account
         grants.outcome = ActivationOutcome.lost_race
         grants.won_by = [_a_grant(AccessGrantSource.subscription)]
@@ -552,6 +553,10 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert response.json() == REFUSED
         assert store.consume_calls == 1
         assert devicecheck.write_calls == []
+        # WR-80: the two lost-race arms are one class and one body, so the cause is all that tells
+        # them apart -- and without this the whole arm deletes with the suite green.
+        assert [(line["event"], line.get("cause")) for line in records] == [
+            ("claim_refused_under_lock", "lost_race_to_another_source")]
 
     def test_a_refused_write_answers_four_hundred_and_three_and_still_consumes(
             self, client, store, account, grants, devicecheck):

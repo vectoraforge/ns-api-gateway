@@ -41,6 +41,7 @@ from .test_claim_precedence import (
     HANDLE,
     REFUSED,
     _a_grant,
+    _handler_warnings,
     _issued_row,
     _RecordingGrants,
     _ScriptedDeviceCheck,
@@ -462,9 +463,10 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert devicecheck.write_calls == []
 
     def test_a_race_lost_to_another_source_is_the_refusal_the_preflight_gives(
-            self, client, store, account, grants, devicecheck, session):
+            self, client, store, account, grants, devicecheck, session, monkeypatch):
         """WR-60: the one-active index arbitrates every source, so a subscription writer wins this
         insert too -- and D-09(b) answers a held subscription grant with 403, never with 200."""
+        records = _handler_warnings(monkeypatch)
         identity_row, _ = account
         grants.outcome = ActivationOutcome.lost_race
         grants.won_by = [_a_grant(AccessGrantSource.subscription)]
@@ -477,6 +479,10 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert store.consume_calls == 1
         assert session.rollbacks >= 1
         assert devicecheck.write_calls == []
+        # WR-80: the two lost-race arms are one class and one body, so the cause is all that tells
+        # them apart -- and without this the whole arm deletes with the suite green.
+        assert [(line["event"], line.get("cause")) for line in records] == [
+            ("claim_refused_under_lock", "lost_race_to_another_source")]
 
     def test_a_refused_write_rolls_back_answers_four_hundred_and_three_and_refreshes_nothing(
             self, client, store, account, grants, devicecheck, session):
