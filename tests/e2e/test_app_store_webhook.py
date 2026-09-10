@@ -72,7 +72,8 @@ _REFUSAL_SOURCES = (inspect.getsource(verify_app_store_notification),
 REFUSAL_STAGES = ("VERIFICATION_FAILURE", "INVALID_APP_IDENTIFIER", "INVALID_CERTIFICATE",
                   "INVALID_CHAIN_LENGTH", "INVALID_CHAIN", "INVALID_ENVIRONMENT",
                   "RETRYABLE_VERIFICATION_FAILURE",
-                  "payload_unstructurable", "notification_without_identity")
+                  "payload_unstructurable", "notification_without_identity",
+                  "transaction_without_original_id")
 
 # One obviously synthetic attribution token, and a second that disagrees with it.
 TOKEN = "a-synthetic-attribution-token"

@@ -25,6 +25,7 @@ from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.errors import (
     InternalError,
     NotificationRejected,
+    ProofRejected,
     Unavailable,
     UnknownStoreSubscriptionStatus,
 )
@@ -186,12 +187,13 @@ def _mint(chain: _Chain, payload: dict, *,
 
 def _transaction(*, bundle_id: str = BUNDLE_ID, environment: str = "Sandbox",
                  revocation_date: int | None = None, expires_in: timedelta = timedelta(days=30),
+                 original_transaction_id: str | None = ORIGINAL_TRANSACTION_ID,
                  ) -> dict:
     """The nested transaction payload, verified on its own bundle id and environment."""
     now = datetime.now(UTC)
     return {"bundleId": bundle_id,
             "environment": environment,
-            "originalTransactionId": ORIGINAL_TRANSACTION_ID,
+            "originalTransactionId": original_transaction_id,
             "transactionId": TRANSACTION_ID,
             "productId": PRODUCT_ID,
             "appAccountToken": ATTRIBUTION_TOKEN,
@@ -569,6 +571,40 @@ class TestAVerifiedEnvelopeWithoutItsOwnIdentityIsRefused:
 
         assert (verified.notification_uuid, verified.event_type) == (
             "8f0f0f00-0000-4000-8000-00000000000a", "SUBSCRIBED")
+
+
+class TestAVerifiedTransactionWithoutItsLifecycleKeyIsRefused:
+    """WR-20: `originalTransactionId` is Optional in the library, and an absent one crossed the seam
+    as `external_id=None`, which `SubscriptionsService.ingest` reads as nothing to write."""
+
+    def test_it_is_refused_rather_than_acknowledged(self, chain):
+        envelope = _mint(chain, _envelope(chain,
+                                          transaction=_transaction(original_transaction_id=None),
+                                          renewal=_renewal()))
+
+        with pytest.raises(NotificationRejected) as refusal:
+            _notifications(chain).verify(envelope)
+
+        assert refusal.value.stage == "transaction_without_original_id"
+
+    def test_the_library_really_does_verify_the_same_transaction_control(self, chain):
+        """The control: the refusal is this module's, not the verification refusing the shape."""
+        verifier = SignedDataVerifier(root_certificates=[chain.root_der],
+                                      enable_online_checks=False,
+                                      environment=Environment.SANDBOX,
+                                      bundle_id=BUNDLE_ID, app_apple_id=APP_APPLE_ID)
+        signed = _mint(chain, _transaction(original_transaction_id=None))
+
+        assert verifier.verify_and_decode_signed_transaction(signed).originalTransactionId is None
+
+    def test_the_restore_path_refuses_the_same_absence_control(self, chain):
+        """The control: both paths of this seam name the same stage for the same absent key."""
+        signed = _mint(chain, _transaction(original_transaction_id=None))
+
+        with pytest.raises(ProofRejected) as refusal:
+            _notifications(chain).verify_transaction(signed, datetime.now(UTC))
+
+        assert refusal.value.stage == "transaction_without_original_id"
 
 
 class TestTheNestedPayloadsAreVerifiedOnTheirOwn:

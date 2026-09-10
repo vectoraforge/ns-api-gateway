@@ -142,6 +142,10 @@ class AppStoreNotifications:
             # The raw int, never `status`: the typed attribute is also None for an unknown value.
             return _crossed(payload, None, None, status=SubscriptionStatus.expired, tier_id=None)
 
+        if transaction.originalTransactionId is None:
+            # Refused, never acknowledged: the lifecycle key this notification is written under is absent.
+            raise NotificationRejected(stage="transaction_without_original_id")
+
         status = None if data.status is None else _APPLE_STATUSES.get(data.status)
         if status is None:
             # A status value present but outside Apple's own enum. The named class carries the log
