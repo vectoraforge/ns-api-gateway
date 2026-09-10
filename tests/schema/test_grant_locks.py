@@ -273,19 +273,50 @@ PINNED_SEARCH_PATH = '"$user", public'
 
 _SOURCE_LITERAL = re.compile(r"'([a-z_]+)'::core\.access_grant_source")
 
-# The relation a locking statement takes its rows from; the two tiers are the only two this path may name.
-_LOCKED_RELATION = re.compile(r"FROM (core\.[a-z_]+)")
+# Every row-lock spelling, not the one literal: `FOR NO KEY UPDATE` and `FOR SHARE` lock a row too,
+# and a substring test for "FOR UPDATE" drops a third tier taken with either from the count entirely.
+_LOCK_CLAUSE = re.compile(r"FOR (?:NO KEY )?UPDATE|FOR (?:KEY )?SHARE")
+
+# Every relation a statement draws rows from, not the first: `FROM core.access_grants JOIN
+# core.external_identities ... FOR UPDATE` locks both, and reading only the first hides the second.
+_RELATIONS = re.compile(r"\b(?:FROM|JOIN|,)\s+((?:core|audit)\.[a-z_]+)")
 
 
 def locking(statements: list[str]) -> list[str]:
     """Only the statements that take a row lock, in the order the writer issued them."""
-    return [statement for statement in statements if "FOR UPDATE" in statement]
+    return [statement for statement in statements if _LOCK_CLAUSE.search(statement)]
 
 
-def relation_of(statement: str) -> str:
-    """The core relation a statement reads, which for a locking statement is the tier it takes."""
-    found = _LOCKED_RELATION.search(statement)
-    return found.group(1) if found else statement
+def relations_of(statement: str) -> list[str]:
+    """Every core or audit relation a statement draws rows from, which for a lock is the tiers it takes."""
+    # The whole statement where none matched, so an unreadable one fails the assertion loudly
+    # instead of contributing an empty list that every membership check passes.
+    return sorted(set(_RELATIONS.findall(statement))) or [statement]
+
+
+class TestTheLockReaderSeesEveryTierAndEverySpelling:
+    """The control on every tier count below: a reader blind to a join or to `FOR SHARE` passes them all."""
+
+    @pytest.mark.parametrize("clause",
+                             ["FOR UPDATE", "FOR NO KEY UPDATE", "FOR SHARE", "FOR KEY SHARE"])
+    def test_every_row_lock_spelling_is_read_as_a_lock(self, clause):
+        """A third tier taken with any of the four is a third tier; only the first was ever counted."""
+        statement = f"SELECT core.users.id FROM core.users {clause}"
+        assert locking([statement]) == [statement]
+
+    def test_a_statement_that_takes_no_lock_is_not_read_as_one(self):
+        """The boundary: a reader answering "locking" to everything would pass the case above."""
+        assert locking(["SELECT core.users.id FROM core.users"]) == []
+
+    def test_a_relation_reached_by_a_join_is_reported_beside_the_first(self):
+        """The identity row locked through a join is the tier the counts below exist to refuse."""
+        joined = ("SELECT core.access_grants.id FROM core.access_grants "
+                  "JOIN core.external_identities ON true FOR UPDATE")
+        assert relations_of(joined) == ["core.access_grants", "core.external_identities"]
+
+    def test_a_statement_naming_no_relation_is_returned_whole(self):
+        """Loudly, not as an empty list: every membership assertion below passes an empty one."""
+        assert relations_of("COMMIT") == ["COMMIT"]
 
 
 def writes(statements: list[str]) -> list[str]:
@@ -393,9 +424,9 @@ class TestTheActivationAddsNoThirdLockTier:
         taken = locking(activation_statements["statements"])
         # Two grant-tier reads, the one-active set first: it contains the effective subset the
         # second one takes, so one grant-tier order holds across both.
-        assert [relation_of(statement) for statement in taken] == ["core.access_grants",
-                                                                   "core.access_grants",
-                                                                   "core.user_monthly_usage"]
+        assert [relations_of(statement) for statement in taken] == [["core.access_grants"],
+                                                                    ["core.access_grants"],
+                                                                    ["core.user_monthly_usage"]]
         # Every grant-tier read, not the first alone: an unordered second one is a second order.
         for statement in taken[:2]:
             assert "ORDER BY core.access_grants.id ASC" in statement
@@ -403,7 +434,8 @@ class TestTheActivationAddsNoThirdLockTier:
     async def test_exactly_two_distinct_lock_tiers_are_taken_on_the_claim_path(self,
                                                                                activation_statements):
         """Two, and never a third: a writer that locks the identity or user row first fails here, not in production."""
-        taken = [relation_of(statement) for statement in locking(activation_statements["statements"])]
+        taken = [relation for statement in locking(activation_statements["statements"])
+                 for relation in relations_of(statement)]
         assert len(set(taken)) == 2
         assert "core.external_identities" not in taken
         assert "core.users" not in taken
@@ -424,9 +456,10 @@ class TestTheActivationAddsNoThirdLockTier:
         """The arm the held-grant fixture never reaches: it inserts the grant, its usage row and the
         identity marker, and a third tier taken on that path is the SHARED-INVARIANTS:33 breach."""
         locked = locking(anonymous_activated_statements["statements"])
-        taken = [relation_of(statement) for statement in locked]
         # A clean account holds nothing in either tier, so `FOR UPDATE` locks no row and the indexes arbitrate.
-        assert taken == ["core.access_grants", "core.access_grants"]
+        assert [relations_of(statement) for statement in locked] == [["core.access_grants"],
+                                                                     ["core.access_grants"]]
+        taken = [relation for statement in locked for relation in relations_of(statement)]
         assert "core.external_identities" not in taken
         assert "core.users" not in taken
         # Every grant-tier read, not the first alone: an unordered second one is a second order.
@@ -533,9 +566,9 @@ class TestTheRegisteredWriterAddsNoThirdLockTier:
         """The ORDER BY is the lock order itself, not presentation, so it is asserted with the tier."""
         taken = locking(conversion_statements["statements"])
         # Two grant-tier reads, the status-only one first: it contains the effective one, so one order holds.
-        assert [relation_of(statement) for statement in taken] == ["core.access_grants",
-                                                                   "core.access_grants",
-                                                                   "core.user_monthly_usage"]
+        assert [relations_of(statement) for statement in taken] == [["core.access_grants"],
+                                                                    ["core.access_grants"],
+                                                                    ["core.user_monthly_usage"]]
         # Every grant-tier read, not the first alone: an unordered second one is a second order.
         for statement in taken[:2]:
             assert "ORDER BY core.access_grants.id ASC" in statement
@@ -543,7 +576,8 @@ class TestTheRegisteredWriterAddsNoThirdLockTier:
     async def test_exactly_two_distinct_lock_tiers_are_taken_on_the_conversion(self,
                                                                                conversion_statements):
         """Two, and never a third: a writer that locks the identity or user row fails here, not in production."""
-        taken = [relation_of(statement) for statement in locking(conversion_statements["statements"])]
+        taken = [relation for statement in locking(conversion_statements["statements"])
+                 for relation in relations_of(statement)]
         assert len(set(taken)) == 2
         assert "core.external_identities" not in taken
         assert "core.users" not in taken
@@ -552,8 +586,9 @@ class TestTheRegisteredWriterAddsNoThirdLockTier:
             self, new_grant_statements):
         """A clean account has nothing in either tier, so `FOR UPDATE` locks nothing and the indexes arbitrate."""
         locked = locking(new_grant_statements["statements"])
-        taken = [relation_of(statement) for statement in locked]
-        assert taken == ["core.access_grants", "core.access_grants"]
+        assert [relations_of(statement) for statement in locked] == [["core.access_grants"],
+                                                                     ["core.access_grants"]]
+        taken = [relation for statement in locked for relation in relations_of(statement)]
         assert "core.external_identities" not in taken
         assert "core.users" not in taken
         # Every grant-tier read, not the first alone: an unordered second one is a second order.
@@ -939,14 +974,15 @@ class TestTheSubscriptionWriterAddsNoThirdLockTier:
         taken = locking(ingestion_statements["statements"])
         # One grant-tier read: the whole one-active set, which is the set `write_subscription_grant`
         # supersedes, so the usage tier behind it covers every row this writer touches.
-        assert [relation_of(statement) for statement in taken] == ["core.access_grants",
-                                                                   "core.user_monthly_usage"]
+        assert [relations_of(statement) for statement in taken] == [["core.access_grants"],
+                                                                    ["core.user_monthly_usage"]]
         assert "ORDER BY core.access_grants.id ASC" in taken[0]
 
     async def test_exactly_two_distinct_lock_tiers_are_taken_on_the_ingestion(self,
                                                                               ingestion_statements):
         """Two, and never a third: a writer that locks the subscription or the purchase row fails here."""
-        taken = [relation_of(statement) for statement in locking(ingestion_statements["statements"])]
+        taken = [relation for statement in locking(ingestion_statements["statements"])
+                 for relation in relations_of(statement)]
         assert len(set(taken)) == 2
         assert "core.subscriptions" not in taken
         assert "core.store_purchases" not in taken
