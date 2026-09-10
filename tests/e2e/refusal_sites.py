@@ -1,7 +1,6 @@
 """Where `NotificationRejected` is raised, read from the package's source rather than imported.
-One copy for both webhook routes: `REFUSAL_FILES` is a control both of them assert against, and
-two copies of it meant a fourth raising file had to be added twice or one route stayed red for a
-reason that no longer described the code."""
+One copy for both webhook routes: `REFUSAL_FILES` is a control both assert against, and a second
+copy of it left one route red for a reason that no longer described the code."""
 import ast
 from pathlib import Path
 
