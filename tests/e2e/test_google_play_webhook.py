@@ -1,7 +1,6 @@
 """The Google Play callback, end to end through the real seam classes against a real database.
 The push token is signed for real against the fake JWKS key, and the Play read is scripted at the transport."""
 import base64
-import inspect
 import json
 import time
 from datetime import UTC, datetime, timedelta
@@ -28,12 +27,11 @@ from e2e.conftest import (
 )
 from e2e.refusal_sites import (
     COMPUTED,
+    GOOGLE_PLAY_REFUSAL_FILES,
     REFUSAL_FILES,
     files_raising_the_refusal,
     raised_refusal_stages,
 )
-from nativespeaker.api.app.dependencies import verify_google_play_notification
-from nativespeaker.api.auth import google_play
 from nativespeaker.api.auth.jwt_verifier import BoundedReason
 from nativespeaker.api.errors import AttributionConflict, InternalError, UnmappedStoreProduct
 from nativespeaker.api.tables import (
@@ -224,10 +222,6 @@ _PUSH_REASONS = frozenset({BoundedReason.bad_signature, BoundedReason.malformed,
                            BoundedReason.expired, BoundedReason.empty_subject,
                            BoundedReason.required_claim_mismatch})
 
-# The two places on this path that raise the refusal, read as source so a third one arrives here.
-_REFUSAL_SOURCES = (inspect.getsource(verify_google_play_notification),
-                    inspect.getsource(google_play))
-
 # The three modules that write a record on this route: the error handler, the Google seam, the service.
 _LOGGERS = ("nativespeaker.api.app.error_handlers.logger",
             "nativespeaker.api.auth.google_play.logger",
@@ -353,7 +347,7 @@ class TestEveryRefusalAnswersTheOneBody:
 
     async def test_every_reachable_arm_is_covered_by_one_parameter(self):
         """The control: a narrowed tuple would leave an arm untested while every case above passed."""
-        raised = raised_refusal_stages(_REFUSAL_SOURCES)
+        raised = raised_refusal_stages(GOOGLE_PLAY_REFUSAL_FILES)
         # The one computed stage is the verifier's bounded reason, so it stands for every member
         # of that set this route can reach -- named in `_PUSH_REASONS`, never the whole enum, two
         # of whose members no credential taken from `HTTPBearer` can produce.
@@ -362,8 +356,8 @@ class TestEveryRefusalAnswersTheOneBody:
         assert {stage for _overrides, _package, stage in REFUSALS} == reachable
 
     async def test_no_raise_site_lives_where_neither_route_control_reads_it(self):
-        """The second control: a refusal raised in a file `_REFUSAL_SOURCES` misses would shrink
-        both sides of the equality above instead of failing it."""
+        """The second control: a refusal raised in a file neither route scans would shrink both
+        sides of the equality above instead of failing it."""
         assert files_raising_the_refusal() == REFUSAL_FILES
 
     async def test_a_refused_push_writes_nothing(

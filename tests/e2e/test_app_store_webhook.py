@@ -1,5 +1,4 @@
 """The App Store notification callback, end to end through the real router against a real database."""
-import inspect
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -11,8 +10,6 @@ from sqlalchemy import func
 from sqlmodel import col, select
 from unit.conftest import make_token
 
-from nativespeaker.api.app.dependencies import verify_app_store_notification
-from nativespeaker.api.auth import app_store
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.errors import NotificationRejected, UnmappedStoreProduct
 from nativespeaker.api.tables import (
@@ -27,6 +24,7 @@ from nativespeaker.api.tables import (
 
 from .conftest import LogSpy, spy_on
 from .refusal_sites import (
+    APP_STORE_REFUSAL_FILES,
     COMPUTED,
     REFUSAL_FILES,
     files_raising_the_refusal,
@@ -61,10 +59,6 @@ UNMAPPED_PRODUCT_ID = "com.nativespeaker.subscription.unmapped"
 KNOWN_STATUSES = frozenset({"OK", "VERIFICATION_FAILURE", "INVALID_APP_IDENTIFIER",
                             "INVALID_CERTIFICATE", "INVALID_CHAIN_LENGTH", "INVALID_CHAIN",
                             "INVALID_ENVIRONMENT", "RETRYABLE_VERIFICATION_FAILURE"})
-
-# The two places on this path that raise the refusal, read as source so a third one arrives here.
-_REFUSAL_SOURCES = (inspect.getsource(verify_app_store_notification),
-                    inspect.getsource(app_store))
 
 # Every reachable arm, written out rather than derived, so the control below can disagree with the
 # module's own raise sites. Deriving it from `VerificationStatus` was how the two stages the seam
@@ -261,18 +255,18 @@ class TestEveryVerificationFailureAnswersTheOneBody:
 
     async def test_every_reachable_arm_is_covered_by_one_parameter(self):
         """The control: the library's members are pinned, so a status it grows fails here, and the
-        seam's own raise sites are read, so a stage raised outside that enum cannot be missed --
+        seam's whole file is read, so a stage raised outside that enum cannot be missed --
         `notification_without_identity` was, because both sides were read off the enum."""
         assert {status.name for status in VerificationStatus} == KNOWN_STATUSES
-        raised = raised_refusal_stages(_REFUSAL_SOURCES)
+        raised = raised_refusal_stages(APP_STORE_REFUSAL_FILES)
         # The one computed stage is `failure.status.name`, so it stands for every member of the
         # library's enum but `OK`; the literal ones stand only for themselves.
         assert COMPUTED in raised
         assert set(REFUSAL_STAGES) == (raised - {COMPUTED}) | (KNOWN_STATUSES - {"OK"})
 
     async def test_no_raise_site_lives_where_neither_route_control_reads_it(self):
-        """The second control: a refusal raised in a file `_REFUSAL_SOURCES` misses would shrink
-        both sides of the equality above instead of failing it."""
+        """The second control: a refusal raised in a file neither route scans would shrink both
+        sides of the equality above instead of failing it."""
         assert files_raising_the_refusal() == REFUSAL_FILES
 
     async def test_a_refused_payload_writes_nothing(
