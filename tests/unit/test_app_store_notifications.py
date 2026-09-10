@@ -189,9 +189,11 @@ def _mint(chain: _Chain, payload: dict, *,
 def _transaction(*, bundle_id: str = BUNDLE_ID, environment: str = "Sandbox",
                  revocation_date: int | None = None, expires_in: timedelta = timedelta(days=30),
                  original_transaction_id: str | None = ORIGINAL_TRANSACTION_ID,
-                 ) -> dict:
+                 # The instant this payload is dated against. A caller that names one decides the
+                 # status itself, instead of leaving it to the wall clock the default reads.
+                 now: datetime | None = None) -> dict:
     """The nested transaction payload, verified on its own bundle id and environment."""
-    now = datetime.now(UTC)
+    now = datetime.now(UTC) if now is None else now
     return {"bundleId": bundle_id,
             "environment": environment,
             "originalTransactionId": original_transaction_id,

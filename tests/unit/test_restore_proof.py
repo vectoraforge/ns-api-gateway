@@ -43,7 +43,9 @@ from unit.test_app_store_notifications import (
     _milliseconds,
     _mint,
     _notifications,
-    _transaction,
+)
+from unit.test_app_store_notifications import (
+    _transaction as _wall_clock_transaction,
 )
 from unit.test_google_play_notifications import (
     ATTRIBUTION_TOKEN as PLAY_ATTRIBUTION_TOKEN,
@@ -107,6 +109,12 @@ def _proof_through(chain: _Chain, transaction: dict, *,
     return _notifications(chain).verify_transaction(_mint(chain, transaction), evaluated_at)
 
 
+def _transaction(**fields) -> dict:
+    """The Apple payload dated against `EVALUATED_AT`, which is what makes the claim above true.
+    The imported helper dates itself from the wall clock, so every case here must pin the instant."""
+    return _wall_clock_transaction(now=EVALUATED_AT, **fields)
+
+
 def _dated(offset: timedelta) -> dict:
     """A transaction whose term ends `offset` from the captured instant, and nothing else changed."""
     return _transaction() | {"expiresDate": _milliseconds(EVALUATED_AT + offset)}
@@ -124,6 +132,10 @@ class TestTheRealChainVerifiesTheRestoreProof:
         assert restored.product_id == PRODUCT_ID
         assert restored.tier_id == TIER_ID
         assert restored.attribution_token == ATTRIBUTION_TOKEN
+        # WR-66: the two dates are the captured instant's, so the term this module reads about is
+        # the one the module declares and never one the wall clock moved under it.
+        assert restored.purchased_at == EVALUATED_AT
+        assert restored.expires_at == EVALUATED_AT + timedelta(days=30)
 
     def test_the_vendored_apple_root_refuses_the_same_proof_control(self, chain):
         """The control that makes the case above non-vacuous: the real root does not sign this chain."""
