@@ -25,7 +25,9 @@ SUBJECT = "challenge-store-subject"
 CONTENDERS = 8
 
 
-@pytest.fixture
+# Module-scoped because `_contended_challenge` below is class-scoped and cannot depend on anything
+# narrower; the value is one attribute of the module-scoped lifespan, so every case still sees it.
+@pytest.fixture(scope="module")
 def store(_app_lifespan):
     """The store the real lifespan constructed, so the wiring is exercised."""
     return _app_lifespan.state.challenge_store
@@ -70,7 +72,11 @@ async def row_count(factory) -> int:
                        col(ExternalIdentity.issuer) == ISSUER)))
 
 
-@pytest_asyncio.fixture(loop_scope="module")
+# WR-85: `scope`, not just `loop_scope`. `loop_scope` names the event loop only, so `scope` stayed
+# `function` and the eight-way race ran once per case -- three independent races, of which
+# `test_no_contender_raised` judged its own and never the one the two cases below inspect. It also
+# built three eight-connection engines against the shared PostgreSQL where one was intended.
+@pytest_asyncio.fixture(scope="class", loop_scope="module")
 async def _contended_challenge(_app_lifespan, store):
     """One committed challenge and CONTENDERS connections from a second engine, since the shared one is serial."""
     config = _app_lifespan.state.config
