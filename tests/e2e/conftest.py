@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
@@ -32,6 +33,7 @@ from nativespeaker.api.auth.store_notifications import (
     VerifiedNotification,
 )
 from nativespeaker.api.config import EnvironmentConfig
+from nativespeaker.api.logs import _QUIETED_LIBRARIES
 from nativespeaker.api.tables import (
     AccessGrant,
     AccessGrantSource,
@@ -212,9 +214,20 @@ def google_linked_firebase_credential(_app_lifespan, _app_config):
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def _app_lifespan():
-    """Start app lifespan (config, DB engine, verifier, LLM service)."""
-    async with app.router.lifespan_context(app):
-        yield app
+    """Start app lifespan (config, DB engine, verifier, LLM service), then put `logging` back."""
+    root = logging.getLogger()
+    original_handlers = root.handlers[:]
+    original_level = root.level
+    # The lifespan calls `setup_logging`, which clears the root handlers and pins these nine.
+    original_levels = {name: logging.getLogger(name).level for name in _QUIETED_LIBRARIES}
+    try:
+        async with app.router.lifespan_context(app):
+            yield app
+    finally:
+        for name, level in original_levels.items():
+            logging.getLogger(name).setLevel(level)
+        root.handlers = original_handlers
+        root.setLevel(original_level)
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
