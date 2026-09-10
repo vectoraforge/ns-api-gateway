@@ -727,9 +727,13 @@ class TestTheDeferrableForeignKeyIsTheBackstop:
 
     async def test_a_grant_left_active_fails_the_commit(self, _schema_db_uri):
         conn = await asyncpg.connect(_schema_db_uri)
-        tier_id = await insert_tier(conn)
-        user_id = await insert_user(conn)
+        # Both seeds inside the guard: `conn` is in autocommit, so `insert_tier` is durable the
+        # moment it returns and a raise from `insert_user` would leave the tier row in the
+        # session-scoped database for every later module to see, with the connection leaked too.
+        tier_id = user_id = None
         try:
+            tier_id = await insert_tier(conn)
+            user_id = await insert_user(conn)
             subscription_id = await insert_subscription(
                 conn, external_id=f"original-{uuid.uuid4().hex[:12]}", tier_id=tier_id,
                 user_id=user_id)
@@ -744,5 +748,8 @@ class TestTheDeferrableForeignKeyIsTheBackstop:
             with pytest.raises(asyncpg.exceptions.ForeignKeyViolationError):
                 await transaction.commit()
         finally:
-            await _clean(conn, user_id=user_id, tier_id=tier_id)
-            await conn.close()
+            try:
+                if tier_id is not None:
+                    await _clean(conn, user_id=user_id, tier_id=tier_id)
+            finally:
+                await conn.close()
