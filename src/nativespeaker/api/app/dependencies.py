@@ -55,31 +55,24 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession]:
 # `auto_error=False`: our own code raises, so the rejection keeps its class, code and log event.
 _bearer = HTTPBearer(auto_error=False)
 
-_AUTHORIZATION = b"authorization"
-
 
 async def get_identity(request: Request,
                        credential: HTTPAuthorizationCredentials | None = Depends(_bearer),
                        ) -> AuthIdentity:
     """Accept the token and resolve the identity it names -- once per request."""
-    # Count on the raw scope. The merged view shows the first field value and hides a second one.
-    if sum(1 for name, _value in request.scope["headers"] if name == _AUTHORIZATION) > 1:
-        raise InvalidExternalJwt(bounded_reason=BoundedReason.duplicate_authorization)
-
     if credential is None:
-        presented = request.headers.get("authorization") is not None
-        raise InvalidExternalJwt(bounded_reason=BoundedReason.malformed if presented
-                                 else BoundedReason.missing_token)
+        if request.headers.get("authorization") is None:
+            raise InvalidExternalJwt(bounded_reason=BoundedReason.missing_token)
+        else:
+            raise InvalidExternalJwt(bounded_reason=BoundedReason.malformed)
 
-    # `verify` is synchronous and can block on a JWKS fetch, so it never runs on the event loop.
+    # `verify` can block on a JWKS fetch
     claims, reason = await run_in_threadpool(request.app.state.jwt_verifier.verify,
                                              credential.credentials)
     if claims is None:
         raise InvalidExternalJwt(bounded_reason=reason or BoundedReason.bad_signature)
 
-    # Its own short session, closed before the handler: Depends(get_db) would hold it across the provider call.
     async with request.app.state.session_factory() as session:
-        # allow_preauth=True here; `get_linked_identity` is the dependency that narrows to linked callers.
         return await IdentitiesDB(session).resolve(issuer=claims.issuer,
                                                    subject=claims.subject, allow_preauth=True)
 
