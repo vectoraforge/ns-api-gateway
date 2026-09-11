@@ -35,7 +35,7 @@ from nativespeaker.api.errors import (
     ProviderAccountAlreadyLinked,
     ProviderTransitionNotAllowed,
 )
-from nativespeaker.api.schemas.auth import Identity, LinkedIdentity
+from nativespeaker.api.schemas.auth import AuthIdentity, LinkedIdentity
 from nativespeaker.api.tables.auth import AuthOperation
 from nativespeaker.api.tables.grants import AccessGrantSource
 from nativespeaker.api.tables.identities import (
@@ -48,7 +48,7 @@ from nativespeaker.api.tables.identities import (
 logger = structlog.get_logger()
 
 # The write seam of the shared sequence: it returns the provider the transaction settled on.
-Write = Callable[[Identity, VerifiedProviderIdentity], Awaitable[IdentityProvider]]
+Write = Callable[[AuthIdentity, VerifiedProviderIdentity], Awaitable[IdentityProvider]]
 
 type PostClaim[I, T] = Callable[[I], Awaitable[T]]
 
@@ -77,7 +77,7 @@ class AuthService:
         # One instant for this request; nothing below it reads the clock again.
         self.evaluated_at = evaluated_at
 
-    async def complete(self, *, identity: Identity, challenge_id: str) -> IdentityProvider:
+    async def complete(self, *, identity: AuthIdentity, challenge_id: str) -> IdentityProvider:
         """Create the account the handle stands for, and return the provider it was created with."""
         return await self._complete(identity=identity,
                                     challenge_id=challenge_id,
@@ -115,11 +115,11 @@ class AuthService:
                              post_claim=partial(self._claim_registered_grant,
                                                 device_token=device_token))
 
-    async def _complete[I: Identity, T](self, *,
-                                       identity: I,
-                                       challenge_id: str,
-                                       operation: AuthOperation,
-                                       post_claim: PostClaim[I, T]) -> T:
+    async def _complete[I: AuthIdentity, T](self, *,
+                                            identity: I,
+                                            challenge_id: str,
+                                            operation: AuthOperation,
+                                            post_claim: PostClaim[I, T]) -> T:
         """The one completion sequence every route runs: locate, claim, commit, post-claim work, spend.
         The order of the rejections below is the precedence, and none of them carries a field."""
         # No rejection before the claim consumes anything, so a wrong presenter cannot burn a live challenge.
@@ -162,7 +162,7 @@ class AuthService:
                                        challenge_row_id=challenge_row_id)
         return settled
 
-    async def _read_then_write(self, identity: Identity, *, write: Write) -> IdentityProvider:
+    async def _read_then_write(self, identity: AuthIdentity, *, write: Write) -> IdentityProvider:
         """The Firebase routes' post-claim work: the retry-wrapped read, then the write it settles."""
         facts = await lookup_with_retry(self.adapter, identity.issuer, identity.subject)
         # The provider the transaction settled on, which a divergence makes different from the read's.
@@ -293,7 +293,7 @@ class AuthService:
             raise ClaimRefusedUnderLock(cause="lost_race_without_a_readable_grant")
         raise ClaimRefusedUnderLock(cause=cause)
 
-    async def _apply_create_user(self, identity: Identity,
+    async def _apply_create_user(self, identity: AuthIdentity,
                                  facts: VerifiedProviderIdentity) -> IdentityProvider:
         """Create the account, and return the provider its new identity row carries."""
         await self.create_user(identity=identity,
@@ -303,7 +303,7 @@ class AuthService:
                                email=facts.email)
         return facts.provider
 
-    async def _apply_upgrade(self, identity: Identity,
+    async def _apply_upgrade(self, identity: AuthIdentity,
                              facts: VerifiedProviderIdentity) -> IdentityProvider:
         """Re-check the locked rows' provider, and return the provider the flip settled on."""
         # Provider only: `identity_state` and `user.active` are read at admission and not again,
@@ -338,7 +338,7 @@ class AuthService:
                                                       email=facts.email)
 
     async def create_user(self, *,
-                          identity: Identity,
+                          identity: AuthIdentity,
                           provider: IdentityProvider,
                           provider_uid: str | None,
                           email: str | None) -> UUID:

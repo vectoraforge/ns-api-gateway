@@ -13,7 +13,7 @@ from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.crud import identities as identities_crud
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError, IdentityAlreadyLinked
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import IdentityProvider
 
@@ -66,9 +66,9 @@ async def harness(_schema_db_uri):
             await engine.dispose()
 
 
-def identity_for(harness: _Harness, subject: str) -> Identity:
+def identity_for(harness: _Harness, subject: str) -> AuthIdentity:
     """The unlinked identity the create-user route resolves for this subject."""
-    return Identity(issuer=harness.issuer, subject=subject)
+    return AuthIdentity(issuer=harness.issuer, subject=subject)
 
 
 async def commit_user(harness: _Harness, *, active: bool = True) -> uuid.UUID:
@@ -163,7 +163,7 @@ class _RacingSession:
 
 async def run_creation(harness: _Harness, *, subject: str, provider: IdentityProvider,
                        provider_uid: str | None, after_re_resolution=None,
-                       identity: Identity | None = None,
+                       identity: AuthIdentity | None = None,
                        challenge: tuple[uuid.UUID, str] | None = None):
     """Drive the production completion once, on its own real session, exactly as the route does.
     `AuthService.complete` owns the claim, the rollback on a rejection and the consumption after it,

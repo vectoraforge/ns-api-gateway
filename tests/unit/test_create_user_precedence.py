@@ -23,7 +23,7 @@ from nativespeaker.api.errors import (
     UserNotFound,
 )
 from nativespeaker.api.routers import auth_router
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import IdentityProvider
@@ -128,8 +128,8 @@ def creator(monkeypatch) -> _RecordingCreator:
 
 
 @pytest.fixture
-def identity() -> Identity:
-    return Identity(issuer=TEST_ISSUER, subject=SUBJECT)
+def identity() -> AuthIdentity:
+    return AuthIdentity(issuer=TEST_ISSUER, subject=SUBJECT)
 
 
 @pytest.fixture

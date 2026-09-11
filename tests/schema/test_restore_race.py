@@ -14,7 +14,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from nativespeaker.api.auth.store_notifications import RestoredSubscription
 from nativespeaker.api.crud.subscriptions import SubscriptionsDB
 from nativespeaker.api.errors import AppError, RestoreTransferRejected
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.services.restore import RestoreService
 from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus, User
 from schema.test_claim_race import _RacingSession, read, scalar
@@ -217,9 +217,9 @@ async def commit_subscription(harness: _Harness, *, user_id: uuid.UUID | None = 
     return subscription_id
 
 
-def identity_of(user_id: uuid.UUID) -> Identity:
+def identity_of(user_id: uuid.UUID) -> AuthIdentity:
     """The admitted caller the route hands the service, carrying nothing but the account it resolved."""
-    return Identity(issuer="ns-restore-race", subject=str(user_id), user=User(id=user_id))
+    return AuthIdentity(issuer="ns-restore-race", subject=str(user_id), user=User(id=user_id))
 
 
 async def run_attempt(harness: _Harness, attempt: _Attempt, proof: RestoredSubscription,

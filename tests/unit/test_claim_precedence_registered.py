@@ -21,10 +21,10 @@ from nativespeaker.api.crud.grants import ActivationOutcome, GrantsDB
 from nativespeaker.api.errors import ProofRejected, Unavailable
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.schemas.auth import (
+    AuthIdentity,
     Entitlement,
     EntitlementStatus,
     EntitlementType,
-    Identity,
 )
 from nativespeaker.api.tables.auth import AuthOperation
 from nativespeaker.api.tables.grants import AccessGrantSource
@@ -109,10 +109,10 @@ def session(timeline, account) -> _RecordingSession:
 
 
 @pytest.fixture
-def identity(account) -> Identity:
+def identity(account) -> AuthIdentity:
     """A linked caller: this route sits behind the same barrier the anonymous claim does."""
     identity_row, user = account
-    return Identity(issuer=TEST_ISSUER, subject=SUBJECT, user=user, identity=identity_row)
+    return AuthIdentity(issuer=TEST_ISSUER, subject=SUBJECT, user=user, identity=identity_row)
 
 
 @pytest.fixture

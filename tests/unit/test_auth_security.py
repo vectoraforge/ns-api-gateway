@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import get_linked_identity
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import AuthIdentity
 from unit.conftest import make_test_verifier, make_token
 
 
@@ -35,7 +35,7 @@ def probe_client():
     router = APIRouter(dependencies=[Depends(get_linked_identity)])
 
     @router.get("/probe")
-    async def _probe(identity: Identity = Depends(get_linked_identity)):
+    async def _probe(identity: AuthIdentity = Depends(get_linked_identity)):
         return {"reached": True}
 
     app.include_router(router)

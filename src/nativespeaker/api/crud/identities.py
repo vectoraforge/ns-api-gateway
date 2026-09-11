@@ -16,7 +16,7 @@ from nativespeaker.api.errors import (
     PreAuthIdentityNotAllowed,
     ProviderAccountAlreadyLinked,
 )
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.purchases import PurchaseProvider, StorePurchaseToken
 from nativespeaker.api.tables.users import User
@@ -27,7 +27,7 @@ class IdentitiesDB:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def resolve(self, *, issuer: str, subject: str, allow_preauth: bool) -> Identity:
+    async def resolve(self, *, issuer: str, subject: str, allow_preauth: bool) -> AuthIdentity:
         """Resolve a verified `(issuer, subject)` or raise the rejection it earned, using a single query."""
         # Outer join: an identity row whose user_id resolves to nothing must stay distinct from no row.
         statement = (select(ExternalIdentity, User)
@@ -39,7 +39,7 @@ class IdentitiesDB:
         if row is None:
             # Identity rows are never deleted, so no row can only mean this pair was never linked.
             if allow_preauth:
-                return Identity(issuer=issuer, subject=subject)
+                return AuthIdentity(issuer=issuer, subject=subject)
             raise PreAuthIdentityNotAllowed
 
         identity, user = row
@@ -51,7 +51,7 @@ class IdentitiesDB:
             raise HistoricalIdentity
         if user.active is not True:
             raise BlockedUser
-        return Identity(issuer=issuer, subject=subject, user=user, identity=identity)
+        return AuthIdentity(issuer=issuer, subject=subject, user=user, identity=identity)
 
     async def resolve_existing(self, *, issuer: str, subject: str) -> ExternalIdentity | None:
         """The re-resolution, issued inside the transaction. Not the race arbiter, and never to be one."""
@@ -89,7 +89,7 @@ class IdentitiesDB:
 
     async def insert_account(self, *,
                              evaluated_at: datetime,
-                             identity: Identity,
+                             identity: AuthIdentity,
                              provider: IdentityProvider,
                              provider_uid: str | None,
                              email: str | None) -> UUID:

@@ -16,7 +16,7 @@ from nativespeaker.api.crud.challenges import (
     new_challenge_id,
 )
 from nativespeaker.api.errors import ChallengeConsumed, ChallengeIdentityMismatch
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.users import User
@@ -76,7 +76,7 @@ class _RecordingSession:
 
 
 def linked_identity(subject: str = SUBJECT, *, issuer: str = ISSUER,
-                    identity_id: UUID | None = None) -> Identity:
+                    identity_id: UUID | None = None) -> AuthIdentity:
     user = User()
     identity = ExternalIdentity(id=identity_id if identity_id is not None else uuid7(),
                                 user_id=user.id,
@@ -84,11 +84,11 @@ def linked_identity(subject: str = SUBJECT, *, issuer: str = ISSUER,
                                 subject=subject,
                                 provider=IdentityProvider.google,
                                 provider_uid=f"google-uid-{subject}")
-    return Identity(user=user, identity=identity, issuer=issuer, subject=subject)
+    return AuthIdentity(user=user, identity=identity, issuer=issuer, subject=subject)
 
 
-def preauth_identity(subject: str = SUBJECT, *, issuer: str = ISSUER) -> Identity:
-    return Identity(issuer=issuer, subject=subject)
+def preauth_identity(subject: str = SUBJECT, *, issuer: str = ISSUER) -> AuthIdentity:
+    return AuthIdentity(issuer=issuer, subject=subject)
 
 
 async def issue_row(identity, *,

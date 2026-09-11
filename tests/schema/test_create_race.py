@@ -13,7 +13,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import IdentityProvider
 
@@ -141,7 +141,7 @@ class _Attempt:
     subject: str
     provider: IdentityProvider
     provider_uid: str | None
-    identity: Identity
+    identity: AuthIdentity
     challenge_row_id: uuid.UUID
     challenge_id: str
     result: IdentityProvider | AppError | None = None
@@ -155,7 +155,7 @@ def outcome_name(attempt: _Attempt) -> str:
 
 async def prepare_attempt(harness: _Harness, *, subject: str, provider: IdentityProvider,
                           provider_uid: str | None) -> _Attempt:
-    identity = Identity(issuer=harness.issuer, subject=subject)
+    identity = AuthIdentity(issuer=harness.issuer, subject=subject)
     row_id, challenge_id = await commit_issued_challenge(harness, subject=subject)
     return _Attempt(subject=subject, provider=provider, provider_uid=provider_uid,
                     identity=identity,

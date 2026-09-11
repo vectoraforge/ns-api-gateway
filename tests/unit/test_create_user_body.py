@@ -14,7 +14,7 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.routers import auth_router
-from nativespeaker.api.schemas.auth import CompletionRequest, Identity
+from nativespeaker.api.schemas.auth import AuthIdentity, CompletionRequest
 
 from .conftest import TEST_ISSUER
 
@@ -79,7 +79,7 @@ def client(store, session, fake_firebase_adapter):
     app.include_router(auth_router)
     register_exception_handlers(app)
 
-    identity = Identity(issuer=TEST_ISSUER, subject=UNLINKED_SUBJECT)
+    identity = AuthIdentity(issuer=TEST_ISSUER, subject=UNLINKED_SUBJECT)
     app.dependency_overrides[get_identity] = lambda: identity
     # An async generator, not a plain callable: `get_db` releases the read transaction itself, and a
     # callable has no `try`/`except` to do it with. Mirrors `app/dependencies.py::get_db` exactly.

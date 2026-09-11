@@ -27,11 +27,11 @@ from nativespeaker.api.errors import (
     RestoreProviderUnknown,
 )
 from nativespeaker.api.schemas.auth import (
+    AuthIdentity,
     ChallengeRequest,
     CompletionRequest,
     CompletionResponse,
     GrantClaimRequest,
-    Identity,
     LinkedIdentity,
     PrepareResponse,
     RestoreRequest,
@@ -51,7 +51,7 @@ router = APIRouter(tags=["auth"], dependencies=[Depends(get_identity)])
              summary="Issue a single-use challenge for a challenge-bearing operation")
 async def issue_challenge(body: ChallengeRequest,
                           response: Response,
-                          identity: Identity = Depends(get_identity),
+                          identity: AuthIdentity = Depends(get_identity),
                           session: AsyncSession = Depends(get_db),
                           challenge_store: ChallengesDB = Depends(get_challenge_store),
                           evaluated_at: datetime = Depends(get_evaluated_at)) -> PrepareResponse:
@@ -82,7 +82,7 @@ async def issue_challenge(body: ChallengeRequest,
              description="Spends a single-use challenge obtained from `POST /auth/challenge`, "
                          "supplied as `challenge_id` in the body, and creates the account.")
 async def create_user(body: CompletionRequest,
-                      identity: Identity = Depends(get_identity),
+                      identity: AuthIdentity = Depends(get_identity),
                       service: AuthService = Depends(get_auth_service)) -> CompletionResponse:
     """Complete the operation the body's handle stands for."""
     # Forwarded untouched and never logged: the handle is a secret.

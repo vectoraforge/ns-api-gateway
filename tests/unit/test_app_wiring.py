@@ -190,7 +190,7 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
         from fastapi.testclient import TestClient
 
         from nativespeaker.api.app.error_handlers import register_exception_handlers
-        from nativespeaker.api.schemas.auth import Identity, LinkedIdentity
+        from nativespeaker.api.schemas.auth import AuthIdentity, LinkedIdentity
         from nativespeaker.api.tables.identities import (
             ExternalIdentity,
             IdentityProvider,
@@ -237,7 +237,7 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
         @router.get("/chats/{chat_id}")
         async def _handler(chat_id: str,
                            who: LinkedIdentity = Depends(get_linked_identity),
-                           admitted: Identity = Depends(get_identity)):
+                           admitted: AuthIdentity = Depends(get_identity)):
             same = who.user is admitted.user and who.identity is admitted.identity
             return {"same": same, "user": str(who.user.id)}
 

@@ -18,7 +18,7 @@ from nativespeaker.api.errors import (
     IdentityAlreadyLinked,
     ProviderAccountAlreadyLinked,
 )
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.services import auth as auth_service
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
@@ -108,8 +108,8 @@ class _ConflictingSession:
         self.rollbacks += 1
 
 
-def _identity() -> Identity:
-    return Identity(issuer=ISSUER, subject=SUBJECT)
+def _identity() -> AuthIdentity:
+    return AuthIdentity(issuer=ISSUER, subject=SUBJECT)
 
 
 def _identity_row(*, state: IdentityState, user_id=None) -> ExternalIdentity:

@@ -58,7 +58,7 @@ def _row(*, identity_state=IdentityState.active, user_active: bool = True, user=
 
 
 async def _resolve(row, *, preauth_callable: bool = False):
-    """The admitting half: resolution returns the `Identity` it resolved."""
+    """The admitting half: resolution returns the `AuthIdentity` it resolved."""
     session = _StubSession(row)
     identity = await IdentitiesDB(session).resolve(issuer=ISSUER, subject=SUBJECT,
                                                    allow_preauth=preauth_callable)

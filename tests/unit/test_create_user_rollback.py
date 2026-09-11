@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.violations import UNIQUE_VIOLATION
 from nativespeaker.api.errors import IdentityAlreadyLinked
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.purchases import StorePurchaseToken
@@ -70,8 +70,8 @@ class _FlushFailingSession:
         self.rollbacks += 1
 
 
-def _identity() -> Identity:
-    return Identity(issuer=ISSUER, subject=SUBJECT)
+def _identity() -> AuthIdentity:
+    return AuthIdentity(issuer=ISSUER, subject=SUBJECT)
 
 
 async def _create(session) -> UUID:

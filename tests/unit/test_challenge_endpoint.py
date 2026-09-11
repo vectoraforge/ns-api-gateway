@@ -19,7 +19,7 @@ from nativespeaker.api.app.dependencies import (
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.routers import auth as auth_module
 from nativespeaker.api.routers import auth_router
-from nativespeaker.api.schemas.auth import ChallengeRequest, Identity
+from nativespeaker.api.schemas.auth import AuthIdentity, ChallengeRequest
 from nativespeaker.api.tables.auth import AuthOperation
 
 from .conftest import TEST_IDENTITY, TEST_ISSUER
@@ -94,7 +94,7 @@ def _client_for(identity, store, session, fake_firebase_adapter):
 @pytest.fixture
 def client(store, session, fake_firebase_adapter):
     """A verified caller whose pair matched no identity row."""
-    yield from _client_for(Identity(issuer=TEST_ISSUER, subject=UNLINKED_SUBJECT),
+    yield from _client_for(AuthIdentity(issuer=TEST_ISSUER, subject=UNLINKED_SUBJECT),
                            store, session, fake_firebase_adapter)
 
 

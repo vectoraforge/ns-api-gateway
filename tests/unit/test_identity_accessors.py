@@ -12,7 +12,7 @@ from nativespeaker.api.app.dependencies import (
     get_linked_identity,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.tables.identities import (
     ExternalIdentity,
     IdentityProvider,
@@ -30,10 +30,10 @@ SUBJECT = "firebase-uid-1"
 _ADDRESS_MARKERS = ("addr", "remote", "host", "forwarded", "xff", "peer")
 
 
-def _linked() -> Identity:
+def _linked() -> AuthIdentity:
     """A linked identity over the real model classes -- no mock stands in for the resolved rows."""
     user, identity = _rows()
-    return Identity(issuer=ISSUER, subject=SUBJECT, user=user, identity=identity)
+    return AuthIdentity(issuer=ISSUER, subject=SUBJECT, user=user, identity=identity)
 
 
 def _rows() -> tuple[User, ExternalIdentity]:
@@ -49,8 +49,8 @@ def _rows() -> tuple[User, ExternalIdentity]:
     return user, identity
 
 
-def _unlinked() -> Identity:
-    return Identity(issuer=ISSUER, subject=SUBJECT)
+def _unlinked() -> AuthIdentity:
+    return AuthIdentity(issuer=ISSUER, subject=SUBJECT)
 
 
 class _Result:
@@ -103,11 +103,11 @@ def _client(row=None) -> TestClient:
     linked_router = APIRouter(dependencies=[Depends(get_linked_identity)])
 
     @admit_router.get("/admitted")
-    async def _admitted(identity: Identity = Depends(get_identity)):
+    async def _admitted(identity: AuthIdentity = Depends(get_identity)):
         return {"linked": identity.user is not None}
 
     @linked_router.get("/linked")
-    async def _linked_route(identity: Identity = Depends(get_linked_identity)):
+    async def _linked_route(identity: AuthIdentity = Depends(get_linked_identity)):
         return {"user_id": str(identity.user.id)}
 
     app.include_router(admit_router)
@@ -301,7 +301,7 @@ class TestTheIdentityShape:
     """The one class's field set, which later phases import verbatim."""
 
     def test_the_identity_carries_the_verified_pair_and_the_two_nullable_rows(self):
-        assert sorted(Identity.__dataclass_fields__) == ["identity", "issuer", "subject", "user"]
+        assert sorted(AuthIdentity.__dataclass_fields__) == ["identity", "issuer", "subject", "user"]
 
     def test_unlinked_is_both_row_fields_none_together(self):
         """There is no tag to misread: nullability is the whole distinction the store branches on."""
@@ -317,8 +317,8 @@ class TestTheIdentityShape:
         assert identity.identity is not None
 
     def test_the_identity_is_frozen_and_slotted(self):
-        assert Identity.__dataclass_params__.frozen
-        assert "__slots__" in Identity.__dict__
+        assert AuthIdentity.__dataclass_params__.frozen
+        assert "__slots__" in AuthIdentity.__dict__
 
     def test_a_frozen_identity_cannot_be_relinked(self):
         with pytest.raises(Exception):
@@ -335,15 +335,15 @@ class TestNoClientAddressIsCarried:
     """No client address in any form, since deriving trust from one would assume rather than prove it."""
 
     def test_no_field_name_reads_as_an_address(self):
-        cls = Identity
+        cls = AuthIdentity
         for name in cls.__dataclass_fields__:
             offenders = [m for m in _ADDRESS_MARKERS if m in name]
             assert not offenders, f"{cls.__name__}.{name} looks like an address field ({offenders})"
 
     def test_the_only_string_fields_are_the_verified_pair(self):
         """An address would arrive as a str, so the two verified values are the whole allowance."""
-        strings = {name for name, hint in get_type_hints(Identity).items() if hint is str}
-        assert strings == {"issuer", "subject"}, f"unexpected str field(s) on Identity: {strings}"
+        strings = {name for name, hint in get_type_hints(AuthIdentity).items() if hint is str}
+        assert strings == {"issuer", "subject"}, f"unexpected str field(s) on AuthIdentity: {strings}"
 
 
 class TestExternalIdentityModel:

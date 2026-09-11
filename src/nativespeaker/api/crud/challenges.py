@@ -8,7 +8,7 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.errors import ChallengeConsumed, ChallengeIdentityMismatch
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 
 # One universal TTL for every operation: no per-operation override, no grace period, no renewal.
@@ -31,7 +31,7 @@ class ChallengesDB:
 
     async def issue(self, session: AsyncSession, *,
                     operation: AuthOperation,
-                    identity: Identity,
+                    identity: AuthIdentity,
                     now: datetime) -> tuple[str, datetime]:
         """Insert one row, returning only `(challenge_id, expires_at)`: from the caller's `now`, never renewed."""
         challenge_id = new_challenge_id()
@@ -87,7 +87,7 @@ class ChallengesDB:
             .returning(col(AuthChallenge.id)))
         return len(result.all()) == 1
 
-    def verify_binding(self, row: AuthChallenge, identity: Identity) -> AuthChallenge:
+    def verify_binding(self, row: AuthChallenge, identity: AuthIdentity) -> AuthChallenge:
         """Return `row` when `identity` is the presenter it was bound to, and raise otherwise."""
         if row.bound_external_identity_id is not None:
             if (identity.identity is not None

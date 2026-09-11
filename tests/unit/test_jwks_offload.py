@@ -13,7 +13,7 @@ from jwt.algorithms import RSAAlgorithm
 from nativespeaker.api.app.dependencies import get_linked_identity
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.jwt_verifier import BoundedReason, JWTVerifier
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import AuthIdentity
 from unit.conftest import PUBLIC_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_token
 
 JWKS_URL = "https://jwks.invalid/keys"
@@ -102,7 +102,7 @@ def probe_app(verifier) -> FastAPI:
     router = APIRouter(dependencies=[Depends(get_linked_identity)])
 
     @router.get("/probe")
-    async def _probe(identity: Identity = Depends(get_linked_identity)):
+    async def _probe(identity: AuthIdentity = Depends(get_linked_identity)):
         return {"reached": True}
 
     app.include_router(router)

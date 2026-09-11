@@ -26,7 +26,7 @@ from nativespeaker.api.errors import (
     NotificationRejected,
     PreAuthIdentityNotAllowed,
 )
-from nativespeaker.api.schemas.auth import Identity, LinkedIdentity
+from nativespeaker.api.schemas.auth import AuthIdentity, LinkedIdentity
 from nativespeaker.api.schemas.webhooks import AppStoreNotificationRequest, PubSubPushRequest
 from nativespeaker.api.services import (
     AuthService,
@@ -60,7 +60,7 @@ _AUTHORIZATION = b"authorization"
 
 async def get_identity(request: Request,
                        credential: HTTPAuthorizationCredentials | None = Depends(_bearer),
-                       ) -> Identity:
+                       ) -> AuthIdentity:
     """Accept the token and resolve the identity it names -- once per request."""
     # Count on the raw scope. The merged view shows the first field value and hides a second one.
     if sum(1 for name, _value in request.scope["headers"] if name == _AUTHORIZATION) > 1:
@@ -85,7 +85,7 @@ async def get_identity(request: Request,
 
 
 # Declared, never called directly: FastAPI's cache only sees solver-resolved deps, so a direct call re-verifies.
-async def get_linked_identity(identity: Identity = Depends(get_identity)) -> LinkedIdentity:
+async def get_linked_identity(identity: AuthIdentity = Depends(get_identity)) -> LinkedIdentity:
     """The resolved user and identity row; rejects an unlinked caller with 403."""
     if identity.user is None or identity.identity is None:
         raise PreAuthIdentityNotAllowed

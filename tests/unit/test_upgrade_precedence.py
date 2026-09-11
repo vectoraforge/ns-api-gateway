@@ -18,7 +18,7 @@ from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.errors import AppError, ProviderAccountAlreadyLinked, UserNotFound
 from nativespeaker.api.routers import auth_router
-from nativespeaker.api.schemas.auth import Identity
+from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.users import User
@@ -134,10 +134,10 @@ def account() -> tuple[ExternalIdentity, User]:
 
 
 @pytest.fixture
-def identity(account) -> Identity:
+def identity(account) -> AuthIdentity:
     """A linked caller: the upgrade route narrows to one, unlike create-user's pre-auth identity."""
     identity_row, user = account
-    return Identity(issuer=TEST_ISSUER, subject=SUBJECT, user=user, identity=identity_row)
+    return AuthIdentity(issuer=TEST_ISSUER, subject=SUBJECT, user=user, identity=identity_row)
 
 
 @pytest.fixture
