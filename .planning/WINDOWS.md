@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 19
+open_count: 20
 waived_count: 1
 fixed_count: 10
-total_count: 30
-last_updated: 2026-09-12T06:28:34.592Z
+total_count: 31
+last_updated: 2026-09-12T08:04:34.354Z
 ---
 
 # Broken Windows Ledger
@@ -45,6 +45,7 @@ last_updated: 2026-09-12T06:28:34.592Z
 | 28 | 45 | todo | migrations/20260818_01_initial-release.sql | 136 | Stale comment: last_cross_account_transfer_month says 'Written by nothing' which D-10 made false. Should read: written by the capped cross-account move only (D-10); one move per subscription per UTC month. Migration not edited (D-14). | open |  | 2026-09-08T21:30:20.962Z |  |
 | 29 | 47 | unrun-verify | tests/e2e/test_restore_subscription.py |  | Pre-existing failure not caused by plan 47-01: the four-arms refusal case expects log event proof_rejected, the code emits purchase_proof_rejected. Measured on HEAD 1a3273d with every 47-01 edit reverted. | open |  | 2026-09-12T05:56:25.182Z |  |
 | 30 | 47 | unrun-verify | tests/schema/test_claim_race.py |  | Two assertions derive the expected monthly period from the live clock; a run straddling a UTC month boundary would fail | open |  | 2026-09-12T06:28:34.592Z |  |
+| 31 | 47 | deviation | tests/unit/test_subscription_attribution.py | 964 | Plan 47-08 measured it red: the control case builds an open term one minute past a module-import NOW, so any run longer than a minute between collection and the case closes the term and ingest raises InternalError. Fails under -m '' (131 s), passes alone. Reproduced with a 65 s post-collection sleep. Introduced by 47-05; not fixed in 47-08, which writes no source. | open |  | 2026-09-12T08:04:34.354Z |  |
 
 ````json
 [
@@ -406,6 +407,18 @@ last_updated: 2026-09-12T06:28:34.592Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-09-12T06:28:34.592Z",
+    "resolved_at": null
+  },
+  {
+    "id": 31,
+    "kind": "deviation",
+    "phase": "47",
+    "file": "tests/unit/test_subscription_attribution.py",
+    "line": 964,
+    "description": "Plan 47-08 measured it red: the control case builds an open term one minute past a module-import NOW, so any run longer than a minute between collection and the case closes the term and ingest raises InternalError. Fails under -m '' (131 s), passes alone. Reproduced with a 65 s post-collection sleep. Introduced by 47-05; not fixed in 47-08, which writes no source.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-12T08:04:34.354Z",
     "resolved_at": null
   }
 ]
