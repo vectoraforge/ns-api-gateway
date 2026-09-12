@@ -23,7 +23,8 @@ pytestmark = pytest.mark.schema
 _ASYNCPG_PREFIX = "postgres://"
 _SQLALCHEMY_PREFIX = "postgresql+asyncpg://"
 
-NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
+# The ingestion reads its own clock, so the terms this file builds are dated from the live one.
+NOW = datetime.now(UTC)
 
 # The tier the migration seeds for a paid subscription, and the one this test's product map targets.
 TIER_ID = "paid"
@@ -145,7 +146,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=N
     """Drive the production ingestion once, on its own session and connection, as one request does."""
     async with harness.factory() as real_session:
         session = _RacedSession(real_session, before_first_flush, before_first_write)
-        service = SubscriptionsService(db=session, evaluated_at=NOW)
+        service = SubscriptionsService(db=session)
         try:
             await service.ingest(attempt.notification)
         except AppError as rejection:

@@ -1,5 +1,5 @@
 """Store-subscription ingestion: one verified notification, one transaction, one commit."""
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid7
 
 import structlog
@@ -21,16 +21,15 @@ logger = structlog.get_logger()
 
 class SubscriptionsService:
 
-    def __init__(self, db: AsyncSession, evaluated_at: datetime) -> None:
+    def __init__(self, db: AsyncSession) -> None:
         self.session = db
         self.subscriptions_db = SubscriptionsDB(db)
         self.purchases_db = PurchasesDB(db)
-        # One instant for this request; nothing below it reads the clock again.
-        self.evaluated_at = evaluated_at
 
     async def ingest(self, notification: VerifiedNotification) -> None:
         """Record one verified notification and commit, or return having written nothing.
         The purchase arms run in order: refuse a changed attribution, keep an agreeing one, insert a new pair."""
+        instant = datetime.now(UTC)
         if notification.external_id is None or notification.product_id is None:
             # Verified but unwritable: `audit.subscription_events.subscription_id` is NOT NULL.
             logger.info("store_notification_without_transaction",
@@ -101,11 +100,11 @@ class SubscriptionsService:
 
         # The store's own word, read live or from the signed envelope: never derived here.
         status = notification.status
-        starts_at = min(notification.purchased_at or self.evaluated_at, self.evaluated_at)
+        starts_at = min(notification.purchased_at or instant, instant)
         term_ends_at = term_end_for(status, notification)
         if status in ENTITLED_STATUSES and (term_ends_at is None
                                             or term_ends_at <= starts_at
-                                            or term_ends_at <= self.evaluated_at):
+                                            or term_ends_at <= instant):
             logger.error("store_notification_without_term", event_type=notification.event_type)
             raise InternalError
         subscription, outcome = await self.subscriptions_db.upsert_subscription(

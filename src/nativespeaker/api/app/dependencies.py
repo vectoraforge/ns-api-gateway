@@ -148,10 +148,8 @@ def get_sync_service(db: AsyncSession = Depends(get_db),
     return SyncService(db=db, evaluated_at=evaluated_at)
 
 
-def get_subscriptions_service(db: AsyncSession = Depends(get_db),
-                              evaluated_at: datetime = Depends(get_evaluated_at),
-                              ) -> SubscriptionsService:
-    return SubscriptionsService(db=db, evaluated_at=evaluated_at)
+def get_subscriptions_service(db: AsyncSession = Depends(get_db)) -> SubscriptionsService:
+    return SubscriptionsService(db=db)
 
 
 # Takes `Request` for the store class the lifespan built, as `get_chat_service` above does.

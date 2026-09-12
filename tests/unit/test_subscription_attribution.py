@@ -29,7 +29,8 @@ OTHER_TIER_ID = "registered"
 TOKEN = "a-synthetic-attribution-token"
 OTHER_TOKEN = "a-different-synthetic-attribution-token"
 
-NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
+# The ingestion reads its own clock, so the terms this file places around it are dated from the live one.
+NOW = datetime.now(UTC)
 
 # The two accounts of the D-09 case: the one a restore made the owner, and the one that bought it.
 RESTORER = uuid7()
@@ -245,7 +246,7 @@ def _seed_owned(writer, owner: UUID, *, external_id: str | None = None,
 
 def _service(session, writer, bound: UUID | None) -> SubscriptionsService:
     """The real service over the two recording crud stands-in, so its own arms are what runs."""
-    service = SubscriptionsService(db=session, evaluated_at=NOW)
+    service = SubscriptionsService(db=session)
     service.subscriptions_db = writer
     service.purchases_db = _RecordingPurchases(writer.timeline, bound)
     return service
@@ -953,10 +954,10 @@ class TestAnEntitledNotificationWithNoOpenTermIsRefusedBeforeAnyWrite:
         assert (writer.upserts, writer.inserted, writer.appended, writer.granted) == ([], [], [], [])
         assert session.commits == 0
 
-    async def test_a_term_still_open_at_the_captured_instant_is_written_control(self, session,
-                                                                                writer):
-        """The control: the captured instant is what the guard compares against, so a term open at
-        it is written whatever the purchase date says."""
+    async def test_a_term_still_open_when_the_ingestion_reads_is_written_control(self, session,
+                                                                                 writer):
+        """The control: the guard compares the term against the instant the ingestion reads, so a
+        term still open then is written whatever the purchase date says."""
         service = _service(session, writer, ORIGINAL_BUYER)
 
         await service.ingest(_notification(attribution_token=TOKEN,
@@ -965,17 +966,19 @@ class TestAnEntitledNotificationWithNoOpenTermIsRefusedBeforeAnyWrite:
 
         assert writer.granted[0]["ends_at"] == NOW + timedelta(minutes=1)
 
-    async def test_a_purchase_date_ahead_of_the_captured_instant_is_capped_at_it(self, session,
-                                                                                writer):
+    @pytest.mark.timing
+    async def test_a_purchase_date_ahead_of_the_instant_is_capped_at_it(self, session, writer):
         """WR-60: unclamped it wrote a grant the shared effective predicate never reads, while that
         row still held the buyer's one-active slot and refused every free claim behind it."""
         service = _service(session, writer, ORIGINAL_BUYER)
 
+        before = datetime.now(UTC)
         await service.ingest(_notification(attribution_token=TOKEN,
                                            purchased_at=NOW + timedelta(days=2),
                                            expires_at=NOW + timedelta(days=30)))
+        after = datetime.now(UTC)
 
-        assert writer.granted[0]["starts_at"] == NOW
+        assert before <= writer.granted[0]["starts_at"] <= after
 
     async def test_a_purchase_date_before_it_is_carried_through_control(self, session, writer):
         """The control: the cap binds one direction only, so a real purchase date is still the start."""

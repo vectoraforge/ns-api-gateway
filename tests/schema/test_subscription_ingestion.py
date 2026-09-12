@@ -16,7 +16,11 @@ from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.crud.grants import GrantsDB
 from nativespeaker.api.errors import InternalError
 from nativespeaker.api.services.subscriptions import SubscriptionsService
-from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
+from nativespeaker.api.tables import (
+    PurchaseProvider,
+    SubscriptionStatus,
+    monthly_period_for,
+)
 from schema.helpers import (
     insert_store_purchase,
     insert_subscription,
@@ -123,14 +127,13 @@ class _Buyer:
     tier_id: str
     token: str | None
     external_id: str
-    evaluated_at: datetime
+    instant: datetime
     provider: PurchaseProvider
 
     async def ingest(self, notification: VerifiedNotification) -> None:
         """Drive one delivery through the real service on its own session, as one request would."""
         async with self.factory() as session:
-            await SubscriptionsService(db=session,
-                                       evaluated_at=self.evaluated_at).ingest(notification)
+            await SubscriptionsService(db=session).ingest(notification)
 
     def built(self, *, external_id: str | None = None, expires_in: timedelta | None = _A_MONTH,
               purchased_before: timedelta = _A_MONTH,
@@ -138,17 +141,17 @@ class _Buyer:
               grace_period_in: timedelta | None = None,
               signed_at: datetime | None = None, event_type: str = "DID_RENEW",
               notification_uuid: str | None = None) -> VerifiedNotification:
-        """One notification for this buyer, with its term placed around the captured instant."""
+        """One notification for this buyer, with its term placed around this buyer's own instant."""
         return _notification(
             external_id=external_id or self.external_id,
             token=self.token,
             tier_id=self.tier_id,
             provider=self.provider,
-            purchased_at=self.evaluated_at - purchased_before,
-            expires_at=None if expires_in is None else self.evaluated_at + expires_in,
+            purchased_at=self.instant - purchased_before,
+            expires_at=None if expires_in is None else self.instant + expires_in,
             status=status,
             grace_period_expires_at=(None if grace_period_in is None
-                                     else self.evaluated_at + grace_period_in),
+                                     else self.instant + grace_period_in),
             signed_at=signed_at,
             event_type=event_type,
             notification_uuid=notification_uuid)
@@ -161,7 +164,7 @@ class _Buyer:
         """Drive one delivery whose commit never runs, and answer what its transaction held."""
         async with self.factory() as session:
             interrupted = _InterruptedSession(session, self.tier_id)
-            service = SubscriptionsService(db=interrupted, evaluated_at=self.evaluated_at)
+            service = SubscriptionsService(db=interrupted)
             with pytest.raises(_CommitInterrupted):
                 await service.ingest(self.built(**placement))
             # Leaving the block closes the session, which rolls the whole transaction back.
@@ -195,7 +198,7 @@ class _Buyer:
             "  ON s.id = e.subscription_id WHERE s.tier_id = $1)", self.tier_id))
 
     async def effective(self) -> list[uuid.UUID]:
-        """The grants the entitlement read itself returns for this buyer at the captured instant."""
+        """The grants the entitlement read itself returns for this buyer right now."""
         async with self.factory() as session:
             return [grant.id for grant in await GrantsDB(session).lock_effective_grants(
                 self.user_id)]
@@ -281,7 +284,7 @@ async def _buyer(schema_db_uri: str, *, attributed: bool = True,
                                                 expire_on_commit=False),
                      probe=probe, user_id=user_id, tier_id=tier_id, token=token,
                      external_id=f"{key}-{uuid.uuid4().hex[:12]}",
-                     evaluated_at=datetime.now(UTC), provider=provider)
+                     instant=datetime.now(UTC), provider=provider)
     finally:
         await probe.close()
         await engine.dispose()
@@ -327,40 +330,47 @@ class TestTheFirstTermIsWritten:
             assert [(row["source"], row["status"]) for row in held] == [("subscription", "active")]
             assert held[0]["tier_id"] == buyer.tier_id
             assert held[0]["subscription_id"] == await buyer.subscription_id()
-            assert held[0]["starts_at"] == buyer.evaluated_at - _A_MONTH
-            assert held[0]["ends_at"] == buyer.evaluated_at + _A_MONTH
+            assert held[0]["starts_at"] == buyer.instant - _A_MONTH
+            assert held[0]["ends_at"] == buyer.instant + _A_MONTH
 
+    @pytest.mark.timing
     async def test_the_fresh_usage_row_is_written_with_the_grant(self, _schema_db_uri):
-        """The period is the captured instant's month, spelled as services/quota.py spells it."""
+        """The period is the month the writer's own clock read lands in, spelled once in the tables."""
         async with _buyer(_schema_db_uri) as buyer:
+            before = datetime.now(UTC)
             await buyer.deliver()
+            after = datetime.now(UTC)
 
             usage = await buyer.usage((await buyer.grants())[0]["id"])
             assert usage is not None
             assert usage["monthly_used"] == 0
-            assert usage["monthly_period"] == buyer.evaluated_at.strftime("%Y-%m")
+            assert usage["monthly_period"] in {monthly_period_for(before),
+                                               monthly_period_for(after)}
 
     async def test_the_store_signing_instant_is_kept_on_the_subscription_row(self, _schema_db_uri):
         """The store's own clock, which is the value the out-of-order guard compares."""
         async with _buyer(_schema_db_uri) as buyer:
-            signed = buyer.evaluated_at - timedelta(minutes=5)
+            signed = buyer.instant - timedelta(minutes=5)
 
             await buyer.deliver(signed_at=signed)
 
             assert await buyer.signed_at() == signed
 
+    @pytest.mark.timing
     async def test_the_buyers_free_grant_is_expired_and_not_deleted(self, _schema_db_uri):
         """D-18. The lifetime slot is spent, so a later lapse leaves the buyer holding nothing."""
         async with _buyer(_schema_db_uri) as buyer:
             free = await _seed_grant(buyer.probe, user_id=buyer.user_id, tier_id=buyer.tier_id,
                                      source="anonymous_device_grant",
-                                     starts_at=buyer.evaluated_at - timedelta(hours=1))
+                                     starts_at=buyer.instant - timedelta(hours=1))
+            before = datetime.now(UTC)
             await buyer.deliver()
+            after = datetime.now(UTC)
 
             held = {row["id"]: row for row in await buyer.grants()}
             assert len(held) == 2
             assert held[free]["status"] == "expired"
-            assert held[free]["ends_at"] == buyer.evaluated_at
+            assert before <= held[free]["ends_at"] <= after
             assert await buyer.usage(free) is not None
 
 
@@ -382,21 +392,24 @@ class TestTheTermDecidesWhatIsWritten:
             assert held[0]["updated_at"] == before["updated_at"]
             assert await buyer.usage(before["id"]) == usage_before
 
+    @pytest.mark.timing
     async def test_a_renewal_expires_the_old_term_and_inserts_the_next(self, _schema_db_uri):
         """Both halves in one case: the superseded row is expired and the next term is active."""
         async with _buyer(_schema_db_uri) as buyer:
             await buyer.deliver()
             first = (await buyer.grants())[0]["id"]
 
+            before = datetime.now(UTC)
             await buyer.deliver(expires_in=2 * _A_MONTH, purchased_before=timedelta(hours=2))
+            after = datetime.now(UTC)
 
             held = {row["id"]: row for row in await buyer.grants()}
             assert len(held) == 2
             assert held[first]["status"] == "expired"
-            assert held[first]["ends_at"] == buyer.evaluated_at
+            assert before <= held[first]["ends_at"] <= after
             next_term = next(row for key, row in held.items() if key != first)
             assert next_term["status"] == "active"
-            assert next_term["ends_at"] == buyer.evaluated_at + 2 * _A_MONTH
+            assert next_term["ends_at"] == buyer.instant + 2 * _A_MONTH
             assert (await buyer.usage(next_term["id"]))["monthly_used"] == 0
 
 
@@ -404,16 +417,19 @@ class TestTheTermDecidesWhatIsWritten:
 class TestLeavingTheEntitledSet:
     """D-18, D-19. Outside `active` and `grace_period` the buyer holds no grant at all."""
 
+    @pytest.mark.timing
     async def test_an_ended_term_leaves_the_buyer_holding_no_grant(self, _schema_db_uri):
         async with _buyer(_schema_db_uri) as buyer:
             await buyer.deliver()
 
+            before = datetime.now(UTC)
             await buyer.deliver(expires_in=-timedelta(minutes=1),
                                 status=SubscriptionStatus.expired)
+            after = datetime.now(UTC)
 
             held = await buyer.grants()
             assert [row["status"] for row in held] == ["expired"]
-            assert held[0]["ends_at"] == buyer.evaluated_at
+            assert before <= held[0]["ends_at"] <= after
 
     async def test_a_withdrawn_purchase_marks_the_grant_revoked(self, _schema_db_uri):
         async with _buyer(_schema_db_uri) as buyer:
@@ -436,7 +452,7 @@ class TestAGracePeriodDeliveryIsEntitledForTheGraceWindow:
 
             held = await buyer.grants()
             assert await buyer.status() == "grace_period"
-            assert held[0]["ends_at"] == buyer.evaluated_at + timedelta(days=16)
+            assert held[0]["ends_at"] == buyer.instant + timedelta(days=16)
             assert await buyer.effective() == [held[0]["id"]]
 
     async def test_a_grace_window_already_past_leaves_no_effective_grant_control(self,
@@ -494,15 +510,15 @@ class TestAPayloadSignedBeforeTheRecordedStateAppliesNothing:
 
     async def test_a_stale_expiry_leaves_the_term_and_the_status_alone(self, _schema_db_uri):
         async with _buyer(_schema_db_uri) as buyer:
-            await buyer.deliver(signed_at=buyer.evaluated_at - timedelta(hours=1))
+            await buyer.deliver(signed_at=buyer.instant - timedelta(hours=1))
 
             await buyer.deliver(expires_in=-timedelta(minutes=1), event_type="EXPIRED",
                                 status=SubscriptionStatus.expired,
-                                signed_at=buyer.evaluated_at - timedelta(days=1))
+                                signed_at=buyer.instant - timedelta(days=1))
 
             held = await buyer.grants()
             assert [row["status"] for row in held] == ["active"]
-            assert held[0]["ends_at"] == buyer.evaluated_at + _A_MONTH
+            assert held[0]["ends_at"] == buyer.instant + _A_MONTH
             assert await buyer.status() == "active"
 
     async def test_the_stale_delivery_is_still_audited_and_does_not_raise(self, _schema_db_uri):
@@ -510,12 +526,12 @@ class TestAPayloadSignedBeforeTheRecordedStateAppliesNothing:
         async with _buyer(_schema_db_uri) as buyer:
             fresh = f"notification-{uuid.uuid4()}"
             stale = f"notification-{uuid.uuid4()}"
-            await buyer.deliver(signed_at=buyer.evaluated_at - timedelta(hours=1),
+            await buyer.deliver(signed_at=buyer.instant - timedelta(hours=1),
                                 notification_uuid=fresh)
 
             await buyer.deliver(expires_in=-timedelta(minutes=1), event_type="EXPIRED",
                                 status=SubscriptionStatus.expired,
-                                signed_at=buyer.evaluated_at - timedelta(days=1),
+                                signed_at=buyer.instant - timedelta(days=1),
                                 notification_uuid=stale)
 
             assert await buyer.events() == {fresh, stale}
@@ -524,11 +540,11 @@ class TestAPayloadSignedBeforeTheRecordedStateAppliesNothing:
             self, _schema_db_uri):
         """The control: the guard is what saved the grant above, and not the order this case delivered in."""
         async with _buyer(_schema_db_uri) as buyer:
-            await buyer.deliver(signed_at=buyer.evaluated_at - timedelta(days=1))
+            await buyer.deliver(signed_at=buyer.instant - timedelta(days=1))
 
             await buyer.deliver(expires_in=-timedelta(minutes=1), event_type="EXPIRED",
                                 status=SubscriptionStatus.expired,
-                                signed_at=buyer.evaluated_at - timedelta(hours=1))
+                                signed_at=buyer.instant - timedelta(hours=1))
 
             assert [row["status"] for row in await buyer.grants()] == ["expired"]
             assert await buyer.status() == "expired"
@@ -541,7 +557,7 @@ class TestAPayloadSignedBeforeTheRecordedStateAppliesNothing:
 
             await buyer.deliver(expires_in=-timedelta(minutes=1), event_type="EXPIRED",
                                 status=SubscriptionStatus.expired,
-                                signed_at=buyer.evaluated_at - timedelta(days=365))
+                                signed_at=buyer.instant - timedelta(days=365))
 
             assert await buyer.status() == "expired"
 
@@ -568,7 +584,7 @@ class TestNothingIsWrittenWithoutABuyerOrOnAReplay:
 
             assert await buyer.counts() == before
             assert [row["ends_at"] for row in await buyer.grants()] == \
-                [buyer.evaluated_at + _A_MONTH]
+                [buyer.instant + _A_MONTH]
 
 
 @pytest.mark.asyncio
@@ -578,7 +594,7 @@ class TestAGoogleRedeliveryWritesNothing:
     async def test_the_same_rtdn_delivered_twice_leaves_every_count_and_every_grant_unchanged(
             self, _schema_db_uri):
         async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
-            event_time = _millis(buyer.evaluated_at - timedelta(minutes=2))
+            event_time = _millis(buyer.instant - timedelta(minutes=2))
             # Derived twice from the same RTDN body, never carried over from the first delivery.
             first = buyer.rtdn_key(event_time, GOOGLE_RENEWED)
             second = buyer.rtdn_key(event_time, GOOGLE_RENEWED)
@@ -599,8 +615,8 @@ class TestAGoogleRedeliveryWritesNothing:
             self, _schema_db_uri):
         """The control: the case above passes on the key repeating, not on the token being seen twice."""
         async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
-            earlier = _millis(buyer.evaluated_at - timedelta(minutes=2))
-            later = _millis(buyer.evaluated_at - timedelta(minutes=1))
+            earlier = _millis(buyer.instant - timedelta(minutes=2))
+            later = _millis(buyer.instant - timedelta(minutes=1))
             await buyer.deliver(event_type=GOOGLE_RENEWED,
                                 notification_uuid=buyer.rtdn_key(earlier, GOOGLE_RENEWED),
                                 signed_at=instant_from_millis(earlier))
@@ -622,8 +638,8 @@ class TestAnOlderGoogleDeliveryDoesNotDowngradeTheSubscriber:
     async def test_the_newer_state_survives_and_the_refusal_is_recorded_at_warning(
             self, _schema_db_uri, service_logs):
         async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
-            newer = _millis(buyer.evaluated_at - timedelta(minutes=1))
-            older = _millis(buyer.evaluated_at - timedelta(days=1))
+            newer = _millis(buyer.instant - timedelta(minutes=1))
+            older = _millis(buyer.instant - timedelta(days=1))
             await buyer.deliver(event_type=GOOGLE_RENEWED, signed_at=instant_from_millis(newer),
                                 notification_uuid=buyer.rtdn_key(newer, GOOGLE_RENEWED))
             granted = await buyer.grants()
@@ -643,8 +659,8 @@ class TestAnOlderGoogleDeliveryDoesNotDowngradeTheSubscriber:
             self, _schema_db_uri):
         """The control: the guard is what saved the grant above, and not the order this case delivered in."""
         async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
-            older = _millis(buyer.evaluated_at - timedelta(days=1))
-            newer = _millis(buyer.evaluated_at - timedelta(minutes=1))
+            older = _millis(buyer.instant - timedelta(days=1))
+            newer = _millis(buyer.instant - timedelta(minutes=1))
             await buyer.deliver(event_type=GOOGLE_RENEWED, signed_at=instant_from_millis(older),
                                 notification_uuid=buyer.rtdn_key(older, GOOGLE_RENEWED))
 
@@ -675,7 +691,7 @@ class TestOneGoogleDeliveryIsOneTransaction:
 class TestAGoogleGracePeriodGrantIsEffective:
     """P-01. `SubscriptionPurchaseV2` names no grace field, so the window is the line item's own expiry."""
 
-    async def test_the_grant_ends_after_the_captured_instant_and_the_read_returns_it(
+    async def test_the_grant_ends_after_the_instant_the_ingestion_read_and_the_read_returns_it(
             self, _schema_db_uri):
         async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
             # In grace Play's `expiryTime` is both the term's end and the end of the grace window.
@@ -686,7 +702,7 @@ class TestAGoogleGracePeriodGrantIsEffective:
             held = await buyer.grants()
             assert await buyer.status() == "grace_period"
             assert held[0]["ends_at"] is not None
-            assert held[0]["ends_at"] > buyer.evaluated_at
+            assert held[0]["ends_at"] > buyer.instant
             assert await buyer.effective() == [held[0]["id"]]
 
     async def test_a_grace_delivery_with_no_grace_end_writes_no_grant(
@@ -707,7 +723,7 @@ class TestAGoogleGracePeriodGrantIsEffective:
             self, _schema_db_uri, service_logs):
         """CR-20: `SUBSCRIPTION_STATE_ACTIVE`/grace with an expiry a moment past is an ordinary Play
         read, and it used to commit a grant the entitlement read never returns while superseding
-        every grant the buyer held. The term must be open at the captured instant, so it is refused."""
+        every grant the buyer held. The term must be open when the ingestion reads its clock, so it is refused."""
         async with _buyer(_schema_db_uri, provider=PurchaseProvider.google_play) as buyer:
             with pytest.raises(InternalError):
                 await buyer.deliver(event_type=GOOGLE_RENEWED,

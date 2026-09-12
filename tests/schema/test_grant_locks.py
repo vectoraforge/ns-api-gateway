@@ -920,20 +920,19 @@ async def _ingestion_run(schema_db_uri: str, *, attributed: bool):
     def record(conn, cursor, statement, parameters, context, executemany):  # noqa: ARG001
         recorded.append(" ".join(statement.split()))
 
-    evaluated_at = datetime.now(UTC)
+    instant = datetime.now(UTC)
     external_id = f"original-{uuid.uuid4().hex[:12]}"
     factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
     try:
         async with factory() as session:
             # Everything above is setup; only what the writer itself issues is the subject of this fixture.
             recorded.clear()
-            await SubscriptionsService(db=session,
-                                       evaluated_at=evaluated_at).ingest(_notification(
-                                           external_id=external_id,
-                                           token=token,
-                                           tier_id=tier_id,
-                                           purchased_at=evaluated_at - timedelta(days=30),
-                                           expires_at=evaluated_at + timedelta(days=30)))
+            await SubscriptionsService(db=session).ingest(_notification(
+                external_id=external_id,
+                token=token,
+                tier_id=tier_id,
+                purchased_at=instant - timedelta(days=30),
+                expires_at=instant + timedelta(days=30)))
         yield {"statements": list(recorded)}
     finally:
         await engine.dispose()
