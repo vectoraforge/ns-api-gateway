@@ -13,14 +13,15 @@ class VerifiedNotification:
     provider: PurchaseProvider
     notification_uuid: str
     event_type: str
-    external_id: str | None
-    transaction_id: str | None
-    product_id: str | None
-    # Resolved by the provider's own class, so it is absent exactly when `product_id` is.
-    tier_id: str | None
-    attribution_token: str | None
     # The store's own word for this subscription, never derived from a date here.
     status: SubscriptionStatus
+    # Both providers guarantee these two: Apple raises rather than assemble without them, and
+    # Google's purchase token and resolved tier are non-optional by signature.
+    external_id: str
+    tier_id: str
+    transaction_id: str | None
+    product_id: str | None
+    attribution_token: str | None
     signed_at: datetime | None
     purchased_at: datetime | None
     expires_at: datetime | None
