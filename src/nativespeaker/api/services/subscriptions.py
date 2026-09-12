@@ -83,8 +83,7 @@ class SubscriptionsService:
                 notification_uuid=notification.notification_uuid,
                 # The recorded tier on both sides: no transition was applied, so none is claimed.
                 old_tier_id=settled.tier_id,
-                new_tier_id=settled.tier_id,
-                evaluated_at=self.evaluated_at), notification)
+                new_tier_id=settled.tier_id), notification)
             logger.warning("store_notification_superseded", event_type=notification.event_type)
             # Reached before the attribution guard: a stale payload must not earn the 500 that guard raises.
             await self.session.commit()
@@ -116,8 +115,7 @@ class SubscriptionsService:
             tier_id=tier_id,
             status=status,
             signed_at=notification.signed_at,
-            clock_read=None if settled is None else settled.store_signed_at,
-            evaluated_at=self.evaluated_at)
+            clock_read=None if settled is None else settled.store_signed_at)
         await self._settle(outcome, notification)
 
         if recorded is None:
@@ -131,8 +129,7 @@ class SubscriptionsService:
                 store_original_transaction_id=notification.external_id,
                 purchase_user_id=user_id,
                 # Set only when the token resolved: the second foreign key needs a binding to point at.
-                resolved_token_value=None if user_id is None else token,
-                evaluated_at=self.evaluated_at), notification)
+                resolved_token_value=None if user_id is None else token), notification)
 
         # Appended after the subscription flushed: the event row's `subscription_id` references it.
         await self._settle(await self.subscriptions_db.append_event(
@@ -140,8 +137,7 @@ class SubscriptionsService:
             event_type=notification.event_type,
             notification_uuid=notification.notification_uuid,
             old_tier_id=old_tier_id,
-            new_tier_id=tier_id,
-            evaluated_at=self.evaluated_at), notification)
+            new_tier_id=tier_id), notification)
 
         if subscription.user_id is not None:
             await self._settle(await self.subscriptions_db.write_subscription_grant(
@@ -152,8 +148,7 @@ class SubscriptionsService:
                 tier_id=tier_id,
                 starts_at=starts_at,
                 ends_at=term_ends_at,
-                may_reactivate=False,
-                evaluated_at=self.evaluated_at), notification)
+                may_reactivate=False), notification)
 
         # Deliberate commit: the store reads the status code, so 200 must mean the rows are durable.
         try:

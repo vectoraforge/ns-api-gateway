@@ -1,6 +1,6 @@
 """Store-subscription writes over `core.subscriptions`, `audit.subscription_events` and the buyer's grant.
 Lock order: grant rows ascending by id, then their usage rows; the subscription row is never locked."""
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from uuid import UUID
 
@@ -66,12 +66,12 @@ def _claim_owner_statement(subscription_id: UUID, owner_read: UUID | None,
 
 
 def _hold_clock_statement(subscription_id: UUID, clock_read: datetime | None,
-                          evaluated_at: datetime):
+                          instant: datetime):
     """The conditional touch that takes the row only where its store clock still reads as read."""
     return (update(Subscription)
             .where(col(Subscription.id) == subscription_id,
                    col(Subscription.store_signed_at).is_not_distinct_from(clock_read))
-            .values(updated_at=evaluated_at)
+            .values(updated_at=instant)
             .execution_options(synchronize_session=False))
 
 
@@ -151,18 +151,18 @@ class SubscriptionsDB:
                                   user_id: UUID | None,
                                   tier_id: str,
                                   status: SubscriptionStatus,
-                                  signed_at: datetime | None,
-                                  evaluated_at: datetime) -> tuple[Subscription, WriteOutcome]:
+                                  signed_at: datetime | None) -> tuple[Subscription, WriteOutcome]:
         """Add the canonical row for a lifecycle pair that has none, and flush it.
         A row another writer committed first is a lost race, never an update over its state."""
+        instant = datetime.now(UTC)
         stored = Subscription(provider=provider,
                               external_id=external_id,
                               user_id=user_id,
                               tier_id=tier_id,
                               status=status,
                               store_signed_at=signed_at,
-                              created_at=evaluated_at,
-                              updated_at=evaluated_at)
+                              created_at=instant,
+                              updated_at=instant)
         self.session.add(stored)
         return await self._flush_or_lose(stored, WriteOutcome.applied)
 
@@ -173,11 +173,11 @@ class SubscriptionsDB:
                                   tier_id: str,
                                   status: SubscriptionStatus,
                                   signed_at: datetime | None,
-                                  clock_read: datetime | None,
-                                  evaluated_at: datetime) -> tuple[Subscription, WriteOutcome]:
+                                  clock_read: datetime | None) -> tuple[Subscription, WriteOutcome]:
         """Update the existing canonical row in place, or insert one, and flush it.
         Both the owner and the store clock are taken conditionally, on what the caller read: this
         row is never locked, so an update keyed on the id alone is last-writer-wins over a rival."""
+        instant = datetime.now(UTC)
         stored = await self.read_subscription(provider, external_id)
         outcome = WriteOutcome.applied
         if stored is None:
@@ -187,8 +187,8 @@ class SubscriptionsDB:
                                   tier_id=tier_id,
                                   status=status,
                                   store_signed_at=signed_at,
-                                  created_at=evaluated_at,
-                                  updated_at=evaluated_at)
+                                  created_at=instant,
+                                  updated_at=instant)
             self.session.add(stored)
         else:
             # D-09: the token attributes an unowned row only, and restore alone changes an owner.
@@ -200,21 +200,19 @@ class SubscriptionsDB:
                     owner_read=None,
                     month_read=stored.last_cross_account_transfer_month,
                     destination=owner,
-                    transfer_month=None,
-                    evaluated_at=evaluated_at)
+                    transfer_month=None)
                 if not claimed:
                     return stored, WriteOutcome.lost_race
             moves_clock = signed_at is not None and (stored.store_signed_at is None
                                                      or signed_at > stored.store_signed_at)
             if not settled or moves_clock:
                 if not await self.hold_subscription_clock(subscription_id=stored.id,
-                                                          clock_read=clock_read,
-                                                          evaluated_at=evaluated_at):
+                                                          clock_read=clock_read):
                     return stored, WriteOutcome.lost_race
             advanced = signed_at if moves_clock else None
             if advanced is not None:
                 stored.store_signed_at = advanced
-                stored.updated_at = evaluated_at
+                stored.updated_at = instant
             if settled:
                 # The lifecycle row already says this, so a repeat event carries no change to record.
                 outcome = WriteOutcome.replayed
@@ -223,7 +221,7 @@ class SubscriptionsDB:
                 stored.tier_id = tier_id
                 stored.status = status
                 stored.user_id = owner  # The claim above writes the column. The callers read this attribute.
-                stored.updated_at = evaluated_at
+                stored.updated_at = instant
 
         return await self._flush_or_lose(stored, outcome)
 
@@ -232,11 +230,11 @@ class SubscriptionsDB:
                                        owner_read: UUID | None,
                                        month_read: date | None,
                                        destination: UUID,
-                                       transfer_month: date | None,
-                                       evaluated_at: datetime) -> bool:
+                                       transfer_month: date | None) -> bool:
         """Set the owner where the row still says what the pre-transaction read saw.
         Takes no lock on `core.subscriptions`; the row count is the whole answer."""
-        values: dict[str, object] = {"user_id": destination, "updated_at": evaluated_at}
+        instant = datetime.now(UTC)
+        values: dict[str, object] = {"user_id": destination, "updated_at": instant}
         if transfer_month is not None:
             # A move alone gives one: adoption leaves the column exactly as it found it.
             values["last_cross_account_transfer_month"] = transfer_month
@@ -245,12 +243,12 @@ class SubscriptionsDB:
         return (await self.session.exec(statement)).rowcount == 1
 
     async def hold_subscription_clock(self, *, subscription_id: UUID,
-                                      clock_read: datetime | None,
-                                      evaluated_at: datetime) -> bool:
+                                      clock_read: datetime | None) -> bool:
         """Take the canonical row where its store clock still says what the caller decided on.
         Takes no `FOR UPDATE` (43 D-16): the write lock this statement itself holds until the
         transaction ends is what serializes the writes behind it, and the row count is the answer."""
-        statement = _hold_clock_statement(subscription_id, clock_read, evaluated_at)
+        instant = datetime.now(UTC)
+        statement = _hold_clock_statement(subscription_id, clock_read, instant)
         return (await self.session.exec(statement)).rowcount == 1
 
     async def insert_purchase(self, *,
@@ -260,9 +258,9 @@ class SubscriptionsDB:
                               store_transaction_id: str | None,
                               store_original_transaction_id: str | None,
                               purchase_user_id: UUID | None,
-                              resolved_token_value: str | None,
-                              evaluated_at: datetime) -> WriteOutcome:
+                              resolved_token_value: str | None) -> WriteOutcome:
         """Add the one purchase row for this lifecycle pair and flush it."""
+        instant = datetime.now(UTC)
         self.session.add(StorePurchase(provider=provider,
                                        identity_value=identity_value,
                                        external_id=external_id,
@@ -270,7 +268,7 @@ class SubscriptionsDB:
                                        store_original_transaction_id=store_original_transaction_id,
                                        purchase_user_id=purchase_user_id,
                                        resolved_token_value=resolved_token_value,
-                                       created_at=evaluated_at))
+                                       created_at=instant))
 
         # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
         try:
@@ -288,15 +286,15 @@ class SubscriptionsDB:
                            event_type: str,
                            notification_uuid: str,
                            old_tier_id: str | None,
-                           new_tier_id: str,
-                           evaluated_at: datetime) -> WriteOutcome:
+                           new_tier_id: str) -> WriteOutcome:
         """Append the event row for one notification and flush it; the subscription is flushed already."""
+        instant = datetime.now(UTC)
         self.session.add(SubscriptionEvent(subscription_id=subscription.id,
                                            event_type=event_type,
                                            notification_uuid=notification_uuid,
                                            old_tier_id=old_tier_id,
                                            new_tier_id=new_tier_id,
-                                           created_at=evaluated_at))
+                                           created_at=instant))
 
         # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
         try:
@@ -317,10 +315,10 @@ class SubscriptionsDB:
                                        tier_id: str,
                                        starts_at: datetime,
                                        ends_at: datetime | None,
-                                       may_reactivate: bool,
-                                       evaluated_at: datetime) -> WriteOutcome:
+                                       may_reactivate: bool) -> WriteOutcome:
         """Supersede the buyer's held grants and insert this term's, under locks `lock_grants` took.
         `may_reactivate` is restore's alone: ingestion passes False and writes nothing for a lapsed term."""
+        instant = datetime.now(UTC)
         entitled = status in ENTITLED_STATUSES
         held = [grant for grant in marked_active
                 if grant.source is AccessGrantSource.subscription
@@ -350,8 +348,8 @@ class SubscriptionsDB:
                 logger.warning("manual_grant_superseded", grant_id=str(grant.id),
                                source=grant.source)
             grant.status = ended
-            grant.ends_at = evaluated_at
-            grant.updated_at = evaluated_at
+            grant.ends_at = instant
+            grant.updated_at = instant
 
         if superseded:
             # Flushed alone and first: the ORM emits inserts before updates, and the index is per-statement.
@@ -368,7 +366,7 @@ class SubscriptionsDB:
             # The buyer holds no grant outside the entitled set, and only restore is a path back to one.
             return WriteOutcome.applied if superseded else WriteOutcome.replayed
 
-        period = monthly_period_for(evaluated_at)
+        period = monthly_period_for(instant)
         carried = 0
         mine = [grant for grant in superseded
                 if grant.user_id == user_id and grant.source is AccessGrantSource.subscription]
@@ -387,15 +385,15 @@ class SubscriptionsDB:
                                 subscription_id=subscription_id,
                                 starts_at=starts_at,
                                 ends_at=ends_at,
-                                created_at=evaluated_at,
-                                updated_at=evaluated_at)
+                                created_at=instant,
+                                updated_at=instant)
         self.session.add(activated)
         # Minted with its grant and never for an existing one: a missing usage row is a broken invariant.
         self.session.add(UserMonthlyUsage(grant_id=activated.id,
                                           monthly_period=period,
                                           monthly_used=carried,
-                                          created_at=evaluated_at,
-                                          updated_at=evaluated_at))
+                                          created_at=instant,
+                                          updated_at=instant))
 
         # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
         try:

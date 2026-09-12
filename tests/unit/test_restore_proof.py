@@ -1192,8 +1192,7 @@ async def _insert_through(session: _AddingSession):
         user_id=None,
         tier_id=TIER_ID,
         status=SubscriptionStatus.active,
-        signed_at=None,
-        evaluated_at=EVALUATED_AT)
+        signed_at=None)
 
 
 class TestTheInsertOnlyWriterReadsNothingAndLosesTheRaceCleanly:

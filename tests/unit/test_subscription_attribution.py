@@ -191,7 +191,7 @@ class _RecordingSubscriptions:
             store_original_transaction_id=fields["store_original_transaction_id"],
             purchase_user_id=fields["purchase_user_id"],
             resolved_token_value=fields["resolved_token_value"],
-            created_at=fields["evaluated_at"])
+            created_at=datetime.now(UTC))
         return WriteOutcome.applied
 
     async def append_event(self, **fields) -> WriteOutcome:
@@ -679,8 +679,7 @@ async def _upsert(writer, external_id: str, *, signed_at=NOW,
                                             status=status,
                                             signed_at=signed_at,
                                             clock_read=(None if stored is None
-                                                        else stored.store_signed_at),
-                                            evaluated_at=NOW)
+                                                        else stored.store_signed_at))
 
 
 @pytest.mark.asyncio

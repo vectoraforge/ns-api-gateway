@@ -110,8 +110,7 @@ class RestoreService:
                 tier_id=proof.tier_id,
                 status=proof.status,
                 # A client-presented proof carries no store clock; an absent date clears nothing.
-                signed_at=None,
-                evaluated_at=self.evaluated_at)
+                signed_at=None)
             await self._settle(outcome, proof)
         subscription_id = stored.id
         tier_id = stored.tier_id
@@ -125,8 +124,7 @@ class RestoreService:
                 month_read=month_read,
                 destination=destination,
                 # The move alone spends a month of the cap; adoption leaves the column untouched.
-                transfer_month=None if current_owner is None else self._this_month(),
-                evaluated_at=self.evaluated_at)
+                transfer_month=None if current_owner is None else self._this_month())
             if not claimed:
                 return await self._answer_as_the_winner_left_it(proof, destination)
 
@@ -142,8 +140,7 @@ class RestoreService:
                 store_original_transaction_id=proof.external_id,
                 purchase_user_id=attributed,
                 # Set only when the token resolved: the second foreign key needs a binding to point at.
-                resolved_token_value=None if attributed is None else token,
-                evaluated_at=self.evaluated_at), proof)
+                resolved_token_value=None if attributed is None else token), proof)
 
         # The webhook's own writer, called unchanged, so both paths mint one term the same way.
         outcome = await self.subscriptions_db.write_subscription_grant(
@@ -155,8 +152,7 @@ class RestoreService:
             starts_at=starts_at,
             # The term checked above, and never a second reading of it that could drift from it.
             ends_at=term_ends_at,
-            may_reactivate=True,
-            evaluated_at=self.evaluated_at)
+            may_reactivate=True)
         await self._settle(outcome, proof)
 
         # Deliberate commit: the caller reads the sync body, so 200 must mean the rows are durable.

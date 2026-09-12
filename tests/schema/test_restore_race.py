@@ -694,24 +694,27 @@ class TestTheDestinationStillLosesEverythingItHeld:
         # Written by the production writer, so the row the move must end has a real restore's shape.
         await run_attempt(harness, _Attempt(name="hold-its-own", user_id=destination),
                           proof_for(harness, external_id=own_key))
+        before = datetime.now(UTC)
         move = await run_attempt(harness, _Attempt(name="move", user_id=destination),
                                  proof_for(harness))
+        after = datetime.now(UTC)
         assert status_of(move) == 200
         return {"move": move, "accounts": (source, destination),
-                "subscriptions": (moving_id, own_id)}
+                "subscriptions": (moving_id, own_id), "bracket": (before, after)}
 
+    @pytest.mark.timing
     async def test_the_destinations_grant_for_another_subscription_is_ended_by_the_move(
             self, harness, moved):
         """The counterpart of the source-side case: this is what stops the narrowing going too far."""
         _, destination = moved["accounts"]
         _, own_id = moved["subscriptions"]
+        before, after = moved["bracket"]
 
         ended = grants_for(await grants_of(harness, destination), own_id)
 
         assert len(ended) == 1
         assert ended[0][1] == "expired"
-        # The move's own instant, which is what the writer ends a superseded term at.
-        assert ended[0][2] == NOW
+        assert before <= ended[0][2] <= after
 
     async def test_the_destination_ends_with_exactly_one_active_grant(self, harness, moved):
         """`ix_access_grants_one_active_per_user` reads one row, and so must this."""
