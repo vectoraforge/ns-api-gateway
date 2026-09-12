@@ -88,6 +88,15 @@ def writer(account, monkeypatch) -> GrantsDB:
     return GrantsDB(_AddingSession())  # ty: ignore[invalid-argument-type]
 
 
+def _spent_usage(grant_id) -> UserMonthlyUsage:
+    """The superseded grant's usage row: the month and the count a conversion must carry across."""
+    return UserMonthlyUsage(grant_id=grant_id,
+                            monthly_period=SPENT_PERIOD,
+                            monthly_used=SPENT_CREDITS,
+                            created_at=SEEDED_AT,
+                            updated_at=SEEDED_AT)
+
+
 def _with_usage(monkeypatch, usage: UserMonthlyUsage | None) -> None:
     async def lock_usage(self, grant_id):
         return usage
@@ -110,9 +119,7 @@ class TestTheConversionCarriesTheCountersAcross:
     async def test_the_new_usage_row_carries_the_superseded_period_and_count(self, writer, account,
                                                                              monkeypatch):
         identity_row, superseded = account
-        _with_usage(monkeypatch, UserMonthlyUsage(grant_id=superseded.id,
-                                                  monthly_period=SPENT_PERIOD,
-                                                  monthly_used=SPENT_CREDITS))
+        _with_usage(monkeypatch, _spent_usage(superseded.id))
 
         assert await _convert(writer, identity_row) is ActivationOutcome.activated
 
@@ -128,9 +135,7 @@ class TestOneConversionStampsEveryColumnWithOneValue:
     async def test_every_column_the_conversion_writes_carries_the_same_value(self, writer, account,
                                                                              monkeypatch):
         identity_row, superseded = account
-        _with_usage(monkeypatch, UserMonthlyUsage(grant_id=superseded.id,
-                                                  monthly_period=SPENT_PERIOD,
-                                                  monthly_used=SPENT_CREDITS))
+        _with_usage(monkeypatch, _spent_usage(superseded.id))
 
         assert await _convert(writer, identity_row) is ActivationOutcome.activated
 
@@ -146,9 +151,7 @@ class TestOneConversionStampsEveryColumnWithOneValue:
             self, writer, account, monkeypatch):
         """The control: equality alone would also hold if the writer copied the superseded row."""
         identity_row, superseded = account
-        _with_usage(monkeypatch, UserMonthlyUsage(grant_id=superseded.id,
-                                                  monthly_period=SPENT_PERIOD,
-                                                  monthly_used=SPENT_CREDITS))
+        _with_usage(monkeypatch, _spent_usage(superseded.id))
         before = datetime.now(UTC)
 
         await _convert(writer, identity_row)

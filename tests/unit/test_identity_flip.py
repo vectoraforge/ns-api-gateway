@@ -111,6 +111,7 @@ class TestTheFlipSetsWhereUnsetAndNeverOverwrites:
 
         await _flip(_StubSession(), identity_row, user)
 
+        assert user.registered_at is not None
         assert before <= user.registered_at <= datetime.now(UTC)
 
     async def test_an_unset_email_takes_the_verified_address(self):

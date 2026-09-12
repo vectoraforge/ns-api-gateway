@@ -803,8 +803,8 @@ class TestTheRegisteredWriterNamesWhyItRefused:
                                                 created_at=account.evaluated_at,
                                                 updated_at=account.evaluated_at))
 
-            breaking = _Account(session=_CommitsBeforeTheFlush(account.session,
-                                                                break_the_term_check),
+            breaking = _Account(session=_CommitsBeforeTheFlush(  # ty: ignore[invalid-argument-type]
+                                    account.session, break_the_term_check),
                                 user_id=account.user_id, issuer=account.issuer,
                                 subject=account.subject,
                                 tier_id=account.tier_id, evaluated_at=account.evaluated_at)
