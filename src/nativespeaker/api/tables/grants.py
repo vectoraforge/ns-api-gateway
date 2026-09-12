@@ -63,7 +63,7 @@ class AccessGrant(SQLModel, table=True):
     source: AccessGrantSource = Field(sa_type=AccessGrantSourceType)
     status: AccessGrantStatus = Field(sa_type=AccessGrantStatusType, default=AccessGrantStatus.active)
     subscription_id: UUID | None = Field(default=None)
-    # The timestamps carry no default. The creating transaction owns the clock.
+    # The timestamps carry no default.
     starts_at: datetime = Field(sa_type=DateTimeType)
     ends_at: datetime | None = Field(sa_type=DateTimeType, default=None)
     created_at: datetime = Field(sa_type=DateTimeType)
