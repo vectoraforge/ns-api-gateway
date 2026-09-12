@@ -114,6 +114,8 @@ Each phase reads only its own spec file plus `SHARED-INVARIANTS.md` at plan time
 
 Phase 35 is the first **booting** app (D-14) — imports and lifespan all run. Phase 36 is the first **fully working** one, once the chat quota path is rewired onto the grant model.
 
+Phases 47–50 were added on 2026-09-11, after the spec phases closed. They are behavior-preserving refactors with no spec file: 47, 48 and 49 are independent of each other; 50 depends on 47 and 49.
+
 > **Phase 37.1 amended this milestone's criteria on 2026-08-24** for two deletions: the auth-event audit subsystem (D-01) and the auth barrier middleware plus route registry (D-06). Criteria below are marked **withdrawn** (subject deleted), **reworded** (mechanism changed, substance intact), **confirmed** (became trivially true), or **blocked** (an unbuilt phase must decide). Completed-plan checkboxes record what was built and are left exactly as written. Two conflicts against `SHARED-INVARIANTS.md` are flagged, not resolved — see `REQUIREMENTS.md` under FOUND-01 and FOUND-05. This line originally also named the startup enumeration assertion, which went with the route registry.
 
 #### Phase 34: Schema
@@ -783,6 +785,104 @@ Plans:
 
 - [x] 46-05-PLAN.md — The dated SIGNOUT amendments, the two closed forward flags, the re-derived counts and the phase close (wave 4)
 
+#### Phase 47: Stop threading an evaluation instant through the layers
+
+**Goal:** Remove the `get_evaluated_at` dependency and every `evaluated_at` parameter that carries its instant from the routers through the services into the crud classes. No dependency supplies the current time, no service takes it in its constructor, and no service method passes it down to crud. Where a SQL statement compares against the current time it uses PostgreSQL's `now()`. Where Python code needs the current time it calls `datetime.now(UTC)` at that spot; a small pure helper may still take the datetime it computes from. Delete every comment whose subject is the removed dependency or the shared instant, and add none.
+**Requirements:** none mapped — behavior-preserving refactor; every route answers as before
+**Depends on:** 46 — runs on the completed v2.0 tree. Touches `app/dependencies.py`, `routers/auth.py`, `services/{auth,chats,quota,restore,subscriptions,sync}.py`, `crud/{grants,identities,subscriptions}.py`, `auth/{app_store,google_play}.py`, `tables/grants.py`, and the unit, e2e and schema tests that pass or override the instant
+**Plans:** 8 plans
+**Success criteria:**
+
+1. `get_evaluated_at` does not exist; no `Depends(...)` in `dependencies.py` or a router supplies a `datetime`, and `tests/e2e/test_restore_subscription.py` no longer overrides one
+2. No service constructor and no service method has an `evaluated_at` parameter, and no crud method receives one from a service
+3. Every SQL comparison against the current time uses `now()`; every Python read of the current time is a `datetime.now(UTC)` call at the point of use, with at most a small pure helper taking the datetime it computes from
+4. No comment or docstring names the removed dependency or the shared instant; `tests/unit/test_sync_clock_capture.py`, which exists only to pin the one-read-per-request clock discipline, goes with it
+5. `.venv/bin/pytest -q -m ''`, `-m e2e` and `-m schema` all exit 0
+
+Plans:
+
+**Wave 1** *(the two plans touch disjoint files and run in parallel)*
+
+- [ ] 47-01-PLAN.md — The tracer: the quota charge end to end, with the effective-grant predicate on `func.clock_timestamp()` per D-01 (wave 1)
+- [ ] 47-02-PLAN.md — D-02: the one-evaluation-time invariant struck, and SYNC-01 amended and dated (wave 1)
+
+**Wave 2** *(blocked on 47-01; the two plans touch disjoint files and run in parallel)*
+
+- [ ] 47-03-PLAN.md — The two free-grant writers and the two identity writers read their own instant (wave 2)
+- [ ] 47-04-PLAN.md — The two store adapters and all four Play signatures, with both term boundaries moved onto the pure helpers (wave 2)
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 47-05-PLAN.md — The seven subscription writers, restore and ingestion; `_open_term` extracted and the pinned override deleted (wave 3)
+
+**Wave 4** *(blocked on 47-05)*
+
+- [ ] 47-06-PLAN.md — The challenge store on the database clock, the router's dependency gone, and `AuthService` holding no instant (wave 4)
+
+**Wave 5** *(blocked on 47-06)*
+
+- [ ] 47-07-PLAN.md — Sync reads its own instant, `get_evaluated_at` is deleted, and one absence guard replaces the clock-capture module (wave 5)
+
+**Wave 6** *(blocked on 47-02 and 47-07)*
+
+- [ ] 47-08-PLAN.md — The phase gate: the three suites measured here, the five criteria re-derived, the record closed (wave 6)
+
+#### Phase 48: Narrow Identity to the verified pair
+
+**Goal:** Remove the `user` and `identity` fields from `AuthIdentity` in `schemas/auth.py` (renamed from `Identity` in 200cc34) so it carries only the verified `(issuer, subject)` pair; `LinkedIdentity` keeps both rows as required fields. A linked caller reaches its handler as a `LinkedIdentity`, through `get_linked_identity`. Every consumer that reads a user or identity row — `services/auth.py`, `services/restore.py`, `routers/users.py` and any other — is annotated `LinkedIdentity`; nothing reads either row off a value typed `AuthIdentity`.
+**Requirements:** none mapped — behavior-preserving refactor; the admission matrix is unchanged
+**Depends on:** 46 — independent of Phase 47
+**Plans:** 0 plans
+**Success criteria:**
+
+1. `AuthIdentity` has exactly two fields, `issuer` and `subject`; `LinkedIdentity` adds `user` and `identity`, both required
+2. No code in `src/` reads `.user` or `.identity` off a value annotated `AuthIdentity`; every such reader is annotated `LinkedIdentity`
+3. `get_linked_identity` still answers `PreAuthIdentityNotAllowed` for a never-linked pair, and `IdentitiesDB.resolve` still raises the same three rejections for a broken, historical or blocked row
+4. Unit and e2e tests that built an `AuthIdentity` with rows build a `LinkedIdentity`; no test asserts the `None` defaults
+5. `.venv/bin/pytest -q -m ''`, `-m e2e` and `-m schema` all exit 0
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 48 to break down)
+
+#### Phase 49: Delete the single-implementation auth Protocols
+
+**Goal:** Delete the four Protocols in the `auth/` package that still have exactly one implementation — `PlaySubscriptionSource`, `FirebaseAdminAdapter`, `DeviceCheckAdapter` and `TokenVerifier`; the fifth, `StoreNotificationVerifier`, went in 37a5ac6, which is the model for each remaining seam — and annotate every parameter and return type that used them with the concrete class: `PlayDeveloperSubscriptions`, `FirebaseAdminLookup`, `AppleDeviceCheck` and `JWTVerifier`. Move `VerifiedProviderIdentity` out of `auth/adapters.py` into `auth/firebase.py` and remove the then-empty module. Stop building `ChallengesDB` in the lifespan: `AuthService` constructs it itself like its other crud classes, the `challenge_store` constructor argument and the `get_challenge_store` dependency go away, and the tests that overrode that dependency monkeypatch the class methods instead, as the grants tests already do. Leave the concrete adapter classes, the build callables, the retry helpers and the value types alone. One seam per commit, tests green at every commit; update the recorded tuple in `tests/unit/test_auth_package_shape.py` once at the end.
+**Requirements:** none mapped — behavior-preserving refactor
+**Depends on:** 46 — independent of Phases 47 and 48. Runs before Phase 50 so the challenge store has left the lifespan before the runtime container is shaped
+**Plans:** 0 plans
+**Success criteria:**
+
+1. None of the four Protocol names exists in `src/` or `tests/`; `auth/adapters.py` is gone and `VerifiedProviderIdentity` is imported from `auth/firebase.py`
+2. Every annotation that named a Protocol names the concrete class — in `services/restore.py`, `app/dependencies.py`, `auth/{devicecheck,firebase,google_play,jwt_verifier}.py`, and the unit tests that import a Protocol by name (`test_adapter_interfaces.py`, `test_firebase_adapter.py`, `test_devicecheck_adapter.py`, `test_google_play_notifications.py`, `test_claim_ordering.py`)
+3. The tests that existed only to guard the Protocols are deleted: the two remaining "seam is the annotation" test classes (`TestTheSeamIsTheAnnotation` in `test_devicecheck_adapter.py`, `TestThePushTokenSeamIsTheAnnotation` in `test_google_play_notifications.py` — 37a5ac6 already rewrote the store one against the concrete class and it stays), the adapter-shape class and Protocol list in `test_adapter_interfaces.py`, the inheritance assertion in `test_firebase_adapter.py`, and the Protocol names in the claim-ordering seam-name set
+4. The lifespan no longer sets `app.state.challenge_store`; `AuthService.__init__` has no `challenge_store` parameter; `get_challenge_store` does not exist; every test that overrode it monkeypatches `ChallengesDB` methods
+5. `tests/unit/test_auth_package_shape.py` records the new tuple, changed in one commit at the end; each seam is its own commit; the three suites exit 0 at every commit
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 49 to break down)
+
+#### Phase 50: Typed runtime container behind an exit-stack lifespan
+
+**Goal:** Two rewrites of `app/lifespan.py`, landed as one phase because they touch the same lines. **First, resource handling.** Replace the four `Optional` locals, the outer `try/finally` and the per-step `try/except` teardown blocks with one `contextlib.AsyncExitStack` that wraps the body up to the `yield`. Every resource registers its own teardown at the moment it is created: the httpx clients through `enter_async_context`, the engine's `dispose` through `push_async_callback` registered before the reachability probe so a failed probe still disposes, each Firebase app's `delete_app` through `callback`; the final "shutdown" log is registered first so it runs last. Move each provider's construction and its degraded-mode warning into a builder in the same module, following the existing `build_app_store_verifier` / `build_db_engine` pattern — one each for the session factory, the Firebase adapter, DeviceCheck, App Store notifications and Google Play — each taking its config slice plus the stack when it owns a closeable. Reorder so the database and JWT builders, the two that can fail boot, run before the degraded-tolerant providers. Drop the `shutdown_step_failed` logging; a failing teardown propagates after the remaining callbacks run, which is what the stack does by default. Keep every warning text unchanged and routed through the module logger, because `tests/unit/test_config.py` monkeypatches it and imports four of the existing builders by name. **Second, the container.** Gather the nine objects the lifespan still puts on `app.state` after Phase 49 — config, the Firebase and DeviceCheck adapters, App Store notifications, Google push tokens, Play subscriptions, the session factory, the JWT verifier and the LLM service — into one frozen, slotted dataclass in its own small module under `nativespeaker/api/app/` (not under `services/`, which holds request-scoped services), one typed field per object using the types the builders return, each field named as the `app.state` attribute is named today (`config`, `firebase_adapter`, `devicecheck_adapter`, `app_store_notifications`, `google_push_tokens`, `play_subscriptions`, `session_factory`, `jwt_verifier`, `llm_service`), so a reader that moves from the attribute to the field changes only its prefix. The lifespan builds each piece as a local, then assigns the container once, right before `yield`, as the only attribute it puts on `app.state`. In `dependencies.py` exactly one untyped access remains, a `get_runtime` function returning that attribute; every other dependency declares it as a parameter with a `Depends(get_runtime)` default and the container type as its annotation, and reads a field off it. The three one-line getters (`get_session_factory`, `get_firebase_adapter`, `get_devicecheck_adapter`) and every inline `request.app.state.*` read in the config, db, chat, restore, App Store and Google Play dependencies go away, so most of those functions no longer take a `Request`. FastAPI caches a dependency per request, so this costs nothing. **The test pass.** The nine test files that set attributes such as the session factory and the JWT verifier directly on `app.state` instead replace the whole container with one built from fakes, or use `dataclasses.replace` on the real one for a single field. The test-only `opened_sessions` attribute is not built by the lifespan and stays on `app.state`. Follow the project's opening-delimiter alignment style.
+**Requirements:** none mapped — behavior-preserving refactor
+**Depends on:** 47, 49 — Phase 47 removes `get_evaluated_at` from `dependencies.py` and Phase 49 removes the challenge store from the lifespan and `get_challenge_store` from `dependencies.py`, so this phase rewrites both files once, in their final shape
+**Plans:** 0 plans
+**Success criteria:**
+
+1. `lifespan` holds no `Optional` resource local, no `try/finally` and no `try/except` teardown; one `AsyncExitStack` owns every teardown, the engine's `dispose` is registered before the reachability probe, and the "shutdown" log line is registered first
+2. The session factory, Firebase adapter, DeviceCheck, App Store notifications and Google Play each have a builder in `lifespan.py`; the database and JWT builders run before the degraded-tolerant providers; every warning text is unchanged and `tests/unit/test_config.py` passes with edits only where a builder it imports by name changed signature
+3. `shutdown_step_failed` is not logged; a teardown that raises propagates after the remaining callbacks have run
+4. The lifespan sets exactly one attribute on `app.state`, the container: a frozen, slotted dataclass with nine typed fields, in its own module under `nativespeaker/api/app/`
+5. `dependencies.py` contains exactly one `request.app.state` read, in `get_runtime`; `get_session_factory`, `get_firebase_adapter` and `get_devicecheck_adapter` are gone; no other dependency takes a `Request` to reach `app.state`
+6. No test sets a lifespan-built attribute on `app.state`; tests substitute the whole container or `dataclasses.replace` one field; `opened_sessions` stays as it is
+7. `.venv/bin/pytest -q -m ''`, `-m e2e` and `-m schema` all exit 0
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 50 to break down)
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -833,3 +933,7 @@ Plans:
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 7/7 | Complete    | 2026-09-06 |
 | 45. POST /auth/restore-subscription | v2.0 | 9/9 | Complete    | 2026-09-08 |
 | 46. POST /auth/sign-out-all | v2.0 | 5/5 | Complete    | 2026-09-08 |
+| 47. Stop threading an evaluation instant through the layers | v2.0 | 0/0 | Not started | - |
+| 48. Narrow Identity to the verified pair | v2.0 | 0/0 | Not started | - |
+| 49. Delete the single-implementation auth Protocols | v2.0 | 0/0 | Not started | - |
+| 50. Typed runtime container behind an exit-stack lifespan | v2.0 | 0/0 | Not started | - |
