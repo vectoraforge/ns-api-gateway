@@ -20,7 +20,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509.oid import NameOID
 
-from nativespeaker.api.auth.app_store import AppStoreNotifications, StoreNotificationVerifier
+from nativespeaker.api.auth.app_store import AppStoreNotifications
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.errors import (
     InternalError,
@@ -282,15 +282,9 @@ class TestTheRealChainVerifies:
 
         assert refusal.value.stage == "VERIFICATION_FAILURE"
 
-    def test_the_seam_satisfies_the_protocol_declared_beside_it(self, chain):
-        """Phase 44's own class must satisfy this same Protocol, so it is asserted rather than assumed."""
-        seam: StoreNotificationVerifier = _notifications(chain)
-        assert isinstance(seam.verify(_full(chain)), VerifiedNotification)
-
-
 class TestTheStoreSeamIsTheAnnotation:
-    """WR-18: the Protocol was named by no production symbol while its consumer took the concrete
-    class, and it declared one of the two methods that consumer calls."""
+    """WR-18: the annotation named a seam its consumer did not take, declaring one of the two
+    methods that consumer calls. The Protocol is gone, so the concrete class carries the guard."""
 
     def test_the_restore_service_takes_the_declared_seam(self):
         import inspect
@@ -298,16 +292,11 @@ class TestTheStoreSeamIsTheAnnotation:
         from nativespeaker.api.services.restore import RestoreService
 
         annotations = inspect.get_annotations(RestoreService.__init__, eval_str=True)
-        assert annotations["app_store"] is StoreNotificationVerifier
+        assert annotations["app_store"] is AppStoreNotifications
 
     def test_the_seam_declares_every_member_its_consumers_call(self):
         """`verify_transaction` was absent, so the annotation above would not have type-checked."""
-        import typing
-
-        assert typing.get_protocol_members(StoreNotificationVerifier) == {"verify",
-                                                                          "verify_transaction"}
-        assert typing.get_protocol_members(StoreNotificationVerifier) <= set(
-            dir(AppStoreNotifications))
+        assert {"verify", "verify_transaction"} <= set(dir(AppStoreNotifications))
 
 
 class TestTheValueTypeCarriesThisProjectsFieldNames:

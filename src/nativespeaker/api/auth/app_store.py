@@ -1,7 +1,6 @@
 """The App Store Server Notifications integration: one envelope and its two nested payloads, verified.
 A signed payload carries an attribution token: this module holds no logger, so none is logged."""
 from datetime import UTC, datetime
-from typing import Protocol
 
 from appstoreserverlibrary.models.JWSRenewalInfoDecodedPayload import JWSRenewalInfoDecodedPayload
 from appstoreserverlibrary.models.JWSTransactionDecodedPayload import JWSTransactionDecodedPayload
@@ -24,19 +23,6 @@ _APPLE_STATUSES = {Status.ACTIVE: SubscriptionStatus.active,
                    Status.BILLING_RETRY: SubscriptionStatus.billing_retry,
                    Status.BILLING_GRACE_PERIOD: SubscriptionStatus.grace_period,
                    Status.REVOKED: SubscriptionStatus.revoked}
-
-
-class StoreNotificationVerifier(Protocol):
-    """The Apple store seam: one verified notification or one verified proof, or a raise."""
-
-    def verify(self, signed_payload: str) -> VerifiedNotification:
-        """The verification call: this project's value type, or a raise."""
-        ...
-
-    def verify_transaction(self, signed_transaction: str,
-                           evaluated_at: datetime) -> RestoredSubscription:
-        """The same for a client-presented proof: this project's value type, or a raise."""
-        ...
 
 
 def _instant(milliseconds: int | None) -> datetime | None:
