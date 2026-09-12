@@ -16,7 +16,7 @@ from nativespeaker.api.tables import (
 )
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 
-EVALUATED_AT = datetime(2026, 9, 9, 12, tzinfo=UTC)
+SEEDED_AT = datetime(2026, 9, 9, 12, tzinfo=UTC)
 ISSUER = "https://securetoken.google.com/test-project"
 SUBJECT = "spent-slot-subject"
 TIER_ID = "registered"
@@ -74,9 +74,9 @@ def _a_grant(source: AccessGrantSource) -> AccessGrant:
                        tier_id=TIER_ID,
                        source=source,
                        status=AccessGrantStatus.active,
-                       starts_at=EVALUATED_AT,
-                       created_at=EVALUATED_AT,
-                       updated_at=EVALUATED_AT)
+                       starts_at=SEEDED_AT,
+                       created_at=SEEDED_AT,
+                       updated_at=SEEDED_AT)
 
 
 def _locks_returning(monkeypatch, *, effective=(), marked_active=()) -> None:
@@ -93,8 +93,8 @@ def _locks_returning(monkeypatch, *, effective=(), marked_active=()) -> None:
         return UserMonthlyUsage(grant_id=grant_id,
                                 monthly_period="2026-09",
                                 monthly_used=0,
-                                created_at=EVALUATED_AT,
-                                updated_at=EVALUATED_AT)
+                                created_at=SEEDED_AT,
+                                updated_at=SEEDED_AT)
 
     monkeypatch.setattr(GrantsDB, "lock_effective_grants", lock_effective)
     monkeypatch.setattr(GrantsDB, "lock_active_grants", lock_active)
@@ -115,8 +115,7 @@ async def _activate(writer: GrantsDB,
     return await writer.activate_registered_account_grant(user_id=identity_row.user_id,
                                                           issuer=identity_row.issuer,
                                                           subject=identity_row.subject,
-                                                          tier_id=TIER_ID,
-                                                          evaluated_at=EVALUATED_AT)
+                                                          tier_id=TIER_ID)
 
 
 async def _claim(writer: GrantsDB, identity_row: ExternalIdentity) -> ActivationOutcome:

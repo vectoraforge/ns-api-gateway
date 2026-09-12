@@ -18,12 +18,12 @@ from nativespeaker.api.tables import (
 )
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 
-EVALUATED_AT = datetime(2026, 9, 9, 12, tzinfo=UTC)
+SEEDED_AT = datetime(2026, 9, 9, 12, tzinfo=UTC)
 ISSUER = "https://securetoken.google.com/test-project"
 SUBJECT = "conversion-subject"
 TIER_ID = "registered"
 
-FRESH_PERIOD = EVALUATED_AT.strftime("%Y-%m")
+FRESH_PERIOD = datetime.now(UTC).strftime("%Y-%m")
 
 SPENT_PERIOD = "2026-08"
 SPENT_CREDITS = 7
@@ -54,9 +54,9 @@ def account() -> tuple[ExternalIdentity, AccessGrant]:
     superseded = AccessGrant(user_id=user_id,
                              tier_id="anonymous",
                              source=AccessGrantSource.anonymous_device_grant,
-                             starts_at=EVALUATED_AT,
-                             created_at=EVALUATED_AT,
-                             updated_at=EVALUATED_AT)
+                             starts_at=SEEDED_AT,
+                             created_at=SEEDED_AT,
+                             updated_at=SEEDED_AT)
     return identity_row, superseded
 
 
@@ -100,8 +100,7 @@ async def _convert(writer: GrantsDB, identity_row: ExternalIdentity) -> Activati
     outcome, _ = await writer.activate_registered_account_grant(user_id=identity_row.user_id,
                                                                 issuer=identity_row.issuer,
                                                                 subject=identity_row.subject,
-                                                                tier_id=TIER_ID,
-                                                                evaluated_at=EVALUATED_AT)
+                                                                tier_id=TIER_ID)
     return outcome
 
 
@@ -120,6 +119,42 @@ class TestTheConversionCarriesTheCountersAcross:
         usage = [row for row in writer.session.added if isinstance(row, UserMonthlyUsage)]
         assert len(usage) == 1
         assert (usage[0].monthly_period, usage[0].monthly_used) == (SPENT_PERIOD, SPENT_CREDITS)
+
+
+class TestOneConversionStampsEveryColumnWithOneValue:
+    """A second clock read inside the writer would let the marker and the grant disagree, and a
+    second free grant could then be claimed against a marker that matches no row."""
+
+    async def test_every_column_the_conversion_writes_carries_the_same_value(self, writer, account,
+                                                                             monkeypatch):
+        identity_row, superseded = account
+        _with_usage(monkeypatch, UserMonthlyUsage(grant_id=superseded.id,
+                                                  monthly_period=SPENT_PERIOD,
+                                                  monthly_used=SPENT_CREDITS))
+
+        assert await _convert(writer, identity_row) is ActivationOutcome.activated
+
+        activated = [row for row in writer.session.added if isinstance(row, AccessGrant)][0]
+        usage = [row for row in writer.session.added if isinstance(row, UserMonthlyUsage)][0]
+        assert {superseded.ends_at, superseded.updated_at,
+                activated.starts_at, activated.created_at, activated.updated_at,
+                usage.created_at, usage.updated_at,
+                identity_row.free_grant_consumed_at, identity_row.updated_at} == {
+                    activated.starts_at}
+
+    async def test_the_value_is_read_inside_the_call_and_not_copied_from_the_old_grant(
+            self, writer, account, monkeypatch):
+        """The control: equality alone would also hold if the writer copied the superseded row."""
+        identity_row, superseded = account
+        _with_usage(monkeypatch, UserMonthlyUsage(grant_id=superseded.id,
+                                                  monthly_period=SPENT_PERIOD,
+                                                  monthly_used=SPENT_CREDITS))
+        before = datetime.now(UTC)
+
+        await _convert(writer, identity_row)
+
+        activated = [row for row in writer.session.added if isinstance(row, AccessGrant)][0]
+        assert before <= activated.starts_at <= datetime.now(UTC)
 
 
 class TestASupersededGrantWithNoUsageRowFailsClosed:

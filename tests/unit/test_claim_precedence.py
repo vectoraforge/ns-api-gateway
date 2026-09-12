@@ -146,7 +146,7 @@ class _RecordingGrants:
         self.session.in_transaction = True
         return self.prior_free_grant
 
-    async def activate(self, *, user_id, issuer, subject, tier_id, evaluated_at,
+    async def activate(self, *, user_id, issuer, subject, tier_id,
                        claim_platform=None) -> tuple[ActivationOutcome, str | None]:
         self.activates += 1
         self.claim_platforms.append(claim_platform)
