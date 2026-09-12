@@ -204,8 +204,7 @@ class AuthService:
             issuer=identity.issuer,
             subject=identity.subject,
             claim_platform=NativeClaimProvider.ios_devicecheck,
-            tier_id=ANONYMOUS_TIER_ID,
-            evaluated_at=self.evaluated_at)
+            tier_id=ANONYMOUS_TIER_ID)
         wrote = await self._settle(identity, outcome, refusal,
                                    source=AccessGrantSource.anonymous_device_grant)
         await self.session.commit()  # Commit before the Apple write. Nothing clears an Apple bit.
@@ -260,8 +259,7 @@ class AuthService:
             user_id=identity.user.id,
             issuer=identity.issuer,
             subject=identity.subject,
-            tier_id=REGISTERED_TIER_ID,
-            evaluated_at=self.evaluated_at)
+            tier_id=REGISTERED_TIER_ID)
         wrote = await self._settle(identity, outcome, refusal,
                                    source=AccessGrantSource.registered_account_grant)
         # As on the anonymous claim: the grant is durable before Apple is told, because nothing clears

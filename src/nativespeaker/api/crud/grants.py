@@ -1,6 +1,6 @@
 """Entitlement reads over `core.access_grants`, and the one writer of each of the two free grants.
 Global lock order: grant rows ascending by id, then usage rows, and never a third tier."""
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID
 
@@ -162,11 +162,11 @@ class GrantsDB:
                                               issuer: str,
                                               subject: str,
                                               claim_platform: NativeClaimProvider,
-                                              tier_id: str,
-                                              evaluated_at: datetime
+                                              tier_id: str
                                               ) -> tuple[ActivationOutcome, str | None]:
         """Take both lock tiers, then write the grant, its usage row and the identity marker.
         The second member names the arm that refused, and is `None` on every other outcome."""
+        instant = datetime.now(UTC)
         marked_active = await self.lock_active_grants(user_id)
         grants = await self.lock_effective_grants(user_id)
         for grant in grants:
@@ -195,19 +195,19 @@ class GrantsDB:
         activated = AccessGrant(user_id=user_id,
                                 tier_id=tier_id,
                                 source=AccessGrantSource.anonymous_device_grant,
-                                starts_at=evaluated_at,
-                                created_at=evaluated_at,
-                                updated_at=evaluated_at)
+                                starts_at=instant,
+                                created_at=instant,
+                                updated_at=instant)
         self.session.add(activated)
         self.session.add(UserMonthlyUsage(grant_id=activated.id,
-                                          monthly_period=monthly_period_for(evaluated_at),
+                                          monthly_period=monthly_period_for(instant),
                                           monthly_used=0,
-                                          created_at=evaluated_at,
-                                          updated_at=evaluated_at))
-        stored.free_grant_consumed_at = evaluated_at
+                                          created_at=instant,
+                                          updated_at=instant))
+        stored.free_grant_consumed_at = instant
         if stored.native_claim_platform is None:
             stored.native_claim_platform = claim_platform
-        stored.updated_at = evaluated_at
+        stored.updated_at = instant
 
         # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
         try:
@@ -224,11 +224,11 @@ class GrantsDB:
                                                 user_id: UUID,
                                                 issuer: str,
                                                 subject: str,
-                                                tier_id: str,
-                                                evaluated_at: datetime
+                                                tier_id: str
                                                 ) -> tuple[ActivationOutcome, str | None]:
         """Take both lock tiers, re-decide the destination, and write it: a conversion, or a new grant.
         The second member names the arm that refused, and is `None` on every other outcome."""
+        instant = datetime.now(UTC)
         # First and ascending by id: this set contains the effective one, so one grant-tier order holds.
         marked_active = await self.lock_active_grants(user_id)
         grants = await self.lock_effective_grants(user_id)
@@ -272,8 +272,8 @@ class GrantsDB:
             if carried is None:
                 raise MissingUsageRowError(superseded.id)
             superseded.status = AccessGrantStatus.expired
-            superseded.ends_at = evaluated_at
-            superseded.updated_at = evaluated_at
+            superseded.ends_at = instant
+            superseded.updated_at = instant
             # Flushed alone and first: the ORM emits inserts before updates, and the one-active index is per-statement.
             try:
                 await self.session.flush()
@@ -287,21 +287,21 @@ class GrantsDB:
         activated = AccessGrant(user_id=user_id,
                                 tier_id=tier_id,
                                 source=AccessGrantSource.registered_account_grant,
-                                starts_at=evaluated_at,
-                                created_at=evaluated_at,
-                                updated_at=evaluated_at)
+                                starts_at=instant,
+                                created_at=instant,
+                                updated_at=instant)
         self.session.add(activated)
         self.session.add(UserMonthlyUsage(
             grant_id=activated.id,
-            monthly_period=(monthly_period_for(evaluated_at) if carried is None
+            monthly_period=(monthly_period_for(instant) if carried is None
                             else carried.monthly_period),
             monthly_used=0 if carried is None else carried.monthly_used,
-            created_at=evaluated_at,
-            updated_at=evaluated_at))
+            created_at=instant,
+            updated_at=instant))
         if stored.free_grant_consumed_at is None:
-            # Set where unset: the conversion path already spent the slot and the instant it spent it is the record.
-            stored.free_grant_consumed_at = evaluated_at
-        stored.updated_at = evaluated_at
+            # Set where unset: the conversion path already spent the slot, and when it did is the record.
+            stored.free_grant_consumed_at = instant
+        stored.updated_at = instant
 
         # Only the flush is inside: the try holds the one statement that can raise, and nothing else.
         try:
