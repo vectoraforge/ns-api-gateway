@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 47
 current_phase_name: Stop threading an evaluation instant through the layers
 status: executing
-stopped_at: Phases 47-50 added 2026-09-11; Phase 47 not yet planned
-last_updated: "2026-09-12T05:31:42.647Z"
-last_activity: 2026-09-08
-last_activity_desc: Phase 46 complete
-state_head: 7e05496a01b9b915980c66bf583529e673f052fd
+stopped_at: Completed 47-01-PLAN.md
+last_updated: "2026-09-12T05:56:46.458Z"
+last_activity: 2026-09-11
+last_activity_desc: Phase 47 execution started
+state_head: 35b66097f5a01be1201753f222b44a30df65f0eb
 progress:
   total_phases: 22
   completed_phases: 17
   total_plans: 132
-  completed_plans: 124
+  completed_plans: 125
   percent: 77
 ---
 
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-09-08)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phases 47-50 (behavior-preserving refactors) — next /gsd:discuss-phase 47 or /gsd:plan-phase 47
+**Current focus:** Phase 47 — Stop threading an evaluation instant through the layers
 
 ## Current Position
 
-Phase: 47 (Stop threading an evaluation instant through the layers) — READY TO EXECUTE
-Plan: Not started
+Phase: 47 (Stop threading an evaluation instant through the layers) — EXECUTING
+Plan: 2 of 8
 Status: Ready to execute
-Progress: [████████████████████] 124/124 plans (100%)
+Progress: [████████████████████] 124/124 plans ([████████░░] 77%)
 
 **Phase 45 closed 2026-09-08.** Re-verification passed 7/7 after the four gap-closure plans. The
 code review that followed them (`45-REVIEW.md`, second run) found CR-01 was NOT closed — `quote`
@@ -56,7 +56,7 @@ three fixes do not interact.
 `45-VERIFICATION.md` itself still reads `gaps_found` and still records RESTORE-01 as BLOCKED:
 **re-verification is what changes those, not this file.** `/gsd:verify-phase 45` decides whether the
 phase is complete; this plan does not.
-Last activity: 2026-09-08 — Phase 46 complete
+Last activity: 2026-09-11 — Phase 47 execution started
 fixes together, and REQUIREMENTS.md carries the dated gap-closure record
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07 and 45-05 each did.
@@ -528,10 +528,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-09T00:04:17.000Z
+**Last session:** 2026-09-12T05:56:45.901Z
 
 Last activity: 2026-09-08
-Stopped at: Phases 47-50 added 2026-09-11; Phase 47 not yet planned
+Stopped at: Completed 47-01-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -600,6 +600,7 @@ Resume file: None
 | Phase 46 P04 | 11 min | 2 tasks | 1 files |
 | Phase 46 P03 | 4 min | 2 tasks | 2 files |
 | Phase 46 P05 | 15 min | 2 tasks | 3 files |
+| Phase 47 P01 | 20 min | 3 tasks | 18 files |
 
 ## Decisions
 
@@ -794,3 +795,6 @@ Resume file: None
 - [Phase 46]: Phase 46 D-05: RevocationUnconfirmed shares 503 verification_temporarily_unavailable with Unavailable on purpose; the two are told apart by class and by log event name, never by the wire
 - [Phase 46]: Phase 46 D-06: POST /auth/sign-out-all answers 401 on a Firebase "no such user" — a flagged conflict against 11-sign-out-all.md, recorded under SIGNOUT-01, not a bug
 - [Phase 46]: Phase 46 D-07: /auth/sign-out-all writes one INFO line, sign_out_all_confirmed, carrying identity_row_id; this narrows Phase 38 D-02's "no success log line" to /auth/sync
+- [Phase 47]: D-01 applied: the effective-grant predicate compares against func.clock_timestamp(), not func.now(). now() is transaction_timestamp() and the e2e harness holds one outer transaction per test, so a seeded grant is invisible to it.
+- [Phase 47]: seconds_until_rollover keeps its one parameter, renamed to instant, because the plan required zero occurrences of the old name in services/quota.py.
+- [Phase 47]: The two cases asserting the statement carried a threaded instant now assert it binds no datetime and carries clock_timestamp() on both bounds.
