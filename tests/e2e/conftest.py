@@ -366,9 +366,8 @@ class FakeAppStoreNotifications:
         assert self.answer is not None, "the seam was called before a case scripted it"
         return self.answer
 
-    def verify_transaction(self, signed_transaction: str,
-                           evaluated_at: datetime) -> RestoredSubscription:
-        self.restore_calls.append((signed_transaction, evaluated_at))
+    def verify_transaction(self, signed_transaction: str) -> RestoredSubscription:
+        self.restore_calls.append(signed_transaction)
         if isinstance(self.restore_answer, BaseException):
             raise self.restore_answer
         assert self.restore_answer is not None, "the seam was called before a case scripted it"
@@ -493,11 +492,10 @@ class FakePlaySubscriptions:
         """Raise-or-return on the restore entry point, on the same terms as `script` above."""
         self.restore_answer = answer
 
-    async def read_for_restore(self, *, package_name: str, purchase_token: str,
-                               evaluated_at: datetime) -> RestoredSubscription:
+    async def read_for_restore(self, *, package_name: str,
+                               purchase_token: str) -> RestoredSubscription:
         self.restore_calls.append({"package_name": package_name,
-                                   "purchase_token": purchase_token,
-                                   "evaluated_at": evaluated_at})
+                                   "purchase_token": purchase_token})
         if isinstance(self.restore_answer, BaseException):
             raise self.restore_answer
         assert self.restore_answer is not None, "the seam was called before a case scripted it"
@@ -505,11 +503,11 @@ class FakePlaySubscriptions:
 
     # `async` because the live read does I/O; FakeDeviceCheckAdapter above is the same precedent.
     async def read(self, *, package_name: str, purchase_token: str, event_type: str,
-                   notification_uuid: str, signed_at: datetime | None,
-                   evaluated_at: datetime) -> VerifiedNotification:
+                   notification_uuid: str,
+                   signed_at: datetime | None) -> VerifiedNotification:
         self.calls.append({"package_name": package_name, "purchase_token": purchase_token,
                            "event_type": event_type, "notification_uuid": notification_uuid,
-                           "signed_at": signed_at, "evaluated_at": evaluated_at})
+                           "signed_at": signed_at})
         if isinstance(self.answer, BaseException):
             raise self.answer
         assert self.answer is not None, "the seam was called before a case scripted it"

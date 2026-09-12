@@ -242,8 +242,7 @@ class TestTheSameAccountAppleRestore:
     """The one path this slice serves: the caller's account already owns the subscription named."""
 
     async def test_a_verified_proof_attaches_the_paid_grant_and_the_body_reports_it(
-            self, restore_client, _db_transaction, scripted_app_store_notifications,
-            pinned_evaluation_instant):
+            self, restore_client, _db_transaction, scripted_app_store_notifications):
         user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
                                       provider=IdentityProvider.google)
         external_id = f"e2e-restore-{uuid4()}"
@@ -260,8 +259,7 @@ class TestTheSameAccountAppleRestore:
         assert body["entitlement"]["tier_id"] == PAID_TIER_ID
         assert body["identity_provider"] == "google"
         assert answered.headers["Cache-Control"] == "no-store"
-        assert scripted_app_store_notifications.restore_calls == [(RESTORE_PROOF,
-                                                                  pinned_evaluation_instant)]
+        assert scripted_app_store_notifications.restore_calls == [RESTORE_PROOF]
 
     async def test_the_one_grant_it_wrote_is_the_subscription_grant_and_its_usage_row(
             self, restore_client, _db_transaction, scripted_app_store_notifications):
@@ -752,8 +750,7 @@ class TestTheSameAccountGooglePlayRestore:
     """The second store on the same path: the purchase token is both the proof and the external id."""
 
     async def test_a_live_purchase_token_attaches_the_paid_grant_and_the_body_reports_it(
-            self, restore_client, _db_transaction, scripted_google_play,
-            pinned_evaluation_instant):
+            self, restore_client, _db_transaction, scripted_google_play):
         user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
                                       provider=IdentityProvider.google)
         purchase_token = f"e2e-play-restore-{uuid4()}"
@@ -770,9 +767,8 @@ class TestTheSameAccountGooglePlayRestore:
         assert body["entitlement"]["status"] == "active"
         assert body["entitlement"]["tier_id"] == PAID_TIER_ID
         assert answered.headers["Cache-Control"] == "no-store"
-        assert [(call["package_name"], call["purchase_token"], call["evaluated_at"]) for call in
-                scripted_google_play.restore_calls] == [(GOOGLE_PACKAGE_NAME, purchase_token,
-                                                         pinned_evaluation_instant)]
+        assert scripted_google_play.restore_calls == [{"package_name": GOOGLE_PACKAGE_NAME,
+                                                       "purchase_token": purchase_token}]
 
     async def test_the_one_grant_it_wrote_is_the_subscription_grant_and_its_usage_row(
             self, restore_client, _db_transaction, scripted_play_subscriptions):
