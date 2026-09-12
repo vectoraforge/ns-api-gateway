@@ -614,7 +614,8 @@ were not re-run, and the changed digest is not a defect.
 
 **After the fix, re-derived and re-recorded:**
 
-5. **The re-derivation at HEAD `5ad4fbd`** — `5236b96` (docs)
+5. **The re-derivation at HEAD `5ad4fbd`** — `8223962` (docs), plus one follow-up commit
+   correcting this line's own hash
 
 `5ad4fbd` is the orchestrator's source fix and is **not** this plan's commit. It is named here
 because it is what the re-derivation measures against.
