@@ -584,7 +584,7 @@ class TestAVerifiedTransactionWithoutItsLifecycleKeyIsRefused:
         signed = _mint(chain, _transaction(original_transaction_id=None))
 
         with pytest.raises(PurchaseProofRejected) as refusal:
-            _notifications(chain).verify_transaction(signed, datetime.now(UTC))
+            _notifications(chain).verify_transaction(signed)
 
         assert refusal.value.stage == "transaction_without_original_id"
 

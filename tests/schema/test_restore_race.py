@@ -165,8 +165,7 @@ class _ScriptedAppStore:
     def __init__(self, proof: RestoredSubscription) -> None:
         self.proof = proof
 
-    def verify_transaction(self, signed_transaction: str,
-                           evaluated_at: datetime) -> RestoredSubscription:
+    def verify_transaction(self, signed_transaction: str) -> RestoredSubscription:
         return self.proof
 
 

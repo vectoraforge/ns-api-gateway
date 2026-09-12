@@ -7,9 +7,11 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from appstoreserverlibrary.models.JWSTransactionDecodedPayload import JWSTransactionDecodedPayload
 from appstoreserverlibrary.signed_data_verifier import VerificationStatus
 from sqlalchemy.exc import IntegrityError
 
+from nativespeaker.api.auth.app_store import _transaction_status
 from nativespeaker.api.auth.google_play import GRACE_STATE, PlayDeveloperSubscriptions
 from nativespeaker.api.auth.store_notifications import RestoredSubscription
 from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
@@ -66,7 +68,6 @@ from unit.test_google_play_notifications import (
     TIER_ID as PLAY_TIER_ID,
 )
 
-# One captured instant for every case below, so no assertion here depends on the wall clock.
 EVALUATED_AT = datetime(2026, 6, 1, tzinfo=UTC)
 
 # The application name the dependency passes in production; the Apple check never reads it.
@@ -99,21 +100,25 @@ def chain() -> _Chain:
     return _build_chain()
 
 
-def _proof_through(chain: _Chain, transaction: dict, *,
-                   evaluated_at: datetime = EVALUATED_AT) -> RestoredSubscription:
+def _proof_through(chain: _Chain, transaction: dict) -> RestoredSubscription:
     """One restore check on the real seam, with the arguments the service passes in production."""
-    return _notifications(chain).verify_transaction(_mint(chain, transaction), evaluated_at)
+    return _notifications(chain).verify_transaction(_mint(chain, transaction))
 
 
 def _transaction(**fields) -> dict:
-    """The Apple payload dated against `EVALUATED_AT`, which is what makes the claim above true.
-    The imported helper dates itself from the wall clock, so every case here must pin the instant."""
+    """The Apple payload dated from `EVALUATED_AT`, so its term sits a known distance from now."""
     return _wall_clock_transaction(now=EVALUATED_AT, **fields)
 
 
 def _dated(offset: timedelta) -> dict:
-    """A transaction whose term ends `offset` from the captured instant, and nothing else changed."""
+    """A transaction whose term ends `offset` from `EVALUATED_AT`, and nothing else changed."""
     return _transaction() | {"expiresDate": _milliseconds(EVALUATED_AT + offset)}
+
+
+def _decoded(offset: timedelta, *, revocation_date: int | None = None) -> JWSTransactionDecodedPayload:
+    """The decoded payload the status helper reads, dated by the same helper the chain signs."""
+    return JWSTransactionDecodedPayload(expiresDate=_dated(offset)["expiresDate"],
+                                        revocationDate=revocation_date)
 
 
 class TestTheRealChainVerifiesTheRestoreProof:
@@ -137,7 +142,7 @@ class TestTheRealChainVerifiesTheRestoreProof:
         notifications = _notifications(chain, root_certificates=[APPLE_ROOT_G3.read_bytes()])
 
         with pytest.raises(PurchaseProofRejected) as refusal:
-            notifications.verify_transaction(_mint(chain, _transaction()), EVALUATED_AT)
+            notifications.verify_transaction(_mint(chain, _transaction()))
 
         assert refusal.value.stage == "VERIFICATION_FAILURE"
 
@@ -147,7 +152,7 @@ class TestTheRealChainVerifiesTheRestoreProof:
 
         with pytest.raises(Unavailable) as refusal:
             AppStoreNotifications(verifier=None, products={}).verify_transaction(
-                _mint(chain, _transaction()), EVALUATED_AT)
+                _mint(chain, _transaction()))
 
         assert refusal.value.stage == "app_store_verify"
 
@@ -184,6 +189,31 @@ class TestTheStatusComesFromTheTransactionAlone:
                              SubscriptionStatus.revoked}
 
 
+class TestTheAppleTermBoundaryIsJudgedByTheHelperAlone:
+    """T-47-11: the comparison is `>`, so a term ending exactly at the instant it is judged
+    against is over. Only a pinned instant names that equality; a live clock never lands on it."""
+
+    @pytest.mark.parametrize(("instant", "expected"), [
+        (EVALUATED_AT - timedelta(microseconds=1), SubscriptionStatus.active),
+        (EVALUATED_AT, SubscriptionStatus.expired),
+        (EVALUATED_AT + timedelta(microseconds=1), SubscriptionStatus.expired),
+    ], ids=["term-ends-after", "term-ends-at", "term-ends-before"])
+    def test_a_term_ending_at_the_instant_is_already_over(self, instant, expected):
+        assert _transaction_status(_decoded(timedelta(0)), instant) is expected
+
+    def test_an_absent_expiry_is_expired_at_every_instant(self):
+        """Apple sends no expiry for a lifetime purchase, and this seam grants nothing on one."""
+        assert _transaction_status(JWSTransactionDecodedPayload(),
+                                   EVALUATED_AT) is SubscriptionStatus.expired
+
+    def test_a_revocation_is_read_before_the_boundary_control(self):
+        """The control: the boundary decides only where no revocation already has."""
+        revoked = _decoded(timedelta(0), revocation_date=_milliseconds(EVALUATED_AT))
+
+        assert _transaction_status(revoked, EVALUATED_AT - timedelta(microseconds=1)) is (
+            SubscriptionStatus.revoked)
+
+
 class TestAProofThatDoesNotVerifyIsRefusedWithoutNamingItself:
     """T-45-04: the refusal's `stage` is one of the library's own eight names and carries no payload."""
 
@@ -209,7 +239,7 @@ class TestAProofThatDoesNotVerifyIsRefusedWithoutNamingItself:
                       _mint(chain, _transaction(bundle_id="com.example.someone-else")),
                       _mint(chain, _transaction(environment="Production"))):
             with pytest.raises(PurchaseProofRejected) as refusal:
-                _notifications(chain).verify_transaction(proof, EVALUATED_AT)
+                _notifications(chain).verify_transaction(proof)
             stages.append(refusal.value.stage)
 
         assert set(stages) <= {status.name for status in VerificationStatus}
@@ -219,7 +249,7 @@ class TestAProofThatDoesNotVerifyIsRefusedWithoutNamingItself:
         proof = _mint(chain, _transaction(bundle_id="com.example.someone-else"))
 
         with pytest.raises(PurchaseProofRejected) as refusal:
-            _notifications(chain).verify_transaction(proof, EVALUATED_AT)
+            _notifications(chain).verify_transaction(proof)
 
         for segment in proof.split("."):
             assert segment not in refusal.value.stage
@@ -526,7 +556,7 @@ class _ScriptedAppStore:
         self._answer = answer
         self.statements_at_call: int | None = None
 
-    def verify_transaction(self, signed_transaction: str, evaluated_at: datetime):
+    def verify_transaction(self, signed_transaction: str):
         self.statements_at_call = self._session.statements
         if isinstance(self._answer, BaseException):
             raise self._answer
