@@ -176,7 +176,6 @@ async def verify_google_play_notification(
         request: Request,
         body: PubSubPushRequest,
         credential: HTTPAuthorizationCredentials | None = Depends(_bearer),
-        evaluated_at: datetime = Depends(get_evaluated_at),
 ) -> VerifiedNotification | None:
     """Verify the push token and read the live subscription, before the handler and before `get_db`."""
     if credential is None:
@@ -205,8 +204,7 @@ async def verify_google_play_notification(
         notification_uuid=notification_key_for(subscription.purchaseToken,
                                                notification.eventTimeMillis, event_type),
         # Google's own instant for the event, which is what the out-of-order guard compares.
-        signed_at=instant_from_millis(notification.eventTimeMillis),
-        evaluated_at=evaluated_at)
+        signed_at=instant_from_millis(notification.eventTimeMillis))
 
 
 # This accessor exists so the profile route can stay Depends()-only and never construct a database class itself.

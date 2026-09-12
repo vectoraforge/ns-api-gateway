@@ -23,6 +23,7 @@ from jwt.exceptions import PyJWKClientConnectionError, PyJWKClientError, PyJWTEr
 from nativespeaker.api.app.dependencies import verify_google_play_notification
 from nativespeaker.api.app.lifespan import build_google_push_verifier
 from nativespeaker.api.auth.google_play import (
+    _CANCELED_STATE,
     GOOGLE_ISSUER,
     GOOGLE_JWKS_URL,
     PLAY_CREDENTIAL_REBUILD_INTERVAL_SECONDS,
@@ -32,7 +33,6 @@ from nativespeaker.api.auth.google_play import (
     CappedRefreshRequest,
     PlayDeveloperSubscriptions,
     PubSubPushTokens,
-    _CANCELED_STATE,
     _status_for,
     developer_notification_from,
     instant_from_millis,
@@ -879,7 +879,7 @@ class TestAZoneLessStampIsClassifiedRatherThanRaised:
 
     def _reader(self, **overrides) -> PlayDeveloperSubscriptions:
         return _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_CANCELED",
-                                                          expiry=UNEXPIRED) | overrides))
+                                                          expiry=OPEN_TERM) | overrides))
 
     @pytest.mark.parametrize("overrides", [
         {"lineItems": [{"productId": PRODUCT_ID, "expiryTime": ZONE_LESS}]},
@@ -907,7 +907,7 @@ class TestAZoneLessStampIsClassifiedRatherThanRaised:
         notification = await _read_through(self._reader())
 
         assert (notification.status, notification.expires_at) == (SubscriptionStatus.active,
-                                                                  UNEXPIRED)
+                                                                  OPEN_TERM)
         assert play_logs.records("error") == []
 
 

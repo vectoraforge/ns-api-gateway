@@ -125,13 +125,13 @@ class PlaySubscriptionSource(Protocol):
     """The Play read seam: one live subscription as this project's value type, or a raise."""
 
     async def read(self, *, package_name: str, purchase_token: str, event_type: str,
-                   notification_uuid: str, signed_at: datetime | None,
-                   evaluated_at: datetime) -> VerifiedNotification | None:
+                   notification_uuid: str,
+                   signed_at: datetime | None) -> VerifiedNotification | None:
         """The `subscriptionsv2.get` call: the value type, `None` for a gone token, or a raise."""
         ...
 
-    async def read_for_restore(self, *, package_name: str, purchase_token: str,
-                               evaluated_at: datetime) -> RestoredSubscription:
+    async def read_for_restore(self, *, package_name: str,
+                               purchase_token: str) -> RestoredSubscription:
         """The same call for a client-presented token: the value type, or the refusal it earned."""
         ...
 
@@ -271,8 +271,8 @@ class PlayDeveloperSubscriptions:
         return self._credential is not None
 
     async def read(self, *, package_name: str, purchase_token: str, event_type: str,
-                   notification_uuid: str, signed_at: datetime | None,
-                   evaluated_at: datetime) -> VerifiedNotification | None:
+                   notification_uuid: str,
+                   signed_at: datetime | None) -> VerifiedNotification | None:
         """Read this subscription's live state from Play, or answer `None` for a gone token."""
         if not await self._credential_in_hand():
             raise Unavailable(stage="play_subscriptions_read")
@@ -302,6 +302,7 @@ class PlayDeveloperSubscriptions:
         # Left as None, every grace-period subscriber's grant would be written with no end date.
         in_grace = subscription.subscriptionState == GRACE_STATE
         identifiers = subscription.externalAccountIdentifiers
+        instant = datetime.now(UTC)
         return VerifiedNotification(
             provider=PurchaseProvider.google_play,
             notification_uuid=notification_uuid,
@@ -313,15 +314,15 @@ class PlayDeveloperSubscriptions:
             tier_id=tier_id,
             attribution_token=(None if identifiers is None
                                else identifiers.obfuscatedExternalAccountId),
-            status=_status_for(subscription.subscriptionState, expiry, evaluated_at),
+            status=_status_for(subscription.subscriptionState, expiry, instant),
             signed_at=signed_at,
             purchased_at=subscription.startTime,
             expires_at=expiry,
             grace_period_expires_at=expiry if in_grace else None,
         )
 
-    async def read_for_restore(self, *, package_name: str, purchase_token: str,
-                               evaluated_at: datetime) -> RestoredSubscription:
+    async def read_for_restore(self, *, package_name: str,
+                               purchase_token: str) -> RestoredSubscription:
         """Read the state of one client-presented purchase token, or raise the refusal it earned."""
         if not await self._credential_in_hand():
             raise Unavailable(stage=RESTORE_UNCONFIGURED_STAGE)
@@ -361,6 +362,7 @@ class PlayDeveloperSubscriptions:
         # Google carries no separate grace field, so in grace this expiry is the end of the window.
         in_grace = subscription.subscriptionState == GRACE_STATE
         identifiers = subscription.externalAccountIdentifiers
+        instant = datetime.now(UTC)
         return RestoredSubscription(
             provider=PurchaseProvider.google_play,
             # The purchase token: `subscriptionsv2.get` accepts no other handle for this subscription.
@@ -369,7 +371,7 @@ class PlayDeveloperSubscriptions:
             tier_id=tier_id,
             attribution_token=(None if identifiers is None
                                else identifiers.obfuscatedExternalAccountId),
-            status=_status_for(subscription.subscriptionState, expiry, evaluated_at),
+            status=_status_for(subscription.subscriptionState, expiry, instant),
             purchased_at=subscription.startTime,
             expires_at=expiry,
             grace_period_expires_at=expiry if in_grace else None,
