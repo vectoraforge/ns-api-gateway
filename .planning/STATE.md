@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 47
 current_phase_name: Stop threading an evaluation instant through the layers
-status: executing
-stopped_at: Completed 47-07-PLAN.md
-last_updated: "2026-09-12T07:52:35.287Z"
-last_activity: 2026-09-11
-last_activity_desc: Phase 47 execution started
-state_head: 863accbdbfcdc22dec304d3d4fa1c106813c75fb
+status: executed
+stopped_at: Completed 47-08-PLAN.md — phase 47 executed, criterion 5 unmet
+last_updated: "2026-09-12T08:10:00.000Z"
+last_activity: 2026-09-12
+last_activity_desc: Phase 47 executed; the gate measured criterion 5 red
+state_head: 6a8928339e9cbf9a614c58fe5ba44b31904773f6
 progress:
   total_phases: 22
   completed_phases: 17
   total_plans: 132
-  completed_plans: 130
+  completed_plans: 132
   percent: 77
 ---
 
@@ -29,10 +29,55 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 
 ## Current Position
 
-Phase: 47 (Stop threading an evaluation instant through the layers) — EXECUTING
+Phase: 47 (Stop threading an evaluation instant through the layers) — EXECUTED, criterion 5 unmet
 Plan: 8 of 8
-Status: Ready to execute
-Progress: [████████████████████] 124/124 plans ([████████░░] 77%)
+Status: All eight plans executed 2026-09-12. NOT verified.
+Progress: [████████████████████] 132/132 plans ([████████░░] 77%)
+
+<!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07, 45-05, 45-09 and
+     46-05 each did. Read at 2026-09-12T08:05Z, during plan 47-08's Task 3: 132 PLAN files and 131
+     SUMMARY files across .planning/phases/, and Phase 47 itself holds 8 PLAN files and 7 SUMMARY
+     files. This plan's own summary is the hundred-and-thirty-second and lands after Task 3, which
+     is why completed_plans is written as 132 here rather than the 131 on disk at the moment of the
+     count. The phase is executed but NOT verified, and criterion 5 is measured red, so
+     completed_phases stays at 17 and percent stays at 77. `/gsd:verify-phase 47` is what moves
+     them, and it should not move them while criterion 5 stands. -->
+
+**Phase 47 outcome — executed, and its own gate says criterion 5 is not met.** The dependency
+`get_evaluated_at` is deleted with its docstring. No `Depends(...)` in `app/dependencies.py` and no
+parameter in any router supplies a datetime; `grep -rn 'datetime'` over that file and the whole
+`routers/` package prints **nothing**, so the name is not even imported. No file under `services/`,
+`crud/`, `routers/` or `app/` carries `evaluated_at`. Three occurrences survive in `src/` and all
+three are pure helpers criterion 3 allows — `monthly_period_for`, `_status_for` and
+`_transaction_status` — each taking the datetime it computes from and reading no clock. **Nineteen
+Python clock reads replaced the one threaded value, one per method, each the first statement of the
+method that stamps from it.** Two SQL comparisons moved database-side under **D-01**, to
+`func.clock_timestamp()` and not `func.now()`, for a reason that was measured rather than argued.
+**Criterion 4 is executable rather than claimed:** `tests/unit/test_sync_clock_capture.py` and its 21
+cases are deleted, and `tests/unit/test_instant_is_not_threaded.py` replaces them with 7 cases and
+four controls, proved to fail on an injected reintroduction by a mutation probe that named the file
+and the spelling. **Criterion 5 is red, measured in plan 47-08's own run and not copied: `-m schema`
+291 passed exit 0, `-m e2e` 360 passed 1 failed exit 1, `-m ''` 2571 passed 2 failed exit 1 over 2573
+collected against a 2570 pre-phase baseline.** One failure is pre-existing and was measured at HEAD
+`1a3273d` before the phase began — the restore four-arms case expects log event `proof_rejected`
+while the code emits `purchase_proof_rejected` — so an "e2e exits 0" criterion was unreachable from
+the start. **The other is this phase's own and is a new defect:**
+`tests/unit/test_subscription_attribution.py:964` builds an open term one minute past a `NOW` read at
+module import, so any run longer than a minute between collection and that case closes the term and
+`ingest` raises `InternalError`. It passes alone in 0.03 s, fails under the 131-second `-m ''` run,
+and a throwaway plugin sleeping 65 s after collection reproduces it at the same raise site. Plan
+47-05 introduced it when it moved that module onto the live clock; its sibling terms are ten to
+thirty days out and this one is one minute. Both failures are logged in `.planning/WINDOWS.md` and in
+the phase's `deferred-items.md`. **Recorded as given up rather than hidden:** the one-evaluation-time
+property is gone and the invariant stating it was **struck** under **D-02** rather than carried as a
+permanent flagged conflict; the exact-equality expiry boundary in the challenge store is now asserted
+over compiled SQL, because a live database clock never lands on a stored value; a superseded grant's
+`ends_at` can fall microseconds before its replacement's `starts_at` across two writers; and
+`func.clock_timestamp()` is VOLATILE, so the effective-grant predicate cannot drive an index scan.
+**Recorded as a phase-wide fact:** nine test modules now derive a term or a period from the wall
+clock, where before they used fixed literals. The new defect is the first bill for that.
+`ruff check src tests` is clean and `ty check` reads **311** diagnostics against the **316** this
+phase started from.
 
 **Phase 45 closed 2026-09-08.** Re-verification passed 7/7 after the four gap-closure plans. The
 code review that followed them (`45-REVIEW.md`, second run) found CR-01 was NOT closed — `quote`
@@ -439,6 +484,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 - `RevocationUnconfirmed` shares 503 `verification_temporarily_unavailable` with `Unavailable` **on purpose** (Phase 46 D-05). The error-tree totality walk rejects one code at two statuses, not one code at one status. The two leaves are told apart **by class and by log event name, never by the wire**, so any test that means to see the difference must assert the class; a status assertion cannot
 - `POST /auth/sign-out-all` answers **401 `auth_required`** on a Firebase "no such user" (Phase 46 D-06). **This is a departure from `11-sign-out-all.md` and is recorded as a flagged conflict under SIGNOUT-01. A later reader must not read it as a bug.** The ground: the token verified and the identity row is linked, but the IDP has no account behind the uid, so nothing exists to revoke and no token can be minted for it again
 - `/auth/sign-out-all` writes one INFO line, `sign_out_all_confirmed`, carrying `identity_row_id` (Phase 46 D-07). This **narrows** Phase 38 D-02's "no success log line" to `/auth/sync`; it does not reopen it there. The ground: for an anonymous account this route is a one-way door, and the middleware `request` line carries no identity, so without this line no operator can answer "did account X sign out everywhere"
+- **Phase 47 D-01: a SQL comparison against the current time uses `func.clock_timestamp()`, never `func.now()`.** The roadmap criterion said `now()`; D-01 overrode it. PostgreSQL's `now()` is `transaction_timestamp()`, and `tests/e2e/conftest.py` holds one outer transaction open per test and joins every app session to it with `create_savepoint`, so a grant a test seeds is invisible to `now()` — measured as **11 of 41 quota tests turning red** under it. Two sites carry the rule: `_effective_grants_statement` in `crud/grants.py` (both bounds) and `ChallengesDB.claim` in `crud/challenges.py`, where the expiry predicate and the `claimed_at` write are one evaluation in one statement. `func.now()` appears nowhere in `src/`. **A later phase adding a current-time comparison in SQL follows this, and must not "correct" it back to `now()`.** The cost is written down: `clock_timestamp()` is VOLATILE, so the effective-grant predicate cannot drive an index scan on `starts_at` or `ends_at` — accepted on a table holding a handful of rows per user and already filtered by `user_id` and `status`
+- **Phase 47 D-02: the one-evaluation-time invariant was struck, not flagged.** The bullet binding every phase to ONE captured evaluation time per request is deleted from `SHARED-INVARIANTS.md`; its `current_period` rule survives word for word, and the shared effective-grant predicate one line above it is untouched. SYNC-01 carries a dated **"Amended by Phase 47 (D-02), 2026-09-11"** blockquote saying what `/auth/sync` rests on instead, and Phase 38's success criterion 1 is superseded. RESEARCH Finding 7 and PATTERNS Cluster 12 both recommended *flagging* instead; the developer overrode both, on the Phase 38 plan 38-04 precedent. No new flagged conflict was filed, because after the strike there is no surviving invariant text to diverge from. **The SYNC-01 bullet text itself still reads "all derived from one captured evaluation time" by design** — the amendment below it is what a reader is meant to reach, so grepping the bullet alone gives a false answer
+- **Phase 47 forward note for Phase 49:** this phase left `PlaySubscriptionSource` declared, with both its methods now free of the datetime parameter, and left `ChallengesDB` built in the lifespan behind `get_challenge_store`. Deleting the Protocol and moving the construction are still Phase 49's, unchanged. `tests/unit/test_auth_package_shape.py` is byte-identical through all eight plans, so Phase 49's ratchet rewrite sees the tuple it planned against
+- **Phase 47 forward note for Phase 50:** `app/dependencies.py` was changed only where a factory declared the deleted dependency. `get_session_factory`, `get_firebase_adapter`, `get_devicecheck_adapter`, `get_challenge_store`, every `request.app.state.*` read and every `Request` parameter are untouched, and the module now imports no `datetime` at all. The `dependencies.py` rewrite onto a runtime container is still Phase 50's, which is what its dependency line assumes
 
 ### Pending Todos
 
