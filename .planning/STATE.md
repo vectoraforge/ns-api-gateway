@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 47
 current_phase_name: Stop threading an evaluation instant through the layers
 status: executing
-stopped_at: Completed 47-03-PLAN.md
-last_updated: "2026-09-12T06:28:31.217Z"
+stopped_at: Completed 47-04-PLAN.md
+last_updated: "2026-09-12T06:46:29.970Z"
 last_activity: 2026-09-11
 last_activity_desc: Phase 47 execution started
-state_head: 47af59de74fcf5efdfc010ba8bea69dafc827824
+state_head: b0241c520b544d97cd314cea4382ef7df455556c
 progress:
   total_phases: 22
   completed_phases: 17
   total_plans: 132
-  completed_plans: 127
+  completed_plans: 128
   percent: 77
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 ## Current Position
 
 Phase: 47 (Stop threading an evaluation instant through the layers) — EXECUTING
-Plan: 4 of 8
+Plan: 5 of 8
 Status: Ready to execute
 Progress: [████████████████████] 124/124 plans ([████████░░] 77%)
 
@@ -528,10 +528,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-12T06:28:30.633Z
+**Last session:** 2026-09-12T06:46:22.549Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 47-03-PLAN.md
+Stopped at: Completed 47-04-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -603,6 +603,7 @@ Resume file: None
 | Phase 47 P01 | 20 min | 3 tasks | 18 files |
 | Phase 47 P02 | 2 min | 2 tasks | 2 files |
 | Phase 47 P03 | 23 min | 3 tasks | 12 files |
+| Phase 47 P04 | 20 min | 3 tasks | 10 files |
 
 ## Decisions
 
@@ -802,3 +803,6 @@ Resume file: None
 - [Phase 47]: The two cases asserting the statement carried a threaded instant now assert it binds no datetime and carries clock_timestamp() on both bounds.
 - [Phase 47]: D-02 applied: SHARED-INVARIANTS.md's one-evaluation-time clause was struck, not flagged — RESEARCH Finding 7 and PATTERNS Cluster 12 both recommended flagging; the user overrode both on the Phase 38 plan 38-04 precedent, which struck a section from the same file. After the strike there is no surviving invariant text to diverge from, so no new flagged conflict is filed and the count is unchanged.
 - [Phase 47]: SYNC-01 is amended, not withdrawn, and stays checked — The endpoint still returns all four values. Only the one-captured-evaluation-time derivation is given up. The replacement is named: one clock read inside SyncService.read_entitlement, and clock_timestamp() in the effective-grant predicate (D-01). A database-side now() would not have restored the property, because a request here spans several transactions.
+- [Phase 47]: The Apple term boundary varies the instant, not the expiry: Apple encodes stamps in milliseconds, so a microsecond offset on the expiry is rounded away
+- [Phase 47]: Five store cases now date their open term from the live clock, because a fixed 2026-06-01 term is over once the seam reads its own clock
+- [Phase 47]: The vacuous Play state-map equality row was deleted and its property relocated onto _status_for at microsecond resolution
