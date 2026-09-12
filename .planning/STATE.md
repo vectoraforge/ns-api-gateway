@@ -5,11 +5,11 @@ milestone_name: Authentication & Entitlements
 current_phase: 47
 current_phase_name: Stop threading an evaluation instant through the layers
 status: executed
-stopped_at: Completed 47-08-PLAN.md — phase 47 executed, criterion 5 unmet
-last_updated: "2026-09-12T08:09:37.259Z"
+stopped_at: "Completed 47-08-PLAN.md — re-derived at 5ad4fbd; criterion 5 unmet on one pre-existing case, plus an open E501"
+last_updated: "2026-09-12T08:24:06.957Z"
 last_activity: 2026-09-12
-last_activity_desc: Phase 47 executed; the gate measured criterion 5 red
-state_head: c1a42c847cc1adf7f973ef4f8c0f730aaa0b5de7
+last_activity_desc: Phase 47 gate re-derived at 5ad4fbd after the fix; criterion 5 still unmet
+state_head: 5ad4fbd01abf92fd4b385f17e418a522cad56eb1
 progress:
   total_phases: 22
   completed_phases: 17
@@ -31,7 +31,8 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 
 Phase: 47 (Stop threading an evaluation instant through the layers) — EXECUTED, criterion 5 unmet
 Plan: 8 of 8
-Status: All eight plans executed 2026-09-12. NOT verified.
+Status: All eight plans executed 2026-09-12. NOT verified. Gate re-derived at 5ad4fbd: one failing
+        case, pre-existing, none of it this phase's — plus one open E501 the fix carried in.
 Progress: [████████████████████] 132/132 plans ([████████░░] 77%)
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07, 45-05, 45-09 and
@@ -56,28 +57,40 @@ method that stamps from it.** Two SQL comparisons moved database-side under **D-
 **Criterion 4 is executable rather than claimed:** `tests/unit/test_sync_clock_capture.py` and its 21
 cases are deleted, and `tests/unit/test_instant_is_not_threaded.py` replaces them with 7 cases and
 four controls, proved to fail on an injected reintroduction by a mutation probe that named the file
-and the spelling. **Criterion 5 is red, measured in plan 47-08's own run and not copied: `-m schema`
-291 passed exit 0, `-m e2e` 360 passed 1 failed exit 1, `-m ''` 2571 passed 2 failed exit 1 over 2573
-collected against a 2570 pre-phase baseline.** One failure is pre-existing and was measured at HEAD
-`1a3273d` before the phase began — the restore four-arms case expects log event `proof_rejected`
-while the code emits `purchase_proof_rejected` — so an "e2e exits 0" criterion was unreachable from
-the start. **The other is this phase's own and is a new defect:**
-`tests/unit/test_subscription_attribution.py:964` builds an open term one minute past a `NOW` read at
-module import, so any run longer than a minute between collection and that case closes the term and
-`ingest` raises `InternalError`. It passes alone in 0.03 s, fails under the 131-second `-m ''` run,
-and a throwaway plugin sleeping 65 s after collection reproduces it at the same raise site. Plan
-47-05 introduced it when it moved that module onto the live clock; its sibling terms are ten to
-thirty days out and this one is one minute. Both failures are logged in `.planning/WINDOWS.md` and in
-the phase's `deferred-items.md`. **Recorded as given up rather than hidden:** the one-evaluation-time
+and the spelling. **Criterion 5 is red, re-derived at HEAD `5ad4fbd` in plan 47-08's own run and not copied:
+`-m schema` 291 passed exit 0, `-m e2e` 360 passed 1 failed exit 1, `-m ''` 2572 passed 1 failed exit
+1 over 2573 collected against a 2570 pre-phase baseline.** **There is exactly one failing case in the
+repository, it is the same case in both suites, and none of it is this phase's.** It is the restore
+four-arms case, and the root cause is now precise: `errors.py` declares `class PurchaseProofRejected`
+with `code = "proof_rejected"`, so the 403 body carries the code and that assertion passes, but the
+log event name comes from the **class name** — the case asserts the code where the logger writes the
+class. Its expectation lines are byte-identical to `1a3273d`; two phase-47 commits touched that file
+but only moved its line numbers. **Excluding that one case, criterion 5 reads met** — 2572 of 2572,
+360 of 360, 291 of 291 — which is stated so a later reader can see the debt is none of Phase 47's.
+**One defect WAS this phase's own, and it is fixed at the root:**
+`tests/unit/test_subscription_attribution.py` built an open term one minute past a `NOW` read at
+module import, so any run longer than a minute between collection and the case closed the term and
+`ingest` raised `InternalError`. It passed alone in 0.03 s and failed under the 131-second `-m ''`
+run; plan 47-08 proved it with a throwaway plugin sleeping 65 s after collection, which reproduced it
+at the same raise site. Plan 47-05 introduced it — its sibling terms are ten to thirty days out and
+this one was one minute. **Commit `5ad4fbd` fixed it by computing the term at call time**, and plan
+47-08 re-ran the suite against the corrected tree to verify rather than accept the report.
+**One regression arrived with that fix and is open:** `ruff check src tests` now exits **1** with a
+single `E501` at `tests/unit/test_subscription_attribution.py:962` (137 > 120), where it printed
+`All checks passed!` at `9d307df` — measured in both invocation forms at both commits. It is one
+line and cosmetic, and it is the cheapest thing standing between this phase and a clean gate.
+`.planning/WINDOWS.md` carries all three: entry 31 closed `fixed`, entry 32 open for the E501, and
+the pre-existing restore case still open. **Recorded as given up rather than hidden:** the one-evaluation-time
 property is gone and the invariant stating it was **struck** under **D-02** rather than carried as a
 permanent flagged conflict; the exact-equality expiry boundary in the challenge store is now asserted
 over compiled SQL, because a live database clock never lands on a stored value; a superseded grant's
 `ends_at` can fall microseconds before its replacement's `starts_at` across two writers; and
 `func.clock_timestamp()` is VOLATILE, so the effective-grant predicate cannot drive an index scan.
 **Recorded as a phase-wide fact:** nine test modules now derive a term or a period from the wall
-clock, where before they used fixed literals. The new defect is the first bill for that.
-`ruff check src tests` is clean and `ty check` reads **311** diagnostics against the **316** this
-phase started from.
+clock, where before they used fixed literals. The defect above was the first bill for that, it
+arrived inside the same phase, and the rule it confirms is: derive the term **at call time**, not at
+import, and prefer a window measured in days. `ty check` reads **311** diagnostics against the
+**316** this phase started from, unchanged by the fix.
 
 **Phase 45 closed 2026-09-08.** Re-verification passed 7/7 after the four gap-closure plans. The
 code review that followed them (`45-REVIEW.md`, second run) found CR-01 was NOT closed — `quote`
@@ -577,10 +590,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-12T08:09:36.661Z
+**Last session:** 2026-09-12T08:24:06.353Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 47-08-PLAN.md — phase 47 executed, criterion 5 unmet
+Stopped at: Completed 47-08-PLAN.md — re-derived at 5ad4fbd; criterion 5 unmet on one pre-existing case
 Resume file: None
 
 ## Performance Metrics
