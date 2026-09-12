@@ -16,6 +16,7 @@ from nativespeaker.api.tables import (
     AccessGrantStatus,
     SubscriptionStatus,
     UserMonthlyUsage,
+    monthly_period_for,
 )
 
 PAID_TIER_ID = "paid"
@@ -24,8 +25,8 @@ FREE_TIER_ID = "free"
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
 TERM_END = NOW + timedelta(days=30)
 
-THIS_MONTH = "2026-09"
-LAST_MONTH = "2026-08"
+THIS_MONTH = monthly_period_for(datetime.now(UTC))
+LAST_MONTH = "2000-01"
 
 DESTINATION = uuid7()
 OLD_OWNER = uuid7()
@@ -130,8 +131,7 @@ async def _write(session: _StubSession, marked_active: list[AccessGrant], *,
         tier_id=PAID_TIER_ID,
         starts_at=NOW,
         ends_at=TERM_END,
-        may_reactivate=may_reactivate,
-        evaluated_at=NOW)
+        may_reactivate=may_reactivate)
 
 
 @pytest.mark.asyncio
@@ -139,15 +139,19 @@ class TestTheDestinationLosesEverythingItHolds:
     """T-45-08-02: the `grant.user_id == user_id` clause keeps the destination's whole set, so
     `ix_access_grants_one_active_per_user` is satisfied by construction rather than by a caught 23505."""
 
+    @pytest.mark.timing
     async def test_a_live_term_of_another_subscription_is_superseded_too(self):
         """One account holds one active grant, so a second store subscription's term ends here."""
         other = _grant(subscription_id=SUBSCRIPTION_A)
         session = _StubSession(_usage(other, monthly_period=THIS_MONTH, monthly_used=0))
 
+        before = datetime.now(UTC)
         outcome = await _write(session, [other])
+        after = datetime.now(UTC)
 
         assert outcome is WriteOutcome.applied
-        assert (other.status, other.ends_at) == (AccessGrantStatus.expired, NOW)
+        assert other.status is AccessGrantStatus.expired
+        assert other.ends_at is not None and before <= other.ends_at <= after
 
     async def test_a_free_grant_is_superseded_too(self):
         free = _grant(source=AccessGrantSource.anonymous_device_grant, subscription_id=None,

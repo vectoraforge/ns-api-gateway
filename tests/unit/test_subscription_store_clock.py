@@ -86,8 +86,7 @@ async def _upsert(stored: Subscription, *, signed_at: datetime | None,
         tier_id=tier_id,
         status=status,
         signed_at=signed_at,
-        clock_read=stored.store_signed_at,
-        evaluated_at=T2)
+        clock_read=stored.store_signed_at)
 
 
 @pytest.mark.asyncio
@@ -150,8 +149,7 @@ async def _adopt(*, claimed: bool) -> tuple[Subscription, WriteOutcome, _StubSes
         tier_id=PAID_TIER_ID,
         status=SubscriptionStatus.active,
         signed_at=T2,
-        clock_read=T1,
-        evaluated_at=T2)
+        clock_read=T1)
     return row, outcome, session
 
 
@@ -196,8 +194,7 @@ async def _write_over(stored: Subscription, *, clock_read: datetime | None,
         tier_id=PAID_TIER_ID,
         status=status,
         signed_at=signed_at,
-        clock_read=clock_read,
-        evaluated_at=T2)
+        clock_read=clock_read)
     return row, outcome, session
 
 

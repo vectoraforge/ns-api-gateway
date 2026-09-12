@@ -567,7 +567,7 @@ class TestTheDeferredForeignKeysFireAtCommitAndNotAtAFlush:
             # The owner update alone, which is exactly the write the diagram orders the expiries after.
             claimed = await SubscriptionsDB(session).claim_subscription_owner(
                 subscription_id=subscription_id, owner_read=owner, month_read=None,
-                destination=mover, transfer_month=THIS_MONTH, evaluated_at=NOW)
+                destination=mover, transfer_month=THIS_MONTH)
             assert claimed
             with pytest.raises(IntegrityError) as violation:
                 await session.commit()
