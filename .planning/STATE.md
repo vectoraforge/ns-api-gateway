@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 47
 current_phase_name: Stop threading an evaluation instant through the layers
 status: executing
-stopped_at: Completed 47-01-PLAN.md
-last_updated: "2026-09-12T05:56:46.458Z"
+stopped_at: Completed 47-02-PLAN.md
+last_updated: "2026-09-12T06:01:24.120Z"
 last_activity: 2026-09-11
 last_activity_desc: Phase 47 execution started
-state_head: 35b66097f5a01be1201753f222b44a30df65f0eb
+state_head: d8bbd881e27c85e56e0e0aedb160b7b2a5c192c3
 progress:
   total_phases: 22
   completed_phases: 17
   total_plans: 132
-  completed_plans: 125
+  completed_plans: 126
   percent: 77
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 ## Current Position
 
 Phase: 47 (Stop threading an evaluation instant through the layers) — EXECUTING
-Plan: 2 of 8
+Plan: 3 of 8
 Status: Ready to execute
 Progress: [████████████████████] 124/124 plans ([████████░░] 77%)
 
@@ -528,10 +528,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-12T05:56:45.901Z
+**Last session:** 2026-09-12T06:01:15.556Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 47-01-PLAN.md
+Stopped at: Completed 47-02-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -601,6 +601,7 @@ Resume file: None
 | Phase 46 P03 | 4 min | 2 tasks | 2 files |
 | Phase 46 P05 | 15 min | 2 tasks | 3 files |
 | Phase 47 P01 | 20 min | 3 tasks | 18 files |
+| Phase 47 P02 | 2 min | 2 tasks | 2 files |
 
 ## Decisions
 
@@ -798,3 +799,5 @@ Resume file: None
 - [Phase 47]: D-01 applied: the effective-grant predicate compares against func.clock_timestamp(), not func.now(). now() is transaction_timestamp() and the e2e harness holds one outer transaction per test, so a seeded grant is invisible to it.
 - [Phase 47]: seconds_until_rollover keeps its one parameter, renamed to instant, because the plan required zero occurrences of the old name in services/quota.py.
 - [Phase 47]: The two cases asserting the statement carried a threaded instant now assert it binds no datetime and carries clock_timestamp() on both bounds.
+- [Phase 47]: D-02 applied: SHARED-INVARIANTS.md's one-evaluation-time clause was struck, not flagged — RESEARCH Finding 7 and PATTERNS Cluster 12 both recommended flagging; the user overrode both on the Phase 38 plan 38-04 precedent, which struck a section from the same file. After the strike there is no surviving invariant text to diverge from, so no new flagged conflict is filed and the count is unchanged.
+- [Phase 47]: SYNC-01 is amended, not withdrawn, and stays checked — The endpoint still returns all four values. Only the one-captured-evaluation-time derivation is given up. The replacement is named: one clock read inside SyncService.read_entitlement, and clock_timestamp() in the effective-grant predicate (D-01). A database-side now() would not have restored the property, because a request here spans several transactions.
