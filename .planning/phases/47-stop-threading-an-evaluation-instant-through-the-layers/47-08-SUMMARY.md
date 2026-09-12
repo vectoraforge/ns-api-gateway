@@ -549,6 +549,15 @@ the non-zero exit as new.
 only because of the new defect: the one-minute window is about two seconds away from failing the
 unit suite as well.
 
+**`roadmap.update-plan-progress` overwrote two lines of Task 3's work and they were restored.** The
+handler rewrote `**Plans:** 8/8 plans complete` to `8/8 plans executed`, which breaks Task 3's own
+gate, and replaced the progress row's `Executed — criterion 5 unmet | 2026-09-12` with
+`In Progress|  |`. The handler is not wrong in its own terms — the phase is genuinely unverified —
+but it drops the date and hides that all eight plans are done. Both lines were put back by hand
+after the handler ran, and every Task 3 gate was re-run green afterwards. A later plan running these
+handlers after a hand-edited ROADMAP entry should re-check its own gates, because the handler runs
+last and wins.
+
 ## Known Stubs
 
 None. This plan wrote no source and no test.
@@ -600,3 +609,11 @@ None - no external service configuration required.
 ---
 *Phase: 47-stop-threading-an-evaluation-instant-through-the-layers*
 *Completed: 2026-09-12*
+
+## Self-Check: PASSED
+
+Every file named in `key-files` exists on disk, all three commits of this plan are reachable in
+`git log`, and Phase 47 now holds 8 PLAN files and 8 SUMMARY files.
+
+**This self-check says the plan's own artifacts are in place. It does not say the phase is green.
+Criterion 5 is measured red and is recorded as such.**

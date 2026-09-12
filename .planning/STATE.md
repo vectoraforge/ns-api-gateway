@@ -6,10 +6,10 @@ current_phase: 47
 current_phase_name: Stop threading an evaluation instant through the layers
 status: executed
 stopped_at: Completed 47-08-PLAN.md — phase 47 executed, criterion 5 unmet
-last_updated: "2026-09-12T08:10:00.000Z"
+last_updated: "2026-09-12T08:09:37.259Z"
 last_activity: 2026-09-12
 last_activity_desc: Phase 47 executed; the gate measured criterion 5 red
-state_head: 6a8928339e9cbf9a614c58fe5ba44b31904773f6
+state_head: c1a42c847cc1adf7f973ef4f8c0f730aaa0b5de7
 progress:
   total_phases: 22
   completed_phases: 17
@@ -577,10 +577,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-12T07:52:34.691Z
+**Last session:** 2026-09-12T08:09:36.661Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 47-07-PLAN.md
+Stopped at: Completed 47-08-PLAN.md — phase 47 executed, criterion 5 unmet
 Resume file: None
 
 ## Performance Metrics
@@ -656,6 +656,7 @@ Resume file: None
 | Phase 47 P05 | 24 min | 3 tasks | 14 files |
 | Phase 47 P06 | 26 min | 3 tasks | 15 files |
 | Phase 47 P07 | 21 min | 3 tasks | 8 files |
+| Phase 47 P08 | 42 min | 3 tasks | 5 files |
 
 ## Decisions
 
