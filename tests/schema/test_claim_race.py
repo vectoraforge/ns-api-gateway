@@ -344,7 +344,7 @@ class TestTwoSimultaneousFirstClaimsAllocateOnce:
             "SELECT u.monthly_period, u.monthly_used FROM core.user_monthly_usage u "
             "JOIN core.access_grants g ON g.id = u.grant_id WHERE g.user_id = :id",
             {"id": raced["user_id"]})
-        assert rows == [("2026-08", 0)]
+        assert rows == [(datetime.now(UTC).strftime("%Y-%m"), 0)]
 
     async def test_the_lifetime_marker_is_set_once(self, harness, raced):
         """Read as a single value, not as a count of writes: the column is set once and never cleared."""
@@ -353,7 +353,10 @@ class TestTwoSimultaneousFirstClaimsAllocateOnce:
             "SELECT free_grant_consumed_at, native_claim_platform::text "
             "FROM core.external_identities WHERE issuer = :issuer AND subject = :s",
             {"issuer": harness.issuer, "s": raced["subject"]})
-        assert rows == [(NOW, "ios_devicecheck")]
+        started_at = await scalar(harness,
+                                  "SELECT starts_at FROM core.access_grants WHERE user_id = :id",
+                                  {"id": raced["user_id"]})
+        assert rows == [(started_at, "ios_devicecheck")]
 
     async def test_both_challenges_were_consumed_and_their_bindings_kept(self, harness, raced):
         """The loser consumes too, so a retry needs a fresh prepare rather than a replay of either handle."""
@@ -434,7 +437,7 @@ class TestTwoSimultaneousRegisteredClaimsAllocateOnce:
             "SELECT u.monthly_period, u.monthly_used FROM core.user_monthly_usage u "
             "JOIN core.access_grants g ON g.id = u.grant_id WHERE g.user_id = :id",
             {"id": raced["user_id"]})
-        assert rows == [("2026-08", 0)]
+        assert rows == [(datetime.now(UTC).strftime("%Y-%m"), 0)]
 
     async def test_the_lifetime_marker_is_set_once(self, harness, raced):
         """Read as a single value, not as a count of writes: the column is set once and never cleared."""
@@ -443,7 +446,10 @@ class TestTwoSimultaneousRegisteredClaimsAllocateOnce:
             "SELECT free_grant_consumed_at, native_claim_platform::text "
             "FROM core.external_identities WHERE issuer = :issuer AND subject = :s",
             {"issuer": harness.issuer, "s": raced["subject"]})
-        assert rows == [(NOW, None)]
+        started_at = await scalar(harness,
+                                  "SELECT starts_at FROM core.access_grants WHERE user_id = :id",
+                                  {"id": raced["user_id"]})
+        assert rows == [(started_at, None)]
 
     async def test_both_challenges_were_consumed_and_their_bindings_kept(self, harness, raced):
         """The loser consumes too, so a retry needs a fresh prepare rather than a replay of either handle."""
@@ -540,10 +546,11 @@ class TestTwoSimultaneousConversionsSupersedeOnce:
                                                                                         harness,
                                                                                         raced):
         """The CHECK `ends_at > starts_at` is strict, so a same-instant seed would refuse the expiry."""
-        started_at = await scalar(harness,
-                                  "SELECT starts_at FROM core.access_grants WHERE id = :id",
-                                  {"id": raced["anonymous_id"]})
-        assert started_at < NOW
+        rows = await read(harness,
+                          "SELECT starts_at, ends_at FROM core.access_grants WHERE id = :id",
+                          {"id": raced["anonymous_id"]})
+        started_at, ended_at = rows[0]
+        assert started_at < ended_at
 
     async def test_neither_attempt_handed_the_service_a_row_of_its_own_session(self, raced):
         """The second premise: the caller's rows belong to no session, so refreshing either one would raise."""
@@ -563,13 +570,17 @@ class TestTwoSimultaneousConversionsSupersedeOnce:
         assert rows == [("registered_account_grant", "registered")]
 
     async def test_exactly_one_row_expired_and_its_source_was_never_rewritten(self, harness, raced):
-        """The anonymous row is expired once, at the request's instant, and stays the row it was."""
+        """The anonymous row is expired once, where the replacement starts, and stays the row it was."""
         rows = await read(
             harness,
             "SELECT id, source::text, ends_at FROM core.access_grants "
             "WHERE user_id = :id AND status = 'expired'",
             {"id": raced["user_id"]})
-        assert rows == [(raced["anonymous_id"], "anonymous_device_grant", NOW)]
+        started_at = await scalar(
+            harness,
+            "SELECT starts_at FROM core.access_grants WHERE user_id = :id AND status = 'active'",
+            {"id": raced["user_id"]})
+        assert rows == [(raced["anonymous_id"], "anonymous_device_grant", started_at)]
 
     async def test_the_user_holds_exactly_two_grant_rows(self, harness, raced):
         """The loser minted no third row, which a second insert against a stale read would have left."""

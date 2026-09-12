@@ -26,7 +26,12 @@ from nativespeaker.api.crud.grants import (
 from nativespeaker.api.services.restore import RestoreService
 from nativespeaker.api.services.subscriptions import SubscriptionsService
 from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
-from nativespeaker.api.tables.grants import FREE_GRANT_SOURCES, AccessGrant, AccessGrantSource
+from nativespeaker.api.tables.grants import (
+    FREE_GRANT_SOURCES,
+    AccessGrant,
+    AccessGrantSource,
+    AccessGrantStatus,
+)
 from nativespeaker.api.tables.identities import NativeClaimProvider
 from schema.helpers import (
     insert_grant,
@@ -362,10 +367,6 @@ async def _anonymous_writer_run(schema_db_uri: str, *, holding_grant: bool):
     def record(conn, cursor, statement, parameters, context, executemany):  # noqa: ARG001
         recorded.append(" ".join(statement.split()))
 
-    # After the seed, never the module's fixed instant: the held grant's starts_at is CURRENT_TIMESTAMP,
-    # and an earlier instant makes it ineffective, so the writer would take one tier instead of two.
-    evaluated_at = datetime.now(UTC)
-
     factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
     try:
         async with factory() as session:
@@ -374,7 +375,7 @@ async def _anonymous_writer_run(schema_db_uri: str, *, holding_grant: bool):
             outcome, _ = await GrantsDB(session).activate_anonymous_device_grant(
                 user_id=user_id, issuer=issuer, subject=subject,
                 claim_platform=NativeClaimProvider.ios_devicecheck,
-                tier_id=tier_id, evaluated_at=evaluated_at)
+                tier_id=tier_id)
             await session.rollback()
         yield {"statements": list(recorded), "outcome": outcome}
     finally:
@@ -500,7 +501,6 @@ async def _registered_writer_run(schema_db_uri: str, *, holding_anonymous_grant:
     def record(conn, cursor, statement, parameters, context, executemany):  # noqa: ARG001
         recorded.append(" ".join(statement.split()))
 
-    evaluated_at = datetime.now(UTC)
     factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
     try:
         async with factory() as session:
@@ -508,7 +508,7 @@ async def _registered_writer_run(schema_db_uri: str, *, holding_anonymous_grant:
             recorded.clear()
             outcome, _ = await GrantsDB(session).activate_registered_account_grant(
                 user_id=user_id, issuer=issuer, subject=subject,
-                tier_id=tier_id, evaluated_at=evaluated_at)
+                tier_id=tier_id)
             await session.rollback()
         yield {"statements": list(recorded), "outcome": outcome}
     finally:
@@ -625,7 +625,7 @@ class _Row:
 
 @dataclass(frozen=True)
 class _Account:
-    """A seeded account, an open session, and the instant the writer is driven at."""
+    """A seeded account, an open session, and the instant the seeded rows are dated from."""
     session: SQLModelAsyncSession
     user_id: uuid.UUID
     issuer: str
@@ -637,17 +637,17 @@ class _Account:
         """The outcome alone: the arm the writer names is asserted in the unit suites."""
         outcome, _ = await GrantsDB(self.session).activate_registered_account_grant(
             user_id=self.user_id, issuer=self.issuer, subject=self.subject,
-            tier_id=self.tier_id, evaluated_at=self.evaluated_at)
+            tier_id=self.tier_id)
         return outcome
 
     async def activate_anonymous(
             self, claim_platform: NativeClaimProvider = NativeClaimProvider.ios_devicecheck):
-        """The other free-grant writer, on the same seed, the same session and the same instant.
+        """The other free-grant writer, on the same seed and the same session.
         The platform is a parameter because 06 step 7 refuses material from the other one."""
         outcome, _ = await GrantsDB(self.session).activate_anonymous_device_grant(
             user_id=self.user_id, issuer=self.issuer, subject=self.subject,
             claim_platform=claim_platform,
-            tier_id=self.tier_id, evaluated_at=self.evaluated_at)
+            tier_id=self.tier_id)
         return outcome
 
     async def claim_platform(self) -> str | None:
@@ -668,8 +668,7 @@ class _Account:
 
 @contextlib.asynccontextmanager
 async def _account_holding(schema_db_uri: str, rows: tuple[_Row, ...],
-                           *, evaluated_before: timedelta = timedelta(0),
-                           provider: str = "google"):
+                           *, provider: str = "google"):
     """Seed an account of `provider` holding `rows`, and yield an open session the writer runs on."""
     subject = f"outcome-{uuid.uuid4().hex[:10]}"
     issuer = f"ns-outcome-{uuid.uuid4().hex[:10]}"
@@ -703,7 +702,7 @@ async def _account_holding(schema_db_uri: str, rows: tuple[_Row, ...],
     try:
         async with factory() as session:
             yield _Account(session=session, user_id=user_id, issuer=issuer, subject=subject,
-                           tier_id=tier_id, evaluated_at=instant - evaluated_before)
+                           tier_id=tier_id, evaluated_at=instant)
             await session.rollback()
     finally:
         await engine.dispose()
@@ -790,13 +789,29 @@ class TestTheRegisteredWriterNamesWhyItRefused:
                 await winner.close()
 
     async def test_a_check_violation_is_raised_and_never_read_as_a_lost_race(self, _schema_db_uri):
-        """WR-01 made executable: the expiry UPDATE breaks `ends_at > starts_at`, which is no race."""
-        held = (_Row("anonymous_device_grant", starts_before=timedelta(0)),)
-        async with _account_holding(_schema_db_uri, held) as account:
+        """WR-01 made executable: a row breaking `ends_at > starts_at` goes in with the writer's own
+        inserts, and the real driver's code for it is no race for the narrowed catch to swallow."""
+        async with _account_holding(_schema_db_uri, ()) as account:
+
+            async def break_the_term_check() -> None:
+                account.session.add(AccessGrant(user_id=account.user_id,
+                                                tier_id=account.tier_id,
+                                                source=AccessGrantSource.manual,
+                                                status=AccessGrantStatus.expired,
+                                                starts_at=account.evaluated_at,
+                                                ends_at=account.evaluated_at,
+                                                created_at=account.evaluated_at,
+                                                updated_at=account.evaluated_at))
+
+            breaking = _Account(session=_CommitsBeforeTheFlush(account.session,
+                                                                break_the_term_check),
+                                user_id=account.user_id, issuer=account.issuer,
+                                subject=account.subject,
+                                tier_id=account.tier_id, evaluated_at=account.evaluated_at)
             with pytest.raises(IntegrityError) as refused:
-                await account.activate()
-            # Not 23505, which is the whole reason the narrowed catch re-raises this one.
-            assert refused.value.orig.sqlstate != "23505"
+                await breaking.activate()
+            # 23514 and not 23505: the narrowed catch swallows the unique violation and no other.
+            assert refused.value.orig.sqlstate == "23514"
 
 
 @pytest.mark.asyncio

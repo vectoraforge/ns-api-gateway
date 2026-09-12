@@ -196,7 +196,6 @@ class TestTheNewRegisteredGrantHappyPath:
             identity = (await session.exec(
                 select(ExternalIdentity).where(col(ExternalIdentity.issuer) == TEST_ISSUER,
                                                col(ExternalIdentity.subject) == SUBJECT))).one()
-        # The one instant: the grant, the marker and the usage period all came from it.
         assert identity.free_grant_consumed_at == grants[0].starts_at
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
