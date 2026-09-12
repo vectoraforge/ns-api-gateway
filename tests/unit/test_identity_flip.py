@@ -2,7 +2,7 @@
 
 The crud method is driven directly over a stub session, so its own arms are what each case runs.
 """
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -20,7 +20,6 @@ PROVIDER_UID = "google-provider-uid-under-test"
 EMAIL = "buyer@example.test"
 
 REGISTERED_AT = datetime(2026, 8, 1, 9, 0, tzinfo=UTC)
-NOW = REGISTERED_AT + timedelta(days=30)
 
 
 class _Orig(Exception):
@@ -61,8 +60,7 @@ def _account(*, registered_at: datetime | None = None,
 
 
 async def _flip(session: _StubSession, identity_row: ExternalIdentity, user: User):
-    return await IdentitiesDB(session).flip_provider(evaluated_at=NOW,
-                                                     identity_row=identity_row,
+    return await IdentitiesDB(session).flip_provider(identity_row=identity_row,
                                                      user=user,
                                                      provider=IdentityProvider.google,
                                                      provider_uid=PROVIDER_UID,
@@ -109,10 +107,11 @@ class TestTheFlipSetsWhereUnsetAndNeverOverwrites:
 
     async def test_an_unset_registration_instant_is_stamped(self):
         identity_row, user = _account()
+        before = datetime.now(UTC)
 
         await _flip(_StubSession(), identity_row, user)
 
-        assert user.registered_at == NOW
+        assert before <= user.registered_at <= datetime.now(UTC)
 
     async def test_an_unset_email_takes_the_verified_address(self):
         """The other half of step 07: a NULL address is filled from the provider's own record."""
@@ -136,7 +135,7 @@ class TestTheFlipSetsWhereUnsetAndNeverOverwrites:
 
         await _flip(_StubSession(), identity_row, user)
 
-        assert user.updated_at == NOW
+        assert user.updated_at > REGISTERED_AT
 
     async def test_a_stored_email_survives_beside_it_control(self):
         """The half that was already correct, kept beside the half this case fixed."""
@@ -145,3 +144,17 @@ class TestTheFlipSetsWhereUnsetAndNeverOverwrites:
         await _flip(_StubSession(), identity_row, user)
 
         assert (user.email, user.registered_at) == ("stored@example.test", REGISTERED_AT)
+
+
+@pytest.mark.asyncio
+class TestOneFlipStampsEveryColumnWithOneValue:
+    """A second clock read inside the writer would register an account at an instant its own
+    identity row says it was not yet registered at."""
+
+    async def test_the_three_columns_the_flip_writes_carry_the_same_value(self):
+        identity_row, user = _account()
+
+        await _flip(_StubSession(), identity_row, user)
+
+        assert {identity_row.updated_at, user.updated_at,
+                user.registered_at} == {user.registered_at}

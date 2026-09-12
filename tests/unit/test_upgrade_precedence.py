@@ -90,14 +90,14 @@ class _RecordingUpgrade:
         self.locks += 1
         return self.identity_row, self.user
 
-    async def flip(self, *, evaluated_at, identity_row, user, provider, provider_uid,
+    async def flip(self, *, identity_row, user, provider, provider_uid,
                    email) -> IdentityProvider:
         self.flips.append({"provider": provider, "provider_uid": provider_uid, "email": email})
         if self.conflict is not None:
             raise self.conflict
         identity_row.provider = provider
         identity_row.provider_uid = provider_uid
-        user.registered_at = evaluated_at
+        user.registered_at = datetime.now(UTC)
         return provider
 
 
