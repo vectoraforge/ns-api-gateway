@@ -10,7 +10,7 @@ import httpx
 import jwt
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from nativespeaker.api.errors import ProofRejected, Unavailable
+from nativespeaker.api.errors import PurchaseProofRejected, Unavailable
 
 # Production only: the development host is not a config field, so no client input can select it.
 DEVICECHECK_HOST = "https://api.devicecheck.apple.com"
@@ -102,7 +102,7 @@ def _reject_or_retry(response: httpx.Response, *, stage: str) -> None:
     """Raise on the two non-success arms: a 400 naming the token, then everything else retryable."""
     if response.status_code == 400:
         if _DEVICE_TOKEN_FAULT in response.text.casefold():
-            raise ProofRejected(stage=stage, cause="rejected")
+            raise PurchaseProofRejected(stage=stage, cause="rejected")
         raise RetryableDeviceCheckError("status 400")
     if response.status_code // 100 != 2:
         raise RetryableDeviceCheckError(f"status {response.status_code}")
@@ -173,7 +173,7 @@ def _retrying(exhausted) -> AsyncRetrying:
         wait=wait_exponential(multiplier=DEVICECHECK_BACKOFF_BASE_SECONDS,
                               exp_base=2,
                               max=DEVICECHECK_BACKOFF_MAX_SECONDS),
-        # Only the internal marker retries, so `ProofRejected` propagates after one attempt.
+        # Only the internal marker retries, so `PurchaseProofRejected` propagates after one attempt.
         retry=retry_if_exception_type(RetryableDeviceCheckError),
         retry_error_callback=exhausted,
     )

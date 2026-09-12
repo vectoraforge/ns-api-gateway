@@ -25,7 +25,7 @@ from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.errors import (
     InternalError,
     NotificationRejected,
-    ProofRejected,
+    PurchaseProofRejected,
     Unavailable,
     UnknownStoreSubscriptionStatus,
     UnmappedStoreProduct,
@@ -601,7 +601,7 @@ class TestAVerifiedTransactionWithoutItsLifecycleKeyIsRefused:
         """The control: both paths of this seam name the same stage for the same absent key."""
         signed = _mint(chain, _transaction(original_transaction_id=None))
 
-        with pytest.raises(ProofRejected) as refusal:
+        with pytest.raises(PurchaseProofRejected) as refusal:
             _notifications(chain).verify_transaction(signed, datetime.now(UTC))
 
         assert refusal.value.stage == "transaction_without_original_id"

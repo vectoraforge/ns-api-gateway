@@ -20,7 +20,7 @@ from nativespeaker.api.auth.store_notifications import RestoredSubscription, Ver
 from nativespeaker.api.errors import (
     InternalError,
     NotificationRejected,
-    ProofRejected,
+    PurchaseProofRejected,
     Unavailable,
     UnmappedStoreProduct,
 )
@@ -330,7 +330,7 @@ class PlayDeveloperSubscriptions:
             raise Unavailable(stage=RESTORE_PACKAGE_STAGE)
         if not _names_one_path_segment(purchase_token):
             # No live purchase token is dots alone, so this is a rejected proof and never a read.
-            raise ProofRejected(stage=RESTORE_TOKEN_GONE_STAGE)
+            raise PurchaseProofRejected(stage=RESTORE_TOKEN_GONE_STAGE)
 
         try:
             response = await self._get(package_name, purchase_token)
@@ -341,9 +341,9 @@ class PlayDeveloperSubscriptions:
         if response.status_code in _GONE_STATUSES:
             # A gone token is a rejected proof, not a server failure. The package name travels in
             # the URL path, so a token of another application answers 404 and arrives here too.
-            raise ProofRejected(stage=RESTORE_TOKEN_GONE_STAGE)
+            raise PurchaseProofRejected(stage=RESTORE_TOKEN_GONE_STAGE)
         if response.status_code == _UNUSABLE_TOKEN_STATUS:
-            raise ProofRejected(stage=RESTORE_TOKEN_UNUSABLE_STAGE)
+            raise PurchaseProofRejected(stage=RESTORE_TOKEN_UNUSABLE_STAGE)
         if response.status_code // 100 != 2:
             raise Unavailable(stage=RESTORE_READ_STAGE,
                               cause="refused" if response.status_code // 100 == 4 else "failed")

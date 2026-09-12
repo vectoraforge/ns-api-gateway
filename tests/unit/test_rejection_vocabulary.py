@@ -112,7 +112,7 @@ EVENT_NAMES = frozenset({
     "revocation_unconfirmed",
     "not_linked",
     # The device-gate arms, under the same lookup base.
-    "proof_rejected",
+    "purchase_proof_rejected",
     "device_grant_exhausted",
     # The store-callback arm, under the same lookup base.
     "notification_rejected",
@@ -182,7 +182,7 @@ CONSTRUCTOR_ARGUMENTS: dict[type, tuple[tuple, dict]] = {
     errors_module.Unavailable: ((), {"stage": "issuer_selection"}),
     errors_module.RevocationUnconfirmed: ((), {"stage": "issuer_selection"}),
     errors_module.NotLinked: ((), {"stage": "provider_classification", "cause": "invalid-shape"}),
-    errors_module.ProofRejected: ((), {"stage": "devicecheck_read", "cause": "rejected"}),
+    errors_module.PurchaseProofRejected: ((), {"stage": "devicecheck_read", "cause": "rejected"}),
     errors_module.DeviceGrantExhausted: ((), {"stage": "devicecheck_read", "cause": "already_set"}),
     errors_module.NotificationRejected: ((), {"stage": "VERIFICATION_FAILURE"}),
     errors_module.UpgradeRefused: ((), UPGRADE_SAMPLE),

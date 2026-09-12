@@ -480,7 +480,7 @@ class ProviderAccountAlreadyLinked(UpgradeRefused):
 # --- Device-gate arms ---
 
 
-class ProofRejected(ProviderLookupError):
+class PurchaseProofRejected(ProviderLookupError):
     """Apple refused the device token, or accepted it and refused the bit write."""
     status = 403
     code = "proof_rejected"

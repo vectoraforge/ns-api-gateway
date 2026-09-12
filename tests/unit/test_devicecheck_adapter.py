@@ -28,7 +28,7 @@ from nativespeaker.api.auth.devicecheck import (
     read_private_key,
     write_bits_with_retry,
 )
-from nativespeaker.api.errors import ProofRejected, Unavailable
+from nativespeaker.api.errors import PurchaseProofRejected, Unavailable
 
 KEY_ID = "ABCDE12345"
 TEAM_ID = "TEAM123456"
@@ -205,7 +205,7 @@ class TestTheParseArms:
             self, body, private_key):
         recorder = Recorder(httpx.Response(400, text=body))
 
-        with pytest.raises(ProofRejected):
+        with pytest.raises(PurchaseProofRejected):
             await read_bits_with_retry(_adapter(recorder, private_key), QUERY_TOKEN)
 
         assert len(recorder.requests) == 1
@@ -289,7 +289,7 @@ class TestTheParseArms:
     async def test_the_write_accepts_only_an_explicit_confirmation(self, private_key):
         recorder = Recorder(httpx.Response(400, text="Unable to verify device token"))
 
-        with pytest.raises(ProofRejected):
+        with pytest.raises(PurchaseProofRejected):
             await write_bits_with_retry(_adapter(recorder, private_key), UPDATE_TOKEN,
                                         bit0=True, bit1=False)
 

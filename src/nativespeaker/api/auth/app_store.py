@@ -11,7 +11,7 @@ from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier, Verif
 from nativespeaker.api.auth.store_notifications import RestoredSubscription, VerifiedNotification
 from nativespeaker.api.errors import (
     NotificationRejected,
-    ProofRejected,
+    PurchaseProofRejected,
     Unavailable,
     UnknownStoreSubscriptionStatus,
     UnmappedStoreProduct,
@@ -151,14 +151,14 @@ class AppStoreNotifications:
         try:
             transaction = self._verifier.verify_and_decode_signed_transaction(signed_transaction)
         except VerificationException as failure:
-            # `ProofRejected`, never `NotificationRejected`: this caller's own bearer token was valid.
-            raise ProofRejected(stage=failure.status.name) from failure
+            # `PurchaseProofRejected`, never `NotificationRejected`: this caller's own bearer token was valid.
+            raise PurchaseProofRejected(stage=failure.status.name) from failure
         except Exception as failure:
-            raise ProofRejected(stage="payload_unstructurable") from failure
+            raise PurchaseProofRejected(stage="payload_unstructurable") from failure
 
         if transaction.originalTransactionId is None:
             # Refused before any read: the lifecycle key this proof is looked up by is absent.
-            raise ProofRejected(stage="transaction_without_original_id")
+            raise PurchaseProofRejected(stage="transaction_without_original_id")
 
         return RestoredSubscription(
             provider=PurchaseProvider.apple,

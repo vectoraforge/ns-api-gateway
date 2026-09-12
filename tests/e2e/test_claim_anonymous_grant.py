@@ -13,7 +13,7 @@ from nativespeaker.api.auth.devicecheck import (
     BitState,
     RetryableDeviceCheckError,
 )
-from nativespeaker.api.errors import ProofRejected
+from nativespeaker.api.errors import PurchaseProofRejected
 from nativespeaker.api.tables.auth import AuthChallenge
 from nativespeaker.api.tables.grants import (
     AccessGrant,
@@ -394,7 +394,7 @@ class TestTheThreeAppleFailureArms:
         subject = "e2e-claim-token-refused"
         user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=subject,
                                       provider=IdentityProvider.anonymous)
-        scripted_devicecheck_adapter.script(ProofRejected(stage="devicecheck_read", cause="rejected"))
+        scripted_devicecheck_adapter.script(PurchaseProofRejected(stage="devicecheck_read", cause="rejected"))
 
         handle = await _issue(claim_client, subject)
         refusal = await _claim(claim_client, subject, handle)

@@ -12,7 +12,7 @@ from unit.conftest import TEST_ISSUER, make_token
 from nativespeaker.api.app.dependencies import get_evaluated_at
 from nativespeaker.api.auth.google_play import GRACE_STATE, RESTORE_TOKEN_GONE_STAGE
 from nativespeaker.api.auth.store_notifications import RestoredSubscription
-from nativespeaker.api.errors import ProofRejected
+from nativespeaker.api.errors import PurchaseProofRejected
 from nativespeaker.api.tables.grants import (
     AccessGrant,
     AccessGrantSource,
@@ -723,7 +723,7 @@ class TestTheSurfaceGateIsTheStoreNameAndTheProof:
         await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
                             provider=IdentityProvider.google)
         scripted_app_store_notifications.script_restore(
-            ProofRejected(stage="VERIFICATION_FAILURE"))
+            PurchaseProofRejected(stage="VERIFICATION_FAILURE"))
 
         refused = await _restore(restore_client, provider="apple",
                                  restore_proof="z" * MAX_PROOF_LENGTH)
@@ -738,7 +738,7 @@ class TestTheSurfaceGateIsTheStoreNameAndTheProof:
         await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
                             provider=IdentityProvider.google)
         scripted_app_store_notifications.script_restore(
-            ProofRejected(stage="VERIFICATION_FAILURE"))
+            PurchaseProofRejected(stage="VERIFICATION_FAILURE"))
 
         refused = await _restore(restore_client, provider="apple",
                                  restore_proof="z" * (MAX_PROOF_LENGTH + 1))
@@ -810,7 +810,7 @@ class TestEveryRejectedProofOfBothStoresAnswersOneBody:
 
         answers = []
         for stage in APPLE_REJECTION_STAGES:
-            scripted_app_store_notifications.script_restore(ProofRejected(stage=stage))
+            scripted_app_store_notifications.script_restore(PurchaseProofRejected(stage=stage))
             answers.append(await _restore(restore_client))
         # Google's own word that this token is gone, read through the real class and its classifier.
         real_google_play_seam.status_code = 404

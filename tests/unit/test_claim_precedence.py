@@ -20,7 +20,7 @@ from nativespeaker.api.app.dependencies import (
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.devicecheck import BitState, RetryableDeviceCheckError
 from nativespeaker.api.crud.grants import ActivationOutcome, GrantsDB
-from nativespeaker.api.errors import ProofRejected, Unavailable
+from nativespeaker.api.errors import PurchaseProofRejected, Unavailable
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.schemas.auth import (
     AuthIdentity,
@@ -483,7 +483,7 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
             self, client, store, account, grants, devicecheck):
         identity_row, _ = account
         store.row = _issued_row(bound_to=identity_row.id)
-        devicecheck.script(ProofRejected(stage="devicecheck_read", cause="rejected"))
+        devicecheck.script(PurchaseProofRejected(stage="devicecheck_read", cause="rejected"))
 
         response = _claim(client)
 
@@ -752,7 +752,7 @@ def _device_spent(identity_row, grants, devicecheck) -> None:
 
 
 def _proof_refused(identity_row, grants, devicecheck) -> None:
-    devicecheck.script(ProofRejected(stage="devicecheck_read", cause="rejected"))
+    devicecheck.script(PurchaseProofRejected(stage="devicecheck_read", cause="rejected"))
 
 
 def _apple_unavailable(identity_row, grants, devicecheck) -> None:

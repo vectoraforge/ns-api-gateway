@@ -16,7 +16,7 @@ from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
 from nativespeaker.api.crud.violations import UNIQUE_VIOLATION, is_unique_violation
 from nativespeaker.api.errors import (
     InternalError,
-    ProofRejected,
+    PurchaseProofRejected,
     RestoreSubscriptionNotEntitled,
     Unavailable,
     UnmappedStoreProduct,
@@ -136,7 +136,7 @@ class TestTheRealChainVerifiesTheRestoreProof:
         assert APPLE_ROOT_G3.is_file(), f"{APPLE_ROOT_G3} is the pinned root and must be tracked"
         notifications = _notifications(chain, root_certificates=[APPLE_ROOT_G3.read_bytes()])
 
-        with pytest.raises(ProofRejected) as refusal:
+        with pytest.raises(PurchaseProofRejected) as refusal:
             notifications.verify_transaction(_mint(chain, _transaction()), EVALUATED_AT)
 
         assert refusal.value.stage == "VERIFICATION_FAILURE"
@@ -196,7 +196,7 @@ class TestAProofThatDoesNotVerifyIsRefusedWithoutNamingItself:
     def test_a_field_of_the_wrong_type_is_refused_rather_than_reaching_the_generic_500(self, chain):
         """WR-17: the library structures the transaction outside its own guard, so a cattrs error
         escaped this seam; a proof that will never structure is this caller's refusal to earn."""
-        with pytest.raises(ProofRejected) as refusal:
+        with pytest.raises(PurchaseProofRejected) as refusal:
             _proof_through(chain, {**_transaction(), "expiresDate": "nope"})
 
         assert refusal.value.stage == "payload_unstructurable"
@@ -208,7 +208,7 @@ class TestAProofThatDoesNotVerifyIsRefusedWithoutNamingItself:
         for proof in (short_chain,
                       _mint(chain, _transaction(bundle_id="com.example.someone-else")),
                       _mint(chain, _transaction(environment="Production"))):
-            with pytest.raises(ProofRejected) as refusal:
+            with pytest.raises(PurchaseProofRejected) as refusal:
                 _notifications(chain).verify_transaction(proof, EVALUATED_AT)
             stages.append(refusal.value.stage)
 
@@ -218,7 +218,7 @@ class TestAProofThatDoesNotVerifyIsRefusedWithoutNamingItself:
     def test_no_stage_and_no_message_carries_any_part_of_the_proof(self, chain):
         proof = _mint(chain, _transaction(bundle_id="com.example.someone-else"))
 
-        with pytest.raises(ProofRejected) as refusal:
+        with pytest.raises(PurchaseProofRejected) as refusal:
             _notifications(chain).verify_transaction(proof, EVALUATED_AT)
 
         for segment in proof.split("."):
@@ -344,7 +344,7 @@ class TestThePlayRequestUrlIsConfinedToOneResource:
         """`quote` leaves a dot unescaped and the client deletes a dot segment, so dots name nothing."""
         sent, reader = _capturing_reader()
 
-        with pytest.raises(ProofRejected) as refusal:
+        with pytest.raises(PurchaseProofRejected) as refusal:
             await reader.read_for_restore(package_name=PACKAGE_NAME, purchase_token=token,
                                           evaluated_at=EVALUATED_AT)
 
@@ -381,7 +381,7 @@ class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
     async def test_a_gone_purchase_token_is_a_rejected_proof(self, status_code):
         reader = _play_reader(_answering({"error": {"status": "NOT_FOUND"}}, status_code))
 
-        with pytest.raises(ProofRejected) as refusal:
+        with pytest.raises(PurchaseProofRejected) as refusal:
             await _restore_through(reader)
 
         assert refusal.value.stage == GONE_STAGE
@@ -393,7 +393,7 @@ class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
         would ask a well-behaved client to retry a proof that can never verify."""
         reader = _play_reader(_answering({"error": {"status": "INVALID_ARGUMENT"}}, 400))
 
-        with pytest.raises(ProofRejected) as refusal:
+        with pytest.raises(PurchaseProofRejected) as refusal:
             await _restore_through(reader)
 
         assert (refusal.value.stage, refusal.value.status) == (TOKEN_UNUSABLE_STAGE, 403)
@@ -484,7 +484,7 @@ class TestThePlayRefusalNamesNoPartOfTheToken:
     """T-45-04: on this path the external id is the purchase token, so no label may carry it."""
 
     @pytest.mark.parametrize(("status_code", "refusal_type"),
-                             [(404, ProofRejected), (500, Unavailable)])
+                             [(404, PurchaseProofRejected), (500, Unavailable)])
     async def test_neither_the_stage_nor_the_message_nor_the_log_fields_carry_it(
             self, status_code, refusal_type):
         reader = _play_reader(_answering({"error": {"status": "NOT_FOUND"}}, status_code))
@@ -643,9 +643,9 @@ class TestTheStoreCallRunsBeforeTheSessionsFirstStatement:
 
     async def test_a_proof_that_does_not_verify_runs_no_statement_either(self):
         session = _CountingSession()
-        store = _ScriptedAppStore(session, ProofRejected(stage="VERIFICATION_FAILURE"))
+        store = _ScriptedAppStore(session, PurchaseProofRejected(stage="VERIFICATION_FAILURE"))
 
-        with pytest.raises(ProofRejected):
+        with pytest.raises(PurchaseProofRejected):
             await _service(session, store).restore(identity=_caller(),
                                                    provider=PurchaseProvider.apple,
                                                    restore_proof="a-forged-transaction")
@@ -656,9 +656,9 @@ class TestTheStoreCallRunsBeforeTheSessionsFirstStatement:
     async def test_a_gone_purchase_token_runs_no_statement_either(self):
         """T-45-03: a fabricated token is refused by Google, so nothing is read and nothing written."""
         session = _CountingSession()
-        play = _ScriptedPlay(session, ProofRejected(stage=GONE_STAGE))
+        play = _ScriptedPlay(session, PurchaseProofRejected(stage=GONE_STAGE))
 
-        with pytest.raises(ProofRejected):
+        with pytest.raises(PurchaseProofRejected):
             await _service(session, _ScriptedAppStore(session, _restored()), play).restore(
                 identity=_caller(), provider=PurchaseProvider.google_play,
                 restore_proof="a-fabricated-purchase-token")
