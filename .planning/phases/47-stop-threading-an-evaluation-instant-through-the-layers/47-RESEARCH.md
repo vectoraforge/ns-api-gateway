@@ -704,9 +704,11 @@ great enough to make stealing it attractive. Normal measures, not paranoid ones.
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 ### 1. `now()` or `clock_timestamp()` — or neither? **BLOCKING. Needs the user.**
+
+**Resolved 2026-09-11 by the user:** option (a), `clock_timestamp()` (D-01). Applied in plans 47-01 and 47-06.
 
 **What we know (measured, not assumed):** criterion 3 says `now()`. `now()` in
 `_effective_grants_statement` fails 11 e2e quota tests because the e2e harness holds one savepoint-
@@ -735,6 +737,8 @@ insists on the literal `now()`, the plan must budget a whole wave for the e2e ha
 
 ### 2. Does a crud writer read its own clock, or take one from its service?
 
+**Resolved:** each crud writer reads its own clock once, at the top. Adopted in plans 47-03 and 47-05.
+
 **What we know:** criterion 2 says "no crud method receives one from a service". Criterion 3 says
 Python reads happen "at the point of use".
 **What's unclear:** `RestoreService.restore` uses the instant four times *and* calls four crud
@@ -747,6 +751,8 @@ plan so a reviewer does not rediscover it; do not build machinery to prevent it.
 
 ### 3. `tables/grants.py:66` — keep or delete?
 
+**Resolved:** keep it, cut to `# The timestamps carry no default.` Adopted in plan 47-07.
+
 `# The timestamps carry no default. The creating transaction owns the clock.` The first sentence is
 a fact about the model that remains true and prevents a real misreading (a reader who adds
 `default_factory=` would break the two e2e equality assertions). The second names the shared instant.
@@ -755,6 +761,8 @@ stating the fact, naming nothing this phase removes.
 
 ### 4. Should the phase also drop `ChallengesDB`'s `now` parameter?
 
+**Resolved:** yes. Adopted in plan 47-06.
+
 `crud/challenges.py` is **not** in the roadmap's "Touches" list, but `ChallengesDB.issue/claim/consume`
 each take `now: datetime` and each receives the shared instant from a router or `AuthService`.
 Criterion 2's wording — "no crud method receives one from a service" — covers it.
@@ -762,6 +770,8 @@ Criterion 2's wording — "no crud method receives one from a service" — cover
 parameter name. Note the file overlap with Phase 49 (which changes only how the class is *built*).
 
 ### 5. Which phase updates `tests/unit/test_auth_package_shape.py`?
+
+**Resolved:** the helpers live in `services/restore.py`; the ratchet is untouched. Adopted in plans 47-04 and 47-05.
 
 `CURRENT = (8, 24, 67)`. Phase 47 changes it only if a function is added to `auth/`; Phase 49 rewrites
 it at the end regardless. **Recommendation:** put `_open_term` in `services/restore.py`, not `auth/`,
@@ -776,7 +786,7 @@ so Phase 47 never touches the ratchet.
 | A1 | A `VOLATILE` `clock_timestamp()` in a WHERE clause prevents an index scan on `starts_at`/`ends_at` | Open Question 1 | Low — the argument for (a) does not rest on it, and the table is small. Settle with `EXPLAIN` if the user cares. |
 | A2 | 47 running before 49 is the smoother order | Finding 8 | Low — they are declared independent; either order works, the second one re-measures the shape tuple |
 | A3 | The rewritten schema-suite assertions will not flake under the `before <= v <= after` bracket | Finding 6 | Low-medium — mitigate with `@pytest.mark.timing`, which the project already uses for exactly this |
-| A4 | The Phase 38 criterion-1 conflict should be *recorded* rather than resolved by editing `SHARED-INVARIANTS.md` | Finding 7 | Medium — `ROADMAP.md:98` says flag, but Phase 38 plan 38-04 set a precedent for striking an invariant under a checkpoint. **User decision.** |
+| A4 (resolved 2026-09-11 by the user: strike the invariant — D-02, plan 47-02) | The Phase 38 criterion-1 conflict should be *recorded* rather than resolved by editing `SHARED-INVARIANTS.md` | Finding 7 | Medium — `ROADMAP.md:98` says flag, but Phase 38 plan 38-04 set a precedent for striking an invariant under a checkpoint. **User decision.** |
 
 ---
 
