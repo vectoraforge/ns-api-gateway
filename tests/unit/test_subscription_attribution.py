@@ -959,7 +959,8 @@ class TestAnEntitledNotificationWithNoOpenTermIsRefusedBeforeAnyWrite:
         """The control: the guard compares the term against the instant the ingestion reads, so a
         term still open then is written whatever the purchase date says."""
         service = _service(session, writer, ORIGINAL_BUYER)
-        ends_at = datetime.now(UTC) + timedelta(minutes=1)  # The term must be open when ingest reads, not when this module was imported.
+        # The term must be open when ingest reads, not at module import.
+        ends_at = datetime.now(UTC) + timedelta(minutes=1)
 
         await service.ingest(_notification(attribution_token=TOKEN,
                                            purchased_at=NOW - timedelta(days=40),
