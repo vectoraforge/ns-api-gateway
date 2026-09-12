@@ -115,6 +115,11 @@ def _dated(offset: timedelta) -> dict:
     return _transaction() | {"expiresDate": _milliseconds(EVALUATED_AT + offset)}
 
 
+def _live(offset: timedelta) -> dict:
+    """A transaction whose term ends `offset` from now, which is what the real seam judges against."""
+    return _wall_clock_transaction(expires_in=offset)
+
+
 def _decoded(offset: timedelta, *, revocation_date: int | None = None) -> JWSTransactionDecodedPayload:
     """The decoded payload the status helper reads, dated by the same helper the chain signs."""
     return JWSTransactionDecodedPayload(expiresDate=_dated(offset)["expiresDate"],
@@ -165,15 +170,15 @@ class TestTheStatusComesFromTheTransactionAlone:
 
         assert _proof_through(chain, revoked).status is SubscriptionStatus.revoked
 
-    def test_a_term_ending_after_the_captured_instant_reports_active(self, chain):
-        assert _proof_through(chain, _dated(timedelta(days=10))).status is SubscriptionStatus.active
+    def test_a_term_ending_after_the_instant_the_seam_reads_reports_active(self, chain):
+        assert _proof_through(chain, _live(timedelta(days=10))).status is SubscriptionStatus.active
 
-    def test_a_term_ending_before_the_captured_instant_reports_expired(self, chain):
+    def test_a_term_ending_before_the_instant_the_seam_reads_reports_expired(self, chain):
         assert _proof_through(chain, _dated(-timedelta(days=1))).status is SubscriptionStatus.expired
 
     def test_revocation_wins_over_a_term_that_has_not_ended(self, chain):
         """The order is the rule: a refunded subscription inside its paid term is still revoked."""
-        revoked = _dated(timedelta(days=10)) | {
+        revoked = _live(timedelta(days=10)) | {
             "revocationDate": _milliseconds(EVALUATED_AT - timedelta(days=1))}
 
         assert _proof_through(chain, revoked).status is SubscriptionStatus.revoked
@@ -181,7 +186,7 @@ class TestTheStatusComesFromTheTransactionAlone:
     def test_grace_period_is_unreachable_from_a_proof_that_carries_no_renewal_payload(self, chain):
         """Pitfall 5: an Apple restore can report three of the five words, and never the other two."""
         reachable = {_proof_through(chain, transaction).status
-                     for transaction in (_transaction(),
+                     for transaction in (_live(timedelta(days=10)),
                                          _dated(-timedelta(days=1)),
                                          _transaction(revocation_date=_milliseconds(EVALUATED_AT)))}
 
@@ -198,7 +203,7 @@ class TestTheAppleTermBoundaryIsJudgedByTheHelperAlone:
         (EVALUATED_AT, SubscriptionStatus.expired),
         (EVALUATED_AT + timedelta(microseconds=1), SubscriptionStatus.expired),
     ], ids=["term-ends-after", "term-ends-at", "term-ends-before"])
-    def test_a_term_ending_at_the_instant_is_already_over(self, instant, expected):
+    def test_transaction_status_reads_a_term_ending_at_the_instant_as_over(self, instant, expected):
         assert _transaction_status(_decoded(timedelta(0)), instant) is expected
 
     def test_an_absent_expiry_is_expired_at_every_instant(self):

@@ -195,7 +195,7 @@ class RestoreService:
         # method forks on the provider again.
         if provider is PurchaseProvider.apple:
             # Verified locally against the vendored root, never live (D-04).
-            return self.app_store.verify_transaction(restore_proof, self.evaluated_at)
+            return self.app_store.verify_transaction(restore_proof)
         if provider is PurchaseProvider.google_play:
             # The purchase token is the proof, and the one live read is both checks (D-05).
             return await self.play.read_for_restore(package_name=self.package_name,

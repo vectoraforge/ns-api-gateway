@@ -116,8 +116,7 @@ class AppStoreNotifications:
                                      else _ms_to_datetime(renewal.gracePeriodExpiresDate)),
         )
 
-    def verify_transaction(self, signed_transaction: str,
-                           evaluated_at: datetime) -> RestoredSubscription:
+    def verify_transaction(self, signed_transaction: str) -> RestoredSubscription:
         """Verify one client-presented signed transaction and report the subscription it names."""
         if self._verifier is None:
             raise Unavailable(stage="app_store_verify")
@@ -134,13 +133,14 @@ class AppStoreNotifications:
             # Refused before any read: the lifecycle key this proof is looked up by is absent.
             raise PurchaseProofRejected(stage="transaction_without_original_id")
 
+        instant = datetime.now(UTC)
         return RestoredSubscription(
             provider=PurchaseProvider.apple,
             external_id=transaction.originalTransactionId,
             product_id=transaction.productId,
             tier_id=self._tier_for(transaction.productId),
             attribution_token=transaction.appAccountToken,
-            status=_transaction_status(transaction, evaluated_at),
+            status=_transaction_status(transaction, instant),
             purchased_at=_ms_to_datetime(transaction.purchaseDate),
             expires_at=_ms_to_datetime(transaction.expiresDate),
             # Apple's grace window lives in the renewal payload, which this proof does not carry.
