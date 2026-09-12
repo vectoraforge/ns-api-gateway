@@ -1,5 +1,6 @@
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid7
 
@@ -252,22 +253,24 @@ class FakeChallengeStore:
     def verify_binding(self, row, identity):
         return self._binding.verify_binding(row, identity)
 
-    async def claim(self, session, *, challenge_id, now) -> bool:
+    async def claim(self, session, *, challenge_id) -> bool:
+        instant = datetime.now(UTC)
         row = self.row
         if row is None or row.challenge_id != challenge_id:
             return False
-        if row.claimed_at is not None or row.expires_at <= now:
+        if row.claimed_at is not None or row.expires_at <= instant:
             return False
-        row.claimed_at = now
+        row.claimed_at = instant
         return True
 
-    async def consume(self, session, *, challenge_id, now) -> bool:
+    async def consume(self, session, *, challenge_id) -> bool:
         self.consume_calls += 1
+        instant = datetime.now(UTC)
         row = self.row
         if row is None or row.challenge_id != challenge_id:
             return False
         if row.claimed_at is None or row.consumed_at is not None:
             return False
-        row.consumed_at = now
+        row.consumed_at = instant
         row.preauth_subject = None
         return True

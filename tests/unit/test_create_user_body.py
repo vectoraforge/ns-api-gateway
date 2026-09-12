@@ -29,7 +29,7 @@ class _RecordingChallengeStore:
         self.issued: list[str] = []
         self.located: list[str] = []
 
-    async def issue(self, session, *, operation, identity, now):
+    async def issue(self, session, *, operation, identity):
         """Kept though completion never issues, so "nothing was issued" stays an assertion with teeth."""
         self.issued.append(str(operation))
         return "issued-handle", datetime(2026, 1, 1, tzinfo=UTC)

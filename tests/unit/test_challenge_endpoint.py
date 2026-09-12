@@ -38,7 +38,7 @@ class _RecordingChallengeStore:
     def __init__(self) -> None:
         self.issued: list[object] = []
 
-    async def issue(self, session, *, operation, identity, now):
+    async def issue(self, session, *, operation, identity):
         self.issued.append(operation)
         return ISSUED_HANDLE, ISSUED_EXPIRY
 

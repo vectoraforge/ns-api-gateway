@@ -24,8 +24,7 @@ from nativespeaker.api.tables.users import User
 ISSUER = "https://securetoken.google.com/test-project"
 SUBJECT = "Xy7Q1s0K2mNb3fV4"
 
-# Deliberately far in the past: a store reading its own wall clock fails by years, not microseconds.
-FIXED_NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+SEEDED_AT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 # The four challenge-bearing operations; a per-operation TTL override is forbidden in either direction.
 CHALLENGE_BEARING = (
@@ -92,15 +91,13 @@ def preauth_identity(subject: str = SUBJECT, *, issuer: str = ISSUER) -> AuthIde
 
 
 async def issue_row(identity, *,
-                    operation: AuthOperation = AuthOperation.create_user,
-                    now: datetime = FIXED_NOW):
+                    operation: AuthOperation = AuthOperation.create_user):
     """Run `issue` against a stub session and return `(handle, expires_at, row, session)`."""
     session = _RecordingSession()
     subject_store = store()
     handle, expires_at = await subject_store.issue(session,
                                                    operation=operation,
-                                                   identity=identity,
-                                                   now=now)
+                                                   identity=identity)
     assert len(session.added) == 1, "issue writes exactly one row"
     return handle, expires_at, session.added[0], session
 
@@ -135,26 +132,29 @@ class TestTheUniversalTTL:
         assert CHALLENGE_TTL_SECONDS == 300
         assert CHALLENGE_ID_BYTES == 16
 
-    async def test_expires_at_is_exactly_300_seconds_after_the_supplied_now(self):
+    async def test_expires_at_is_exactly_300_seconds_after_created_at(self):
         _, expires_at, row, _ = await issue_row(preauth_identity())
-        assert expires_at == FIXED_NOW + timedelta(seconds=300)
+        assert expires_at == row.created_at + timedelta(seconds=300)
         assert row.expires_at == expires_at
 
-    async def test_the_clock_is_the_supplied_one_and_not_the_wall_clock(self):
-        """`FIXED_NOW` is years away, so a store reading its own clock fails by years, not by microseconds."""
-        _, expires_at, _, _ = await issue_row(preauth_identity())
-        assert abs((expires_at - datetime.now(UTC)).days) > 30
-
-    async def test_created_at_is_the_same_captured_evaluation_time(self):
-        """SHARED-INVARIANTS: every time-dependent value derives from ONE captured time."""
+    @pytest.mark.timing
+    async def test_the_clock_is_the_stores_own_and_is_read_inside_the_call(self):
+        """A store still taking a caller's instant cannot land between two reads taken around the call."""
+        before = datetime.now(UTC)
         _, _, row, _ = await issue_row(preauth_identity())
-        assert row.created_at == FIXED_NOW
+        after = datetime.now(UTC)
+        assert before <= row.created_at <= after
+
+    async def test_created_at_and_expires_at_come_from_one_read(self):
+        """Two reads inside `issue` would make the difference something other than the exact TTL."""
+        _, expires_at, row, _ = await issue_row(preauth_identity())
+        assert expires_at - row.created_at == timedelta(seconds=CHALLENGE_TTL_SECONDS)
 
     @pytest.mark.parametrize("operation", CHALLENGE_BEARING)
     async def test_every_operation_gets_the_identical_ttl(self, operation):
         """A per-operation override is forbidden in either direction."""
-        _, expires_at, _, _ = await issue_row(preauth_identity(), operation=operation)
-        assert expires_at - FIXED_NOW == timedelta(seconds=CHALLENGE_TTL_SECONDS)
+        _, expires_at, row, _ = await issue_row(preauth_identity(), operation=operation)
+        assert expires_at - row.created_at == timedelta(seconds=CHALLENGE_TTL_SECONDS)
 
     async def test_the_row_records_the_operation_it_was_issued_for(self):
         _, _, row, _ = await issue_row(preauth_identity(),
@@ -165,7 +165,7 @@ class TestTheUniversalTTL:
         """Exactly `challenge_id` and `expires_at`: a three-element return would hand a caller the row id to leak."""
         session = _RecordingSession()
         returned = await store().issue(session, operation=AuthOperation.create_user,
-                                       identity=preauth_identity(), now=FIXED_NOW)
+                                       identity=preauth_identity())
         assert isinstance(returned, tuple)
         assert len(returned) == 2
         handle, expires_at = returned
@@ -216,14 +216,14 @@ class TestTheCompletionComparison:
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.claim_registered_grant,
                             bound_external_identity_id=identity.identity.id,
-                            expires_at=FIXED_NOW, created_at=FIXED_NOW)
+                            expires_at=SEEDED_AT, created_at=SEEDED_AT)
         assert store().verify_binding(row, identity) is row
 
     def test_a_linked_row_rejects_a_different_identity_row(self):
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.claim_registered_grant,
                             bound_external_identity_id=uuid7(),
-                            expires_at=FIXED_NOW, created_at=FIXED_NOW)
+                            expires_at=SEEDED_AT, created_at=SEEDED_AT)
         with pytest.raises(ChallengeIdentityMismatch):
             store().verify_binding(row, linked_identity())
 
@@ -232,7 +232,7 @@ class TestTheCompletionComparison:
         row = AuthChallenge(challenge_id=new_challenge_id(),
                             operation=AuthOperation.claim_registered_grant,
                             bound_external_identity_id=uuid7(),
-                            expires_at=FIXED_NOW, created_at=FIXED_NOW)
+                            expires_at=SEEDED_AT, created_at=SEEDED_AT)
         with pytest.raises(ChallengeIdentityMismatch):
             store().verify_binding(row, preauth_identity())
 
@@ -241,7 +241,7 @@ class TestTheCompletionComparison:
                             operation=AuthOperation.create_user,
                             preauth_issuer=ISSUER,
                             preauth_subject=SUBJECT,
-                            expires_at=FIXED_NOW, created_at=FIXED_NOW)
+                            expires_at=SEEDED_AT, created_at=SEEDED_AT)
         assert store().verify_binding(row, preauth_identity()) is row
 
     def test_a_preauth_row_rejects_a_different_subject(self):
@@ -249,7 +249,7 @@ class TestTheCompletionComparison:
                             operation=AuthOperation.create_user,
                             preauth_issuer=ISSUER,
                             preauth_subject=SUBJECT,
-                            expires_at=FIXED_NOW, created_at=FIXED_NOW)
+                            expires_at=SEEDED_AT, created_at=SEEDED_AT)
         with pytest.raises(ChallengeIdentityMismatch):
             store().verify_binding(row, preauth_identity("someone-else"))
 
@@ -259,7 +259,7 @@ class TestTheCompletionComparison:
                             operation=AuthOperation.create_user,
                             preauth_issuer="https://securetoken.google.com/other-project",
                             preauth_subject=SUBJECT,
-                            expires_at=FIXED_NOW, created_at=FIXED_NOW)
+                            expires_at=SEEDED_AT, created_at=SEEDED_AT)
         with pytest.raises(ChallengeIdentityMismatch):
             store().verify_binding(row, preauth_identity())
 
@@ -269,7 +269,7 @@ class TestTheCompletionComparison:
                             operation=AuthOperation.create_user,
                             preauth_issuer=ISSUER,
                             preauth_subject=SUBJECT,
-                            expires_at=FIXED_NOW, created_at=FIXED_NOW)
+                            expires_at=SEEDED_AT, created_at=SEEDED_AT)
         assert store().verify_binding(row, linked_identity(SUBJECT)) is row
 
     def test_a_cleared_preauth_subject_takes_the_already_used_rejection(self):
@@ -277,8 +277,8 @@ class TestTheCompletionComparison:
                             operation=AuthOperation.create_user,
                             preauth_issuer=ISSUER,
                             preauth_subject=None,
-                            consumed_at=FIXED_NOW,
-                            expires_at=FIXED_NOW, created_at=FIXED_NOW)
+                            consumed_at=SEEDED_AT,
+                            expires_at=SEEDED_AT, created_at=SEEDED_AT)
         with pytest.raises(ChallengeConsumed):
             store().verify_binding(row, preauth_identity())
 
@@ -288,8 +288,8 @@ class TestTheCompletionComparison:
                             operation=AuthOperation.create_user,
                             preauth_issuer="https://securetoken.google.com/other-project",
                             preauth_subject=None,
-                            consumed_at=FIXED_NOW,
-                            expires_at=FIXED_NOW, created_at=FIXED_NOW)
+                            consumed_at=SEEDED_AT,
+                            expires_at=SEEDED_AT, created_at=SEEDED_AT)
         with pytest.raises(ChallengeConsumed):
             store().verify_binding(row, preauth_identity())
 
@@ -301,7 +301,7 @@ class TestLocateIsByteForByte:
         row = AuthChallenge(challenge_id="a" * 22, operation=AuthOperation.create_user,
                             preauth_issuer=ISSUER,
                             preauth_subject=SUBJECT,
-                            expires_at=FIXED_NOW, created_at=FIXED_NOW)
+                            expires_at=SEEDED_AT, created_at=SEEDED_AT)
         assert await store().locate(_RecordingSession([row]), "a" * 22) is row
 
     async def test_locate_returns_none_when_no_row_matches(self):
