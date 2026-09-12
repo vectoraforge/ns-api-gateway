@@ -5,11 +5,11 @@ milestone_name: Authentication & Entitlements
 current_phase: 47
 current_phase_name: Stop threading an evaluation instant through the layers
 status: executing
-stopped_at: Completed 47-06-PLAN.md
-last_updated: "2026-09-12T07:35:36.795Z"
+stopped_at: Completed 47-07-PLAN.md
+last_updated: "2026-09-12T07:52:35.287Z"
 last_activity: 2026-09-11
 last_activity_desc: Phase 47 execution started
-state_head: 92fda5b89a9a2a07139f054d15b1e50b15d0b303
+state_head: 863accbdbfcdc22dec304d3d4fa1c106813c75fb
 progress:
   total_phases: 22
   completed_phases: 17
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 ## Current Position
 
 Phase: 47 (Stop threading an evaluation instant through the layers) — EXECUTING
-Plan: 7 of 8
+Plan: 8 of 8
 Status: Ready to execute
 Progress: [████████████████████] 124/124 plans ([████████░░] 77%)
 
@@ -528,10 +528,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-12T07:35:36.205Z
+**Last session:** 2026-09-12T07:52:34.691Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 47-06-PLAN.md
+Stopped at: Completed 47-07-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -606,6 +606,7 @@ Resume file: None
 | Phase 47 P04 | 20 min | 3 tasks | 10 files |
 | Phase 47 P05 | 24 min | 3 tasks | 14 files |
 | Phase 47 P06 | 26 min | 3 tasks | 15 files |
+| Phase 47 P07 | 21 min | 3 tasks | 8 files |
 
 ## Decisions
 
