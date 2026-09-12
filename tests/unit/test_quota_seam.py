@@ -376,6 +376,14 @@ class TestNoSessionIsHeldAcrossTheProviderCall:
         assert usage.monthly_used == ALLOWANCE
 
 
+class TestTheChatServiceHoldsNoClockReading:
+    """A datetime held here would be a request-scoped instant the charge no longer takes."""
+
+    def test_no_attribute_of_the_service_is_a_datetime(self, mock_chats_db):
+        assert [value for value in vars(_service(mock_chats_db)).values()
+                if isinstance(value, datetime)] == []
+
+
 class TestNoConnectionIsHeldAcrossTheProviderCall:
     """CR-01: the request session and the charge session must never want a connection at the same instant."""
 

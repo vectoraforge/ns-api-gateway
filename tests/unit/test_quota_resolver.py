@@ -1,5 +1,6 @@
 """The resolver's pure policy: the branches a real database cannot produce, and the lock order it cannot show."""
 from datetime import UTC, datetime, timedelta, timezone
+from inspect import signature
 from uuid import uuid7
 
 import pytest
@@ -459,6 +460,23 @@ class TestEveryRejectionCarriesTheRetryAfterTheInvariantRequires:
         refusal = await self._refusal(evaluated_at=near_the_boundary)
 
         assert refusal.extra_headers() == {"Retry-After": "60"}
+
+
+class TestTheChargeReadsTheClockItself:
+    """One read inside `charge` decides the stamp it writes and the period the counter is keyed by."""
+
+    def test_the_charge_asks_for_a_caller_and_nothing_else(self):
+        assert set(signature(QuotaService.charge).parameters) == {"self", "user_id"}
+
+    async def test_the_stamp_lands_inside_the_call_and_names_the_period_written(self):
+        grant, usage = _one_effective_grant(monthly_period=STALE_PERIOD)
+
+        before = datetime.now(UTC)
+        await _consume(grants=(grant,), usage=usage)
+        after = datetime.now(UTC)
+
+        assert before <= usage.updated_at <= after
+        assert usage.monthly_period == monthly_period_for(usage.updated_at)
 
 
 class TestTheRolloverIsDerivedFromTheCapturedInstant:
