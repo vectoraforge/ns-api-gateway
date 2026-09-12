@@ -47,7 +47,6 @@ class _Harness:
     user_id: uuid.UUID
     tier_id: str
     grant_id: uuid.UUID
-    evaluated_at: datetime
 
 
 @pytest_asyncio.fixture
@@ -59,11 +58,9 @@ async def harness(_schema_db_uri):
         user_id = await insert_user(setup)
         tier_id = await insert_tier(setup, monthly_credits=MONTHLY_CREDITS)
         grant_id = await insert_grant(setup, user_id=user_id, tier_id=tier_id, source="manual")
-        # Captured after the insert so it is at or past the grant's defaulted starts_at, or the predicate excludes it.
-        evaluated_at = datetime.now(UTC)
-        # The seeded period must match the evaluated instant, or every read reports zero used instead of the count.
+        # The seeded period must be this month, or every read reports zero used instead of the count.
         await insert_usage(setup, grant_id=grant_id,
-                           monthly_period=evaluated_at.strftime("%Y-%m"),
+                           monthly_period=datetime.now(UTC).strftime("%Y-%m"),
                            monthly_used=SEEDED_USED)
     finally:
         await setup.close()
@@ -73,8 +70,7 @@ async def harness(_schema_db_uri):
         yield _Harness(engine=engine,
                        factory=async_sessionmaker(engine, class_=SQLModelAsyncSession,
                                                   expire_on_commit=False),
-                       user_id=user_id, tier_id=tier_id, grant_id=grant_id,
-                       evaluated_at=evaluated_at)
+                       user_id=user_id, tier_id=tier_id, grant_id=grant_id)
     finally:
         await engine.dispose()
         cleanup = await asyncpg.connect(_schema_db_uri)
@@ -107,7 +103,7 @@ async def sync_with_a_bounded_lock_wait(harness: _Harness):
     # surviving it IS the assertion. Were any of sync's reads to take FOR UPDATE this raises instead.
     async with harness.factory() as session:
         await (await session.connection()).execute(text(f"SET LOCAL lock_timeout = '{_NO_WAIT}'"))
-        return await SyncService(session, harness.evaluated_at).read_entitlement(harness.user_id)
+        return await SyncService(session).read_entitlement(harness.user_id)
 
 
 @pytest.mark.asyncio
@@ -146,8 +142,7 @@ class TestSyncWaitsOnNoLock:
         async with harness.factory() as reader:
             await (await reader.connection()).execute(text(f"SET LOCAL lock_timeout = '{_NO_WAIT}'"))
             opened_at = await transaction_started_at(reader)
-            entitlement = await SyncService(reader,
-                                            harness.evaluated_at).read_entitlement(harness.user_id)
+            entitlement = await SyncService(reader).read_entitlement(harness.user_id)
 
             assert entitlement.status is EntitlementStatus.active, \
                 "control: the read must have found the grant, or it read through nothing"

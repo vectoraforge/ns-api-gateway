@@ -274,8 +274,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=N
             attempt.result = rejection
         else:
             # The route's own read, after the completion committed: the claim, the repeat and the loser share it.
-            attempt.result = await SyncService(db=session,
-                                               evaluated_at=NOW).read_entitlement(identity.user.id)
+            attempt.result = await SyncService(db=session).read_entitlement(identity.user.id)
         attempt.integrity_at_flush = session.integrity_at_flush
         attempt.integrity_at_commit = session.integrity_at_commit
         attempt.flushes = session.flushes

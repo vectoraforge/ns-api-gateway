@@ -1,5 +1,5 @@
 """The sync service's statements: no lock, the shared predicate, the boundaries and the read order."""
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from uuid import uuid7
 
 import pytest
@@ -19,14 +19,16 @@ from nativespeaker.api.tables import (
     AccessGrantStatus,
     AccessTier,
     UserMonthlyUsage,
+    monthly_period_for,
 )
 
 USER_ID = uuid7()
 TIER_ID = "registered"
 ALLOWANCE = 50
-EVALUATED_AT = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
-PERIOD = "2026-08"
-STALE_PERIOD = "2026-07"
+SEEDED_AT = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+PERIOD = monthly_period_for(datetime.now(UTC))
+STALE_PERIOD = "2000-01"
+AHEAD_PERIOD = "9999-12"
 
 # The whole difference between the locking and the non-locking read, as PostgreSQL receives it.
 LOCK_CLAUSE = " FOR UPDATE"
@@ -93,7 +95,7 @@ def _grant(*, user_id=..., tier_id=TIER_ID, status=AccessGrantStatus.active,
                        tier_id=tier_id,
                        source=source,
                        status=status,
-                       starts_at=EVALUATED_AT if starts_at is ... else starts_at,
+                       starts_at=SEEDED_AT if starts_at is ... else starts_at,
                        ends_at=ends_at)
 
 
@@ -119,9 +121,9 @@ def _without_the_lock(sql: str) -> str:
     return sql[:-len(LOCK_CLAUSE)]
 
 
-async def _read(session: _StubSession, *, evaluated_at=EVALUATED_AT) -> Entitlement:
-    """The entitlement the service reports over `session` at the module's instant, or a given one."""
-    return await SyncService(db=session, evaluated_at=evaluated_at).read_entitlement(USER_ID)
+async def _read(session: _StubSession) -> Entitlement:
+    """The entitlement the service reports over `session`."""
+    return await SyncService(db=session).read_entitlement(USER_ID)
 
 
 async def _happy_path() -> _StubSession:
@@ -261,10 +263,10 @@ class TestTheZeroGrantAnswer:
         assert (entitlement.tier_id, entitlement.monthly_credits) == (None, None)
         assert (entitlement.current_period, entitlement.monthly_used) == (PERIOD, 0)
 
-    async def test_the_period_is_the_captured_instant_and_is_never_null(self):
+    async def test_the_period_is_this_month_and_is_never_null(self):
         """`current_period` is not nullable even with nothing to report, so it cannot come from a grant."""
         entitlement = await _read(_StubSession(grants=()))
-        assert entitlement.current_period == EVALUATED_AT.strftime("%Y-%m") == PERIOD
+        assert entitlement.current_period == monthly_period_for(datetime.now(UTC))
 
     async def test_it_stops_at_the_grant_read(self):
         """No grant means there is no usage row and no tier to look up."""
@@ -313,16 +315,14 @@ class TestTheRolloverIsComputedNeverWritten:
         assert session.added == []
         assert (session.committed, session.rolled_back) == (False, False)
 
-    async def test_a_period_ahead_of_this_request_reports_the_stored_count(self):
-        """WR-47: the charge rolls forward only, so a stored period ahead of this request's own is
-        the month the row counts; `!=` reported zero used against a counter the charge will spend."""
-        grant = _grant(starts_at=EVALUATED_AT - timedelta(days=90))
-        usage = _usage(grant, monthly_period=PERIOD, monthly_used=7)
-        session = _StubSession(grants=(grant,), usage=usage)
+    async def test_a_period_ahead_of_this_month_reports_the_stored_count(self):
+        """WR-47: the charge rolls forward only, so a stored period ahead of this month is the month
+        the row counts; `!=` reported zero used against a counter the charge will spend."""
+        _, session = self._seeded(monthly_period=AHEAD_PERIOD, monthly_used=7)
 
-        entitlement = await _read(session, evaluated_at=EVALUATED_AT - timedelta(days=30))
+        entitlement = await _read(session)
 
-        assert (entitlement.current_period, entitlement.monthly_used) == ("2026-07", 7)
+        assert (entitlement.current_period, entitlement.monthly_used) == (PERIOD, 7)
 
 
 class TestEverySourceIsReportedAsItsOwnType:
@@ -427,6 +427,6 @@ class TestTheTierHasNoRow:
 class TestTheServiceKeepsNoSessionHandle:
     """WR-30: SYNC-02 is read-only, and a kept session handle is the one thing that could write."""
 
-    def test_the_service_holds_only_the_reads_and_the_instant(self):
-        service = SyncService(db=_StubSession(grants=()), evaluated_at=EVALUATED_AT)
-        assert set(vars(service)) == {"grants_db", "evaluated_at"}
+    def test_the_service_holds_only_the_reads(self):
+        service = SyncService(db=_StubSession(grants=()))
+        assert set(vars(service)) == {"grants_db"}
