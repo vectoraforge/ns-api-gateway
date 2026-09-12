@@ -1,6 +1,7 @@
 """Store-subscription restore: one client-presented proof, one transaction, one commit.
 Lock order: grant rows ascending by id, then their usage rows; the subscription row is never
 locked, and the insert that holds its unique-index slot runs after both tiers are taken."""
+from collections.abc import Iterable
 from datetime import UTC, date, datetime
 from uuid import UUID, uuid7
 
@@ -31,9 +32,15 @@ from nativespeaker.api.tables import AccessGrantSource, PurchaseProvider
 logger = structlog.get_logger()
 
 
+def _open_term(candidates: Iterable[datetime | None], instant: datetime) -> datetime | None:
+    """The first term in `candidates` still open at `instant`, or `None` where none is.
+    The comparison is `>`: a term ending exactly at `instant` is over."""
+    return next((end for end in candidates if end is not None and end > instant), None)
+
+
 class RestoreService:
 
-    def __init__(self, db: AsyncSession, evaluated_at: datetime,
+    def __init__(self, db: AsyncSession,
                  app_store: AppStoreNotifications, play: PlaySubscriptionSource,
                  package_name: str) -> None:
         self.session = db
@@ -43,12 +50,11 @@ class RestoreService:
         self.play = play
         # The Play read travels the application name in its URL; the Apple check needs none.
         self.package_name = package_name
-        # One instant for this request; nothing below it reads the clock again.
-        self.evaluated_at = evaluated_at
 
     async def restore(self, identity: LinkedIdentity, provider: PurchaseProvider,
                       restore_proof: str) -> None:
         """Verify the store proof and attach the entitlement the subscription it names carries."""
+        instant = datetime.now(UTC)
         proof = await self._verify(provider, restore_proof)
         destination = identity.user.id
 
@@ -64,8 +70,7 @@ class RestoreService:
         if status not in ENTITLED_STATUSES:
             raise RestoreSubscriptionNotEntitled(cause="status_not_entitled")
 
-        # `10-restore-subscription.md:84(3)` requires the clamp to the captured instant.
-        starts_at = min(proof.purchased_at or self.evaluated_at, self.evaluated_at)
+        starts_at = min(proof.purchased_at or instant, instant)
 
         token = proof.attribution_token
         # The nullable resolve, never the completeness-checking read: no row here is ordinary.
@@ -79,7 +84,7 @@ class RestoreService:
         month_read = None if stored is None else stored.last_cross_account_transfer_month
         # The account this restore takes the subscription from, and `None` on every other branch.
         current_owner = None if owner_read == destination else owner_read
-        if current_owner is not None and month_read == self._this_month():
+        if current_owner is not None and month_read == self._this_month(instant):
             # D-10: one move per subscription per UTC month, refused before any lock and with nothing written.
             raise RestoreTransferRejected
 
@@ -97,8 +102,7 @@ class RestoreService:
                          if stored is not None
                          and grant.source is AccessGrantSource.subscription
                          and grant.subscription_id == stored.id]
-        term_ends_at = next((end for end in (*recorded_term, term_end_for(status, proof))
-                             if end is not None and end > self.evaluated_at), None)
+        term_ends_at = _open_term((*recorded_term, term_end_for(status, proof)), instant)
         if term_ends_at is None:
             raise RestoreSubscriptionNotEntitled(cause="term_closed")
 
@@ -124,7 +128,7 @@ class RestoreService:
                 month_read=month_read,
                 destination=destination,
                 # The move alone spends a month of the cap; adoption leaves the column untouched.
-                transfer_month=None if current_owner is None else self._this_month())
+                transfer_month=None if current_owner is None else self._this_month(instant))
             if not claimed:
                 return await self._answer_as_the_winner_left_it(proof, destination)
 
@@ -150,7 +154,6 @@ class RestoreService:
             marked_active=marked_active,
             tier_id=tier_id,
             starts_at=starts_at,
-            # The term checked above, and never a second reading of it that could drift from it.
             ends_at=term_ends_at,
             may_reactivate=True)
         await self._settle(outcome, proof)
@@ -166,10 +169,10 @@ class RestoreService:
                 raise
             await self._settle(WriteOutcome.lost_race, proof)
 
-    def _this_month(self) -> date:
-        """The first day of the captured instant's UTC month, as the `DATE` column stores it."""
+    def _this_month(self, instant: datetime) -> date:
+        """The first day of `instant`'s UTC month, as the `DATE` column stores it."""
         # Real dates on both sides of the comparison; `monthly_period`'s `YYYY-MM` string is another thing.
-        return self.evaluated_at.astimezone(UTC).date().replace(day=1)
+        return instant.astimezone(UTC).date().replace(day=1)
 
     async def _answer_as_the_winner_left_it(self, proof: RestoredSubscription,
                                             destination: UUID) -> None:

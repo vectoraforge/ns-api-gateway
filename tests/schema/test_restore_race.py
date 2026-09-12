@@ -24,10 +24,11 @@ pytestmark = pytest.mark.schema
 _ASYNCPG_PREFIX = "postgres://"
 _SQLALCHEMY_PREFIX = "postgresql+asyncpg://"
 
-NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
+# The restore reads its own clock, so the proof terms this file builds are dated from the live one.
+NOW = datetime.now(UTC)
 
-# The month the cap writes for `NOW`, spelled out rather than derived, so the case pins the value.
-THIS_MONTH = date(2026, 8, 1)
+# The month the cap spends, which is the month the service's own read lands in.
+THIS_MONTH = NOW.date().replace(day=1)
 
 # The tier the migration seeds for a paid subscription, and the one this test's proof names.
 TIER_ID = "paid"

@@ -70,6 +70,9 @@ from unit.test_google_play_notifications import (
 
 EVALUATED_AT = datetime(2026, 6, 1, tzinfo=UTC)
 
+# A term the restore reads as open. The service reads its own clock, so a fixed literal rots.
+OPEN_TERM = datetime.now(UTC) + timedelta(days=30)
+
 # The application name the dependency passes in production; the Apple check never reads it.
 PACKAGE_NAME = "com.nativespeaker.app"
 
@@ -586,7 +589,7 @@ def _restored() -> RestoredSubscription:
                                 attribution_token=ATTRIBUTION_TOKEN,
                                 status=SubscriptionStatus.active,
                                 purchased_at=EVALUATED_AT - timedelta(days=1),
-                                expires_at=EVALUATED_AT + timedelta(days=30),
+                                expires_at=OPEN_TERM,
                                 grace_period_expires_at=None)
 
 
@@ -599,7 +602,7 @@ def _play_restored() -> RestoredSubscription:
                                 attribution_token=PLAY_ATTRIBUTION_TOKEN,
                                 status=SubscriptionStatus.active,
                                 purchased_at=EVALUATED_AT - timedelta(days=1),
-                                expires_at=EVALUATED_AT + timedelta(days=30),
+                                expires_at=OPEN_TERM,
                                 grace_period_expires_at=None)
 
 
@@ -830,7 +833,7 @@ async def _same_account_restore(purchased_at, settled_status=SubscriptionStatus.
                                  attribution_token=ATTRIBUTION_TOKEN,
                                  status=SubscriptionStatus.active,
                                  purchased_at=purchased_at,
-                                 expires_at=EVALUATED_AT + timedelta(days=30),
+                                 expires_at=OPEN_TERM,
                                  grace_period_expires_at=None)
     service = _service(session, _ScriptedAppStore(session, proof))
     service.subscriptions_db = recorder
@@ -890,12 +893,15 @@ class TestTheFirstRestoreOfAnUnrecordedPurchaseWritesItsRow:
         assert recorder.purchases == []
 
 
-async def _grant_written(purchased_at) -> dict:
-    """The fields the restore hands the grant writer for a proof carrying `purchased_at`."""
+async def _grant_written(purchased_at) -> tuple[dict, datetime, datetime]:
+    """The fields the restore hands the grant writer for a proof carrying `purchased_at`,
+    with the two clock reads that bracket the one the service made inside the call."""
+    before = datetime.now(UTC)
     recorder, session = await _same_account_restore(purchased_at)
+    after = datetime.now(UTC)
 
     assert session.commits == 1
-    return recorder.granted[0]
+    return recorder.granted[0], before, after
 
 
 @pytest.fixture
@@ -1016,26 +1022,28 @@ class TestTheTierIsReReadUnderTheGrantLocksAsWell:
 class TestTheRestoredGrantNeverBeginsAfterTheInstantThatWroteIt:
     """WR-60: `10-restore-subscription.md:84(3)` requires `starts_at <= now` of the created grant."""
 
-    async def test_a_purchase_date_ahead_of_the_captured_instant_is_capped_at_it(self):
+    @pytest.mark.timing
+    async def test_a_purchase_date_ahead_of_the_instant_is_capped_at_it(self):
         """Unclamped it wrote a row the shared effective predicate never reads, while that row still
         held `ix_access_grants_one_active_per_user` and refused every free claim behind it."""
-        granted = await _grant_written(EVALUATED_AT + timedelta(days=2))
+        granted, before, after = await _grant_written(OPEN_TERM)
 
-        assert granted["starts_at"] == EVALUATED_AT
+        assert before <= granted["starts_at"] <= after
 
     async def test_a_purchase_date_before_it_is_carried_through_control(self):
         """The control: the cap binds one direction only, so a real purchase date is still the start."""
-        granted = await _grant_written(EVALUATED_AT - timedelta(days=1))
+        granted, _, _ = await _grant_written(EVALUATED_AT - timedelta(days=1))
 
         assert granted["starts_at"] == EVALUATED_AT - timedelta(days=1)
 
-    async def test_an_absent_purchase_date_is_the_captured_instant_control(self):
-        granted = await _grant_written(None)
+    @pytest.mark.timing
+    async def test_an_absent_purchase_date_is_the_instant_the_service_read_control(self):
+        granted, before, after = await _grant_written(None)
 
-        assert granted["starts_at"] == EVALUATED_AT
+        assert before <= granted["starts_at"] <= after
 
 
-GRACE_WINDOW_ENDS = EVALUATED_AT + timedelta(days=14)
+GRACE_WINDOW_ENDS = OPEN_TERM - timedelta(days=16)
 
 
 class _GraceRecorder(_GrantRecorder):
