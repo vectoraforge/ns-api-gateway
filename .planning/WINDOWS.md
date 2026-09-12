@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 18
+open_count: 19
 waived_count: 1
 fixed_count: 10
-total_count: 29
-last_updated: 2026-09-12T05:56:25.182Z
+total_count: 30
+last_updated: 2026-09-12T06:28:34.592Z
 ---
 
 # Broken Windows Ledger
@@ -44,6 +44,7 @@ last_updated: 2026-09-12T05:56:25.182Z
 | 27 | 45 | unrun-verify | .planning/phases/45-post-auth-restore-subscription/45-09-PLAN.md |  | 45-09 acceptance check 'git diff --quiet -- ../specs' cannot run: ../specs is in the parent superrepo, outside this repository. D-14 proved by file mtime instead. | open |  | 2026-09-08T21:30:16.158Z |  |
 | 28 | 45 | todo | migrations/20260818_01_initial-release.sql | 136 | Stale comment: last_cross_account_transfer_month says 'Written by nothing' which D-10 made false. Should read: written by the capped cross-account move only (D-10); one move per subscription per UTC month. Migration not edited (D-14). | open |  | 2026-09-08T21:30:20.962Z |  |
 | 29 | 47 | unrun-verify | tests/e2e/test_restore_subscription.py |  | Pre-existing failure not caused by plan 47-01: the four-arms refusal case expects log event proof_rejected, the code emits purchase_proof_rejected. Measured on HEAD 1a3273d with every 47-01 edit reverted. | open |  | 2026-09-12T05:56:25.182Z |  |
+| 30 | 47 | unrun-verify | tests/schema/test_claim_race.py |  | Two assertions derive the expected monthly period from the live clock; a run straddling a UTC month boundary would fail | open |  | 2026-09-12T06:28:34.592Z |  |
 
 ````json
 [
@@ -393,6 +394,18 @@ last_updated: 2026-09-12T05:56:25.182Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-09-12T05:56:25.182Z",
+    "resolved_at": null
+  },
+  {
+    "id": 30,
+    "kind": "unrun-verify",
+    "phase": "47",
+    "file": "tests/schema/test_claim_race.py",
+    "line": null,
+    "description": "Two assertions derive the expected monthly period from the live clock; a run straddling a UTC month boundary would fail",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-12T06:28:34.592Z",
     "resolved_at": null
   }
 ]
