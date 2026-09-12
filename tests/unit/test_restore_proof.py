@@ -605,7 +605,7 @@ def _play_restored() -> RestoredSubscription:
 
 def _service(session: _CountingSession, store: _ScriptedAppStore,
              play: _ScriptedPlay | None = None) -> RestoreService:
-    return RestoreService(db=session, evaluated_at=EVALUATED_AT, app_store=store,
+    return RestoreService(db=session, app_store=store,
                           play=_ScriptedPlay(session, _play_restored()) if play is None else play,
                           package_name=PACKAGE_NAME)
 

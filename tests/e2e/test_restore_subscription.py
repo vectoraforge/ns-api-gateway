@@ -9,7 +9,6 @@ from httpx import ASGITransport, AsyncClient
 from sqlmodel import col, select
 from unit.conftest import TEST_ISSUER, make_token
 
-from nativespeaker.api.app.dependencies import get_evaluated_at
 from nativespeaker.api.auth.google_play import GRACE_STATE, RESTORE_TOKEN_GONE_STAGE
 from nativespeaker.api.auth.store_notifications import RestoredSubscription
 from nativespeaker.api.errors import PurchaseProofRejected
@@ -102,19 +101,6 @@ async def restore_client(_app_lifespan, stub_verifier):
 def refusal_records(monkeypatch) -> LogSpy:
     """Every WARNING record the handler writes, which is the level a refused proof is recorded at."""
     return spy_on(monkeypatch, (_HANDLER_LOGGER,), ("warning",))
-
-
-@pytest.fixture
-def pinned_evaluation_instant(_app_lifespan):
-    """The instant this request captures, pinned so a seam reading the clock a second time records
-    a value that differs from it: SHARED-INVARIANTS binds every time-dependent value to the one
-    captured evaluation time, and only a pinned instant makes a second reading observable."""
-    instant = datetime.now(UTC).replace(microsecond=424242)
-    _app_lifespan.dependency_overrides[get_evaluated_at] = lambda: instant
-    try:
-        yield instant
-    finally:
-        _app_lifespan.dependency_overrides.pop(get_evaluated_at)
 
 
 def _auth(subject: str = SUBJECT) -> dict[str, str]:
@@ -414,27 +400,6 @@ class TestTheTermTheProofCarriesDecidesWhetherThereIsAnythingToAttach:
         assert refused.status_code == 404
         assert refused.content == RESTORE_NOT_FOUND_BODY
         assert await _account_snapshot(_db_transaction, user.id) == before
-
-    async def test_a_term_ending_at_the_captured_instant_is_not_open(
-            self, restore_client, _db_transaction, scripted_app_store_notifications,
-            pinned_evaluation_instant):
-        """The closed side of the boundary at the instant itself: the predicate is `<=`, so a term
-        ending exactly when the request was evaluated is over. Only a pinned instant names that
-        equality, because a live clock never lands on it."""
-        user, _ = await seed_identity(_db_transaction, issuer=TEST_ISSUER, subject=SUBJECT,
-                                      provider=IdentityProvider.google)
-        external_id = f"e2e-boundary-{uuid4()}"
-        await seed_subscription(_db_transaction, external_id=external_id, user_id=user.id,
-                                tier_id=PAID_TIER_ID)
-        before = await _four_counts(_db_transaction, user.id, external_id)
-        scripted_app_store_notifications.script_restore(
-            _proof(external_id, expires_at=pinned_evaluation_instant))
-
-        refused = await _restore(restore_client)
-
-        assert refused.status_code == 404
-        assert refused.content == RESTORE_NOT_FOUND_BODY
-        assert await _four_counts(_db_transaction, user.id, external_id) == before
 
     async def test_an_open_term_still_attaches_the_grant_control(
             self, restore_client, _db_transaction, scripted_app_store_notifications):

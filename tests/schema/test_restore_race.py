@@ -228,7 +228,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, proof: RestoredSubsc
     async with harness.factory() as real_session:
         session = _RecordingSession(real_session, before_first_update, before_first_commit,
                                     before_first_flush)
-        service = RestoreService(db=session, evaluated_at=NOW,
+        service = RestoreService(db=session,
                                  app_store=_ScriptedAppStore(proof),
                                  # Never read: every attempt of this file names the Apple store.
                                  play=None, package_name=PACKAGE_NAME)

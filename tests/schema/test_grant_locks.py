@@ -1034,7 +1034,7 @@ async def _restore_move_run(schema_db_uri: str):
     try:
         async with factory() as session:
             recorded.clear()
-            await RestoreService(db=session, evaluated_at=evaluated_at,
+            await RestoreService(db=session,
                                  app_store=_ScriptedAppStore(proof),
                                  play=None,
                                  package_name="com.nativespeaker.app").restore(
