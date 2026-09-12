@@ -1,6 +1,5 @@
 import time
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid7
 
@@ -138,15 +137,12 @@ def mock_chats_db():
     return db
 
 
-EVALUATED_AT = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
-
-
 @pytest.fixture
 def charge_calls(monkeypatch) -> list[UUID]:
     """Records the user each charge would bill, in place of resolving one: the resolver has its own suite."""
     calls: list[UUID] = []
 
-    async def recording_charge(self, *, user_id: UUID, evaluated_at: datetime) -> None:
+    async def recording_charge(self, *, user_id: UUID) -> None:
         calls.append(user_id)
 
     monkeypatch.setattr(QuotaService, "charge", recording_charge)
@@ -171,8 +167,7 @@ def service(mock_chats_db, charge_calls):
                                 "es": ["Ejemplo 1"]},
                       messages_limit=50,
                       chats_limit=50,
-                      quota_service=QuotaService(MagicMock()),
-                      evaluated_at=EVALUATED_AT)
+                      quota_service=QuotaService(MagicMock()))
     svc.chats_db = mock_chats_db
     return svc
 

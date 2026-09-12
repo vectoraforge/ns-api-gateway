@@ -30,8 +30,9 @@ USER_ID = uuid7()
 TIER_ID = "registered"
 ALLOWANCE = 50
 EVALUATED_AT = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
-PERIOD = "2026-08"
-STALE_PERIOD = "2026-07"
+PERIOD = monthly_period_for(datetime.now(UTC))
+STALE_PERIOD = "2000-01"
+AHEAD_PERIOD = "9999-12"
 
 
 class _StubResult:
@@ -105,9 +106,9 @@ def _usage(grant: AccessGrant, *, monthly_period=..., monthly_used=0) -> UserMon
                             monthly_used=monthly_used)
 
 
-async def _charge(session: _StubSession, *, evaluated_at=EVALUATED_AT) -> None:
+async def _charge(session: _StubSession) -> None:
     """Run the merged charge, handing the service a factory that yields the stub as its short session."""
-    await QuotaService(lambda: session).charge(user_id=USER_ID, evaluated_at=evaluated_at)
+    await QuotaService(lambda: session).charge(user_id=USER_ID)
 
 
 async def _consume(*, grants=(), usage=None, allowance=ALLOWANCE) -> _StubSession:
@@ -261,10 +262,10 @@ class TestLazyRollover:
         await _consume(grants=(grant,), usage=usage)
         assert usage.monthly_used == 1
 
-    async def test_a_stale_period_is_rewritten_from_the_captured_instant(self):
+    async def test_a_stale_period_is_rewritten_to_this_month(self):
         grant, usage = _one_effective_grant(monthly_period=STALE_PERIOD)
         await _consume(grants=(grant,), usage=usage)
-        assert usage.monthly_period == EVALUATED_AT.strftime("%Y-%m") == PERIOD
+        assert usage.monthly_period == PERIOD
 
     async def test_a_stale_exhausted_row_does_not_refuse_the_new_period(self):
         """The ordering claim as the failure it prevents: last month's exhaustion must not answer this month."""
@@ -277,29 +278,25 @@ class TestLazyRollover:
         await _consume(grants=(grant,), usage=usage)
         assert (usage.monthly_period, usage.monthly_used) == (PERIOD, 8)
 
-    async def test_an_instant_behind_the_stored_period_charges_the_stored_one(self):
-        """WR-47: `!=` ran the reset backwards, so a request admitted before the UTC month boundary
-        that reached this lock after a later one had rolled the row over erased that charge and
-        wrote the row back to its own month, handing the account a second allowance."""
-        grant = _grant(starts_at=EVALUATED_AT - timedelta(days=90))
-        usage = _usage(grant, monthly_period=PERIOD, monthly_used=7)
-        session = _StubSession(grants=(grant,), usage=usage)
+    async def test_a_stored_period_ahead_of_this_month_charges_the_stored_one(self):
+        """WR-47: `!=` ran the reset backwards, so a row another request had already rolled over
+        was written back to the earlier month, handing the account a second allowance."""
+        grant, usage = _one_effective_grant(monthly_period=AHEAD_PERIOD, monthly_used=7)
 
-        await _charge(session, evaluated_at=EVALUATED_AT - timedelta(days=30))
+        await _consume(grants=(grant,), usage=usage)
 
-        assert (usage.monthly_period, usage.monthly_used) == (PERIOD, 8)
+        assert (usage.monthly_period, usage.monthly_used) == (AHEAD_PERIOD, 8)
 
-    async def test_an_instant_behind_an_exhausted_stored_period_is_still_refused(self):
-        """The other half: the stale instant reads the stored month's count, so it cannot buy its
-        way past an allowance the later requests of that month already spent."""
-        grant = _grant(starts_at=EVALUATED_AT - timedelta(days=90))
-        usage = _usage(grant, monthly_period=PERIOD, monthly_used=ALLOWANCE)
+    async def test_an_exhausted_stored_period_ahead_of_this_month_is_still_refused(self):
+        """The other half: the count of the month the row names is the one read, so no request can
+        buy its way past an allowance that month already spent."""
+        grant, usage = _one_effective_grant(monthly_period=AHEAD_PERIOD, monthly_used=ALLOWANCE)
         session = _StubSession(grants=(grant,), usage=usage)
 
         with pytest.raises(QuotaExceededError):
-            await _charge(session, evaluated_at=EVALUATED_AT - timedelta(days=30))
+            await _charge(session)
 
-        assert (usage.monthly_period, usage.monthly_used) == (PERIOD, ALLOWANCE)
+        assert (usage.monthly_period, usage.monthly_used) == (AHEAD_PERIOD, ALLOWANCE)
 
 
 class TestTheLockingStatements:
@@ -405,38 +402,32 @@ class TestGrantThenUsageOrder:
         assert all("core.users" not in _compiled(s) for s in session.statements)
 
 
-class TestTheResolverReadsNoClock:
-    """One captured instant decides both the predicate and the period, so a rollover cannot race itself."""
+class TestThePeriodIsDerivedAndNeverCopied:
+    """The month the counter is keyed by is derived where the charge runs, from no stored column."""
 
-    async def test_the_period_is_the_evaluated_instants_utc_calendar_month(self):
+    async def test_the_period_written_is_this_utc_calendar_month(self):
         grant, usage = _one_effective_grant(monthly_period=STALE_PERIOD)
         await _consume(grants=(grant,), usage=usage)
-        assert usage.monthly_period == "2026-08"
+        assert usage.monthly_period == PERIOD
 
-    async def test_a_different_instant_produces_a_different_period(self):
-        """The period tracks the argument, which is the only thing that makes the captured instant
-        checkable. Ahead of the stored period rather than behind it, because the rollover runs
-        forward only -- the case below the stale one in `TestLazyRollover` is the other direction."""
-        grant = _grant(ends_at=EVALUATED_AT + timedelta(days=90))
+    async def test_the_period_is_taken_from_neither_the_row_nor_the_grant(self):
+        """Three distinct months, so a period copied from either column fails here."""
+        grant = _grant(starts_at=EVALUATED_AT)
         usage = _usage(grant, monthly_period=STALE_PERIOD)
-        session = _StubSession(grants=(grant,), usage=usage)
-        later = EVALUATED_AT + timedelta(days=60)
-        await _charge(session, evaluated_at=later)
-        assert usage.monthly_period == later.strftime("%Y-%m") == "2026-10"
 
-    async def test_the_updated_at_stamp_is_the_captured_instant(self):
-        grant, usage = _one_effective_grant()
-        await _consume(grants=(grant,), usage=usage)
-        assert usage.updated_at == EVALUATED_AT
+        await _charge(_StubSession(grants=(grant,), usage=usage))
+
+        assert usage.monthly_period == PERIOD
+        assert usage.monthly_period not in (STALE_PERIOD, monthly_period_for(grant.starts_at))
 
 
 class TestEveryRejectionCarriesTheRetryAfterTheInvariantRequires:
     """SHARED-INVARIANTS: a 429 carries `Retry-After` where computable -- and the same one per branch."""
 
-    async def _refusal(self, evaluated_at=EVALUATED_AT, **kwargs) -> QuotaExceededError:
+    async def _refusal(self, **kwargs) -> QuotaExceededError:
         session = _StubSession(**{"grants": (), "usage": None, "allowance": ALLOWANCE} | kwargs)
         with pytest.raises(QuotaExceededError) as caught:
-            await _charge(session, evaluated_at=evaluated_at)
+            await _charge(session)
         return caught.value
 
     async def test_an_exhausted_allowance_names_the_capped_wait(self):
@@ -453,13 +444,13 @@ class TestEveryRejectionCarriesTheRetryAfterTheInvariantRequires:
         assert (await self._refusal(grants=())).extra_headers() == (
             await self._refusal(grants=(grant,), usage=usage)).extra_headers()
 
-    async def test_a_rollover_closer_than_the_ceiling_is_the_value_sent(self):
+    def test_a_rollover_closer_than_the_ceiling_is_below_the_cap(self):
         """The control: the cap is a ceiling, not a constant. A header past the boundary would send
         a client back after its own allowance had already reset."""
         near_the_boundary = datetime(2026, 8, 31, 23, 59, tzinfo=UTC)
-        refusal = await self._refusal(evaluated_at=near_the_boundary)
 
-        assert refusal.extra_headers() == {"Retry-After": "60"}
+        assert seconds_until_rollover(near_the_boundary) == 60
+        assert seconds_until_rollover(near_the_boundary) < RETRY_AFTER_CEILING_SECONDS
 
 
 class TestTheChargeReadsTheClockItself:

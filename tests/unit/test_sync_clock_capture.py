@@ -112,7 +112,7 @@ class TestTheInstantIsCapturedOnceAndSharedByEveryService:
         tree = ast.parse(DEPENDENCIES.read_text())
         assert _clock_reads(_function(tree, name), _clock_aliases(tree)) == []
 
-    @pytest.mark.parametrize("name", ("get_sync_service", "get_auth_service", "get_chat_service"))
+    @pytest.mark.parametrize("name", ("get_sync_service", "get_auth_service"))
     def test_every_service_dependency_takes_the_one_captured_instant(self, name):
         """FastAPI caches a dependency per request, so declaring it is what makes the instant shared."""
         function = _function(ast.parse(DEPENDENCIES.read_text()), name)

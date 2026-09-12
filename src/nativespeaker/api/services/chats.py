@@ -1,4 +1,3 @@
-from datetime import datetime
 from uuid import UUID
 
 import orjson
@@ -32,8 +31,7 @@ class ChatService:
                  examples: dict[str, list[str]],
                  messages_limit: int,
                  chats_limit: int,
-                 quota_service: QuotaService,
-                 evaluated_at: datetime) -> None:
+                 quota_service: QuotaService) -> None:
         self.llm_service = llm_service
         self.session = db
         self.chats_db = ChatsDB(db)
@@ -42,7 +40,6 @@ class ChatService:
         self.chats_limit = chats_limit
         # Required with no default: a `None` here would serve both quota-checked POSTs for free and fail nothing.
         self.quota_service = quota_service
-        self.evaluated_at = evaluated_at
 
     @property
     def supported_languages(self) -> list[str]:
@@ -96,7 +93,7 @@ class ChatService:
         # Ends the read above and returns its connection, so no request holds one across the provider call.
         await self.session.commit()
         async with self.llm_service.admission() as admitted:
-            await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
+            await self.quota_service.charge(user_id=user_id)
             ai_message = await self.ask_llm(chat, human_message, admitted)
 
         # Read the count again in the transaction that writes. The count above is stale.
@@ -128,7 +125,7 @@ class ChatService:
         # Ends the read above and returns its connection; `expire_on_commit=False` keeps `chat` readable.
         await self.session.commit()
         async with self.llm_service.admission() as admitted:
-            await self.quota_service.charge(user_id=user_id, evaluated_at=self.evaluated_at)
+            await self.quota_service.charge(user_id=user_id)
             ai_message = await self.ask_llm(chat=chat, message=human_message, admitted=admitted)
 
         # Read the chat again in the transaction that writes. A delete during the call orphans the inserts.

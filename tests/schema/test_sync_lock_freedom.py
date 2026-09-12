@@ -156,8 +156,7 @@ class TestSyncWaitsOnNoLock:
 
             # The reader's transaction stays open across the charge: that a charge still commits is the point.
             await asyncio.wait_for(
-                QuotaService(harness.factory).charge(user_id=harness.user_id,
-                                                     evaluated_at=harness.evaluated_at),
+                QuotaService(harness.factory).charge(user_id=harness.user_id),
                 _DEADLINE_SECONDS)
 
             assert await transaction_started_at(reader) == opened_at, \
@@ -180,8 +179,7 @@ class TestSyncNeverReportsAPairingThatNeverExisted:
             entitlement, _ = await asyncio.wait_for(
                 asyncio.gather(
                     sync_with_a_bounded_lock_wait(harness),
-                    QuotaService(harness.factory).charge(user_id=harness.user_id,
-                                                         evaluated_at=harness.evaluated_at)),
+                    QuotaService(harness.factory).charge(user_id=harness.user_id)),
                 _DEADLINE_SECONDS)
 
             assert entitlement.status is EntitlementStatus.active

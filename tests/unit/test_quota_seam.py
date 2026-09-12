@@ -32,11 +32,12 @@ from nativespeaker.api.tables import (
     ChatRole,
     Message,
     UserMonthlyUsage,
+    monthly_period_for,
 )
 from unit.conftest import TEST_USER_ID
 
 PHRASE = "I am going to home"
-EVALUATED_AT = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+GRANT_STARTED_AT = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
 TIER_ID = "registered"
 ALLOWANCE = 50
 CHATS_LIMIT = 50
@@ -158,12 +159,12 @@ class _RecordingSession:
 
 
 def _effective_grant_rows(*, monthly_used: int = 0):
-    """One active grant and its usage row for the evaluated instant's period -- the admitted case."""
+    """One active grant and its usage row for this calendar month -- the admitted case."""
     grant = AccessGrant(id=uuid7(), user_id=TEST_USER_ID, tier_id=TIER_ID,
                         source=AccessGrantSource.manual, status=AccessGrantStatus.active,
-                        starts_at=EVALUATED_AT, ends_at=None)
+                        starts_at=GRANT_STARTED_AT, ends_at=None)
     usage = UserMonthlyUsage(grant_id=grant.id,
-                             monthly_period=EVALUATED_AT.strftime("%Y-%m"),
+                             monthly_period=monthly_period_for(datetime.now(UTC)),
                              monthly_used=monthly_used)
     return grant, usage
 
@@ -196,8 +197,7 @@ def _service(mock_chats_db, *, llm=None, session_factory=None, request_session=N
                       messages_limit=MESSAGES_LIMIT,
                       chats_limit=CHATS_LIMIT,
                       quota_service=QuotaService(
-                          session_factory if session_factory is not None else MagicMock()),
-                      evaluated_at=EVALUATED_AT)
+                          session_factory if session_factory is not None else MagicMock()))
     svc.chats_db = mock_chats_db
     return svc
 
@@ -205,7 +205,7 @@ def _service(mock_chats_db, *, llm=None, session_factory=None, request_session=N
 def _raising_charge(monkeypatch, error: BaseException) -> None:
     """Replace the charge with one that refuses, leaving every other line of the service untouched."""
 
-    async def refusing_charge(self, *, user_id, evaluated_at) -> None:
+    async def refusing_charge(self, *, user_id) -> None:
         raise error
 
     monkeypatch.setattr(QuotaService, "charge", refusing_charge)
@@ -355,10 +355,11 @@ class TestNoSessionIsHeldAcrossTheProviderCall:
         service = _service(mock_chats_db, llm=RecordingLLM(events),
                            session_factory=_recording_factory(events, grant, usage))
 
+        before = datetime.now(UTC)
         await service.create_chat(phrase=PHRASE, user_id=TEST_USER_ID, lang="en")
 
         assert usage.monthly_used == 1
-        assert usage.updated_at == EVALUATED_AT
+        assert before <= usage.updated_at <= datetime.now(UTC)
 
     async def test_a_refused_charge_rolls_its_session_back_and_closes_it(self, mock_chats_db):
         """The failing path closes too: an exhausted row must not leak an open transaction into the request."""

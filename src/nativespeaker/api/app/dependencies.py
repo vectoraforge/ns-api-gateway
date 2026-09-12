@@ -105,15 +105,13 @@ def get_evaluated_at() -> datetime:
 def get_chat_service(request: Request,
                      db: AsyncSession = Depends(get_db),
                      config: AppConfig = Depends(get_config),
-                     quota_service: QuotaService = Depends(get_quota_service),
-                     evaluated_at: datetime = Depends(get_evaluated_at)) -> ChatService:
+                     quota_service: QuotaService = Depends(get_quota_service)) -> ChatService:
     return ChatService(db=db,
                        llm_service=request.app.state.llm_service,
                        examples=config.examples,
                        chats_limit=config.chats_limit,
                        messages_limit=config.messages_limit,
-                       quota_service=quota_service,
-                       evaluated_at=evaluated_at)
+                       quota_service=quota_service)
 
 
 # These two accessors exist so a challenge-bearing route can stay Depends()-only and never take Request itself.

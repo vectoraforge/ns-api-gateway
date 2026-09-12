@@ -23,14 +23,14 @@ logger = structlog.get_logger()
 RETRY_AFTER_CEILING_SECONDS = 300
 
 
-def seconds_until_rollover(evaluated_at: datetime) -> int:
+def seconds_until_rollover(instant: datetime) -> int:
     """Whole seconds from this instant to the UTC month boundary the allowance rolls over on."""
-    instant = evaluated_at.astimezone(UTC)
-    december = instant.month == 12
-    rollover = instant.replace(year=instant.year + (1 if december else 0),
-                               month=1 if december else instant.month + 1,
-                               day=1, hour=0, minute=0, second=0, microsecond=0)
-    return max(math.ceil((rollover - evaluated_at).total_seconds()), 1)
+    utc = instant.astimezone(UTC)
+    december = utc.month == 12
+    rollover = utc.replace(year=utc.year + (1 if december else 0),
+                           month=1 if december else utc.month + 1,
+                           day=1, hour=0, minute=0, second=0, microsecond=0)
+    return max(math.ceil((rollover - instant).total_seconds()), 1)
 
 
 class QuotaService:
@@ -38,9 +38,10 @@ class QuotaService:
     def __init__(self, session_factory: async_sessionmaker | Callable[[], AsyncSession]) -> None:
         self.session_factory = session_factory
 
-    async def charge(self, *, user_id: UUID, evaluated_at: datetime) -> None:
+    async def charge(self, *, user_id: UUID) -> None:
         """Spend one unit of `user_id`'s allowance, or raise. Commits on success."""
-        retry_after_seconds = min(seconds_until_rollover(evaluated_at),
+        instant = datetime.now(UTC)
+        retry_after_seconds = min(seconds_until_rollover(instant),
                                   RETRY_AFTER_CEILING_SECONDS)
 
         # Its own short session: no grant or usage row lock is held across the provider round trip.
@@ -67,9 +68,9 @@ class QuotaService:
                     # Fail closed, never mint: a grant without a usage row is a failed write, not a fresh allowance.
                     raise MissingUsageRowError(grant.id)
 
-                period = monthly_period_for(evaluated_at)
+                period = monthly_period_for(instant)
 
-                if usage.monthly_period < period:  # Use "<", never "!=": an old instant must not reset the count.
+                if usage.monthly_period < period:  # Use "<", never "!=": a month ahead keeps its count.
                     # Rollover runs before the comparison and in the same transaction: no reset commits uncharged.
                     usage.monthly_used = 0
                     usage.monthly_period = period
@@ -87,9 +88,8 @@ class QuotaService:
                     raise QuotaExceededError("The allowance for the current period is used up",
                                              retry_after_seconds=retry_after_seconds)
 
-                # `updated_at` is stamped from the captured instant, not a clock.
                 usage.monthly_used += 1
-                usage.updated_at = evaluated_at
+                usage.updated_at = instant
 
                 await session.commit()
             except Exception:
