@@ -1,6 +1,5 @@
 """The three completions: the rejection precedence, the claim, the post-claim work and the spend."""
 from collections.abc import Awaitable, Callable
-from datetime import datetime
 from functools import partial
 from typing import NoReturn
 from uuid import UUID
@@ -65,7 +64,6 @@ class AuthService:
                  db: AsyncSession,
                  challenge_store: ChallengesDB,
                  adapter,
-                 evaluated_at: datetime,
                  devicecheck) -> None:
         self.session = db
         self.identities_db = IdentitiesDB(db)
@@ -74,8 +72,6 @@ class AuthService:
         self.adapter = adapter
         # Named for the vendor API, never for the company: two unrelated enums are already called apple.
         self.devicecheck = devicecheck
-        # One instant for this request; nothing below it reads the clock again.
-        self.evaluated_at = evaluated_at
 
     async def complete(self, *, identity: AuthIdentity, challenge_id: str) -> IdentityProvider:
         """Create the account the handle stands for, and return the provider it was created with."""

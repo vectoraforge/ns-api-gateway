@@ -1,5 +1,4 @@
 """Control flow only: a failed insert stops inserting and raises; durability is a schema-test claim."""
-from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
@@ -16,7 +15,6 @@ from nativespeaker.api.tables.users import User
 
 ISSUER = "https://securetoken.google.com/ns-rollback-test"
 SUBJECT = "rollback-control-flow-subject"
-NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
 
 # The user flushes alone, then the identity row and both tokens; every case below fails the second.
 SECOND_FLUSH = 2
@@ -76,7 +74,7 @@ def _identity() -> AuthIdentity:
 
 async def _create(session) -> UUID:
     service = AuthService(db=session, challenge_store=ChallengesDB(), adapter=None,
-                          devicecheck=None, evaluated_at=NOW)
+                          devicecheck=None)
     return await service.create_user(identity=_identity(),
                                      provider=IdentityProvider.anonymous,
                                      provider_uid=None,

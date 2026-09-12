@@ -134,13 +134,12 @@ def get_devicecheck_adapter(request: Request) -> DeviceCheckAdapter:
 def get_auth_service(db: AsyncSession = Depends(get_db),
                      challenge_store: ChallengesDB = Depends(get_challenge_store),
                      adapter=Depends(get_firebase_adapter),
-                     devicecheck: DeviceCheckAdapter = Depends(get_devicecheck_adapter),
-                     evaluated_at: datetime = Depends(get_evaluated_at)) -> AuthService:
+                     devicecheck: DeviceCheckAdapter = Depends(get_devicecheck_adapter)
+                     ) -> AuthService:
     return AuthService(db=db,
                        challenge_store=challenge_store,
                        adapter=adapter,
-                       devicecheck=devicecheck,
-                       evaluated_at=evaluated_at)
+                       devicecheck=devicecheck)
 
 
 def get_sync_service(db: AsyncSession = Depends(get_db),

@@ -145,7 +145,7 @@ async def commit_issued_challenge(harness: _Harness, *, identity_id: uuid.UUID,
                  "        :identity_id, :expires_at, :now)"),
             {"id": row_id, "challenge_id": challenge_id, "operation": operation,
              "identity_id": identity_id,
-             "expires_at": NOW + timedelta(seconds=300), "now": NOW})
+             "expires_at": datetime.now(UTC) + timedelta(seconds=300), "now": NOW})
     return row_id, challenge_id
 
 
@@ -261,7 +261,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=N
         attempt.caller_rows_detached = all(
             object_session(row) is None for row in (identity.user, identity.identity))
         service = AuthService(db=session, challenge_store=store, adapter=None,
-                              evaluated_at=NOW, devicecheck=_NeverSetDevice())
+                              devicecheck=_NeverSetDevice())
         completion = (service.complete_claim_registered_grant
                       if attempt.operation == "claim_registered_grant"
                       else service.complete_claim_anonymous_grant)

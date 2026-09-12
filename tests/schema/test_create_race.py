@@ -96,7 +96,7 @@ async def commit_issued_challenge(harness: _Harness, *,
                  "        :expires_at, :now)"),
             {"id": row_id, "challenge_id": challenge_id, "issuer": harness.issuer,
              "subject": subject,
-             "expires_at": NOW + timedelta(seconds=300), "now": NOW})
+             "expires_at": datetime.now(UTC) + timedelta(seconds=300), "now": NOW})
     return row_id, challenge_id
 
 
@@ -171,7 +171,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_re_resolution=
         session = _HookedSession(real_session, after_re_resolution)
         service = AuthService(db=session, challenge_store=store,
                               adapter=_ScriptedAdapter(attempt.provider, attempt.provider_uid),
-                              devicecheck=None, evaluated_at=NOW)
+                              devicecheck=None)
         try:
             attempt.result = await service.complete(identity=attempt.identity,
                                                     challenge_id=attempt.challenge_id)

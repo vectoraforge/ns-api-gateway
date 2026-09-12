@@ -143,8 +143,9 @@ class TestTheClaimIsTheOnlyPlaceExpiryIsEvaluated:
     async def test_a_claim_against_an_expired_row_returns_false(self, store, _db_transaction):
         handle, _ = await issue(_db_transaction, store)
         await expire(_db_transaction, handle)
-        assert (await read(_db_transaction, handle)).expires_at < datetime.now(UTC), \
-            "the fixture must actually be expired"
+        expired = await read(_db_transaction, handle)
+        assert expired is not None
+        assert expired.expires_at < datetime.now(UTC), "the fixture must actually be expired"
 
         async with _db_transaction() as session:
             assert await store.claim(session, challenge_id=handle) is False
@@ -211,13 +212,17 @@ class TestTheLifecycleRunsOneDirectionOnly:
         async with _db_transaction() as session:
             await store.claim(session, challenge_id=handle)
             await session.commit()
-        won = (await read(_db_transaction, handle)).claimed_at
+        claimed = await read(_db_transaction, handle)
+        assert claimed is not None
+        won = claimed.claimed_at
 
         async with _db_transaction() as session:
             await store.claim(session, challenge_id=handle)
             await session.commit()
 
-        assert (await read(_db_transaction, handle)).claimed_at == won
+        later = await read(_db_transaction, handle)
+        assert later is not None
+        assert later.claimed_at == won
 
     async def test_consume_before_any_claim_returns_false(self, store, _db_transaction):
         """Consumption requires a claim. Skipping the claim would skip the serialization point."""

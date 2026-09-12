@@ -112,7 +112,7 @@ async def commit_issued_challenge(harness: _Harness, *,
                  "        :expires_at, :now)"),
             {"id": row_id, "challenge_id": challenge_id, "issuer": harness.issuer,
              "subject": subject,
-             "expires_at": NOW + timedelta(seconds=300), "now": NOW})
+             "expires_at": datetime.now(UTC) + timedelta(seconds=300), "now": NOW})
     return row_id, challenge_id
 
 
@@ -177,7 +177,7 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
         session = _RacingSession(real_session, after_re_resolution)
         service = AuthService(db=session, challenge_store=store,
                               adapter=_ScriptedAdapter(provider, provider_uid),
-                              devicecheck=None, evaluated_at=NOW)
+                              devicecheck=None)
         try:
             result = await service.complete(identity=identity, challenge_id=challenge_id_value)
         except AppError as rejection:
