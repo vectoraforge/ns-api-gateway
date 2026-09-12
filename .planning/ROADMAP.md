@@ -790,7 +790,7 @@ Plans:
 **Goal:** Remove the `get_evaluated_at` dependency and every `evaluated_at` parameter that carries its instant from the routers through the services into the crud classes. No dependency supplies the current time, no service takes it in its constructor, and no service method passes it down to crud. Where a SQL statement compares against the current time it uses PostgreSQL's `now()`. Where Python code needs the current time it calls `datetime.now(UTC)` at that spot; a small pure helper may still take the datetime it computes from. Delete every comment whose subject is the removed dependency or the shared instant, and add none.
 **Requirements:** none mapped — behavior-preserving refactor; every route answers as before
 **Depends on:** 46 — runs on the completed v2.0 tree. Touches `app/dependencies.py`, `routers/auth.py`, `services/{auth,chats,quota,restore,subscriptions,sync}.py`, `crud/{grants,identities,subscriptions}.py`, `auth/{app_store,google_play}.py`, `tables/grants.py`, and the unit, e2e and schema tests that pass or override the instant
-**Plans:** 5/8 plans executed
+**Plans:** 6/8 plans executed
 **Success criteria:**
 
 1. `get_evaluated_at` does not exist; no `Depends(...)` in `dependencies.py` or a router supplies a `datetime`, and `tests/e2e/test_restore_subscription.py` no longer overrides one
@@ -817,7 +817,7 @@ Plans:
 
 **Wave 4** *(blocked on 47-05)*
 
-- [ ] 47-06-PLAN.md — The challenge store on the database clock, the router's dependency gone, and `AuthService` holding no instant (wave 4)
+- [x] 47-06-PLAN.md — The challenge store on the database clock, the router's dependency gone, and `AuthService` holding no instant (wave 4)
 
 **Wave 5** *(blocked on 47-06)*
 
@@ -933,7 +933,7 @@ Plans:
 | 44. POST /webhooks/google-play/rtdn | v2.0 | 7/7 | Complete    | 2026-09-06 |
 | 45. POST /auth/restore-subscription | v2.0 | 9/9 | Complete    | 2026-09-08 |
 | 46. POST /auth/sign-out-all | v2.0 | 5/5 | Complete    | 2026-09-08 |
-| 47. Stop threading an evaluation instant through the layers | v2.0 | 5/8 | In Progress|  |
+| 47. Stop threading an evaluation instant through the layers | v2.0 | 6/8 | In Progress|  |
 | 48. Narrow Identity to the verified pair | v2.0 | 0/0 | Not started | - |
 | 49. Delete the single-implementation auth Protocols | v2.0 | 0/0 | Not started | - |
 | 50. Typed runtime container behind an exit-stack lifespan | v2.0 | 0/0 | Not started | - |
