@@ -1,9 +1,9 @@
 """The challenge store. A handle is a secret capability: this module holds no logger, so none is logged."""
 import base64
 import secrets
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import update
+from sqlalchemy import func, update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -23,6 +23,16 @@ def new_challenge_id() -> str:
     return base64.urlsafe_b64encode(secrets.token_bytes(CHALLENGE_ID_BYTES)).rstrip(b"=").decode()
 
 
+def _claim_statement(challenge_id: str):
+    """The claim UPDATE, module-level so a test compiles this statement rather than a mirror of it."""
+    return (update(AuthChallenge)
+            .where(col(AuthChallenge.challenge_id) == challenge_id,
+                   col(AuthChallenge.claimed_at).is_(None),
+                   col(AuthChallenge.expires_at) > func.clock_timestamp())
+            .values(claimed_at=func.clock_timestamp())
+            .returning(col(AuthChallenge.id)))
+
+
 class ChallengesDB:
     """The four operations. No method commits, and the session is a parameter on every one of them."""
 
@@ -31,11 +41,11 @@ class ChallengesDB:
 
     async def issue(self, session: AsyncSession, *,
                     operation: AuthOperation,
-                    identity: AuthIdentity,
-                    now: datetime) -> tuple[str, datetime]:
-        """Insert one row, returning only `(challenge_id, expires_at)`: from the caller's `now`, never renewed."""
+                    identity: AuthIdentity) -> tuple[str, datetime]:
+        """Insert one row, returning only `(challenge_id, expires_at)`, and never renew it."""
+        instant = datetime.now(UTC)
         challenge_id = new_challenge_id()
-        expires_at = now + timedelta(seconds=CHALLENGE_TTL_SECONDS)
+        expires_at = instant + timedelta(seconds=CHALLENGE_TTL_SECONDS)
 
         bound_identity_id = None
         preauth_issuer = None
@@ -52,7 +62,7 @@ class ChallengesDB:
                                   preauth_issuer=preauth_issuer,
                                   preauth_subject=preauth_subject,
                                   expires_at=expires_at,
-                                  created_at=now))
+                                  created_at=instant))
         await session.flush()
         return challenge_id, expires_at
 
@@ -61,29 +71,19 @@ class ChallengesDB:
         statement = select(AuthChallenge).where(col(AuthChallenge.challenge_id) == challenge_id)
         return (await session.exec(statement)).first()
 
-    async def claim(self, session: AsyncSession, *,
-                    challenge_id: str,
-                    now: datetime) -> bool:
+    async def claim(self, session: AsyncSession, *, challenge_id: str) -> bool:
         """Move issued -> claimed. The one serialization point and the only expiry check; `True` wins it."""
-        result = await session.exec(
-            update(AuthChallenge)
-            .where(col(AuthChallenge.challenge_id) == challenge_id,
-                   col(AuthChallenge.claimed_at).is_(None),
-                   col(AuthChallenge.expires_at) > now)
-            .values(claimed_at=now)
-            .returning(col(AuthChallenge.id)))
+        result = await session.exec(_claim_statement(challenge_id))
         return len(result.all()) == 1
 
-    async def consume(self, session: AsyncSession, *,
-                      challenge_id: str,
-                      now: datetime) -> bool:
+    async def consume(self, session: AsyncSession, *, challenge_id: str) -> bool:
         """Move claimed -> consumed, clearing `preauth_subject` in the same statement the CHECK needs."""
         result = await session.exec(
             update(AuthChallenge)
             .where(col(AuthChallenge.challenge_id) == challenge_id,
                    col(AuthChallenge.claimed_at).is_not(None),
                    col(AuthChallenge.consumed_at).is_(None))
-            .values(consumed_at=now, preauth_subject=None)
+            .values(consumed_at=func.clock_timestamp(), preauth_subject=None)
             .returning(col(AuthChallenge.id)))
         return len(result.all()) == 1
 

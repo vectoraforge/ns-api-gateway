@@ -133,9 +133,7 @@ class AuthService:
         if challenge.operation is not operation:
             raise ChallengeOperationMismatch()
 
-        if not await self.challenge_store.claim(self.session,
-                                                challenge_id=challenge_id,
-                                                now=self.evaluated_at):
+        if not await self.challenge_store.claim(self.session, challenge_id=challenge_id):
             # `claimed_at` distinguishes the two losses; the claim's WHERE is the only expiry evaluation anywhere.
             await self.session.refresh(challenge)
             if challenge.claimed_at is None:
@@ -387,9 +385,7 @@ class AuthService:
                                   challenge_id: str,
                                   challenge_row_id: str) -> None:
         """Spend the handle and commit, so neither path can leave a claimed handle re-presentable."""
-        consumed = await self.challenge_store.consume(self.session,
-                                                      challenge_id=challenge_id,
-                                                      now=self.evaluated_at)
+        consumed = await self.challenge_store.consume(self.session, challenge_id=challenge_id)
         if not consumed:
             # Not recoverable: this attempt holds the claim, so a `False` means stored state diverged.
             logger.error("challenge_consume_did_not_match", challenge_row_id=challenge_row_id)

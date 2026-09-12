@@ -1,8 +1,6 @@
 """The eight auth routes: `/auth/challenge` issues a challenge, `/auth/create-user`, `/auth/upgrade-anonymous`
 and the two `/auth/claim-*-grant` routes spend one, `/auth/restore-subscription` attaches a paid store
 subscription, `/auth/sync` reports entitlement, and `/auth/sign-out-all` revokes the refresh tokens."""
-from datetime import datetime
-
 import structlog
 from fastapi import APIRouter, Depends
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -12,7 +10,6 @@ from nativespeaker.api.app.dependencies import (
     get_auth_service,
     get_challenge_store,
     get_db,
-    get_evaluated_at,
     get_firebase_adapter,
     get_identity,
     get_linked_identity,
@@ -53,8 +50,8 @@ async def issue_challenge(body: ChallengeRequest,
                           response: Response,
                           identity: AuthIdentity = Depends(get_identity),
                           session: AsyncSession = Depends(get_db),
-                          challenge_store: ChallengesDB = Depends(get_challenge_store),
-                          evaluated_at: datetime = Depends(get_evaluated_at)) -> PrepareResponse:
+                          challenge_store: ChallengesDB = Depends(get_challenge_store)
+                          ) -> PrepareResponse:
     """Issue one challenge for an operation this route serves."""
     if body.operation not in AuthOperation:
         # The rejected string is caller-supplied and bounded, so logging it is safe; a handle never is.
@@ -67,8 +64,7 @@ async def issue_challenge(body: ChallengeRequest,
 
     challenge_id, expires_at = await challenge_store.issue(session,
                                                            operation=AuthOperation(body.operation),
-                                                           identity=identity,
-                                                           now=evaluated_at)
+                                                           identity=identity)
     # `get_db` never commits. This commit makes the issued row durable before the answer.
     await session.commit()
     # `no-store` rather than `no-cache`: the handle is a secret, and a revalidatable copy is a copy.
