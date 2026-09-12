@@ -1,6 +1,6 @@
 """The identity store: the resolving query, the re-resolution, the account insert and the provider flip.
 Lock order: the identity row and then its user row, taken together by the one joined statement below."""
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy.exc import IntegrityError
@@ -88,16 +88,16 @@ class IdentitiesDB:
         return (await self.session.exec(select(User).where(col(User.id) == user_id))).first()
 
     async def insert_account(self, *,
-                             evaluated_at: datetime,
                              identity: AuthIdentity,
                              provider: IdentityProvider,
                              provider_uid: str | None,
                              email: str | None) -> UUID:
         """Insert the user, its identity row and its purchase tokens, and return the new user's id."""
+        instant = datetime.now(UTC)
         user = User(email=email,
-                    registered_at=None if provider is IdentityProvider.anonymous else evaluated_at,
-                    created_at=evaluated_at,
-                    updated_at=evaluated_at)
+                    registered_at=None if provider is IdentityProvider.anonymous else instant,
+                    created_at=instant,
+                    updated_at=instant)
         self.session.add(user)
         await self.session.flush()
 
@@ -107,14 +107,14 @@ class IdentitiesDB:
                                           provider=provider,
                                           provider_uid=provider_uid,
                                           identity_state=IdentityState.active,
-                                          created_at=evaluated_at,
-                                          updated_at=evaluated_at))
+                                          created_at=instant,
+                                          updated_at=instant))
 
         for store in PurchaseProvider:
             self.session.add(StorePurchaseToken(user_id=user.id,
                                                 provider=store,
                                                 identity_value=str(uuid4()),
-                                                created_at=evaluated_at))
+                                                created_at=instant))
 
         try:
             await self.session.flush()
@@ -125,22 +125,22 @@ class IdentitiesDB:
         return user.id
 
     async def flip_provider(self, *,
-                            evaluated_at: datetime,
                             identity_row: ExternalIdentity,
                             user: User,
                             provider: IdentityProvider,
                             provider_uid: str | None,
                             email: str | None) -> IdentityProvider:
         """Write both halves of the flip in the caller's transaction, and return the provider written."""
+        instant = datetime.now(UTC)
         stored_provider = identity_row.provider
         # Read before the flush too: a failed flush expires the row, and reading it after re-queries a dead transaction.
         identity_row_id = identity_row.id
         identity_row.provider = provider
         identity_row.provider_uid = provider_uid
-        identity_row.updated_at = evaluated_at
+        identity_row.updated_at = instant
         if user.registered_at is None:
-            user.registered_at = evaluated_at
-        user.updated_at = evaluated_at
+            user.registered_at = instant
+        user.updated_at = instant
         if user.email is None:
             # A stored address is never overwritten, and a divergent live one is simply not copied.
             user.email = email

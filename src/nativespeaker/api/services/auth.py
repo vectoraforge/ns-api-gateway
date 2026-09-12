@@ -328,8 +328,7 @@ class AuthService:
                                                stored_provider=stored,
                                                live_provider=facts.provider)
 
-        return await self.identities_db.flip_provider(evaluated_at=self.evaluated_at,
-                                                      identity_row=identity_row,
+        return await self.identities_db.flip_provider(identity_row=identity_row,
                                                       user=user,
                                                       provider=facts.provider,
                                                       provider_uid=facts.provider_uid,
@@ -357,8 +356,7 @@ class AuthService:
                                                    stored_provider=holder.provider,
                                                    live_provider=provider)
 
-        return await self.identities_db.insert_account(evaluated_at=self.evaluated_at,
-                                                       identity=identity,
+        return await self.identities_db.insert_account(identity=identity,
                                                        provider=provider,
                                                        provider_uid=provider_uid,
                                                        email=email)
