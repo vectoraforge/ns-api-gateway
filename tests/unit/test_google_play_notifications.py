@@ -32,6 +32,8 @@ from nativespeaker.api.auth.google_play import (
     CappedRefreshRequest,
     PlayDeveloperSubscriptions,
     PubSubPushTokens,
+    _CANCELED_STATE,
+    _status_for,
     developer_notification_from,
     instant_from_millis,
 )
@@ -62,12 +64,14 @@ ATTRIBUTION_TOKEN = "8f4d1a2e-0000-4000-8000-000000000002"
 EVENT_TYPE = "4"
 NOTIFICATION_KEY = f"google_play:{PURCHASE_TOKEN}:1780000000000:{EVENT_TYPE}"
 
-# One captured instant for every case below, so no assertion here depends on the wall clock.
 EVALUATED_AT = datetime(2026, 6, 1, tzinfo=UTC)
 PURCHASED_AT = EVALUATED_AT - timedelta(days=30)
 SIGNED_AT = EVALUATED_AT - timedelta(minutes=1)
 UNEXPIRED = EVALUATED_AT + timedelta(days=10)
 LAPSED = EVALUATED_AT - timedelta(days=1)
+
+# A term the live read still finds open, because the read judges against the clock it reads itself.
+OPEN_TERM = datetime.now(UTC) + timedelta(days=10)
 
 # Google's `SubscriptionState` enum, all nine values verbatim.
 PUBLISHED_STATES = (
@@ -136,7 +140,7 @@ def _play_reader(handler, *, products: dict[str, str] | None = None,
                  credential=_UNSET, build=None,
                  rebuild_interval_seconds: float = PLAY_CREDENTIAL_REBUILD_INTERVAL_SECONDS,
                  ) -> PlayDeveloperSubscriptions:
-    """The real Play read class over a stubbed transport and a captured instant."""
+    """The real Play read class over a stubbed transport, answering whatever the handler answers."""
     return PlayDeveloperSubscriptions(
         credential=_FakeCredential() if credential is _UNSET else credential,
         build=build,
@@ -149,7 +153,7 @@ async def _read_through(reader: PlayDeveloperSubscriptions) -> VerifiedNotificat
     """One read on this reader, with the arguments the dependency passes in production."""
     return await reader.read(package_name=PACKAGE_NAME, purchase_token=PURCHASE_TOKEN,
                              event_type=EVENT_TYPE, notification_uuid=NOTIFICATION_KEY,
-                             signed_at=SIGNED_AT, evaluated_at=EVALUATED_AT)
+                             signed_at=SIGNED_AT)
 
 
 async def _read(state: str, *, expiry: datetime | None = None) -> VerifiedNotification:
@@ -168,9 +172,8 @@ class TestTheStateMap:
         # This project's enum carries no paused word, and the auto-resume arrives as a fresh active.
         ("SUBSCRIPTION_STATE_PAUSED", UNEXPIRED, SubscriptionStatus.expired),
         # Canceled but not expired is still a paid term: Google says so in the field's own text.
-        ("SUBSCRIPTION_STATE_CANCELED", UNEXPIRED, SubscriptionStatus.active),
+        ("SUBSCRIPTION_STATE_CANCELED", OPEN_TERM, SubscriptionStatus.active),
         ("SUBSCRIPTION_STATE_CANCELED", LAPSED, SubscriptionStatus.expired),
-        ("SUBSCRIPTION_STATE_CANCELED", EVALUATED_AT, SubscriptionStatus.expired),
         ("SUBSCRIPTION_STATE_CANCELED", None, SubscriptionStatus.expired),
         ("SUBSCRIPTION_STATE_EXPIRED", LAPSED, SubscriptionStatus.expired),
         ("SUBSCRIPTION_STATE_PENDING", None, SubscriptionStatus.expired),
@@ -322,12 +325,9 @@ def _stub_request(*, play=None, tokens=None, package_name: str | None = PACKAGE_
     return SimpleNamespace(app=SimpleNamespace(state=state))
 
 
-async def _verify(body: PubSubPushRequest, *, credential=PUSH_CREDENTIAL,
-                  evaluated_at: datetime = EVALUATED_AT, **stub):
-    """Run the real dependency over a stubbed request, with every argument the route resolves.
-    `evaluated_at` is passed explicitly: left to its default it is the `Depends` object itself."""
-    return await verify_google_play_notification(_stub_request(**stub), body, credential,
-                                                 evaluated_at)
+async def _verify(body: PubSubPushRequest, *, credential=PUSH_CREDENTIAL, **stub):
+    """Run the real dependency over a stubbed request, with every argument the route resolves."""
+    return await verify_google_play_notification(_stub_request(**stub), body, credential)
 
 
 def _names_read_inside_functions() -> set[str]:
@@ -486,41 +486,30 @@ class TestThePackageNameCheck:
         assert play.calls[0]["notification_uuid"] == f"google_play:{PURCHASE_TOKEN}:{EVENT_TIME_MILLIS}:4"
 
 
-class TestTheEntitlementDecisionUsesTheInstantTheRequestCaptured:
-    """WR-27: the adapter read a clock of its own, so it decided at a different instant from the
-    grant writer, and a term crossing between the two commits a grant outside its own term."""
+class TestTheCanceledTermIsJudgedByTheHelperThatTakesTheInstant:
+    """T-47-11: canceled is the one state whose answer depends on a date, and the comparison is
+    `>`, so a term ending exactly at the instant it is judged against is over."""
 
     @pytest.mark.parametrize(("evaluated_at", "expected"), [
         (UNEXPIRED - timedelta(days=1), SubscriptionStatus.active),
+        (UNEXPIRED - timedelta(microseconds=1), SubscriptionStatus.active),
+        (UNEXPIRED, SubscriptionStatus.expired),
+        (UNEXPIRED + timedelta(microseconds=1), SubscriptionStatus.expired),
         (UNEXPIRED + timedelta(days=1), SubscriptionStatus.expired),
-    ], ids=["inside-the-term", "past-the-term"])
-    async def test_a_canceled_term_is_judged_against_the_instant_passed_in(self, evaluated_at,
-                                                                          expected):
-        """The one state whose answer depends on a date, read on both sides of its own expiry."""
-        reader = _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_CANCELED",
-                                                            expiry=UNEXPIRED)))
+    ], ids=["inside-the-term", "one-tick-inside", "at-the-expiry", "one-tick-past", "past-the-term"])
+    def test_status_for_reads_a_term_ending_at_the_instant_as_over(self, evaluated_at, expected):
+        assert _status_for(_CANCELED_STATE, UNEXPIRED, evaluated_at) is expected
 
-        notification = await reader.read(package_name=PACKAGE_NAME,
-                                         purchase_token=PURCHASE_TOKEN, event_type=EVENT_TYPE,
-                                         notification_uuid=NOTIFICATION_KEY, signed_at=SIGNED_AT,
-                                         evaluated_at=evaluated_at)
-
-        assert notification.status is expected
+    def test_a_canceled_term_with_no_expiry_is_never_entitled_control(self):
+        """The control: the boundary decides only where Play stated a term at all."""
+        assert _status_for(_CANCELED_STATE, None, UNEXPIRED) is SubscriptionStatus.expired
 
     def test_the_class_holds_no_clock_of_its_own_to_fall_back_to(self):
-        """Read off the signature: a surviving source would let a later edit silently use it again.
+        """Read off the signature: the constructor holds no date, so each read takes its own.
         `rebuild_interval_seconds` is a monotonic floor and names no date a term can be read from."""
         parameters = set(inspect.signature(PlayDeveloperSubscriptions.__init__).parameters)
         assert parameters == {"self", "credential", "build", "rebuild_interval_seconds",
                               "client", "products"}
-
-    async def test_the_dependency_forwards_the_solver_resolved_instant_to_the_read(self):
-        """The other half: the instant reaches the adapter through the dependency, not by hand."""
-        play = _RecordingPlay()
-
-        await _verify(_push(_rtdn(**SUBSCRIPTION_BODY)), play=play, evaluated_at=LAPSED)
-
-        assert play.calls[0]["evaluated_at"] == LAPSED
 
 
 class TestBothEntryPointsGuardTheValueTheyPutInThePath:
@@ -538,7 +527,7 @@ class TestBothEntryPointsGuardTheValueTheyPutInThePath:
 
         assert await reader.read(package_name=PACKAGE_NAME, purchase_token=purchase_token,
                                  event_type=EVENT_TYPE, notification_uuid=NOTIFICATION_KEY,
-                                 signed_at=SIGNED_AT, evaluated_at=EVALUATED_AT) is None
+                                 signed_at=SIGNED_AT) is None
         assert play_logs.records("error") == [("google_play_unusable_purchase_token", {})]
 
     @pytest.mark.parametrize("package_name", ["", ".", "..", "..."])
@@ -554,7 +543,7 @@ class TestBothEntryPointsGuardTheValueTheyPutInThePath:
         with pytest.raises(InternalError):
             await reader.read(package_name=package_name, purchase_token=PURCHASE_TOKEN,
                               event_type=EVENT_TYPE, notification_uuid=NOTIFICATION_KEY,
-                              signed_at=SIGNED_AT, evaluated_at=EVALUATED_AT)
+                              signed_at=SIGNED_AT)
 
         assert play_logs.records("error") == [("google_play_unusable_package_name", {})]
 
@@ -597,8 +586,7 @@ class TestTheLineItemCountIsMadeVisible:
 
         with pytest.raises(Unavailable) as refusal:
             await reader.read_for_restore(package_name=PACKAGE_NAME,
-                                          purchase_token=PURCHASE_TOKEN,
-                                          evaluated_at=EVALUATED_AT)
+                                          purchase_token=PURCHASE_TOKEN)
 
         assert (refusal.value.stage, refusal.value.status) == (RESTORE_UNPARSEABLE_STAGE, 503)
         assert play_logs.records("error") == [("google_play_unexpected_line_item_count",
@@ -757,8 +745,7 @@ class TestACredentialBootCouldNotReadIsRebuiltRatherThanCachedForThePodsLife:
         reader = self._live_reader(credential=None, build=build)
 
         restored = await reader.read_for_restore(package_name=PACKAGE_NAME,
-                                                 purchase_token=PURCHASE_TOKEN,
-                                                 evaluated_at=EVALUATED_AT)
+                                                 purchase_token=PURCHASE_TOKEN)
 
         assert (restored.tier_id, build.calls) == (TIER_ID, 1)
 
@@ -777,8 +764,7 @@ class TestACredentialBootCouldNotReadIsRebuiltRatherThanCachedForThePodsLife:
 
         with pytest.raises(Unavailable) as refusal:
             await reader.read_for_restore(package_name=PACKAGE_NAME,
-                                          purchase_token=PURCHASE_TOKEN,
-                                          evaluated_at=EVALUATED_AT)
+                                          purchase_token=PURCHASE_TOKEN)
 
         assert refusal.value.stage == RESTORE_UNCONFIGURED_STAGE
 
@@ -912,8 +898,7 @@ class TestAZoneLessStampIsClassifiedRatherThanRaised:
 
         with pytest.raises(Unavailable) as refusal:
             await reader.read_for_restore(package_name=PACKAGE_NAME,
-                                          purchase_token=PURCHASE_TOKEN,
-                                          evaluated_at=EVALUATED_AT)
+                                          purchase_token=PURCHASE_TOKEN)
 
         assert refusal.value.stage == RESTORE_UNPARSEABLE_STAGE
 
