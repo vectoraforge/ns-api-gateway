@@ -331,7 +331,7 @@ class TestTheLockingStatements:
         assert "FOR UPDATE" not in _compiled(session.statements[2])
 
     async def test_the_lower_bound_is_inclusive(self):
-        """A grant whose `starts_at` equals the evaluated instant is already effective."""
+        """A grant whose `starts_at` equals the current time is already effective."""
         session = await self._admitted_session()
         sql = _compiled(session.statements[0])
         assert "core.access_grants.starts_at <= " in sql
@@ -470,8 +470,8 @@ class TestTheChargeReadsTheClockItself:
         assert usage.monthly_period == monthly_period_for(usage.updated_at)
 
 
-class TestTheRolloverIsDerivedFromTheCapturedInstant:
-    """The header's value, computed off the same instant the period is, and never off a clock."""
+class TestTheRolloverIsDerivedFromTheInstantItIsGiven:
+    """The header's value, computed by the same rule the period is, over the datetime handed in."""
 
     @pytest.mark.parametrize(("instant", "expected"), [
         (datetime(2026, 8, 31, 23, 59, 59, tzinfo=UTC), 1),

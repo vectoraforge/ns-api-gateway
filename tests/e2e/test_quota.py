@@ -63,7 +63,7 @@ class TestNoEffectiveGrant:
     async def test_a_not_yet_started_grant_is_no_grant(self, async_client,
                                                        linked_firebase_identity,
                                                        _db_transaction, own_chat, path, body):
-        """`starts_at > evaluated_at`: the row exists, the entitlement has not begun."""
+        """`starts_at` is later than the current time: the row exists, the entitlement has not begun."""
         user, _ = linked_firebase_identity
         now = datetime.now(UTC)
         await seed_grant(_db_transaction, user_id=user.id, starts_at=now + timedelta(days=1))
@@ -75,7 +75,7 @@ class TestNoEffectiveGrant:
     async def test_an_already_ended_grant_is_no_grant(self, async_client,
                                                       linked_firebase_identity,
                                                       _db_transaction, own_chat, path, body):
-        """`ends_at <= evaluated_at`: the row exists, the entitlement is over."""
+        """`ends_at` is at or before the current time: the row exists, the entitlement is over."""
         user, _ = linked_firebase_identity
         now = datetime.now(UTC)
         await seed_grant(_db_transaction, user_id=user.id,
