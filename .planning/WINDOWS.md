@@ -46,7 +46,7 @@ last_updated: 2026-09-12T08:20:17.143Z
 | 29 | 47 | unrun-verify | tests/e2e/test_restore_subscription.py |  | Pre-existing failure not caused by plan 47-01: the four-arms refusal case expects log event proof_rejected, the code emits purchase_proof_rejected. Measured on HEAD 1a3273d with every 47-01 edit reverted. | open |  | 2026-09-12T05:56:25.182Z |  |
 | 30 | 47 | unrun-verify | tests/schema/test_claim_race.py |  | Two assertions derive the expected monthly period from the live clock; a run straddling a UTC month boundary would fail | open |  | 2026-09-12T06:28:34.592Z |  |
 | 31 | 47 | deviation | tests/unit/test_subscription_attribution.py | 964 | Plan 47-08 measured it red: the control case builds an open term one minute past a module-import NOW, so any run longer than a minute between collection and the case closes the term and ingest raises InternalError. Fails under -m '' (131 s), passes alone. Reproduced with a 65 s post-collection sleep. Introduced by 47-05; not fixed in 47-08, which writes no source. | fixed |  | 2026-09-12T08:04:34.354Z | 2026-09-12T08:20:17.143Z |
-| 32 | 47 | lint-warning | tests/unit/test_subscription_attribution.py | 962 | E501 line too long (137 > 120), introduced by the fix commit 5ad4fbd: the trailing explanatory comment on the new call-time clock read overruns the configured 120. Measured by plan 47-08 at HEAD 5ad4fbd - ruff check src tests exits 1 with exactly this one error, where it exited 0 at 9d307df. Not repaired by 47-08, which writes no source. | open |  | 2026-09-12T08:20:12.909Z |  |
+| 32 | 47 | lint-warning | tests/unit/test_subscription_attribution.py | 962 | E501 line too long (137 > 120), introduced by the fix commit 5ad4fbd: the trailing explanatory comment on the new call-time clock read overruns the configured 120. Measured by plan 47-08 at HEAD 5ad4fbd - ruff check src tests exits 1 with exactly this one error, where it exited 0 at 9d307df. Not repaired by 47-08, which writes no source. | fixed | Fixed by the orchestrator in ee7ecb4: the note is shorter and sits above the statement instead of riding on its end. Re-measured at HEAD ee7ecb4 - ruff check src tests prints All checks passed! and exits 0; the bare unit run reports 1921 passed. | 2026-09-12T08:20:12.909Z | 2026-09-12T08:35:00.000Z |
 
 ````json
 [
@@ -429,10 +429,10 @@ last_updated: 2026-09-12T08:20:17.143Z
     "file": "tests/unit/test_subscription_attribution.py",
     "line": 962,
     "description": "E501 line too long (137 > 120), introduced by the fix commit 5ad4fbd: the trailing explanatory comment on the new call-time clock read overruns the configured 120. Measured by plan 47-08 at HEAD 5ad4fbd - ruff check src tests exits 1 with exactly this one error, where it exited 0 at 9d307df. Not repaired by 47-08, which writes no source.",
-    "status": "open",
-    "reason": "",
+    "status": "fixed",
+    "reason": "Fixed by the orchestrator in ee7ecb4: the note is shorter and sits above the statement instead of riding on its end. Re-measured at HEAD ee7ecb4 - ruff check src tests prints All checks passed! and exits 0; the bare unit run reports 1921 passed.",
     "recorded_at": "2026-09-12T08:20:12.909Z",
-    "resolved_at": null
+    "resolved_at": "2026-09-12T08:35:00.000Z"
   }
 ]
 ````
