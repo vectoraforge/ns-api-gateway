@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 47
 current_phase_name: Stop threading an evaluation instant through the layers
 status: executing
-stopped_at: Completed 47-04-PLAN.md
-last_updated: "2026-09-12T06:46:29.970Z"
+stopped_at: Completed 47-05-PLAN.md
+last_updated: "2026-09-12T07:13:39.803Z"
 last_activity: 2026-09-11
 last_activity_desc: Phase 47 execution started
-state_head: b0241c520b544d97cd314cea4382ef7df455556c
+state_head: 7aa9a1892e8bb05e77c140815afa5ef1e142cbb0
 progress:
   total_phases: 22
   completed_phases: 17
   total_plans: 132
-  completed_plans: 128
+  completed_plans: 129
   percent: 77
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 ## Current Position
 
 Phase: 47 (Stop threading an evaluation instant through the layers) — EXECUTING
-Plan: 5 of 8
+Plan: 6 of 8
 Status: Ready to execute
 Progress: [████████████████████] 124/124 plans ([████████░░] 77%)
 
@@ -528,10 +528,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-12T06:46:22.549Z
+**Last session:** 2026-09-12T07:13:39.212Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 47-04-PLAN.md
+Stopped at: Completed 47-05-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -604,6 +604,7 @@ Resume file: None
 | Phase 47 P02 | 2 min | 2 tasks | 2 files |
 | Phase 47 P03 | 23 min | 3 tasks | 12 files |
 | Phase 47 P04 | 20 min | 3 tasks | 10 files |
+| Phase 47 P05 | 24 min | 3 tasks | 14 files |
 
 ## Decisions
 
@@ -806,3 +807,4 @@ Resume file: None
 - [Phase 47]: The Apple term boundary varies the instant, not the expiry: Apple encodes stamps in milliseconds, so a microsecond offset on the expiry is rounded away
 - [Phase 47]: Five store cases now date their open term from the live clock, because a fixed 2026-06-01 term is over once the seam reads its own clock
 - [Phase 47]: The vacuous Play state-map equality row was deleted and its property relocated onto _status_for at microsecond resolution
+- [Phase 47]: The seven subscription writers and both services read their own clock; the restore term check is the pure helper _open_term and the only get_evaluated_at test override is deleted
