@@ -25,7 +25,7 @@ class SyncService:
         """Report the entitlement `user_id` holds at the captured instant, taking no lock and writing nothing."""
         period = monthly_period_for(self.evaluated_at)
 
-        grants = await self.grants_db.read_effective_grants(user_id, self.evaluated_at)
+        grants = await self.grants_db.read_effective_grants(user_id)
         if not grants:
             # Not an error: this is the ordinary answer for a caller who has never claimed a grant.
             return Entitlement(type=EntitlementType.none,

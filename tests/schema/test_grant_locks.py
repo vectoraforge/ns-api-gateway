@@ -47,10 +47,9 @@ def _issuable(statement) -> str:
                                  compile_kwargs={"literal_binds": True}))
 
 
-def _lock_grants(user_id: uuid.UUID, evaluated_at: datetime | None = None) -> str:
+def _lock_grants(user_id: uuid.UUID) -> str:
     """The SQL `GrantsDB.lock_effective_grants` compiles, so there is no mirror left to drift."""
-    return _issuable(_effective_grants_statement(
-        user_id, evaluated_at if evaluated_at is not None else datetime.now(UTC)).with_for_update())
+    return _issuable(_effective_grants_statement(user_id).with_for_update())
 
 
 def _lock_usage(grant_id: uuid.UUID) -> str:

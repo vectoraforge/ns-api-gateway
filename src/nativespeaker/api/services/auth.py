@@ -174,7 +174,7 @@ class AuthService:
         if identity.identity.provider is not IdentityProvider.anonymous:
             raise ClaimantNotAnonymous
 
-        held = await self.grants_db.read_effective_grants(identity.user.id, self.evaluated_at)
+        held = await self.grants_db.read_effective_grants(identity.user.id)
         if len(held) > 1:
             raise MultipleEffectiveGrantsError(len(held), identity.user.id)
         if any(grant.source is AccessGrantSource.anonymous_device_grant for grant in held):
@@ -223,7 +223,7 @@ class AuthService:
         if identity.identity.provider not in (IdentityProvider.google, IdentityProvider.apple):
             raise ClaimantNotRegistered
 
-        held = await self.grants_db.read_effective_grants(identity.user.id, self.evaluated_at)
+        held = await self.grants_db.read_effective_grants(identity.user.id)
         if len(held) > 1:
             # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
             raise MultipleEffectiveGrantsError(len(held), identity.user.id)
@@ -285,7 +285,7 @@ class AuthService:
         # The writer's transaction is unusable either way, and the read below needs a fresh one.
         await self.session.rollback()
         if outcome is ActivationOutcome.lost_race:
-            held = await self.grants_db.read_effective_grants(identity.user.id, self.evaluated_at)
+            held = await self.grants_db.read_effective_grants(identity.user.id)
             if any(grant.source is source for grant in held):
                 return False
             if held:

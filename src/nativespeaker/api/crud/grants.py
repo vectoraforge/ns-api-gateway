@@ -4,6 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -23,16 +24,16 @@ from nativespeaker.api.tables import (
 from nativespeaker.api.tables.identities import IdentityProvider, NativeClaimProvider
 
 
-def _effective_grants_statement(user_id: UUID, evaluated_at: datetime):
-    """Every grant of `user_id` effective at `evaluated_at`, ascending by id."""
+def _effective_grants_statement(user_id: UUID):
+    """Every grant of `user_id` effective now, ascending by id."""
     return (
         select(AccessGrant)
         .where(col(AccessGrant.user_id) == user_id,
                # `== active`, not `!= revoked`: a NULL or a future member must fail closed here.
                col(AccessGrant.status) == AccessGrantStatus.active,
-               col(AccessGrant.starts_at) <= evaluated_at,
+               col(AccessGrant.starts_at) <= func.clock_timestamp(),
                or_(col(AccessGrant.ends_at).is_(None),
-                   col(AccessGrant.ends_at) > evaluated_at))
+                   col(AccessGrant.ends_at) > func.clock_timestamp()))
         # No `.limit(...)`: the caller must see a second effective grant and fail closed on it.
         .order_by(col(AccessGrant.id).asc())
     )
@@ -96,19 +97,17 @@ class GrantsDB:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def lock_effective_grants(self, user_id: UUID,
-                                    evaluated_at: datetime) -> list[AccessGrant]:
-        """Lock and return every effective grant for `user_id` at `evaluated_at`, ascending by id."""
+    async def lock_effective_grants(self, user_id: UUID) -> list[AccessGrant]:
+        """Lock and return every effective grant for `user_id` now, ascending by id."""
         # No eager-loading option here: Postgres rejects FOR UPDATE combined with the join those emit.
         # populate_existing reads the row again, because the identity map holds the old values.
-        statement = (_effective_grants_statement(user_id, evaluated_at)
+        statement = (_effective_grants_statement(user_id)
                      .with_for_update().execution_options(populate_existing=True))
         return list((await self.session.exec(statement)).all())
 
-    async def read_effective_grants(self, user_id: UUID,
-                                    evaluated_at: datetime) -> list[AccessGrant]:
-        """Return every effective grant for `user_id` at `evaluated_at`, ascending by id, taking no lock."""
-        statement = _effective_grants_statement(user_id, evaluated_at)
+    async def read_effective_grants(self, user_id: UUID) -> list[AccessGrant]:
+        """Return every effective grant for `user_id` now, ascending by id, taking no lock."""
+        statement = _effective_grants_statement(user_id)
         return list((await self.session.exec(statement)).all())
 
     async def lock_active_grants(self, user_id: UUID) -> list[AccessGrant]:
@@ -169,7 +168,7 @@ class GrantsDB:
         """Take both lock tiers, then write the grant, its usage row and the identity marker.
         The second member names the arm that refused, and is `None` on every other outcome."""
         marked_active = await self.lock_active_grants(user_id)
-        grants = await self.lock_effective_grants(user_id, evaluated_at)
+        grants = await self.lock_effective_grants(user_id)
         for grant in grants:
             if await self.lock_usage(grant.id) is None:
                 raise MissingUsageRowError(grant.id)
@@ -232,7 +231,7 @@ class GrantsDB:
         The second member names the arm that refused, and is `None` on every other outcome."""
         # First and ascending by id: this set contains the effective one, so one grant-tier order holds.
         marked_active = await self.lock_active_grants(user_id)
-        grants = await self.lock_effective_grants(user_id, evaluated_at)
+        grants = await self.lock_effective_grants(user_id)
         # The usage row is kept rather than discarded: the conversion carries the old counters across.
         locked_usage: dict[UUID, UserMonthlyUsage | None] = {}
         for grant in grants:

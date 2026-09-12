@@ -68,7 +68,7 @@ def writer(account, monkeypatch) -> GrantsDB:
     async def lock_active(self, user_id):
         return []
 
-    async def lock_effective(self, user_id, evaluated_at):
+    async def lock_effective(self, user_id):
         return [superseded]
 
     async def resolve_existing(self, *, issuer, subject):

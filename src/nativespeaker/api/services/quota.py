@@ -47,7 +47,7 @@ class QuotaService:
         async with self.session_factory() as session:
             try:
                 grants_db = GrantsDB(session)
-                grants = await grants_db.lock_effective_grants(user_id, evaluated_at)
+                grants = await grants_db.lock_effective_grants(user_id)
 
                 if not grants:
                     # Labels come from a closed set only: a fixed branch name, never an id or a raw path.

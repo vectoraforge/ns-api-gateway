@@ -120,7 +120,7 @@ class TestSyncWaitsOnNoLock:
         async with harness.factory() as holder:
             grants_db = GrantsDB(holder)
 
-            held = await grants_db.lock_effective_grants(harness.user_id, harness.evaluated_at)
+            held = await grants_db.lock_effective_grants(harness.user_id)
             assert [grant.id for grant in held] == [harness.grant_id], \
                 "control: the holder must really hold the grant row, or sync has nothing to read through"
             usage = await grants_db.lock_usage(harness.grant_id)

@@ -365,13 +365,13 @@ class TestEveryLockedReadIsKeyedOnWhatTheOneBeforeItNamed:
         _grant_row, session = await self._three_reads()
         assert USER_ID in _bound(session.statements[0])
 
-    async def test_both_grant_bounds_carry_the_one_captured_instant(self):
-        """One instant, not a second clock reading: the period the counter rolls over on and the
-        term the grant is selected by must be decided against the same moment."""
+    async def test_both_grant_bounds_ask_the_database_for_the_time(self):
+        """The term the grant is selected by is decided in SQL, so no datetime is sent with it."""
         _grant_row, session = await self._three_reads()
-        instants = [value for value in _bound(session.statements[0]) if isinstance(value, datetime)]
 
-        assert instants == [EVALUATED_AT, EVALUATED_AT]
+        assert [value for value in _bound(session.statements[0])
+                if isinstance(value, datetime)] == []
+        assert _compiled(session.statements[0]).count("clock_timestamp()") == 2
 
     async def test_the_usage_lock_is_keyed_on_the_grant_the_first_lock_returned(self):
         grant, session = await self._three_reads()

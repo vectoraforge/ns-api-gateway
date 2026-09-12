@@ -169,8 +169,8 @@ class TestThePredicateIsOneDefinition:
     """The locking and non-locking reads compile to one text apart from the trailing lock clause."""
 
     async def test_the_grant_reads_differ_only_by_the_lock_clause(self):
-        locking = await _issued(lambda db: db.lock_effective_grants(USER_ID, EVALUATED_AT))
-        non_locking = await _issued(lambda db: db.read_effective_grants(USER_ID, EVALUATED_AT))
+        locking = await _issued(lambda db: db.lock_effective_grants(USER_ID))
+        non_locking = await _issued(lambda db: db.read_effective_grants(USER_ID))
         assert locking != non_locking
         assert _without_the_lock(locking) == non_locking
 
@@ -236,12 +236,12 @@ class TestEveryReadIsKeyedOnWhatTheOneBeforeItNamed:
         _, session = await self._three_reads()
         assert USER_ID in _bound(session.statements[0])
 
-    async def test_both_grant_bounds_carry_the_one_captured_instant(self):
-        """03-sync.md:42: grant selection and the period come from ONE instant, so a second clock
-        reading here would select against a different one than `current_period` reports."""
+    async def test_both_grant_bounds_ask_the_database_for_the_time(self):
+        """The term the grant is selected by is decided in SQL, so no datetime is sent with it."""
         _, session = await self._three_reads()
-        instants = [value for value in _bound(session.statements[0]) if isinstance(value, datetime)]
-        assert instants == [EVALUATED_AT, EVALUATED_AT]
+        assert [value for value in _bound(session.statements[0])
+                if isinstance(value, datetime)] == []
+        assert _compiled(session.statements[0]).count("clock_timestamp()") == 2
 
     async def test_the_usage_read_is_keyed_on_the_grant_the_first_read_returned(self):
         grant, session = await self._three_reads()

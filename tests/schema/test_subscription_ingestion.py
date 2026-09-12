@@ -198,7 +198,7 @@ class _Buyer:
         """The grants the entitlement read itself returns for this buyer at the captured instant."""
         async with self.factory() as session:
             return [grant.id for grant in await GrantsDB(session).lock_effective_grants(
-                self.user_id, self.evaluated_at)]
+                self.user_id)]
 
     async def events(self) -> set[str]:
         """Every committed event row's notification uuid on this case's tier."""

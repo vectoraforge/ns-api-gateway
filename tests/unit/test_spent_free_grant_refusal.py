@@ -52,7 +52,7 @@ def writer(identity_row, monkeypatch) -> GrantsDB:
     async def lock_active(self, user_id):
         return []
 
-    async def lock_effective(self, user_id, evaluated_at):
+    async def lock_effective(self, user_id):
         return []
 
     async def resolve_existing(self, *, issuer, subject):
@@ -83,7 +83,7 @@ def _locks_returning(monkeypatch, *, effective=(), marked_active=()) -> None:
     """Rescript the two lock tiers the `writer` fixture leaves empty, plus the usage lock a
     non-empty effective set makes the writer take before it decides anything."""
 
-    async def lock_effective(self, user_id, evaluated_at):
+    async def lock_effective(self, user_id):
         return list(effective)
 
     async def lock_active(self, user_id):

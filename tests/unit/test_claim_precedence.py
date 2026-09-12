@@ -122,7 +122,7 @@ class _RecordingGrants:
         self.won_by: list[AccessGrant] | None = None
         self.reads = 0
 
-    async def read_effective(self, user_id: UUID, evaluated_at: datetime) -> list[AccessGrant]:
+    async def read_effective(self, user_id: UUID) -> list[AccessGrant]:
         self.timeline.append("read_effective_grants")
         self.session.in_transaction = True
         # Every read after the first is the loser's re-read, taken in the transaction the rollback opened.
