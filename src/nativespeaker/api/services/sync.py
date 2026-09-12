@@ -1,5 +1,5 @@
-"""Auth-state reconciliation: the entitlement one caller holds at one instant, read and never written."""
-from datetime import datetime
+"""Auth-state reconciliation: the entitlement one caller holds, read and never written."""
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -16,14 +16,13 @@ from nativespeaker.api.tables import monthly_period_for
 
 class SyncService:
 
-    def __init__(self, db: AsyncSession, evaluated_at: datetime) -> None:
+    def __init__(self, db: AsyncSession) -> None:
         self.grants_db = GrantsDB(db)
-        # One instant for this request; nothing below it reads the clock again.
-        self.evaluated_at = evaluated_at
 
     async def read_entitlement(self, user_id: UUID) -> Entitlement:
-        """Report the entitlement `user_id` holds at the captured instant, taking no lock and writing nothing."""
-        period = monthly_period_for(self.evaluated_at)
+        """Report the entitlement `user_id` holds, taking no lock and writing nothing."""
+        instant = datetime.now(UTC)
+        period = monthly_period_for(instant)
 
         grants = await self.grants_db.read_effective_grants(user_id)
         if not grants:

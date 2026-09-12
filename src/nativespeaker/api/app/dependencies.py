@@ -1,5 +1,4 @@
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -96,11 +95,6 @@ def get_quota_service(session_factory: async_sessionmaker = Depends(get_session_
     return QuotaService(session_factory=session_factory)
 
 
-def get_evaluated_at() -> datetime:
-    """One instant per request, shared by construction: FastAPI caches this dependency per request."""
-    return datetime.now(UTC)
-
-
 # Defined below the dependencies it declares, because its `Depends()` defaults are evaluated at definition time.
 def get_chat_service(request: Request,
                      db: AsyncSession = Depends(get_db),
@@ -142,9 +136,8 @@ def get_auth_service(db: AsyncSession = Depends(get_db),
                        devicecheck=devicecheck)
 
 
-def get_sync_service(db: AsyncSession = Depends(get_db),
-                     evaluated_at: datetime = Depends(get_evaluated_at)) -> SyncService:
-    return SyncService(db=db, evaluated_at=evaluated_at)
+def get_sync_service(db: AsyncSession = Depends(get_db)) -> SyncService:
+    return SyncService(db=db)
 
 
 def get_subscriptions_service(db: AsyncSession = Depends(get_db)) -> SubscriptionsService:
