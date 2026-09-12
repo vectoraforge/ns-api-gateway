@@ -21,10 +21,11 @@ router = APIRouter(tags=["webhooks"])
                          "pinned Apple root, then records the subscription and its event. It reads "
                          "no Authorization header.")
 async def app_store_notification(
-        notification: VerifiedNotification = Depends(verify_app_store_notification),
+        notification: VerifiedNotification | None = Depends(verify_app_store_notification),
         service: SubscriptionsService = Depends(get_subscriptions_service)) -> Response:
     """Record one verified notification, or answer 200 having written nothing."""
-    await service.ingest(notification)
+    if notification is not None:
+        await service.ingest(notification)
     # An empty body: Apple reads the status code and nothing else.
     return Response(status_code=200)
 

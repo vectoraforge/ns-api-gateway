@@ -168,7 +168,7 @@ def get_restore_service(request: Request,
 
 
 def verify_app_store_notification(request: Request,
-                                  body: AppStoreNotificationRequest) -> VerifiedNotification:
+                                  body: AppStoreNotificationRequest) -> VerifiedNotification | None:
     """Turn the posted envelope into a verified notification, before the handler and before `get_db`."""
     # Never `run_in_threadpool`: with online checks off, no code path in the seam performs I/O.
     return request.app.state.app_store_notifications.verify(body.signedPayload)

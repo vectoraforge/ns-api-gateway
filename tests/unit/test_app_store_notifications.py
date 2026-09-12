@@ -366,16 +366,11 @@ class TestTheValueTypeCarriesThisProjectsFieldNames:
 
         assert verified.event_type == "SOME_FUTURE_TYPE"
 
-    def test_a_notification_with_no_transaction_part_carries_none_throughout(self, chain):
-        verified = _notifications(chain).verify(
-            _mint(chain, _envelope(chain, notification_type="TEST")))
-
-        assert verified.event_type == "TEST"
-        assert (verified.external_id, verified.transaction_id, verified.product_id) == (
-            None, None, None)
-        # No transaction part means no product, so there is no tier to resolve and nothing to grant.
-        assert verified.tier_id is None
-        assert verified.status is SubscriptionStatus.expired
+    def test_a_notification_with_no_transaction_part_is_answered_as_nothing(self, chain):
+        """No transaction part means no product, no tier and nothing to grant, so the seam
+        assembles no value type at all and the route answers 200 having written nothing."""
+        assert _notifications(chain).verify(
+            _mint(chain, _envelope(chain, notification_type="TEST"))) is None
 
 
 class TestApplesFiveStatusesStillMapOneToOne:
@@ -399,21 +394,19 @@ class TestApplesFiveStatusesStillMapOneToOne:
     def test_a_payload_carrying_no_status_at_all_is_verified_and_unwritable(self, chain):
         """WR-20. OQ-2 is answered: `status` is an auto-renewable subscription's state, which the
         types below carry no instance of, so an absent one is a shape and never a bad value."""
-        verified = _notifications(chain).verify(
+        assert _notifications(chain).verify(
             _mint(chain, _envelope(chain, notification_type="CONSUMPTION_REQUEST",
-                                   transaction=_transaction(), status=None)))
-
-        assert (verified.external_id, verified.product_id, verified.tier_id) == (None, None, None)
-        assert verified.event_type == "CONSUMPTION_REQUEST"
+                                   transaction=_transaction(), status=None))) is None
 
     @pytest.mark.parametrize("statusless_type",
                              ["CONSUMPTION_REQUEST", "ONE_TIME_CHARGE", "EXTERNAL_PURCHASE_TOKEN"])
     def test_no_statusless_apple_type_answers_the_500_that_apple_retries_forever(self, chain,
                                                                                 statusless_type):
-        """The defect this replaced: Apple acknowledges 200 only, so a 500 here never clears."""
-        assert isinstance(_notifications(chain).verify(
+        """The defect this replaced: Apple acknowledges 200 only, so a 500 here never clears.
+        Answering nothing is the acknowledgement; raising anything at all is the defect."""
+        assert _notifications(chain).verify(
             _mint(chain, _envelope(chain, notification_type=statusless_type,
-                                   transaction=_transaction(), status=None))), VerifiedNotification)
+                                   transaction=_transaction(), status=None))) is None
 
     def test_a_status_outside_apples_own_enum_still_raises_rather_than_deriving_one(self, chain):
         """The measurement fires: the loud arm is kept for a value present and unrecognized."""
@@ -680,10 +673,12 @@ class TestTheValidityWindowIsTheClaimedSigningDate:
         expired = _build_chain(leaf_valid_to=datetime.now(UTC) - timedelta(days=30))
         backdated = int((time.time() - 90 * 24 * 3600) * 1000)
 
+        # Only the envelope's own date is backdated -- a nested payload is verified against its
+        # own, so this case carries none, and verifying is the whole of what it asserts.
         verified = _notifications(expired).verify(
             _mint(expired, _envelope(expired, signed_date=backdated)))
 
-        assert verified.event_type == "SUBSCRIBED"
+        assert verified is None
 
     def test_the_same_expired_leaf_is_refused_at_a_current_signing_date_control(self):
         """The control: the window is enforced, just against the date the payload claims."""

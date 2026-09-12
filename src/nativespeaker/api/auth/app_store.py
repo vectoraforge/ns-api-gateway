@@ -2,9 +2,8 @@
 A signed payload carries an attribution token: this module holds no logger, so none is logged."""
 from datetime import UTC, datetime
 
-from appstoreserverlibrary.models.JWSRenewalInfoDecodedPayload import JWSRenewalInfoDecodedPayload
 from appstoreserverlibrary.models.JWSTransactionDecodedPayload import JWSTransactionDecodedPayload
-from appstoreserverlibrary.models.Status import Status
+from appstoreserverlibrary.models.Status import Status as AppleStatus
 from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier, VerificationException
 
 from nativespeaker.api.auth.store_notifications import RestoredSubscription, VerifiedNotification
@@ -17,15 +16,14 @@ from nativespeaker.api.errors import (
 )
 from nativespeaker.api.tables.purchases import PurchaseProvider, SubscriptionStatus
 
-# Apple's five statuses, one to one onto `core.subscription_status`.
-_APPLE_STATUSES = {Status.ACTIVE: SubscriptionStatus.active,
-                   Status.EXPIRED: SubscriptionStatus.expired,
-                   Status.BILLING_RETRY: SubscriptionStatus.billing_retry,
-                   Status.BILLING_GRACE_PERIOD: SubscriptionStatus.grace_period,
-                   Status.REVOKED: SubscriptionStatus.revoked}
+_APPLE_STATUSES = {AppleStatus.ACTIVE: SubscriptionStatus.active,
+                   AppleStatus.EXPIRED: SubscriptionStatus.expired,
+                   AppleStatus.BILLING_RETRY: SubscriptionStatus.billing_retry,
+                   AppleStatus.BILLING_GRACE_PERIOD: SubscriptionStatus.grace_period,
+                   AppleStatus.REVOKED: SubscriptionStatus.revoked}
 
 
-def _instant(milliseconds: int | None) -> datetime | None:
+def _ms_to_datetime(milliseconds: int | None) -> datetime | None:
     """Convert one of Apple's UNIX-millisecond stamps, keeping an absent or unusable one absent."""
     if milliseconds is None:
         return None
@@ -40,33 +38,10 @@ def _transaction_status(transaction: JWSTransactionDecodedPayload,
     """The status one signed transaction reports, with no renewal payload to consult."""
     if transaction.revocationDate is not None:
         return SubscriptionStatus.revoked
-    expires_at = _instant(transaction.expiresDate)
+    expires_at = _ms_to_datetime(transaction.expiresDate)
     # Grace and billing retry need the renewal payload, so an Apple restore reports three words only.
     return (SubscriptionStatus.active if expires_at is not None and expires_at > evaluated_at
             else SubscriptionStatus.expired)
-
-
-def _crossed(payload, transaction: JWSTransactionDecodedPayload | None,
-             renewal: JWSRenewalInfoDecodedPayload | None, *,
-             status: SubscriptionStatus, tier_id: str | None) -> VerifiedNotification:
-    """Assemble the value type; the grace-period field comes from the renewal payload alone."""
-    return VerifiedNotification(
-        provider=PurchaseProvider.apple,
-        notification_uuid=payload.notificationUUID,
-        # The raw string, never `notificationType`: the typed attribute is None for an unknown type.
-        event_type=payload.rawNotificationType,
-        external_id=None if transaction is None else transaction.originalTransactionId,
-        transaction_id=None if transaction is None else transaction.transactionId,
-        product_id=None if transaction is None else transaction.productId,
-        tier_id=tier_id,
-        attribution_token=None if transaction is None else transaction.appAccountToken,
-        status=status,
-        # The envelope's own instant: neither nested payload carries a signing date.
-        signed_at=_instant(payload.signedDate),
-        purchased_at=None if transaction is None else _instant(transaction.purchaseDate),
-        expires_at=None if transaction is None else _instant(transaction.expiresDate),
-        grace_period_expires_at=None if renewal is None else _instant(renewal.gracePeriodExpiresDate),
-    )
 
 
 class AppStoreNotifications:
@@ -78,7 +53,7 @@ class AppStoreNotifications:
         # Server-controlled reference data, never a value the store supplied.
         self._products = products
 
-    def verify(self, signed_payload: str) -> VerifiedNotification:
+    def verify(self, signed_payload: str) -> VerifiedNotification | None:
         """Verify the envelope and both nested payloads, then return this project's value type."""
         if self._verifier is None:
             raise Unavailable(stage="app_store_verify")
@@ -93,40 +68,53 @@ class AppStoreNotifications:
         if not payload.notificationUUID or not payload.rawNotificationType:
             raise NotificationRejected(stage="notification_without_identity")
 
-        data = payload.data
-        if data is None or data.signedTransactionInfo is None:
-            # A test or summary notification: verified, and carrying nothing a subscription row needs.
-            return _crossed(payload, None, None, status=SubscriptionStatus.expired, tier_id=None)
+        if payload.data is None or payload.data.signedTransactionInfo is None:
+            return None
 
         try:
-            transaction = self._verifier.verify_and_decode_signed_transaction(data.signedTransactionInfo)
+            transaction = self._verifier.verify_and_decode_signed_transaction(payload.data.signedTransactionInfo)
         except VerificationException as failure:
             raise NotificationRejected(stage=failure.status.name) from failure
         except Exception as failure:
             raise NotificationRejected(stage="payload_unstructurable") from failure
 
-        if data.rawStatus is None:
-            return _crossed(payload, None, None, status=SubscriptionStatus.expired, tier_id=None)
+        if payload.data.rawStatus is None:
+            return None
 
         if transaction.originalTransactionId is None:
             raise NotificationRejected(stage="transaction_without_original_id")
 
         renewal = None
-        if data.signedRenewalInfo is not None:
+        if payload.data.signedRenewalInfo is not None:
             try:
-                renewal = self._verifier.verify_and_decode_renewal_info(data.signedRenewalInfo)
+                renewal = self._verifier.verify_and_decode_renewal_info(payload.data.signedRenewalInfo)
             except VerificationException as failure:
                 raise NotificationRejected(stage=failure.status.name) from failure
             except Exception as failure:
                 raise NotificationRejected(stage="payload_unstructurable") from failure
 
         # Keep this check below the last verification arm. A 500 above it makes Apple retry a bad payload.
-        status = None if data.status is None else _APPLE_STATUSES.get(data.status)
+        status = _APPLE_STATUSES.get(payload.data.status) if payload.data.status else None
         if status is None:
             raise UnknownStoreSubscriptionStatus(PurchaseProvider.apple)
 
-        return _crossed(payload, transaction, renewal, status=status,
-                        tier_id=self._tier_for(transaction.productId))
+        return VerifiedNotification(
+            provider=PurchaseProvider.apple,
+            notification_uuid=payload.notificationUUID,
+            event_type=payload.rawNotificationType,
+            status=status,
+            external_id=transaction.originalTransactionId,
+            transaction_id=transaction.transactionId,
+            product_id=transaction.productId,
+            tier_id=self._tier_for(transaction.productId),
+            attribution_token=transaction.appAccountToken,
+            signed_at=_ms_to_datetime(payload.signedDate),
+            purchased_at=_ms_to_datetime(transaction.purchaseDate),
+            expires_at=_ms_to_datetime(transaction.expiresDate),
+            # The grace-period field comes from the renewal payload, absent on most notifications.
+            grace_period_expires_at=(None if renewal is None
+                                     else _ms_to_datetime(renewal.gracePeriodExpiresDate)),
+        )
 
     def verify_transaction(self, signed_transaction: str,
                            evaluated_at: datetime) -> RestoredSubscription:
@@ -153,8 +141,8 @@ class AppStoreNotifications:
             tier_id=self._tier_for(transaction.productId),
             attribution_token=transaction.appAccountToken,
             status=_transaction_status(transaction, evaluated_at),
-            purchased_at=_instant(transaction.purchaseDate),
-            expires_at=_instant(transaction.expiresDate),
+            purchased_at=_ms_to_datetime(transaction.purchaseDate),
+            expires_at=_ms_to_datetime(transaction.expiresDate),
             # Apple's grace window lives in the renewal payload, which this proof does not carry.
             grace_period_expires_at=None)
 
