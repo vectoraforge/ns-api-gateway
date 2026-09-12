@@ -2,7 +2,7 @@
 phase: 47-stop-threading-an-evaluation-instant-through-the-layers
 plan: 08
 subsystem: infra
-tags: [pytest, ruff, record, roadmap, entitlements, regression]
+tags: [pytest, ruff, record, roadmap, entitlements, phase-gate]
 
 requires:
   - phase: 47-stop-threading-an-evaluation-instant-through-the-layers
@@ -10,10 +10,10 @@ requires:
   - phase: 47-stop-threading-an-evaluation-instant-through-the-layers
     provides: "Plan 47-07: the deleted dependency and the absence guard that makes criteria 1, 2 and 4 executable"
 provides:
-  - The three suites and the linter measured on this run, twice - at 9d307df and again at 5ad4fbd
+  - The three suites and the linter measured on this run three times - at 9d307df, at 5ad4fbd and at 9a44f20
   - Each of the five roadmap criteria re-derived with the command that proves it
   - A new defect found and named - the one-minute open term in the attribution suite, since fixed in 5ad4fbd and verified here
-  - A ruff regression the fix carried in, found only because the commands were re-run rather than copied
+  - A ruff regression the first fix carried in, caught only because the commands were re-run rather than copied - since fixed in ee7ecb4 and re-measured clean here
   - The ROADMAP Phase 47 entry closed with measured annotations, criterion 5 recorded NOT MET
   - STATE.md carrying D-01, D-02 and the forward notes for Phases 49 and 50
 affects: [48, 49, 50]
@@ -43,7 +43,7 @@ key-decisions:
   - "A second failure was found, and it was this phase's own: a one-minute open term in tests/unit/test_subscription_attribution.py, introduced by plan 47-05. Fixed at the root by the orchestrator in 5ad4fbd."
   - "This plan repaired nothing, before or after the fix. It writes no source, and that constraint did not lapse when the tree changed underneath it."
   - "The fix was verified rather than accepted: the diff was read, its history claim was checked and found overstated in one detail, and every command was re-run here."
-  - "The re-run surfaced a regression nobody reported: 5ad4fbd introduced an E501, so ruff is no longer clean and a must_haves truth is broken."
+  - "The re-run surfaced a regression nobody reported: 5ad4fbd introduced an E501 and broke the must_haves truth that ruff is clean. Reporting it rather than repairing it is what got it fixed at the root in ee7ecb4, re-measured clean here."
   - "Criterion 3 is closed as met in spirit with the D-01 deviation named in its own annotation, not in a footnote."
   - "The record was still closed, red criterion and all. Stopping without a SUMMARY would leave the phase record open and say nothing."
 
@@ -102,13 +102,13 @@ coverage:
     description: "Criterion 5 - the three suites all exit 0"
     verification:
       - kind: integration
-        ref: ".venv/bin/pytest -q -m schema tests/schema (291 passed, exit 0) — re-measured at HEAD 5ad4fbd"
+        ref: ".venv/bin/pytest -q -m schema tests/schema (291 passed, exit 0) — re-measured at HEAD 9a44f20"
         status: pass
       - kind: e2e
-        ref: ".venv/bin/pytest -q -m e2e tests/e2e (360 passed, 1 failed, exit 1) — re-measured at HEAD 5ad4fbd"
+        ref: ".venv/bin/pytest -q -m e2e tests/e2e (360 passed, 1 failed, exit 1) — re-measured at HEAD 9a44f20"
         status: fail
       - kind: regression
-        ref: ".venv/bin/pytest -q -m '' (2572 passed, 1 failed, exit 1) — re-measured at HEAD 5ad4fbd"
+        ref: ".venv/bin/pytest -q -m '' (2572 passed, 1 failed, exit 1) — re-measured at HEAD 9a44f20"
         status: fail
     human_judgment: true
     rationale: "NOT met as literally worded, and unreachable: the single remaining failure is the pre-existing restore log-event case, which predates the phase. Excluding that one known case the criterion reads MET — zero failures are attributable to Phase 47. A human decides whether the phase ships with that one case open."
@@ -116,10 +116,12 @@ coverage:
     description: "ruff is clean over src and tests (the plan's own must_haves truth)"
     verification:
       - kind: other
-        ref: "ruff check src tests at HEAD 5ad4fbd — E501 line too long (137 > 120) at tests/unit/test_subscription_attribution.py:962, exit 1"
-        status: fail
-    human_judgment: true
-    rationale: "A regression introduced by the fix commit 5ad4fbd, measured against a clean ruff reading at 9d307df. Cosmetic and one line, but this plan writes no source and does not repair it."
+        ref: ".venv/bin/ruff check src tests at HEAD 9a44f20 — All checks passed!, exit 0"
+        status: pass
+      - kind: other
+        ref: "uv run ruff check src tests at HEAD 9a44f20 — All checks passed!, exit 0 (the second form, run so the two agree)"
+        status: pass
+    human_judgment: false
   - id: D6
     description: "The ROADMAP entry and STATE.md carry the close, and the ROADMAP diff touches only the Phase 47 entry and its progress row"
     verification:
@@ -143,11 +145,13 @@ status: complete
 
 **Four criteria are met and re-derived here with the command that proves each; the one defect this phase introduced was found at the gate and fixed at the root in `5ad4fbd`, and criterion 5 now fails on one pre-existing case alone — so it is unmet as literally worded and met once that case is excluded.**
 
-> **Re-derived 2026-09-12 at HEAD `5ad4fbd`.** This SUMMARY was first written at `9d307df`,
-> when `-m ''` reported **2 failed**. The orchestrator then fixed the defect this gate found,
-> and every command below was re-run by this plan against the corrected tree — not copied from
-> the orchestrator and not carried over from the first pass. Two things changed and both are
-> recorded: the attribution failure is **gone**, and `ruff` is **no longer clean**.
+> **Re-derived twice, most recently 2026-09-12 at HEAD `9a44f20`.** This SUMMARY was first
+> written at `9d307df`, when `-m ''` reported **2 failed** and `ruff` was clean. Two rounds of
+> fixes followed, and this plan re-ran every command itself after each — never copying the
+> orchestrator's numbers and never carrying its own forward. The path the readings trace:
+> `5ad4fbd` fixed the defect this gate found and **carried an E501 in with it**, which only the
+> re-run caught; `ee7ecb4` then fixed that. **At `9a44f20` the attribution failure is gone and
+> `ruff` is clean again.** One failure remains and it predates the phase.
 
 ## Performance
 
@@ -165,8 +169,9 @@ status: complete
 - **A new defect was found, and it was this phase's own.** It was named, located to the
   line, and proved by a probe rather than by reading the code. **It is now fixed at the root
   in `5ad4fbd`, and this plan re-measured the tree to verify the fix rather than accepting it.**
-- **A second regression arrived with that fix and is reported, not hidden:** `ruff` is no
-  longer clean. One E501 on the fix's own line.
+- **A second regression arrived with that fix and was reported, not hidden:** one E501 on the
+  fix's own line, which broke `ruff`. Reporting it is what got it fixed — `ee7ecb4` — and
+  `ruff` is measured clean here in both invocation forms.
 - The five roadmap criteria are re-derived with their commands and their answers, twice —
   once at `9d307df` and again at `5ad4fbd` after the fix.
 - The ROADMAP entry and STATE.md carry the close, and the ROADMAP diff touches only the
@@ -183,41 +188,58 @@ as the first would claim the e2e and schema suites passed when they never ran.**
 
 | Command | Result | Exit |
 |---|---|---|
-| `.venv/bin/pytest -q -m ''` | **2572 passed, 1 failed**, 131.10 s | **1** |
-| `.venv/bin/pytest -q -m e2e` | **360 passed, 1 failed**, 45.44 s | **1** |
-| `.venv/bin/pytest -q -m schema` | **291 passed**, 33.94 s | 0 |
-| `ruff check src tests` | **`Found 1 error.`** — E501 | **1** |
+| `.venv/bin/pytest -q -m ''` | **2572 passed, 1 failed**, 137.03 s | **1** |
+| `.venv/bin/pytest -q -m e2e` | **360 passed, 1 failed**, 44.15 s | **1** |
+| `.venv/bin/pytest -q -m schema` | **291 passed**, 33.76 s | 0 |
+| `.venv/bin/ruff check src tests` | **`All checks passed!`** | **0** |
+| `uv run ruff check src tests` | **`All checks passed!`** | **0** |
 
 Two extra readings, taken for context and not asked for by the criterion:
 
 | Command | Result | Exit |
 |---|---|---|
-| `.venv/bin/pytest tests/unit -q` (the bare unit suite) | **1921 passed**, 56.37 s | 0 |
+| `.venv/bin/pytest tests/unit -q` (the bare unit suite) | **1921 passed**, 55.46 s | 0 |
 | `.venv/bin/ty check` | **311 diagnostics** | 1 |
 
-**The first pass, at HEAD `9d307df`, kept for the comparison it makes possible:**
+The single failure, named by the run rather than summarised:
 
-| Command | Result | Exit |
-|---|---|---|
-| `.venv/bin/pytest -q -m ''` | 2571 passed, **2 failed**, 2573 collected, 131.11 s | 1 |
-| `.venv/bin/pytest -q -m e2e` | 360 passed, 1 failed, 50.98 s | 1 |
-| `.venv/bin/pytest -q -m schema` | 291 passed, 34.13 s | 0 |
-| `uv run ruff check src tests` | **`All checks passed!`** | **0** |
-| `.venv/bin/pytest tests/unit -q` | 1921 passed, 57.74 s | 0 |
-| `.venv/bin/ty check` | 311 diagnostics | 1 |
+```
+FAILED tests/e2e/test_restore_subscription.py::TestEveryRejectedProofOfBothStoresAnswersOneBody
+       ::test_the_four_arms_answer_bodies_equal_to_each_other_and_write_nothing
+```
 
-**What moved between the two passes, and why.** One source commit sits between them, `5ad4fbd`,
-and it touches one file. The `-m ''` run went from 2 failures to **1** — the attribution control
-is fixed. The unit count is unchanged at 1921, because the case was already collected and was
-already passing in the short unit run. **And `ruff` went from clean to one error**, which is the
-subject of its own section below.
+**The two earlier passes, kept for the comparison they make possible.** Every row was measured
+by this plan at the commit named.
 
-`ruff` was run in both forms in both passes — `.venv/bin/ruff check src tests` and the plan's
-literal `uv run ruff check src tests`. The two forms agree with each other in both passes.
+| Command | at `9d307df` | at `5ad4fbd` | at `9a44f20` |
+|---|---|---|---|
+| `-m ''` | 2571 passed, **2 failed** | 2572 passed, 1 failed | **2572 passed, 1 failed** |
+| `-m e2e` | 360 passed, 1 failed | 360 passed, 1 failed | **360 passed, 1 failed** |
+| `-m schema` | 291 passed | 291 passed | **291 passed** |
+| `ruff` (both forms) | `All checks passed!` | **`Found 1 error.`** | **`All checks passed!`** |
+| bare unit | 1921 passed | 1921 passed | **1921 passed** |
+| `ty check` | 311 | 311 | **311** |
 
-`ty check` reads 311 in both passes, against the **316** this phase started from. Five
+**What moved, and why.** Two source commits sit across the three passes, and each touches the
+same one file.
+
+- **`5ad4fbd`** fixed the attribution control, so `-m ''` went from 2 failures to **1**. The
+  unit count did not move, because that case was already collected and already passing in the
+  short unit run. **The same commit took `ruff` from clean to one error**, which nobody had
+  reported and which only re-running the command caught.
+- **`ee7ecb4`** moved that comment onto its own line, and `ruff` is clean again. No test count
+  moved, which is the control: a whitespace-and-comment change must not alter a suite, and it
+  did not.
+
+**Nothing else moved across three passes.** `-m e2e` and `-m schema` are identical in all
+three, and the one failing case is the same case every time.
+
+`ruff` was run in both forms in every pass — `.venv/bin/ruff check src tests` and the plan's
+literal `uv run ruff check src tests`. The two forms agree with each other in all three.
+
+`ty check` reads 311 in every pass, against the **316** this phase started from. Five
 diagnostics went and none was added, measured by earlier plans with a diff of the sorted sets
-rather than a count. `ty` is not part of any criterion, and the fix did not move it.
+rather than a count. `ty` is in no criterion, and neither fix moved it.
 
 ### The delta from the baseline, accounted for
 
@@ -341,40 +363,49 @@ passing case than before, with the attribution case absent from the failure list
 `.planning/WINDOWS.md` entry 31 is now `status: fixed` with its `resolved_at` set and the
 reason recorded.
 
-**The fix carried one thing in with it**, which is the next section and is why `ruff` is no
-longer clean.
+**The fix carried one thing in with it**, which is the next section. It has since been fixed
+too.
 
-### Failure 3 — `ruff` is no longer clean, and the fix commit is what broke it
+### Failure 3 — an E501 the first fix carried in — **FIXED in `ee7ecb4`**
 
-`ruff check src tests` exits **1** at HEAD `5ad4fbd` and prints exactly one error:
-
-```
-E501 Line too long (137 > 120)
-   --> tests/unit/test_subscription_attribution.py:962:121
-```
-
-The line is the fix's own, and it is 137 characters because the explanatory comment rides on
-the end of the statement:
+**What happened.** `5ad4fbd` put its explanatory note on the end of the statement, making the
+line **137 characters** against the `line-length = 120` set in `pyproject.toml:79`:
 
 ```python
         ends_at = datetime.now(UTC) + timedelta(minutes=1)  # The term must be open when ingest reads, not when this module was imported.
 ```
 
-`pyproject.toml:79` sets `line-length = 120`.
+`ruff check src tests` then exited **1** with exactly one error, `E501 Line too long (137 >
+120)` at `tests/unit/test_subscription_attribution.py:962:121`.
 
-**Measured as a before-and-after, not inferred.** This plan ran `ruff check src tests` at
-`9d307df` in its first pass, in both invocation forms, and both printed `All checks passed!`
-and exited 0. It ran both forms again at `5ad4fbd` and both exit 1 with this one error. The
-only source commit between the two readings is `5ad4fbd`, and the only file it touches is this
-one.
+**It was caught as a before-and-after, not inferred.** This plan ran `ruff` at `9d307df` in its
+first pass, in both invocation forms, and both printed `All checks passed!` and exited 0. It
+ran both forms again at `5ad4fbd` and both exited 1 with that one error. The only source commit
+between the two readings was `5ad4fbd`, and the only file it touched was this one. **Nobody had
+reported this. It surfaced only because the commands were re-run instead of copied** — which is
+the whole argument for this plan's convention.
 
-**This breaks one of the plan's own `must_haves` truths** — *"ruff is clean over src and
-tests"* — which was true when this SUMMARY was first written and is not true now.
+**It broke one of the plan's own `must_haves` truths** — *"ruff is clean over src and tests"* —
+which was true when this SUMMARY was first written and was not true at `5ad4fbd`.
 
-It is not repaired here: this plan writes no source, and that constraint did not lapse because
-the tree changed underneath it. The remedy is cosmetic — move the comment to its own line above
-the statement, which is what the surrounding file already does. Logged as
-`.planning/WINDOWS.md` entry 32, `kind: lint-warning`, open.
+**This plan did not repair it, and that was the right call.** The no-source constraint did not
+lapse because the tree changed underneath it, and a lint fix landing in the commit that reports
+it would have destroyed the report's own evidence. The remedy was named instead: move the
+comment to its own line above the statement, which is what the surrounding file already does.
+
+**`ee7ecb4` did exactly that**, with a shorter note:
+
+```python
+        # The term must be open when ingest reads, not at module import.
+        ends_at = datetime.now(UTC) + timedelta(minutes=1)
+```
+
+The statement and the assertion are untouched; the comment line is 72 characters.
+**Re-measured here at HEAD `9a44f20`: `.venv/bin/ruff check src tests` and `uv run ruff check
+src tests` both print `All checks passed!` and exit 0, and the bare unit run is 1921 passed,
+unchanged — the control that a comment move altered no behaviour.** `.planning/WINDOWS.md`
+entry 32 is `status: fixed`, closed by the orchestrator in `9a44f20` in both the table row and
+the JSON block.
 
 ## Task 2 — the five criteria re-derived
 
@@ -533,9 +564,9 @@ the measurement. It is stated only so the next reader can see precisely how much
 is this phase's debt, which is none of it.
 
 **A fourth command, outside the criterion but inside the plan's own `must_haves`:** `ruff check
-src tests` now exits **1**. That truth — *"ruff is clean over src and tests"* — held at
-`9d307df` and does not hold at `5ad4fbd`. It is a one-line E501 in the fix commit, detailed
-under Failure 3.
+src tests` prints `All checks passed!` and exits **0** in both invocation forms. That truth —
+*"ruff is clean over src and tests"* — held at `9d307df`, was broken at `5ad4fbd` by an E501
+this plan's re-run caught, and holds again at `9a44f20`. Detailed under Failure 3.
 
 ## Task 2 — what this phase gave up
 
@@ -577,9 +608,10 @@ time**, not at import, and prefer a window measured in days.
 | 828 | `- [ ] 47-08-PLAN.md` → `- [x]` |
 | 936 | the progress row: `7/8 \| In Progress` → `8/8 \| Executed — criterion 5 unmet \| 2026-09-12` |
 
-**Revised after the fix, in the same four hunks.** Criterion 5's annotation was rewritten to the
-re-derived verdict at `5ad4fbd`: one failing case, pre-existing, none of it this phase's, plus the
-new `ruff` regression named beside it. The progress row now reads `Executed — criterion 5 unmet
+**Revised twice after the fixes, inside the same hunks.** Criterion 5's annotation now carries the
+verdict re-derived at `9a44f20`: one failing case, pre-existing, none of it this phase's. The
+`ruff` regression `5ad4fbd` carried in was named there while it stood and is recorded as resolved
+history now that `ee7ecb4` has closed it. The progress row reads `Executed — criterion 5 unmet
 (one pre-existing case)`, which is the same verdict said in four words.
 
 No other phase entry was touched. The three later phase entries are present, count `3`. The eight
@@ -643,8 +675,10 @@ round a real pass down either.
 **The fix was verified, not accepted on report.** The orchestrator's commit was read as a diff,
 its claim about the file's history was checked independently and found overstated in one detail
 (two phase-47 commits did touch that e2e file, though not the expectation lines), and every
-command was re-run here rather than copied. That re-run is what surfaced the `ruff` regression,
-which no one had reported.
+command was re-run here rather than copied. **That re-run is what surfaced the `ruff` regression,
+which no one had reported** — and reporting it rather than repairing it is what got it fixed at
+the root in `ee7ecb4`. The same discipline was applied to that second fix: it was re-measured
+here too, rather than accepted.
 
 **The new defect was diagnosed to the line and proved, not guessed.** A case that passes alone and
 fails in a long run is the classic shape of a stale module-level clock read, but that shape is a
@@ -687,20 +721,25 @@ by the orchestrator**
   `WINDOWS.md` entry 31 is closed, `status: fixed`.
 - **Committed in:** `6a89283` (the report), `5ad4fbd` (the fix, by the orchestrator)
 
-**3. [Rule 1 - Bug] The fix commit introduced an E501 and it is reported, not repaired**
+**3. [Rule 1 - Bug] The first fix commit introduced an E501; it was reported, not repaired — and
+then fixed**
 - **Found during:** the re-derivation at HEAD `5ad4fbd`
-- **Issue:** `tests/unit/test_subscription_attribution.py:962` is 137 characters against
-  `line-length = 120`. `ruff check src tests` exits 1 with exactly this one error. It exited 0 in
-  both invocation forms at `9d307df`, measured by this plan in its first pass, and `5ad4fbd` is
+- **Issue:** `tests/unit/test_subscription_attribution.py:962` was 137 characters against
+  `line-length = 120`. `ruff check src tests` exited 1 with exactly this one error. It exited 0 in
+  both invocation forms at `9d307df`, measured by this plan in its first pass, and `5ad4fbd` was
   the only source commit between the two readings.
-- **Why it was not fixed:** the same constraint as deviation 1. This plan writes no source, and
-  that did not lapse because the tree changed underneath it. Fixing a lint error would also mean
-  a source edit landing in the commit that reports it.
-- **What was done instead:** logged as `WINDOWS.md` entry 32 (`lint-warning`, open), written into
+- **Why this plan did not fix it:** the same constraint as deviation 1. This plan writes no
+  source, and that did not lapse because the tree changed underneath it. A lint fix landing in
+  the commit that reports the lint error would also have destroyed the report's own evidence.
+- **What was done instead:** logged as `WINDOWS.md` entry 32 (`lint-warning`), written into
   `deferred-items.md` with the one-line remedy, and named in the ROADMAP criterion-5 annotation
-  and in STATE.md. It breaks the plan's own `must_haves` truth *"ruff is clean over src and
-  tests"*, and the SUMMARY says so.
-- **Committed in:** n/a — a record, not a change
+  and in STATE.md, because it broke the `must_haves` truth *"ruff is clean over src and tests"*.
+- **Outcome:** the orchestrator fixed it in `ee7ecb4`, by the exact remedy this plan named — the
+  note is shorter and sits on its own line above the statement. Re-measured here at `9a44f20`:
+  `ruff` prints `All checks passed!` and exits 0 in both forms, and the bare unit run is
+  unchanged at 1921 passed. `WINDOWS.md` entry 32 is closed, `status: fixed`. **The truth holds
+  again.**
+- **Committed in:** `8223962` (the report), `ee7ecb4` (the fix, by the orchestrator)
 
 **2. [Rule 3 - Blocking] Task 2's fourth verify command cannot pass**
 - **Found during:** Task 2
@@ -776,18 +815,19 @@ None - no external service configuration required.
   5 stands.** `/gsd:verify-phase 47` is the decision point, and this record is deliberately shaped
   so that command meets the red criterion first. **What that command is deciding is now narrow and
   well-defined:** whether the phase ships with one pre-existing test-vocabulary mismatch and one
-  cosmetic lint error open. No defect of this phase's own design remains.
-- **Two entries are open in `.planning/WINDOWS.md`, and a third is now closed.**
+  test-vocabulary mismatch open. No defect of this phase's own design remains, and the two that
+  were its own — the one-minute term and the E501 the first fix carried in — are both closed.
+- **One entry is open in `.planning/WINDOWS.md` for this phase's gate, and two are closed.**
   - **Closed — entry 31**, the one-minute open term. Fixed at the root in `5ad4fbd`, verified
     here, `status: fixed` with its reason recorded.
   - **Open — the pre-existing `proof_rejected` case.** The case asserts the wire error **code**
     where the logger writes the exception **class name**. A one-word fix in the case, or a
     rename of `PurchaseProofRejected`, and it belongs to whoever owns the restore vocabulary.
     It is the whole of criterion 5's remaining shortfall.
-  - **Open — entry 32**, the E501 in `tests/unit/test_subscription_attribution.py:962`,
-    introduced by `5ad4fbd`. One line, cosmetic, and it is what stops `ruff` from being clean.
-    **Whoever picks this up should take it first: it is the cheapest of the three and it
-    restores a `must_haves` truth.**
+  - **Closed — entry 32**, the E501 in `tests/unit/test_subscription_attribution.py:962` that
+    `5ad4fbd` carried in. Fixed in `ee7ecb4` by moving the note onto its own line, re-measured
+    clean here in both `ruff` forms, `status: fixed`. **`ruff` is clean over `src` and `tests`
+    again, so that `must_haves` truth holds.**
 - **Phase 48 is unblocked and always was** — its roadmap entry says it is independent of Phase 47.
 - **Phase 49 sees the shape it planned against.** `PlaySubscriptionSource` is still declared with
   both methods free of the datetime, `ChallengesDB` is still built in the lifespan behind
@@ -811,4 +851,5 @@ Every file named in `key-files` exists on disk, all commits of this plan are rea
 `git log`, and Phase 47 holds 8 PLAN files and 8 SUMMARY files.
 
 **This self-check says the plan's own artifacts are in place. It does not say the phase is green.
-Criterion 5 is measured red and is recorded as such, and `ruff` is red too.**
+Criterion 5 is measured red and is recorded as such — on one pre-existing case, and on nothing
+this phase caused. `ruff` is clean.**

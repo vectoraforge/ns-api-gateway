@@ -5,11 +5,11 @@ milestone_name: Authentication & Entitlements
 current_phase: 47
 current_phase_name: Stop threading an evaluation instant through the layers
 status: executed
-stopped_at: "Completed 47-08-PLAN.md — re-derived at 5ad4fbd; criterion 5 unmet on one pre-existing case, plus an open E501"
-last_updated: "2026-09-12T08:24:06.957Z"
+stopped_at: "Completed 47-08-PLAN.md — re-derived at 9a44f20; criterion 5 unmet on one pre-existing case, ruff clean"
+last_updated: "2026-09-12T09:52:55.194Z"
 last_activity: 2026-09-12
-last_activity_desc: Phase 47 gate re-derived at 5ad4fbd after the fix; criterion 5 still unmet
-state_head: 5ad4fbd01abf92fd4b385f17e418a522cad56eb1
+last_activity_desc: Phase 47 gate re-derived at 9a44f20; criterion 5 still unmet on one pre-existing case
+state_head: 9a44f2004281cbcc8f8bb3bccbe5f0f1fb43fb1a
 progress:
   total_phases: 22
   completed_phases: 17
@@ -31,8 +31,8 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 
 Phase: 47 (Stop threading an evaluation instant through the layers) — EXECUTED, criterion 5 unmet
 Plan: 8 of 8
-Status: All eight plans executed 2026-09-12. NOT verified. Gate re-derived at 5ad4fbd: one failing
-        case, pre-existing, none of it this phase's — plus one open E501 the fix carried in.
+Status: All eight plans executed 2026-09-12. NOT verified. Gate re-derived at 9a44f20: one failing
+        case, pre-existing, none of it this phase's. ruff clean; both self-inflicted defects closed.
 Progress: [████████████████████] 132/132 plans ([████████░░] 77%)
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07, 45-05, 45-09 and
@@ -57,7 +57,7 @@ method that stamps from it.** Two SQL comparisons moved database-side under **D-
 **Criterion 4 is executable rather than claimed:** `tests/unit/test_sync_clock_capture.py` and its 21
 cases are deleted, and `tests/unit/test_instant_is_not_threaded.py` replaces them with 7 cases and
 four controls, proved to fail on an injected reintroduction by a mutation probe that named the file
-and the spelling. **Criterion 5 is red, re-derived at HEAD `5ad4fbd` in plan 47-08's own run and not copied:
+and the spelling. **Criterion 5 is red, re-derived at HEAD `9a44f20` in plan 47-08's own run and not copied:
 `-m schema` 291 passed exit 0, `-m e2e` 360 passed 1 failed exit 1, `-m ''` 2572 passed 1 failed exit
 1 over 2573 collected against a 2570 pre-phase baseline.** **There is exactly one failing case in the
 repository, it is the same case in both suites, and none of it is this phase's.** It is the restore
@@ -75,12 +75,16 @@ run; plan 47-08 proved it with a throwaway plugin sleeping 65 s after collection
 at the same raise site. Plan 47-05 introduced it — its sibling terms are ten to thirty days out and
 this one was one minute. **Commit `5ad4fbd` fixed it by computing the term at call time**, and plan
 47-08 re-ran the suite against the corrected tree to verify rather than accept the report.
-**One regression arrived with that fix and is open:** `ruff check src tests` now exits **1** with a
-single `E501` at `tests/unit/test_subscription_attribution.py:962` (137 > 120), where it printed
-`All checks passed!` at `9d307df` — measured in both invocation forms at both commits. It is one
-line and cosmetic, and it is the cheapest thing standing between this phase and a clean gate.
-`.planning/WINDOWS.md` carries all three: entry 31 closed `fixed`, entry 32 open for the E501, and
-the pre-existing restore case still open. **Recorded as given up rather than hidden:** the one-evaluation-time
+**One regression arrived with that fix and is now closed too:** `5ad4fbd` left an `E501` at
+`tests/unit/test_subscription_attribution.py:962` (137 > 120) that took `ruff` from clean to exit
+1, where it had printed `All checks passed!` at `9d307df`. **Nobody reported it; it surfaced only
+because plan 47-08 re-ran the command instead of copying the number** — which is the case for this
+project's measure-don't-copy convention, made once in practice rather than argued. `ee7ecb4` moved
+the note onto its own line, and plan 47-08 re-measured at HEAD `9a44f20`: both `ruff` forms print
+`All checks passed!` and exit **0**, with the bare unit run unchanged at 1921 passed as the
+control. `.planning/WINDOWS.md` carries entry 31 `fixed`, entry 32 `fixed`, and the pre-existing
+restore case still open — **the last is the whole of what stands between this phase and a green
+gate.** **Recorded as given up rather than hidden:** the one-evaluation-time
 property is gone and the invariant stating it was **struck** under **D-02** rather than carried as a
 permanent flagged conflict; the exact-equality expiry boundary in the challenge store is now asserted
 over compiled SQL, because a live database clock never lands on a stored value; a superseded grant's
@@ -590,10 +594,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-12T08:24:06.353Z
+**Last session:** 2026-09-12T09:52:54.573Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 47-08-PLAN.md — re-derived at 5ad4fbd; criterion 5 unmet on one pre-existing case
+Stopped at: Completed 47-08-PLAN.md — re-derived at 9a44f20; criterion 5 unmet on one pre-existing case
 Resume file: None
 
 ## Performance Metrics

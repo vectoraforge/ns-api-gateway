@@ -24,7 +24,8 @@ the unrelated pre-existing restore case below. `.venv/bin/pytest tests/unit -q` 
 **1921 passed, exit 0**.
 
 **One side effect the fix carried in, recorded below rather than hidden:** the new line
-overruns the line-length limit, so `ruff` is no longer clean. See the next section.
+overran the line-length limit and broke `ruff`. That is fixed too, in `ee7ecb4`. See the
+next section.
 
 The original diagnosis follows, kept as written.
 
@@ -58,7 +59,21 @@ The fix is a wider window, or an open term derived at call time rather than at
 import. Discovered 2026-09-12. **Fixed the same day in `5ad4fbd`, by the second
 of those two routes.**
 
-## `ruff` is no longer clean — E501 introduced by the fix commit `5ad4fbd`
+## E501 introduced by the fix commit `5ad4fbd` — **CLOSED 2026-09-12 in `ee7ecb4`**
+
+**Resolved.** `ee7ecb4`, `style(47-05): move the open-term note above the statement`, shortened
+the note and put it on its own line above the statement. The statement and the assertion are
+untouched, and the comment line is 72 characters.
+
+Re-measured by plan 47-08 at HEAD `9a44f20`, in both invocation forms:
+`.venv/bin/ruff check src tests` and `uv run ruff check src tests` each print
+`All checks passed!` and exit **0**. The bare unit run is **1921 passed**, unchanged — the
+control that a comment move altered no behaviour. `.planning/WINDOWS.md` entry 32 is
+`status: fixed`.
+
+The defect as it was found follows, kept as written.
+
+### The E501 as it was found
 
 `tests/unit/test_subscription_attribution.py:962` is **137 characters** against the
 `line-length = 120` set in `pyproject.toml:79`:
@@ -67,8 +82,8 @@ of those two routes.**
         ends_at = datetime.now(UTC) + timedelta(minutes=1)  # The term must be open when ingest reads, not when this module was imported.
 ```
 
-`ruff check src tests` exits **1** and prints exactly one error, `E501 Line too long
-(137 > 120)`. Both invocation forms agree — `.venv/bin/ruff` and `uv run ruff`.
+`ruff check src tests` exited **1** and printed exactly one error, `E501 Line too long
+(137 > 120)`. Both invocation forms agreed — `.venv/bin/ruff` and `uv run ruff`.
 
 **This is a regression, and the before-and-after was measured rather than assumed.** Plan
 47-08 ran `ruff check src tests` at `9d307df`, before the fix landed, and it printed
@@ -77,5 +92,6 @@ readings is `5ad4fbd`, and the only file it touches is this one.
 
 The fix for the fix is cosmetic: move the explanatory comment to its own line above the
 statement, which is what the surrounding file already does. Not repaired by plan 47-08,
-which writes no source. This breaks the plan's own `must_haves` truth *"ruff is clean over
-src and tests"*. Discovered 2026-09-12.
+which writes no source. This broke the plan's own `must_haves` truth *"ruff is clean over
+src and tests"*. Discovered 2026-09-12. **Fixed the same day in `ee7ecb4`, by exactly that
+route, and the truth holds again.**
