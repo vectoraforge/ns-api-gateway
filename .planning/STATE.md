@@ -2,19 +2,20 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
-current_phase: 46
-status: completed
-stopped_at: Phase 46 complete — all phases complete
-last_updated: "2026-09-09T00:02:43.072Z"
+current_phase: 47
+current_phase_name: Stop threading an evaluation instant through the layers
+status: executing
+stopped_at: Phases 47-50 added 2026-09-11; Phase 47 not yet planned
+last_updated: "2026-09-12T05:31:42.647Z"
 last_activity: 2026-09-08
 last_activity_desc: Phase 46 complete
-state_head: 25db24aa1efc58e895e0781f62d3c6e45be07cc8
+state_head: 7e05496a01b9b915980c66bf583529e673f052fd
 progress:
-  total_phases: 18
+  total_phases: 22
   completed_phases: 17
-  total_plans: 124
+  total_plans: 132
   completed_plans: 124
-  percent: 94
+  percent: 77
 ---
 
 # Project State
@@ -24,13 +25,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-09-08)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** v2.0 milestone close — all 18 phases complete; next `/gsd:complete-milestone v2.0`
+**Current focus:** Phases 47-50 (behavior-preserving refactors) — next /gsd:discuss-phase 47 or /gsd:plan-phase 47
 
 ## Current Position
 
-Phase: 46
+Phase: 47 (Stop threading an evaluation instant through the layers) — READY TO EXECUTE
 Plan: Not started
-Status: All phases complete
+Status: Ready to execute
 Progress: [████████████████████] 124/124 plans (100%)
 
 **Phase 45 closed 2026-09-08.** Re-verification passed 7/7 after the four gap-closure plans. The
@@ -491,6 +492,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 - Phase 37.3 inserted after Phase 37: Machine-generated code refactoring, part 2 (URGENT)
 - Phase 37.4 inserted after Phase 37.3: Machine-generated code refactoring, part 3 (URGENT)
 - Phase 37.5 inserted after Phase 37.4: Machine-generated code refactoring, part 4 (URGENT)
+- Phase 47 added: Stop threading an evaluation instant through the layers — remove get_evaluated_at; now() in SQL, datetime.now(UTC) at the point of use
+- Phase 48 added: Narrow Identity to the verified pair — drop user/identity from AuthIdentity; consumers take LinkedIdentity
+- Phase 49 added: Delete the four remaining single-implementation auth Protocols (StoreNotificationVerifier went in 37a5ac6); move VerifiedProviderIdentity into firebase.py; AuthService builds ChallengesDB itself
+- Phase 50 added: Typed runtime container behind an exit-stack lifespan — AsyncExitStack + builders, one frozen dataclass on app.state, get_runtime as the only untyped read
 
 ### Blockers/Concerns
 
@@ -526,7 +531,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 **Last session:** 2026-09-09T00:04:17.000Z
 
 Last activity: 2026-09-08
-Stopped at: Phase 46 complete — all phases complete
+Stopped at: Phases 47-50 added 2026-09-11; Phase 47 not yet planned
 Resume file: None
 
 ## Performance Metrics
