@@ -23,6 +23,8 @@ from nativespeaker.api.tables import (
     SubscriptionEvent,
     SubscriptionStatus,
     UserMonthlyUsage,
+    clamped_to_database_instant,
+    database_instant,
     monthly_period_for,
 )
 
@@ -348,7 +350,7 @@ class SubscriptionsDB:
                 logger.warning("manual_grant_superseded", grant_id=str(grant.id),
                                source=grant.source)
             grant.status = ended
-            grant.ends_at = instant
+            grant.ends_at = database_instant()
             grant.updated_at = instant
 
         if superseded:
@@ -383,7 +385,7 @@ class SubscriptionsDB:
                                 tier_id=tier_id,
                                 source=AccessGrantSource.subscription,
                                 subscription_id=subscription_id,
-                                starts_at=starts_at,
+                                starts_at=clamped_to_database_instant(starts_at),
                                 ends_at=ends_at,
                                 created_at=instant,
                                 updated_at=instant)

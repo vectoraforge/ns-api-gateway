@@ -129,8 +129,9 @@ class TestTheConversionCarriesTheCountersAcross:
 
 
 class TestOneConversionStampsEveryColumnWithOneValue:
-    """A second clock read inside the writer would let the marker and the grant disagree, and a
-    second free grant could then be claimed against a marker that matches no row."""
+    """A second clock read inside the writer would let the marker and the rows disagree, and a
+    second free grant could then be claimed against a marker that matches no row. The start and
+    the end of a term are the database clock, which the effective-grant predicate reads."""
 
     async def test_every_column_the_conversion_writes_carries_the_same_value(self, writer, account,
                                                                              monkeypatch):
@@ -141,11 +142,21 @@ class TestOneConversionStampsEveryColumnWithOneValue:
 
         activated = [row for row in writer.session.added if isinstance(row, AccessGrant)][0]
         usage = [row for row in writer.session.added if isinstance(row, UserMonthlyUsage)][0]
-        assert {superseded.ends_at, superseded.updated_at,
-                activated.starts_at, activated.created_at, activated.updated_at,
+        assert {superseded.updated_at,
+                activated.created_at, activated.updated_at,
                 usage.created_at, usage.updated_at,
                 identity_row.free_grant_consumed_at, identity_row.updated_at} == {
-                    activated.starts_at}
+                    activated.created_at}
+
+    async def test_the_term_start_and_the_superseded_end_are_the_database_clock(self, writer, account,
+                                                                                monkeypatch):
+        identity_row, superseded = account
+        _with_usage(monkeypatch, _spent_usage(superseded.id))
+
+        assert await _convert(writer, identity_row) is ActivationOutcome.activated
+
+        activated = [row for row in writer.session.added if isinstance(row, AccessGrant)][0]
+        assert {str(activated.starts_at), str(superseded.ends_at)} == {"statement_timestamp()"}
 
     async def test_the_value_is_read_inside_the_call_and_not_copied_from_the_old_grant(
             self, writer, account, monkeypatch):
@@ -157,7 +168,7 @@ class TestOneConversionStampsEveryColumnWithOneValue:
         await _convert(writer, identity_row)
 
         activated = [row for row in writer.session.added if isinstance(row, AccessGrant)][0]
-        assert before <= activated.starts_at <= datetime.now(UTC)
+        assert before <= activated.created_at <= datetime.now(UTC)
 
 
 class TestASupersededGrantWithNoUsageRowFailsClosed:

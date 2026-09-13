@@ -4,7 +4,7 @@ from enum import StrEnum
 from typing import Any, cast
 from uuid import UUID, uuid7
 
-from sqlalchemy import DateTime, Enum
+from sqlalchemy import DateTime, Enum, func
 from sqlmodel import Field, SQLModel
 
 
@@ -31,6 +31,16 @@ FREE_GRANT_SOURCES = frozenset({AccessGrantSource.anonymous_device_grant,
 def monthly_period_for(evaluated_at: datetime) -> str:
     """The UTC calendar month `UserMonthlyUsage.monthly_period` stores, in `YYYY-MM`."""
     return evaluated_at.astimezone(UTC).strftime("%Y-%m")  # `strftime` reports the stored wall clock.
+
+
+def database_instant() -> datetime:
+    """The database clock as a SQL expression: the clock the effective-grant predicate reads."""
+    return cast(datetime, func.statement_timestamp())
+
+
+def clamped_to_database_instant(instant: datetime) -> datetime:
+    """The earlier of `instant` and the database clock, as a SQL expression."""
+    return cast(datetime, func.least(instant, func.statement_timestamp()))
 
 AccessGrantSourceType = cast(Any, Enum(AccessGrantSource, name='access_grant_source', schema='core'))
 AccessGrantStatusType = cast(Any, Enum(AccessGrantStatus, name='access_grant_status', schema='core'))

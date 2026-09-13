@@ -196,7 +196,7 @@ class TestTheNewRegisteredGrantHappyPath:
             identity = (await session.exec(
                 select(ExternalIdentity).where(col(ExternalIdentity.issuer) == TEST_ISSUER,
                                                col(ExternalIdentity.subject) == SUBJECT))).one()
-        assert identity.free_grant_consumed_at == grants[0].starts_at
+        assert identity.free_grant_consumed_at == identity.updated_at
         assert (await _challenge_for(_db_transaction, handle)).consumed_at is not None
 
     async def test_a_set_anonymous_bit_survives_the_registered_claim(
@@ -260,7 +260,7 @@ class TestTheConversionOfAnActiveAnonymousGrant:
         assert expired.status is AccessGrantStatus.expired
         # The source is history and is never rewritten: only the status and the end instant move.
         assert expired.source is AccessGrantSource.anonymous_device_grant
-        assert expired.ends_at == registered.starts_at
+        assert expired.ends_at is not None and expired.ends_at <= registered.starts_at
         assert registered.source is AccessGrantSource.registered_account_grant
         assert [grant.id for grant in grants
                 if grant.status is AccessGrantStatus.active] == [registered.id]

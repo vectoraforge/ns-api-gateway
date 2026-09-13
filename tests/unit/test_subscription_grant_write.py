@@ -145,13 +145,11 @@ class TestTheDestinationLosesEverythingItHolds:
         other = _grant(subscription_id=SUBSCRIPTION_A)
         session = _StubSession(_usage(other, monthly_period=THIS_MONTH, monthly_used=0))
 
-        before = datetime.now(UTC)
         outcome = await _write(session, [other])
-        after = datetime.now(UTC)
 
         assert outcome is WriteOutcome.applied
         assert other.status is AccessGrantStatus.expired
-        assert other.ends_at is not None and before <= other.ends_at <= after
+        assert str(other.ends_at) == "statement_timestamp()"
 
     async def test_a_free_grant_is_superseded_too(self):
         free = _grant(source=AccessGrantSource.anonymous_device_grant, subscription_id=None,

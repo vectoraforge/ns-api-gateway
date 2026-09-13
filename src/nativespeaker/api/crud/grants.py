@@ -19,6 +19,7 @@ from nativespeaker.api.tables import (
     AccessGrantStatus,
     AccessTier,
     UserMonthlyUsage,
+    database_instant,
     monthly_period_for,
 )
 from nativespeaker.api.tables.identities import IdentityProvider, NativeClaimProvider
@@ -195,7 +196,7 @@ class GrantsDB:
         activated = AccessGrant(user_id=user_id,
                                 tier_id=tier_id,
                                 source=AccessGrantSource.anonymous_device_grant,
-                                starts_at=instant,
+                                starts_at=database_instant(),
                                 created_at=instant,
                                 updated_at=instant)
         self.session.add(activated)
@@ -272,7 +273,7 @@ class GrantsDB:
             if carried is None:
                 raise MissingUsageRowError(superseded.id)
             superseded.status = AccessGrantStatus.expired
-            superseded.ends_at = instant
+            superseded.ends_at = database_instant()
             superseded.updated_at = instant
             # Flushed alone and first: the ORM emits inserts before updates, and the one-active index is per-statement.
             try:
@@ -287,7 +288,7 @@ class GrantsDB:
         activated = AccessGrant(user_id=user_id,
                                 tier_id=tier_id,
                                 source=AccessGrantSource.registered_account_grant,
-                                starts_at=instant,
+                                starts_at=database_instant(),
                                 created_at=instant,
                                 updated_at=instant)
         self.session.add(activated)

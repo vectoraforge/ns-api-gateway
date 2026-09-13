@@ -103,7 +103,7 @@ class TestTheAnonymousDeviceGrantHappyPath:
                                                col(ExternalIdentity.subject) == SUBJECT))).one()
             assert identity.free_grant_consumed_at is not None
             assert identity.native_claim_platform is NativeClaimProvider.ios_devicecheck
-            assert identity.free_grant_consumed_at == grant.starts_at
+            assert identity.free_grant_consumed_at == identity.updated_at
 
             challenge = (await session.exec(
                 select(AuthChallenge)
