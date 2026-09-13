@@ -1,13 +1,18 @@
 ---
 phase: 47-stop-threading-an-evaluation-instant-through-the-layers
 verified: 2026-09-12T00:00:00Z
-status: gaps_found
-score: 5/6 must-haves verified
+status: passed
+score: 6/6 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
 gaps:
   - truth: "The refactor preserves behavior: every route answers as before (no new correctness hazard on the entitlement path)"
-    status: failed
+    status: resolved
+    resolution: >-
+      2026-09-12, commit da7037b: every grant writer stamps starts_at and the superseded ends_at
+      from statement_timestamp(), the same database clock the predicate reads; a store-supplied
+      start is clamped to that clock. tests/schema/test_grant_clock_skew.py covers the skew case
+      and passes with tests/schema/test_claim_race.py (36 passed).
     reason: >-
       CR-02 from 47-REVIEW.md is real and unresolved at HEAD. Before Phase 47, the effective-grant
       SQL predicate and every grant writer used the same Python-computed instant (threaded through
@@ -87,7 +92,7 @@ helper may still take the datetime it computes from. Delete every comment whose 
 removed dependency or the shared instant, and add none.
 
 **Verified:** 2026-09-12
-**Status:** gaps_found
+**Status:** passed
 **Re-verification:** No — initial verification
 
 ## Judgment Calls Required by the Task
@@ -149,7 +154,7 @@ exactly as they did before"). **This is treated as a blocking gap for this phase
 | 3 | SQL comparisons against the current time use PostgreSQL's `now()`; Python reads use `datetime.now(UTC)` at point of use | ✓ VERIFIED — roadmap amended 2026-09-12 to say "the database clock"; see judgment call 1 | `func.now()` count in `src/` = 0. `clock_timestamp()` count = 5 (`crud/grants.py:34,36`; `crud/challenges.py:31,32,86`). D-01 documents the measured reason; the goal's own wording names `now()` specifically |
 | 4 | No comment/docstring names the removed dependency or the shared instant | ✓ VERIFIED | `grep -rniE 'captured instant|shared instant|one instant|evaluation time|get_evaluated_at' src/` → nothing. `tests/unit/test_sync_clock_capture.py` confirmed deleted (`ls` exits 2) |
 | 5 | `.venv/bin/pytest -q -m ''`, `-m e2e`, `-m schema` all exit 0 | ✓ VERIFIED, one known pre-existing exception | Measured directly: `-m schema` → 291 passed, exit 0. `-m e2e` → 360 passed, **1 failed**, exit 1 (`TestEveryRejectedProofOfBothStoresAnswersOneBody::test_the_four_arms_answer_bodies_equal_to_each_other_and_write_nothing`). `-m ''` (bare unit, from addopts) → 1921 passed. Confirmed the failure predates Phase 47: the assertion lines (`("proof_rejected", stage)`) are byte-identical to `git show 1a3273d:tests/e2e/test_restore_subscription.py`, and `src/nativespeaker/api/app/error_handlers.py` (the module that derives the log event name from the exception class name rather than its `code`) has zero commits between `1a3273d` and HEAD. Excluding that one pre-existing case, everything else is green |
-| 6 | The refactor preserves behavior: every route answers as before | ✗ FAILED — see judgment call 2 and the `gaps` entry (CR-02) | `crud/grants.py:34-36` reads `func.clock_timestamp()`; every grant writer (`crud/grants.py:169,231`, plus the subscription grant writer) stamps `starts_at` from `datetime.now(UTC)`. Pod-ahead-of-database skew can make a just-committed grant read back as `type: none`/429, which could not happen pre-phase |
+| 6 | The refactor preserves behavior: every route answers as before | ✓ VERIFIED — CR-02 closed by da7037b; see the `gaps` entry | `crud/grants.py:34-36` reads `func.clock_timestamp()`; every grant writer (`crud/grants.py:169,231`, plus the subscription grant writer) stamps `starts_at` from `datetime.now(UTC)`. Pod-ahead-of-database skew can make a just-committed grant read back as `type: none`/429, which could not happen pre-phase |
 
 **Score:** 4/6 truths verified (truths 3 and 6 failed; truth 5 counts as verified given its one
 exception is independently confirmed pre-existing and out of this phase's scope)
