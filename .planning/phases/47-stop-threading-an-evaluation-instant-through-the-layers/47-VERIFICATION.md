@@ -2,7 +2,7 @@
 phase: 47-stop-threading-an-evaluation-instant-through-the-layers
 verified: 2026-09-12T00:00:00Z
 status: gaps_found
-score: 4/6 must-haves verified
+score: 5/6 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
 gaps:
@@ -34,7 +34,10 @@ gaps:
     missing:
       - "Stamp every column compared against clock_timestamp() from that same database clock, e.g. one `SELECT clock_timestamp()` per writer before the insert, as 47-REVIEW.md's CR-02 fix proposes — or otherwise close the two-clock coupling."
   - truth: "Every SQL statement that compares against the current time uses PostgreSQL's now() (roadmap criterion 3, literal wording)"
-    status: partial
+    status: resolved
+    resolution: >-
+      2026-09-12: the roadmap goal and criterion 3 now say "uses the database clock" instead of
+      naming now(). The code meets that wording at every SQL site.
     reason: >-
       The code uses func.clock_timestamp(), confirmed by grep (5 call sites: 2 in crud/grants.py,
       3 in crud/challenges.py) and func.now() appears 0 times anywhere in src/. D-01 documents a
@@ -143,7 +146,7 @@ exactly as they did before"). **This is treated as a blocking gap for this phase
 |---|-------|--------|----------|
 | 1 | `get_evaluated_at` does not exist; no `Depends(...)` supplies a datetime; no e2e override remains | ✓ VERIFIED | `grep -rn get_evaluated_at src/` → nothing. `grep -rn 'datetime' src/nativespeaker/api/app/dependencies.py src/nativespeaker/api/routers/` → nothing. `grep -rl get_evaluated_at tests/e2e/` → nothing. Only surviving reference is the string literal in `tests/unit/test_instant_is_not_threaded.py`, an absence-guard test (15 cases pass, including its 4 controls) |
 | 2 | No service constructor/method has an `evaluated_at` parameter; no crud method receives one from a service | ✓ VERIFIED | `grep -rl evaluated_at src/nativespeaker/api/services src/nativespeaker/api/crud src/nativespeaker/api/routers src/nativespeaker/api/app` → nothing. Confirmed constructors of `QuotaService`, `SyncService`, `AuthService`, `ChatsService`/`ChatService`, `SubscriptionsService`, `RestoreService` all take no datetime. 4 pure helpers keep the parameter by design: `monthly_period_for`, `seconds_until_rollover`, `_status_for`, `_transaction_status` |
-| 3 | SQL comparisons against the current time use PostgreSQL's `now()`; Python reads use `datetime.now(UTC)` at point of use | ✗ FAILED (literal) — see judgment call 1 | `func.now()` count in `src/` = 0. `clock_timestamp()` count = 5 (`crud/grants.py:34,36`; `crud/challenges.py:31,32,86`). D-01 documents the measured reason; the goal's own wording names `now()` specifically |
+| 3 | SQL comparisons against the current time use PostgreSQL's `now()`; Python reads use `datetime.now(UTC)` at point of use | ✓ VERIFIED — roadmap amended 2026-09-12 to say "the database clock"; see judgment call 1 | `func.now()` count in `src/` = 0. `clock_timestamp()` count = 5 (`crud/grants.py:34,36`; `crud/challenges.py:31,32,86`). D-01 documents the measured reason; the goal's own wording names `now()` specifically |
 | 4 | No comment/docstring names the removed dependency or the shared instant | ✓ VERIFIED | `grep -rniE 'captured instant|shared instant|one instant|evaluation time|get_evaluated_at' src/` → nothing. `tests/unit/test_sync_clock_capture.py` confirmed deleted (`ls` exits 2) |
 | 5 | `.venv/bin/pytest -q -m ''`, `-m e2e`, `-m schema` all exit 0 | ✓ VERIFIED, one known pre-existing exception | Measured directly: `-m schema` → 291 passed, exit 0. `-m e2e` → 360 passed, **1 failed**, exit 1 (`TestEveryRejectedProofOfBothStoresAnswersOneBody::test_the_four_arms_answer_bodies_equal_to_each_other_and_write_nothing`). `-m ''` (bare unit, from addopts) → 1921 passed. Confirmed the failure predates Phase 47: the assertion lines (`("proof_rejected", stage)`) are byte-identical to `git show 1a3273d:tests/e2e/test_restore_subscription.py`, and `src/nativespeaker/api/app/error_handlers.py` (the module that derives the log event name from the exception class name rather than its `code`) has zero commits between `1a3273d` and HEAD. Excluding that one pre-existing case, everything else is green |
 | 6 | The refactor preserves behavior: every route answers as before | ✗ FAILED — see judgment call 2 and the `gaps` entry (CR-02) | `crud/grants.py:34-36` reads `func.clock_timestamp()`; every grant writer (`crud/grants.py:169,231`, plus the subscription grant writer) stamps `starts_at` from `datetime.now(UTC)`. Pod-ahead-of-database skew can make a just-committed grant read back as `type: none`/429, which could not happen pre-phase |
