@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
     get_challenge_store,
+    get_claims,
     get_db,
     get_devicecheck_adapter,
     get_firebase_adapter,
@@ -15,10 +16,11 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
+from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.errors import AppError, ProviderAccountAlreadyLinked, UserNotFound
 from nativespeaker.api.routers import auth_router
-from nativespeaker.api.schemas.auth import AuthIdentity
+from nativespeaker.api.schemas.auth import LinkedIdentity
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.users import User
@@ -134,10 +136,16 @@ def account() -> tuple[ExternalIdentity, User]:
 
 
 @pytest.fixture
-def identity(account) -> AuthIdentity:
-    """A linked caller: the upgrade route narrows to one, unlike create-user's pre-auth identity."""
+def claims() -> VerifiedClaims:
+    """The two values the token proved, which the completion reads for the provider lookup."""
+    return VerifiedClaims(issuer=TEST_ISSUER, subject=SUBJECT)
+
+
+@pytest.fixture
+def linked(account) -> LinkedIdentity:
+    """A linked caller: the upgrade route narrows to one, unlike create-user's pre-auth caller."""
     identity_row, user = account
-    return AuthIdentity(issuer=TEST_ISSUER, subject=SUBJECT, user=user, identity=identity_row)
+    return LinkedIdentity(user=user, identity=identity_row)
 
 
 @pytest.fixture
@@ -150,12 +158,14 @@ def upgrade(account, monkeypatch) -> _RecordingUpgrade:
 
 
 @pytest.fixture
-def client(store, session, identity, upgrade, fake_firebase_adapter):
+def client(store, session, claims, linked, upgrade, fake_firebase_adapter):
     app = FastAPI()
     app.include_router(auth_router)
     register_exception_handlers(app)
 
-    app.dependency_overrides[get_identity] = lambda: identity
+    # Two entries: the account dependency declares the token one, so overriding it alone leaves the token unsupplied.
+    app.dependency_overrides[get_claims] = lambda: claims
+    app.dependency_overrides[get_identity] = lambda: linked
     # An async generator, not a plain callable: `get_db` releases the read transaction itself, and a
     # callable has no `try`/`except` to do it with. Mirrors `app/dependencies.py::get_db` exactly.
     async def _db():
