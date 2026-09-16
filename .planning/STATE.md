@@ -3,18 +3,18 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 48
-current_phase_name: narrow-identity-to-the-verified-pair
-status: executed
-stopped_at: Phase 48 context gathered
-last_updated: "2026-09-16T21:26:25.850Z"
-last_activity: 2026-09-12
-last_activity_desc: Phase 47 gate re-derived at 9a44f20; criterion 5 still unmet on one pre-existing case
-state_head: 967ce5d231eca5ae6c3894ad4087a590c050e89c
+current_phase_name: Narrow Identity to the verified pair
+status: executing
+stopped_at: Completed 48-01-PLAN.md
+last_updated: "2026-09-16T21:49:33.956Z"
+last_activity: 2026-09-16
+last_activity_desc: Phase 48 execution started
+state_head: c2c14be943f8812dae839fc448ead6ac52cba65d
 progress:
   total_phases: 22
   completed_phases: 18
   total_plans: 140
-  completed_plans: 132
+  completed_plans: 133
   percent: 82
 ---
 
@@ -25,15 +25,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-09-08)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 47 — Stop threading an evaluation instant through the layers
+**Current focus:** Phase 48 — Narrow Identity to the verified pair
 
 ## Current Position
 
-Phase: 48 (narrow-identity-to-the-verified-pair) — READY TO EXECUTE
-Plan: 8 of 8
-Status: All eight plans executed 2026-09-12. NOT verified. Gate re-derived at 9a44f20: one failing
+Phase: 48 (Narrow Identity to the verified pair) — EXECUTING
+Plan: 2 of 8
+Status: Ready to execute
         case, pre-existing, none of it this phase's. ruff clean; both self-inflicted defects closed.
-Progress: [████████████████████] 132/132 plans ([████████░░] 77%)
+Progress: [████████████████████] 132/132 plans ([████████░░] 82%)
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07, 45-05, 45-09 and
      46-05 each did. Read at 2026-09-12T08:05Z, during plan 47-08's Task 3: 132 PLAN files and 131
@@ -118,7 +118,7 @@ three fixes do not interact.
 `45-VERIFICATION.md` itself still reads `gaps_found` and still records RESTORE-01 as BLOCKED:
 **re-verification is what changes those, not this file.** `/gsd:verify-phase 45` decides whether the
 phase is complete; this plan does not.
-Last activity: 2026-09-11 — Phase 47 execution started
+Last activity: 2026-09-16 — Phase 48 execution started
 fixes together, and REQUIREMENTS.md carries the dated gap-closure record
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07 and 45-05 each did.
@@ -594,11 +594,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-16T20:31:11.466Z
+**Last session:** 2026-09-16T21:49:33.271Z
 
 Last activity: 2026-09-08
-Stopped at: Phase 48 context gathered
-Resume file: .planning/phases/48-narrow-identity-to-the-verified-pair/48-CONTEXT.md
+Stopped at: Completed 48-01-PLAN.md
+Resume file: None
 
 ## Performance Metrics
 
@@ -674,6 +674,7 @@ Resume file: .planning/phases/48-narrow-identity-to-the-verified-pair/48-CONTEXT
 | Phase 47 P06 | 26 min | 3 tasks | 15 files |
 | Phase 47 P07 | 21 min | 3 tasks | 8 files |
 | Phase 47 P08 | 42 min | 3 tasks | 5 files |
+| Phase 48 P01 | 12 min | 3 tasks | 14 files |
 
 ## Decisions
 
@@ -879,3 +880,5 @@ Resume file: .planning/phases/48-narrow-identity-to-the-verified-pair/48-CONTEXT
 - [Phase 47]: The seven subscription writers and both services read their own clock; the restore term check is the pure helper _open_term and the only get_evaluated_at test override is deleted
 - [Phase 47]: The claim UPDATE is the module-level _claim_statement, so the compiled-SQL boundary case reads the production statement and not a mirror of it — An inline statement is unreachable from a test; a rebuilt copy would keep passing while the predicate drifted to >=
 - [Phase 47]: The challenge claim and consume stamp from func.clock_timestamp(); issue keeps a Python read because expires_at goes into the response body — One clock per class, and a value returned to the caller cannot come from a database expression without a round trip
+- [Phase 48]: Task 1 answered B: AuthService.complete resolves the caller itself, keeping every create-user wire outcome byte-identical — Under D-07 as written, an already-linked caller would be answered 409 challenge_required in a loop instead of 409 identity_already_linked; B also drops the one-spent-challenge cost D-07 had accepted
+- [Phase 48]: The phase gate must measure LinkedIdentity | None as a parameter, not as a bare grep — D-03 mandates crud/identities.py resolve to return LinkedIdentity | None, so the plan-level verification line as written can never pass; the real invariant is that only crud/challenges.py and services/auth.py take it as a parameter
