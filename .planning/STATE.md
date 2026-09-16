@@ -2,38 +2,37 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
-current_phase: 48
-current_phase_name: Narrow Identity to the verified pair
-status: verifying
-stopped_at: Completed 48-08-PLAN.md
-last_updated: "2026-09-16T22:51:18.318Z"
+current_phase: 49
+current_phase_name: Delete the single-implementation auth Protocols
+status: planning
+stopped_at: Phase 48 complete, ready to plan Phase 49
+last_updated: "2026-09-16T23:04:30.802Z"
 last_activity: 2026-09-16
-last_activity_desc: Phase 48 execution started
-state_head: dda93449e7e368b713e34d2070be87effd922c87
+last_activity_desc: Phase 48 complete, transitioned to Phase 49
+state_head: f15ace5fb850cbbebd6fff50b07160a20a5e9496
 progress:
   total_phases: 22
-  completed_phases: 18
+  completed_phases: 19
   total_plans: 140
   completed_plans: 140
-  percent: 82
+  percent: 86
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-09-08)
+See: .planning/PROJECT.md (updated 2026-09-16)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 48 — Narrow Identity to the verified pair
+**Current focus:** Phase 49 — Delete the single-implementation auth Protocols
 
 ## Current Position
 
-Phase: 48 (Narrow Identity to the verified pair) — EXECUTING
-Plan: 8 of 8
-Status: Phase complete — ready for verification
-        case, pre-existing, none of it this phase's. ruff clean; both self-inflicted defects closed.
-Progress: [████████████████████] 132/132 plans ([████████░░] 82%)
+Phase: 49 — Delete the single-implementation auth Protocols
+Plan: Not started
+Status: Ready to plan
+Progress: [████████████████████] 140/140 plans ([█████████░] 86%)
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07, 45-05, 45-09 and
      46-05 each did. Read at 2026-09-12T08:05Z, during plan 47-08's Task 3: 132 PLAN files and 131
@@ -118,7 +117,7 @@ three fixes do not interact.
 `45-VERIFICATION.md` itself still reads `gaps_found` and still records RESTORE-01 as BLOCKED:
 **re-verification is what changes those, not this file.** `/gsd:verify-phase 45` decides whether the
 phase is complete; this plan does not.
-Last activity: 2026-09-16 — Phase 48 execution started
+Last activity: 2026-09-16 — Phase 48 complete, transitioned to Phase 49
 fixes together, and REQUIREMENTS.md carries the dated gap-closure record
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07 and 45-05 each did.
@@ -463,6 +462,9 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ### Key Decisions (carry forward)
 
+- Phase 48: the auth barrier is two dependencies, `get_claims` (token, no table) and `get_identity` (account, one query); `AuthIdentity` is gone and `LinkedIdentity` holds two required rows
+- Phase 48 D-07 option B: `AuthService.complete` resolves the caller itself, so an already-linked caller still earns 409 `identity_already_linked` before the challenge is spent (WINDOWS.md entry 33)
+- Phase 48: a crud read that can find nothing answers `None`; the refusal belongs to the caller that requires a row
 - Error contract: 5 status codes / 5 opaque codes — SUPERSEDED in v2.0 by the shared auth error registry (anti-oracle within class)
 - All FastAPI dependencies in app/dependencies.py; routes use Depends() only
 - Session-in-init DB pattern for all DB classes
@@ -581,6 +583,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 - RESOLVED (45-06 addendum): CR-01 reopened by the second review — `quote(…, safe="")` never escapes `.` and httpx drops dot segments, so `..` rewrote the Play read path. Closed by refusing a dot-only token before the request is built, proved over a recording transport. The webhook `read()` carries no equivalent guard; nothing untrusted reaches it today.
 - OPEN (46, assumption A1): the Identity Toolkit `accounts:update` → `USER_NOT_FOUND` mapping behind D-06's 401 arm is verified from the installed SDK source and an upstream issue report, never probed against a live project; both suites script the exception directly, so the exposure is production-only. One real-credential `revoke_refresh_tokens` call against a deleted uid settles it.
 - NOTED (46): `TestTheLookupArmsCarryStageAndOnlyABoundedCause` in `tests/unit/test_rejection_vocabulary.py` is a hand-picked three-arm sample and does not name `RevocationUnconfirmed`; nothing fails, and adding the fourth row is a one-line edit.
+- NOTED (48-08): `.planning/WINDOWS.md` has drifted twice between its markdown table and its fenced JSON, each time blocking `windows append` for a whole phase. The JSON is the source of truth; regenerate the table with the tool rather than editing it by hand.
 - ACCEPTED (46, T-46-06): one unbounded Firebase revocation write per attempt on `POST /auth/sign-out-all`, on the Phase 40 D-22 precedent; the caller must hold a valid ID token for a linked, active account, and the write is idempotent. Closes with the v2.1 gateway contract.
 
 ### Quick Tasks Completed
@@ -594,10 +597,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-16T22:51:10.718Z
+**Last session:** 2026-09-16T23:05:07Z
 
-Last activity: 2026-09-08
-Stopped at: Completed 48-08-PLAN.md
+Last activity: 2026-09-16
+Stopped at: Phase 48 complete, ready to plan Phase 49
 Resume file: None
 
 ## Performance Metrics
