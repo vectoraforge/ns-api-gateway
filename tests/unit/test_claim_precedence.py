@@ -12,6 +12,7 @@ from sqlalchemy.exc import InvalidRequestError
 
 from nativespeaker.api.app.dependencies import (
     get_challenge_store,
+    get_claims,
     get_devicecheck_adapter,
     get_firebase_adapter,
     get_identity,
@@ -19,14 +20,15 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.devicecheck import BitState, RetryableDeviceCheckError
+from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud.grants import ActivationOutcome, GrantsDB
 from nativespeaker.api.errors import PurchaseProofRejected, Unavailable
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.schemas.auth import (
-    AuthIdentity,
     Entitlement,
     EntitlementStatus,
     EntitlementType,
+    LinkedIdentity,
 )
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.grants import AccessGrant, AccessGrantSource
@@ -229,10 +231,16 @@ def account() -> tuple[ExternalIdentity, User]:
 
 
 @pytest.fixture
-def identity(account) -> AuthIdentity:
+def claims() -> VerifiedClaims:
+    """The two values the token proved, which is what the grant writer records."""
+    return VerifiedClaims(issuer=TEST_ISSUER, subject=SUBJECT)
+
+
+@pytest.fixture
+def linked(account) -> LinkedIdentity:
     """A linked caller: the claim route narrows to one, as the upgrade route does."""
     identity_row, user = account
-    return AuthIdentity(issuer=TEST_ISSUER, subject=SUBJECT, user=user, identity=identity_row)
+    return LinkedIdentity(user=user, identity=identity_row)
 
 
 @pytest.fixture
@@ -253,12 +261,14 @@ def devicecheck(session, timeline) -> _ScriptedDeviceCheck:
 
 
 @pytest.fixture
-def client(store, session, identity, grants, devicecheck):
+def client(store, session, claims, linked, grants, devicecheck):
     app = FastAPI()
     app.include_router(auth_router)
     register_exception_handlers(app)
 
-    app.dependency_overrides[get_identity] = lambda: identity
+    # Two entries: the account dependency declares the token one, so overriding it alone leaves the token unsupplied.
+    app.dependency_overrides[get_claims] = lambda: claims
+    app.dependency_overrides[get_identity] = lambda: linked
 
     app.state.session_factory = lambda: session
     app.dependency_overrides[get_challenge_store] = lambda: store
