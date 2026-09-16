@@ -57,56 +57,35 @@ def _row(*, identity_state=IdentityState.active, user_active: bool = True, user=
     return identity, user
 
 
-async def _resolve(row, *, preauth_callable: bool = False):
-    """The admitting half: resolution returns the `AuthIdentity` it resolved."""
+async def _resolve(row):
+    """The admitting half: resolution returns the `LinkedIdentity` it resolved, or `None`."""
     session = _StubSession(row)
-    identity = await IdentitiesDB(session).resolve(issuer=ISSUER, subject=SUBJECT,
-                                                   allow_preauth=preauth_callable)
+    identity = await IdentitiesDB(session).resolve(issuer=ISSUER, subject=SUBJECT)
     return identity, session
 
 
-async def _rejected(row, expected: type[BaseException], *, preauth_callable: bool = False):
+async def _rejected(row, expected: type[BaseException]):
     """The rejecting half: resolution raises, and the raised instance is what the cases read."""
     session = _StubSession(row)
     with pytest.raises(expected) as caught:
-        await IdentitiesDB(session).resolve(issuer=ISSUER, subject=SUBJECT,
-                                            allow_preauth=preauth_callable)
+        await IdentitiesDB(session).resolve(issuer=ISSUER, subject=SUBJECT)
     return caught.value, session
 
 
-async def _drive(row, *, preauth_callable: bool = False) -> _StubSession:
+async def _drive(row) -> _StubSession:
     """Run resolution for its effect on the session, whichever way the outcome goes."""
     session = _StubSession(row)
     with contextlib.suppress(AppError):
-        await IdentitiesDB(session).resolve(issuer=ISSUER, subject=SUBJECT,
-                                            allow_preauth=preauth_callable)
+        await IdentitiesDB(session).resolve(issuer=ISSUER, subject=SUBJECT)
     return session
 
 
 class TestOutcomeOneNoMatchingRow:
-    """The only two readings of a pair that was never linked."""
+    """The one reading of a pair that was never linked: the caller decides what `None` means."""
 
-    async def test_a_preauth_callable_route_admits_the_verified_pair(self):
-        identity, _ = await _resolve(None, preauth_callable=True)
-        assert identity.issuer == ISSUER
-        assert identity.subject == SUBJECT
-
-    async def test_the_unlinked_identity_carries_no_row(self):
-        """Unlinked is both row fields `None` together, which is what the store branches on."""
-        identity, _ = await _resolve(None, preauth_callable=True)
-        assert identity.user is None
-        assert identity.identity is None
-
-    async def test_any_other_route_rejects_preauth_identity_not_allowed(self):
-        rejection, _ = await _rejected(None, PreAuthIdentityNotAllowed)
-        assert (rejection.status, rejection.code) == (403, "preauth_identity_not_allowed")
-
-    async def test_the_rejection_carries_no_actor_material(self):
-        """The verified pair is not a field on any rejection, so it cannot reach the log line."""
-        rejection, _ = await _rejected(None, PreAuthIdentityNotAllowed)
-        assert rejection.log_fields() == {}
-        for absent in ("issuer", "subject", "actor_issuer", "actor_subject"):
-            assert not hasattr(rejection, absent)
+    async def test_resolve_answers_none_when_no_row_exists(self):
+        identity, _ = await _resolve(None)
+        assert identity is None
 
 
 class TestOutcomeTwoIdentityStateIsNotExactlyActive:
@@ -119,9 +98,7 @@ class TestOutcomeTwoIdentityStateIsNotExactlyActive:
 
     @pytest.mark.parametrize("state", [IdentityState.historical, None, "retired", ""])
     async def test_it_never_falls_through_to_pre_auth(self, state):
-        """Even on the one route that may admit a pre-auth principal."""
-        rejection, _ = await _rejected(_row(identity_state=state), HistoricalIdentity,
-                                       preauth_callable=True)
+        rejection, _ = await _rejected(_row(identity_state=state), HistoricalIdentity)
         assert isinstance(rejection, AccountUnavailable)
 
     async def test_a_retired_identity_never_surfaces_preauth_identity_not_allowed(self):
@@ -155,10 +132,6 @@ class TestOutcomeFourLinkedAndActive:
         assert identity.identity is row[0]
         assert identity.user is row[1]
 
-    async def test_the_admitted_identity_carries_the_verified_pair(self):
-        identity, _ = await _resolve(_row())
-        assert (identity.issuer, identity.subject) == (ISSUER, SUBJECT)
-
     async def test_the_classifier_is_the_stored_provider_column(self):
         identity, _ = await _resolve(_row())
         assert identity.identity.provider is IdentityProvider.google
@@ -173,8 +146,7 @@ class TestUnresolvableUser:
 
     async def test_it_is_not_read_as_an_unlinked_pair(self):
         """The outer join is what keeps this case distinct from outcome 1."""
-        rejection, _ = await _rejected(_row(user=None), IdentityUnresolvable,
-                                       preauth_callable=True)
+        rejection, _ = await _rejected(_row(user=None), IdentityUnresolvable)
         assert not isinstance(rejection, PreAuthIdentityNotAllowed)
 
     async def test_it_is_recorded_at_error_like_every_other_integrity_break(self):
