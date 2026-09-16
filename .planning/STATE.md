@@ -5,17 +5,17 @@ milestone_name: Authentication & Entitlements
 current_phase: 47
 current_phase_name: Stop threading an evaluation instant through the layers
 status: executed
-stopped_at: "Completed 47-08-PLAN.md — re-derived at 9a44f20; criterion 5 unmet on one pre-existing case, ruff clean"
-last_updated: "2026-09-12T09:52:55.194Z"
+stopped_at: Phase 48 context gathered
+last_updated: "2026-09-16T20:31:12.126Z"
 last_activity: 2026-09-12
 last_activity_desc: Phase 47 gate re-derived at 9a44f20; criterion 5 still unmet on one pre-existing case
-state_head: 9a44f2004281cbcc8f8bb3bccbe5f0f1fb43fb1a
+state_head: fb0cc9603fd27a5ee391a5a881594853296836bc
 progress:
   total_phases: 22
-  completed_phases: 17
+  completed_phases: 18
   total_plans: 132
   completed_plans: 132
-  percent: 77
+  percent: 82
 ---
 
 # Project State
@@ -594,11 +594,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-12T09:52:54.573Z
+**Last session:** 2026-09-16T20:31:11.466Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 47-08-PLAN.md — re-derived at 9a44f20; criterion 5 unmet on one pre-existing case
-Resume file: None
+Stopped at: Phase 48 context gathered
+Resume file: .planning/phases/48-narrow-identity-to-the-verified-pair/48-CONTEXT.md
 
 ## Performance Metrics
 
