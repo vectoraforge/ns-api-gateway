@@ -12,19 +12,23 @@ from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
     get_challenge_store,
+    get_claims,
     get_db,
     get_firebase_adapter,
-    get_identity,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
+from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.routers import auth as auth_module
 from nativespeaker.api.routers import auth_router
-from nativespeaker.api.schemas.auth import AuthIdentity, ChallengeRequest
+from nativespeaker.api.schemas.auth import ChallengeRequest
 from nativespeaker.api.tables.auth import AuthOperation
 
-from .conftest import TEST_IDENTITY, TEST_ISSUER
+from .conftest import TEST_IDENTITY, TEST_ISSUER, TEST_SUBJECT
 
 UNLINKED_SUBJECT = "unlinked-challenge-subject"
+
+UNLINKED_CLAIMS = VerifiedClaims(issuer=TEST_ISSUER, subject=UNLINKED_SUBJECT)
+LINKED_CLAIMS = VerifiedClaims(issuer=TEST_ISSUER, subject=TEST_SUBJECT)
 
 
 # What the fake store answers with; nothing under test parses either value.
@@ -37,27 +41,33 @@ class _RecordingChallengeStore:
 
     def __init__(self) -> None:
         self.issued: list[object] = []
+        self.bound: list[object] = []
 
-    async def issue(self, session, *, operation, identity):
+    async def issue(self, session, *, operation, claims, linked):
         self.issued.append(operation)
+        self.bound.append(linked)
         return ISSUED_HANDLE, ISSUED_EXPIRY
 
 
-class _EmptyResult:
+class _StubResult:
+    def __init__(self, row):
+        self._row = row
+
     def first(self):
-        return None
+        return self._row
 
 
 class _RecordingSession:
     """Records what it was asked, so a query on any arm of this route would be visible."""
 
-    def __init__(self) -> None:
+    def __init__(self, row=None) -> None:
+        self._row = row
         self.statements: list[object] = []
         self.commits = 0
 
     async def exec(self, statement):
         self.statements.append(statement)
-        return _EmptyResult()
+        return _StubResult(self._row)
 
     async def commit(self):
         self.commits += 1
@@ -76,13 +86,18 @@ def session() -> _RecordingSession:
     return _RecordingSession()
 
 
-def _client_for(identity, store, session, fake_firebase_adapter):
+@pytest.fixture
+def linked_session() -> _RecordingSession:
+    return _RecordingSession(row=(TEST_IDENTITY.identity, TEST_IDENTITY.user))
+
+
+def _client_for(claims, store, session, fake_firebase_adapter):
     """The real auth router, with the barrier's context supplied and app state substituted."""
     app = FastAPI()
     app.include_router(auth_router)
     register_exception_handlers(app)
 
-    app.dependency_overrides[get_identity] = lambda: identity
+    app.dependency_overrides[get_claims] = lambda: claims
     app.dependency_overrides[get_db] = lambda: session
     app.dependency_overrides[get_challenge_store] = lambda: store
     app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
@@ -94,14 +109,13 @@ def _client_for(identity, store, session, fake_firebase_adapter):
 @pytest.fixture
 def client(store, session, fake_firebase_adapter):
     """A verified caller whose pair matched no identity row."""
-    yield from _client_for(AuthIdentity(issuer=TEST_ISSUER, subject=UNLINKED_SUBJECT),
-                           store, session, fake_firebase_adapter)
+    yield from _client_for(UNLINKED_CLAIMS, store, session, fake_firebase_adapter)
 
 
 @pytest.fixture
-def linked_client(store, session, fake_firebase_adapter):
+def linked_client(store, linked_session, fake_firebase_adapter):
     """A verified caller holding an identity row and the user it belongs to."""
-    yield from _client_for(TEST_IDENTITY, store, session, fake_firebase_adapter)
+    yield from _client_for(LINKED_CLAIMS, store, linked_session, fake_firebase_adapter)
 
 
 def _assert_preauth_refused(response) -> None:
@@ -133,7 +147,7 @@ class TestTheIssuableOperations:
 
     @pytest.mark.parametrize("operation", _EVERY_OPERATION)
     def test_a_member_of_the_vocabulary_is_issued_with_the_two_field_body(self, linked_client, store,
-                                                                          session, operation):
+                                                                          linked_session, operation):
         response = linked_client.post("/auth/challenge", json={"operation": operation})
 
         assert response.status_code == 200
@@ -143,7 +157,7 @@ class TestTheIssuableOperations:
         assert store.issued == [AuthOperation(operation)]
         # The member and not the caller's string, so the store never stores what was typed.
         assert all(isinstance(issued, AuthOperation) for issued in store.issued)
-        assert session.commits == 1
+        assert linked_session.commits == 1
 
     def test_the_issued_handle_is_not_cacheable(self, client):
         """`no-store` and not `no-cache`: a revalidatable copy of a secret handle is still a copy."""
@@ -183,13 +197,30 @@ class TestTheFrameworksOwnArm:
         _assert_validation_error(client.post("/auth/challenge"))
 
 
+class TestTheIssuedChallengeIsBoundToWhatTheRouteResolved:
+    """The route resolves its own caller, and hands the store the row it found or `None`."""
+
+    def test_a_caller_with_a_row_is_bound_to_that_row(self, linked_client, store, linked_session):
+        response = linked_client.post("/auth/challenge", json={"operation": "create_user"})
+
+        assert response.status_code == 200
+        assert [bound.identity.id for bound in store.bound] == [TEST_IDENTITY.identity.id]
+        assert len(linked_session.statements) == 1
+
+    def test_a_caller_with_no_row_is_bound_to_nothing(self, client, store, session):
+        response = client.post("/auth/challenge", json={"operation": "create_user"})
+
+        assert response.status_code == 200
+        assert store.bound == [None]
+        assert len(session.statements) == 1
+
+
 class TestEveryRefusalLeavesNothingBehind:
-    """The refusals are syntactic: nothing is issued, nothing is read, and the provider is never called."""
+    """The body refusals are syntactic: nothing is issued, nothing is read, and the provider is never called."""
 
     @pytest.mark.parametrize(("body", "expected"), [
         ({"operation": "sync"}, {"code": "invalid_request"}),
         ({"operation": "nope"}, {"code": "invalid_request"}),
-        ({"operation": _BEYOND_CREATE_USER[0]}, {"code": "preauth_identity_not_allowed"}),
         ({"operation": 123}, {"code": "validation_error"}),
         ({"operation": None}, {"code": "validation_error"}),
         ({}, {"code": "validation_error"}),
@@ -200,7 +231,7 @@ class TestEveryRefusalLeavesNothingBehind:
 
         assert response.json() == expected
         assert store.issued == []
-        # Issuance resolves no identity of its own, so a statement here would be a new read.
+        # The route resolves after the operation check, so a refused body issues no statement.
         assert session.statements == []
         assert session.commits == 0
         assert fake_firebase_adapter.calls == []
@@ -226,10 +257,15 @@ class TestTheAccountLessCallerPreparesCreateUserAndNothingElse:
         assert store.issued == [AuthOperation.create_user]
 
     @pytest.mark.parametrize("operation", _BEYOND_CREATE_USER)
-    def test_every_other_operation_is_the_preauth_refusal(self, client, store, operation):
+    def test_every_other_operation_is_the_preauth_refusal(self, client, store, session,
+                                                          fake_firebase_adapter, operation):
         _assert_preauth_refused(client.post("/auth/challenge", json={"operation": operation}))
 
         assert store.issued == []
+        assert session.commits == 0
+        assert fake_firebase_adapter.calls == []
+        # The row refusal is earned by a read, where every body refusal is not.
+        assert len(session.statements) == 1
 
     @pytest.mark.parametrize("operation", _BEYOND_CREATE_USER)
     def test_the_same_operation_is_issued_once_the_caller_holds_an_account(self, linked_client,
