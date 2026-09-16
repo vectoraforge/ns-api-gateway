@@ -14,9 +14,16 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from nativespeaker.api.auth.store_notifications import RestoredSubscription
 from nativespeaker.api.crud.subscriptions import SubscriptionsDB
 from nativespeaker.api.errors import AppError, RestoreTransferRejected
-from nativespeaker.api.schemas.auth import AuthIdentity
+from nativespeaker.api.schemas.auth import LinkedIdentity
 from nativespeaker.api.services.restore import RestoreService
-from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus, User
+from nativespeaker.api.tables import (
+    ExternalIdentity,
+    IdentityProvider,
+    IdentityState,
+    PurchaseProvider,
+    SubscriptionStatus,
+    User,
+)
 from schema.test_claim_race import _RacingSession, read, scalar
 
 pytestmark = pytest.mark.schema
@@ -217,9 +224,16 @@ async def commit_subscription(harness: _Harness, *, user_id: uuid.UUID | None = 
     return subscription_id
 
 
-def identity_of(user_id: uuid.UUID) -> AuthIdentity:
-    """The admitted caller the route hands the service, carrying nothing but the account it resolved."""
-    return AuthIdentity(issuer="ns-restore-race", subject=str(user_id), user=User(id=user_id))
+def identity_of(user_id: uuid.UUID) -> LinkedIdentity:
+    """The admitted caller the route hands the service: the account it resolved and that account's row."""
+    # This file seeds no identity row, so the row is built here for the two fields the type requires.
+    return LinkedIdentity(user=User(id=user_id),
+                          identity=ExternalIdentity(user_id=user_id,
+                                                    issuer="ns-restore-race",
+                                                    subject=str(user_id),
+                                                    provider=IdentityProvider.google,
+                                                    provider_uid=f"uid-{user_id}",
+                                                    identity_state=IdentityState.active))
 
 
 async def run_attempt(harness: _Harness, attempt: _Attempt, proof: RestoredSubscription,
