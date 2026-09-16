@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 48
 current_phase_name: Narrow Identity to the verified pair
-status: executing
-stopped_at: Completed 48-07-PLAN.md
-last_updated: "2026-09-16T22:33:27.501Z"
+status: verifying
+stopped_at: Completed 48-08-PLAN.md
+last_updated: "2026-09-16T22:51:18.318Z"
 last_activity: 2026-09-16
 last_activity_desc: Phase 48 execution started
-state_head: 9b69769fd42d7104008b2ff4deb464cba9a30687
+state_head: dda93449e7e368b713e34d2070be87effd922c87
 progress:
   total_phases: 22
   completed_phases: 18
   total_plans: 140
-  completed_plans: 139
+  completed_plans: 140
   percent: 82
 ---
 
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 
 Phase: 48 (Narrow Identity to the verified pair) — EXECUTING
 Plan: 8 of 8
-Status: Ready to execute
+Status: Phase complete — ready for verification
         case, pre-existing, none of it this phase's. ruff clean; both self-inflicted defects closed.
 Progress: [████████████████████] 132/132 plans ([████████░░] 82%)
 
@@ -594,10 +594,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-16T22:33:26.798Z
+**Last session:** 2026-09-16T22:51:10.718Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 48-07-PLAN.md
+Stopped at: Completed 48-08-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -681,6 +681,7 @@ Resume file: None
 | Phase 48 P05 | 5 min | 3 tasks | 4 files |
 | Phase 48 P06 | 3 min | 2 tasks | 4 files |
 | Phase 48 P07 | 5 min | 2 tasks | 4 files |
+| Phase 48 P08 | 9 min | 3 tasks | 2 files |
 
 ## Decisions
 
@@ -899,3 +900,5 @@ Resume file: None
 - [Phase 48]: Plan 48-06 executed Task 2 before Task 1: the restore suite transitively imports tests/unit/test_jwks_offload.py, so Task 1 could not collect until Task 2 landed
 - [Phase 48]: The users route suite renames its identity fixture to linked, matching the handler parameter in routers/users.py:19
 - [Phase 48]: The e2e suite collects again (361 tests): 48-03 coverage entry D5 is discharged by an unscaffolded re-run of tests/e2e/test_challenge_store.py, 32 passed
+- [Phase 48]: The phase gate is measured at this phase's HEAD, not copied: -m '' 1 failed 2572 passed, -m e2e 1 failed 360 passed, -m schema 297 passed, ruff clean, ty 306 against a ceiling of 311. The one failure is the pre-existing restore case.
+- [Phase 48]: WINDOWS.md entry 33 records D-07 and option B as waived, and the ledger's counters were set to what its entries yield (19/2/12/33) rather than to the stale numbers the plan copied; a second pre-existing defect, row 31's unrendered reason cell, was repaired behind it, so windows append answers ok again.
