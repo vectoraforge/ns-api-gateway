@@ -829,16 +829,16 @@ Plans:
 
 #### Phase 48: Narrow Identity to the verified pair
 
-**Goal:** Remove the `user` and `identity` fields from `AuthIdentity` in `schemas/auth.py` (renamed from `Identity` in 200cc34) so it carries only the verified `(issuer, subject)` pair; `LinkedIdentity` keeps both rows as required fields. A linked caller reaches its handler as a `LinkedIdentity`, through `get_linked_identity`. Every consumer that reads a user or identity row — `services/auth.py`, `services/restore.py`, `routers/users.py` and any other — is annotated `LinkedIdentity`; nothing reads either row off a value typed `AuthIdentity`.
-**Requirements:** none mapped — behavior-preserving refactor; the admission matrix is unchanged
+**Goal:** Delete `AuthIdentity` from `schemas/auth.py`. The token result is `VerifiedClaims` from `auth/jwt_verifier.py`, holding `issuer` and `subject`. `LinkedIdentity` holds `user` and `identity`, both required, and nothing else. Two dependencies: `get_claims` checks the token and returns `VerifiedClaims` without a database read; `get_identity` calls `IdentitiesDB.resolve` and returns `LinkedIdentity`, raising `PreAuthIdentityNotAllowed` when no row exists. `resolve` loses `allow_preauth` and returns `LinkedIdentity | None`. The challenge route declares `get_claims` and calls `resolve` itself; create-user declares `get_claims` only; every other route declares `get_identity`, and both where it reads both. Services and the challenge store take `claims: VerifiedClaims` and `linked: LinkedIdentity` (the store: `LinkedIdentity | None`) as separate parameters. Amended 2026-09-16 by the phase discussion; the original goal kept `AuthIdentity` as a two-field class, which would have duplicated `VerifiedClaims`.
+**Requirements:** none mapped — behavior-preserving refactor; the admission matrix is unchanged except that a historical row or blocked user on create-user is now rejected by `AuthService._reject_existing_identity` after the challenge is claimed
 **Depends on:** 46 — independent of Phase 47
 **Plans:** 0 plans
 **Success criteria:**
 
-1. `AuthIdentity` has exactly two fields, `issuer` and `subject`; `LinkedIdentity` adds `user` and `identity`, both required
-2. No code in `src/` reads `.user` or `.identity` off a value annotated `AuthIdentity`; every such reader is annotated `LinkedIdentity`
-3. `get_linked_identity` still answers `PreAuthIdentityNotAllowed` for a never-linked pair, and `IdentitiesDB.resolve` still raises the same three rejections for a broken, historical or blocked row
-4. Unit and e2e tests that built an `AuthIdentity` with rows build a `LinkedIdentity`; no test asserts the `None` defaults
+1. `AuthIdentity` does not exist in `src/` or `tests/`; `LinkedIdentity` has exactly two fields, `user` and `identity`, both required, and no base class
+2. `get_claims` returns `VerifiedClaims` and issues no SQL statement; `get_identity` returns `LinkedIdentity` and answers `PreAuthIdentityNotAllowed` for a never-linked pair; `IdentitiesDB.resolve` has no `allow_preauth` parameter, returns `LinkedIdentity | None`, and still raises the same three rejections for a broken, historical or blocked row
+3. No code in `src/` reads `.user` or `.identity` off anything but a `LinkedIdentity`, and no parameter is annotated `LinkedIdentity | None` outside `crud/challenges.py`; the challenge route still admits a never-linked caller for `create_user` and rejects it for every other operation
+4. Tests that built an `AuthIdentity` build a `VerifiedClaims` or a `LinkedIdentity`; no test asserts a `None` row field or passes `allow_preauth`
 5. `.venv/bin/pytest -q -m ''`, `-m e2e` and `-m schema` all exit 0
 
 Plans:
