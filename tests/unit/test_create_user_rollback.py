@@ -4,10 +4,10 @@ from uuid import UUID
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.violations import UNIQUE_VIOLATION
 from nativespeaker.api.errors import IdentityAlreadyLinked
-from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.purchases import StorePurchaseToken
@@ -68,14 +68,14 @@ class _FlushFailingSession:
         self.rollbacks += 1
 
 
-def _identity() -> AuthIdentity:
-    return AuthIdentity(issuer=ISSUER, subject=SUBJECT)
+def _claims() -> VerifiedClaims:
+    return VerifiedClaims(issuer=ISSUER, subject=SUBJECT)
 
 
 async def _create(session) -> UUID:
     service = AuthService(db=session, challenge_store=ChallengesDB(), adapter=None,
                           devicecheck=None)
-    return await service.create_user(identity=_identity(),
+    return await service.create_user(claims=_claims(),
                                      provider=IdentityProvider.anonymous,
                                      provider_uid=None,
                                      email=None)

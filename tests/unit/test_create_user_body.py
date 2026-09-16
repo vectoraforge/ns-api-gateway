@@ -7,14 +7,15 @@ from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
     get_challenge_store,
+    get_claims,
     get_db,
     get_devicecheck_adapter,
     get_firebase_adapter,
-    get_identity,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
+from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.routers import auth_router
-from nativespeaker.api.schemas.auth import AuthIdentity, CompletionRequest
+from nativespeaker.api.schemas.auth import CompletionRequest
 
 from .conftest import TEST_ISSUER
 
@@ -29,7 +30,7 @@ class _RecordingChallengeStore:
         self.issued: list[str] = []
         self.located: list[str] = []
 
-    async def issue(self, session, *, operation, identity):
+    async def issue(self, session, *, operation, claims, linked):
         """Kept though completion never issues, so "nothing was issued" stays an assertion with teeth."""
         self.issued.append(str(operation))
         return "issued-handle", datetime(2026, 1, 1, tzinfo=UTC)
@@ -79,8 +80,8 @@ def client(store, session, fake_firebase_adapter):
     app.include_router(auth_router)
     register_exception_handlers(app)
 
-    identity = AuthIdentity(issuer=TEST_ISSUER, subject=UNLINKED_SUBJECT)
-    app.dependency_overrides[get_identity] = lambda: identity
+    claims = VerifiedClaims(issuer=TEST_ISSUER, subject=UNLINKED_SUBJECT)
+    app.dependency_overrides[get_claims] = lambda: claims
     # An async generator, not a plain callable: `get_db` releases the read transaction itself, and a
     # callable has no `try`/`except` to do it with. Mirrors `app/dependencies.py::get_db` exactly.
     async def _db():
@@ -118,8 +119,8 @@ class TestTheHandleReachesTheStore:
         assert store.issued == []
         # This arm releases `locate`'s read transaction, so a spurious rollback elsewhere fails here.
         assert session.rollbacks == 1
-        # The handler resolves no identity of its own: the racy pre-check is gone, not relocated.
-        assert session.statements == []
+        # The completion path resolves the caller once; a second query anywhere fails here.
+        assert len(session.statements) == 1
 
 
 # Absent, null, empty, a wrong scalar type and a container. None of them is a usable handle.
