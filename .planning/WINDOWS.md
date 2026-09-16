@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 20
-waived_count: 1
-fixed_count: 11
-total_count: 32
-last_updated: 2026-09-12T08:20:17.143Z
+open_count: 19
+waived_count: 2
+fixed_count: 12
+total_count: 33
+last_updated: 2026-09-16T22:46:00.665Z
 ---
 
 # Broken Windows Ledger
@@ -45,8 +45,9 @@ last_updated: 2026-09-12T08:20:17.143Z
 | 28 | 45 | todo | migrations/20260818_01_initial-release.sql | 136 | Stale comment: last_cross_account_transfer_month says 'Written by nothing' which D-10 made false. Should read: written by the capped cross-account move only (D-10); one move per subscription per UTC month. Migration not edited (D-14). | open |  | 2026-09-08T21:30:20.962Z |  |
 | 29 | 47 | unrun-verify | tests/e2e/test_restore_subscription.py |  | Pre-existing failure not caused by plan 47-01: the four-arms refusal case expects log event proof_rejected, the code emits purchase_proof_rejected. Measured on HEAD 1a3273d with every 47-01 edit reverted. | open |  | 2026-09-12T05:56:25.182Z |  |
 | 30 | 47 | unrun-verify | tests/schema/test_claim_race.py |  | Two assertions derive the expected monthly period from the live clock; a run straddling a UTC month boundary would fail | open |  | 2026-09-12T06:28:34.592Z |  |
-| 31 | 47 | deviation | tests/unit/test_subscription_attribution.py | 964 | Plan 47-08 measured it red: the control case builds an open term one minute past a module-import NOW, so any run longer than a minute between collection and the case closes the term and ingest raises InternalError. Fails under -m '' (131 s), passes alone. Reproduced with a 65 s post-collection sleep. Introduced by 47-05; not fixed in 47-08, which writes no source. | fixed |  | 2026-09-12T08:04:34.354Z | 2026-09-12T08:20:17.143Z |
+| 31 | 47 | deviation | tests/unit/test_subscription_attribution.py | 964 | Plan 47-08 measured it red: the control case builds an open term one minute past a module-import NOW, so any run longer than a minute between collection and the case closes the term and ingest raises InternalError. Fails under -m '' (131 s), passes alone. Reproduced with a 65 s post-collection sleep. Introduced by 47-05; not fixed in 47-08, which writes no source. | fixed | Fixed at the root by the orchestrator in 5ad4fbd: the control now computes its open term at call time instead of dating it from the module-import NOW. Re-measured by plan 47-08 at HEAD 5ad4fbd - .venv/bin/pytest -q -m '' reports 1 failed / 2572 passed, and the one remaining failure is the unrelated pre-existing restore case. | 2026-09-12T08:04:34.354Z | 2026-09-12T08:20:17.143Z |
 | 32 | 47 | lint-warning | tests/unit/test_subscription_attribution.py | 962 | E501 line too long (137 > 120), introduced by the fix commit 5ad4fbd: the trailing explanatory comment on the new call-time clock read overruns the configured 120. Measured by plan 47-08 at HEAD 5ad4fbd - ruff check src tests exits 1 with exactly this one error, where it exited 0 at 9d307df. Not repaired by 47-08, which writes no source. | fixed | Fixed by the orchestrator in ee7ecb4: the note is shorter and sits above the statement instead of riding on its end. Re-measured at HEAD ee7ecb4 - ruff check src tests prints All checks passed! and exits 0; the bare unit run reports 1921 passed. | 2026-09-12T08:20:12.909Z | 2026-09-12T08:35:00.000Z |
+| 33 | 48 | deviation | src/nativespeaker/api/services/auth.py |  | D-07 gives create-user the token dependency only, so no router-level declaration resolves that caller any more. Planning found the consequence: a caller holding an active row presents a challenge bound to that row, which the completion path could no longer confirm, so ChallengesDB.verify_binding would answer 409 challenge_required where the route answers 409 identity_already_linked today. The developer chose the option recorded in 48-01-SUMMARY.md - option B, AuthService.complete resolves the caller itself before the completion sequence. ROADMAP criterion 3 was amended on 2026-09-16 at plan time to name AuthService._complete beside crud/challenges.py, because _complete serves create-user, which has no row, and the three claim routes, which have one. | waived | Accepted under option B rather than fixed, because every wire outcome is preserved. The completion path issues one identity statement where the router-level dependency issued it before, so create-user's query count does not move; the three rejections still refuse a caller before the claim spends its challenge, so D-07's accepted cost of one spent challenge does not ship. Measured at the phase gate in plan 48-08: tests/e2e/test_create_user.py answers 22 passed, including TestCompletionRejectsAnAlreadyLinkedCaller::test_an_active_linked_identity_is_rejected_at_completion, which asserts 409 identity_already_linked. | 2026-09-16T22:46:00.665Z | 2026-09-16T22:46:00.665Z |
 
 ````json
 [
@@ -433,6 +434,18 @@ last_updated: 2026-09-12T08:20:17.143Z
     "reason": "Fixed by the orchestrator in ee7ecb4: the note is shorter and sits above the statement instead of riding on its end. Re-measured at HEAD ee7ecb4 - ruff check src tests prints All checks passed! and exits 0; the bare unit run reports 1921 passed.",
     "recorded_at": "2026-09-12T08:20:12.909Z",
     "resolved_at": "2026-09-12T08:35:00.000Z"
+  },
+  {
+    "id": 33,
+    "kind": "deviation",
+    "phase": "48",
+    "file": "src/nativespeaker/api/services/auth.py",
+    "line": null,
+    "description": "D-07 gives create-user the token dependency only, so no router-level declaration resolves that caller any more. Planning found the consequence: a caller holding an active row presents a challenge bound to that row, which the completion path could no longer confirm, so ChallengesDB.verify_binding would answer 409 challenge_required where the route answers 409 identity_already_linked today. The developer chose the option recorded in 48-01-SUMMARY.md - option B, AuthService.complete resolves the caller itself before the completion sequence. ROADMAP criterion 3 was amended on 2026-09-16 at plan time to name AuthService._complete beside crud/challenges.py, because _complete serves create-user, which has no row, and the three claim routes, which have one.",
+    "status": "waived",
+    "reason": "Accepted under option B rather than fixed, because every wire outcome is preserved. The completion path issues one identity statement where the router-level dependency issued it before, so create-user's query count does not move; the three rejections still refuse a caller before the claim spends its challenge, so D-07's accepted cost of one spent challenge does not ship. Measured at the phase gate in plan 48-08: tests/e2e/test_create_user.py answers 22 passed, including TestCompletionRejectsAnAlreadyLinkedCaller::test_an_active_linked_identity_is_rejected_at_completion, which asserts 409 identity_already_linked.",
+    "recorded_at": "2026-09-16T22:46:00.665Z",
+    "resolved_at": "2026-09-16T22:46:00.665Z"
   }
 ]
 ````
