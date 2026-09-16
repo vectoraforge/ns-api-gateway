@@ -8,13 +8,14 @@ from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
     get_challenge_store,
+    get_claims,
     get_devicecheck_adapter,
     get_firebase_adapter,
-    get_identity,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.firebase import FIREBASE_LOOKUP_ATTEMPTS, RetryableLookupError
+from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.errors import (
     AppError,
     IdentityAlreadyLinked,
@@ -23,7 +24,6 @@ from nativespeaker.api.errors import (
     UserNotFound,
 )
 from nativespeaker.api.routers import auth_router
-from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import IdentityProvider
@@ -56,13 +56,19 @@ class _RejectionLog:
         return [event for event, _ in self.entries]
 
 
+class _EmptyResult:
+    def first(self):
+        return None
+
+
 class _StubSession:
-    """Records transaction boundaries and refuses queries: a statement here would mean the router resolves identity."""
+    """Records transaction boundaries and every statement, so the completion path's reads are counted."""
 
     def __init__(self) -> None:
         self.commits = 0
         self.rollbacks = 0
         self.refreshed: list[object] = []
+        self.statements: list[object] = []
 
     async def __aenter__(self):
         return self
@@ -80,8 +86,9 @@ class _StubSession:
         self.refreshed.append(obj)
 
     async def exec(self, statement):
-        raise AssertionError("the completion path issued a query of its own: "
-                             f"{statement!r}")
+        self.statements.append(statement)
+        # No row: every case in this module is a caller holding no identity row.
+        return _EmptyResult()
 
 
 class _RecordingCreator:
@@ -128,17 +135,17 @@ def creator(monkeypatch) -> _RecordingCreator:
 
 
 @pytest.fixture
-def identity() -> AuthIdentity:
-    return AuthIdentity(issuer=TEST_ISSUER, subject=SUBJECT)
+def claims() -> VerifiedClaims:
+    return VerifiedClaims(issuer=TEST_ISSUER, subject=SUBJECT)
 
 
 @pytest.fixture
-def client(store, session, identity, creator, fake_firebase_adapter):
+def client(store, session, claims, creator, fake_firebase_adapter):
     app = FastAPI()
     app.include_router(auth_router)
     register_exception_handlers(app)
 
-    app.dependency_overrides[get_identity] = lambda: identity
+    app.dependency_overrides[get_claims] = lambda: claims
     app.state.session_factory = lambda: session
     app.dependency_overrides[get_challenge_store] = lambda: store
     app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
@@ -182,6 +189,29 @@ def _assert_challenge_required(response) -> None:
     """Byte-identical across all five rejections, asserted by equality so a more helpful field fails here."""
     assert response.status_code == 409
     assert response.json() == {"code": "challenge_required"}
+
+
+class TestTheCompletionPathIssuesOneStatement:
+    """`complete` resolves the caller itself, and that resolution is the only statement it issues."""
+
+    def test_the_whole_success_path_issues_exactly_one_statement(
+            self, client, store, session, fake_firebase_adapter):
+        """The longest path, so a second query added anywhere along it is still a failure."""
+        store.row = _issued_row()
+        fake_firebase_adapter.script(VerifiedProviderIdentity(provider=IdentityProvider.google,
+                                                              provider_uid="google-uid-1"))
+
+        assert _complete(client).status_code == 200
+
+        assert len(session.statements) == 1
+
+    def test_a_rejected_presentation_issues_the_same_one_statement(self, client, store, session):
+        """The resolution runs before the sequence, so the earliest rejection costs it and no more."""
+        store.row = None
+
+        _assert_challenge_required(_complete(client))
+
+        assert len(session.statements) == 1
 
 
 class TestTheFiveChallengeRejections:
