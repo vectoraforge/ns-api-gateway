@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud import identities as identities_crud
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.violations import UNIQUE_VIOLATION
@@ -18,7 +19,6 @@ from nativespeaker.api.errors import (
     IdentityAlreadyLinked,
     ProviderAccountAlreadyLinked,
 )
-from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.services import auth as auth_service
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
@@ -108,8 +108,8 @@ class _ConflictingSession:
         self.rollbacks += 1
 
 
-def _identity() -> AuthIdentity:
-    return AuthIdentity(issuer=ISSUER, subject=SUBJECT)
+def _claims() -> VerifiedClaims:
+    return VerifiedClaims(issuer=ISSUER, subject=SUBJECT)
 
 
 def _identity_row(*, state: IdentityState, user_id=None) -> ExternalIdentity:
@@ -127,7 +127,7 @@ async def _create(session, *, provider=IdentityProvider.anonymous, provider_uid=
     """Drive `AuthService.create_user` over whichever session the case scripted."""
     service = AuthService(db=session, challenge_store=ChallengesDB(), adapter=None,
                           devicecheck=None)
-    return await service.create_user(identity=_identity(),
+    return await service.create_user(claims=_claims(),
                                      provider=provider,
                                      provider_uid=provider_uid,
                                      email=None)
