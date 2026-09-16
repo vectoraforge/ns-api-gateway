@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 48
 current_phase_name: Narrow Identity to the verified pair
 status: executing
-stopped_at: Completed 48-04-PLAN.md
-last_updated: "2026-09-16T22:11:47.394Z"
+stopped_at: Completed 48-05-PLAN.md
+last_updated: "2026-09-16T22:18:28.696Z"
 last_activity: 2026-09-16
 last_activity_desc: Phase 48 execution started
-state_head: 9973a575b8c7ce1a62c2401495c90d53921bb61c
+state_head: b031373b4f4318d462705beb9ff0968593e53b1d
 progress:
   total_phases: 22
   completed_phases: 18
   total_plans: 140
-  completed_plans: 136
+  completed_plans: 137
   percent: 82
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 ## Current Position
 
 Phase: 48 (Narrow Identity to the verified pair) — EXECUTING
-Plan: 5 of 8
+Plan: 6 of 8
 Status: Ready to execute
         case, pre-existing, none of it this phase's. ruff clean; both self-inflicted defects closed.
 Progress: [████████████████████] 132/132 plans ([████████░░] 82%)
@@ -594,10 +594,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-16T22:11:46.701Z
+**Last session:** 2026-09-16T22:18:22.019Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 48-04-PLAN.md
+Stopped at: Completed 48-05-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -678,6 +678,7 @@ Resume file: None
 | Phase 48 P02 | 3 min | 2 tasks | 2 files |
 | Phase 48 P03 | 6 min | 3 tasks | 3 files |
 | Phase 48 P04 | 2 min | 2 tasks | 3 files |
+| Phase 48 P05 | 5 min | 3 tasks | 4 files |
 
 ## Decisions
 
@@ -891,3 +892,5 @@ Resume file: None
 - [Phase 48]: Test helpers that build a VerifiedClaims are named claims_for, not preauth_identity: both linked and unlinked call sites pass the value — D-01 makes the value a VerifiedClaims and D-08 passes it on every path, so a name saying pre-auth contradicts the call sites that also pass a LinkedIdentity.
 - [Phase 48]: The e2e verify for plan 48-03 was measured behind a temporary scaffold in a sibling-owned file, applied and reverted in one command, rather than by editing that file — tests/e2e/conftest.py imports tests/unit/test_jwks_offload.py, which is still red and belongs to a sibling wave-2 plan. The scope boundary forbids fixing it; claiming the run without measuring it would have been worse.
 - [Phase 48]: 48-04: the one identity fixture in each precedence suite splits into claims and linked, because each dependency override needs its own callable and no name exists for the pair
+- [Phase 48]: Task 2 preserved an assertion that option B invalidates: the body suite counted zero reads on the one non-422 path that reaches the handler. It counts exactly one instead, which is the same pin Task 1 adds.
+- [Phase 48]: The deleted _StubSession query guard is replaced by two counting cases, on the longest and the shortest completion path, so a second query anywhere between them still fails.
