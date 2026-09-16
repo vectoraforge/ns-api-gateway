@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.dialects import postgresql
 
-from nativespeaker.api.app.dependencies import get_linked_identity, get_purchases_db
+from nativespeaker.api.app.dependencies import get_identity, get_purchases_db
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.crud.purchases import PurchasesDB
 from nativespeaker.api.routers import users_router
@@ -75,22 +75,21 @@ def _bound(statement) -> list:
 def _linked_identity(*, email=EMAIL, display_name=DISPLAY_NAME) -> LinkedIdentity:
     """A linked caller carrying the profile fields the shared `TEST_IDENTITY` leaves unset."""
     user_id = uuid7()
-    return LinkedIdentity(issuer=TEST_ISSUER, subject=SUBJECT,
-                    user=User(id=user_id, active=True, email=email, display_name=display_name),
-                    identity=ExternalIdentity(id=uuid7(), user_id=user_id, issuer=TEST_ISSUER,
-                                              subject=SUBJECT, provider=IdentityProvider.google,
-                                              provider_uid="google-account-profile",
-                                              identity_state=IdentityState.active))
+    return LinkedIdentity(user=User(id=user_id, active=True, email=email, display_name=display_name),
+                          identity=ExternalIdentity(id=uuid7(), user_id=user_id, issuer=TEST_ISSUER,
+                                                    subject=SUBJECT, provider=IdentityProvider.google,
+                                                    provider_uid="google-account-profile",
+                                                    identity_state=IdentityState.active))
 
 
 @contextlib.contextmanager
-def _client_for(identity: LinkedIdentity, session: _RecordingSession):
+def _client_for(linked: LinkedIdentity, session: _RecordingSession):
     """The real users router, with the barrier's context supplied and the token store substituted."""
     app = FastAPI()
     app.include_router(users_router)
     register_exception_handlers(app)
 
-    app.dependency_overrides[get_linked_identity] = lambda: identity
+    app.dependency_overrides[get_identity] = lambda: linked
     app.dependency_overrides[get_purchases_db] = lambda: PurchasesDB(session)
 
     # `raise_server_exceptions=False` so the 500 arm renders through the shared handler rather than propagating.
@@ -104,13 +103,13 @@ def session() -> _RecordingSession:
 
 
 @pytest.fixture
-def identity() -> LinkedIdentity:
+def linked() -> LinkedIdentity:
     return _linked_identity()
 
 
 @pytest.fixture
-def client(identity, session):
-    with _client_for(identity, session) as test_client:
+def client(linked, session):
+    with _client_for(linked, session) as test_client:
         yield test_client
 
 
@@ -156,13 +155,13 @@ class TestTheProfileTakesOneQuery:
 
         assert all("core.users" not in _compiled(statement) for statement in session.statements)
 
-    def test_the_read_is_keyed_on_the_barrier_resolved_caller(self, client, session, identity):
+    def test_the_read_is_keyed_on_the_barrier_resolved_caller(self, client, session, linked):
         """WR-84: the happy path has no refusal to inspect, so an unscoped read leaks every account's
         store tokens through a 200 that the two secrecy cases below never see."""
         client.get("/users/me")
 
         assert "core.store_purchase_tokens.user_id = " in _compiled(session.statements[0])
-        assert _bound(session.statements[0]) == [identity.user.id]
+        assert _bound(session.statements[0]) == [linked.user.id]
 
 
 # Signals the caller supplies about itself: a user agent, an unknown header, an unknown query parameter.
@@ -209,17 +208,17 @@ class TestAnIncompleteAccountIsAnOpaqueFailure:
     """An unrepresented store is a broken invariant answered as the generic 500, never as a partial body."""
 
     @pytest.mark.parametrize("seeded", _INCOMPLETE_ACCOUNTS)
-    def test_a_missing_store_row_answers_the_generic_500(self, identity, seeded):
-        with _client_for(identity, _RecordingSession(seeded)) as client:
+    def test_a_missing_store_row_answers_the_generic_500(self, linked, seeded):
+        with _client_for(linked, _RecordingSession(seeded)) as client:
             response = client.get("/users/me")
 
         assert response.status_code == 500
         assert response.json() == {"code": "internal_error"}
 
     @pytest.mark.parametrize("seeded", _INCOMPLETE_ACCOUNTS)
-    def test_the_refusal_carries_no_cache_header_and_no_identifier(self, identity, seeded):
+    def test_the_refusal_carries_no_cache_header_and_no_identifier(self, linked, seeded):
         """The 500 body is the whole disclosure: no user id, no provider name, no token value."""
-        with _client_for(identity, _RecordingSession(seeded)) as client:
+        with _client_for(linked, _RecordingSession(seeded)) as client:
             response = client.get("/users/me")
 
         assert "cache-control" not in response.headers

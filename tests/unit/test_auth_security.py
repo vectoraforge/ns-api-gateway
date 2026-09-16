@@ -3,9 +3,9 @@ import pytest
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from nativespeaker.api.app.dependencies import get_linked_identity
+from nativespeaker.api.app.dependencies import get_identity
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.schemas.auth import AuthIdentity
+from nativespeaker.api.schemas.auth import LinkedIdentity
 from unit.conftest import make_test_verifier, make_token
 
 
@@ -32,10 +32,10 @@ def probe_client():
     """One route behind the real auth dependency, returning 200 whenever it is reached."""
     app = FastAPI()
     register_exception_handlers(app)
-    router = APIRouter(dependencies=[Depends(get_linked_identity)])
+    router = APIRouter(dependencies=[Depends(get_identity)])
 
     @router.get("/probe")
-    async def _probe(identity: AuthIdentity = Depends(get_linked_identity)):
+    async def _probe(linked: LinkedIdentity = Depends(get_identity)):
         return {"reached": True}
 
     app.include_router(router)
@@ -54,7 +54,7 @@ def test_the_probe_route_declares_the_dependency(probe_client):
     app = probe_client.app
     route = next(r for r in app.routes if isinstance(r, APIRoute) and r.path == "/probe")
     declared = [d.call for d in route.dependant.dependencies]
-    assert declared.count(get_linked_identity) == 2, declared
+    assert declared.count(get_identity) == 2, declared
 
 
 class TestBearerTokenEdgeCases:

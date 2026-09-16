@@ -10,10 +10,10 @@ from fastapi import APIRouter, Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
 from jwt.algorithms import RSAAlgorithm
 
-from nativespeaker.api.app.dependencies import get_linked_identity
+from nativespeaker.api.app.dependencies import get_identity
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.jwt_verifier import BoundedReason, JWTVerifier
-from nativespeaker.api.schemas.auth import AuthIdentity
+from nativespeaker.api.schemas.auth import LinkedIdentity
 from unit.conftest import PUBLIC_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_token
 
 JWKS_URL = "https://jwks.invalid/keys"
@@ -99,10 +99,10 @@ def probe_app(verifier) -> FastAPI:
     """One route carrying the real dependency at router and endpoint level, which is the production shape."""
     app = FastAPI()
     register_exception_handlers(app)
-    router = APIRouter(dependencies=[Depends(get_linked_identity)])
+    router = APIRouter(dependencies=[Depends(get_identity)])
 
     @router.get("/probe")
-    async def _probe(identity: AuthIdentity = Depends(get_linked_identity)):
+    async def _probe(linked: LinkedIdentity = Depends(get_identity)):
         return {"reached": True}
 
     app.include_router(router)
