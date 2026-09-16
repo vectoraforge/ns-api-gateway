@@ -4,9 +4,9 @@ from fastapi import Depends
 from fastapi.routing import APIRoute
 
 from nativespeaker.api.app.dependencies import (
+    get_claims,
     get_db,
     get_identity,
-    get_linked_identity,
     verify_app_store_notification,
     verify_google_play_notification,
 )
@@ -58,15 +58,15 @@ class TestEveryRouteIsAuthenticated:
         missing = [route.path for route in _api_routes()
                    if route.path not in PUBLIC_PATHS | PREAUTH_CALLABLE_PATHS
                    | PROVIDER_CALLBACK_PATHS
-                   and get_linked_identity not in _declared(route)]
+                   and get_identity not in _declared(route)]
         assert missing == [], f"routes serving without a linked-identity declaration: {missing}"
 
     @pytest.mark.parametrize("path", sorted(PREAUTH_CALLABLE_PATHS))
-    def test_the_preauth_callable_route_still_resolves_the_identity(self, path):
+    def test_the_preauth_callable_route_still_verifies_the_token(self, path):
         """Create-user is exempt from the narrowing, not from authentication: a linked caller is owed a 409."""
         declared = [_declared(route) for route in _api_routes() if route.path == path]
         assert declared, f"{path} is not a registered route"
-        assert all(get_identity in calls for calls in declared)
+        assert all(get_claims in calls for calls in declared)
 
     @pytest.mark.parametrize("path", ("/auth/sync", "/auth/upgrade-anonymous",
                                       "/auth/claim-anonymous-grant",
@@ -77,7 +77,7 @@ class TestEveryRouteIsAuthenticated:
         """Named rather than left to the generic case, which would also pass if the route were exempted."""
         declared = [_declared(route) for route in _api_routes() if route.path == path]
         assert declared, f"{path} is not a registered route"
-        assert all(get_linked_identity in calls for calls in declared)
+        assert all(get_identity in calls for calls in declared)
 
     @pytest.mark.parametrize("path", ("/auth/sync", "/auth/upgrade-anonymous",
                                       "/auth/claim-anonymous-grant",
@@ -93,15 +93,15 @@ class TestEveryRouteIsAuthenticated:
         """Read off the live router, not off the literal: a second open route fails here, not only below."""
         open_paths = {route.path for route in _api_routes()
                       if route.path not in PROVIDER_CALLBACK_PATHS
-                      and get_linked_identity not in _declared(route)
-                      and get_identity not in _declared(route)}
+                      and get_identity not in _declared(route)
+                      and get_claims not in _declared(route)}
         assert open_paths == {"/health/ready"}
 
     def test_no_route_serves_without_an_identity_or_a_callback_declaration(self):
         """A second such route would have to be added to one of the two literals above to pass."""
         unauthenticated = {route.path for route in _api_routes()
-                           if get_linked_identity not in _declared(route)
-                           and get_identity not in _declared(route)}
+                           if get_identity not in _declared(route)
+                           and get_claims not in _declared(route)}
         assert unauthenticated == PUBLIC_PATHS | PROVIDER_CALLBACK_PATHS
 
     def test_no_route_declares_a_wrapper_around_an_accessor(self):
@@ -109,7 +109,7 @@ class TestEveryRouteIsAuthenticated:
         for route in _api_routes():
             for call in _declared(route):
                 wrapped = getattr(call, "__wrapped__", None)
-                assert wrapped not in (get_linked_identity, get_identity), \
+                assert wrapped not in (get_identity, get_claims), \
                     f"{route.path} declares a wrapper around {getattr(wrapped, '__name__', wrapped)}"
 
 
@@ -134,8 +134,8 @@ class TestTheProviderCallbackPartition:
         """Its own, not any: one route declaring the other's verifier would pass a shared-name case."""
         calls = _declared(_route_at(path))
         assert verifier in calls
+        assert get_claims not in calls
         assert get_identity not in calls
-        assert get_linked_identity not in calls
 
     @pytest.mark.parametrize("verifier", sorted(PROVIDER_CALLBACK_VERIFIERS.values(),
                                                 key=lambda call: call.__name__))
@@ -190,7 +190,8 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
         from fastapi.testclient import TestClient
 
         from nativespeaker.api.app.error_handlers import register_exception_handlers
-        from nativespeaker.api.schemas.auth import AuthIdentity, LinkedIdentity
+        from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
+        from nativespeaker.api.schemas.auth import LinkedIdentity
         from nativespeaker.api.tables.identities import (
             ExternalIdentity,
             IdentityProvider,
@@ -232,14 +233,16 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
 
         app = FastAPI()
         register_exception_handlers(app)
-        router = APIRouter(dependencies=[Depends(get_linked_identity)])
+        router = APIRouter(dependencies=[Depends(get_identity)])
 
         @router.get("/chats/{chat_id}")
         async def _handler(chat_id: str,
-                           who: LinkedIdentity = Depends(get_linked_identity),
-                           admitted: AuthIdentity = Depends(get_identity)):
-            same = who.user is admitted.user and who.identity is admitted.identity
-            return {"same": same, "user": str(who.user.id)}
+                           linked: LinkedIdentity = Depends(get_identity),
+                           admitted: VerifiedClaims = Depends(get_claims)):
+            # A VerifiedClaims carries no row, so the two values are what the row is compared on.
+            same = (linked.identity.issuer == admitted.issuer
+                    and linked.identity.subject == admitted.subject)
+            return {"same": same, "user": str(linked.user.id)}
 
         app.include_router(router)
         app.state.jwt_verifier = _CountingVerifier()
