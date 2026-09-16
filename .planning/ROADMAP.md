@@ -842,15 +842,26 @@ Plans:
 5. `.venv/bin/pytest -q -m ''`, `-m e2e` and `-m schema` all exit 0
 
 Plans:
+**Wave 1**
 
 - [ ] 48-01-PLAN.md — the two types, the two dependencies, and every `src/` caller, proved end to end
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 48-02-PLAN.md — `resolve` and the admission fixture in the crud and handler suites
 - [ ] 48-03-PLAN.md — the challenge store and the challenge route suites
 - [ ] 48-04-PLAN.md — the three precedence suites take two overrides
 - [ ] 48-05-PLAN.md — the create-user and conflict suites
 - [ ] 48-06-PLAN.md — the restore, users and probe-route suites
 - [ ] 48-07-PLAN.md — the four schema suites
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 48-08-PLAN.md — the phase gate and the records
+
+**Cross-cutting constraints:**
+
+- D-11: every test builds a VerifiedClaims or a LinkedIdentity
 
 #### Phase 49: Delete the single-implementation auth Protocols
 

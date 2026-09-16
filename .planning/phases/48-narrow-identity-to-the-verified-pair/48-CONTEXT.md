@@ -35,7 +35,7 @@ which `auth/jwt_verifier.py:59` already defines, and deleted it. D-09 amends the
   `auth/jwt_verifier.py`, holding `issuer` and `subject`, unchanged. It keeps the plural: `iss`
   and `sub` are two JWT claims. Every import, annotation and constructor of `AuthIdentity` in
   `src/` and `tests/` changes.
-- **D-02: `LinkedIdentity` holds `user: User` and `identity: ExternalIdentity`, both required.**
+- **D-02:** `LinkedIdentity` holds `user: User` and `identity: ExternalIdentity`, both required.
   It loses `issuer`, `subject` and its base class. It stays a frozen, slotted dataclass in
   `schemas/auth.py`. `resolve` returns both rows or raises, so no reader gets a `None` warning.
   One class for both rows, not two: one joined query loads both, and 7 of 12 routes read the
@@ -43,7 +43,7 @@ which `auth/jwt_verifier.py:59` already defines, and deleted it. D-09 amends the
 
 ### The crud method
 
-- **D-03: `IdentitiesDB.resolve(*, issuer, subject) -> LinkedIdentity | None`.** The
+- **D-03:** `IdentitiesDB.resolve(*, issuer, subject) -> LinkedIdentity | None`. The
   `allow_preauth` parameter is removed: nothing in `src/` passes `False`. `None` means no
   `ExternalIdentity` row exists. The three rejections are unchanged: `IdentityUnresolvable` for
   a row whose user is missing, `HistoricalIdentity` for a non-active row, `BlockedUser` for a
@@ -60,8 +60,8 @@ which `auth/jwt_verifier.py:59` already defines, and deleted it. D-09 amends the
   authentication check for every route that needs an account. Router-level declarations:
   `routers/auth.py` declares `get_claims`; `routers/users.py` and `routers/chats.py` declare
   `get_identity`. FastAPI caches `get_claims`, so a route declaring both verifies the token once.
-- **D-06: The challenge route declares `get_claims` and `get_db` and calls
-  `IdentitiesDB(session).resolve` itself.** It is the one route that admits a caller with no
+- **D-06:** The challenge route declares `get_claims` and `get_db` and calls
+  `IdentitiesDB(session).resolve` itself. It is the one route that admits a caller with no
   row, because that caller issues the create-user challenge. `None` with any operation other
   than `create_user` is `PreAuthIdentityNotAllowed`, as today. The three rejections from
   `resolve` propagate as today.
@@ -74,7 +74,7 @@ which `auth/jwt_verifier.py:59` already defines, and deleted it. D-09 amends the
 
 ### Parameters
 
-- **D-08: Services and the challenge store take the two values as separate parameters:**
+- **D-08:** Services and the challenge store take the two values as separate parameters:
   `claims: VerifiedClaims` and `linked: LinkedIdentity`. The name `linked`, not `identity`, so
   reads are `linked.user` and `linked.identity`. `ChallengesDB.issue` and `verify_binding` take
   `claims` and `linked: LinkedIdentity | None`: they bind to `linked.identity.id` when a row

@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
-current_phase: 47
-current_phase_name: Stop threading an evaluation instant through the layers
+current_phase: 48
+current_phase_name: narrow-identity-to-the-verified-pair
 status: executed
 stopped_at: Phase 48 context gathered
-last_updated: "2026-09-16T20:31:12.126Z"
+last_updated: "2026-09-16T21:26:25.850Z"
 last_activity: 2026-09-12
 last_activity_desc: Phase 47 gate re-derived at 9a44f20; criterion 5 still unmet on one pre-existing case
-state_head: fb0cc9603fd27a5ee391a5a881594853296836bc
+state_head: 967ce5d231eca5ae6c3894ad4087a590c050e89c
 progress:
   total_phases: 22
   completed_phases: 18
-  total_plans: 132
+  total_plans: 140
   completed_plans: 132
   percent: 82
 ---
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 
 ## Current Position
 
-Phase: 47 (Stop threading an evaluation instant through the layers) — EXECUTED, criterion 5 unmet
+Phase: 48 (narrow-identity-to-the-verified-pair) — READY TO EXECUTE
 Plan: 8 of 8
 Status: All eight plans executed 2026-09-12. NOT verified. Gate re-derived at 9a44f20: one failing
         case, pre-existing, none of it this phase's. ruff clean; both self-inflicted defects closed.
