@@ -356,8 +356,7 @@ def admission_client():
     def _resolving(row):
         async def _dependency():
             session = cast(AsyncSession, _StubSession(row))
-            return await IdentitiesDB(session).resolve(issuer=ISSUER, subject=SUBJECT,
-                                                       allow_preauth=False)
+            return await IdentitiesDB(session).resolve(issuer=ISSUER, subject=SUBJECT)
 
         return _dependency
 
