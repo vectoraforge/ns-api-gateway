@@ -560,17 +560,22 @@ one challenge. It is refused either way. Record it in `.planning/WINDOWS.md`.
 | A4 | `crud/` may import `VerifiedClaims` from `auth/jwt_verifier.py` | The two types | AGENTS.md § Package layout gives no ruling; `jwt_verifier.py` imports nothing from this project, so no cycle can arise |
 | A5 | The 2579-case count for `-m ''` is 7 higher than the 2572 STATE.md records for Phase 47 | Baseline | None for this phase; the counts were measured today, and the failing set is the same one case |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does `LinkedIdentity` keep `slots=True`?**
+   - **Resolved:** yes. D-02 locks it frozen and slotted. Applied in plan 48-01 Task 2.
    - What we know: D-02 says frozen and slotted.
    - What's unclear: nothing. It is locked.
 2. **What replaces `test_identity_accessors.py:343-346`?**
+   - **Resolved:** nothing replaces it; the case is deleted. Decided in 48-01 § planner_notes and
+     applied in plan 48-01 Task 2.
    - What we know: the case asserts the only `str` fields are `issuer` and `subject`. After D-02
      `LinkedIdentity` has no `str` field at all.
    - Recommendation: delete it. `tests/unit/test_jwt_security.py:207-227` already pins
      `VerifiedClaims`, which is where a client address could now arrive.
 3. **Does `_complete` still need `verify_binding` to take both values?**
+   - **Resolved:** yes, one signature takes both. Decided in 48-01 § planner_notes P-02 and
+     applied in plan 48-01 Task 2.
    - What we know: create-user binds on `claims`, the other three bind on `linked.identity.id`.
    - Recommendation: keep one signature taking both, as D-08 states. One method, one precedence.
 
