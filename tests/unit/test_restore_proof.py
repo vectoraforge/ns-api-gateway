@@ -618,10 +618,9 @@ SUBJECT = "restore-ordering-subject"
 
 
 def _caller() -> LinkedIdentity:
-    """The shape the barrier hands the handler: `resolve` sets the two rows together or neither,
-    so a user standing beside `identity=None` stands in for a state production cannot produce."""
+    """The shape the barrier hands the handler: both rows, resolved together."""
     user = User()
-    return LinkedIdentity(issuer=ISSUER, subject=SUBJECT, user=user,
+    return LinkedIdentity(user=user,
                           identity=ExternalIdentity(user_id=user.id, issuer=ISSUER,
                                                     subject=SUBJECT,
                                                     provider=IdentityProvider.google,
@@ -637,7 +636,7 @@ class TestTheStoreCallRunsBeforeTheSessionsFirstStatement:
         store = _ScriptedAppStore(session, _restored())
 
         with pytest.raises(_Stop):
-            await _service(session, store).restore(identity=_caller(),
+            await _service(session, store).restore(linked=_caller(),
                                                    provider=PurchaseProvider.apple,
                                                    restore_proof="a-signed-transaction")
 
@@ -651,7 +650,7 @@ class TestTheStoreCallRunsBeforeTheSessionsFirstStatement:
         play = _ScriptedPlay(session, _play_restored())
 
         with pytest.raises(_Stop):
-            await _service(session, store, play).restore(identity=_caller(),
+            await _service(session, store, play).restore(linked=_caller(),
                                                          provider=PurchaseProvider.google_play,
                                                          restore_proof="a-purchase-token")
 
@@ -665,7 +664,7 @@ class TestTheStoreCallRunsBeforeTheSessionsFirstStatement:
         play = _ScriptedPlay(session, _play_restored())
 
         with pytest.raises(_Stop):
-            await _service(session, store, play).restore(identity=_caller(),
+            await _service(session, store, play).restore(linked=_caller(),
                                                          provider=PurchaseProvider.apple,
                                                          restore_proof="a-signed-transaction")
 
@@ -677,7 +676,7 @@ class TestTheStoreCallRunsBeforeTheSessionsFirstStatement:
         store = _ScriptedAppStore(session, PurchaseProofRejected(stage="VERIFICATION_FAILURE"))
 
         with pytest.raises(PurchaseProofRejected):
-            await _service(session, store).restore(identity=_caller(),
+            await _service(session, store).restore(linked=_caller(),
                                                    provider=PurchaseProvider.apple,
                                                    restore_proof="a-forged-transaction")
 
@@ -691,7 +690,7 @@ class TestTheStoreCallRunsBeforeTheSessionsFirstStatement:
 
         with pytest.raises(PurchaseProofRejected):
             await _service(session, _ScriptedAppStore(session, _restored()), play).restore(
-                identity=_caller(), provider=PurchaseProvider.google_play,
+                linked=_caller(), provider=PurchaseProvider.google_play,
                 restore_proof="a-fabricated-purchase-token")
 
         assert session.statements == 0
@@ -750,7 +749,7 @@ class TestTheCreateBranchNeverOverwritesARowCommittedSinceItsRead:
         service.purchases_db = _NoAttribution()
 
         with pytest.raises(_Stop):
-            await service.restore(identity=_caller(), provider=PurchaseProvider.apple,
+            await service.restore(linked=_caller(), provider=PurchaseProvider.apple,
                                   restore_proof="a-signed-transaction")
 
         assert recorder.calls == ["lock_grants_of", "insert_subscription"]
@@ -840,7 +839,7 @@ async def _same_account_restore(purchased_at, settled_status=SubscriptionStatus.
     service.purchases_db = (_AttributedToTheCaller(caller.user.id) if attributed_to_caller
                             else _NoAttribution())
 
-    await service.restore(identity=caller, provider=PurchaseProvider.apple,
+    await service.restore(linked=caller, provider=PurchaseProvider.apple,
                           restore_proof="a-signed-transaction")
     return recorder, session
 
@@ -1082,7 +1081,7 @@ async def _grace_restore(ends_at: datetime | None) -> tuple[_GraceRecorder, _Com
     service.subscriptions_db = recorder
     service.purchases_db = _NoAttribution()
 
-    await service.restore(identity=caller, provider=PurchaseProvider.apple,
+    await service.restore(linked=caller, provider=PurchaseProvider.apple,
                           restore_proof="a-signed-transaction")
     return recorder, session
 
@@ -1144,7 +1143,7 @@ class TestALostAdoptionClaimIsAnsweredAsTheWinnerLeftIt:
         service, caller, recorder, session = _adoption_restore(claim_wins=False,
                                                                winner_is_caller=True)
 
-        await service.restore(identity=caller, provider=PurchaseProvider.apple,
+        await service.restore(linked=caller, provider=PurchaseProvider.apple,
                               restore_proof="a-signed-transaction")
 
         assert (recorder.granted, session.rollbacks, session.commits) == ([], 1, 0)
@@ -1154,7 +1153,7 @@ class TestALostAdoptionClaimIsAnsweredAsTheWinnerLeftIt:
         service, caller, recorder, session = _adoption_restore(claim_wins=False)
 
         with pytest.raises(RestoreSubscriptionNotEntitled):
-            await service.restore(identity=caller, provider=PurchaseProvider.apple,
+            await service.restore(linked=caller, provider=PurchaseProvider.apple,
                                   restore_proof="a-signed-transaction")
 
         assert (recorder.granted, session.rollbacks, session.commits) == ([], 1, 0)
@@ -1163,7 +1162,7 @@ class TestALostAdoptionClaimIsAnsweredAsTheWinnerLeftIt:
         """The control: adoption takes the row and spends none of D-10's month cap doing it."""
         service, caller, recorder, session = _adoption_restore()
 
-        await service.restore(identity=caller, provider=PurchaseProvider.apple,
+        await service.restore(linked=caller, provider=PurchaseProvider.apple,
                               restore_proof="a-signed-transaction")
 
         assert (recorder.claims[0]["owner_read"], recorder.claims[0]["transfer_month"]) == (None,
