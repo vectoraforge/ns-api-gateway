@@ -51,12 +51,12 @@ class RestoreService:
         # The Play read travels the application name in its URL; the Apple check needs none.
         self.package_name = package_name
 
-    async def restore(self, identity: LinkedIdentity, provider: PurchaseProvider,
+    async def restore(self, linked: LinkedIdentity, provider: PurchaseProvider,
                       restore_proof: str) -> None:
         """Verify the store proof and attach the entitlement the subscription it names carries."""
         instant = datetime.now(UTC)
         proof = await self._verify(provider, restore_proof)
-        destination = identity.user.id
+        destination = linked.user.id
 
         # Plain reads, never locks: a subscription-row lock would sit ahead of the grant locks below.
         stored = await self.subscriptions_db.read_subscription(proof.provider, proof.external_id)

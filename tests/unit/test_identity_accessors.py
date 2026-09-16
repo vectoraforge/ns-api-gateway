@@ -286,17 +286,24 @@ class TestAccessorsCannotProvision:
         """Both await resolution now, so FastAPI must not hand them to the threadpool."""
         assert inspect.iscoroutinefunction(accessor)
 
-    @pytest.mark.parametrize("path", ["/admitted", "/linked"])
-    def test_the_declaration_resolves_once(self, path):
-        """One session across both declarations; an accessor calling rather than declaring ran everything twice."""
+    def test_the_declaration_resolves_once(self):
+        """One session per request; an accessor calling rather than declaring ran everything twice."""
         user, identity = _rows()
         client = _client(row=(identity, user))
-        client.get(path, headers=_bearer())
+        client.get("/linked", headers=_bearer())
         opened = client.app.state.opened_sessions
         assert len(opened) == 1, "resolution ran more than once"
         session = opened[0]
         assert len(session.statements) == 1, "resolution issues exactly one statement per request"
         assert session.closed, "the session closes before the handler runs"
+
+    def test_the_admitting_declaration_reads_no_table_at_all(self):
+        """`get_claims` answers from the token alone, so an admitted caller costs no connection."""
+        user, identity = _rows()
+        client = _client(row=(identity, user))
+        response = client.get("/admitted", headers=_bearer())
+        assert response.status_code == 200
+        assert client.app.state.opened_sessions == []
 
 
 class TestTheLinkedIdentityShape:

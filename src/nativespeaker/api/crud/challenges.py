@@ -7,8 +7,9 @@ from sqlalchemy import func, update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.errors import ChallengeConsumed, ChallengeIdentityMismatch
-from nativespeaker.api.schemas.auth import AuthIdentity
+from nativespeaker.api.schemas.auth import LinkedIdentity
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 
 # One universal TTL for every operation: no per-operation override, no grace period, no renewal.
@@ -41,7 +42,8 @@ class ChallengesDB:
 
     async def issue(self, session: AsyncSession, *,
                     operation: AuthOperation,
-                    identity: AuthIdentity) -> tuple[str, datetime]:
+                    claims: VerifiedClaims,
+                    linked: LinkedIdentity | None) -> tuple[str, datetime]:
         """Insert one row, returning only `(challenge_id, expires_at)`, and never renew it."""
         instant = datetime.now(UTC)
         challenge_id = new_challenge_id()
@@ -50,11 +52,11 @@ class ChallengesDB:
         bound_identity_id = None
         preauth_issuer = None
         preauth_subject = None
-        if identity.identity is not None:
-            bound_identity_id = identity.identity.id
+        if linked is not None:
+            bound_identity_id = linked.identity.id
         else:
-            preauth_issuer = identity.issuer
-            preauth_subject = identity.subject
+            preauth_issuer = claims.issuer
+            preauth_subject = claims.subject
 
         session.add(AuthChallenge(challenge_id=challenge_id,
                                   operation=operation,
@@ -87,19 +89,19 @@ class ChallengesDB:
             .returning(col(AuthChallenge.id)))
         return len(result.all()) == 1
 
-    def verify_binding(self, row: AuthChallenge, identity: AuthIdentity) -> AuthChallenge:
-        """Return `row` when `identity` is the presenter it was bound to, and raise otherwise."""
+    def verify_binding(self, row: AuthChallenge, claims: VerifiedClaims,
+                       linked: LinkedIdentity | None) -> AuthChallenge:
+        """Return `row` when the caller is the presenter it was bound to, and raise otherwise."""
         if row.bound_external_identity_id is not None:
-            if (identity.identity is not None
-                    and identity.identity.id == row.bound_external_identity_id):
+            if linked is not None and linked.identity.id == row.bound_external_identity_id:
                 return row
             raise ChallengeIdentityMismatch()
 
         # A cleared subject is never compared: the row takes the already-used answer.
         if row.preauth_subject is None:
             raise ChallengeConsumed()
-        if row.preauth_issuer != identity.issuer:
+        if row.preauth_issuer != claims.issuer:
             raise ChallengeIdentityMismatch()
-        if row.preauth_subject != identity.subject:
+        if row.preauth_subject != claims.subject:
             raise ChallengeIdentityMismatch()
         return row

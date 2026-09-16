@@ -9,22 +9,23 @@ from starlette.responses import Response
 from nativespeaker.api.app.dependencies import (
     get_auth_service,
     get_challenge_store,
+    get_claims,
     get_db,
     get_firebase_adapter,
     get_identity,
-    get_linked_identity,
     get_restore_service,
     get_sync_service,
 )
 from nativespeaker.api.auth.firebase import revoke_with_retry
+from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud.challenges import ChallengesDB
+from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.errors import (
     InvalidRequest,
     PreAuthIdentityNotAllowed,
     RestoreProviderUnknown,
 )
 from nativespeaker.api.schemas.auth import (
-    AuthIdentity,
     ChallengeRequest,
     CompletionRequest,
     CompletionResponse,
@@ -40,7 +41,7 @@ from nativespeaker.api.tables.purchases import PurchaseProvider
 
 logger = structlog.get_logger()
 
-router = APIRouter(tags=["auth"], dependencies=[Depends(get_identity)])
+router = APIRouter(tags=["auth"], dependencies=[Depends(get_claims)])
 
 
 @router.post("/auth/challenge",
@@ -48,7 +49,7 @@ router = APIRouter(tags=["auth"], dependencies=[Depends(get_identity)])
              summary="Issue a single-use challenge for a challenge-bearing operation")
 async def issue_challenge(body: ChallengeRequest,
                           response: Response,
-                          identity: AuthIdentity = Depends(get_identity),
+                          claims: VerifiedClaims = Depends(get_claims),
                           session: AsyncSession = Depends(get_db),
                           challenge_store: ChallengesDB = Depends(get_challenge_store)
                           ) -> PrepareResponse:
@@ -58,13 +59,16 @@ async def issue_challenge(body: ChallengeRequest,
         logger.warning("auth_challenge_operation_not_issuable", operation=body.operation)
         raise InvalidRequest
 
+    # Read after the vocabulary check: a refused body issues no statement.
+    linked = await IdentitiesDB(session).resolve(issuer=claims.issuer, subject=claims.subject)
     # Create-user is the only operation an account-less caller may prepare, because it is the only route it reaches.
-    if body.operation != AuthOperation.create_user and identity.identity is None:
+    if body.operation != AuthOperation.create_user and linked is None:
         raise PreAuthIdentityNotAllowed
 
     challenge_id, expires_at = await challenge_store.issue(session,
                                                            operation=AuthOperation(body.operation),
-                                                           identity=identity)
+                                                           claims=claims,
+                                                           linked=linked)
     # `get_db` never commits. This commit makes the issued row durable before the answer.
     await session.commit()
     # `no-store` rather than `no-cache`: the handle is a secret, and a revalidatable copy is a copy.
@@ -78,11 +82,11 @@ async def issue_challenge(body: ChallengeRequest,
              description="Spends a single-use challenge obtained from `POST /auth/challenge`, "
                          "supplied as `challenge_id` in the body, and creates the account.")
 async def create_user(body: CompletionRequest,
-                      identity: AuthIdentity = Depends(get_identity),
+                      claims: VerifiedClaims = Depends(get_claims),
                       service: AuthService = Depends(get_auth_service)) -> CompletionResponse:
     """Complete the operation the body's handle stands for."""
     # Forwarded untouched and never logged: the handle is a secret.
-    provider = await service.complete(identity=identity, challenge_id=body.challenge_id)
+    provider = await service.complete(claims=claims, challenge_id=body.challenge_id)
     return CompletionResponse(identity_provider=provider)
 
 
@@ -93,11 +97,13 @@ async def create_user(body: CompletionRequest,
                          "supplied as `challenge_id` in the body, and records the provider the "
                          "Firebase read reports onto the caller's existing identity row.")
 async def upgrade_anonymous(body: CompletionRequest,
-                            identity: LinkedIdentity = Depends(get_linked_identity),
+                            claims: VerifiedClaims = Depends(get_claims),
+                            linked: LinkedIdentity = Depends(get_identity),
                             service: AuthService = Depends(get_auth_service)) -> CompletionResponse:
     """Complete the operation the body's handle stands for."""
     # Forwarded untouched and never logged: the handle is a secret.
-    provider = await service.complete_upgrade(identity=identity, challenge_id=body.challenge_id)
+    provider = await service.complete_upgrade(claims=claims, linked=linked,
+                                              challenge_id=body.challenge_id)
     return CompletionResponse(identity_provider=provider)
 
 
@@ -109,19 +115,21 @@ async def upgrade_anonymous(body: CompletionRequest,
                          "Apple DeviceCheck and activates the grant.")
 async def claim_anonymous_grant(body: GrantClaimRequest,
                                 response: Response,
-                                identity: LinkedIdentity = Depends(get_linked_identity),
+                                claims: VerifiedClaims = Depends(get_claims),
+                                linked: LinkedIdentity = Depends(get_identity),
                                 service: AuthService = Depends(get_auth_service),
                                 sync_service: SyncService = Depends(get_sync_service)) -> SyncResponse:
     """Complete the operation the body's handle stands for, and report the entitlement it left."""
     # Forwarded untouched and never logged: the handle and the device token are secrets.
-    await service.complete_claim_anonymous_grant(identity=identity,
+    await service.complete_claim_anonymous_grant(claims=claims,
+                                                 linked=linked,
                                                  challenge_id=body.challenge_id,
                                                  device_token=body.device_token)
     # Read after the completion committed, so the claim, the repeat and the race loser share one shape.
-    entitlement = await sync_service.read_entitlement(identity.user.id)
+    entitlement = await sync_service.read_entitlement(linked.user.id)
     # Set on the injected response rather than returned as a JSONResponse, so the model still validates.
     response.headers["Cache-Control"] = "no-store"
-    return SyncResponse(entitlement=entitlement, identity_provider=identity.identity.provider)
+    return SyncResponse(entitlement=entitlement, identity_provider=linked.identity.provider)
 
 
 @router.post("/auth/claim-registered-grant",
@@ -132,19 +140,21 @@ async def claim_anonymous_grant(body: GrantClaimRequest,
                          "converting an anonymous device grant the caller already holds.")
 async def claim_registered_grant(body: GrantClaimRequest,
                                  response: Response,
-                                 identity: LinkedIdentity = Depends(get_linked_identity),
+                                 claims: VerifiedClaims = Depends(get_claims),
+                                 linked: LinkedIdentity = Depends(get_identity),
                                  service: AuthService = Depends(get_auth_service),
                                  sync_service: SyncService = Depends(get_sync_service)) -> SyncResponse:
     """Complete the operation the body's handle stands for, and report the entitlement it left."""
     # Forwarded untouched and never logged: the handle and the device token are secrets.
-    await service.complete_claim_registered_grant(identity=identity,
+    await service.complete_claim_registered_grant(claims=claims,
+                                                  linked=linked,
                                                   challenge_id=body.challenge_id,
                                                   device_token=body.device_token)
     # Read after the completion committed, so the claim, the repeat and the race loser share one shape.
-    entitlement = await sync_service.read_entitlement(identity.user.id)
+    entitlement = await sync_service.read_entitlement(linked.user.id)
     # Set on the injected response rather than returned as a JSONResponse, so the model still validates.
     response.headers["Cache-Control"] = "no-store"
-    return SyncResponse(entitlement=entitlement, identity_provider=identity.identity.provider)
+    return SyncResponse(entitlement=entitlement, identity_provider=linked.identity.provider)
 
 
 @router.post("/auth/restore-subscription",
@@ -155,7 +165,7 @@ async def claim_registered_grant(body: GrantClaimRequest,
                          "entitlement the subscription it names carries.")
 async def restore_subscription(body: RestoreRequest,
                                response: Response,
-                               identity: LinkedIdentity = Depends(get_linked_identity),
+                               linked: LinkedIdentity = Depends(get_identity),
                                service: RestoreService = Depends(get_restore_service),
                                sync_service: SyncService = Depends(get_sync_service)) -> SyncResponse:
     """Verify the store artifact and report the entitlement the caller's account now holds."""
@@ -165,14 +175,14 @@ async def restore_subscription(body: RestoreRequest,
         raise RestoreProviderUnknown
 
     # Forwarded untouched and never logged: the store artifact is a secret.
-    await service.restore(identity=identity,
+    await service.restore(linked=linked,
                           provider=PurchaseProvider(body.provider),
                           restore_proof=body.restore_proof)
     # Read after the restore committed, so the restore and the repeat share one shape.
-    entitlement = await sync_service.read_entitlement(identity.user.id)
+    entitlement = await sync_service.read_entitlement(linked.user.id)
     # Set on the injected response rather than returned as a JSONResponse, so the model still validates.
     response.headers["Cache-Control"] = "no-store"
-    return SyncResponse(entitlement=entitlement, identity_provider=identity.identity.provider)
+    return SyncResponse(entitlement=entitlement, identity_provider=linked.identity.provider)
 
 
 @router.post("/auth/sync",
@@ -180,11 +190,11 @@ async def restore_subscription(body: RestoreRequest,
              summary="Report the caller's entitlement and registration state",
              description="Reads the caller's effective grant, the current period's usage and the "
                          "stored registration state. Nothing is written.")
-async def sync(identity: LinkedIdentity = Depends(get_linked_identity),
+async def sync(linked: LinkedIdentity = Depends(get_identity),
                service: SyncService = Depends(get_sync_service)) -> SyncResponse:
     """Report what the caller's account entitles it to at this request's instant."""
-    entitlement = await service.read_entitlement(identity.user.id)
-    return SyncResponse(entitlement=entitlement, identity_provider=identity.identity.provider)
+    entitlement = await service.read_entitlement(linked.user.id)
+    return SyncResponse(entitlement=entitlement, identity_provider=linked.identity.provider)
 
 
 @router.post("/auth/sign-out-all",
@@ -193,11 +203,12 @@ async def sync(identity: LinkedIdentity = Depends(get_linked_identity),
              description="Revokes every refresh token the account holds, so no new session can be "
                          "minted for it. An ID token already issued stays valid until it expires "
                          "(up to one hour). An anonymous account cannot be signed in to again.")
-async def sign_out_all(identity: LinkedIdentity = Depends(get_linked_identity),
+async def sign_out_all(claims: VerifiedClaims = Depends(get_claims),
+                       linked: LinkedIdentity = Depends(get_identity),
                        adapter=Depends(get_firebase_adapter)) -> Response:
     """Revoke the caller's refresh tokens at the provider."""
     # The request-verified pair, never the stored row: the provider is told what this request proved.
-    await revoke_with_retry(adapter, identity.issuer, identity.subject)
+    await revoke_with_retry(adapter, claims.issuer, claims.subject)
     # The row id alone: enough to answer "did this account sign out everywhere", and no more.
-    logger.info("sign_out_all_confirmed", identity_row_id=str(identity.identity.id))
+    logger.info("sign_out_all_confirmed", identity_row_id=str(linked.identity.id))
     return Response(status_code=204)

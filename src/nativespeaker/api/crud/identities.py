@@ -7,16 +7,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud.violations import is_unique_violation
 from nativespeaker.api.errors import (
     BlockedUser,
     HistoricalIdentity,
     IdentityAlreadyLinked,
     IdentityUnresolvable,
-    PreAuthIdentityNotAllowed,
     ProviderAccountAlreadyLinked,
 )
-from nativespeaker.api.schemas.auth import AuthIdentity
+from nativespeaker.api.schemas.auth import LinkedIdentity
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.purchases import PurchaseProvider, StorePurchaseToken
 from nativespeaker.api.tables.users import User
@@ -27,8 +27,9 @@ class IdentitiesDB:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def resolve(self, *, issuer: str, subject: str, allow_preauth: bool) -> AuthIdentity:
-        """Resolve a verified `(issuer, subject)` or raise the rejection it earned, using a single query."""
+    async def resolve(self, *, issuer: str, subject: str) -> LinkedIdentity | None:
+        """Resolve a verified `(issuer, subject)` to both rows with a single query, or `None` where
+        no identity row exists, or raise the rejection the row earned."""
         # Outer join: an identity row whose user_id resolves to nothing must stay distinct from no row.
         statement = (select(ExternalIdentity, User)
                      .join(User, col(ExternalIdentity.user_id) == col(User.id), isouter=True)
@@ -37,10 +38,7 @@ class IdentitiesDB:
         row = (await self.session.exec(statement)).first()
 
         if row is None:
-            # Identity rows are never deleted, so no row can only mean this pair was never linked.
-            if allow_preauth:
-                return AuthIdentity(issuer=issuer, subject=subject)
-            raise PreAuthIdentityNotAllowed
+            return None
 
         identity, user = row
         if user is None:
@@ -51,7 +49,7 @@ class IdentitiesDB:
             raise HistoricalIdentity
         if user.active is not True:
             raise BlockedUser
-        return AuthIdentity(issuer=issuer, subject=subject, user=user, identity=identity)
+        return LinkedIdentity(user=user, identity=identity)
 
     async def resolve_existing(self, *, issuer: str, subject: str) -> ExternalIdentity | None:
         """The re-resolution, issued inside the transaction. Not the race arbiter, and never to be one."""
@@ -88,7 +86,7 @@ class IdentitiesDB:
         return (await self.session.exec(select(User).where(col(User.id) == user_id))).first()
 
     async def insert_account(self, *,
-                             identity: AuthIdentity,
+                             claims: VerifiedClaims,
                              provider: IdentityProvider,
                              provider_uid: str | None,
                              email: str | None) -> UUID:
@@ -102,8 +100,8 @@ class IdentitiesDB:
         await self.session.flush()
 
         self.session.add(ExternalIdentity(user_id=user.id,
-                                          issuer=identity.issuer,
-                                          subject=identity.subject,
+                                          issuer=claims.issuer,
+                                          subject=claims.subject,
                                           provider=provider,
                                           provider_uid=provider_uid,
                                           identity_state=IdentityState.active,

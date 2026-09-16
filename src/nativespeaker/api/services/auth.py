@@ -10,6 +10,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.devicecheck import read_bits_with_retry, write_bits_with_retry
 from nativespeaker.api.auth.firebase import lookup_with_retry
+from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud import ChallengesDB, GrantsDB, IdentitiesDB
 from nativespeaker.api.crud.grants import ActivationOutcome
 from nativespeaker.api.errors import (
@@ -34,7 +35,7 @@ from nativespeaker.api.errors import (
     ProviderAccountAlreadyLinked,
     ProviderTransitionNotAllowed,
 )
-from nativespeaker.api.schemas.auth import AuthIdentity, LinkedIdentity
+from nativespeaker.api.schemas.auth import LinkedIdentity
 from nativespeaker.api.tables.auth import AuthOperation
 from nativespeaker.api.tables.grants import AccessGrantSource
 from nativespeaker.api.tables.identities import (
@@ -47,9 +48,9 @@ from nativespeaker.api.tables.identities import (
 logger = structlog.get_logger()
 
 # The write seam of the shared sequence: it returns the provider the transaction settled on.
-Write = Callable[[AuthIdentity, VerifiedProviderIdentity], Awaitable[IdentityProvider]]
+Write = Callable[[VerifiedClaims, VerifiedProviderIdentity], Awaitable[IdentityProvider]]
 
-type PostClaim[I, T] = Callable[[I], Awaitable[T]]
+type PostClaim[T] = Callable[[VerifiedClaims], Awaitable[T]]
 
 # The seeded `core.access_tiers` row an anonymous device grant points at.
 ANONYMOUS_TIER_ID = "anonymous"
@@ -73,49 +74,62 @@ class AuthService:
         # Named for the vendor API, never for the company: two unrelated enums are already called apple.
         self.devicecheck = devicecheck
 
-    async def complete(self, *, identity: AuthIdentity, challenge_id: str) -> IdentityProvider:
+    async def complete(self, *, claims: VerifiedClaims, challenge_id: str) -> IdentityProvider:
         """Create the account the handle stands for, and return the provider it was created with."""
-        return await self._complete(identity=identity,
+        # Resolved here rather than by a route dependency, so the three rejections still refuse a
+        # caller before the claim spends its challenge.
+        linked = await self.identities_db.resolve(issuer=claims.issuer, subject=claims.subject)
+        return await self._complete(claims=claims,
+                                    linked=linked,
                                     challenge_id=challenge_id,
                                     operation=AuthOperation.create_user,
                                     post_claim=partial(self._read_then_write,
                                                        write=self._apply_create_user))
 
-    async def complete_upgrade(self, *, identity: LinkedIdentity, challenge_id: str) -> IdentityProvider:
+    async def complete_upgrade(self, *, claims: VerifiedClaims, linked: LinkedIdentity,
+                               challenge_id: str) -> IdentityProvider:
         """Record the caller's identity row as registered, and return the provider it now carries."""
-        return await self._complete(identity=identity,
+        return await self._complete(claims=claims,
+                                    linked=linked,
                                     challenge_id=challenge_id,
                                     operation=AuthOperation.upgrade_anonymous_to_registered,
                                     post_claim=partial(self._read_then_write,
                                                        write=self._apply_upgrade))
 
     async def complete_claim_anonymous_grant(self, *,
-                                             identity: LinkedIdentity,
+                                             claims: VerifiedClaims,
+                                             linked: LinkedIdentity,
                                              challenge_id: str,
                                              device_token: str) -> None:
         """Claim the caller's one anonymous device grant; the entitlement is read back after commit."""
-        await self._complete(identity=identity,
+        await self._complete(claims=claims,
+                             linked=linked,
                              challenge_id=challenge_id,
                              operation=AuthOperation.claim_anonymous_grant,
                              post_claim=partial(self._claim_anonymous_grant,
+                                                linked=linked,
                                                 device_token=device_token))
 
     async def complete_claim_registered_grant(self, *,
-                                              identity: LinkedIdentity,
+                                              claims: VerifiedClaims,
+                                              linked: LinkedIdentity,
                                               challenge_id: str,
                                               device_token: str) -> None:
         """Claim the caller's one registered account grant; the entitlement is read back after commit."""
-        await self._complete(identity=identity,
+        await self._complete(claims=claims,
+                             linked=linked,
                              challenge_id=challenge_id,
                              operation=AuthOperation.claim_registered_grant,
                              post_claim=partial(self._claim_registered_grant,
+                                                linked=linked,
                                                 device_token=device_token))
 
-    async def _complete[I: AuthIdentity, T](self, *,
-                                            identity: I,
-                                            challenge_id: str,
-                                            operation: AuthOperation,
-                                            post_claim: PostClaim[I, T]) -> T:
+    async def _complete[T](self, *,
+                           claims: VerifiedClaims,
+                           linked: LinkedIdentity | None,
+                           challenge_id: str,
+                           operation: AuthOperation,
+                           post_claim: PostClaim[T]) -> T:
         """The one completion sequence every route runs: locate, claim, commit, post-claim work, spend.
         The order of the rejections below is the precedence, and none of them carries a field."""
         # No rejection before the claim consumes anything, so a wrong presenter cannot burn a live challenge.
@@ -125,7 +139,7 @@ class AuthService:
             raise ChallengeNotFound()
 
         # Every line below reads `challenge`, which only the binding check produces: deleting it is a NameError.
-        challenge = self.challenge_store.verify_binding(located, identity)
+        challenge = self.challenge_store.verify_binding(located, claims, linked)
         if challenge.operation is not operation:
             raise ChallengeOperationMismatch()
 
@@ -144,7 +158,7 @@ class AuthService:
         challenge_row_id = str(challenge.id)
 
         try:
-            settled = await post_claim(identity)
+            settled = await post_claim(claims)
         except AppError:
             # A conflicting write leaves the transaction unusable, and the spend below needs it back.
             await self.session.rollback()
@@ -156,34 +170,35 @@ class AuthService:
                                        challenge_row_id=challenge_row_id)
         return settled
 
-    async def _read_then_write(self, identity: AuthIdentity, *, write: Write) -> IdentityProvider:
+    async def _read_then_write(self, claims: VerifiedClaims, *, write: Write) -> IdentityProvider:
         """The Firebase routes' post-claim work: the retry-wrapped read, then the write it settles."""
-        facts = await lookup_with_retry(self.adapter, identity.issuer, identity.subject)
+        facts = await lookup_with_retry(self.adapter, claims.issuer, claims.subject)
         # The provider the transaction settled on, which a divergence makes different from the read's.
-        return await write(identity, facts)
+        return await write(claims, facts)
 
-    async def _claim_anonymous_grant(self, identity: LinkedIdentity, *, device_token: str) -> None:
+    async def _claim_anonymous_grant(self, claims: VerifiedClaims, *, linked: LinkedIdentity,
+                                     device_token: str) -> None:
         """Refuse, or verify the device with Apple and activate the grant inside one transaction."""
         # D-08: the stored provider column is the sole classifier, and it is tested positively.
-        if identity.identity.provider is not IdentityProvider.anonymous:
+        if linked.identity.provider is not IdentityProvider.anonymous:
             raise ClaimantNotAnonymous
 
-        held = await self.grants_db.read_effective_grants(identity.user.id)
+        held = await self.grants_db.read_effective_grants(linked.user.id)
         if len(held) > 1:
-            raise MultipleEffectiveGrantsError(len(held), identity.user.id)
+            raise MultipleEffectiveGrantsError(len(held), linked.user.id)
         if any(grant.source is AccessGrantSource.anonymous_device_grant for grant in held):
             # The repeat: nothing is written, Apple is never reached, and the entitlement is read after commit.
             return
         # D-03: an ineligible account never costs an Apple round trip, and both arms decide before Apple.
-        consumed = identity.identity.free_grant_consumed_at is not None
-        if consumed or await self.grants_db.has_prior_free_grant(identity.user.id):
+        consumed = linked.identity.free_grant_consumed_at is not None
+        if consumed or await self.grants_db.has_prior_free_grant(linked.user.id):
             # Read at any status, as the lifetime index is: revocation and expiry never reopen the slot.
             raise FreeGrantAlreadyConsumed
         if held:
             raise OtherActiveGrantHeld
         # The one-active index's own question, asked on the mark alone; no source-keyed read is added
         # here because `has_prior_free_grant` above already covers both free sources at any status.
-        if await self.grants_db.read_active_grants(identity.user.id):
+        if await self.grants_db.read_active_grants(linked.user.id):
             raise ActiveGrantOutsideItsTerm
 
         await self.session.rollback()
@@ -194,12 +209,12 @@ class AuthService:
             raise DeviceGrantExhausted(stage="devicecheck_read", cause="already_set")
 
         outcome, refusal = await self.grants_db.activate_anonymous_device_grant(
-            user_id=identity.user.id,
-            issuer=identity.issuer,
-            subject=identity.subject,
+            user_id=linked.user.id,
+            issuer=claims.issuer,
+            subject=claims.subject,
             claim_platform=NativeClaimProvider.ios_devicecheck,
             tier_id=ANONYMOUS_TIER_ID)
-        wrote = await self._settle(identity, outcome, refusal,
+        wrote = await self._settle(linked, outcome, refusal,
                                    source=AccessGrantSource.anonymous_device_grant)
         await self.session.commit()  # Commit before the Apple write. Nothing clears an Apple bit.
 
@@ -210,16 +225,17 @@ class AuthService:
             except Exception as failure:
                 logger.error("devicecheck_bit_write_failed", failure=type(failure).__name__)
 
-    async def _claim_registered_grant(self, identity: LinkedIdentity, *, device_token: str) -> None:
+    async def _claim_registered_grant(self, claims: VerifiedClaims, *, linked: LinkedIdentity,
+                                      device_token: str) -> None:
         """Refuse, or convert the caller's anonymous grant, or verify the device and activate a new one."""
         # D-05: the stored provider column is the sole classifier, and it is tested positively.
-        if identity.identity.provider not in (IdentityProvider.google, IdentityProvider.apple):
+        if linked.identity.provider not in (IdentityProvider.google, IdentityProvider.apple):
             raise ClaimantNotRegistered
 
-        held = await self.grants_db.read_effective_grants(identity.user.id)
+        held = await self.grants_db.read_effective_grants(linked.user.id)
         if len(held) > 1:
             # A tripwire, not a recovery branch: a partial unique index makes it unreachable.
-            raise MultipleEffectiveGrantsError(len(held), identity.user.id)
+            raise MultipleEffectiveGrantsError(len(held), linked.user.id)
         sources = [grant.source for grant in held]
         if AccessGrantSource.registered_account_grant in sources:
             # The repeat: nothing is written, Apple is never reached, and the entitlement is read after commit.
@@ -228,10 +244,10 @@ class AuthService:
             raise OtherActiveGrantHeld
         # D-09(e) on both destinations: the lifetime index keys on source and carries no status.
         if await self.grants_db.holds_grant_of_source(
-                identity.user.id, AccessGrantSource.registered_account_grant):
+                linked.user.id, AccessGrantSource.registered_account_grant):
             raise FreeGrantAlreadyConsumed
         # A row the one-active index sees and this window cannot; the insert below would be refused.
-        marked = await self.grants_db.read_active_grants(identity.user.id)
+        marked = await self.grants_db.read_active_grants(linked.user.id)
         if [grant for grant in marked if grant.id not in {row.id for row in held}]:
             raise ActiveGrantOutsideItsTerm
 
@@ -239,7 +255,7 @@ class AuthService:
         state = None
         if not held:
             # History by source and status: `free_grant_consumed_at` is already set on the conversion path.
-            if await self.grants_db.has_prior_free_grant(identity.user.id):
+            if await self.grants_db.has_prior_free_grant(linked.user.id):
                 raise FreeGrantAlreadyConsumed
 
             await self.session.rollback()
@@ -250,11 +266,11 @@ class AuthService:
                 raise DeviceGrantExhausted(stage="devicecheck_read", cause="already_set")
 
         outcome, refusal = await self.grants_db.activate_registered_account_grant(
-            user_id=identity.user.id,
-            issuer=identity.issuer,
-            subject=identity.subject,
+            user_id=linked.user.id,
+            issuer=claims.issuer,
+            subject=claims.subject,
             tier_id=REGISTERED_TIER_ID)
-        wrote = await self._settle(identity, outcome, refusal,
+        wrote = await self._settle(linked, outcome, refusal,
                                    source=AccessGrantSource.registered_account_grant)
         # As on the anonymous claim: the grant is durable before Apple is told, because nothing clears
         # an Apple bit and a crash before this commit would burn the slot with nothing granted.
@@ -268,7 +284,7 @@ class AuthService:
             except Exception as failure:
                 logger.error("devicecheck_bit_write_failed", failure=type(failure).__name__)
 
-    async def _settle(self, identity: LinkedIdentity, outcome: ActivationOutcome,
+    async def _settle(self, linked: LinkedIdentity, outcome: ActivationOutcome,
                       cause: str | None, *, source: AccessGrantSource) -> bool:
         """Answer for what the writer did, and report whether this attempt is the one that wrote it:
         a race re-reads the winner's row, and a refusal raises carrying the arm that refused."""
@@ -277,7 +293,7 @@ class AuthService:
         # The writer's transaction is unusable either way, and the read below needs a fresh one.
         await self.session.rollback()
         if outcome is ActivationOutcome.lost_race:
-            held = await self.grants_db.read_effective_grants(identity.user.id)
+            held = await self.grants_db.read_effective_grants(linked.user.id)
             if any(grant.source is source for grant in held):
                 return False
             if held:
@@ -285,23 +301,23 @@ class AuthService:
             raise ClaimRefusedUnderLock(cause="lost_race_without_a_readable_grant")
         raise ClaimRefusedUnderLock(cause=cause)
 
-    async def _apply_create_user(self, identity: AuthIdentity,
+    async def _apply_create_user(self, claims: VerifiedClaims,
                                  facts: VerifiedProviderIdentity) -> IdentityProvider:
         """Create the account, and return the provider its new identity row carries."""
-        await self.create_user(identity=identity,
+        await self.create_user(claims=claims,
                                provider=facts.provider,
                                provider_uid=facts.provider_uid,
                                # The copy rule was evaluated once, inside the read; nothing re-derives it.
                                email=facts.email)
         return facts.provider
 
-    async def _apply_upgrade(self, identity: AuthIdentity,
+    async def _apply_upgrade(self, claims: VerifiedClaims,
                              facts: VerifiedProviderIdentity) -> IdentityProvider:
         """Re-check the locked rows' provider, and return the provider the flip settled on."""
         # Provider only: `identity_state` and `user.active` are read at admission and not again,
         # so a retire or block inside the challenge-commit window still upgrades (window 12).
-        located = await self.identities_db.lock_identity_and_user(issuer=identity.issuer,
-                                                                   subject=identity.subject)
+        located = await self.identities_db.lock_identity_and_user(issuer=claims.issuer,
+                                                                 subject=claims.subject)
         if located is None:
             # The barrier resolved both rows and neither is ever deleted, so no row is broken state.
             raise IdentityUnresolvable
@@ -329,28 +345,28 @@ class AuthService:
                                                       email=facts.email)
 
     async def create_user(self, *,
-                          identity: AuthIdentity,
+                          claims: VerifiedClaims,
                           provider: IdentityProvider,
                           provider_uid: str | None,
                           email: str | None) -> UUID:
         """Return the new user's id, or raise the rejection the transaction earned."""
-        existing = await self.identities_db.resolve_existing(issuer=identity.issuer,
-                                                             subject=identity.subject)
+        existing = await self.identities_db.resolve_existing(issuer=claims.issuer,
+                                                             subject=claims.subject)
 
         if existing is not None:
             # The prepare-time pre-check is racy, so this resolution is the one that decides.
             await self._reject_existing_identity(existing)
 
         if provider_uid is not None:
-            holder = await self.identities_db.resolve_provider_account(issuer=identity.issuer,
-                                                                       provider=provider,
-                                                                       provider_uid=provider_uid)
+            holder = await self.identities_db.resolve_provider_account(issuer=claims.issuer,
+                                                                      provider=provider,
+                                                                      provider_uid=provider_uid)
             if holder is not None:
                 raise ProviderAccountAlreadyLinked(identity_row_id=holder.id,
                                                    stored_provider=holder.provider,
                                                    live_provider=provider)
 
-        return await self.identities_db.insert_account(identity=identity,
+        return await self.identities_db.insert_account(claims=claims,
                                                        provider=provider,
                                                        provider_uid=provider_uid,
                                                        email=email)

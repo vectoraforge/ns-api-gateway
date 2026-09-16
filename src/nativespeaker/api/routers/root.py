@@ -2,11 +2,11 @@ from importlib.metadata import version
 
 from fastapi import APIRouter, Depends
 
-from nativespeaker.api.app.dependencies import get_chat_service, get_linked_identity
+from nativespeaker.api.app.dependencies import get_chat_service, get_identity
 from nativespeaker.api.services import ChatService
 
 # Router-level auth protects an endpoint added later whose own Depends is forgotten; the same callable runs once.
-router = APIRouter(tags=["root"], dependencies=[Depends(get_linked_identity)])
+router = APIRouter(tags=["root"], dependencies=[Depends(get_identity)])
 
 
 @router.get("/",

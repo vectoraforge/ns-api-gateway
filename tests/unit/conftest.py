@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from nativespeaker.api.app.dependencies import (
     get_chat_service,
     get_db,
-    get_linked_identity,
+    get_identity,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
@@ -109,7 +109,7 @@ def make_test_verifier() -> _FixedKeyVerifier:
     return _FixedKeyVerifier()
 
 
-# Handlers read identity.user.id and nothing else, so the id is the whole contract.
+# Handlers read linked.user.id and nothing else, so the id is the whole contract.
 TEST_SUBJECT = "test-user"
 TEST_USER_ID = uuid7()
 TEST_IDENTITY = LinkedIdentity(
@@ -121,8 +121,6 @@ TEST_IDENTITY = LinkedIdentity(
                               provider=IdentityProvider.google,
                               provider_uid="google-account-test",
                               identity_state=IdentityState.active),
-    issuer=TEST_ISSUER,
-    subject=TEST_SUBJECT,
 )
 
 
@@ -185,7 +183,7 @@ def client(mock_chats_db, service):
 
     app.dependency_overrides[get_db] = lambda: MagicMock()
     app.dependency_overrides[get_chat_service] = lambda: service
-    app.dependency_overrides[get_linked_identity] = lambda: TEST_IDENTITY
+    app.dependency_overrides[get_identity] = lambda: TEST_IDENTITY
     # No quota override is needed: the charge is called by the ChatService replaced above, and `charge_calls` stubs it.
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
@@ -250,8 +248,8 @@ class FakeChallengeStore:
             return self.row
         return None
 
-    def verify_binding(self, row, identity):
-        return self._binding.verify_binding(row, identity)
+    def verify_binding(self, row, claims, linked):
+        return self._binding.verify_binding(row, claims, linked)
 
     async def claim(self, session, *, challenge_id) -> bool:
         instant = datetime.now(UTC)

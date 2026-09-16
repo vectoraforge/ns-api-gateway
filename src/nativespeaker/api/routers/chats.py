@@ -4,23 +4,23 @@ from fastapi import APIRouter, Depends, Response
 
 from nativespeaker.api.app.dependencies import (
     get_chat_service,
-    get_linked_identity,
+    get_identity,
 )
 from nativespeaker.api.schemas.api import ChatRequest, ChatResponse, MessageRequest, MessageResponse
 from nativespeaker.api.schemas.auth import LinkedIdentity
 from nativespeaker.api.services import ChatService
 
 # Authentication is default-on for every route on this router.
-router = APIRouter(tags=["chats"], dependencies=[Depends(get_linked_identity)])
+router = APIRouter(tags=["chats"], dependencies=[Depends(get_identity)])
 
 
 @router.get("/chats",
             response_model=list[ChatResponse],
             summary="List chats",
             description="Returns all chat sessions belonging to the authenticated user.")
-async def list_chats(identity: LinkedIdentity = Depends(get_linked_identity),
+async def list_chats(linked: LinkedIdentity = Depends(get_identity),
                      service: ChatService = Depends(get_chat_service)):
-    chats = await service.list_chats(identity.user.id)
+    chats = await service.list_chats(linked.user.id)
     return [ChatResponse(chat_id=chat.id, title=chat.title,
                          created_at=chat.created_at, lang=chat.lang)
             for chat in chats]
@@ -31,9 +31,9 @@ async def list_chats(identity: LinkedIdentity = Depends(get_linked_identity),
             summary="Get chat messages",
             description="Returns all messages in a chat session, ordered chronologically.")
 async def get_chat_messages(chat_id: UUID,
-                            identity: LinkedIdentity = Depends(get_linked_identity),
+                            linked: LinkedIdentity = Depends(get_identity),
                             service: ChatService = Depends(get_chat_service)) -> list[MessageResponse]:
-    messages = await service.get_messages(chat_id=chat_id, user_id=identity.user.id)
+    messages = await service.get_messages(chat_id=chat_id, user_id=linked.user.id)
     return [
         MessageResponse(chat_id=message.chat_id, role=message.role,
                         content=message.content,
@@ -49,9 +49,9 @@ async def get_chat_messages(chat_id: UUID,
                          "Consumes one request from the user's monthly quota.",
              response_description="AI analysis message")
 async def create_chat(body: ChatRequest,
-                      identity: LinkedIdentity = Depends(get_linked_identity),
+                      linked: LinkedIdentity = Depends(get_identity),
                       service: ChatService = Depends(get_chat_service)) -> MessageResponse:
-    ai_message = await service.create_chat(user_id=identity.user.id, phrase=body.phrase,
+    ai_message = await service.create_chat(user_id=linked.user.id, phrase=body.phrase,
                                            context=body.context, lang=body.lang)
     return MessageResponse(chat_id=ai_message.chat_id, role=ai_message.role,
                            content=ai_message.content,
@@ -66,9 +66,9 @@ async def create_chat(body: ChatRequest,
              response_description="AI follow-up message")
 async def send_message(chat_id: UUID,
                        body: MessageRequest,
-                       identity: LinkedIdentity = Depends(get_linked_identity),
+                       linked: LinkedIdentity = Depends(get_identity),
                        service: ChatService = Depends(get_chat_service)) -> MessageResponse:
-    ai_message = await service.send_message(chat_id=chat_id, user_id=identity.user.id,
+    ai_message = await service.send_message(chat_id=chat_id, user_id=linked.user.id,
                                             message=body.message)
     return MessageResponse(chat_id=ai_message.chat_id, role=ai_message.role,
                            content=ai_message.content,
@@ -80,7 +80,7 @@ async def send_message(chat_id: UUID,
                summary="Delete chat",
                description="Permanently deletes a chat session and all its messages.")
 async def delete_chat(chat_id: UUID,
-                      identity: LinkedIdentity = Depends(get_linked_identity),
+                      linked: LinkedIdentity = Depends(get_identity),
                       service: ChatService = Depends(get_chat_service)) -> Response:
-    await service.delete_chat(chat_id, identity.user.id)
+    await service.delete_chat(chat_id, linked.user.id)
     return Response(status_code=204)

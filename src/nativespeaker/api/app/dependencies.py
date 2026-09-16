@@ -14,7 +14,7 @@ from nativespeaker.api.auth.google_play import (
     notification_key_for,
     subscription_notification_from,
 )
-from nativespeaker.api.auth.jwt_verifier import BoundedReason
+from nativespeaker.api.auth.jwt_verifier import BoundedReason, VerifiedClaims
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.config import AppConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
@@ -25,7 +25,7 @@ from nativespeaker.api.errors import (
     NotificationRejected,
     PreAuthIdentityNotAllowed,
 )
-from nativespeaker.api.schemas.auth import AuthIdentity, LinkedIdentity
+from nativespeaker.api.schemas.auth import LinkedIdentity
 from nativespeaker.api.schemas.webhooks import AppStoreNotificationRequest, PubSubPushRequest
 from nativespeaker.api.services import (
     AuthService,
@@ -55,10 +55,10 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession]:
 _bearer = HTTPBearer(auto_error=False)
 
 
-async def get_identity(request: Request,
-                       credential: HTTPAuthorizationCredentials | None = Depends(_bearer),
-                       ) -> AuthIdentity:
-    """Accept the token and resolve the identity it names -- once per request."""
+async def get_claims(request: Request,
+                     credential: HTTPAuthorizationCredentials | None = Depends(_bearer),
+                     ) -> VerifiedClaims:
+    """Accept the token and return the two values it proves -- once per request."""
     if credential is None:
         if request.headers.get("authorization") is None:
             raise InvalidExternalJwt(bounded_reason=BoundedReason.missing_token)
@@ -71,18 +71,18 @@ async def get_identity(request: Request,
     if claims is None:
         raise InvalidExternalJwt(bounded_reason=reason or BoundedReason.bad_signature)
 
-    async with request.app.state.session_factory() as session:
-        return await IdentitiesDB(session).resolve(issuer=claims.issuer,
-                                                   subject=claims.subject, allow_preauth=True)
+    return claims
 
 
 # Declared, never called directly: FastAPI's cache only sees solver-resolved deps, so a direct call re-verifies.
-async def get_linked_identity(identity: AuthIdentity = Depends(get_identity)) -> LinkedIdentity:
-    """The resolved user and identity row; rejects an unlinked caller with 403."""
-    if identity.user is None or identity.identity is None:
+async def get_identity(request: Request,
+                       claims: VerifiedClaims = Depends(get_claims)) -> LinkedIdentity:
+    """The resolved user and identity row; rejects a caller holding no identity row with 403."""
+    async with request.app.state.session_factory() as session:
+        linked = await IdentitiesDB(session).resolve(issuer=claims.issuer, subject=claims.subject)
+    if linked is None:
         raise PreAuthIdentityNotAllowed
-    return LinkedIdentity(issuer=identity.issuer, subject=identity.subject,
-                          user=identity.user, identity=identity.identity)
+    return linked
 
 
 def get_session_factory(request: Request) -> async_sessionmaker:

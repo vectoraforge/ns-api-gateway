@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, Query
 
-from nativespeaker.api.app.dependencies import get_chat_service, get_linked_identity
+from nativespeaker.api.app.dependencies import get_chat_service, get_identity
 from nativespeaker.api.schemas.api import ExamplesResponse
 from nativespeaker.api.services import ChatService
 
 # Authentication is default-on for every route on this router.
-router = APIRouter(tags=["examples"], dependencies=[Depends(get_linked_identity)])
+router = APIRouter(tags=["examples"], dependencies=[Depends(get_identity)])
 
 
 @router.get("/examples",

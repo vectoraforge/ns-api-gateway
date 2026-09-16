@@ -92,16 +92,7 @@ class MeResponse(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
-class AuthIdentity:
-    """A verified `(issuer, subject)` and the rows it resolved to, both `None` when it is unlinked."""
-    issuer: str
-    subject: str
-    user: User | None = None
-    identity: ExternalIdentity | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class LinkedIdentity(AuthIdentity):
-    """The same pair once the linked check has run: both rows are present by construction."""
+class LinkedIdentity:
+    """The account a verified credential resolved to: the user row and the identity row."""
     user: User
     identity: ExternalIdentity
