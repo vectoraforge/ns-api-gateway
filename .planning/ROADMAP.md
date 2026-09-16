@@ -832,7 +832,7 @@ Plans:
 **Goal:** Delete `AuthIdentity` from `schemas/auth.py`. The token result is `VerifiedClaims` from `auth/jwt_verifier.py`, holding `issuer` and `subject`. `LinkedIdentity` holds `user` and `identity`, both required, and nothing else. Two dependencies: `get_claims` checks the token and returns `VerifiedClaims` without a database read; `get_identity` calls `IdentitiesDB.resolve` and returns `LinkedIdentity`, raising `PreAuthIdentityNotAllowed` when no row exists. `resolve` loses `allow_preauth` and returns `LinkedIdentity | None`. The challenge route declares `get_claims` and calls `resolve` itself; create-user declares `get_claims` only; every other route declares `get_identity`, and both where it reads both. Services and the challenge store take `claims: VerifiedClaims` and `linked: LinkedIdentity` (the store: `LinkedIdentity | None`) as separate parameters. Amended 2026-09-16 by the phase discussion; the original goal kept `AuthIdentity` as a two-field class, which would have duplicated `VerifiedClaims`.
 **Requirements:** none mapped — behavior-preserving refactor; the admission matrix is unchanged except that a historical row or blocked user on create-user is now rejected by `AuthService._reject_existing_identity` after the challenge is claimed
 **Depends on:** 46 — independent of Phase 47
-**Plans:** 6/8 plans executed
+**Plans:** 7/8 plans executed
 **Success criteria:**
 
 1. `AuthIdentity` does not exist in `src/` or `tests/`; `LinkedIdentity` has exactly two fields, `user` and `identity`, both required, and no base class
@@ -853,7 +853,7 @@ Plans:
 - [x] 48-04-PLAN.md — the three precedence suites take two overrides
 - [x] 48-05-PLAN.md — the create-user and conflict suites
 - [x] 48-06-PLAN.md — the restore, users and probe-route suites
-- [ ] 48-07-PLAN.md — the four schema suites
+- [x] 48-07-PLAN.md — the four schema suites
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -952,6 +952,6 @@ Plans:
 | 45. POST /auth/restore-subscription | v2.0 | 9/9 | Complete    | 2026-09-08 |
 | 46. POST /auth/sign-out-all | v2.0 | 5/5 | Complete    | 2026-09-08 |
 | 47. Stop threading an evaluation instant through the layers | v2.0 | 8/8 | Executed — criterion 5 unmet (one pre-existing case) | 2026-09-12 |
-| 48. Narrow Identity to the verified pair | v2.0 | 6/8 | In Progress|  |
+| 48. Narrow Identity to the verified pair | v2.0 | 7/8 | In Progress|  |
 | 49. Delete the single-implementation auth Protocols | v2.0 | 0/0 | Not started | - |
 | 50. Typed runtime container behind an exit-stack lifespan | v2.0 | 0/0 | Not started | - |
