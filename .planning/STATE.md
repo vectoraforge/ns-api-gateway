@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 48
 current_phase_name: Narrow Identity to the verified pair
 status: executing
-stopped_at: Completed 48-05-PLAN.md
-last_updated: "2026-09-16T22:18:28.696Z"
+stopped_at: Completed 48-06-PLAN.md
+last_updated: "2026-09-16T22:25:02.225Z"
 last_activity: 2026-09-16
 last_activity_desc: Phase 48 execution started
-state_head: b031373b4f4318d462705beb9ff0968593e53b1d
+state_head: bf7b01b35aa3b863c2798ec6c7e53d15f34a3843
 progress:
   total_phases: 22
   completed_phases: 18
   total_plans: 140
-  completed_plans: 137
+  completed_plans: 138
   percent: 82
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 ## Current Position
 
 Phase: 48 (Narrow Identity to the verified pair) — EXECUTING
-Plan: 6 of 8
+Plan: 7 of 8
 Status: Ready to execute
         case, pre-existing, none of it this phase's. ruff clean; both self-inflicted defects closed.
 Progress: [████████████████████] 132/132 plans ([████████░░] 82%)
@@ -594,10 +594,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-16T22:18:22.019Z
+**Last session:** 2026-09-16T22:25:01.521Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 48-05-PLAN.md
+Stopped at: Completed 48-06-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -679,6 +679,7 @@ Resume file: None
 | Phase 48 P03 | 6 min | 3 tasks | 3 files |
 | Phase 48 P04 | 2 min | 2 tasks | 3 files |
 | Phase 48 P05 | 5 min | 3 tasks | 4 files |
+| Phase 48 P06 | 3 min | 2 tasks | 4 files |
 
 ## Decisions
 
@@ -894,3 +895,6 @@ Resume file: None
 - [Phase 48]: 48-04: the one identity fixture in each precedence suite splits into claims and linked, because each dependency override needs its own callable and no name exists for the pair
 - [Phase 48]: Task 2 preserved an assertion that option B invalidates: the body suite counted zero reads on the one non-422 path that reaches the handler. It counts exactly one instead, which is the same pin Task 1 adds.
 - [Phase 48]: The deleted _StubSession query guard is replaced by two counting cases, on the longest and the shortest completion path, so a second query anywhere between them still fails.
+- [Phase 48]: Plan 48-06 executed Task 2 before Task 1: the restore suite transitively imports tests/unit/test_jwks_offload.py, so Task 1 could not collect until Task 2 landed
+- [Phase 48]: The users route suite renames its identity fixture to linked, matching the handler parameter in routers/users.py:19
+- [Phase 48]: The e2e suite collects again (361 tests): 48-03 coverage entry D5 is discharged by an unscaffolded re-run of tests/e2e/test_challenge_store.py, 32 passed
