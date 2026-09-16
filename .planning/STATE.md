@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 48
 current_phase_name: Narrow Identity to the verified pair
 status: executing
-stopped_at: Completed 48-01-PLAN.md
-last_updated: "2026-09-16T21:49:33.956Z"
+stopped_at: Completed 48-02-PLAN.md
+last_updated: "2026-09-16T21:57:13.343Z"
 last_activity: 2026-09-16
 last_activity_desc: Phase 48 execution started
-state_head: c2c14be943f8812dae839fc448ead6ac52cba65d
+state_head: d9400016c17969152caa9c6c693eb706dee8bd79
 progress:
   total_phases: 22
   completed_phases: 18
   total_plans: 140
-  completed_plans: 133
+  completed_plans: 134
   percent: 82
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-08)
 ## Current Position
 
 Phase: 48 (Narrow Identity to the verified pair) — EXECUTING
-Plan: 2 of 8
+Plan: 3 of 8
 Status: Ready to execute
         case, pre-existing, none of it this phase's. ruff clean; both self-inflicted defects closed.
 Progress: [████████████████████] 132/132 plans ([████████░░] 82%)
@@ -594,10 +594,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-16T21:49:33.271Z
+**Last session:** 2026-09-16T21:57:12.668Z
 
 Last activity: 2026-09-08
-Stopped at: Completed 48-01-PLAN.md
+Stopped at: Completed 48-02-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -675,6 +675,7 @@ Resume file: None
 | Phase 47 P07 | 21 min | 3 tasks | 8 files |
 | Phase 47 P08 | 42 min | 3 tasks | 5 files |
 | Phase 48 P01 | 12 min | 3 tasks | 14 files |
+| Phase 48 P02 | 3 min | 2 tasks | 2 files |
 
 ## Decisions
 
@@ -882,3 +883,5 @@ Resume file: None
 - [Phase 47]: The challenge claim and consume stamp from func.clock_timestamp(); issue keeps a Python read because expires_at goes into the response body — One clock per class, and a value returned to the caller cannot come from a database expression without a round trip
 - [Phase 48]: Task 1 answered B: AuthService.complete resolves the caller itself, keeping every create-user wire outcome byte-identical — Under D-07 as written, an already-linked caller would be answered 409 challenge_required in a loop instead of 409 identity_already_linked; B also drops the one-spent-challenge cost D-07 had accepted
 - [Phase 48]: The phase gate must measure LinkedIdentity | None as a parameter, not as a bare grep — D-03 mandates crud/identities.py resolve to return LinkedIdentity | None, so the plan-level verification line as written can never pass; the real invariant is that only crud/challenges.py and services/auth.py take it as a parameter
+- [Phase 48]: 48-02: Task 1 acceptance criterion 3 contradicts its own action; the action won and the criterion is recorded failed with its measurement — The criterion greps for PreAuthIdentityNotAllowed anywhere in the crud suite, but two rejection cases the same action orders kept assert the negative. Deleting them would drop the live guard against the flag branch being restored.
+- [Phase 48]: 48-02: a case reading identity.issuer and identity.subject off a LinkedIdentity is deleted, not rewritten — D-02 removed both fields from the slotted class, so the case raised AttributeError. Its subject is VerifiedClaims, already pinned by tests/unit/test_jwt_security.py:207-227.
