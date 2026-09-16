@@ -8,11 +8,12 @@ from fastapi import APIRouter, Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
+    get_claims,
     get_identity,
-    get_linked_identity,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.schemas.auth import AuthIdentity
+from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
+from nativespeaker.api.schemas.auth import LinkedIdentity
 from nativespeaker.api.tables.identities import (
     ExternalIdentity,
     IdentityProvider,
@@ -22,18 +23,12 @@ from nativespeaker.api.tables.identities import (
 from nativespeaker.api.tables.users import User
 from unit.conftest import TEST_ISSUER, make_test_verifier, make_token
 
-ACCESSORS = (get_identity, get_linked_identity)
+ACCESSORS = (get_claims, get_identity)
 ISSUER = TEST_ISSUER
 SUBJECT = "firebase-uid-1"
 
 # A field name matching any of these would be a client address sneaking onto the identity.
 _ADDRESS_MARKERS = ("addr", "remote", "host", "forwarded", "xff", "peer")
-
-
-def _linked() -> AuthIdentity:
-    """A linked identity over the real model classes -- no mock stands in for the resolved rows."""
-    user, identity = _rows()
-    return AuthIdentity(issuer=ISSUER, subject=SUBJECT, user=user, identity=identity)
 
 
 def _rows() -> tuple[User, ExternalIdentity]:
@@ -49,8 +44,15 @@ def _rows() -> tuple[User, ExternalIdentity]:
     return user, identity
 
 
-def _unlinked() -> AuthIdentity:
-    return AuthIdentity(issuer=ISSUER, subject=SUBJECT)
+def _linked() -> LinkedIdentity:
+    """A linked identity over the real model classes -- no mock stands in for the resolved rows."""
+    user, identity = _rows()
+    return LinkedIdentity(user=user, identity=identity)
+
+
+def _unlinked() -> VerifiedClaims:
+    """What the token alone proves: the two verified values, and no row."""
+    return VerifiedClaims(issuer=ISSUER, subject=SUBJECT)
 
 
 class _Result:
@@ -99,16 +101,16 @@ def _client(row=None) -> TestClient:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     register_exception_handlers(app)
 
-    admit_router = APIRouter(dependencies=[Depends(get_identity)])
-    linked_router = APIRouter(dependencies=[Depends(get_linked_identity)])
+    admit_router = APIRouter(dependencies=[Depends(get_claims)])
+    linked_router = APIRouter(dependencies=[Depends(get_identity)])
 
     @admit_router.get("/admitted")
-    async def _admitted(identity: AuthIdentity = Depends(get_identity)):
-        return {"linked": identity.user is not None}
+    async def _admitted(claims: VerifiedClaims = Depends(get_claims)):
+        return {"subject": claims.subject}
 
     @linked_router.get("/linked")
-    async def _linked_route(identity: AuthIdentity = Depends(get_linked_identity)):
-        return {"user_id": str(identity.user.id)}
+    async def _linked_route(linked: LinkedIdentity = Depends(get_identity)):
+        return {"user_id": str(linked.user.id)}
 
     app.include_router(admit_router)
     app.include_router(linked_router)
@@ -157,10 +159,10 @@ class TestNoCredentialIsRefused:
 
 
 class TestTheNarrowingHoldsInBothDirections:
-    """With the type split gone, this is where D-02's narrowing is asserted at the accessor level."""
+    """The barrier is the two declarations: one admits a caller with no row, the other refuses it."""
 
-    def test_an_unlinked_caller_on_a_linked_route_answers_403(self):
-        """The replacement for the deleted type guarantee: the declaration is what refuses the read."""
+    def test_a_caller_with_no_row_on_a_linked_route_answers_403(self):
+        """The declaration is what refuses the read, and it refuses before the handler runs."""
         response = _client(row=None).get("/linked", headers=_bearer())
         assert response.status_code == 403
         assert response.json() == {"code": "preauth_identity_not_allowed"}
@@ -172,17 +174,17 @@ class TestTheNarrowingHoldsInBothDirections:
         assert response.status_code == 200
         assert response.json() == {"user_id": str(user.id)}
 
-    def test_an_unlinked_caller_on_an_admitting_route_is_admitted(self):
-        """The other direction of D-02's narrowing: get_identity is what create-user declares."""
+    def test_a_caller_with_no_row_on_an_admitting_route_is_admitted(self):
+        """The other direction: `get_claims` is what create-user declares."""
         response = _client(row=None).get("/admitted", headers=_bearer())
         assert response.status_code == 200
-        assert response.json() == {"linked": False}
+        assert response.json() == {"subject": _unlinked().subject}
 
     def test_a_linked_caller_on_an_admitting_route_is_admitted_too(self):
         user, identity = _rows()
         response = _client(row=(identity, user)).get("/admitted", headers=_bearer())
         assert response.status_code == 200
-        assert response.json() == {"linked": True}
+        assert response.json() == {"subject": SUBJECT}
 
 
 class TestTheWireArmsRaiseAndTheHandlerRecordsThemOnce:
@@ -273,11 +275,11 @@ class TestNeverReturnsNone:
 class TestAccessorsCannotProvision:
     """Exactly one read and no reachable write verb, asserted now that the accessors do open a session."""
 
-    def test_only_the_resolving_accessor_takes_the_request(self):
-        """The narrowing accessor takes the resolved identity, which is what puts it on the cache."""
-        assert list(inspect.signature(get_identity).parameters) == ["request", "credential"]
-        params = list(inspect.signature(get_linked_identity).parameters)
-        assert params == ["identity"], f"get_linked_identity takes {params}, not the identity"
+    def test_each_accessor_declares_the_parameters_its_own_work_needs(self):
+        """`get_identity` declares `get_claims`, which is what puts the verification on the cache."""
+        assert list(inspect.signature(get_claims).parameters) == ["request", "credential"]
+        params = list(inspect.signature(get_identity).parameters)
+        assert params == ["request", "claims"], f"get_identity takes {params}, not the request and the claims"
 
     @pytest.mark.parametrize("accessor", ACCESSORS, ids=lambda f: f.__name__)
     def test_accessor_is_asynchronous(self, accessor):
@@ -297,53 +299,25 @@ class TestAccessorsCannotProvision:
         assert session.closed, "the session closes before the handler runs"
 
 
-class TestTheIdentityShape:
+class TestTheLinkedIdentityShape:
     """The one class's field set, which later phases import verbatim."""
 
-    def test_the_identity_carries_the_verified_pair_and_the_two_nullable_rows(self):
-        assert sorted(AuthIdentity.__dataclass_fields__) == ["identity", "issuer", "subject", "user"]
-
-    def test_unlinked_is_both_row_fields_none_together(self):
-        """There is no tag to misread: nullability is the whole distinction the store branches on."""
-        identity = _unlinked()
-        assert identity.user is None
-        assert identity.identity is None
-        for absent in ("kind", "provider", "provider_uid", "user_id"):
-            assert not hasattr(identity, absent)
-
-    def test_linked_carries_both_rows(self):
-        identity = _linked()
-        assert identity.user is not None
-        assert identity.identity is not None
-
-    def test_the_identity_is_frozen_and_slotted(self):
-        assert AuthIdentity.__dataclass_params__.frozen
-        assert "__slots__" in AuthIdentity.__dict__
-
-    def test_a_frozen_identity_cannot_be_relinked(self):
+    def test_it_carries_both_rows_frozen_slotted_and_over_no_base_class(self):
+        assert sorted(LinkedIdentity.__dataclass_fields__) == ["identity", "user"]
+        assert "__slots__" in LinkedIdentity.__dict__
+        assert LinkedIdentity.__mro__[1] is object
         with pytest.raises(Exception):
-            _unlinked().user = _rows()[0]  # ty: ignore[invalid-assignment]
-
-    def test_the_linked_classifier_is_the_stored_provider_column(self):
-        """The sole per-request classifier is read off the resolved row, not off a claim."""
-        identity = _linked()
-        assert identity.identity.provider is IdentityProvider.google
-        assert not hasattr(identity, "provider"), "an identity-level provider would compete with the column"
+            _linked().user = _rows()[0]  # ty: ignore[invalid-assignment]
 
 
 class TestNoClientAddressIsCarried:
     """No client address in any form, since deriving trust from one would assume rather than prove it."""
 
     def test_no_field_name_reads_as_an_address(self):
-        cls = AuthIdentity
+        cls = LinkedIdentity
         for name in cls.__dataclass_fields__:
             offenders = [m for m in _ADDRESS_MARKERS if m in name]
             assert not offenders, f"{cls.__name__}.{name} looks like an address field ({offenders})"
-
-    def test_the_only_string_fields_are_the_verified_pair(self):
-        """An address would arrive as a str, so the two verified values are the whole allowance."""
-        strings = {name for name, hint in get_type_hints(AuthIdentity).items() if hint is str}
-        assert strings == {"issuer", "subject"}, f"unexpected str field(s) on AuthIdentity: {strings}"
 
 
 class TestExternalIdentityModel:
