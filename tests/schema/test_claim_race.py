@@ -13,6 +13,7 @@ from sqlalchemy.orm import object_session
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth.devicecheck import BitState
+from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.errors import AppError
@@ -133,7 +134,7 @@ async def commit_issued_challenge(harness: _Harness, *, identity_id: uuid.UUID,
                                   operation: str) -> tuple[uuid.UUID, str]:
     """One issued challenge; the completion under test claims it itself, so `claimed_at` starts NULL.
     Bound to the identity row and carrying no preauth pair, which is the only shape `ChallengesDB.issue`
-    can produce for a claim: both claim routes depend on `get_linked_identity`."""
+    can produce for a claim: both claim routes depend on `get_identity`."""
     row_id = uuid.uuid4()
     challenge_id = f"handle-{uuid.uuid4().hex[:16]}"
     async with harness.engine.begin() as conn:  # ty: ignore[possibly-unbound-attribute]
@@ -246,20 +247,19 @@ async def prepare_attempt(harness: _Harness, *, name: str, subject: str,
 async def resolve_identity(harness: _Harness, subject: str):
     """Resolve the caller as `get_identity` does: on a session of its own, closed before the service runs."""
     async with harness.factory() as session:
-        return await IdentitiesDB(session).resolve(issuer=harness.issuer,
-                                                   subject=subject,
-                                                   allow_preauth=False)
+        return await IdentitiesDB(session).resolve(issuer=harness.issuer, subject=subject)
 
 
 async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=None,
                       before_first_commit=None) -> _Attempt:
     """Drive the production completion once, on its own session and connection, as the route does."""
     store = ChallengesDB()
-    identity = await resolve_identity(harness, attempt.subject)
+    claims = VerifiedClaims(issuer=harness.issuer, subject=attempt.subject)
+    linked = await resolve_identity(harness, attempt.subject)
     async with harness.factory() as real_session:
         session = _RacingSession(real_session, before_first_flush, before_first_commit)
         attempt.caller_rows_detached = all(
-            object_session(row) is None for row in (identity.user, identity.identity))
+            object_session(row) is None for row in (linked.user, linked.identity))
         service = AuthService(db=session, challenge_store=store, adapter=None,
                               devicecheck=_NeverSetDevice())
         completion = (service.complete_claim_registered_grant
@@ -267,14 +267,15 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=N
                       else service.complete_claim_anonymous_grant)
         try:
             await completion(
-                identity=identity,
+                claims=claims,
+                linked=linked,
                 challenge_id=attempt.challenge_id,
                 device_token=f"device-{attempt.name}")
         except AppError as rejection:
             attempt.result = rejection
         else:
             # The route's own read, after the completion committed: the claim, the repeat and the loser share it.
-            attempt.result = await SyncService(db=session).read_entitlement(identity.user.id)
+            attempt.result = await SyncService(db=session).read_entitlement(linked.user.id)
         attempt.integrity_at_flush = session.integrity_at_flush
         attempt.integrity_at_commit = session.integrity_at_commit
         attempt.flushes = session.flushes

@@ -10,10 +10,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
+from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud import identities as identities_crud
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError, IdentityAlreadyLinked
-from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import IdentityProvider
 
@@ -66,9 +66,9 @@ async def harness(_schema_db_uri):
             await engine.dispose()
 
 
-def identity_for(harness: _Harness, subject: str) -> AuthIdentity:
-    """The unlinked identity the create-user route resolves for this subject."""
-    return AuthIdentity(issuer=harness.issuer, subject=subject)
+def claims_for(harness: _Harness, subject: str) -> VerifiedClaims:
+    """The verified pair the create-user route proves for this subject."""
+    return VerifiedClaims(issuer=harness.issuer, subject=subject)
 
 
 async def commit_user(harness: _Harness, *, active: bool = True) -> uuid.UUID:
@@ -163,12 +163,12 @@ class _RacingSession:
 
 async def run_creation(harness: _Harness, *, subject: str, provider: IdentityProvider,
                        provider_uid: str | None, after_re_resolution=None,
-                       identity: AuthIdentity | None = None,
+                       claims: VerifiedClaims | None = None,
                        challenge: tuple[uuid.UUID, str] | None = None):
     """Drive the production completion once, on its own real session, exactly as the route does.
     `AuthService.complete` owns the claim, the rollback on a rejection and the consumption after it,
     so the arms asserted below are the shipped ones rather than a model of them written here."""
-    identity = identity or identity_for(harness, subject)
+    claims = claims or claims_for(harness, subject)
     row_id, challenge_id_value = challenge or await commit_issued_challenge(
         harness, subject=subject)
 
@@ -179,7 +179,7 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
                               adapter=_ScriptedAdapter(provider, provider_uid),
                               devicecheck=None)
         try:
-            result = await service.complete(identity=identity, challenge_id=challenge_id_value)
+            result = await service.complete(claims=claims, challenge_id=challenge_id_value)
         except AppError as rejection:
             result = rejection
     return result, row_id, challenge_id_value

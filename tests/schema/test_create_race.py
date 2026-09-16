@@ -11,9 +11,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
+from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError
-from nativespeaker.api.schemas.auth import AuthIdentity
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import IdentityProvider
 
@@ -141,7 +141,7 @@ class _Attempt:
     subject: str
     provider: IdentityProvider
     provider_uid: str | None
-    identity: AuthIdentity
+    claims: VerifiedClaims
     challenge_row_id: uuid.UUID
     challenge_id: str
     result: IdentityProvider | AppError | None = None
@@ -155,10 +155,10 @@ def outcome_name(attempt: _Attempt) -> str:
 
 async def prepare_attempt(harness: _Harness, *, subject: str, provider: IdentityProvider,
                           provider_uid: str | None) -> _Attempt:
-    identity = AuthIdentity(issuer=harness.issuer, subject=subject)
+    claims = VerifiedClaims(issuer=harness.issuer, subject=subject)
     row_id, challenge_id = await commit_issued_challenge(harness, subject=subject)
     return _Attempt(subject=subject, provider=provider, provider_uid=provider_uid,
-                    identity=identity,
+                    claims=claims,
                     challenge_row_id=row_id, challenge_id=challenge_id)
 
 
@@ -173,7 +173,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_re_resolution=
                               adapter=_ScriptedAdapter(attempt.provider, attempt.provider_uid),
                               devicecheck=None)
         try:
-            attempt.result = await service.complete(identity=attempt.identity,
+            attempt.result = await service.complete(claims=attempt.claims,
                                                     challenge_id=attempt.challenge_id)
         except AppError as rejection:
             attempt.result = rejection
