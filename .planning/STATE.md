@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 49
 current_phase_name: Delete the single-implementation auth Protocols
 status: executing
-stopped_at: Completed 49-01-PLAN.md
-last_updated: "2026-09-17T22:59:36.702Z"
+stopped_at: Completed 49-02-PLAN.md
+last_updated: "2026-09-17T23:15:31.739Z"
 last_activity: 2026-09-17
 last_activity_desc: Phase 49 execution started
-state_head: 6d9ed93661f29a89bd93b28953f7c0033a7238ef
+state_head: 65b1c91ea4a3a3a4983dc7f5c1271ce039a300ae
 progress:
   total_phases: 22
   completed_phases: 19
   total_plans: 144
-  completed_plans: 141
+  completed_plans: 142
   percent: 86
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-16)
 ## Current Position
 
 Phase: 49 (Delete the single-implementation auth Protocols) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Progress: [████████████████████] 140/140 plans ([█████████░] 86%)
 
@@ -597,10 +597,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-17T22:59:35.930Z
+**Last session:** 2026-09-17T23:15:24.266Z
 
 Last activity: 2026-09-16
-Stopped at: Completed 49-01-PLAN.md
+Stopped at: Completed 49-02-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -686,6 +686,7 @@ Resume file: None
 | Phase 48 P07 | 5 min | 2 tasks | 4 files |
 | Phase 48 P08 | 9 min | 3 tasks | 2 files |
 | Phase 49 P01 | 7 min | 2 tasks | 5 files |
+| Phase 49 P02 | 10 min | 2 tasks | 19 files |
 
 ## Decisions
 
@@ -908,3 +909,5 @@ Resume file: None
 - [Phase 48]: WINDOWS.md entry 33 records D-07 and option B as waived, and the ledger's counters were set to what its entries yield (19/2/12/33) rather than to the stale numbers the plan copied; a second pre-existing defect, row 31's unrendered reason cell, was repaired behind it, so windows append answers ok again.
 - [Phase 49]: 49-01: the JWT verifier suites are tests/unit/test_jwt_security.py and tests/unit/test_jwks_offload.py; no tests/unit/test_jwt_verifier.py exists — Plan 49-01 Task 2's verify block named a file that is not tracked, so the command collected 0 items. Plans 49-02 to 49-04 must not copy the name.
 - [Phase 49]: 49-01: the -m '' passed baseline is 2580, not the 2572 recorded in the plans — Measured 2582 before any edit and 2580 after the two cases Task 2 deleted. The one failed name is unchanged: the pre-existing restore four-arms case.
+- [Phase 49]: tests/unit/test_adapter_interfaces.py is deleted; TestNoProviderDependency and TestTheValueTypeIsImmutable move to tests/unit/test_firebase_adapter.py, with AUTH_PACKAGE derived from the firebase module and the membership control naming jwt_verifier
+- [Phase 49]: The two verify greps that match a test double (FakeDeviceCheckAdapter) and a gitignored egg-info manifest were re-scoped to word boundaries and tracked source, not satisfied by editing unrelated code
