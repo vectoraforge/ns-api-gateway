@@ -83,6 +83,10 @@ points the goal left open.
 - **D-07: The Phase 49 entry in `ROADMAP.md` is amended in the discuss commit** to name D-01:
   the goal says `ChallengesDB` takes the session in its constructor, and criterion 4 names
   `ChallengesDB(db)`. `REQUIREMENTS.md` maps nothing to this phase and is not edited.
+- **D-08: Each seam commit that changes the `auth/` count updates `CURRENT` in
+  `tests/unit/test_auth_package_shape.py`**, as 37a5ac6 did. The test compares a literal with a
+  live count, so a tuple changed once at the end fails the unit suite at each commit before it.
+  The user chose this at planning, 2026-09-16; ROADMAP criterion 5 is amended to match.
 
 ### Carried forward
 
@@ -96,8 +100,8 @@ points the goal left open.
 ### Claude's Discretion
 
 - The order of the five commits (four Protocols, then or before the `ChallengesDB` change). The
-  ROADMAP fixes one seam per commit, the three suites green at each, and the
-  `test_auth_package_shape.py` tuple changed once at the end.
+  ROADMAP fixes one seam per commit and the three suites green at each; D-08 fixes the
+  `test_auth_package_shape.py` tuple.
 - Whether D-01 and the removal of `get_challenge_store` are one commit or two.
 - Whether `tests/unit/test_adapter_interfaces.py` is deleted when criterion 3 leaves it empty.
 

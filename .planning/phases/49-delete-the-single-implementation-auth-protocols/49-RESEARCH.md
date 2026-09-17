@@ -602,7 +602,7 @@ deselects them by default.
 
 ## Open Questions
 
-1. **Criterion 5 contradicts itself, and the model commit resolves it the other way.**
+1. **RESOLVED 2026-09-16 (CONTEXT D-08): the tuple changes in each seam commit.** Criterion 5 contradicted itself, and the model commit resolved it the other way.
    - What we know: `test_auth_package_shape.py:13` is a literal `CURRENT = (8, 24, 67)`, compared
      against a live AST walk of `auth/` (`:16-27`). Measured this session, the current value is
      exactly `(8, 24, 67)`. Deleting *any one* Protocol changes the measurement — deleting
