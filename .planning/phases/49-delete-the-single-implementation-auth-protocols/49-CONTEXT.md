@@ -61,8 +61,8 @@ points the goal left open.
   `self._binding = ChallengesDB()` and its `verify_binding` pass-through go if nothing else
   needs them. The per-file `store` fixtures and the `dependency_overrides[get_challenge_store]`
   lines in the four suites are removed.
-- **D-05: `test_challenge_endpoint.py` and `test_create_user_body.py` each keep their own
-  `_RecordingChallengeStore`** and monkeypatch `ChallengesDB.issue` in their own `store` fixture.
+- **D-05: `test_challenge_endpoint.py` and `test_create_user_body.py` each keep their own `_RecordingChallengeStore`**
+  and monkeypatch `ChallengesDB.issue` in their own `store` fixture.
   The two recorders differ, so they are not merged.
 - The tests that build `AuthService(..., challenge_store=...)` drop the argument
   (`test_create_user_rollback.py`, `test_conflict_classification.py`, `test_create_race.py`,
@@ -71,8 +71,8 @@ points the goal left open.
 
 ### Annotations
 
-- **D-06: `AuthService.__init__` annotates `adapter: FirebaseAdminLookup` and
-  `devicecheck: AppleDeviceCheck`; `get_auth_service` annotates `adapter` the same way.** Today
+- **D-06: `AuthService.__init__` annotates `adapter` as `FirebaseAdminLookup` and `devicecheck` as `AppleDeviceCheck`; `get_auth_service` annotates `adapter` the same way.**
+  Today
   all three are unannotated. No criterion asks for this; the phase already edits both signatures
   to remove `challenge_store`, and `ty` then checks the calls. No `| None`: the lifespan always
   builds both (`lifespan.py:171, 180`). The 7 test sites that pass `adapter=None` do not change;
@@ -83,8 +83,8 @@ points the goal left open.
 - **D-07: The Phase 49 entry in `ROADMAP.md` is amended in the discuss commit** to name D-01:
   the goal says `ChallengesDB` takes the session in its constructor, and criterion 4 names
   `ChallengesDB(db)`. `REQUIREMENTS.md` maps nothing to this phase and is not edited.
-- **D-08: Each seam commit that changes the `auth/` count updates `CURRENT` in
-  `tests/unit/test_auth_package_shape.py`**, as 37a5ac6 did. The test compares a literal with a
+- **D-08: Each seam commit that changes the `auth/` count updates `CURRENT` in `tests/unit/test_auth_package_shape.py`**,
+  as 37a5ac6 did. The test compares a literal with a
   live count, so a tuple changed once at the end fails the unit suite at each commit before it.
   The user chose this at planning, 2026-09-16; ROADMAP criterion 5 is amended to match.
 

@@ -878,11 +878,25 @@ Plans:
 5. `tests/unit/test_auth_package_shape.py` records the new tuple, changed in each seam commit that changes the `auth/` count; each seam is its own commit; the three suites exit 0 at every commit
 
 Plans:
+**Wave 1**
 
 - [ ] 49-01-PLAN.md — the two smallest Protocol seams: the Play subscription source and the JWT verifier
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 49-02-PLAN.md — the DeviceCheck and Firebase admin seams, the value-type move, and the adapter module removal
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 49-03-PLAN.md — the challenge dependency goes; the service and the handler each build their own crud object
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 49-04-PLAN.md — the challenge crud class takes the session in its constructor; phase gate
+
+**Cross-cutting constraints:**
+
+- D-08: each of the two commits writes the re-measured CURRENT tuple into tests/unit/test_auth_package_shape.py in that same commit.
 
 #### Phase 50: Typed runtime container behind an exit-stack lifespan
 
