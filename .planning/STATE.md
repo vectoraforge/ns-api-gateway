@@ -3,18 +3,18 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 49
-current_phase_name: delete-the-single-implementation-auth-protocols
+current_phase_name: Delete the single-implementation auth Protocols
 status: executing
-stopped_at: Phase 49 context gathered
-last_updated: "2026-09-17T06:16:49.165Z"
-last_activity: 2026-09-16
-last_activity_desc: Phase 48 complete, transitioned to Phase 49
-state_head: 26462bc585e6a584bfbe380c53648971d5172c2d
+stopped_at: Completed 49-01-PLAN.md
+last_updated: "2026-09-17T22:59:36.702Z"
+last_activity: 2026-09-17
+last_activity_desc: Phase 49 execution started
+state_head: 6d9ed93661f29a89bd93b28953f7c0033a7238ef
 progress:
   total_phases: 22
   completed_phases: 19
   total_plans: 144
-  completed_plans: 140
+  completed_plans: 141
   percent: 86
 ---
 
@@ -29,8 +29,8 @@ See: .planning/PROJECT.md (updated 2026-09-16)
 
 ## Current Position
 
-Phase: 49 (delete-the-single-implementation-auth-protocols) — READY TO EXECUTE
-Plan: Not started
+Phase: 49 (Delete the single-implementation auth Protocols) — EXECUTING
+Plan: 2 of 4
 Status: Ready to execute
 Progress: [████████████████████] 140/140 plans ([█████████░] 86%)
 
@@ -117,7 +117,7 @@ three fixes do not interact.
 `45-VERIFICATION.md` itself still reads `gaps_found` and still records RESTORE-01 as BLOCKED:
 **re-verification is what changes those, not this file.** `/gsd:verify-phase 45` decides whether the
 phase is complete; this plan does not.
-Last activity: 2026-09-16 — Phase 48 complete, transitioned to Phase 49
+Last activity: 2026-09-17 — Phase 49 execution started
 fixes together, and REQUIREMENTS.md carries the dated gap-closure record
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07 and 45-05 each did.
@@ -597,11 +597,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-17T05:32:08.087Z
+**Last session:** 2026-09-17T22:59:35.930Z
 
 Last activity: 2026-09-16
-Stopped at: Phase 49 context gathered
-Resume file: .planning/phases/49-delete-the-single-implementation-auth-protocols/49-CONTEXT.md
+Stopped at: Completed 49-01-PLAN.md
+Resume file: None
 
 ## Performance Metrics
 
@@ -685,6 +685,7 @@ Resume file: .planning/phases/49-delete-the-single-implementation-auth-protocols
 | Phase 48 P06 | 3 min | 2 tasks | 4 files |
 | Phase 48 P07 | 5 min | 2 tasks | 4 files |
 | Phase 48 P08 | 9 min | 3 tasks | 2 files |
+| Phase 49 P01 | 7 min | 2 tasks | 5 files |
 
 ## Decisions
 
@@ -905,3 +906,5 @@ Resume file: .planning/phases/49-delete-the-single-implementation-auth-protocols
 - [Phase 48]: The e2e suite collects again (361 tests): 48-03 coverage entry D5 is discharged by an unscaffolded re-run of tests/e2e/test_challenge_store.py, 32 passed
 - [Phase 48]: The phase gate is measured at this phase's HEAD, not copied: -m '' 1 failed 2572 passed, -m e2e 1 failed 360 passed, -m schema 297 passed, ruff clean, ty 306 against a ceiling of 311. The one failure is the pre-existing restore case.
 - [Phase 48]: WINDOWS.md entry 33 records D-07 and option B as waived, and the ledger's counters were set to what its entries yield (19/2/12/33) rather than to the stale numbers the plan copied; a second pre-existing defect, row 31's unrendered reason cell, was repaired behind it, so windows append answers ok again.
+- [Phase 49]: 49-01: the JWT verifier suites are tests/unit/test_jwt_security.py and tests/unit/test_jwks_offload.py; no tests/unit/test_jwt_verifier.py exists — Plan 49-01 Task 2's verify block named a file that is not tracked, so the command collected 0 items. Plans 49-02 to 49-04 must not copy the name.
+- [Phase 49]: 49-01: the -m '' passed baseline is 2580, not the 2572 recorded in the plans — Measured 2582 before any edit and 2580 after the two cases Task 2 deleted. The one failed name is unchanged: the pre-existing restore four-arms case.
