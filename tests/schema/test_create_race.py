@@ -12,7 +12,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth.firebase import VerifiedProviderIdentity
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
-from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import IdentityProvider
@@ -166,10 +165,9 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_re_resolution=
     """Drive the production completion once, on its own session and connection, as the route does.
     `AuthService.complete` owns the claim, the rollback on a rejection and the consumption after it,
     so the consumption asserted below is the shipped arm rather than a model of it written here."""
-    store = ChallengesDB()
     async with harness.factory() as real_session:
         session = _HookedSession(real_session, after_re_resolution)
-        service = AuthService(db=session, challenge_store=store,
+        service = AuthService(db=session,
                               adapter=_ScriptedAdapter(attempt.provider, attempt.provider_uid),
                               devicecheck=None)
         try:

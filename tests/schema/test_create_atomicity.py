@@ -12,7 +12,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 from nativespeaker.api.auth.firebase import VerifiedProviderIdentity
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud import identities as identities_crud
-from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.errors import AppError, IdentityAlreadyLinked
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import IdentityProvider
@@ -172,10 +171,9 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
     row_id, challenge_id_value = challenge or await commit_issued_challenge(
         harness, subject=subject)
 
-    store = ChallengesDB()
     async with harness.factory() as real_session:
         session = _RacingSession(real_session, after_re_resolution)
-        service = AuthService(db=session, challenge_store=store,
+        service = AuthService(db=session,
                               adapter=_ScriptedAdapter(provider, provider_uid),
                               devicecheck=None)
         try:

@@ -7,8 +7,16 @@ from uuid import UUID
 import structlog
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.auth.devicecheck import read_bits_with_retry, write_bits_with_retry
-from nativespeaker.api.auth.firebase import VerifiedProviderIdentity, lookup_with_retry
+from nativespeaker.api.auth.devicecheck import (
+    AppleDeviceCheck,
+    read_bits_with_retry,
+    write_bits_with_retry,
+)
+from nativespeaker.api.auth.firebase import (
+    FirebaseAdminLookup,
+    VerifiedProviderIdentity,
+    lookup_with_retry,
+)
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud import ChallengesDB, GrantsDB, IdentitiesDB
 from nativespeaker.api.crud.grants import ActivationOutcome
@@ -62,13 +70,12 @@ class AuthService:
 
     def __init__(self,
                  db: AsyncSession,
-                 challenge_store: ChallengesDB,
-                 adapter,
-                 devicecheck) -> None:
+                 adapter: FirebaseAdminLookup,
+                 devicecheck: AppleDeviceCheck) -> None:
         self.session = db
         self.identities_db = IdentitiesDB(db)
         self.grants_db = GrantsDB(db)
-        self.challenge_store = challenge_store
+        self.challenges_db = ChallengesDB()
         self.adapter = adapter
         # Named for the vendor API, never for the company: two unrelated enums are already called apple.
         self.devicecheck = devicecheck
@@ -132,17 +139,17 @@ class AuthService:
         """The one completion sequence every route runs: locate, claim, commit, post-claim work, spend.
         The order of the rejections below is the precedence, and none of them carries a field."""
         # No rejection before the claim consumes anything, so a wrong presenter cannot burn a live challenge.
-        located = await self.challenge_store.locate(self.session, challenge_id)
+        located = await self.challenges_db.locate(self.session, challenge_id)
         if located is None:
             # A definitive no-row. A lookup outage raises out of `locate` instead of answering "no such challenge".
             raise ChallengeNotFound()
 
         # Every line below reads `challenge`, which only the binding check produces: deleting it is a NameError.
-        challenge = self.challenge_store.verify_binding(located, claims, linked)
+        challenge = self.challenges_db.verify_binding(located, claims, linked)
         if challenge.operation is not operation:
             raise ChallengeOperationMismatch()
 
-        if not await self.challenge_store.claim(self.session, challenge_id=challenge_id):
+        if not await self.challenges_db.claim(self.session, challenge_id=challenge_id):
             # `claimed_at` distinguishes the two losses; the claim's WHERE is the only expiry evaluation anywhere.
             await self.session.refresh(challenge)
             if challenge.claimed_at is None:
@@ -396,7 +403,7 @@ class AuthService:
                                   challenge_id: str,
                                   challenge_row_id: str) -> None:
         """Spend the handle and commit, so neither path can leave a claimed handle re-presentable."""
-        consumed = await self.challenge_store.consume(self.session, challenge_id=challenge_id)
+        consumed = await self.challenges_db.consume(self.session, challenge_id=challenge_id)
         if not consumed:
             # Not recoverable: this attempt holds the claim, so a `False` means stored state diverged.
             logger.error("challenge_consume_did_not_match", challenge_row_id=challenge_row_id)

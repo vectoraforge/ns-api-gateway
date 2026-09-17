@@ -9,7 +9,6 @@ from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud import identities as identities_crud
-from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.violations import UNIQUE_VIOLATION
 from nativespeaker.api.errors import (
     AccountUnavailable,
@@ -125,8 +124,7 @@ def _identity_row(*, state: IdentityState, user_id=None) -> ExternalIdentity:
 
 async def _create(session, *, provider=IdentityProvider.anonymous, provider_uid=None):
     """Drive `AuthService.create_user` over whichever session the case scripted."""
-    service = AuthService(db=session, challenge_store=ChallengesDB(), adapter=None,
-                          devicecheck=None)
+    service = AuthService(db=session, adapter=None, devicecheck=None)
     return await service.create_user(claims=_claims(),
                                      provider=provider,
                                      provider_uid=provider_uid,

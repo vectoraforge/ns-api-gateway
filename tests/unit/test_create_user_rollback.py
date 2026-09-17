@@ -5,7 +5,6 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
-from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.violations import UNIQUE_VIOLATION
 from nativespeaker.api.errors import IdentityAlreadyLinked
 from nativespeaker.api.services.auth import AuthService
@@ -73,8 +72,7 @@ def _claims() -> VerifiedClaims:
 
 
 async def _create(session) -> UUID:
-    service = AuthService(db=session, challenge_store=ChallengesDB(), adapter=None,
-                          devicecheck=None)
+    service = AuthService(db=session, adapter=None, devicecheck=None)
     return await service.create_user(claims=_claims(),
                                      provider=IdentityProvider.anonymous,
                                      provider_uid=None,

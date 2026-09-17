@@ -14,7 +14,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth.devicecheck import BitState
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
-from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.errors import AppError
 from nativespeaker.api.schemas.auth import Entitlement, EntitlementStatus, EntitlementType
@@ -253,7 +252,6 @@ async def resolve_identity(harness: _Harness, subject: str):
 async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=None,
                       before_first_commit=None) -> _Attempt:
     """Drive the production completion once, on its own session and connection, as the route does."""
-    store = ChallengesDB()
     claims = VerifiedClaims(issuer=harness.issuer, subject=attempt.subject)
     linked = await resolve_identity(harness, attempt.subject)
     assert linked is not None, f"the harness seeded no identity row for {attempt.subject}"
@@ -261,7 +259,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=N
         session = _RacingSession(real_session, before_first_flush, before_first_commit)
         attempt.caller_rows_detached = all(
             object_session(row) is None for row in (linked.user, linked.identity))
-        service = AuthService(db=session, challenge_store=store, adapter=None,
+        service = AuthService(db=session, adapter=None,
                               devicecheck=_NeverSetDevice())
         completion = (service.complete_claim_registered_grant
                       if attempt.operation == "claim_registered_grant"

@@ -17,7 +17,6 @@ from nativespeaker.api.auth.google_play import (
 from nativespeaker.api.auth.jwt_verifier import BoundedReason, VerifiedClaims
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.config import AppConfig
-from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.crud.purchases import PurchasesDB
 from nativespeaker.api.errors import (
@@ -108,12 +107,6 @@ def get_chat_service(request: Request,
                        quota_service=quota_service)
 
 
-# These two accessors exist so a challenge-bearing route can stay Depends()-only and never take Request itself.
-def get_challenge_store(request: Request) -> ChallengesDB:
-    """The one `ChallengesDB` the lifespan built. Read per request, never cached by a caller."""
-    return request.app.state.challenge_store
-
-
 def get_firebase_adapter(request: Request) -> FirebaseAdminLookup:
     """The provider seam the lifespan built."""
     return request.app.state.firebase_adapter
@@ -125,12 +118,10 @@ def get_devicecheck_adapter(request: Request) -> AppleDeviceCheck:
 
 
 def get_auth_service(db: AsyncSession = Depends(get_db),
-                     challenge_store: ChallengesDB = Depends(get_challenge_store),
-                     adapter=Depends(get_firebase_adapter),
+                     adapter: FirebaseAdminLookup = Depends(get_firebase_adapter),
                      devicecheck: AppleDeviceCheck = Depends(get_devicecheck_adapter)
                      ) -> AuthService:
     return AuthService(db=db,
-                       challenge_store=challenge_store,
                        adapter=adapter,
                        devicecheck=devicecheck)
 

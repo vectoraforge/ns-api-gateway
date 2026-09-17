@@ -12,7 +12,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from e2e.conftest import seed_identity
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
-from nativespeaker.api.crud.challenges import _claim_statement
+from nativespeaker.api.crud.challenges import ChallengesDB, _claim_statement
 from nativespeaker.api.errors import ChallengeConsumed, ChallengeIdentityMismatch
 from nativespeaker.api.schemas.auth import LinkedIdentity
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
@@ -28,9 +28,9 @@ CONTENDERS = 8
 
 
 @pytest.fixture(scope="module")
-def store(_app_lifespan):
-    """The store the real lifespan constructed, so the wiring is exercised."""
-    return _app_lifespan.state.challenge_store
+def store():
+    """The crud object this module drives; every method below takes the session the case opened."""
+    return ChallengesDB()
 
 
 def claims_for(subject: str = SUBJECT, *, issuer: str = ISSUER) -> VerifiedClaims:

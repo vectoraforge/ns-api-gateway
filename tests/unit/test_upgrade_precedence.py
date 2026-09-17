@@ -7,7 +7,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
-    get_challenge_store,
     get_claims,
     get_db,
     get_devicecheck_adapter,
@@ -26,7 +25,6 @@ from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvid
 from nativespeaker.api.tables.users import User
 
 from .conftest import TEST_ISSUER
-from .conftest import FakeChallengeStore as _FakeChallengeStore
 
 SUBJECT = "upgrade-precedence-subject"
 HANDLE = "a-scripted-upgrade-handle"
@@ -104,11 +102,6 @@ class _RecordingUpgrade:
 
 
 @pytest.fixture
-def store() -> _FakeChallengeStore:
-    return _FakeChallengeStore()
-
-
-@pytest.fixture
 def rejections(monkeypatch) -> _RejectionLog:
     """Spy on every logger a rejection can come from, so one logged at the wrong site is still seen."""
     log = _RejectionLog()
@@ -177,7 +170,6 @@ def client(store, session, claims, linked, upgrade, fake_firebase_adapter):
             raise
 
     app.dependency_overrides[get_db] = _db
-    app.dependency_overrides[get_challenge_store] = lambda: store
     app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
     # Declared by `get_auth_service` for every auth route; this app has no lifespan to build one.
     app.dependency_overrides[get_devicecheck_adapter] = lambda: None

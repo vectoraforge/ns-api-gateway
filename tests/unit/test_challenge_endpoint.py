@@ -12,13 +12,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
-    get_challenge_store,
     get_claims,
     get_db,
     get_firebase_adapter,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
+from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.routers import auth as auth_module
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.schemas.auth import ChallengeRequest
@@ -84,8 +84,14 @@ class _RecordingSession:
 
 
 @pytest.fixture
-def store() -> _RecordingChallengeStore:
-    return _RecordingChallengeStore()
+def store(monkeypatch) -> _RecordingChallengeStore:
+    recorder = _RecordingChallengeStore()
+
+    async def issue(self, session, *, operation, claims, linked):
+        return await recorder.issue(session, operation=operation, claims=claims, linked=linked)
+
+    monkeypatch.setattr(ChallengesDB, "issue", issue)
+    return recorder
 
 
 @pytest.fixture
@@ -117,7 +123,7 @@ def blocked_session() -> _RecordingSession:
     return _RecordingSession(row=_identity_row(user_active=False))
 
 
-def _client_for(claims, store, session, fake_firebase_adapter):
+def _client_for(claims, session, fake_firebase_adapter):
     """The real auth router, with the barrier's context supplied and app state substituted."""
     app = FastAPI()
     app.include_router(auth_router)
@@ -125,7 +131,6 @@ def _client_for(claims, store, session, fake_firebase_adapter):
 
     app.dependency_overrides[get_claims] = lambda: claims
     app.dependency_overrides[get_db] = lambda: session
-    app.dependency_overrides[get_challenge_store] = lambda: store
     app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
@@ -135,25 +140,25 @@ def _client_for(claims, store, session, fake_firebase_adapter):
 @pytest.fixture
 def client(store, session, fake_firebase_adapter):
     """A verified caller whose pair matched no identity row."""
-    yield from _client_for(UNLINKED_CLAIMS, store, session, fake_firebase_adapter)
+    yield from _client_for(UNLINKED_CLAIMS, session, fake_firebase_adapter)
 
 
 @pytest.fixture
 def linked_client(store, linked_session, fake_firebase_adapter):
     """A verified caller holding an identity row and the user it belongs to."""
-    yield from _client_for(LINKED_CLAIMS, store, linked_session, fake_firebase_adapter)
+    yield from _client_for(LINKED_CLAIMS, linked_session, fake_firebase_adapter)
 
 
 @pytest.fixture
 def historical_client(store, historical_session, fake_firebase_adapter):
     """A verified caller whose identity row is no longer active."""
-    yield from _client_for(LINKED_CLAIMS, store, historical_session, fake_firebase_adapter)
+    yield from _client_for(LINKED_CLAIMS, historical_session, fake_firebase_adapter)
 
 
 @pytest.fixture
 def blocked_client(store, blocked_session, fake_firebase_adapter):
     """A verified caller holding an active identity row whose user is not active."""
-    yield from _client_for(LINKED_CLAIMS, store, blocked_session, fake_firebase_adapter)
+    yield from _client_for(LINKED_CLAIMS, blocked_session, fake_firebase_adapter)
 
 
 def _assert_preauth_refused(response) -> None:

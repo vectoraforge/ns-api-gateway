@@ -6,7 +6,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
-    get_challenge_store,
     get_claims,
     get_db,
     get_devicecheck_adapter,
@@ -14,6 +13,7 @@ from nativespeaker.api.app.dependencies import (
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
+from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.schemas.auth import CompletionRequest
 
@@ -64,8 +64,18 @@ class _UnlinkedSession:
 
 
 @pytest.fixture
-def store() -> _RecordingChallengeStore:
-    return _RecordingChallengeStore()
+def store(monkeypatch) -> _RecordingChallengeStore:
+    recorder = _RecordingChallengeStore()
+
+    async def issue(self, session, *, operation, claims, linked):
+        return await recorder.issue(session, operation=operation, claims=claims, linked=linked)
+
+    async def locate(self, session, challenge_id):
+        return await recorder.locate(session, challenge_id)
+
+    monkeypatch.setattr(ChallengesDB, "issue", issue)
+    monkeypatch.setattr(ChallengesDB, "locate", locate)
+    return recorder
 
 
 @pytest.fixture
@@ -93,7 +103,6 @@ def client(store, session, fake_firebase_adapter):
             raise
 
     app.dependency_overrides[get_db] = _db
-    app.dependency_overrides[get_challenge_store] = lambda: store
     app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
     # Declared by `get_auth_service` for every auth route; this app has no lifespan to build one.
     app.dependency_overrides[get_devicecheck_adapter] = lambda: None

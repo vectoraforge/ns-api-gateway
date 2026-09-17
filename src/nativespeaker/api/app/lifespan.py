@@ -39,7 +39,6 @@ from nativespeaker.api.config import (
     JWTConfig,
     StoreEnvironment,
 )
-from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.logs import setup_logging
 from nativespeaker.api.services import LLMService
 
@@ -158,8 +157,6 @@ async def lifespan(app: FastAPI):
     app.state.config = config
 
     setup_logging(log_level=config.log_level)
-
-    app.state.challenge_store = ChallengesDB()
 
     db_engine: AsyncEngine | None = None
     devicecheck_client: httpx.AsyncClient | None = None

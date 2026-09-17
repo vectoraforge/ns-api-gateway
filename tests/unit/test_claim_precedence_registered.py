@@ -9,7 +9,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
-    get_challenge_store,
     get_claims,
     get_devicecheck_adapter,
     get_firebase_adapter,
@@ -34,7 +33,6 @@ from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvid
 from nativespeaker.api.tables.users import User
 
 from .conftest import TEST_ISSUER
-from .conftest import FakeChallengeStore as _FakeChallengeStore
 from .test_claim_precedence import (
     CHALLENGE_REQUIRED,
     HANDLE,
@@ -86,11 +84,6 @@ class _RegisteredStubSync(_StubSync):
 def timeline() -> list[str]:
     """One ordered record of every boundary, crud call and seam call this request made."""
     return []
-
-
-@pytest.fixture
-def store() -> _FakeChallengeStore:
-    return _FakeChallengeStore()
 
 
 @pytest.fixture
@@ -151,7 +144,6 @@ def client(store, session, claims, linked, grants, devicecheck):
     app.dependency_overrides[get_identity] = lambda: linked
 
     app.state.session_factory = lambda: session
-    app.dependency_overrides[get_challenge_store] = lambda: store
     app.dependency_overrides[get_firebase_adapter] = lambda: None
     app.dependency_overrides[get_devicecheck_adapter] = lambda: devicecheck
     app.dependency_overrides[get_sync_service] = lambda: _RegisteredStubSync()

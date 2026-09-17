@@ -8,7 +8,6 @@ from starlette.responses import Response
 
 from nativespeaker.api.app.dependencies import (
     get_auth_service,
-    get_challenge_store,
     get_claims,
     get_db,
     get_firebase_adapter,
@@ -50,9 +49,7 @@ router = APIRouter(tags=["auth"], dependencies=[Depends(get_claims)])
 async def issue_challenge(body: ChallengeRequest,
                           response: Response,
                           claims: VerifiedClaims = Depends(get_claims),
-                          session: AsyncSession = Depends(get_db),
-                          challenge_store: ChallengesDB = Depends(get_challenge_store)
-                          ) -> PrepareResponse:
+                          session: AsyncSession = Depends(get_db)) -> PrepareResponse:
     """Issue one challenge for an operation this route serves."""
     if body.operation not in AuthOperation:
         # The rejected string is caller-supplied and bounded, so logging it is safe; a handle never is.
@@ -65,10 +62,10 @@ async def issue_challenge(body: ChallengeRequest,
     if body.operation != AuthOperation.create_user and linked is None:
         raise PreAuthIdentityNotAllowed
 
-    challenge_id, expires_at = await challenge_store.issue(session,
-                                                           operation=AuthOperation(body.operation),
-                                                           claims=claims,
-                                                           linked=linked)
+    challenge_id, expires_at = await ChallengesDB().issue(session,
+                                                          operation=AuthOperation(body.operation),
+                                                          claims=claims,
+                                                          linked=linked)
     # `get_db` never commits. This commit makes the issued row durable before the answer.
     await session.commit()
     # `no-store` rather than `no-cache`: the handle is a secret, and a revalidatable copy is a copy.

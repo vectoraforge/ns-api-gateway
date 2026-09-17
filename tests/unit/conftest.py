@@ -234,12 +234,11 @@ def fake_firebase_adapter() -> FakeFirebaseAdapter:
 
 
 class FakeChallengeStore:
-    """One in-memory row whose `claim` and `consume` mirror the real conditional updates clause for
-    clause. Defined once and imported by all four precedence suites: two drifting fakes of the
-    system's only serialization point is the hazard, and three copies were what they carried."""
+    """One in-memory row whose `claim` and `consume` mirror the real conditional updates clause for clause.
+    Defined once and reached by the four precedence suites through the `store` fixture below: two drifting fakes
+    of the only serialization point is the hazard, and three copies were what they carried."""
 
     def __init__(self) -> None:
-        self._binding = ChallengesDB()
         self.row: AuthChallenge | None = None
         self.consume_calls = 0
 
@@ -247,9 +246,6 @@ class FakeChallengeStore:
         if self.row is not None and self.row.challenge_id == challenge_id:
             return self.row
         return None
-
-    def verify_binding(self, row, claims, linked):
-        return self._binding.verify_binding(row, claims, linked)
 
     async def claim(self, session, *, challenge_id) -> bool:
         instant = datetime.now(UTC)
@@ -272,3 +268,23 @@ class FakeChallengeStore:
         row.consumed_at = instant
         row.preauth_subject = None
         return True
+
+
+@pytest.fixture
+def store(monkeypatch) -> FakeChallengeStore:
+    """The fake behind the crud class, for the four precedence suites. The binding check stays real."""
+    fake = FakeChallengeStore()
+
+    async def locate(self, session, challenge_id):
+        return await fake.locate(session, challenge_id)
+
+    async def claim(self, session, *, challenge_id):
+        return await fake.claim(session, challenge_id=challenge_id)
+
+    async def consume(self, session, *, challenge_id):
+        return await fake.consume(session, challenge_id=challenge_id)
+
+    monkeypatch.setattr(ChallengesDB, "locate", locate)
+    monkeypatch.setattr(ChallengesDB, "claim", claim)
+    monkeypatch.setattr(ChallengesDB, "consume", consume)
+    return fake

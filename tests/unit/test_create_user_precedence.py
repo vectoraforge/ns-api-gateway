@@ -7,7 +7,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
-    get_challenge_store,
     get_claims,
     get_devicecheck_adapter,
     get_firebase_adapter,
@@ -37,7 +36,6 @@ from nativespeaker.api.tables.identities import (
 from nativespeaker.api.tables.users import User
 
 from .conftest import TEST_ISSUER
-from .conftest import FakeChallengeStore as _FakeChallengeStore
 
 SUBJECT = "precedence-unlinked-subject"
 OTHER_SUBJECT = "precedence-somebody-else"
@@ -129,11 +127,6 @@ class _RecordingCreator:
 
 
 @pytest.fixture
-def store() -> _FakeChallengeStore:
-    return _FakeChallengeStore()
-
-
-@pytest.fixture
 def rejections(monkeypatch) -> _RejectionLog:
     """Spy on both loggers a rejection can come from, so one logged at the wrong site is still seen."""
     log = _RejectionLog()
@@ -170,7 +163,7 @@ def claims() -> VerifiedClaims:
     return VerifiedClaims(issuer=TEST_ISSUER, subject=SUBJECT)
 
 
-def _client_for(session, store, claims, fake_firebase_adapter):
+def _client_for(session, claims, fake_firebase_adapter):
     """The real auth router, with the completion path's context supplied and app state substituted."""
     app = FastAPI()
     app.include_router(auth_router)
@@ -178,7 +171,6 @@ def _client_for(session, store, claims, fake_firebase_adapter):
 
     app.dependency_overrides[get_claims] = lambda: claims
     app.state.session_factory = lambda: session
-    app.dependency_overrides[get_challenge_store] = lambda: store
     app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
     # Declared by `get_auth_service` for every auth route; this app has no lifespan to build one.
     app.dependency_overrides[get_devicecheck_adapter] = lambda: None
@@ -189,19 +181,19 @@ def _client_for(session, store, claims, fake_firebase_adapter):
 
 @pytest.fixture
 def client(store, session, claims, creator, fake_firebase_adapter):
-    yield from _client_for(session, store, claims, fake_firebase_adapter)
+    yield from _client_for(session, claims, fake_firebase_adapter)
 
 
 @pytest.fixture
 def historical_client(store, historical_session, claims, creator, fake_firebase_adapter):
     """A verified caller whose identity row is no longer active."""
-    yield from _client_for(historical_session, store, claims, fake_firebase_adapter)
+    yield from _client_for(historical_session, claims, fake_firebase_adapter)
 
 
 @pytest.fixture
 def blocked_client(store, blocked_session, claims, creator, fake_firebase_adapter):
     """A verified caller holding an active identity row whose user is not active."""
-    yield from _client_for(blocked_session, store, claims, fake_firebase_adapter)
+    yield from _client_for(blocked_session, claims, fake_firebase_adapter)
 
 
 def _issued_row(*,
