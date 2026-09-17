@@ -256,6 +256,7 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=N
     store = ChallengesDB()
     claims = VerifiedClaims(issuer=harness.issuer, subject=attempt.subject)
     linked = await resolve_identity(harness, attempt.subject)
+    assert linked is not None, f"the harness seeded no identity row for {attempt.subject}"
     async with harness.factory() as real_session:
         session = _RacingSession(real_session, before_first_flush, before_first_commit)
         attempt.caller_rows_detached = all(
