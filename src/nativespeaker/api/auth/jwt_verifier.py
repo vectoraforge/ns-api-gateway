@@ -4,7 +4,6 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
 
 import jwt
 import structlog
@@ -64,12 +63,6 @@ class VerifiedClaims:
 
 # A bounded reason is never client-visible: it reaches the security log and nowhere else.
 VerificationResult = tuple[VerifiedClaims | None, BoundedReason | None]
-
-
-class TokenVerifier(Protocol):
-    def verify(self, token: str) -> VerificationResult:
-        """Return `(claims, None)` on acceptance, `(None, reason)` on any failure. Never raises."""
-        ...
 
 
 def bounded_reason_for(exc: PyJWTError) -> BoundedReason:

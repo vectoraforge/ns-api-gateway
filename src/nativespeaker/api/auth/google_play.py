@@ -14,7 +14,7 @@ import structlog
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
-from nativespeaker.api.auth.jwt_verifier import TokenVerifier
+from nativespeaker.api.auth.jwt_verifier import JWTVerifier
 from nativespeaker.api.auth.store_notifications import RestoredSubscription, VerifiedNotification
 from nativespeaker.api.errors import (
     InternalError,
@@ -192,8 +192,8 @@ def _status_for(state: str, expiry: datetime | None,
 class PubSubPushTokens:
     """The Cloud Pub/Sub push token, verified against Google's keys and pinned to one push identity."""
 
-    def __init__(self, *, verifier: TokenVerifier | None,
-                 build: Callable[[], TokenVerifier | None] | None = None,
+    def __init__(self, *, verifier: JWTVerifier | None,
+                 build: Callable[[], JWTVerifier | None] | None = None,
                  rebuild_interval_seconds: float = PUSH_VERIFIER_REBUILD_INTERVAL_SECONDS) -> None:
         self._verifier = verifier
         self._build = build
