@@ -8,8 +8,17 @@
 
 Behavior-preserving refactor of the auth barrier types. Today `AuthIdentity` holds `issuer`,
 `subject` and two nullable rows, and `LinkedIdentity` subclasses it. After this phase the token
-result and the account are two types with no `None` field, served by two dependencies. The
-admission matrix is unchanged, except for the one ordering change recorded in D-07.
+result and the account are two types with no `None` field, served by two dependencies.
+
+Amended on 2026-09-16 after code review WR-01, which measured the wire. The sentence "the
+admission matrix is unchanged, except for the one ordering change recorded in D-07" was wrong.
+On `/auth/challenge` and `/auth/create-user`, a bad body or an unknown operation is now refused
+with 400 or 422 before the account state is read. Before this phase, the same request from a
+historical row or a blocked user was refused with 403 `account_unavailable`. Both answers are
+refusals, and no accepted request changes. D-07's own consequence does not ship:
+`AuthService.complete` resolves the caller at `services/auth.py:81`, so a historical row or a
+blocked user is refused before the claim, and `_reject_existing_identity` runs only after a
+racing row. Every other outcome is unchanged.
 
 **In scope:** `schemas/auth.py`, `app/dependencies.py`,
 `crud/identities.py`, `crud/challenges.py`, `services/auth.py`, `services/restore.py`,
