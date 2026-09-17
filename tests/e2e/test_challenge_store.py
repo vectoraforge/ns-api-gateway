@@ -27,25 +27,18 @@ SUBJECT = "challenge-store-subject"
 CONTENDERS = 8
 
 
-@pytest.fixture(scope="module")
-def store():
-    """The crud object this module drives; every method below takes the session the case opened."""
-    return ChallengesDB()
-
-
 def claims_for(subject: str = SUBJECT, *, issuer: str = ISSUER) -> VerifiedClaims:
     return VerifiedClaims(issuer=issuer, subject=subject)
 
 
-async def issue(factory, store, linked: LinkedIdentity | None = None, *,
+async def issue(factory, linked: LinkedIdentity | None = None, *,
                 operation: AuthOperation = AuthOperation.claim_anonymous_grant
                 ) -> tuple[str, datetime]:
     """Issue one challenge and commit it, the way a real prepare handler would."""
     async with factory() as session:
-        handle, expires_at = await store.issue(session,
-                                               operation=operation,
-                                               claims=claims_for(),
-                                               linked=linked)
+        handle, expires_at = await ChallengesDB(session).issue(operation=operation,
+                                                               claims=claims_for(),
+                                                               linked=linked)
         await session.commit()
     return handle, expires_at
 
@@ -81,13 +74,13 @@ async def row_count(factory) -> int:
 
 
 @pytest_asyncio.fixture(scope="class", loop_scope="module")
-async def _contended_challenge(_app_lifespan, store):
+async def _contended_challenge(_app_lifespan):
     """One committed challenge and CONTENDERS connections from a second engine, since the shared one is serial."""
     config = _app_lifespan.state.config
     engine = create_async_engine(config.db.url, pool_size=CONTENDERS + 2, max_overflow=0)
     factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
     try:
-        handle, _ = await issue(factory, store)
+        handle, _ = await issue(factory)
 
         barrier = asyncio.Barrier(CONTENDERS)
 
@@ -95,7 +88,7 @@ async def _contended_challenge(_app_lifespan, store):
             async with factory() as session:
                 await session.connection()
                 await barrier.wait()
-                won = await store.claim(session, challenge_id=handle)
+                won = await ChallengesDB(session).claim(challenge_id=handle)
                 await session.commit()
                 return won
 
@@ -141,42 +134,42 @@ class TestTheClaimSerializesConcurrentAttempts:
 class TestTheClaimIsTheOnlyPlaceExpiryIsEvaluated:
     """Issued normally, then the stored row is pushed past its expiry and claimed against the real clock."""
 
-    async def test_a_claim_against_an_expired_row_returns_false(self, store, _db_transaction):
-        handle, _ = await issue(_db_transaction, store)
+    async def test_a_claim_against_an_expired_row_returns_false(self, _db_transaction):
+        handle, _ = await issue(_db_transaction)
         await expire(_db_transaction, handle)
         expired = await read(_db_transaction, handle)
         assert expired is not None
         assert expired.expires_at < datetime.now(UTC), "the fixture must actually be expired"
 
         async with _db_transaction() as session:
-            assert await store.claim(session, challenge_id=handle) is False
+            assert await ChallengesDB(session).claim(challenge_id=handle) is False
             await session.commit()
 
-    async def test_an_expired_row_is_left_unclaimed(self, store, _db_transaction):
-        handle, _ = await issue(_db_transaction, store)
+    async def test_an_expired_row_is_left_unclaimed(self, _db_transaction):
+        handle, _ = await issue(_db_transaction)
         await expire(_db_transaction, handle)
         async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle)
+            await ChallengesDB(session).claim(challenge_id=handle)
             await session.commit()
 
         row = await read(_db_transaction, handle)
         assert row.claimed_at is None
 
-    async def test_locate_still_returns_an_expired_row(self, store, _db_transaction):
+    async def test_locate_still_returns_an_expired_row(self, _db_transaction):
         """A lookup filtering on expires_at would make an expired handle indistinguishable from an unknown one."""
-        handle, _ = await issue(_db_transaction, store)
+        handle, _ = await issue(_db_transaction)
         await expire(_db_transaction, handle)
         async with _db_transaction() as session:
-            located = await store.locate(session, handle)
+            located = await ChallengesDB(session).locate(handle)
         assert located is not None
         assert located.expires_at < datetime.now(UTC)
 
-    async def test_a_row_inside_its_window_still_claims(self, store, _db_transaction):
+    async def test_a_row_inside_its_window_still_claims(self, _db_transaction):
         """The boundary from the other side, so the cases above cannot pass for a claim that rejects all."""
-        handle, expires_at = await issue(_db_transaction, store)
+        handle, expires_at = await issue(_db_transaction)
         assert expires_at > datetime.now(UTC), "the TTL must actually leave the row open"
         async with _db_transaction() as session:
-            claimed = await store.claim(session, challenge_id=handle)
+            claimed = await ChallengesDB(session).claim(challenge_id=handle)
             await session.commit()
         assert claimed is True
 
@@ -198,94 +191,96 @@ class TestTheExpiryBoundaryIsPinnedInTheCompiledSQL:
 class TestTheLifecycleRunsOneDirectionOnly:
     """issued -> claimed -> consumed: never back, never again, never by a later attempt."""
 
-    async def test_a_second_claim_of_a_claimed_row_returns_false(self, store, _db_transaction):
-        handle, _ = await issue(_db_transaction, store)
+    async def test_a_second_claim_of_a_claimed_row_returns_false(self, _db_transaction):
+        handle, _ = await issue(_db_transaction)
         async with _db_transaction() as session:
-            assert await store.claim(session, challenge_id=handle) is True
-            assert await store.claim(session, challenge_id=handle) is False
+            crud = ChallengesDB(session)
+            assert await crud.claim(challenge_id=handle) is True
+            assert await crud.claim(challenge_id=handle) is False
             await session.commit()
 
-    async def test_a_second_claim_does_not_change_the_stored_claim_time(self, store,
-                                                                        _db_transaction):
+    async def test_a_second_claim_does_not_change_the_stored_claim_time(self, _db_transaction):
         """The loser matched no row, so the winner's claimed_at is what a later read still sees.
         The store stamps from the database clock, which advances between the two statements."""
-        handle, _ = await issue(_db_transaction, store)
+        handle, _ = await issue(_db_transaction)
         async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle)
+            await ChallengesDB(session).claim(challenge_id=handle)
             await session.commit()
         claimed = await read(_db_transaction, handle)
         assert claimed is not None
         won = claimed.claimed_at
 
         async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle)
+            await ChallengesDB(session).claim(challenge_id=handle)
             await session.commit()
 
         later = await read(_db_transaction, handle)
         assert later is not None
         assert later.claimed_at == won
 
-    async def test_consume_before_any_claim_returns_false(self, store, _db_transaction):
+    async def test_consume_before_any_claim_returns_false(self, _db_transaction):
         """Consumption requires a claim. Skipping the claim would skip the serialization point."""
-        handle, _ = await issue(_db_transaction, store)
+        handle, _ = await issue(_db_transaction)
         async with _db_transaction() as session:
-            assert await store.consume(session, challenge_id=handle) is False
+            assert await ChallengesDB(session).consume(challenge_id=handle) is False
             await session.commit()
 
         assert (await read(_db_transaction, handle)).consumed_at is None
 
-    async def test_a_consume_without_a_claim_changes_nothing(self, store, _db_transaction):
+    async def test_a_consume_without_a_claim_changes_nothing(self, _db_transaction):
         """A rejected consume must not half-apply: neither column moves."""
-        handle, _ = await issue(_db_transaction, store)
+        handle, _ = await issue(_db_transaction)
         async with _db_transaction() as session:
-            await store.consume(session, challenge_id=handle)
+            await ChallengesDB(session).consume(challenge_id=handle)
             await session.commit()
 
         row = await read(_db_transaction, handle)
         assert row.consumed_at is None
         assert row.preauth_subject is not None
 
-    async def test_consume_under_the_winning_attempt_sets_consumed_at(self, store,
-                                                                      _db_transaction):
-        handle, _ = await issue(_db_transaction, store)
+    async def test_consume_under_the_winning_attempt_sets_consumed_at(self, _db_transaction):
+        handle, _ = await issue(_db_transaction)
         async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle)
-            assert await store.consume(session, challenge_id=handle) is True
+            crud = ChallengesDB(session)
+            await crud.claim(challenge_id=handle)
+            assert await crud.consume(challenge_id=handle) is True
             await session.commit()
 
         assert (await read(_db_transaction, handle)).consumed_at is not None
 
-    async def test_consume_clears_the_preauth_subject_on_a_preauth_bound_row(self, store,
-                                                                             _db_transaction):
+    async def test_consume_clears_the_preauth_subject_on_a_preauth_bound_row(self, _db_transaction):
         """Both column changes land in one UPDATE; the binding CHECK would reject a two-statement consume."""
-        handle, _ = await issue(_db_transaction, store)
+        handle, _ = await issue(_db_transaction)
         assert (await read(_db_transaction, handle)).preauth_subject is not None
 
         async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle)
-            await store.consume(session, challenge_id=handle)
+            crud = ChallengesDB(session)
+            await crud.claim(challenge_id=handle)
+            await crud.consume(challenge_id=handle)
             await session.commit()
 
         row = await read(_db_transaction, handle)
         assert row.preauth_subject is None
         assert row.preauth_issuer == ISSUER, "the plaintext issuer is not cleared (ruling 9.3)"
 
-    async def test_a_second_consume_of_a_consumed_row_returns_false(self, store, _db_transaction):
+    async def test_a_second_consume_of_a_consumed_row_returns_false(self, _db_transaction):
         """The WHERE keys on consumed_at IS NULL alone now, so a replay still matches no row."""
-        handle, _ = await issue(_db_transaction, store)
+        handle, _ = await issue(_db_transaction)
         async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle)
-            assert await store.consume(session, challenge_id=handle) is True
-            assert await store.consume(session, challenge_id=handle) is False
+            crud = ChallengesDB(session)
+            await crud.claim(challenge_id=handle)
+            assert await crud.consume(challenge_id=handle) is True
+            assert await crud.consume(challenge_id=handle) is False
             await session.commit()
 
-    async def test_a_consumed_row_is_never_returned_to_issued(self, store, _db_transaction):
+    async def test_a_consumed_row_is_never_returned_to_issued(self, _db_transaction):
         """No reclaim, no reissue, no reuse: the claim's claimed_at IS NULL makes that structural."""
-        handle, _ = await issue(_db_transaction, store)
+        handle, _ = await issue(_db_transaction)
         async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle)
-            await store.consume(session, challenge_id=handle)
-            assert await store.claim(session, challenge_id=handle) is False
+            crud = ChallengesDB(session)
+            await crud.claim(challenge_id=handle)
+            await crud.consume(challenge_id=handle)
+            assert await crud.claim(challenge_id=handle) is False
             await session.commit()
 
 
@@ -293,33 +288,36 @@ class TestTheLifecycleRunsOneDirectionOnly:
 class TestTheBindingAgainstRealRows:
     """Asserted against rows PostgreSQL accepted and read back, not ones built in memory."""
 
-    async def test_a_linked_bound_row_matches_its_own_identity(self, store, _db_transaction):
+    async def test_a_linked_bound_row_matches_its_own_identity(self, _db_transaction):
         """The linked arm needs a real identity row, because bound_external_identity_id carries a foreign key."""
         user, identity = await seed_identity(_db_transaction, issuer=ISSUER, subject=SUBJECT)
         linked = LinkedIdentity(user=user, identity=identity)
-        handle, _ = await issue(_db_transaction, store, linked,
+        handle, _ = await issue(_db_transaction, linked,
                                 operation=AuthOperation.claim_registered_grant)
 
         row = await read(_db_transaction, handle)
         assert row.bound_external_identity_id == identity.id
-        assert store.verify_binding(row, claims=claims_for(), linked=linked) is row
+        async with _db_transaction() as session:
+            assert ChallengesDB(session).verify_binding(row, claims=claims_for(),
+                                                        linked=linked) is row
 
-    async def test_a_linked_bound_row_rejects_a_different_identity(self, store, _db_transaction):
+    async def test_a_linked_bound_row_rejects_a_different_identity(self, _db_transaction):
         user, identity = await seed_identity(_db_transaction, issuer=ISSUER, subject=SUBJECT)
         other_user, other_identity = await seed_identity(_db_transaction, issuer=ISSUER,
                                                          subject="a-different-subject",
                                                          provider=IdentityProvider.apple)
         linked = LinkedIdentity(user=user, identity=identity)
         intruder = LinkedIdentity(user=other_user, identity=other_identity)
-        handle, _ = await issue(_db_transaction, store, linked,
+        handle, _ = await issue(_db_transaction, linked,
                                 operation=AuthOperation.claim_registered_grant)
 
         row = await read(_db_transaction, handle)
-        with pytest.raises(ChallengeIdentityMismatch):
-            store.verify_binding(row, claims=claims_for("a-different-subject"), linked=intruder)
+        async with _db_transaction() as session:
+            with pytest.raises(ChallengeIdentityMismatch):
+                ChallengesDB(session).verify_binding(row, claims=claims_for("a-different-subject"),
+                                                     linked=intruder)
 
-    async def test_a_rejected_binding_leaves_the_challenge_unconsumed(self, store,
-                                                                      _db_transaction):
+    async def test_a_rejected_binding_leaves_the_challenge_unconsumed(self, _db_transaction):
         """A row bound to another identity is rejected before the claim, so it burns nobody's challenge."""
         user, identity = await seed_identity(_db_transaction, issuer=ISSUER, subject=SUBJECT)
         other_user, other_identity = await seed_identity(_db_transaction, issuer=ISSUER,
@@ -327,37 +325,42 @@ class TestTheBindingAgainstRealRows:
                                                          provider=IdentityProvider.apple)
         linked = LinkedIdentity(user=user, identity=identity)
         intruder = LinkedIdentity(user=other_user, identity=other_identity)
-        handle, _ = await issue(_db_transaction, store, linked,
+        handle, _ = await issue(_db_transaction, linked,
                                 operation=AuthOperation.claim_registered_grant)
 
-        with pytest.raises(ChallengeIdentityMismatch):
-            store.verify_binding(await read(_db_transaction, handle),
-                                 claims=claims_for("a-different-subject"), linked=intruder)
+        async with _db_transaction() as session:
+            with pytest.raises(ChallengeIdentityMismatch):
+                ChallengesDB(session).verify_binding(await read(_db_transaction, handle),
+                                                     claims=claims_for("a-different-subject"),
+                                                     linked=intruder)
 
         row = await read(_db_transaction, handle)
         assert row.claimed_at is None
         assert row.consumed_at is None
 
-    async def test_a_preauth_row_read_back_carries_the_subject_it_was_issued_for(self, store,
-                                                                                   _db_transaction):
+    async def test_a_preauth_row_read_back_carries_the_subject_it_was_issued_for(self,
+                                                                                _db_transaction):
         """The subject survives the TEXT round trip unaltered, which is what the comparison depends on."""
-        handle, _ = await issue(_db_transaction, store)
+        handle, _ = await issue(_db_transaction)
         row = await read(_db_transaction, handle)
         assert row.preauth_subject == SUBJECT
-        assert store.verify_binding(row, claims=claims_for(), linked=None) is row
-
-    async def test_a_consumed_preauth_row_takes_the_already_used_rejection(self, store,
-                                                                           _db_transaction):
-        """Consume clears the subject, so the row read back rejects challenge_consumed, not a mismatch."""
-        handle, _ = await issue(_db_transaction, store)
         async with _db_transaction() as session:
-            await store.claim(session, challenge_id=handle)
-            await store.consume(session, challenge_id=handle)
+            assert ChallengesDB(session).verify_binding(row, claims=claims_for(),
+                                                        linked=None) is row
+
+    async def test_a_consumed_preauth_row_takes_the_already_used_rejection(self, _db_transaction):
+        """Consume clears the subject, so the row read back rejects challenge_consumed, not a mismatch."""
+        handle, _ = await issue(_db_transaction)
+        async with _db_transaction() as session:
+            crud = ChallengesDB(session)
+            await crud.claim(challenge_id=handle)
+            await crud.consume(challenge_id=handle)
             await session.commit()
 
         row = await read(_db_transaction, handle)
-        with pytest.raises(ChallengeConsumed):
-            store.verify_binding(row, claims=claims_for(), linked=None)
+        async with _db_transaction() as session:
+            with pytest.raises(ChallengeConsumed):
+                ChallengesDB(session).verify_binding(row, claims=claims_for(), linked=None)
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -378,10 +381,10 @@ class TestLocateIsByteForByteAgainstPostgres:
             await session.commit()
         return self.PLANTED
 
-    async def test_an_exact_handle_locates_its_row(self, store, _db_transaction):
+    async def test_an_exact_handle_locates_its_row(self, _db_transaction):
         handle = await self.plant(_db_transaction)
         async with _db_transaction() as session:
-            assert (await store.locate(session, handle)).challenge_id == handle
+            assert (await ChallengesDB(session).locate(handle)).challenge_id == handle
 
     @pytest.mark.parametrize("mangled", [
         pytest.param("abcdefghijklmnopqrstuv", id="lowercased"),
@@ -392,30 +395,29 @@ class TestLocateIsByteForByteAgainstPostgres:
         pytest.param("AbCdEfGhIjKlMnOpQrStU", id="truncated"),
         pytest.param("AbCdEfGhIjKlMnOpQrStUvx", id="extended"),
     ])
-    async def test_a_handle_that_differs_at_all_locates_nothing(self, store, _db_transaction,
-                                                                mangled):
+    async def test_a_handle_that_differs_at_all_locates_nothing(self, _db_transaction, mangled):
         """A case-insensitive collation, CHAR blank padding, or a trimming store would turn one handle into many."""
         planted = await self.plant(_db_transaction)
         assert mangled != planted, "the mangling must actually differ"
         async with _db_transaction() as session:
-            assert await store.locate(session, mangled) is None
+            assert await ChallengesDB(session).locate(mangled) is None
 
-    async def test_an_unknown_handle_locates_nothing(self, store, _db_transaction):
+    async def test_an_unknown_handle_locates_nothing(self, _db_transaction):
         async with _db_transaction() as session:
-            assert await store.locate(session, "ZZZZZZZZZZZZZZZZZZZZZZ") is None
+            assert await ChallengesDB(session).locate("ZZZZZZZZZZZZZZZZZZZZZZ") is None
 
 
 @pytest.mark.asyncio(loop_scope="module")
 class TestTheRollbackIsolatesEveryRow:
-    """The operational proof that the store reads its session per call rather than caching one."""
+    """The operational proof that no row this module wrote outlives the test that wrote it."""
 
     async def test_no_row_this_module_wrote_survives_its_test(self, _db_transaction):
         """Every case above wrote a row, so a non-zero count means one escaped the per-test
         transaction. The count owns its rows, so another module's leftovers cannot fail it."""
         assert await row_count(_db_transaction) == 0
 
-    async def test_a_row_written_in_this_test_is_visible_and_still_rolls_back(self, store,
+    async def test_a_row_written_in_this_test_is_visible_and_still_rolls_back(self,
                                                                               _db_transaction):
-        handle, _ = await issue(_db_transaction, store)
+        handle, _ = await issue(_db_transaction)
         assert await read(_db_transaction, handle) is not None
         assert await row_count(_db_transaction) == 1

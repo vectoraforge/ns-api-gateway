@@ -75,7 +75,7 @@ class AuthService:
         self.session = db
         self.identities_db = IdentitiesDB(db)
         self.grants_db = GrantsDB(db)
-        self.challenges_db = ChallengesDB()
+        self.challenges_db = ChallengesDB(db)
         self.adapter = adapter
         # Named for the vendor API, never for the company: two unrelated enums are already called apple.
         self.devicecheck = devicecheck
@@ -139,7 +139,7 @@ class AuthService:
         """The one completion sequence every route runs: locate, claim, commit, post-claim work, spend.
         The order of the rejections below is the precedence, and none of them carries a field."""
         # No rejection before the claim consumes anything, so a wrong presenter cannot burn a live challenge.
-        located = await self.challenges_db.locate(self.session, challenge_id)
+        located = await self.challenges_db.locate(challenge_id)
         if located is None:
             # A definitive no-row. A lookup outage raises out of `locate` instead of answering "no such challenge".
             raise ChallengeNotFound()
@@ -149,7 +149,7 @@ class AuthService:
         if challenge.operation is not operation:
             raise ChallengeOperationMismatch()
 
-        if not await self.challenges_db.claim(self.session, challenge_id=challenge_id):
+        if not await self.challenges_db.claim(challenge_id=challenge_id):
             # `claimed_at` distinguishes the two losses; the claim's WHERE is the only expiry evaluation anywhere.
             await self.session.refresh(challenge)
             if challenge.claimed_at is None:
@@ -403,7 +403,7 @@ class AuthService:
                                   challenge_id: str,
                                   challenge_row_id: str) -> None:
         """Spend the handle and commit, so neither path can leave a claimed handle re-presentable."""
-        consumed = await self.challenges_db.consume(self.session, challenge_id=challenge_id)
+        consumed = await self.challenges_db.consume(challenge_id=challenge_id)
         if not consumed:
             # Not recoverable: this attempt holds the claim, so a `False` means stored state diverged.
             logger.error("challenge_consume_did_not_match", challenge_row_id=challenge_row_id)

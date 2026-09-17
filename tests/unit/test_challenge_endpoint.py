@@ -50,7 +50,7 @@ class _RecordingChallengeStore:
         self.issued: list[object] = []
         self.bound: list[object] = []
 
-    async def issue(self, session, *, operation, claims, linked):
+    async def issue(self, *, operation, claims, linked):
         self.issued.append(operation)
         self.bound.append(linked)
         return ISSUED_HANDLE, ISSUED_EXPIRY
@@ -87,8 +87,8 @@ class _RecordingSession:
 def store(monkeypatch) -> _RecordingChallengeStore:
     recorder = _RecordingChallengeStore()
 
-    async def issue(self, session, *, operation, claims, linked):
-        return await recorder.issue(session, operation=operation, claims=claims, linked=linked)
+    async def issue(self, *, operation, claims, linked):
+        return await recorder.issue(operation=operation, claims=claims, linked=linked)
 
     monkeypatch.setattr(ChallengesDB, "issue", issue)
     return recorder

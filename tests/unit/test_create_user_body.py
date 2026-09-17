@@ -30,12 +30,12 @@ class _RecordingChallengeStore:
         self.issued: list[str] = []
         self.located: list[str] = []
 
-    async def issue(self, session, *, operation, claims, linked):
+    async def issue(self, *, operation, claims, linked):
         """Kept though completion never issues, so "nothing was issued" stays an assertion with teeth."""
         self.issued.append(str(operation))
         return "issued-handle", datetime(2026, 1, 1, tzinfo=UTC)
 
-    async def locate(self, session, challenge_id):
+    async def locate(self, challenge_id):
         self.located.append(challenge_id)
         return None
 
@@ -67,11 +67,11 @@ class _UnlinkedSession:
 def store(monkeypatch) -> _RecordingChallengeStore:
     recorder = _RecordingChallengeStore()
 
-    async def issue(self, session, *, operation, claims, linked):
-        return await recorder.issue(session, operation=operation, claims=claims, linked=linked)
+    async def issue(self, *, operation, claims, linked):
+        return await recorder.issue(operation=operation, claims=claims, linked=linked)
 
-    async def locate(self, session, challenge_id):
-        return await recorder.locate(session, challenge_id)
+    async def locate(self, challenge_id):
+        return await recorder.locate(challenge_id)
 
     monkeypatch.setattr(ChallengesDB, "issue", issue)
     monkeypatch.setattr(ChallengesDB, "locate", locate)

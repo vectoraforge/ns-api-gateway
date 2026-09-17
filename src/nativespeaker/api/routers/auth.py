@@ -62,10 +62,10 @@ async def issue_challenge(body: ChallengeRequest,
     if body.operation != AuthOperation.create_user and linked is None:
         raise PreAuthIdentityNotAllowed
 
-    challenge_id, expires_at = await ChallengesDB().issue(session,
-                                                          operation=AuthOperation(body.operation),
-                                                          claims=claims,
-                                                          linked=linked)
+    challenge_id, expires_at = await ChallengesDB(session).issue(
+        operation=AuthOperation(body.operation),
+        claims=claims,
+        linked=linked)
     # `get_db` never commits. This commit makes the issued row durable before the answer.
     await session.commit()
     # `no-store` rather than `no-cache`: the handle is a secret, and a revalidatable copy is a copy.

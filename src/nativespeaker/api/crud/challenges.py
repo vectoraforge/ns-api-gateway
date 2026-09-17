@@ -35,12 +35,15 @@ def _claim_statement(challenge_id: str):
 
 
 class ChallengesDB:
-    """The four operations. No method commits, and the session is a parameter on every one of them."""
+    """The four operations. No method commits."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
 
     def __repr__(self) -> str:
         return f"ChallengesDB(ttl_seconds={CHALLENGE_TTL_SECONDS})"
 
-    async def issue(self, session: AsyncSession, *,
+    async def issue(self, *,
                     operation: AuthOperation,
                     claims: VerifiedClaims,
                     linked: LinkedIdentity | None) -> tuple[str, datetime]:
@@ -58,29 +61,29 @@ class ChallengesDB:
             preauth_issuer = claims.issuer
             preauth_subject = claims.subject
 
-        session.add(AuthChallenge(challenge_id=challenge_id,
-                                  operation=operation,
-                                  bound_external_identity_id=bound_identity_id,
-                                  preauth_issuer=preauth_issuer,
-                                  preauth_subject=preauth_subject,
-                                  expires_at=expires_at,
-                                  created_at=instant))
-        await session.flush()
+        self.session.add(AuthChallenge(challenge_id=challenge_id,
+                                       operation=operation,
+                                       bound_external_identity_id=bound_identity_id,
+                                       preauth_issuer=preauth_issuer,
+                                       preauth_subject=preauth_subject,
+                                       expires_at=expires_at,
+                                       created_at=instant))
+        await self.session.flush()
         return challenge_id, expires_at
 
-    async def locate(self, session: AsyncSession, challenge_id: str) -> AuthChallenge | None:
+    async def locate(self, challenge_id: str) -> AuthChallenge | None:
         """Look the row up by byte-for-byte equality. `None` is a definitive no-row; an outage raises."""
         statement = select(AuthChallenge).where(col(AuthChallenge.challenge_id) == challenge_id)
-        return (await session.exec(statement)).first()
+        return (await self.session.exec(statement)).first()
 
-    async def claim(self, session: AsyncSession, *, challenge_id: str) -> bool:
+    async def claim(self, *, challenge_id: str) -> bool:
         """Move issued -> claimed. The one serialization point and the only expiry check; `True` wins it."""
-        result = await session.exec(_claim_statement(challenge_id))
+        result = await self.session.exec(_claim_statement(challenge_id))
         return len(result.all()) == 1
 
-    async def consume(self, session: AsyncSession, *, challenge_id: str) -> bool:
+    async def consume(self, *, challenge_id: str) -> bool:
         """Move claimed -> consumed, clearing `preauth_subject` in the same statement the CHECK needs."""
-        result = await session.exec(
+        result = await self.session.exec(
             update(AuthChallenge)
             .where(col(AuthChallenge.challenge_id) == challenge_id,
                    col(AuthChallenge.claimed_at).is_not(None),

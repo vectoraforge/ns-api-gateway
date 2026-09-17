@@ -242,12 +242,12 @@ class FakeChallengeStore:
         self.row: AuthChallenge | None = None
         self.consume_calls = 0
 
-    async def locate(self, session, challenge_id: str) -> AuthChallenge | None:
+    async def locate(self, challenge_id: str) -> AuthChallenge | None:
         if self.row is not None and self.row.challenge_id == challenge_id:
             return self.row
         return None
 
-    async def claim(self, session, *, challenge_id) -> bool:
+    async def claim(self, *, challenge_id) -> bool:
         instant = datetime.now(UTC)
         row = self.row
         if row is None or row.challenge_id != challenge_id:
@@ -257,7 +257,7 @@ class FakeChallengeStore:
         row.claimed_at = instant
         return True
 
-    async def consume(self, session, *, challenge_id) -> bool:
+    async def consume(self, *, challenge_id) -> bool:
         self.consume_calls += 1
         instant = datetime.now(UTC)
         row = self.row
@@ -275,14 +275,14 @@ def store(monkeypatch) -> FakeChallengeStore:
     """The fake behind the crud class, for the four precedence suites. The binding check stays real."""
     fake = FakeChallengeStore()
 
-    async def locate(self, session, challenge_id):
-        return await fake.locate(session, challenge_id)
+    async def locate(self, challenge_id):
+        return await fake.locate(challenge_id)
 
-    async def claim(self, session, *, challenge_id):
-        return await fake.claim(session, challenge_id=challenge_id)
+    async def claim(self, *, challenge_id):
+        return await fake.claim(challenge_id=challenge_id)
 
-    async def consume(self, session, *, challenge_id):
-        return await fake.consume(session, challenge_id=challenge_id)
+    async def consume(self, *, challenge_id):
+        return await fake.consume(challenge_id=challenge_id)
 
     monkeypatch.setattr(ChallengesDB, "locate", locate)
     monkeypatch.setattr(ChallengesDB, "claim", claim)
