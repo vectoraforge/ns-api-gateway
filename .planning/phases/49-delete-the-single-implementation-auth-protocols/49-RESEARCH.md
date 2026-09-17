@@ -600,7 +600,7 @@ deselects them by default.
 | A1 | The new `CURRENT` tuple is `(7, 20, 60)`, computed from the measured `(8, 24, 67)` minus one module, four classes and seven Protocol methods, plus `VerifiedProviderIdentity` re-landing in `auth/firebase.py` | Open Question 1 | A wrong literal fails the shape case. The arithmetic is from a real AST count run this session, but **measure it from the failing run's own text**, as Phase 46 did |
 | A2 | Deleting `tests/unit/test_adapter_interfaces.py` outright is acceptable if `TestNoProviderDependency` and `TestTheValueTypeIsImmutable` are relocated | Pitfall 1 | Dropping them loses a package-wide SDK-isolation guard silently |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **RESOLVED 2026-09-16 (CONTEXT D-08): the tuple changes in each seam commit.** Criterion 5 contradicted itself, and the model commit resolved it the other way.
    - What we know: `test_auth_package_shape.py:13` is a literal `CURRENT = (8, 24, 67)`, compared
@@ -616,7 +616,7 @@ deselects them by default.
      with the user before planning, since CONTEXT records that the user challenges any change the
      ROADMAP does not name.
 
-2. **What becomes of `tests/unit/test_adapter_interfaces.py`?**
+2. **RESOLVED (49-02-PLAN.md Task 2): the file is deleted; `TestNoProviderDependency` and `TestTheValueTypeIsImmutable` move to `tests/unit/test_firebase_adapter.py`.** What becomes of `tests/unit/test_adapter_interfaces.py`?
    - What we know: CONTEXT leaves it to discretion; criterion 3 removes only its adapter-shape class
      and Protocol list. Two unrelated properties live in the same file (Pitfall 1), and the file
      cannot import once `auth/adapters.py` is gone.
@@ -625,7 +625,7 @@ deselects them by default.
      and re-point `TestNoProviderDependency` at an auth module that still exists — its
      `assert "adapters" in SDK_FREE_MODULES` control at `:73` must be re-written whatever is chosen.
 
-3. **Does `ChallengesDB.__repr__` keep the TTL?**
+3. **RESOLVED (49-04-PLAN.md Task 1): the repr keeps the TTL.** Does `ChallengesDB.__repr__` keep the TTL?
    - What we know: `crud/challenges.py:40-41` returns `f"ChallengesDB(ttl_seconds={CHALLENGE_TTL_SECONDS})"`.
      D-01 says "the class docstring and `__repr__` follow the new shape". `IdentitiesDB` and
      `GrantsDB` declare no `__repr__` at all.
