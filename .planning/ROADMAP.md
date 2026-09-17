@@ -868,7 +868,7 @@ Plans:
 **Goal:** Delete the four Protocols in the `auth/` package that still have exactly one implementation — `PlaySubscriptionSource`, `FirebaseAdminAdapter`, `DeviceCheckAdapter` and `TokenVerifier`; the fifth, `StoreNotificationVerifier`, went in 37a5ac6, which is the model for each remaining seam — and annotate every parameter and return type that used them with the concrete class: `PlayDeveloperSubscriptions`, `FirebaseAdminLookup`, `AppleDeviceCheck` and `JWTVerifier`. Move `VerifiedProviderIdentity` out of `auth/adapters.py` into `auth/firebase.py` and remove the then-empty module. Stop building `ChallengesDB` in the lifespan: `ChallengesDB` takes the session in its constructor as `IdentitiesDB` and `GrantsDB` do, `AuthService` constructs it itself like its other crud classes and holds it as `challenges_db`, the challenge route builds its own, the `challenge_store` constructor argument and the `get_challenge_store` dependency go away, and the tests that overrode that dependency monkeypatch the class methods instead, as the grants tests already do. Leave the concrete adapter classes, the build callables, the retry helpers and the value types alone. One seam per commit, tests green at every commit; each commit that changes the `auth/` count updates the recorded tuple in `tests/unit/test_auth_package_shape.py`, as 37a5ac6 did. Amended 2026-09-16 by the phase discussion: the `ChallengesDB` constructor. Amended 2026-09-16 at planning: the tuple changes in each seam commit, because the shape test compares a literal with a live count.
 **Requirements:** none mapped — behavior-preserving refactor
 **Depends on:** 46 — independent of Phases 47 and 48. Runs before Phase 50 so the challenge store has left the lifespan before the runtime container is shaped
-**Plans:** 0 plans
+**Plans:** 4 plans
 **Success criteria:**
 
 1. None of the four Protocol names exists in `src/` or `tests/`; `auth/adapters.py` is gone and `VerifiedProviderIdentity` is imported from `auth/firebase.py`
@@ -879,7 +879,10 @@ Plans:
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 49 to break down)
+- [ ] 49-01-PLAN.md — the two smallest Protocol seams: the Play subscription source and the JWT verifier
+- [ ] 49-02-PLAN.md — the DeviceCheck and Firebase admin seams, the value-type move, and the adapter module removal
+- [ ] 49-03-PLAN.md — the challenge dependency goes; the service and the handler each build their own crud object
+- [ ] 49-04-PLAN.md — the challenge crud class takes the session in its constructor; phase gate
 
 #### Phase 50: Typed runtime container behind an exit-stack lifespan
 
@@ -953,5 +956,5 @@ Plans:
 | 46. POST /auth/sign-out-all | v2.0 | 5/5 | Complete    | 2026-09-08 |
 | 47. Stop threading an evaluation instant through the layers | v2.0 | 8/8 | Executed — criterion 5 unmet (one pre-existing case) | 2026-09-12 |
 | 48. Narrow Identity to the verified pair | v2.0 | 8/8 | Complete    | 2026-09-16 |
-| 49. Delete the single-implementation auth Protocols | v2.0 | 0/0 | Not started | - |
+| 49. Delete the single-implementation auth Protocols | v2.0 | 0/4 | Planned | - |
 | 50. Typed runtime container behind an exit-stack lifespan | v2.0 | 0/0 | Not started | - |
