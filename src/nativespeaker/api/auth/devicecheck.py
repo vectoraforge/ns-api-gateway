@@ -3,7 +3,7 @@ A device token is a secret capability: this module holds no logger, so none is l
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NoReturn, Protocol
+from typing import NoReturn
 from uuid import uuid4
 
 import httpx
@@ -41,18 +41,6 @@ class BitState:
 
     bit0: bool
     bit1: bool
-
-
-class DeviceCheckAdapter(Protocol):
-    """The device-gate seam: one read of both bits, and one write of both."""
-
-    async def read_bits(self, device_token: str) -> BitState:
-        """The query call: the device's bit state, or a raise."""
-        ...
-
-    async def write_bits(self, device_token: str, *, bit0: bool, bit1: bool) -> None:
-        """The update call: both bits written and confirmed, or a raise."""
-        ...
 
 
 def read_private_key(path: str | None) -> str | None:
@@ -179,12 +167,12 @@ def _retrying(exhausted) -> AsyncRetrying:
     )
 
 
-async def read_bits_with_retry(adapter: DeviceCheckAdapter, device_token: str) -> BitState:
+async def read_bits_with_retry(adapter: AppleDeviceCheck, device_token: str) -> BitState:
     """Call the adapter's query up to `DEVICECHECK_ATTEMPTS` times; return the state or raise."""
     return await _retrying(_read_exhausted)(adapter.read_bits, device_token)
 
 
-async def write_bits_with_retry(adapter: DeviceCheckAdapter, device_token: str, *,
+async def write_bits_with_retry(adapter: AppleDeviceCheck, device_token: str, *,
                                 bit0: bool, bit1: bool) -> None:
     """Call the adapter's update up to `DEVICECHECK_ATTEMPTS` times; return on confirmation or raise."""
     await _retrying(_write_exhausted)(adapter.write_bits, device_token, bit0=bit0, bit1=bit1)

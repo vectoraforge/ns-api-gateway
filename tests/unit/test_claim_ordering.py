@@ -36,7 +36,7 @@ WROTE_NAME = "wrote"
 # Every name the device-gate seam exposes. None of them may appear inside the crud writer.
 SEAM_NAMES = frozenset({"devicecheck", "read_bits", "write_bits",
                         "read_bits_with_retry", "write_bits_with_retry",
-                        "DeviceCheckAdapter", "AppleDeviceCheck", "BitState"})
+                        "AppleDeviceCheck", "BitState"})
 
 # The crud module's import roots: the standard library, the ORM it is written in, and this project.
 # `enum` joins `datetime` and `uuid` as a named stdlib module; the driver is still not one of them.

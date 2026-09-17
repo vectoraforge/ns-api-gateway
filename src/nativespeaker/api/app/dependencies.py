@@ -7,7 +7,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from nativespeaker.api.auth.adapters import FirebaseAdminAdapter
-from nativespeaker.api.auth.devicecheck import DeviceCheckAdapter
+from nativespeaker.api.auth.devicecheck import AppleDeviceCheck
 from nativespeaker.api.auth.google_play import (
     developer_notification_from,
     instant_from_millis,
@@ -120,7 +120,7 @@ def get_firebase_adapter(request: Request) -> FirebaseAdminAdapter:
     return request.app.state.firebase_adapter
 
 
-def get_devicecheck_adapter(request: Request) -> DeviceCheckAdapter:
+def get_devicecheck_adapter(request: Request) -> AppleDeviceCheck:
     """The device-gate seam the lifespan built, declared like its Firebase sibling above."""
     return request.app.state.devicecheck_adapter
 
@@ -128,7 +128,7 @@ def get_devicecheck_adapter(request: Request) -> DeviceCheckAdapter:
 def get_auth_service(db: AsyncSession = Depends(get_db),
                      challenge_store: ChallengesDB = Depends(get_challenge_store),
                      adapter=Depends(get_firebase_adapter),
-                     devicecheck: DeviceCheckAdapter = Depends(get_devicecheck_adapter)
+                     devicecheck: AppleDeviceCheck = Depends(get_devicecheck_adapter)
                      ) -> AuthService:
     return AuthService(db=db,
                        challenge_store=challenge_store,
