@@ -239,10 +239,7 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
         async def _handler(chat_id: str,
                            linked: LinkedIdentity = Depends(get_identity),
                            admitted: VerifiedClaims = Depends(get_claims)):
-            # A VerifiedClaims carries no row, so the two values are what the row is compared on.
-            same = (linked.identity.issuer == admitted.issuer
-                    and linked.identity.subject == admitted.subject)
-            return {"same": same, "user": str(linked.user.id)}
+            return {"resolved_user": str(linked.user.id), "subject": admitted.subject}
 
         app.include_router(router)
         app.state.jwt_verifier = _CountingVerifier()
@@ -255,4 +252,5 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
         assert response.status_code == 200, response.json()
         assert counts["verify"] == 1, f"the JWT was verified {counts['verify']} times"
         assert counts["query"] == 1, f"identity was resolved {counts['query']} times"
-        assert response.json()["same"] is True
+        # Each declaration's own output, so a resolution of anything but the token's subject fails here.
+        assert response.json() == {"resolved_user": str(user.id), "subject": subject}
