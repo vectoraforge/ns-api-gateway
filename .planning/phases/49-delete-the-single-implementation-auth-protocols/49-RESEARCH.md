@@ -93,7 +93,7 @@ session-holding constructor like its two sibling crud classes, takes it off the 
 
 The Protocol half is small and verifiable: 4 class definitions, 9 annotation sites in `src/`, 5 test
 files. The `ChallengesDB` half is the bulk of the work: **~35 method call sites in
-`tests/e2e/test_challenge_store.py` alone** plus 13 in `tests/unit/test_challenge_ids.py`, because
+`tests/e2e/test_challenge_store.py` alone** plus 15 in `tests/unit/test_challenge_ids.py`, because
 every `store.claim(session, ...)` becomes `ChallengesDB(session).claim(...)`.
 
 One criterion as written cannot hold — see **Open Question 1**: `tests/unit/test_auth_package_shape.py`
@@ -269,7 +269,7 @@ the argument leaves the local unused — **delete the local too**, or ruff F841 
 | File | Sites | Note |
 |------|-------|------|
 | `tests/e2e/test_challenge_store.py` | ~35 (`:45, 98, 152, 159, 170, 179, 204-205, 214, 221, 232, 241, 252-253, 265-266, 277-279, 286-288, 305, 319, 334, 347, 354-355, 360, 384, 401, 405`) | module-scoped `store` fixture at `:31-34` reads `_app_lifespan.state.challenge_store`; helpers `issue(factory, store, ...)` at `:38-51` take the store as a parameter; a second engine and factory are built at `:85-88` |
-| `tests/unit/test_challenge_ids.py` | 13 (`:99, 169, 222, 230, 239, 247, 256, 266, 275, 286, 297, 308, 311, 320, 327`) | plain helper `def store() -> ChallengesDB: return ChallengesDB()` at `:39-40`, called as `store()` |
+| `tests/unit/test_challenge_ids.py` | 15 (`:98, 169, 222, 230, 239, 247, 256, 266, 275, 286, 297, 308, 311, 320, 327`) [RE-MEASURED with `grep -n 'store()' tests/unit/test_challenge_ids.py`; the earlier count of 13 was wrong and `:99` was off by one] | plain helper `def store() -> ChallengesDB: return ChallengesDB()` at `:39-40`, called as `store()` |
 
 `tests/schema/test_claim_race.py:136` mentions `ChallengesDB.issue` in a docstring — update the
 prose if the signature it describes changes.
