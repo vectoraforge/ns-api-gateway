@@ -5,7 +5,6 @@ import base64
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Protocol
 from urllib.parse import quote
 
 import google.auth.exceptions
@@ -119,21 +118,6 @@ class DeveloperNotification(BaseModel):
     packageName: str
     eventTimeMillis: int
     subscriptionNotification: SubscriptionNotification | None = None
-
-
-class PlaySubscriptionSource(Protocol):
-    """The Play read seam: one live subscription as this project's value type, or a raise."""
-
-    async def read(self, *, package_name: str, purchase_token: str, event_type: str,
-                   notification_uuid: str,
-                   signed_at: datetime | None) -> VerifiedNotification | None:
-        """The `subscriptionsv2.get` call: the value type, `None` for a gone token, or a raise."""
-        ...
-
-    async def read_for_restore(self, *, package_name: str,
-                               purchase_token: str) -> RestoredSubscription:
-        """The same call for a client-presented token: the value type, or the refusal it earned."""
-        ...
 
 
 def developer_notification_from(data: str) -> DeveloperNotification | None:
