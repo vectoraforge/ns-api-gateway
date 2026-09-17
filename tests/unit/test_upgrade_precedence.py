@@ -15,7 +15,7 @@ from nativespeaker.api.app.dependencies import (
     get_identity,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
+from nativespeaker.api.auth.firebase import VerifiedProviderIdentity
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.errors import AppError, ProviderAccountAlreadyLinked, UserNotFound

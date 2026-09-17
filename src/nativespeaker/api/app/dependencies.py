@@ -6,8 +6,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from nativespeaker.api.auth.adapters import FirebaseAdminAdapter
 from nativespeaker.api.auth.devicecheck import AppleDeviceCheck
+from nativespeaker.api.auth.firebase import FirebaseAdminLookup
 from nativespeaker.api.auth.google_play import (
     developer_notification_from,
     instant_from_millis,
@@ -114,9 +114,8 @@ def get_challenge_store(request: Request) -> ChallengesDB:
     return request.app.state.challenge_store
 
 
-def get_firebase_adapter(request: Request) -> FirebaseAdminAdapter:
+def get_firebase_adapter(request: Request) -> FirebaseAdminLookup:
     """The provider seam the lifespan built."""
-    # The Protocol declares both methods async, which is what the concrete class implements.
     return request.app.state.firebase_adapter
 
 

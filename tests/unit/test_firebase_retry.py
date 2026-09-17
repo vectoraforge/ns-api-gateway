@@ -4,12 +4,12 @@ import time
 import pytest
 import tenacity
 
-from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.firebase import (
     FIREBASE_BACKOFF_BASE_SECONDS,
     FIREBASE_BACKOFF_MAX_SECONDS,
     FIREBASE_LOOKUP_ATTEMPTS,
     RetryableLookupError,
+    VerifiedProviderIdentity,
     lookup_with_retry,
     revoke_with_retry,
 )

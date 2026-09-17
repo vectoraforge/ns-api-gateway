@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
+from nativespeaker.api.auth.firebase import VerifiedProviderIdentity
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud import identities as identities_crud
 from nativespeaker.api.crud.challenges import ChallengesDB

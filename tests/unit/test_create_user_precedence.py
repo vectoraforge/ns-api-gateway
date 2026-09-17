@@ -13,8 +13,11 @@ from nativespeaker.api.app.dependencies import (
     get_firebase_adapter,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
-from nativespeaker.api.auth.firebase import FIREBASE_LOOKUP_ATTEMPTS, RetryableLookupError
+from nativespeaker.api.auth.firebase import (
+    FIREBASE_LOOKUP_ATTEMPTS,
+    RetryableLookupError,
+    VerifiedProviderIdentity,
+)
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.errors import (
     AppError,

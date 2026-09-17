@@ -7,9 +7,8 @@ from uuid import UUID
 import structlog
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
 from nativespeaker.api.auth.devicecheck import read_bits_with_retry, write_bits_with_retry
-from nativespeaker.api.auth.firebase import lookup_with_retry
+from nativespeaker.api.auth.firebase import VerifiedProviderIdentity, lookup_with_retry
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud import ChallengesDB, GrantsDB, IdentitiesDB
 from nativespeaker.api.crud.grants import ActivationOutcome

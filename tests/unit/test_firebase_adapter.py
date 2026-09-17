@@ -1,16 +1,22 @@
 """The issuer-selected Firebase Admin adapter against a monkeypatched SDK: no network, no credential, no app."""
+import subprocess
+import sys
+from dataclasses import FrozenInstanceError, is_dataclass
+from pathlib import Path
+
 import firebase_admin
 import google.auth
 import google.auth.exceptions
 import pytest
 from firebase_admin import auth, credentials, exceptions
 
-from nativespeaker.api.auth.adapters import VerifiedProviderIdentity
+from nativespeaker.api.auth import firebase as firebase_module
 from nativespeaker.api.auth.firebase import (
     FIREBASE_HTTP_TIMEOUT_SECONDS,
     FIREBASE_LOOKUP_ATTEMPTS,
     FirebaseAdminLookup,
     RetryableLookupError,
+    VerifiedProviderIdentity,
     _application_default_credential,
     build_admin_apps,
     lookup_with_retry,
@@ -31,6 +37,17 @@ OTHER_ISSUER = "https://securetoken.google.com/some-other-project"
 SUBJECT = "firebase-uid-1"
 
 PROVIDER_TEXT = "USER_NOT_FOUND: no user record for that uid in project ns-test-project"
+
+AUTH_PACKAGE = Path(firebase_module.__file__).parent
+# Only `firebase` is excluded: it is the only auth module that may import the provider SDK.
+SDK_FREE_MODULES = tuple(sorted({path.stem for path in AUTH_PACKAGE.glob("*.py")}
+                                - {"__init__", "firebase"}))
+
+FROZEN = (VerifiedProviderIdentity,)
+
+
+def _run(code: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
 
 
 class StubConfig:
@@ -586,10 +603,59 @@ class TestNeitherDeletedConceptSurvivesInTheCode:
         assert name not in code
 
 
-class TestTheDeliberateNonImplementations:
-    """The concrete lookup is not the seam: it conforms structurally and claims nothing more."""
+class TestNoProviderDependency:
+    """No `firebase_admin` in `sys.modules` after importing any auth module but `firebase`.
+    Package-wide is not assertable as one import: `auth/__init__.py` exposes nothing, so importing
+    one module loads no sibling and says nothing about the rest. The set is read off the directory."""
 
-    def test_the_class_is_not_annotated_as_the_full_protocol(self):
-        """A Protocol is satisfied structurally, so conforming to it is never a reason to inherit it."""
-        from nativespeaker.api.auth.adapters import FirebaseAdminAdapter
-        assert FirebaseAdminAdapter not in FirebaseAdminLookup.__mro__
+    @pytest.mark.parametrize("sdk_free_module", SDK_FREE_MODULES)
+    def test_importing_the_module_does_not_import_firebase_admin(self, sdk_free_module):
+        result = _run(f"import sys, nativespeaker.api.auth.{sdk_free_module}; "
+                      "print('firebase_admin' in sys.modules)")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "False"
+
+    def test_the_set_is_every_auth_module_but_the_one_excluded_by_design(self):
+        """The control: a glob that matched nothing, or that quietly swept `firebase` in, would
+        make the case above vacuous or permanently red."""
+        on_disk = {path.stem for path in AUTH_PACKAGE.glob("*.py")} - {"__init__"}
+
+        assert set(SDK_FREE_MODULES) == on_disk - {"firebase"}
+        assert len(SDK_FREE_MODULES) > 1
+        assert "jwt_verifier" in SDK_FREE_MODULES
+
+    def test_the_excluded_module_is_the_one_that_really_holds_the_sdk(self):
+        """The control: `firebase` is excluded because it imports the SDK legitimately. If that
+        stopped being true the exclusion would be hiding a module this class should be walking."""
+        result = _run("import sys, nativespeaker.api.auth.firebase; "
+                      "print('firebase_admin' in sys.modules)")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "True"
+
+
+class TestTheValueTypeIsImmutable:
+    """The one type that crosses the seam is a frozen, slotted dataclass and nothing else."""
+
+    @pytest.mark.parametrize("value_type", FROZEN, ids=lambda t: t.__name__)
+    def test_every_dataclass_is_frozen_and_slotted(self, value_type):
+        assert is_dataclass(value_type)
+        assert value_type.__dataclass_params__.frozen is True
+        assert hasattr(value_type, "__slots__")
+
+    def test_a_constructed_identity_cannot_be_reassigned(self):
+        identity = VerifiedProviderIdentity(provider=IdentityProvider.google,
+                                            provider_uid="google-uid-1")
+        with pytest.raises(FrozenInstanceError):
+            identity.provider_uid = "somebody-elses-uid"  # ty: ignore[invalid-assignment]
+
+    def test_a_constructed_identity_carries_no_instance_dict(self):
+        """Slotted, so a field this type never declared cannot be smuggled onto an instance."""
+        identity = VerifiedProviderIdentity(provider=IdentityProvider.anonymous, provider_uid=None)
+        assert not hasattr(identity, "__dict__")
+        with pytest.raises(AttributeError):
+            identity.email_verified = True  # ty: ignore[unresolved-attribute]
+
+    def test_the_email_defaults_to_none(self):
+        """An anonymous record has no verified address, so the field it would ride on defaults absent."""
+        identity = VerifiedProviderIdentity(provider=IdentityProvider.anonymous, provider_uid=None)
+        assert identity.email is None
