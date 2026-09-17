@@ -5,6 +5,7 @@ Everything outside the four-value vocabulary is one 400; an account-less caller 
 import ast
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid7
 
 import pytest
 from fastapi import FastAPI
@@ -22,6 +23,12 @@ from nativespeaker.api.routers import auth as auth_module
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.schemas.auth import ChallengeRequest
 from nativespeaker.api.tables.auth import AuthOperation
+from nativespeaker.api.tables.identities import (
+    ExternalIdentity,
+    IdentityProvider,
+    IdentityState,
+)
+from nativespeaker.api.tables.users import User
 
 from .conftest import TEST_IDENTITY, TEST_ISSUER, TEST_SUBJECT
 
@@ -91,6 +98,25 @@ def linked_session() -> _RecordingSession:
     return _RecordingSession(row=(TEST_IDENTITY.identity, TEST_IDENTITY.user))
 
 
+def _identity_row(*, identity_state=IdentityState.active, user_active: bool = True):
+    """An `(identity, user)` pair shaped exactly as the single joined statement returns one."""
+    user_id = uuid7()
+    identity = ExternalIdentity(id=uuid7(), user_id=user_id, issuer=TEST_ISSUER,
+                                subject=TEST_SUBJECT, provider=IdentityProvider.google,
+                                provider_uid="google-account-test", identity_state=identity_state)
+    return identity, User(id=user_id, active=user_active)
+
+
+@pytest.fixture
+def historical_session() -> _RecordingSession:
+    return _RecordingSession(row=_identity_row(identity_state=IdentityState.historical))
+
+
+@pytest.fixture
+def blocked_session() -> _RecordingSession:
+    return _RecordingSession(row=_identity_row(user_active=False))
+
+
 def _client_for(claims, store, session, fake_firebase_adapter):
     """The real auth router, with the barrier's context supplied and app state substituted."""
     app = FastAPI()
@@ -118,10 +144,28 @@ def linked_client(store, linked_session, fake_firebase_adapter):
     yield from _client_for(LINKED_CLAIMS, store, linked_session, fake_firebase_adapter)
 
 
+@pytest.fixture
+def historical_client(store, historical_session, fake_firebase_adapter):
+    """A verified caller whose identity row is no longer active."""
+    yield from _client_for(LINKED_CLAIMS, store, historical_session, fake_firebase_adapter)
+
+
+@pytest.fixture
+def blocked_client(store, blocked_session, fake_firebase_adapter):
+    """A verified caller holding an active identity row whose user is not active."""
+    yield from _client_for(LINKED_CLAIMS, store, blocked_session, fake_firebase_adapter)
+
+
 def _assert_preauth_refused(response) -> None:
     """Both halves, every time: the 403 and the code the existing pre-auth refusal answers with."""
     assert response.status_code == 403
     assert response.json() == {"code": "preauth_identity_not_allowed"}
+
+
+def _assert_account_unavailable(response) -> None:
+    """Both halves, every time: the two row rejections answer as one class, and neither names a row."""
+    assert response.status_code == 403
+    assert response.json() == {"code": "account_unavailable"}
 
 
 def _assert_invalid_request(response) -> None:
@@ -274,6 +318,29 @@ class TestTheAccountLessCallerPreparesCreateUserAndNothingElse:
 
         assert response.status_code == 200
         assert store.issued == [AuthOperation(operation)]
+
+
+class TestTheRowRejectionsAreThisRoutesOwn:
+    """The route resolves its own caller, so the two rejections the router-level declaration used to
+    raise are raised here now, for every operation and before anything is issued."""
+
+    @pytest.mark.parametrize("operation", _EVERY_OPERATION)
+    def test_a_historical_identity_row_is_refused_before_a_handle_is_issued(
+            self, historical_client, store, historical_session, operation):
+        _assert_account_unavailable(historical_client.post("/auth/challenge",
+                                                           json={"operation": operation}))
+
+        assert store.issued == []
+        assert historical_session.commits == 0
+
+    @pytest.mark.parametrize("operation", _EVERY_OPERATION)
+    def test_a_blocked_user_is_refused_before_a_handle_is_issued(
+            self, blocked_client, store, blocked_session, operation):
+        _assert_account_unavailable(blocked_client.post("/auth/challenge",
+                                                        json={"operation": operation}))
+
+        assert store.issued == []
+        assert blocked_session.commits == 0
 
 
 class TestTheRefusalOrderDisclosesNothing:

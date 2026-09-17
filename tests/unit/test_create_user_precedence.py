@@ -26,7 +26,12 @@ from nativespeaker.api.errors import (
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
-from nativespeaker.api.tables.identities import IdentityProvider
+from nativespeaker.api.tables.identities import (
+    ExternalIdentity,
+    IdentityProvider,
+    IdentityState,
+)
+from nativespeaker.api.tables.users import User
 
 from .conftest import TEST_ISSUER
 from .conftest import FakeChallengeStore as _FakeChallengeStore
@@ -56,15 +61,28 @@ class _RejectionLog:
         return [event for event, _ in self.entries]
 
 
-class _EmptyResult:
+class _StubResult:
+    def __init__(self, row) -> None:
+        self._row = row
+
     def first(self):
-        return None
+        return self._row
+
+
+def _identity_row(*, identity_state=IdentityState.active, user_active: bool = True):
+    """An `(identity, user)` pair shaped exactly as the single joined statement returns one."""
+    user_id = uuid4()
+    identity = ExternalIdentity(id=uuid4(), user_id=user_id, issuer=TEST_ISSUER, subject=SUBJECT,
+                                provider=IdentityProvider.google, provider_uid="google-account-1",
+                                identity_state=identity_state)
+    return identity, User(id=user_id, active=user_active)
 
 
 class _StubSession:
     """Records transaction boundaries and every statement, so the completion path's reads are counted."""
 
-    def __init__(self) -> None:
+    def __init__(self, row=None) -> None:
+        self._row = row
         self.commits = 0
         self.rollbacks = 0
         self.refreshed: list[object] = []
@@ -87,8 +105,8 @@ class _StubSession:
 
     async def exec(self, statement):
         self.statements.append(statement)
-        # No row: every case in this module is a caller holding no identity row.
-        return _EmptyResult()
+        # `None` unless the case seeded a row: the caller holds no identity row in all but two of them.
+        return _StubResult(self._row)
 
 
 class _RecordingCreator:
@@ -128,6 +146,16 @@ def session() -> _StubSession:
 
 
 @pytest.fixture
+def historical_session() -> _StubSession:
+    return _StubSession(row=_identity_row(identity_state=IdentityState.historical))
+
+
+@pytest.fixture
+def blocked_session() -> _StubSession:
+    return _StubSession(row=_identity_row(user_active=False))
+
+
+@pytest.fixture
 def creator(monkeypatch) -> _RecordingCreator:
     recorder = _RecordingCreator()
     monkeypatch.setattr(AuthService, "create_user", recorder)
@@ -139,8 +167,8 @@ def claims() -> VerifiedClaims:
     return VerifiedClaims(issuer=TEST_ISSUER, subject=SUBJECT)
 
 
-@pytest.fixture
-def client(store, session, claims, creator, fake_firebase_adapter):
+def _client_for(session, store, claims, fake_firebase_adapter):
+    """The real auth router, with the completion path's context supplied and app state substituted."""
     app = FastAPI()
     app.include_router(auth_router)
     register_exception_handlers(app)
@@ -154,6 +182,23 @@ def client(store, session, claims, creator, fake_firebase_adapter):
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def client(store, session, claims, creator, fake_firebase_adapter):
+    yield from _client_for(session, store, claims, fake_firebase_adapter)
+
+
+@pytest.fixture
+def historical_client(store, historical_session, claims, creator, fake_firebase_adapter):
+    """A verified caller whose identity row is no longer active."""
+    yield from _client_for(historical_session, store, claims, fake_firebase_adapter)
+
+
+@pytest.fixture
+def blocked_client(store, blocked_session, claims, creator, fake_firebase_adapter):
+    """A verified caller holding an active identity row whose user is not active."""
+    yield from _client_for(blocked_session, store, claims, fake_firebase_adapter)
 
 
 def _issued_row(*,
@@ -212,6 +257,40 @@ class TestTheCompletionPathIssuesOneStatement:
         _assert_challenge_required(_complete(client))
 
         assert len(session.statements) == 1
+
+
+class TestTheRowRejectionsOutrankTheChallenge:
+    """`complete` resolves the caller itself, so the two rejections the router-level declaration
+    used to raise still refuse that caller, and still before the claim spends the challenge."""
+
+    def test_a_historical_identity_row_is_refused_before_the_challenge_is_claimed(
+            self, historical_client, store, rejections, creator, fake_firebase_adapter):
+        store.row = _issued_row()
+
+        response = _complete(historical_client)
+
+        assert response.status_code == 403
+        assert response.json() == {"code": "account_unavailable"}
+        assert rejections.results == ["historical_identity"]
+        # The handle is untouched, so the refused caller may still present it once it is admitted.
+        assert store.row.claimed_at is None
+        assert store.consume_calls == 0
+        assert creator.calls == []
+        assert fake_firebase_adapter.calls == []
+
+    def test_a_blocked_user_is_refused_before_the_challenge_is_claimed(
+            self, blocked_client, store, rejections, creator, fake_firebase_adapter):
+        store.row = _issued_row()
+
+        response = _complete(blocked_client)
+
+        assert response.status_code == 403
+        assert response.json() == {"code": "account_unavailable"}
+        assert rejections.results == ["blocked_user"]
+        assert store.row.claimed_at is None
+        assert store.consume_calls == 0
+        assert creator.calls == []
+        assert fake_firebase_adapter.calls == []
 
 
 class TestTheFiveChallengeRejections:
