@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 49
 current_phase_name: Delete the single-implementation auth Protocols
-status: executing
-stopped_at: Completed 49-03-PLAN.md
-last_updated: "2026-09-17T23:37:43.433Z"
+status: verifying
+stopped_at: Completed 49-04-PLAN.md
+last_updated: "2026-09-17T23:58:50.579Z"
 last_activity: 2026-09-17
 last_activity_desc: Phase 49 execution started
-state_head: f60208f849e843df71db74bfcc7e623c00dad772
+state_head: e99999261fbe76f37c53687b37d777cf3ff590ec
 progress:
   total_phases: 22
   completed_phases: 19
   total_plans: 144
-  completed_plans: 143
+  completed_plans: 144
   percent: 86
 ---
 
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-09-16)
 
 Phase: 49 (Delete the single-implementation auth Protocols) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Progress: [████████████████████] 140/140 plans ([█████████░] 86%)
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07, 45-05, 45-09 and
@@ -597,10 +597,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-17T23:37:42.634Z
+**Last session:** 2026-09-17T23:58:40.583Z
 
 Last activity: 2026-09-16
-Stopped at: Completed 49-03-PLAN.md
+Stopped at: Completed 49-04-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -688,6 +688,7 @@ Resume file: None
 | Phase 49 P01 | 7 min | 2 tasks | 5 files |
 | Phase 49 P02 | 10 min | 2 tasks | 19 files |
 | Phase 49 P03 | 16 min | 2 tasks | 17 files |
+| Phase 49 P04 | 19 min | 2 tasks | 9 files |
 
 ## Decisions
 
@@ -914,3 +915,5 @@ Resume file: None
 - [Phase 49]: The two verify greps that match a test double (FakeDeviceCheckAdapter) and a gitignored egg-info manifest were re-scoped to word boundaries and tracked source, not satisfied by editing unrelated code
 - [Phase 49]: ty type-checks tests: D-06's two concrete annotations raised the gate from 306 to 316, ten diagnostics at five AuthService test call sites — The plan assumed test call sites passing None are unchecked. They are not. Each of the ten is a deliberate test double, marked with the in-repo precedent # ty: ignore[invalid-argument-type]; D-06 forbids widening to | None.
 - [Phase 49]: The challenge crud object is built by its callers: no lifespan attribute, no request-scoped accessor — AuthService holds self.challenges_db and the challenge handler builds its own inline, as it already builds the identities one. Six unit suites monkeypatch ChallengesDB instead of overriding a dependency.
+- [Phase 49]: ChallengesDB takes the session in its constructor (D-01); the three crud classes AuthService builds now have one shape
+- [Phase 49]: The store() helper in test_challenge_ids.py leaves its parameter unannotated, so no ty ignore mark was needed; the type gate reads 306, unmoved
