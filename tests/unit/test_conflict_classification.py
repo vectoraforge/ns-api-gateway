@@ -124,7 +124,7 @@ def _identity_row(*, state: IdentityState, user_id=None) -> ExternalIdentity:
 
 async def _create(session, *, provider=IdentityProvider.anonymous, provider_uid=None):
     """Drive `AuthService.create_user` over whichever session the case scripted."""
-    service = AuthService(db=session, adapter=None, devicecheck=None)
+    service = AuthService(db=session, adapter=None, devicecheck=None)  # ty: ignore[invalid-argument-type]
     return await service.create_user(claims=_claims(),
                                      provider=provider,
                                      provider_uid=provider_uid,

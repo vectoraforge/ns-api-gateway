@@ -174,8 +174,8 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
     async with harness.factory() as real_session:
         session = _RacingSession(real_session, after_re_resolution)
         service = AuthService(db=session,
-                              adapter=_ScriptedAdapter(provider, provider_uid),
-                              devicecheck=None)
+                              adapter=_ScriptedAdapter(provider, provider_uid),  # ty: ignore[invalid-argument-type]
+                              devicecheck=None)  # ty: ignore[invalid-argument-type]
         try:
             result = await service.complete(claims=claims, challenge_id=challenge_id_value)
         except AppError as rejection:

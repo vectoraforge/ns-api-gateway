@@ -259,8 +259,9 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=N
         session = _RacingSession(real_session, before_first_flush, before_first_commit)
         attempt.caller_rows_detached = all(
             object_session(row) is None for row in (linked.user, linked.identity))
-        service = AuthService(db=session, adapter=None,
-                              devicecheck=_NeverSetDevice())
+        service = AuthService(db=session,
+                              adapter=None,  # ty: ignore[invalid-argument-type]
+                              devicecheck=_NeverSetDevice())  # ty: ignore[invalid-argument-type]
         completion = (service.complete_claim_registered_grant
                       if attempt.operation == "claim_registered_grant"
                       else service.complete_claim_anonymous_grant)

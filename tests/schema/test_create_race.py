@@ -167,9 +167,10 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_re_resolution=
     so the consumption asserted below is the shipped arm rather than a model of it written here."""
     async with harness.factory() as real_session:
         session = _HookedSession(real_session, after_re_resolution)
-        service = AuthService(db=session,
-                              adapter=_ScriptedAdapter(attempt.provider, attempt.provider_uid),
-                              devicecheck=None)
+        service = AuthService(
+            db=session,
+            adapter=_ScriptedAdapter(attempt.provider, attempt.provider_uid),  # ty: ignore[invalid-argument-type]
+            devicecheck=None)  # ty: ignore[invalid-argument-type]
         try:
             attempt.result = await service.complete(claims=attempt.claims,
                                                     challenge_id=attempt.challenge_id)

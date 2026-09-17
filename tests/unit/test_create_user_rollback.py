@@ -72,7 +72,7 @@ def _claims() -> VerifiedClaims:
 
 
 async def _create(session) -> UUID:
-    service = AuthService(db=session, adapter=None, devicecheck=None)
+    service = AuthService(db=session, adapter=None, devicecheck=None)  # ty: ignore[invalid-argument-type]
     return await service.create_user(claims=_claims(),
                                      provider=IdentityProvider.anonymous,
                                      provider_uid=None,
