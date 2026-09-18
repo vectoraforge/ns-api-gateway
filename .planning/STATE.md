@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Authentication & Entitlements
 current_phase: 50
 current_phase_name: Typed runtime container behind an exit-stack lifespan
-status: executing
-stopped_at: Completed 50-06-PLAN.md
-last_updated: "2026-09-18T09:07:38.521Z"
+status: verifying
+stopped_at: Completed 50-07-PLAN.md
+last_updated: "2026-09-18T09:28:40.322Z"
 last_activity: 2026-09-18
 last_activity_desc: Phase 50 execution started
-state_head: 7776763986eee033cfbde691c595c5cac3dfe016
+state_head: 53f8ba2a1d401baaf4b7de2dcb6310db42155403
 progress:
   total_phases: 22
   completed_phases: 20
   total_plans: 151
-  completed_plans: 150
+  completed_plans: 151
   percent: 91
 ---
 
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-09-17)
 
 Phase: 50 (Typed runtime container behind an exit-stack lifespan) — EXECUTING
 Plan: 7 of 7
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Progress: [████████████████████] 144/144 plans ([█████████░] 91%)
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07, 45-05, 45-09 and
@@ -599,10 +599,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-18T09:07:37.630Z
+**Last session:** 2026-09-18T09:28:31.629Z
 
 Last activity: 2026-09-17
-Stopped at: Completed 50-06-PLAN.md
+Stopped at: Completed 50-07-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -697,6 +697,7 @@ Resume file: None
 | Phase 50 P04 | 14 min | 2 tasks | 11 files |
 | Phase 50 P05 | 10 min | 2 tasks | 14 files |
 | Phase 50 P06 | 13 min | 3 tasks | 8 files |
+| Phase 50 P07 | 17 min | 3 tasks | 2 files |
 
 ## Decisions
 
@@ -937,3 +938,5 @@ Resume file: None
 - [Phase 50]: 50-05: the plan's inline ty ignore for a None adapter field was not written — make_runtime takes untyped **overrides, so ty reports nothing there; adding the comment measured as unused-ignore-comment and raised that file from 1 diagnostic to 2
 - [Phase 50]: The lifespan writes one app.state attribute and dependencies.py reads one, both counted by a case — Criteria 5 and 6 are measurements in tests/unit/test_app_wiring.py, each confirmed red with a throwaway edit
 - [Phase 50]: No ty suppression was added for the RestoreService package_name mismatch the typed container exposed — The annotation is genuinely optimistic; hiding a real finding to hold the count at 296 would be a symptom fix
+- [Phase 50]: Task 3 measured `ty` at 297 diagnostics, unchanged from plan 50-06: the three new diagnostics the AST helpers added were narrowed away rather than recorded.
+- [Phase 50]: Criterion 3 is measured behaviourally as well as by absence: a case drives the real lifespan over recording stand-ins, one of which raises from its registered teardown.
