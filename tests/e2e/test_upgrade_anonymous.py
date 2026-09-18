@@ -7,7 +7,10 @@ from httpx import ASGITransport, AsyncClient
 from sqlmodel import col, select
 from unit.conftest import TEST_ISSUER, make_token
 
-from nativespeaker.api.auth.firebase import FirebaseAdminLookup, VerifiedProviderIdentity
+from nativespeaker.api.auth.firebase import (
+    FirebaseAdminLookup,
+)
+from nativespeaker.api.schemas.auth import VerifiedProviderIdentity
 from nativespeaker.api.tables.auth import AuthChallenge
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.users import User

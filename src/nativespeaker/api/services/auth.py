@@ -14,7 +14,6 @@ from nativespeaker.api.auth.devicecheck import (
 )
 from nativespeaker.api.auth.firebase import (
     FirebaseAdminLookup,
-    VerifiedProviderIdentity,
     lookup_with_retry,
 )
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
@@ -43,7 +42,7 @@ from nativespeaker.api.errors import (
     ProviderAccountAlreadyLinked,
     ProviderTransitionNotAllowed,
 )
-from nativespeaker.api.schemas.auth import LinkedIdentity
+from nativespeaker.api.schemas.auth import LinkedIdentity, VerifiedProviderIdentity
 from nativespeaker.api.tables.auth import AuthOperation
 from nativespeaker.api.tables.grants import AccessGrantSource
 from nativespeaker.api.tables.identities import (

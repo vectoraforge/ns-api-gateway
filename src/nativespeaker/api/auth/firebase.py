@@ -1,7 +1,6 @@
 """The Firebase Admin integration: one named app per issuer, two adapter methods, never a [DEFAULT] app.
 Never take the first recognized entry, and never classify non-empty providerData as anonymous.
 Never read `firebase.sign_in_provider`: no declaration match here, and no `required_flow` anywhere."""
-from dataclasses import dataclass
 from typing import NoReturn
 
 import firebase_admin
@@ -13,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from nativespeaker.api.errors import NotLinked, RevocationUnconfirmed, Unavailable, UserNotFound
+from nativespeaker.api.schemas.auth import VerifiedProviderIdentity
 from nativespeaker.api.tables.identities import IdentityProvider
 
 logger = structlog.get_logger()
@@ -57,18 +57,6 @@ def _application_default_credential() -> credentials.ApplicationDefault | None:
         return None
     logger.info("firebase_admin_using_application_default_credentials")
     return credentials.ApplicationDefault()
-
-
-@dataclass(frozen=True, slots=True)
-class VerifiedProviderIdentity:
-    """What one completed providerData read established: which provider owns the caller, and its uid.
-    Every field here has already passed its rule -- the shape classified, the address verified."""
-
-    provider: IdentityProvider
-    # `None` exactly for the anonymous arm: `core.external_identities`' CHECK requires NULL there.
-    provider_uid: str | None
-    # Absent by default because an anonymous record has no verified address to carry.
-    email: str | None = None
 
 
 class FirebaseAdminLookup:

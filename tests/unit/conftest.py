@@ -17,7 +17,6 @@ from nativespeaker.api.app.dependencies import (
     get_identity,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
-from nativespeaker.api.auth.firebase import VerifiedProviderIdentity
 from nativespeaker.api.auth.jwt_verifier import (
     DECODE_ALGORITHMS,
     DECODE_OPTIONS,
@@ -31,7 +30,7 @@ from nativespeaker.api.crud import ChatsDB
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.resilience import _ADMISSION, Admitted
 from nativespeaker.api.routers import chats_router, examples_router, health_router, root_router
-from nativespeaker.api.schemas.auth import LinkedIdentity
+from nativespeaker.api.schemas.auth import LinkedIdentity, VerifiedProviderIdentity
 from nativespeaker.api.services import ChatService, QuotaService
 from nativespeaker.api.tables.auth import AuthChallenge
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState

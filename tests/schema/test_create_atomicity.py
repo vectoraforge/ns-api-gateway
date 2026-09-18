@@ -11,10 +11,13 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from nativespeaker.api.auth.devicecheck import AppleDeviceCheck
-from nativespeaker.api.auth.firebase import FirebaseAdminLookup, VerifiedProviderIdentity
+from nativespeaker.api.auth.firebase import (
+    FirebaseAdminLookup,
+)
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud import identities as identities_crud
 from nativespeaker.api.errors import AppError, IdentityAlreadyLinked
+from nativespeaker.api.schemas.auth import VerifiedProviderIdentity
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import IdentityProvider
 

@@ -9,11 +9,11 @@ from nativespeaker.api.auth.firebase import (
     FIREBASE_BACKOFF_MAX_SECONDS,
     FIREBASE_LOOKUP_ATTEMPTS,
     RetryableLookupError,
-    VerifiedProviderIdentity,
     lookup_with_retry,
     revoke_with_retry,
 )
 from nativespeaker.api.errors import NotLinked, RevocationUnconfirmed, Unavailable, UserNotFound
+from nativespeaker.api.schemas.auth import VerifiedProviderIdentity
 from nativespeaker.api.tables.identities import IdentityProvider
 
 ISSUER = "https://securetoken.google.com/ns-prod"

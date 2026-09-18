@@ -15,7 +15,6 @@ from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.firebase import (
     FIREBASE_LOOKUP_ATTEMPTS,
     RetryableLookupError,
-    VerifiedProviderIdentity,
 )
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.errors import (
@@ -26,6 +25,7 @@ from nativespeaker.api.errors import (
     UserNotFound,
 )
 from nativespeaker.api.routers import auth_router
+from nativespeaker.api.schemas.auth import VerifiedProviderIdentity
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import (

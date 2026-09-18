@@ -16,7 +16,6 @@ from nativespeaker.api.auth.firebase import (
     FIREBASE_LOOKUP_ATTEMPTS,
     FirebaseAdminLookup,
     RetryableLookupError,
-    VerifiedProviderIdentity,
     _application_default_credential,
     build_admin_apps,
     lookup_with_retry,
@@ -29,6 +28,7 @@ from nativespeaker.api.errors import (
     Unavailable,
     UserNotFound,
 )
+from nativespeaker.api.schemas.auth import VerifiedProviderIdentity
 from nativespeaker.api.tables.identities import IdentityProvider
 
 PROJECT_ID = "ns-test-project"

@@ -4,7 +4,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unit.conftest import TEST_ISSUER, make_token
 
-from nativespeaker.api.auth.firebase import VerifiedProviderIdentity
+from nativespeaker.api.schemas.auth import VerifiedProviderIdentity
 from nativespeaker.api.tables.identities import IdentityProvider
 from nativespeaker.api.tables.purchases import PurchaseProvider
 

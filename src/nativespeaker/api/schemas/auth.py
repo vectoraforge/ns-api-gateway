@@ -92,6 +92,18 @@ class MeResponse(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
+class VerifiedProviderIdentity:
+    """What one completed providerData read established: which provider owns the caller, and its uid.
+    Every field here has already passed its rule -- the shape classified, the address verified."""
+
+    provider: IdentityProvider
+    # `None` exactly for the anonymous arm: `core.external_identities`' CHECK requires NULL there.
+    provider_uid: str | None
+    # Absent by default because an anonymous record has no verified address to carry.
+    email: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class LinkedIdentity:
     """The account a verified credential resolved to: the user row and the identity row."""
     user: User
