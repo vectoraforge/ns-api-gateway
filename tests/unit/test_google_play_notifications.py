@@ -2,7 +2,6 @@
 A throwaway keypair mints the push tokens and an `httpx.MockTransport` answers the Play read.
 Untested by construction: only whether Google's live tokens and answers match Google's own shapes."""
 import ast
-import asyncio
 import base64
 import inspect
 import json
@@ -25,13 +24,10 @@ from nativespeaker.api.auth.google_play import (
     _CANCELED_STATE,
     GOOGLE_ISSUER,
     GOOGLE_JWKS_URL,
-    PLAY_CREDENTIAL_REBUILD_INTERVAL_SECONDS,
     PLAY_HTTP_TIMEOUT_SECONDS,
-    RESTORE_UNCONFIGURED_STAGE,
     RESTORE_UNPARSEABLE_STAGE,
     CappedRefreshRequest,
-    PlayDeveloperSubscriptions,
-    PubSubPushTokens,
+    GooglePlayNotifications,
     _status_for,
     developer_notification_from,
     instant_from_millis,
@@ -135,19 +131,16 @@ _UNSET = object()
 
 
 def _play_reader(handler, *, products: dict[str, str] | None = None,
-                 credential=_UNSET, build=None,
-                 rebuild_interval_seconds: float = PLAY_CREDENTIAL_REBUILD_INTERVAL_SECONDS,
-                 ) -> PlayDeveloperSubscriptions:
+                 credential=_UNSET) -> GooglePlayNotifications:
     """The real Play read class over a stubbed transport, answering whatever the handler answers."""
-    return PlayDeveloperSubscriptions(
+    return GooglePlayNotifications(
+        verifier=None,
         credential=_FakeCredential() if credential is _UNSET else credential,
-        build=build,
-        rebuild_interval_seconds=rebuild_interval_seconds,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         products={PRODUCT_ID: TIER_ID} if products is None else products)
 
 
-async def _read_through(reader: PlayDeveloperSubscriptions) -> VerifiedNotification | None:
+async def _read_through(reader: GooglePlayNotifications) -> VerifiedNotification | None:
     """One read on this reader, with the arguments the dependency passes in production."""
     return await reader.read(package_name=PACKAGE_NAME, purchase_token=PURCHASE_TOKEN,
                              event_type=EVENT_TYPE, notification_uuid=NOTIFICATION_KEY,
@@ -299,6 +292,20 @@ class _RecordingPlay:
         return self._answer
 
 
+class _StubGooglePlay:
+    """One stand-in for the merged class: this case's token check, and this case's read."""
+
+    def __init__(self, tokens, play) -> None:
+        self._tokens = tokens
+        self._play = play
+
+    async def verify(self, bearer: str) -> None:
+        await self._tokens.verify(bearer)
+
+    async def read(self, **fields):
+        return await self._play.read(**fields)
+
+
 PUSH_CREDENTIAL = HTTPAuthorizationCredentials(scheme="Bearer", credentials="push.token.value")
 
 
@@ -315,10 +322,10 @@ def _push(payload: dict) -> PubSubPushRequest:
 
 
 def _stub_request(*, play=None, tokens=None, package_name: str | None = PACKAGE_NAME):
-    """The three `app.state` members the dependency reads, and nothing else."""
+    """The two `app.state` members the dependency reads, and nothing else."""
     state = SimpleNamespace(
-        google_push_tokens=_AcceptingTokens() if tokens is None else tokens,
-        play_subscriptions=_UncallablePlay() if play is None else play,
+        google_play_notifications=_StubGooglePlay(_AcceptingTokens() if tokens is None else tokens,
+                                                  _UncallablePlay() if play is None else play),
         config=SimpleNamespace(google_play=GooglePlayConfig(package_name=package_name)))
     return SimpleNamespace(app=SimpleNamespace(state=state))
 
@@ -503,11 +510,9 @@ class TestTheCanceledTermIsJudgedByTheHelperThatTakesTheInstant:
         assert _status_for(_CANCELED_STATE, None, UNEXPIRED) is SubscriptionStatus.expired
 
     def test_the_class_holds_no_clock_of_its_own_to_fall_back_to(self):
-        """Read off the signature: the constructor holds no date, so each read takes its own.
-        `rebuild_interval_seconds` is a monotonic floor and names no date a term can be read from."""
-        parameters = set(inspect.signature(PlayDeveloperSubscriptions.__init__).parameters)
-        assert parameters == {"self", "credential", "build", "rebuild_interval_seconds",
-                              "client", "products"}
+        """Read off the signature: the constructor holds no date, so each read takes its own."""
+        parameters = set(inspect.signature(GooglePlayNotifications.__init__).parameters)
+        assert parameters == {"self", "verifier", "credential", "client", "products"}
 
 
 class TestBothEntryPointsGuardTheValueTheyPutInThePath:
@@ -716,96 +721,6 @@ class TestAnUnconfiguredCredentialIsNeverAcknowledged:
         assert await _read_through(reader) is not None
 
 
-class _RecordingCredentialBuild:
-    """The ADC read as a double: it counts its calls and answers whatever the case last set."""
-
-    def __init__(self, credential=None) -> None:
-        self.credential = credential
-        self.calls = 0
-
-    def __call__(self):
-        """One rebuild attempt, which answers `None` for as long as the environment does."""
-        self.calls += 1
-        return self.credential
-
-
-class TestACredentialBootCouldNotReadIsRebuiltRatherThanCachedForThePodsLife:
-    """WR-51: a metadata-server blip at boot answered 503 for every later delivery and every
-    later google_play restore, with both probes green and nothing recovering without a restart."""
-
-    def _live_reader(self, **kwargs) -> PlayDeveloperSubscriptions:
-        """A reader whose transport answers one ordinary active subscription."""
-        return _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_ACTIVE",
-                                                          expiry=UNEXPIRED)), **kwargs)
-
-    async def test_the_next_restore_read_rebuilds_the_credential_boot_could_not_read(self):
-        build = _RecordingCredentialBuild(_FakeCredential())
-        reader = self._live_reader(credential=None, build=build)
-
-        restored = await reader.read_for_restore(package_name=PACKAGE_NAME,
-                                                 purchase_token=PURCHASE_TOKEN)
-
-        assert (restored.tier_id, build.calls) == (TIER_ID, 1)
-
-    async def test_the_rebuilt_credential_serves_the_webhook_read_and_is_read_once(self):
-        build = _RecordingCredentialBuild(_FakeCredential())
-        reader = self._live_reader(credential=None, build=build)
-
-        assert await _read_through(reader) is not None
-        assert await _read_through(reader) is not None
-        assert build.calls == 1, "one rebuild serving both deliveries"
-
-    async def test_an_environment_supplying_none_again_is_the_503_it_was(self):
-        """The control: recovery is a retry, never a read no credential ever signed."""
-        reader = _play_reader(_never_reached, credential=None,
-                              build=_RecordingCredentialBuild())
-
-        with pytest.raises(Unavailable) as refusal:
-            await reader.read_for_restore(package_name=PACKAGE_NAME,
-                                          purchase_token=PURCHASE_TOKEN)
-
-        assert refusal.value.stage == RESTORE_UNCONFIGURED_STAGE
-
-    async def test_a_rebuild_that_answered_none_is_not_retried_within_the_interval(self):
-        """The rate floor: nothing else records that a rebuild was just attempted and failed."""
-        build = _RecordingCredentialBuild()
-        reader = _play_reader(_never_reached, credential=None, build=build)
-
-        for _ in range(5):
-            with pytest.raises(Unavailable):
-                await _read_through(reader)
-
-        assert build.calls == 1, "the first delivery's attempt, and none of the four behind it"
-
-    async def test_one_burst_of_callers_shares_a_single_rebuild(self):
-        """The lock: with the floor at zero it is the only thing parting eight concurrent callers."""
-        build = _RecordingCredentialBuild(_FakeCredential())
-        reader = self._live_reader(credential=None, build=build, rebuild_interval_seconds=0.0)
-
-        await asyncio.gather(*(_read_through(reader) for _ in range(8)))
-
-        assert build.calls == 1, "one rebuild for the burst, and not one per caller"
-
-    async def test_the_interval_elapsing_still_recovers_the_route(self):
-        """The floor delays the retry and never cancels it, as the push verifier's does."""
-        build = _RecordingCredentialBuild()
-        reader = self._live_reader(credential=None, build=build, rebuild_interval_seconds=0.0)
-
-        with pytest.raises(Unavailable):
-            await _read_through(reader)
-        build.credential = _FakeCredential()
-
-        assert await _read_through(reader) is not None
-        assert build.calls == 2, "the refused attempt, then the one that recovered the route"
-
-    async def test_a_pod_wired_without_a_builder_keeps_the_answer_boot_gave_it(self):
-        """The control on the seam: an absent builder is the old behaviour exactly."""
-        reader = _play_reader(_never_reached, credential=None)
-
-        with pytest.raises(Unavailable):
-            await _read_through(reader)
-
-
 class _RecordingSession:
     """A `requests` session that answers 200 and records the timeout each call asked for."""
 
@@ -875,7 +790,7 @@ class TestAZoneLessStampIsClassifiedRatherThanRaised:
 
     ZONE_LESS = "2026-07-01T00:00:00"
 
-    def _reader(self, **overrides) -> PlayDeveloperSubscriptions:
+    def _reader(self, **overrides) -> GooglePlayNotifications:
         return _play_reader(_answering(_subscription_body("SUBSCRIPTION_STATE_CANCELED",
                                                           expiry=OPEN_TERM) | overrides))
 
@@ -1006,12 +921,21 @@ def jwks(monkeypatch) -> CountedJwksTransport:
 
 
 @pytest.fixture
-def push_tokens(jwks) -> PubSubPushTokens:
-    """The real push-token class over a real `JWTVerifier`, built the way lifespan builds it."""
-    return PubSubPushTokens(verifier=build_google_push_verifier(_play_config()))
+def push_tokens(jwks) -> GooglePlayNotifications:
+    """The real merged class over a real `JWTVerifier`, built the way lifespan builds it."""
+    return _push_checker(build_google_push_verifier(_play_config()))
 
 
-async def _refused(push_tokens: PubSubPushTokens, token: str) -> NotificationRejected:
+def _push_checker(verifier) -> GooglePlayNotifications:
+    """The merged class wired for the token check alone: no case here reaches Play."""
+    return GooglePlayNotifications(
+        verifier=verifier,
+        credential=None,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(_never_reached)),
+        products={})
+
+
+async def _refused(push_tokens: GooglePlayNotifications, token: str) -> NotificationRejected:
     """Verify a token that must be refused, and hand back the refusal it raised."""
     with pytest.raises(NotificationRejected) as refusal:
         await push_tokens.verify(token)
@@ -1031,7 +955,7 @@ class TestThePushTokenCheck:
     async def test_an_unconfigured_deployment_answers_503_rather_than_admitting_the_push(self):
         """The verifier the builder could not build: the route fails closed, it does not open."""
         with pytest.raises(Unavailable):
-            await PubSubPushTokens(verifier=None).verify(_push_token())
+            await _push_checker(None).verify(_push_token())
 
     async def test_every_refusal_is_one_class_with_one_body(self, push_tokens):
         refusals = [await _refused(push_tokens, _push_token(**overrides))
@@ -1113,87 +1037,3 @@ class TestTheJwksWarmUpGuard:
     def test_an_unconfigured_value_answers_none_without_a_fetch(self, absent, jwks):
         assert build_google_push_verifier(_play_config(**{absent: None})) is None
         assert len(jwks) == 0, "an unconfigured deployment must not reach for Google's keys"
-
-
-class TestAWarmUpFailureIsRetriedRatherThanCachedForThePodsLife:
-    """WR-41: a two-second JWKS blip at boot answered 503 for every later delivery, and the
-    deliveries Pub/Sub gives up on are the renewals and revocations nothing else reports."""
-
-    async def test_the_next_delivery_rebuilds_the_verifier_boot_could_not_build(self, jwks):
-        jwks.error = urllib.error.URLError("the JWKS endpoint is unreachable")
-        tokens = PubSubPushTokens(verifier=build_google_push_verifier(_play_config()),
-                                  build=lambda: build_google_push_verifier(_play_config()))
-        jwks.error = None
-
-        assert await tokens.verify(_push_token()) is None
-
-    async def test_the_rebuilt_verifier_is_kept_rather_than_rebuilt_per_delivery(self, jwks):
-        jwks.error = urllib.error.URLError("the JWKS endpoint is unreachable")
-        tokens = PubSubPushTokens(verifier=build_google_push_verifier(_play_config()),
-                                  build=lambda: build_google_push_verifier(_play_config()))
-        jwks.error = None
-
-        await tokens.verify(_push_token())
-        await tokens.verify(_push_token())
-
-        assert len(jwks) == 2, "the failed warm-up, then one rebuild serving both deliveries"
-
-    async def test_a_key_set_still_unreachable_is_the_503_it_was(self, jwks):
-        """The control: recovery is a retry, never an admission of a token nothing verified."""
-        jwks.error = urllib.error.URLError("the JWKS endpoint is unreachable")
-        tokens = PubSubPushTokens(verifier=None,
-                                  build=lambda: build_google_push_verifier(_play_config()))
-
-        with pytest.raises(Unavailable):
-            await tokens.verify(_push_token())
-
-    async def test_an_unconfigured_deployment_rebuilds_without_reaching_for_the_keys(self, jwks):
-        """The control: absent settings are not transient, so the rebuild costs no fetch at all."""
-        tokens = PubSubPushTokens(verifier=None,
-                                  build=lambda: build_google_push_verifier(
-                                      _play_config(push_audience=None)))
-
-        with pytest.raises(Unavailable):
-            await tokens.verify(_push_token())
-        assert len(jwks) == 0
-
-
-class TestTheRebuildIsSerializedAndFloored:
-    """WR-02: the rebuild runs before the bearer is examined at all, on one of the two routes
-    outside the gateway's JWT policy, so unguarded one burst pays a blocking fetch per delivery."""
-
-    async def test_one_burst_of_deliveries_shares_a_single_rebuild(self, jwks):
-        """Every caller reaches the guard before the first fetch returns, so only the lock parts them."""
-        jwks.fetch_delay = 0.02
-        tokens = PubSubPushTokens(verifier=None,
-                                  build=lambda: build_google_push_verifier(_play_config()))
-
-        await asyncio.gather(*(tokens.verify(_push_token()) for _ in range(8)))
-
-        assert len(jwks) == 1, "one rebuild for the burst, and not one per delivery"
-
-    async def test_a_rebuild_that_failed_is_not_retried_within_the_interval(self, jwks):
-        """The rate floor: nothing else records that a rebuild was just attempted and failed."""
-        jwks.error = urllib.error.URLError("the JWKS endpoint is unreachable")
-        tokens = PubSubPushTokens(verifier=None,
-                                  build=lambda: build_google_push_verifier(_play_config()))
-
-        for _ in range(5):
-            with pytest.raises(Unavailable):
-                await tokens.verify(_push_token())
-
-        assert len(jwks) == 1, "the first delivery's attempt, and none of the four behind it"
-
-    async def test_the_interval_elapsing_still_recovers_the_route(self, jwks):
-        """WR-41's intent, kept: the floor delays the retry and never cancels it."""
-        jwks.error = urllib.error.URLError("the JWKS endpoint is unreachable")
-        tokens = PubSubPushTokens(verifier=None,
-                                  build=lambda: build_google_push_verifier(_play_config()),
-                                  rebuild_interval_seconds=0.0)
-
-        with pytest.raises(Unavailable):
-            await tokens.verify(_push_token())
-        jwks.error = None
-
-        assert await tokens.verify(_push_token()) is None
-        assert len(jwks) == 2, "the refused attempt, then the one that recovered the route"

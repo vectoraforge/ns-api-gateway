@@ -140,7 +140,7 @@ def get_restore_service(request: Request,
                         db: AsyncSession = Depends(get_db)) -> RestoreService:
     return RestoreService(db=db,
                           app_store=request.app.state.app_store_notifications,
-                          play=request.app.state.play_subscriptions,
+                          play=request.app.state.google_play_notifications,
                           package_name=request.app.state.config.google_play.package_name)
 
 
@@ -160,7 +160,7 @@ async def verify_google_play_notification(
     if credential is None:
         raise NotificationRejected(stage="push_credential_absent")
 
-    await request.app.state.google_push_tokens.verify(credential.credentials)
+    await request.app.state.google_play_notifications.verify(credential.credentials)
     # Decoded only after the token check, so a forged body is never parsed.
     notification = developer_notification_from(body.message.data)
     if notification is None:
@@ -176,7 +176,7 @@ async def verify_google_play_notification(
         raise NotificationRejected(stage="package_name_mismatch")
 
     event_type = str(subscription.notificationType)
-    return await request.app.state.play_subscriptions.read(
+    return await request.app.state.google_play_notifications.read(
         package_name=notification.packageName,
         purchase_token=subscription.purchaseToken,
         event_type=event_type,

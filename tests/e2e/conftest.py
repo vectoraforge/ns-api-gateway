@@ -24,8 +24,7 @@ from nativespeaker.api.auth.firebase import _application_default_credential
 from nativespeaker.api.auth.google_play import (
     GOOGLE_ISSUER,
     GOOGLE_JWKS_URL,
-    PlayDeveloperSubscriptions,
-    PubSubPushTokens,
+    GooglePlayNotifications,
 )
 from nativespeaker.api.auth.jwt_verifier import JWTVerifier
 from nativespeaker.api.auth.store_notifications import (
@@ -446,10 +445,10 @@ class StubPlayCredential:
 
 @pytest.fixture
 def real_google_play_seam(_app_lifespan, monkeypatch):
-    """Install the real Google classes: a real verifier over a fake JWKS, and a scripted Play transport."""
+    """Install the real Google class: a real verifier over a fake JWKS, and a scripted Play transport."""
     install_counted_transport(monkeypatch)
     play = _app_lifespan.state.config.google_play
-    original = (_app_lifespan.state.google_push_tokens, _app_lifespan.state.play_subscriptions,
+    original = (_app_lifespan.state.google_play_notifications,
                 play.package_name, play.push_audience, play.push_service_account_email)
     play.package_name = GOOGLE_PACKAGE_NAME
     play.push_audience = GOOGLE_PUSH_AUDIENCE
@@ -461,20 +460,20 @@ def real_google_play_seam(_app_lifespan, monkeypatch):
                            issuer=GOOGLE_ISSUER,
                            required_claims={"email": GOOGLE_PUSH_SERVICE_ACCOUNT,
                                             "email_verified": True})
-    _app_lifespan.state.google_push_tokens = PubSubPushTokens(verifier=verifier)
-    _app_lifespan.state.play_subscriptions = PlayDeveloperSubscriptions(
+    _app_lifespan.state.google_play_notifications = GooglePlayNotifications(
+        verifier=verifier,
         credential=StubPlayCredential(),
         client=httpx.AsyncClient(transport=httpx.MockTransport(scripted.handle)),
         products={GOOGLE_PRODUCT_ID: GOOGLE_PAID_TIER_ID})
     try:
         yield scripted
     finally:
-        (_app_lifespan.state.google_push_tokens, _app_lifespan.state.play_subscriptions,
+        (_app_lifespan.state.google_play_notifications,
          play.package_name, play.push_audience, play.push_service_account_email) = original
 
 
 class FakePlaySubscriptions:
-    """A scriptable stand-in for the Play read seam, recording every read it was asked for."""
+    """A scriptable stand-in for the Play class, recording every call each entry point was asked for."""
 
     def __init__(self) -> None:
         # No default answer: every case scripts the notification it wants read or the failure it wants.
@@ -483,6 +482,11 @@ class FakePlaySubscriptions:
         self.restore_answer: BaseException | RestoredSubscription | None = None
         self.calls: list[dict] = []
         self.restore_calls: list[dict] = []
+        self.push_calls: list[str] = []
+
+    async def verify(self, bearer: str) -> None:
+        """Admit any bearer, for the cases that are not about the push token."""
+        self.push_calls.append(bearer)
 
     def script(self, answer: BaseException | VerifiedNotification) -> None:
         """Raise-or-return: a scripted exception is raised, a scripted notification is returned."""
@@ -514,26 +518,16 @@ class FakePlaySubscriptions:
         return self.answer
 
 
-class AcceptingPushTokens:
-    """A push-token seam that admits any bearer, for the cases that are not about the token."""
-
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-
-    async def verify(self, bearer: str) -> None:
-        self.calls.append(bearer)
-
-
 @pytest.fixture
 def scripted_play_subscriptions(_app_lifespan):
-    """Swap app.state.play_subscriptions for a scripted fake, scripted per case."""
-    original = _app_lifespan.state.play_subscriptions
+    """Swap app.state.google_play_notifications for a scripted fake, scripted per case."""
+    original = _app_lifespan.state.google_play_notifications
     subscriptions = FakePlaySubscriptions()
-    _app_lifespan.state.play_subscriptions = subscriptions
+    _app_lifespan.state.google_play_notifications = subscriptions
     try:
         yield subscriptions
     finally:
-        _app_lifespan.state.play_subscriptions = original
+        _app_lifespan.state.google_play_notifications = original
 
 
 @pytest.fixture
@@ -541,13 +535,12 @@ def scripted_google_play(_app_lifespan, scripted_play_subscriptions):
     """The scripted Play read with the push check neutralised, so a case scripts an outcome
     without minting a token; it yields the same fake."""
     play = _app_lifespan.state.config.google_play
-    original = (_app_lifespan.state.google_push_tokens, play.package_name)
-    _app_lifespan.state.google_push_tokens = AcceptingPushTokens()
+    original = play.package_name
     play.package_name = GOOGLE_PACKAGE_NAME
     try:
         yield scripted_play_subscriptions
     finally:
-        (_app_lifespan.state.google_push_tokens, play.package_name) = original
+        play.package_name = original
 
 
 def _play_is_never_reached(request: httpx.Request) -> httpx.Response:
@@ -557,20 +550,19 @@ def _play_is_never_reached(request: httpx.Request) -> httpx.Response:
 
 @pytest.fixture
 def unconfigured_google_play(_app_lifespan):
-    """Swap both Google classes for ones holding no verifier and no credential, which is the
-    state an incomplete configuration leaves them in."""
-    original = (_app_lifespan.state.google_push_tokens, _app_lifespan.state.play_subscriptions)
-    _app_lifespan.state.google_push_tokens = PubSubPushTokens(verifier=None)
-    # Constructed with None, never deleted: lifespan always builds both, configured or not.
-    _app_lifespan.state.play_subscriptions = PlayDeveloperSubscriptions(
+    """Swap the Google class for one holding no verifier and no credential, which is the
+    state an incomplete configuration leaves it in."""
+    original = _app_lifespan.state.google_play_notifications
+    # Constructed with None, never deleted: lifespan always builds it, configured or not.
+    _app_lifespan.state.google_play_notifications = GooglePlayNotifications(
+        verifier=None,
         credential=None,
         client=httpx.AsyncClient(transport=httpx.MockTransport(_play_is_never_reached)),
         products={})
     try:
-        yield _app_lifespan.state.google_push_tokens
+        yield _app_lifespan.state.google_play_notifications
     finally:
-        (_app_lifespan.state.google_push_tokens,
-         _app_lifespan.state.play_subscriptions) = original
+        _app_lifespan.state.google_play_notifications = original
 
 
 @pytest_asyncio.fixture(loop_scope="module")

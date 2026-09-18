@@ -12,7 +12,7 @@ from appstoreserverlibrary.signed_data_verifier import VerificationStatus
 from sqlalchemy.exc import IntegrityError
 
 from nativespeaker.api.auth.app_store import _transaction_status
-from nativespeaker.api.auth.google_play import GRACE_STATE, PlayDeveloperSubscriptions
+from nativespeaker.api.auth.google_play import GRACE_STATE, GooglePlayNotifications
 from nativespeaker.api.auth.store_notifications import RestoredSubscription
 from nativespeaker.api.crud.subscriptions import SubscriptionsDB, WriteOutcome
 from nativespeaker.api.crud.violations import UNIQUE_VIOLATION, is_unique_violation
@@ -265,15 +265,16 @@ class TestAProofThatDoesNotVerifyIsRefusedWithoutNamingItself:
 
 
 def _play_reader(handler, *, products: dict[str, str] | None = None,
-                 credential=None) -> PlayDeveloperSubscriptions:
+                 credential=None) -> GooglePlayNotifications:
     """The real Play read class over a stubbed transport, answering whatever the handler answers."""
-    return PlayDeveloperSubscriptions(
+    return GooglePlayNotifications(
+        verifier=None,
         credential=_FakeCredential() if credential is None else credential,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         products={PLAY_PRODUCT_ID: PLAY_TIER_ID} if products is None else products)
 
 
-async def _restore_through(reader: PlayDeveloperSubscriptions) -> RestoredSubscription:
+async def _restore_through(reader: GooglePlayNotifications) -> RestoredSubscription:
     """One restore read on this reader, with the arguments the service passes in production."""
     return await reader.read_for_restore(package_name=PACKAGE_NAME,
                                          purchase_token=PURCHASE_TOKEN)
@@ -318,7 +319,7 @@ class TestThePlayReadReportsTheRestoreValueType:
         assert (await _play_restore("SUBSCRIPTION_STATE_ACTIVE")).grace_period_expires_at is None
 
 
-def _capturing_reader() -> tuple[list[httpx.Request], PlayDeveloperSubscriptions]:
+def _capturing_reader() -> tuple[list[httpx.Request], GooglePlayNotifications]:
     """A reader that records every request it sends, so a case reads the URL httpx built."""
     sent: list[httpx.Request] = []
     answer = _answering(_subscription_body("SUBSCRIPTION_STATE_ACTIVE"))
@@ -489,7 +490,8 @@ class TestThePlayAnswerIsClassifiedBeforeItIsParsed:
         def _never(request):
             raise AssertionError(f"an unconfigured deployment reached {request.url}")
 
-        reader = PlayDeveloperSubscriptions(
+        reader = GooglePlayNotifications(
+            verifier=None,
             credential=None,
             client=httpx.AsyncClient(transport=httpx.MockTransport(_never)),
             products={})

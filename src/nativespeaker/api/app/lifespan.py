@@ -27,8 +27,7 @@ from nativespeaker.api.auth.google_play import (
     GOOGLE_JWKS_URL,
     PLAY_HTTP_TIMEOUT_SECONDS,
     PLAY_SCOPE,
-    PlayDeveloperSubscriptions,
-    PubSubPushTokens,
+    GooglePlayNotifications,
 )
 from nativespeaker.api.auth.jwt_verifier import JWTVerifier
 from nativespeaker.api.config import (
@@ -207,12 +206,9 @@ async def lifespan(app: FastAPI):
                                        "Google's key set is reachable again, which the next delivery "
                                        "retries without a restart")
         play_client = httpx.AsyncClient(timeout=PLAY_HTTP_TIMEOUT_SECONDS)
-        app.state.google_push_tokens = PubSubPushTokens(
+        app.state.google_play_notifications = GooglePlayNotifications(
             verifier=google_push_verifier,
-            build=lambda: build_google_push_verifier(config.google_play))
-        app.state.play_subscriptions = PlayDeveloperSubscriptions(
             credential=play_credential,
-            build=_play_credential,
             client=play_client,
             products=config.google_play.products)
 

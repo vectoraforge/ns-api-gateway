@@ -1,9 +1,6 @@
 """The Google Play integration: the Pub/Sub push token, the RTDN body, and the live subscription read.
 Log labels come from a closed set: the purchase token, the push token and every Play value are excluded."""
-import asyncio
 import base64
-import time
-from collections.abc import Callable
 from datetime import UTC, datetime
 from urllib.parse import quote
 
@@ -41,10 +38,6 @@ PLAY_URL = ("https://androidpublisher.googleapis.com/androidpublisher/v3/applica
 
 # A per-request option because every call sends one bearer and reads one subscription.
 PLAY_HTTP_TIMEOUT_SECONDS = 8
-
-PUSH_VERIFIER_REBUILD_INTERVAL_SECONDS = 30.0
-
-PLAY_CREDENTIAL_REBUILD_INTERVAL_SECONDS = 30.0
 
 # The two Play statuses that say this purchase token is gone, which no later attempt can change.
 _GONE_STATUSES = frozenset({404, 410})
@@ -189,35 +182,6 @@ def _status_for(state: str, expiry: datetime | None,
     return _STATES.get(state, SubscriptionStatus.expired)
 
 
-class PubSubPushTokens:
-    """The Cloud Pub/Sub push token, verified against Google's keys and pinned to one push identity."""
-
-    def __init__(self, *, verifier: JWTVerifier | None,
-                 build: Callable[[], JWTVerifier | None] | None = None,
-                 rebuild_interval_seconds: float = PUSH_VERIFIER_REBUILD_INTERVAL_SECONDS) -> None:
-        self._verifier = verifier
-        self._build = build
-        self._rebuild_lock = asyncio.Lock()
-        self._rebuild_interval = rebuild_interval_seconds
-        self._next_rebuild = 0.0
-
-    async def verify(self, bearer: str) -> None:
-        """Accept one Google-signed push token, or raise."""
-        build = self._build
-        if self._verifier is None and build is not None:
-            async with self._rebuild_lock:
-                if self._verifier is None and time.monotonic() >= self._next_rebuild:
-                    self._next_rebuild = time.monotonic() + self._rebuild_interval
-                    self._verifier = await run_in_threadpool(build)
-        if self._verifier is None:
-            raise Unavailable(stage="google_push_verify")
-
-        # `verify` is synchronous and can block on a JWKS fetch, so it never runs on the event loop.
-        claims, reason = await run_in_threadpool(self._verifier.verify, bearer)
-        if claims is None:
-            raise NotificationRejected(stage=str(reason))
-
-
 class CappedRefreshRequest(google.auth.transport.requests.Request):
     """The credential refresh transport, capped at this module's own timeout.
     `Request.__call__` defaults to 120 s and `jwt_grant` passes no timeout of its own, so an
@@ -229,36 +193,34 @@ class CappedRefreshRequest(google.auth.transport.requests.Request):
         return super().__call__(url, method, body, headers, timeout, **kwargs)
 
 
-class PlayDeveloperSubscriptions:
-    """The `purchases.subscriptionsv2.get` read, signed per call with this deployment's credential."""
+class GooglePlayNotifications:
+    """Google Play's Pub/Sub push token, and the live read of the subscription a token names."""
 
-    def __init__(self, *, credential, build: Callable[[], object] | None = None,
-                 rebuild_interval_seconds: float = PLAY_CREDENTIAL_REBUILD_INTERVAL_SECONDS,
-                 client: httpx.AsyncClient, products: dict[str, str]) -> None:
+    def __init__(self, *, verifier: JWTVerifier | None,
+                 credential,
+                 client: httpx.AsyncClient,
+                 products: dict[str, str]) -> None:
+        self._verifier = verifier
         self._credential = credential
-        self._build = build
-        self._rebuild_lock = asyncio.Lock()
-        self._rebuild_interval = rebuild_interval_seconds
-        self._next_rebuild = 0.0
         self._client = client
         # Server-controlled reference data, never a value the store supplied.
         self._products = products
 
-    async def _credential_in_hand(self) -> bool:
-        """Report whether a credential is held, rebuilding once if boot could not read one."""
-        build = self._build
-        if self._credential is None and build is not None:
-            async with self._rebuild_lock:
-                if self._credential is None and time.monotonic() >= self._next_rebuild:
-                    self._next_rebuild = time.monotonic() + self._rebuild_interval
-                    self._credential = await run_in_threadpool(build)
-        return self._credential is not None
+    async def verify(self, bearer: str) -> None:
+        """Accept one Google-signed push token, or raise."""
+        if self._verifier is None:
+            raise Unavailable(stage="google_push_verify")
+
+        # `verify` is synchronous and can block on a JWKS fetch, so it never runs on the event loop.
+        claims, reason = await run_in_threadpool(self._verifier.verify, bearer)
+        if claims is None:
+            raise NotificationRejected(stage=str(reason))
 
     async def read(self, *, package_name: str, purchase_token: str, event_type: str,
                    notification_uuid: str,
                    signed_at: datetime | None) -> VerifiedNotification | None:
         """Read this subscription's live state from Play, or answer `None` for a gone token."""
-        if not await self._credential_in_hand():
+        if self._credential is None:
             raise Unavailable(stage="play_subscriptions_read")
         if not package_name or not _names_one_path_segment(package_name):
             logger.error("google_play_unusable_package_name")
@@ -308,7 +270,7 @@ class PlayDeveloperSubscriptions:
     async def read_for_restore(self, *, package_name: str,
                                purchase_token: str) -> RestoredSubscription:
         """Read the state of one client-presented purchase token, or raise the refusal it earned."""
-        if not await self._credential_in_hand():
+        if self._credential is None:
             raise Unavailable(stage=RESTORE_UNCONFIGURED_STAGE)
         if not package_name or not _names_one_path_segment(package_name):
             # An absent or dot-only application name is an unusable deployment, never a refusal.

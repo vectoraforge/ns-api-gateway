@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from nativespeaker.api.auth.app_store import AppStoreNotifications
-from nativespeaker.api.auth.google_play import PlayDeveloperSubscriptions
+from nativespeaker.api.auth.google_play import GooglePlayNotifications
 from nativespeaker.api.auth.store_notifications import RestoredSubscription, term_end_for
 from nativespeaker.api.crud.purchases import PurchasesDB
 from nativespeaker.api.crud.subscriptions import (
@@ -41,7 +41,7 @@ def _open_term(candidates: Iterable[datetime | None], instant: datetime) -> date
 class RestoreService:
 
     def __init__(self, db: AsyncSession,
-                 app_store: AppStoreNotifications, play: PlayDeveloperSubscriptions,
+                 app_store: AppStoreNotifications, play: GooglePlayNotifications,
                  package_name: str) -> None:
         self.session = db
         self.subscriptions_db = SubscriptionsDB(db)
