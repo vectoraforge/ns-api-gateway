@@ -1,5 +1,5 @@
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 import firebase_admin
@@ -35,6 +35,7 @@ from nativespeaker.api.auth.jwt_verifier import JWTVerifier
 from nativespeaker.api.config import (
     AppStoreConfig,
     DatabaseConfig,
+    DeviceCheckConfig,
     EnvironmentConfig,
     GooglePlayConfig,
     JWTConfig,
@@ -147,6 +148,76 @@ def _play_credential() -> google.auth.credentials.Credentials | None:
     return credential
 
 
+async def build_session_factory(db: DatabaseConfig,
+                                stack: AsyncExitStack) -> async_sessionmaker[SQLModelAsyncSession]:
+    """The one session factory, over an engine proved to reach Postgres."""
+    engine = build_db_engine(db)
+    # Registered before the probe, so a probe that raises still disposes the pool it opened.
+    stack.push_async_callback(engine.dispose)
+    await _prove_database_reachable(engine, db)
+    return async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
+
+
+def build_firebase_adapter(jwt: JWTConfig, stack: AsyncExitStack) -> FirebaseAdminLookup:
+    """The `getUser` providerData reader, over one named Admin app per configured issuer."""
+    apps = build_admin_apps(jwt)
+    for firebase_app in apps.values():
+        # `firebase_admin` registers named apps process-globally and raises on a repeated name.
+        stack.callback(firebase_admin.delete_app, firebase_app)
+    return FirebaseAdminLookup(apps)
+
+
+async def build_devicecheck_adapter(devicecheck: DeviceCheckConfig,
+                                    stack: AsyncExitStack) -> AppleDeviceCheck:
+    """The two-bit DeviceCheck client, degraded when this deployment supplies no key."""
+    private_key = read_private_key(devicecheck.private_key_path)
+    if not (devicecheck.key_id and devicecheck.team_id and private_key):
+        logger.warning("devicecheck_credential_absent",
+                       consequence="the anonymous grant claim fails closed as "
+                                   "verification_temporarily_unavailable until this pod is restarted "
+                                   "with the DeviceCheck key id, team id and private key available "
+                                   "in this environment")
+    client = await stack.enter_async_context(
+        httpx.AsyncClient(timeout=DEVICECHECK_HTTP_TIMEOUT_SECONDS))
+    return AppleDeviceCheck(key_id=devicecheck.key_id,
+                            team_id=devicecheck.team_id,
+                            private_key=private_key,
+                            client=client)
+
+
+def build_app_store_notifications(store: AppStoreConfig) -> AppStoreNotifications:
+    """Apple's signed notification reader, degraded when this deployment supplies no root."""
+    verifier = build_app_store_verifier(store)
+    if verifier is None or not store.products:
+        logger.warning("app_store_configuration_absent",
+                       consequence="POST /webhooks/app-store refuses every notification and "
+                                   "POST /auth/restore-subscription refuses every apple "
+                                   "restore until this pod is restarted with the App Store "
+                                   "bundle id, environment, product map, app id (production "
+                                   "only) and root certificate available in this environment")
+    return AppStoreNotifications(verifier=verifier, products=store.products)
+
+
+async def build_google_play_notifications(play: GooglePlayConfig,
+                                          stack: AsyncExitStack) -> GooglePlayNotifications:
+    """Google's push-token and subscription reader, degraded when this deployment supplies no credential."""
+    verifier = build_google_push_verifier(play)
+    credential = _play_credential()
+    if (google_push_pins(play) is None or credential is None
+            or not play.package_name or not play.products):
+        logger.warning("google_play_configuration_absent",
+                       consequence="POST /webhooks/google-play/rtdn refuses every delivery and "
+                                   "POST /auth/restore-subscription refuses every google_play "
+                                   "restore until this pod is restarted with the Play package "
+                                   "name, product map, push audience, push service account and "
+                                   "Application Default Credentials available in this environment")
+    client = await stack.enter_async_context(httpx.AsyncClient(timeout=PLAY_HTTP_TIMEOUT_SECONDS))
+    return GooglePlayNotifications(verifier=verifier,
+                                   credential=credential,
+                                   client=client,
+                                   products=play.products)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config = EnvironmentConfig().app_config
@@ -155,67 +226,25 @@ async def lifespan(app: FastAPI):
 
     setup_logging(log_level=config.log_level)
 
-    db_engine: AsyncEngine | None = None
-    devicecheck_client: httpx.AsyncClient | None = None
-    play_client: httpx.AsyncClient | None = None
-    firebase_apps: dict[str, firebase_admin.App] = {}
+    async with AsyncExitStack() as stack:
+        # Registered first, so it runs last.
+        stack.callback(logger.info, "shutdown")
 
-    try:
-        firebase_apps = build_admin_apps(config.jwt)
-        firebase_adapter = FirebaseAdminLookup(firebase_apps)
-
-        devicecheck_key = read_private_key(config.devicecheck.private_key_path)
-        if not (config.devicecheck.key_id and config.devicecheck.team_id and devicecheck_key):
-            logger.warning("devicecheck_credential_absent",
-                           consequence="the anonymous grant claim fails closed as "
-                                       "verification_temporarily_unavailable until this pod is restarted "
-                                       "with the DeviceCheck key id, team id and private key available "
-                                       "in this environment")
-        devicecheck_client = httpx.AsyncClient(timeout=DEVICECHECK_HTTP_TIMEOUT_SECONDS)
-        devicecheck_adapter = AppleDeviceCheck(key_id=config.devicecheck.key_id,
-                                              team_id=config.devicecheck.team_id,
-                                              private_key=devicecheck_key,
-                                              client=devicecheck_client)
-
-        app_store_verifier = build_app_store_verifier(config.app_store)
-        if app_store_verifier is None or not config.app_store.products:
-            logger.warning("app_store_configuration_absent",
-                           consequence="POST /webhooks/app-store refuses every notification and "
-                                       "POST /auth/restore-subscription refuses every apple "
-                                       "restore until this pod is restarted with the App Store "
-                                       "bundle id, environment, product map, app id (production "
-                                       "only) and root certificate available in this environment")
-        app_store_notifications = AppStoreNotifications(verifier=app_store_verifier,
-                                                       products=config.app_store.products)
-
-        google_push_verifier = build_google_push_verifier(config.google_play)
-        play_credential = _play_credential()
-        if (google_push_pins(config.google_play) is None or play_credential is None
-                or not config.google_play.package_name or not config.google_play.products):
-            logger.warning("google_play_configuration_absent",
-                           consequence="POST /webhooks/google-play/rtdn refuses every delivery and "
-                                       "POST /auth/restore-subscription refuses every google_play "
-                                       "restore until this pod is restarted with the Play package "
-                                       "name, product map, push audience, push service account and "
-                                       "Application Default Credentials available in this environment")
-        play_client = httpx.AsyncClient(timeout=PLAY_HTTP_TIMEOUT_SECONDS)
-        google_play_notifications = GooglePlayNotifications(
-            verifier=google_push_verifier,
-            credential=play_credential,
-            client=play_client,
-            products=config.google_play.products)
-
-        db_engine = build_db_engine(config.db)
-        await _prove_database_reachable(db_engine, config.db)
-        session_factory: async_sessionmaker[SQLModelAsyncSession] = async_sessionmaker(
-            db_engine, class_=SQLModelAsyncSession, expire_on_commit=False)
-
+        session_factory = await build_session_factory(config.db, stack)
         jwt_verifier = build_jwt_verifier(config.jwt)
 
+        firebase_adapter = build_firebase_adapter(config.jwt, stack)
+        devicecheck_adapter = await build_devicecheck_adapter(config.devicecheck, stack)
+        app_store_notifications = build_app_store_notifications(config.app_store)
+        google_play_notifications = await build_google_play_notifications(config.google_play, stack)
         llm_service = LLMService(model_config=config.model,
                                  api_key=config.openai.api_key,
                                  resilence_config=config.resilience,
                                  system_prompt=config.prompt)
+
+        # Three scalars, never the container: it holds `config`, whose `DatabaseConfig.url` renders a password.
+        logger.info("started", model=config.model.name, concurrency=config.resilience.pool_size,
+                    languages=list(config.examples.keys()))
 
         app.state.runtime = Runtime(config=config,
                                     session_factory=session_factory,
@@ -226,28 +255,4 @@ async def lifespan(app: FastAPI):
                                     google_play_notifications=google_play_notifications,
                                     llm_service=llm_service)
 
-        logger.info("started", model=config.model.name, concurrency=config.resilience.pool_size,
-                    languages=list(config.examples.keys()))
-
         yield
-    finally:
-        if db_engine is not None:
-            try:
-                await db_engine.dispose()
-            except Exception:
-                logger.error("shutdown_step_failed", step="db_engine_dispose", exc_info=True)
-        for client in (devicecheck_client, play_client):
-            if client is not None:
-                try:
-                    await client.aclose()
-                except Exception:
-                    logger.error("shutdown_step_failed", step="http_client_close", exc_info=True)
-
-        # `firebase_admin` registers named apps process-globally and raises on a repeated name.
-        for firebase_app in firebase_apps.values():
-            try:
-                firebase_admin.delete_app(firebase_app)
-            except Exception:
-                logger.error("shutdown_step_failed", step="firebase_delete_app", exc_info=True)
-
-        logger.info("shutdown")
