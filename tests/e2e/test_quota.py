@@ -367,8 +367,8 @@ class TestNoServiceRejectionIsCharged:
             self, async_client, quota_grant, _db_transaction, _app_lifespan):
         """The limit is driven to zero rather than seeded up to, since the subject is the counter."""
         grant, _ = quota_grant
-        original = _app_lifespan.state.config.chats_limit
-        _app_lifespan.state.config.chats_limit = 0
+        original = _app_lifespan.state.runtime.config.chats_limit
+        _app_lifespan.state.runtime.config.chats_limit = 0
         try:
             before = [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)]
 
@@ -378,7 +378,7 @@ class TestNoServiceRejectionIsCharged:
             assert [row.monthly_used
                     for row in await usage_rows(_db_transaction, grant.id)] == before
         finally:
-            _app_lifespan.state.config.chats_limit = original
+            _app_lifespan.state.runtime.config.chats_limit = original
 
     async def test_the_message_history_limit_is_not_charged(
             self, async_client, quota_grant, _db_transaction, _app_lifespan):
@@ -391,8 +391,8 @@ class TestNoServiceRejectionIsCharged:
         before = [row.monthly_used for row in await usage_rows(_db_transaction, grant.id)]
         assert before == [1]
 
-        original = _app_lifespan.state.config.messages_limit
-        _app_lifespan.state.config.messages_limit = 0
+        original = _app_lifespan.state.runtime.config.messages_limit
+        _app_lifespan.state.runtime.config.messages_limit = 0
         try:
             response = await async_client.post(f"/chats/{chat_id}", json=FOLLOWUP)
 
@@ -400,7 +400,7 @@ class TestNoServiceRejectionIsCharged:
             assert [row.monthly_used
                     for row in await usage_rows(_db_transaction, grant.id)] == before
         finally:
-            _app_lifespan.state.config.messages_limit = original
+            _app_lifespan.state.runtime.config.messages_limit = original
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -410,7 +410,7 @@ class TestAnOpenCircuitStillAnswers503:
     async def test_an_open_circuit_answers_service_unavailable(
             self, async_client, quota_grant, _app_lifespan):
         """The breaker is opened directly, since the subject is what an open circuit answers, not the threshold."""
-        breaker = _app_lifespan.state.llm_service.policy._circuit_breaker
+        breaker = _app_lifespan.state.runtime.llm_service.policy._circuit_breaker
         breaker._opened_at = time.monotonic()
         try:
             response = await async_client.post("/chats", json=PHRASE)

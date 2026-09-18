@@ -116,32 +116,32 @@ def get_subscriptions_service(db: AsyncSession = Depends(get_db)) -> Subscriptio
     return SubscriptionsService(db=db)
 
 
-# Takes `Request` for the store class the lifespan built, as `get_chat_service` above does.
-def get_restore_service(request: Request,
-                        db: AsyncSession = Depends(get_db)) -> RestoreService:
+def get_restore_service(db: AsyncSession = Depends(get_db),
+                        runtime: Runtime = Depends(get_runtime)) -> RestoreService:
     return RestoreService(db=db,
-                          app_store=request.app.state.app_store_notifications,
-                          play=request.app.state.google_play_notifications,
-                          package_name=request.app.state.config.google_play.package_name)
+                          app_store=runtime.app_store_notifications,
+                          play=runtime.google_play_notifications,
+                          package_name=runtime.config.google_play.package_name)
 
 
-def verify_app_store_notification(request: Request,
-                                  body: AppStoreNotificationRequest) -> VerifiedNotification | None:
+def verify_app_store_notification(body: AppStoreNotificationRequest,
+                                  runtime: Runtime = Depends(get_runtime),
+                                  ) -> VerifiedNotification | None:
     """Turn the posted envelope into a verified notification, before the handler and before `get_db`."""
     # Never `run_in_threadpool`: with online checks off, no code path in the seam performs I/O.
-    return request.app.state.app_store_notifications.verify(body.signedPayload)
+    return runtime.app_store_notifications.verify(body.signedPayload)
 
 
 async def verify_google_play_notification(
-        request: Request,
         body: PubSubPushRequest,
         credential: HTTPAuthorizationCredentials | None = Depends(_bearer),
+        runtime: Runtime = Depends(get_runtime),
 ) -> VerifiedNotification | None:
     """Verify the push token and read the live subscription, before the handler and before `get_db`."""
     if credential is None:
         raise NotificationRejected(stage="push_credential_absent")
 
-    await request.app.state.google_play_notifications.verify(credential.credentials)
+    await runtime.google_play_notifications.verify(credential.credentials)
     # Decoded only after the token check, so a forged body is never parsed.
     notification = developer_notification_from(body.message.data)
     if notification is None:
@@ -151,13 +151,13 @@ async def verify_google_play_notification(
     if subscription is None:
         return None
 
-    expected_package = request.app.state.config.google_play.package_name
+    expected_package = runtime.config.google_play.package_name
     if not expected_package or notification.packageName != expected_package:
         # Refused before the Play call: this delivery names an application this deployment does not serve.
         raise NotificationRejected(stage="package_name_mismatch")
 
     event_type = str(subscription.notificationType)
-    return await request.app.state.google_play_notifications.read(
+    return await runtime.google_play_notifications.read(
         package_name=notification.packageName,
         purchase_token=subscription.purchaseToken,
         event_type=event_type,

@@ -152,7 +152,6 @@ async def lifespan(app: FastAPI):
     config = EnvironmentConfig().app_config
     if config is None:
         raise RuntimeError("Configuration failed to load")
-    app.state.config = config
 
     setup_logging(log_level=config.log_level)
 
@@ -188,7 +187,6 @@ async def lifespan(app: FastAPI):
                                        "only) and root certificate available in this environment")
         app_store_notifications = AppStoreNotifications(verifier=app_store_verifier,
                                                        products=config.app_store.products)
-        app.state.app_store_notifications = app_store_notifications
 
         google_push_verifier = build_google_push_verifier(config.google_play)
         play_credential = _play_credential()
@@ -206,7 +204,6 @@ async def lifespan(app: FastAPI):
             credential=play_credential,
             client=play_client,
             products=config.google_play.products)
-        app.state.google_play_notifications = google_play_notifications
 
         db_engine = build_db_engine(config.db)
         await _prove_database_reachable(db_engine, config.db)
@@ -219,7 +216,6 @@ async def lifespan(app: FastAPI):
                                  api_key=config.openai.api_key,
                                  resilence_config=config.resilience,
                                  system_prompt=config.prompt)
-        app.state.llm_service = llm_service
 
         app.state.runtime = Runtime(config=config,
                                     session_factory=session_factory,

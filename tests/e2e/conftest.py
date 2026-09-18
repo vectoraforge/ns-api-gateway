@@ -382,25 +382,30 @@ class FakeAppStoreNotifications:
 
 @pytest.fixture
 def scripted_app_store_notifications(_app_lifespan):
-    """Swap app.state.app_store_notifications for a scripted fake, scripted per case."""
-    original = _app_lifespan.state.app_store_notifications
+    """Swap the app_store_notifications field for a scripted fake, scripted per case."""
+    original = _app_lifespan.state.runtime.app_store_notifications
     notifications = FakeAppStoreNotifications()
-    _app_lifespan.state.app_store_notifications = notifications
+    _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime,
+                                          app_store_notifications=notifications)
     try:
         yield notifications
     finally:
-        _app_lifespan.state.app_store_notifications = original
+        _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime,
+                                              app_store_notifications=original)
 
 
 @pytest.fixture
 def unconfigured_app_store_notifications(_app_lifespan):
-    """Swap app.state.app_store_notifications for one holding no verifier, as an incomplete config leaves it."""
-    original = _app_lifespan.state.app_store_notifications
-    _app_lifespan.state.app_store_notifications = AppStoreNotifications(verifier=None, products={})
+    """Swap the app_store_notifications field for one holding no verifier, as an incomplete config leaves it."""
+    original = _app_lifespan.state.runtime.app_store_notifications
+    unconfigured = AppStoreNotifications(verifier=None, products={})
+    _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime,
+                                          app_store_notifications=unconfigured)
     try:
-        yield _app_lifespan.state.app_store_notifications
+        yield unconfigured
     finally:
-        _app_lifespan.state.app_store_notifications = original
+        _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime,
+                                              app_store_notifications=original)
 
 
 # The three values a deployment configures for the Pub/Sub push, in obviously synthetic form.
@@ -454,9 +459,9 @@ class StubPlayCredential:
 def real_google_play_seam(_app_lifespan, monkeypatch):
     """Install the real Google class: a real verifier over a fake JWKS, and a scripted Play transport."""
     install_counted_transport(monkeypatch)
-    play = _app_lifespan.state.config.google_play
-    original = (_app_lifespan.state.google_play_notifications,
-                play.package_name, play.push_audience, play.push_service_account_email)
+    play = _app_lifespan.state.runtime.config.google_play
+    original = _app_lifespan.state.runtime.google_play_notifications
+    original_play = (play.package_name, play.push_audience, play.push_service_account_email)
     play.package_name = GOOGLE_PACKAGE_NAME
     play.push_audience = GOOGLE_PUSH_AUDIENCE
     play.push_service_account_email = GOOGLE_PUSH_SERVICE_ACCOUNT
@@ -467,16 +472,20 @@ def real_google_play_seam(_app_lifespan, monkeypatch):
                            issuer=GOOGLE_ISSUER,
                            required_claims={"email": GOOGLE_PUSH_SERVICE_ACCOUNT,
                                             "email_verified": True})
-    _app_lifespan.state.google_play_notifications = GooglePlayNotifications(
-        verifier=verifier,
-        credential=StubPlayCredential(),
-        client=httpx.AsyncClient(transport=httpx.MockTransport(scripted.handle)),
-        products={GOOGLE_PRODUCT_ID: GOOGLE_PAID_TIER_ID})
+    _app_lifespan.state.runtime = replace(
+        _app_lifespan.state.runtime,
+        google_play_notifications=GooglePlayNotifications(
+            verifier=verifier,
+            credential=StubPlayCredential(),
+            client=httpx.AsyncClient(transport=httpx.MockTransport(scripted.handle)),
+            products={GOOGLE_PRODUCT_ID: GOOGLE_PAID_TIER_ID}))
     try:
         yield scripted
     finally:
-        (_app_lifespan.state.google_play_notifications,
-         play.package_name, play.push_audience, play.push_service_account_email) = original
+        (play.package_name, play.push_audience,
+         play.push_service_account_email) = original_play
+        _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime,
+                                              google_play_notifications=original)
 
 
 class FakePlaySubscriptions:
@@ -527,21 +536,23 @@ class FakePlaySubscriptions:
 
 @pytest.fixture
 def scripted_play_subscriptions(_app_lifespan):
-    """Swap app.state.google_play_notifications for a scripted fake, scripted per case."""
-    original = _app_lifespan.state.google_play_notifications
+    """Swap the google_play_notifications field for a scripted fake, scripted per case."""
+    original = _app_lifespan.state.runtime.google_play_notifications
     subscriptions = FakePlaySubscriptions()
-    _app_lifespan.state.google_play_notifications = subscriptions
+    _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime,
+                                          google_play_notifications=subscriptions)
     try:
         yield subscriptions
     finally:
-        _app_lifespan.state.google_play_notifications = original
+        _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime,
+                                              google_play_notifications=original)
 
 
 @pytest.fixture
 def scripted_google_play(_app_lifespan, scripted_play_subscriptions):
     """The scripted Play read with the push check neutralised, so a case scripts an outcome
     without minting a token; it yields the same fake."""
-    play = _app_lifespan.state.config.google_play
+    play = _app_lifespan.state.runtime.config.google_play
     original = play.package_name
     play.package_name = GOOGLE_PACKAGE_NAME
     try:
@@ -559,17 +570,20 @@ def _play_is_never_reached(request: httpx.Request) -> httpx.Response:
 def unconfigured_google_play(_app_lifespan):
     """Swap the Google class for one holding no verifier and no credential, which is the
     state an incomplete configuration leaves it in."""
-    original = _app_lifespan.state.google_play_notifications
+    original = _app_lifespan.state.runtime.google_play_notifications
     # Constructed with None, never deleted: lifespan always builds it, configured or not.
-    _app_lifespan.state.google_play_notifications = GooglePlayNotifications(
+    unconfigured = GooglePlayNotifications(
         verifier=None,
         credential=None,
         client=httpx.AsyncClient(transport=httpx.MockTransport(_play_is_never_reached)),
         products={})
+    _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime,
+                                          google_play_notifications=unconfigured)
     try:
-        yield _app_lifespan.state.google_play_notifications
+        yield unconfigured
     finally:
-        _app_lifespan.state.google_play_notifications = original
+        _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime,
+                                              google_play_notifications=original)
 
 
 @pytest_asyncio.fixture(loop_scope="module")

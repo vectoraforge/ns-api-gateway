@@ -42,7 +42,7 @@ from nativespeaker.api.config import GooglePlayConfig
 from nativespeaker.api.errors import InternalError, NotificationRejected, Unavailable
 from nativespeaker.api.schemas.webhooks import PUBSUB_DATA_LIMIT, PubSubPushRequest
 from nativespeaker.api.tables import PurchaseProvider, SubscriptionStatus
-from unit.conftest import PRIVATE_KEY_PEM, make_token
+from unit.conftest import PRIVATE_KEY_PEM, make_runtime, make_token
 from unit.test_jwks_offload import CountedJwksTransport, install_counted_transport, jwks_body
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src/nativespeaker/api"
@@ -321,18 +321,17 @@ def _push(payload: dict) -> PubSubPushRequest:
     return PubSubPushRequest(message={"messageId": "2280000000000001", "data": data})
 
 
-def _stub_request(*, play=None, tokens=None, package_name: str | None = PACKAGE_NAME):
-    """The two `app.state` members the dependency reads, and nothing else."""
-    state = SimpleNamespace(
+def _stub_runtime(*, play=None, tokens=None, package_name: str | None = PACKAGE_NAME):
+    """The container, holding the two fields the dependency reads and nothing else of its own."""
+    return make_runtime(
         google_play_notifications=_StubGooglePlay(_AcceptingTokens() if tokens is None else tokens,
                                                   _UncallablePlay() if play is None else play),
         config=SimpleNamespace(google_play=GooglePlayConfig(package_name=package_name)))
-    return SimpleNamespace(app=SimpleNamespace(state=state))
 
 
 async def _verify(body: PubSubPushRequest, *, credential=PUSH_CREDENTIAL, **stub):
-    """Run the real dependency over a stubbed request, with every argument the route resolves."""
-    return await verify_google_play_notification(_stub_request(**stub), body, credential)
+    """Run the real dependency over a stubbed container, with every argument the route resolves."""
+    return await verify_google_play_notification(body, credential, _stub_runtime(**stub))
 
 
 def _names_read_inside_functions() -> set[str]:

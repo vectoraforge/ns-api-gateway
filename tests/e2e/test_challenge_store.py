@@ -80,7 +80,7 @@ async def row_count(factory) -> int:
 @pytest_asyncio.fixture(scope="class", loop_scope="module")
 async def _contended_challenge(_app_lifespan):
     """One committed challenge and CONTENDERS connections from a second engine, since the shared one is serial."""
-    config = _app_lifespan.state.config
+    config = _app_lifespan.state.runtime.config
     engine = create_async_engine(config.db.url, pool_size=CONTENDERS + 2, max_overflow=0)
     factory = async_sessionmaker(engine, class_=SQLModelAsyncSession, expire_on_commit=False)
     try:

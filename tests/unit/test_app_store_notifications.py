@@ -655,7 +655,7 @@ class TestEveryBusinessRuleRunsBelowTheLastVerification:
 
 
 class TestAnAbsentVerifierFailsClosedOnUse:
-    """The unconfigured deployment: the class is on `app.state` in every environment and raises here."""
+    """The unconfigured deployment: the class is a container field in every environment and raises here."""
 
     def test_it_raises_unavailable_rather_than_returning_anything(self):
         with pytest.raises(Unavailable) as failure:
