@@ -2,20 +2,20 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Authentication & Entitlements
-current_phase: 49
-current_phase_name: Delete the single-implementation auth Protocols
-status: verifying
-stopped_at: Completed 49-04-PLAN.md
-last_updated: "2026-09-17T23:58:50.579Z"
+current_phase: 50
+current_phase_name: Typed runtime container behind an exit-stack lifespan
+status: planning
+stopped_at: Phase 49 complete, ready to plan Phase 50
+last_updated: "2026-09-18T01:21:09.646Z"
 last_activity: 2026-09-17
-last_activity_desc: Phase 49 execution started
-state_head: e99999261fbe76f37c53687b37d777cf3ff590ec
+last_activity_desc: Phase 49 complete, transitioned to Phase 50
+state_head: 6f7dd71084ba4513148793a5d7c39e42a35df84f
 progress:
   total_phases: 22
-  completed_phases: 19
+  completed_phases: 20
   total_plans: 144
   completed_plans: 144
-  percent: 86
+  percent: 91
 ---
 
 # Project State
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-09-16)
 
 ## Current Position
 
-Phase: 49 (Delete the single-implementation auth Protocols) — EXECUTING
-Plan: 4 of 4
-Status: Phase complete — ready for verification
+Phase: 50 — Typed runtime container behind an exit-stack lifespan
+Plan: Not started
+Status: Ready to plan
 Progress: [████████████████████] 140/140 plans ([█████████░] 86%)
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07, 45-05, 45-09 and
@@ -117,7 +117,7 @@ three fixes do not interact.
 `45-VERIFICATION.md` itself still reads `gaps_found` and still records RESTORE-01 as BLOCKED:
 **re-verification is what changes those, not this file.** `/gsd:verify-phase 45` decides whether the
 phase is complete; this plan does not.
-Last activity: 2026-09-17 — Phase 49 execution started
+Last activity: 2026-09-17 — Phase 49 complete, transitioned to Phase 50
 fixes together, and REQUIREMENTS.md carries the dated gap-closure record
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07 and 45-05 each did.
@@ -600,7 +600,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 **Last session:** 2026-09-17T23:58:40.583Z
 
 Last activity: 2026-09-16
-Stopped at: Completed 49-04-PLAN.md
+Stopped at: Phase 49 complete, ready to plan Phase 50
 Resume file: None
 
 ## Performance Metrics
