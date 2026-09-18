@@ -5,11 +5,11 @@ milestone_name: Authentication & Entitlements
 current_phase: 50
 current_phase_name: Typed runtime container behind an exit-stack lifespan
 status: executing
-stopped_at: Phase 50 context gathered
-last_updated: "2026-09-18T06:35:51.350Z"
-last_activity: 2026-09-17
-last_activity_desc: Phase 49 complete, transitioned to Phase 50
-state_head: 54f9a0cad9bc3af09a476bb37ab8bfc0e71f4987
+stopped_at: Completed 50-01-PLAN.md
+last_updated: "2026-09-18T08:03:08.138Z"
+last_activity: 2026-09-18
+last_activity_desc: Phase 50 execution started
+state_head: c1ead1ced57f2618c385a2fcd4404e9abf836670
 progress:
   total_phases: 22
   completed_phases: 20
@@ -29,8 +29,8 @@ See: .planning/PROJECT.md (updated 2026-09-17)
 
 ## Current Position
 
-Phase: 50 (Typed runtime container behind an exit-stack lifespan) — READY TO EXECUTE
-Plan: Not started
+Phase: 50 (Typed runtime container behind an exit-stack lifespan) — EXECUTING
+Plan: 2 of 7
 Status: Ready to execute
 Progress: [████████████████████] 144/144 plans ([█████████░] 91%)
 
@@ -117,7 +117,7 @@ three fixes do not interact.
 `45-VERIFICATION.md` itself still reads `gaps_found` and still records RESTORE-01 as BLOCKED:
 **re-verification is what changes those, not this file.** `/gsd:verify-phase 45` decides whether the
 phase is complete; this plan does not.
-Last activity: 2026-09-17 — Phase 49 complete, transitioned to Phase 50
+Last activity: 2026-09-18 — Phase 50 execution started
 fixes together, and REQUIREMENTS.md carries the dated gap-closure record
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07 and 45-05 each did.
@@ -599,11 +599,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-18T05:17:58.906Z
+**Last session:** 2026-09-18T08:03:00.481Z
 
 Last activity: 2026-09-17
-Stopped at: Phase 50 context gathered
-Resume file: .planning/phases/50-typed-runtime-container-behind-an-exit-stack-lifespan/50-CONTEXT.md
+Stopped at: Completed 50-01-PLAN.md
+Resume file: None
 
 ## Performance Metrics
 
@@ -691,6 +691,7 @@ Resume file: .planning/phases/50-typed-runtime-container-behind-an-exit-stack-li
 | Phase 49 P02 | 10 min | 2 tasks | 19 files |
 | Phase 49 P03 | 16 min | 2 tasks | 17 files |
 | Phase 49 P04 | 19 min | 2 tasks | 9 files |
+| Phase 50 P01 | 13 min | 2 tasks | 9 files |
 
 ## Decisions
 
@@ -919,3 +920,5 @@ Resume file: .planning/phases/50-typed-runtime-container-behind-an-exit-stack-li
 - [Phase 49]: The challenge crud object is built by its callers: no lifespan attribute, no request-scoped accessor — AuthService holds self.challenges_db and the challenge handler builds its own inline, as it already builds the identities one. Six unit suites monkeypatch ChallengesDB instead of overriding a dependency.
 - [Phase 49]: ChallengesDB takes the session in its constructor (D-01); the three crud classes AuthService builds now have one shape
 - [Phase 49]: The store() helper in test_challenge_ids.py leaves its parameter unannotated, so no ty ignore mark was needed; the type gate reads 306, unmoved
+- [Phase 50]: Phase 47 commit 275bd8e renamed the restore refusal log event to the class name purchase_proof_rejected; only the four-arms e2e expectation was missed, so the fix is the test and never errors.py
+- [Phase 50]: GooglePlayNotifications keeps the stage string play_subscriptions_read, so the plan acceptance line about play_subscriptions holds for the app.state attribute only; D-09 pins every stage string unchanged.
