@@ -30,6 +30,7 @@ PROVIDER_CALLBACK_VERIFIERS = {"/webhooks/app-store": verify_app_store_notificat
 PROVIDER_CALLBACK_PATHS = set(PROVIDER_CALLBACK_VERIFIERS)
 
 DEPENDENCIES_MODULE = Path(dependencies_module.__file__)
+TESTS_ROOT = Path(__file__).resolve().parents[1]
 
 # Literals, as above: the one untyped read and the two functions allowed to take a `Request`.
 APP_STATE_CHAIN = "request.app.state"
@@ -61,6 +62,33 @@ def _app_state_chains() -> list[ast.Attribute]:
     tree = ast.parse(DEPENDENCIES_MODULE.read_text())
     return [node for node in ast.walk(tree)
             if isinstance(node, ast.Attribute) and _dotted(node) == APP_STATE_CHAIN]
+
+
+def _assignment_targets(node: ast.Assign) -> list[ast.expr]:
+    """Every name this statement assigns, unpacked targets included."""
+    targets: list[ast.expr] = []
+    for target in node.targets:
+        if isinstance(target, (ast.Tuple, ast.List)):
+            targets.extend(target.elts)
+        else:
+            targets.append(target)
+    return targets
+
+
+def _state_assignments(names: set[str]) -> list[str]:
+    """Every `<...>.state.<name>` assignment under `tests/`, as file and line."""
+    found = []
+    for path in sorted(TESTS_ROOT.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in _assignment_targets(node):
+                if (isinstance(target, ast.Attribute) and target.attr in names
+                        and isinstance(target.value, ast.Attribute)
+                        and target.value.attr == "state"):
+                    found.append(f"{path.relative_to(TESTS_ROOT)}:{node.lineno} "
+                                 f"sets .state.{target.attr}")
+    return found
 
 
 def _api_routes() -> list[APIRoute]:
@@ -227,6 +255,20 @@ class TestTheContainerIsTheOneUntypedRead:
                      and argument.annotation.id == "Request"}
         assert declaring == REQUEST_DECLARING_FUNCTIONS, \
             f"functions declaring a Request: {sorted(declaring)}"
+
+
+class TestNoTestSetsALifespanAttributeOnAppState:
+    """Criterion 6, walked over every file under `tests/`. The field names are read off the
+    container, so renaming a field cannot carry an assignment past this case."""
+
+    def test_no_container_field_is_assigned_through_state(self):
+        offenders = _state_assignments({field.name for field in fields(Runtime)})
+        assert offenders == [], f"tests setting a lifespan-built attribute: {offenders}"
+
+    def test_opened_sessions_is_still_assigned_that_way_control(self):
+        """The control: without it, a walk that matched nothing anywhere would also pass above."""
+        assert _state_assignments({"opened_sessions"}) != [], \
+            "opened_sessions is set on app.state by no test, so the case above measures nothing"
 
 
 class TestTheProviderCallbackPartition:
