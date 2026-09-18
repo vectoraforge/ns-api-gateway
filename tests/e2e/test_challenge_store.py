@@ -385,7 +385,9 @@ class TestLocateIsByteForByteAgainstPostgres:
     async def test_an_exact_handle_locates_its_row(self, _db_transaction):
         handle = await self.plant(_db_transaction)
         async with _db_transaction() as session:
-            assert (await ChallengesDB(session).locate(handle)).challenge_id == handle
+            located = await ChallengesDB(session).locate(handle)
+        assert located is not None
+        assert located.challenge_id == handle
 
     @pytest.mark.parametrize("mangled", [
         pytest.param("abcdefghijklmnopqrstuv", id="lowercased"),
