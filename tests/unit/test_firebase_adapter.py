@@ -653,7 +653,7 @@ class TestTheValueTypeIsImmutable:
         identity = VerifiedProviderIdentity(provider=IdentityProvider.anonymous, provider_uid=None)
         assert not hasattr(identity, "__dict__")
         with pytest.raises(AttributeError):
-            identity.email_verified = True  # ty: ignore[unresolved-attribute]
+            identity.email_verified = True
 
     def test_the_email_defaults_to_none(self):
         """An anonymous record has no verified address, so the field it would ride on defaults absent."""
