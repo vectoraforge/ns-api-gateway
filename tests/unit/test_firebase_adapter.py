@@ -180,7 +180,7 @@ class TestBuildAdminApps:
             return "app-sentinel"
 
         monkeypatch.setattr(firebase_admin, "initialize_app", capture)
-        apps = build_admin_apps(StubConfig())
+        apps = build_admin_apps(StubConfig().jwt)
 
         assert apps == {ISSUER: "app-sentinel"}
         assert isinstance(passed["credential"], credentials.ApplicationDefault)
@@ -191,7 +191,7 @@ class TestBuildAdminApps:
 
     def test_an_absent_credential_yields_an_empty_mapping_and_no_default_app(self, no_adc):
         """ADC is the only source, so `no_adc` is what makes absent mean absent here."""
-        assert build_admin_apps(StubConfig()) == {}
+        assert build_admin_apps(StubConfig().jwt) == {}
         assert firebase_admin._DEFAULT_APP_NAME not in firebase_admin._apps
 
     def test_an_absent_credential_does_not_raise_and_does_not_initialize_anything(self, monkeypatch,
@@ -200,17 +200,12 @@ class TestBuildAdminApps:
             raise AssertionError("initialize_app must not be called with no credential")
 
         monkeypatch.setattr(firebase_admin, "initialize_app", explode)
-        assert build_admin_apps(StubConfig()) == {}
+        assert build_admin_apps(StubConfig().jwt) == {}
 
-    @pytest.mark.parametrize("failure", ["DefaultCredentialsError", "RefreshError",
-                                         "TransportError", "MutualTLSChannelError"])
-    def test_every_adc_failure_is_that_absent_state_and_never_a_dead_pod(self, monkeypatch,
-                                                                        failure):
-        """WR-08b, the twin of WR-08: a metadata server that answers badly raises a different
-        `GoogleAuthError` subclass, and caught narrowly it escaped `lifespan` and crashlooped the
-        pod -- under a docstring that promises this reader never raises."""
+    def test_an_absent_credential_is_that_absent_state(self, monkeypatch):
+        """D-08: absence is the one arm that still answers `None` and still builds no app."""
         def raising(*_args, **_kwargs):
-            raise getattr(google.auth.exceptions, failure)(f"{failure} in this test")
+            raise google.auth.exceptions.DefaultCredentialsError("no ADC in this test")
 
         def explode(*_args, **_kwargs):
             raise AssertionError("initialize_app must not be called with no credential")
@@ -219,7 +214,20 @@ class TestBuildAdminApps:
         monkeypatch.setattr(firebase_admin, "initialize_app", explode)
 
         assert _application_default_credential() is None
-        assert build_admin_apps(StubConfig()) == {}
+        assert build_admin_apps(StubConfig().jwt) == {}
+
+    @pytest.mark.parametrize("failure", ["RefreshError", "TransportError",
+                                         "MutualTLSChannelError"])
+    def test_a_badly_answered_adc_read_stops_the_boot(self, monkeypatch, failure):
+        """D-08 reverses WR-08b: a metadata server that answers badly is transient, so the pod does
+        not start and Kubernetes is the retry. Only absence is a deployment without the provider."""
+        def raising(*_args, **_kwargs):
+            raise getattr(google.auth.exceptions, failure)(f"{failure} in this test")
+
+        monkeypatch.setattr(google.auth, "default", raising)
+
+        with pytest.raises(RuntimeError):
+            _application_default_credential()
 
     def test_a_supplied_credential_is_still_read_control(self, monkeypatch):
         """The control: a reader that answered `None` unconditionally would pass every case above."""

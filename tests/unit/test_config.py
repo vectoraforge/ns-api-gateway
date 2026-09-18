@@ -633,8 +633,10 @@ class TestTheDefaultRootCertificateIsTheCommittedAppleRoot:
                               root_certificate_path=store.root_certificate_path)
 
 
-class TestAnIncompleteConfigurationBootsAndHoldsNoVerifier:
-    """D-02, P-04. The library raises ValueError from its own constructor, which would kill the pod at boot."""
+class TestAnIncompleteConfigurationBootsAndAnUnusableRootDoesNot:
+    """D-02, P-04, D-08. An absent bundle id, environment, app id or root path is a deployment with
+    no App Store provider, so the builder answers `None`. A root file that is present but cannot be
+    read or parsed is an operator error, so the builder raises and the pod does not start."""
 
     def _store(self, **overrides) -> AppStoreConfig:
         """A complete Production configuration, with `overrides` removing whatever a case wants absent."""
@@ -655,25 +657,27 @@ class TestAnIncompleteConfigurationBootsAndHoldsNoVerifier:
     def test_an_absent_environment_yields_no_verifier(self):
         assert build_app_store_verifier(self._store(environment=None)) is None
 
-    def test_an_unreadable_root_certificate_yields_no_verifier(self):
+    def test_an_absent_root_certificate_yields_no_verifier(self):
+        """`is_file()` is false, so this is absence and not an unusable file."""
         assert build_app_store_verifier(
             self._store(root_certificate_path="/nonexistent/AppleRootCA-G3.cer")) is None
 
     @pytest.mark.parametrize("content", [b"", b"not a certificate at all", b"-----BEGIN CERT"],
                              ids=["truncated", "arbitrary-bytes", "the-pem-form"])
-    def test_a_root_that_is_not_a_der_certificate_yields_no_verifier(self, content):
+    def test_a_root_that_is_not_a_der_certificate_stops_the_boot(self, content):
         """37.4 WR-06. The library parses its root lazily, so an unchecked one built a verifier that
         answered 401 to every genuine Apple notification -- a rejection reading as Apple forging."""
         tmp_dir = tempfile.mkdtemp()
         try:
             root = Path(tmp_dir, "AppleRootCA-G3.cer")
             root.write_bytes(content)
-            assert build_app_store_verifier(self._store(root_certificate_path=str(root))) is None
+            with pytest.raises(RuntimeError):
+                build_app_store_verifier(self._store(root_certificate_path=str(root)))
         finally:
             shutil.rmtree(tmp_dir)
 
-    def test_an_unopenable_root_yields_no_verifier_rather_than_raising(self):
-        """A projected secret carrying the wrong mode is present, and `is_file()` says so."""
+    def test_an_unopenable_root_stops_the_boot(self):
+        """A projected secret carrying the wrong mode is present, so an operator repairs it."""
         tmp_dir = tempfile.mkdtemp()
         try:
             root = Path(tmp_dir, "AppleRootCA-G3.cer")
@@ -681,7 +685,8 @@ class TestAnIncompleteConfigurationBootsAndHoldsNoVerifier:
             root.chmod(0o000)
             if os.access(root, os.R_OK):  # pragma: no cover - the root user reads it regardless
                 pytest.skip("running as a user that ignores file modes")
-            assert build_app_store_verifier(self._store(root_certificate_path=str(root))) is None
+            with pytest.raises(RuntimeError):
+                build_app_store_verifier(self._store(root_certificate_path=str(root)))
         finally:
             shutil.rmtree(tmp_dir)
 
