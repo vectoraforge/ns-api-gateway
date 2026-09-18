@@ -687,10 +687,9 @@ class TestAnIncompleteConfigurationBootsAndHoldsNoVerifier:
 
 
 class TestOnlyAnAbsentAdcCostsARouteAndAnyOtherFailureStopsTheBoot:
-    """D-08. `google.auth.default()` raises `RefreshError` and `TransportError` too, when the
-    GCE metadata server answers but answers badly. Absence means this deployment has no Play
-    credential, so the route answers 503; every other failure now stops the pod, and Kubernetes
-    is the retry."""
+    """D-08. `google.auth.default()` raises `RefreshError` and `TransportError` too, when the GCE
+    metadata server answers but answers badly. Absence is a deployment with no Play credential and
+    costs the route its 503; every other failure now stops the pod, and Kubernetes is the retry."""
 
     def test_an_absent_credential_answers_none(self, monkeypatch):
         def raising(*_args, **_kwargs):

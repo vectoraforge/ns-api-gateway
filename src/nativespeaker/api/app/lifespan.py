@@ -4,6 +4,7 @@ from pathlib import Path
 
 import firebase_admin
 import google.auth
+import google.auth.credentials
 import google.auth.exceptions
 import httpx
 import structlog
@@ -92,9 +93,8 @@ def build_google_push_verifier(play: GooglePlayConfig) -> JWTVerifier | None:
                            # The audience alone is a value the deployer chose, so the push identity is pinned too.
                            required_claims={"email": service_account,
                                             "email_verified": True})
-    except PyJWTError:
-        # The warm-up fetch raises on an unreachable JWKS, and one route's 503 beats a dead pod.
-        return None
+    except PyJWTError as failure:
+        raise RuntimeError(f"JWKS unusable at {GOOGLE_JWKS_URL}: {failure}") from failure
 
 
 def build_jwt_verifier(jwt: JWTConfig) -> JWTVerifier:
@@ -132,19 +132,16 @@ async def _prove_database_reachable(engine: AsyncEngine, db: DatabaseConfig) -> 
                            f"{type(failure).__name__}: {failure}") from failure
 
 
-def _play_credential():
+def _play_credential() -> google.auth.credentials.Credentials | None:
     """ADC scoped for the Play Developer API, or `None` if the environment supplies none."""
     try:
         credential, _project = google.auth.default(scopes=[PLAY_SCOPE])
+    # `DefaultCredentialsError` subclasses `GoogleAuthError`, so the absent arm is written first.
     except google.auth.exceptions.DefaultCredentialsError:
         return None
-    except google.auth.exceptions.GoogleAuthError:
-        logger.warning("play_credential_warm_up_failed",
-                       consequence="POST /webhooks/google-play/rtdn and the google_play arm of "
-                                   "POST /auth/restore-subscription answer 503 until Google's "
-                                   "metadata server answers again, which the next call retries "
-                                   "without a restart")
-        return None
+    except google.auth.exceptions.GoogleAuthError as failure:
+        raise RuntimeError("Application Default Credentials unreadable for the Play Developer "
+                           f"API: {type(failure).__name__}: {failure}") from failure
     return credential
 
 
@@ -200,11 +197,6 @@ async def lifespan(app: FastAPI):
                                        "restore until this pod is restarted with the Play package "
                                        "name, product map, push audience, push service account and "
                                        "Application Default Credentials available in this environment")
-        elif google_push_verifier is None:
-            logger.warning("google_push_verifier_warm_up_failed",
-                           consequence="POST /webhooks/google-play/rtdn refuses every delivery until "
-                                       "Google's key set is reachable again, which the next delivery "
-                                       "retries without a restart")
         play_client = httpx.AsyncClient(timeout=PLAY_HTTP_TIMEOUT_SECONDS)
         app.state.google_play_notifications = GooglePlayNotifications(
             verifier=google_push_verifier,
