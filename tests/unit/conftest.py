@@ -17,6 +17,9 @@ from nativespeaker.api.app.dependencies import (
     get_identity,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
+from nativespeaker.api.app.runtime import Runtime
+from nativespeaker.api.auth.app_store import AppStoreNotifications
+from nativespeaker.api.auth.google_play import GooglePlayNotifications
 from nativespeaker.api.auth.jwt_verifier import (
     DECODE_ALGORITHMS,
     DECODE_OPTIONS,
@@ -230,6 +233,23 @@ class FakeFirebaseAdapter:
 def fake_firebase_adapter() -> FakeFirebaseAdapter:
     """A fresh fake per test, defaulting to the anonymous identity -- what an empty read establishes."""
     return FakeFirebaseAdapter()
+
+
+def make_runtime(**overrides) -> Runtime:
+    """The whole container a case needs: it names the fields it reads and this fills the rest.
+    Defined here, below both fakes it builds from."""
+    fields = {"config": MagicMock(),
+              "session_factory": MagicMock(),
+              "jwt_verifier": make_test_verifier(),
+              "firebase_adapter": FakeFirebaseAdapter(),
+              "devicecheck_adapter": MagicMock(),
+              "app_store_notifications": AppStoreNotifications(verifier=None, products={}),
+              "google_play_notifications": GooglePlayNotifications(verifier=None,
+                                                                   credential=None,
+                                                                   client=MagicMock(),
+                                                                   products={}),
+              "llm_service": MagicMock()}
+    return Runtime(**(fields | overrides))  # ty: ignore[invalid-argument-type]
 
 
 class FakeChallengeStore:
