@@ -17,6 +17,7 @@ from nativespeaker.api.auth.google_play import (
 from nativespeaker.api.auth.jwt_verifier import BoundedReason, VerifiedClaims
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
 from nativespeaker.api.config import AppConfig
+from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.crud.purchases import PurchasesDB
 from nativespeaker.api.errors import (
@@ -188,3 +189,7 @@ async def verify_google_play_notification(
 # This accessor exists so the profile route can stay Depends()-only and never construct a database class itself.
 def get_purchases_db(db: AsyncSession = Depends(get_db)) -> PurchasesDB:
     return PurchasesDB(db)
+
+
+def get_challenges_db(db: AsyncSession = Depends(get_db)) -> ChallengesDB:
+    return ChallengesDB(db)

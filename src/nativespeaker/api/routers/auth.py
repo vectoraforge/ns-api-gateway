@@ -8,6 +8,7 @@ from starlette.responses import Response
 
 from nativespeaker.api.app.dependencies import (
     get_auth_service,
+    get_challenges_db,
     get_claims,
     get_db,
     get_firebase_adapter,
@@ -49,7 +50,9 @@ router = APIRouter(tags=["auth"], dependencies=[Depends(get_claims)])
 async def issue_challenge(body: ChallengeRequest,
                           response: Response,
                           claims: VerifiedClaims = Depends(get_claims),
-                          session: AsyncSession = Depends(get_db)) -> PrepareResponse:
+                          session: AsyncSession = Depends(get_db),
+                          challenges_db: ChallengesDB = Depends(get_challenges_db),
+                          ) -> PrepareResponse:
     """Issue one challenge for an operation this route serves."""
     if body.operation not in AuthOperation:
         # The rejected string is caller-supplied and bounded, so logging it is safe; a handle never is.
@@ -62,7 +65,7 @@ async def issue_challenge(body: ChallengeRequest,
     if body.operation != AuthOperation.create_user and linked is None:
         raise PreAuthIdentityNotAllowed
 
-    challenge_id, expires_at = await ChallengesDB(session).issue(
+    challenge_id, expires_at = await challenges_db.issue(
         operation=AuthOperation(body.operation),
         claims=claims,
         linked=linked)
