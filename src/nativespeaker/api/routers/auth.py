@@ -16,7 +16,7 @@ from nativespeaker.api.app.dependencies import (
     get_restore_service,
     get_sync_service,
 )
-from nativespeaker.api.auth.firebase import revoke_with_retry
+from nativespeaker.api.auth.firebase import FirebaseAdminLookup, revoke_with_retry
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.identities import IdentitiesDB
@@ -205,7 +205,7 @@ async def sync(linked: LinkedIdentity = Depends(get_identity),
                          "(up to one hour). An anonymous account cannot be signed in to again.")
 async def sign_out_all(claims: VerifiedClaims = Depends(get_claims),
                        linked: LinkedIdentity = Depends(get_identity),
-                       adapter=Depends(get_firebase_adapter)) -> Response:
+                       adapter: FirebaseAdminLookup = Depends(get_firebase_adapter)) -> Response:
     """Revoke the caller's refresh tokens at the provider."""
     # The request-verified pair, never the stored row: the provider is told what this request proved.
     await revoke_with_retry(adapter, claims.issuer, claims.subject)
