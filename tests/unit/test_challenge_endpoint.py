@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from nativespeaker.api.app.dependencies import (
     get_claims,
     get_db,
-    get_firebase_adapter,
+    get_runtime,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
@@ -30,7 +30,7 @@ from nativespeaker.api.tables.identities import (
 )
 from nativespeaker.api.tables.users import User
 
-from .conftest import TEST_IDENTITY, TEST_ISSUER, TEST_SUBJECT
+from .conftest import TEST_IDENTITY, TEST_ISSUER, TEST_SUBJECT, make_runtime
 
 UNLINKED_SUBJECT = "unlinked-challenge-subject"
 
@@ -131,7 +131,8 @@ def _client_for(claims, session, fake_firebase_adapter):
 
     app.dependency_overrides[get_claims] = lambda: claims
     app.dependency_overrides[get_db] = lambda: session
-    app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
+    app.dependency_overrides[get_runtime] = lambda: make_runtime(
+        firebase_adapter=fake_firebase_adapter)
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client

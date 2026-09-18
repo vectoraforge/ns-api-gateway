@@ -6,8 +6,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from nativespeaker.api.app.runtime import Runtime
-from nativespeaker.api.auth.devicecheck import AppleDeviceCheck
-from nativespeaker.api.auth.firebase import FirebaseAdminLookup
 from nativespeaker.api.auth.google_play import (
     developer_notification_from,
     instant_from_millis,
@@ -103,23 +101,11 @@ def get_chat_service(runtime: Runtime = Depends(get_runtime),
                        quota_service=quota_service)
 
 
-def get_firebase_adapter(request: Request) -> FirebaseAdminLookup:
-    """The Firebase lookup the lifespan built."""
-    return request.app.state.firebase_adapter
-
-
-def get_devicecheck_adapter(request: Request) -> AppleDeviceCheck:
-    """The DeviceCheck adapter the lifespan built."""
-    return request.app.state.devicecheck_adapter
-
-
 def get_auth_service(db: AsyncSession = Depends(get_db),
-                     adapter: FirebaseAdminLookup = Depends(get_firebase_adapter),
-                     devicecheck: AppleDeviceCheck = Depends(get_devicecheck_adapter)
-                     ) -> AuthService:
+                     runtime: Runtime = Depends(get_runtime)) -> AuthService:
     return AuthService(db=db,
-                       adapter=adapter,
-                       devicecheck=devicecheck)
+                       adapter=runtime.firebase_adapter,
+                       devicecheck=runtime.devicecheck_adapter)
 
 
 def get_sync_service(db: AsyncSession = Depends(get_db)) -> SyncService:

@@ -12,9 +12,8 @@ from sqlalchemy.exc import InvalidRequestError
 
 from nativespeaker.api.app.dependencies import (
     get_claims,
-    get_devicecheck_adapter,
-    get_firebase_adapter,
     get_identity,
+    get_runtime,
     get_sync_service,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
@@ -263,9 +262,11 @@ def client(challenges_db, session, claims, linked, grants, devicecheck):
     app.dependency_overrides[get_claims] = lambda: claims
     app.dependency_overrides[get_identity] = lambda: linked
 
-    app.state.runtime = make_runtime(session_factory=lambda: session)
-    app.dependency_overrides[get_firebase_adapter] = lambda: None
-    app.dependency_overrides[get_devicecheck_adapter] = lambda: devicecheck
+    # An override of `get_runtime` bypasses `app.state`, so the session factory is named here too.
+    app.dependency_overrides[get_runtime] = lambda: make_runtime(
+        session_factory=lambda: session,
+        firebase_adapter=None,
+        devicecheck_adapter=devicecheck)
     app.dependency_overrides[get_sync_service] = lambda: _StubSync()
 
     with TestClient(app, raise_server_exceptions=False) as test_client:

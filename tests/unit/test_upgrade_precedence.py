@@ -9,9 +9,8 @@ from fastapi.testclient import TestClient
 from nativespeaker.api.app.dependencies import (
     get_claims,
     get_db,
-    get_devicecheck_adapter,
-    get_firebase_adapter,
     get_identity,
+    get_runtime,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
@@ -23,7 +22,7 @@ from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.users import User
 
-from .conftest import TEST_ISSUER
+from .conftest import TEST_ISSUER, make_runtime
 
 SUBJECT = "upgrade-precedence-subject"
 HANDLE = "a-scripted-upgrade-handle"
@@ -169,9 +168,10 @@ def client(challenges_db, session, claims, linked, upgrade, fake_firebase_adapte
             raise
 
     app.dependency_overrides[get_db] = _db
-    app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
     # Declared by `get_auth_service` for every auth route; this app has no lifespan to build one.
-    app.dependency_overrides[get_devicecheck_adapter] = lambda: None
+    app.dependency_overrides[get_runtime] = lambda: make_runtime(
+        firebase_adapter=fake_firebase_adapter,
+        devicecheck_adapter=None)
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client

@@ -11,12 +11,13 @@ from nativespeaker.api.app.dependencies import (
     get_challenges_db,
     get_claims,
     get_db,
-    get_firebase_adapter,
     get_identity,
     get_restore_service,
+    get_runtime,
     get_sync_service,
 )
-from nativespeaker.api.auth.firebase import FirebaseAdminLookup, revoke_with_retry
+from nativespeaker.api.app.runtime import Runtime
+from nativespeaker.api.auth.firebase import revoke_with_retry
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.identities import IdentitiesDB
@@ -205,10 +206,10 @@ async def sync(linked: LinkedIdentity = Depends(get_identity),
                          "(up to one hour). An anonymous account cannot be signed in to again.")
 async def sign_out_all(claims: VerifiedClaims = Depends(get_claims),
                        linked: LinkedIdentity = Depends(get_identity),
-                       adapter: FirebaseAdminLookup = Depends(get_firebase_adapter)) -> Response:
+                       runtime: Runtime = Depends(get_runtime)) -> Response:
     """Revoke the caller's refresh tokens at the provider."""
     # The request-verified pair, never the stored row: the provider is told what this request proved.
-    await revoke_with_retry(adapter, claims.issuer, claims.subject)
+    await revoke_with_retry(runtime.firebase_adapter, claims.issuer, claims.subject)
     # The row id alone: enough to answer "did this account sign out everywhere", and no more.
     logger.info("sign_out_all_confirmed", identity_row_id=str(linked.identity.id))
     return Response(status_code=204)

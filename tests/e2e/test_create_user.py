@@ -564,7 +564,7 @@ class TestTheRealAnonymousCompletion:
             self, anonymous_client, _db_transaction, _app_lifespan, _app_config,
             anonymous_firebase_credential):
         _, local_id = anonymous_firebase_credential
-        adapter = _app_lifespan.state.firebase_adapter
+        adapter = _app_lifespan.state.runtime.firebase_adapter
         # scripted_firebase_adapter is deliberately not requested, and this is what makes that visible.
         assert isinstance(adapter, FirebaseAdminLookup)
         users_before = await _count(_db_transaction, _USERS)
@@ -602,7 +602,7 @@ class TestTheRealAnonymousCompletion:
     async def test_the_real_sdk_returns_empty_provider_data_for_an_anonymous_user(
             self, _app_lifespan, _app_config, anonymous_firebase_credential):
         """The real SDK returns an EMPTY providerData, the only shape the classifier answers anonymous to."""
-        adapter = _app_lifespan.state.firebase_adapter
+        adapter = _app_lifespan.state.runtime.firebase_adapter
         assert isinstance(adapter, FirebaseAdminLookup)
         _, local_id = anonymous_firebase_credential
 

@@ -8,8 +8,7 @@ from fastapi.testclient import TestClient
 from nativespeaker.api.app.dependencies import (
     get_claims,
     get_db,
-    get_devicecheck_adapter,
-    get_firebase_adapter,
+    get_runtime,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
@@ -17,7 +16,7 @@ from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.routers import auth_router
 from nativespeaker.api.schemas.auth import CompletionRequest
 
-from .conftest import TEST_ISSUER
+from .conftest import TEST_ISSUER, make_runtime
 
 UNLINKED_SUBJECT = "unlinked-body-subject"
 
@@ -103,9 +102,10 @@ def client(store, session, fake_firebase_adapter):
             raise
 
     app.dependency_overrides[get_db] = _db
-    app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
     # Declared by `get_auth_service` for every auth route; this app has no lifespan to build one.
-    app.dependency_overrides[get_devicecheck_adapter] = lambda: None
+    app.dependency_overrides[get_runtime] = lambda: make_runtime(
+        firebase_adapter=fake_firebase_adapter,
+        devicecheck_adapter=None)
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client

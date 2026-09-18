@@ -66,14 +66,14 @@ class TestTheGoogleLinkedCredential:
         record = auth.get_user(local_id, app=admin_app)
         # An exact one-element comparison: the classifier this phase depends on refuses anything else.
         assert [entry.provider_id for entry in record.provider_data] == ["google.com"]
-        identity = await _app_lifespan.state.firebase_adapter.get_user_provider_data(
+        identity = await _app_lifespan.state.runtime.firebase_adapter.get_user_provider_data(
             _app_config.jwt.issuer, local_id)
         assert identity.provider is IdentityProvider.google
         assert identity.provider_uid
 
     async def test_the_read_ran_through_the_production_lookup(self, _app_lifespan):
         # scripted_firebase_adapter is deliberately not requested, and this is what makes that visible.
-        assert isinstance(_app_lifespan.state.firebase_adapter, FirebaseAdminLookup)
+        assert isinstance(_app_lifespan.state.runtime.firebase_adapter, FirebaseAdminLookup)
 
     async def test_the_firebase_user_is_deleted_when_the_module_tears_down(
             self, google_linked_firebase_credential, _google_user_deleted_after_teardown, _app_config):
@@ -279,7 +279,7 @@ class TestTheRealGoogleLinkedUpgrade:
             self, google_linked_client, _db_transaction, _app_lifespan, _app_config,
             google_linked_firebase_credential):
         _, local_id = google_linked_firebase_credential
-        adapter = _app_lifespan.state.firebase_adapter
+        adapter = _app_lifespan.state.runtime.firebase_adapter
         # scripted_firebase_adapter is deliberately not requested, and this is what makes that visible.
         assert isinstance(adapter, FirebaseAdminLookup)
         issuer = _app_config.jwt.issuer

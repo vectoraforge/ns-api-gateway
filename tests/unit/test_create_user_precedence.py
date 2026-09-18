@@ -8,8 +8,7 @@ from fastapi.testclient import TestClient
 
 from nativespeaker.api.app.dependencies import (
     get_claims,
-    get_devicecheck_adapter,
-    get_firebase_adapter,
+    get_runtime,
 )
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.firebase import (
@@ -170,10 +169,11 @@ def _client_for(session, claims, fake_firebase_adapter):
     register_exception_handlers(app)
 
     app.dependency_overrides[get_claims] = lambda: claims
-    app.state.runtime = make_runtime(session_factory=lambda: session)
-    app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
-    # Declared by `get_auth_service` for every auth route; this app has no lifespan to build one.
-    app.dependency_overrides[get_devicecheck_adapter] = lambda: None
+    # An override of `get_runtime` bypasses `app.state`, so the session factory is named here too.
+    app.dependency_overrides[get_runtime] = lambda: make_runtime(
+        session_factory=lambda: session,
+        firebase_adapter=fake_firebase_adapter,
+        devicecheck_adapter=None)
 
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client

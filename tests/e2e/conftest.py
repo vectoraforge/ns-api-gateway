@@ -292,14 +292,15 @@ def stub_verifier(_app_lifespan):
 
 @pytest.fixture
 def scripted_firebase_adapter(_app_lifespan):
-    """Swap app.state.firebase_adapter for a scripted fake, defaulting to ok with empty providerData."""
-    original = _app_lifespan.state.firebase_adapter
+    """Swap runtime.firebase_adapter for a scripted fake, defaulting to ok with empty providerData."""
+    original = _app_lifespan.state.runtime.firebase_adapter
     adapter = FakeFirebaseAdapter()
-    _app_lifespan.state.firebase_adapter = adapter
+    _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime, firebase_adapter=adapter)
     try:
         yield adapter
     finally:
-        _app_lifespan.state.firebase_adapter = original
+        _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime,
+                                              firebase_adapter=original)
 
 
 class FakeDeviceCheckAdapter:
@@ -334,14 +335,15 @@ class FakeDeviceCheckAdapter:
 
 @pytest.fixture
 def scripted_devicecheck_adapter(_app_lifespan):
-    """Swap app.state.devicecheck_adapter for a scripted fake, defaulting to a never-set device."""
-    original = _app_lifespan.state.devicecheck_adapter
+    """Swap runtime.devicecheck_adapter for a scripted fake, defaulting to a never-set device."""
+    original = _app_lifespan.state.runtime.devicecheck_adapter
     adapter = FakeDeviceCheckAdapter()
-    _app_lifespan.state.devicecheck_adapter = adapter
+    _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime, devicecheck_adapter=adapter)
     try:
         yield adapter
     finally:
-        _app_lifespan.state.devicecheck_adapter = original
+        _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime,
+                                              devicecheck_adapter=original)
 
 
 class FakeAppStoreNotifications:

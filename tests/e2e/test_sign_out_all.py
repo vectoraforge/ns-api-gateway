@@ -1,5 +1,7 @@
 """What `POST /auth/sign-out-all` answers over the real router: the confirmed revocation,
 every refusal, and the record each one writes."""
+from dataclasses import replace
+
 import pytest
 import pytest_asyncio
 from firebase_admin import auth, exceptions
@@ -61,15 +63,17 @@ class _NamedApp:
 @pytest.fixture
 def real_seam(_app_lifespan):
     """Install the real seam over a given apps mapping: only it turns an SDK error into a refusal."""
-    original = _app_lifespan.state.firebase_adapter
+    original = _app_lifespan.state.runtime.firebase_adapter
 
     def install(apps: dict) -> None:
-        _app_lifespan.state.firebase_adapter = FirebaseAdminLookup(apps)
+        _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime,
+                                              firebase_adapter=FirebaseAdminLookup(apps))
 
     try:
         yield install
     finally:
-        _app_lifespan.state.firebase_adapter = original
+        _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime,
+                                              firebase_adapter=original)
 
 
 @pytest.fixture

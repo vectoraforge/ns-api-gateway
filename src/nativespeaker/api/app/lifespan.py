@@ -164,7 +164,6 @@ async def lifespan(app: FastAPI):
     try:
         firebase_apps = build_admin_apps(config.jwt)
         firebase_adapter = FirebaseAdminLookup(firebase_apps)
-        app.state.firebase_adapter = firebase_adapter
 
         devicecheck_key = read_private_key(config.devicecheck.private_key_path)
         if not (config.devicecheck.key_id and config.devicecheck.team_id and devicecheck_key):
@@ -178,7 +177,6 @@ async def lifespan(app: FastAPI):
                                               team_id=config.devicecheck.team_id,
                                               private_key=devicecheck_key,
                                               client=devicecheck_client)
-        app.state.devicecheck_adapter = devicecheck_adapter
 
         app_store_verifier = build_app_store_verifier(config.app_store)
         if app_store_verifier is None or not config.app_store.products:
