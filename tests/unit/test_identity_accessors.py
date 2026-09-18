@@ -1,5 +1,6 @@
 """The two identity accessors, driven over real routers: what each one admits and what each one refuses."""
 import inspect
+from dataclasses import replace
 from typing import get_type_hints
 from uuid import uuid7
 
@@ -21,7 +22,7 @@ from nativespeaker.api.tables.identities import (
     NativeClaimProvider,
 )
 from nativespeaker.api.tables.users import User
-from unit.conftest import TEST_ISSUER, make_test_verifier, make_token
+from unit.conftest import TEST_ISSUER, make_runtime, make_test_verifier, make_token
 
 ACCESSORS = (get_claims, get_identity)
 ISSUER = TEST_ISSUER
@@ -115,11 +116,11 @@ def _client(row=None) -> TestClient:
     app.include_router(admit_router)
     app.include_router(linked_router)
 
-    # Read per request by the dependency, exactly as the real lifespan supplies them.
-    app.state.jwt_verifier = make_test_verifier()
     opened: list[_ProbeSession] = []
     app.state.opened_sessions = opened
-    app.state.session_factory = lambda: _ProbeSession(row, opened)
+    # Read per request by the dependency, exactly as the real lifespan supplies them.
+    app.state.runtime = make_runtime(jwt_verifier=make_test_verifier(),
+                                     session_factory=lambda: _ProbeSession(row, opened))
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -223,7 +224,8 @@ class TestTheWireArmsRaiseAndTheHandlerRecordsThemOnce:
         """37.4 WR-02: `verify` is typed to permit `(None, None)`, and a null label is not one of
         the eight -- it would reach the pipeline as the string "None", which no alert can key on."""
         client = _client()
-        client.app.state.jwt_verifier = _UnlabelledVerifier()
+        client.app.state.runtime = replace(client.app.state.runtime,
+                                           jwt_verifier=_UnlabelledVerifier())
 
         response = client.get("/linked", headers={"Authorization": "Bearer not.a.jwt"})
 
@@ -277,9 +279,11 @@ class TestAccessorsCannotProvision:
 
     def test_each_accessor_declares_the_parameters_its_own_work_needs(self):
         """`get_identity` declares `get_claims`, which is what puts the verification on the cache."""
-        assert list(inspect.signature(get_claims).parameters) == ["request", "credential"]
+        claims_params = list(inspect.signature(get_claims).parameters)
+        assert claims_params == ["request", "credential", "runtime"], (
+            f"get_claims takes {claims_params}; it keeps the request for the authorization header alone")
         params = list(inspect.signature(get_identity).parameters)
-        assert params == ["request", "claims"], f"get_identity takes {params}, not the request and the claims"
+        assert params == ["runtime", "claims"], f"get_identity takes {params}, not the container and the claims"
 
     @pytest.mark.parametrize("accessor", ACCESSORS, ids=lambda f: f.__name__)
     def test_accessor_is_asynchronous(self, accessor):

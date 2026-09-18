@@ -31,6 +31,7 @@ from nativespeaker.api.errors import (
 )
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.users import User
+from unit.conftest import make_runtime
 from unit.error_tree import fresh_interpreter
 
 ISSUER = "https://securetoken.google.com/test-project"
@@ -285,7 +286,7 @@ def generator_session_client():
     app = FastAPI()
     register_exception_handlers(app)
     session = _RollbackRecordingSession()
-    app.state.session_factory = lambda: session
+    app.state.runtime = make_runtime(session_factory=lambda: session)
 
     @app.get("/consuming")
     async def _consuming_route(db=Depends(get_db)):

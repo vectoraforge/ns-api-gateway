@@ -1,5 +1,6 @@
 import logging
 import os
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -251,7 +252,7 @@ def test_user_id(firebase_token):
 @pytest_asyncio.fixture(loop_scope="module", autouse=True)
 async def _db_transaction(_app_lifespan):
     """Wrap each test in a transaction that rolls back: the app's session factory is swapped so its writes join it."""
-    original_factory = _app_lifespan.state.session_factory
+    original_factory = _app_lifespan.state.runtime.session_factory
 
     # async_sessionmaker stores bind in its kw dict
     engine = original_factory.kw["bind"]
@@ -266,23 +267,27 @@ async def _db_transaction(_app_lifespan):
             join_transaction_mode="create_savepoint",
         )
 
-        _app_lifespan.state.session_factory = test_factory
+        _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime,
+                                              session_factory=test_factory)
         try:
             yield test_factory
         finally:
-            _app_lifespan.state.session_factory = original_factory
+            # The field, never the whole container: this fixture is autouse and others swap inside it.
+            _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime,
+                                                  session_factory=original_factory)
             await transaction.rollback()
 
 
 @pytest.fixture
 def stub_verifier(_app_lifespan):
-    """Swap app.state.jwt_verifier for an ephemeral-RSA one; the app reads it per request, so the real path runs."""
-    original = _app_lifespan.state.jwt_verifier
-    _app_lifespan.state.jwt_verifier = make_test_verifier()
+    """Swap runtime.jwt_verifier for an ephemeral-RSA one; the app reads it per request, so the real path runs."""
+    original = _app_lifespan.state.runtime.jwt_verifier
+    verifier = make_test_verifier()
+    _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime, jwt_verifier=verifier)
     try:
-        yield _app_lifespan.state.jwt_verifier
+        yield verifier
     finally:
-        _app_lifespan.state.jwt_verifier = original
+        _app_lifespan.state.runtime = replace(_app_lifespan.state.runtime, jwt_verifier=original)
 
 
 @pytest.fixture

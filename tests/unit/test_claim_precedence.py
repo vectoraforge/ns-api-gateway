@@ -38,7 +38,7 @@ from nativespeaker.api.tables.identities import (
 )
 from nativespeaker.api.tables.users import User
 
-from .conftest import TEST_ISSUER
+from .conftest import TEST_ISSUER, make_runtime
 
 SUBJECT = "claim-precedence-subject"
 HANDLE = "a-scripted-claim-handle"
@@ -263,7 +263,7 @@ def client(challenges_db, session, claims, linked, grants, devicecheck):
     app.dependency_overrides[get_claims] = lambda: claims
     app.dependency_overrides[get_identity] = lambda: linked
 
-    app.state.session_factory = lambda: session
+    app.state.runtime = make_runtime(session_factory=lambda: session)
     app.dependency_overrides[get_firebase_adapter] = lambda: None
     app.dependency_overrides[get_devicecheck_adapter] = lambda: devicecheck
     app.dependency_overrides[get_sync_service] = lambda: _StubSync()

@@ -35,7 +35,7 @@ from nativespeaker.api.tables.identities import (
 )
 from nativespeaker.api.tables.users import User
 
-from .conftest import TEST_ISSUER
+from .conftest import TEST_ISSUER, make_runtime
 
 SUBJECT = "precedence-unlinked-subject"
 OTHER_SUBJECT = "precedence-somebody-else"
@@ -170,7 +170,7 @@ def _client_for(session, claims, fake_firebase_adapter):
     register_exception_handlers(app)
 
     app.dependency_overrides[get_claims] = lambda: claims
-    app.state.session_factory = lambda: session
+    app.state.runtime = make_runtime(session_factory=lambda: session)
     app.dependency_overrides[get_firebase_adapter] = lambda: fake_firebase_adapter
     # Declared by `get_auth_service` for every auth route; this app has no lifespan to build one.
     app.dependency_overrides[get_devicecheck_adapter] = lambda: None

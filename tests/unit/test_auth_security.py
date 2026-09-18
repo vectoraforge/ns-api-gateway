@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from nativespeaker.api.app.dependencies import get_identity
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.schemas.auth import LinkedIdentity
-from unit.conftest import make_test_verifier, make_token
+from unit.conftest import make_runtime, make_test_verifier, make_token
 
 
 class _EmptyResult:
@@ -40,8 +40,8 @@ def probe_client():
 
     app.include_router(router)
     # Read per request by the dependency, exactly as the real lifespan supplies them.
-    app.state.jwt_verifier = make_test_verifier()
-    app.state.session_factory = _NoIdentitySession
+    app.state.runtime = make_runtime(jwt_verifier=make_test_verifier(),
+                                     session_factory=_NoIdentitySession)
 
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client

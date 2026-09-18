@@ -2,7 +2,6 @@ from collections.abc import AsyncGenerator
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -42,9 +41,9 @@ def get_runtime(request: Request) -> Runtime:
     return request.app.state.runtime
 
 
-async def get_db(request: Request) -> AsyncGenerator[AsyncSession]:
+async def get_db(runtime: Runtime = Depends(get_runtime)) -> AsyncGenerator[AsyncSession]:
     """The request session: it rolls back on the way out, and never commits."""
-    async with request.app.state.session_factory() as session:
+    async with runtime.session_factory() as session:
         try:
             yield session
         except Exception:
@@ -58,6 +57,7 @@ _bearer = HTTPBearer(auto_error=False)
 
 async def get_claims(request: Request,
                      credential: HTTPAuthorizationCredentials | None = Depends(_bearer),
+                     runtime: Runtime = Depends(get_runtime),
                      ) -> VerifiedClaims:
     """Accept the token and return the two values it proves -- once per request."""
     if credential is None:
@@ -67,7 +67,7 @@ async def get_claims(request: Request,
             raise InvalidExternalJwt(bounded_reason=BoundedReason.malformed)
 
     # `verify` can block on a JWKS fetch
-    claims, reason = await run_in_threadpool(request.app.state.jwt_verifier.verify,
+    claims, reason = await run_in_threadpool(runtime.jwt_verifier.verify,
                                              credential.credentials)
     if claims is None:
         raise InvalidExternalJwt(bounded_reason=reason or BoundedReason.bad_signature)
@@ -76,24 +76,19 @@ async def get_claims(request: Request,
 
 
 # Declared, never called directly: FastAPI's cache only sees solver-resolved deps, so a direct call re-verifies.
-async def get_identity(request: Request,
+async def get_identity(runtime: Runtime = Depends(get_runtime),
                        claims: VerifiedClaims = Depends(get_claims)) -> LinkedIdentity:
     """The resolved user and identity row; rejects a caller holding no identity row with 403."""
-    async with request.app.state.session_factory() as session:
+    async with runtime.session_factory() as session:
         linked = await IdentitiesDB(session).resolve(issuer=claims.issuer, subject=claims.subject)
     if linked is None:
         raise PreAuthIdentityNotAllowed
     return linked
 
 
-def get_session_factory(request: Request) -> async_sessionmaker:
-    """The one factory the lifespan built."""
-    return request.app.state.session_factory
-
-
-def get_quota_service(session_factory: async_sessionmaker = Depends(get_session_factory)) -> QuotaService:
+def get_quota_service(runtime: Runtime = Depends(get_runtime)) -> QuotaService:
     # The factory, not `get_db`: the charge commits in its own session while the request session stays open.
-    return QuotaService(session_factory=session_factory)
+    return QuotaService(session_factory=runtime.session_factory)
 
 
 # Defined below the dependencies it declares, because its `Depends()` defaults are evaluated at definition time.

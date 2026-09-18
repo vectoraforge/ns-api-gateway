@@ -14,7 +14,7 @@ from nativespeaker.api.app.dependencies import get_identity
 from nativespeaker.api.app.error_handlers import register_exception_handlers
 from nativespeaker.api.auth.jwt_verifier import BoundedReason, JWTVerifier
 from nativespeaker.api.schemas.auth import LinkedIdentity
-from unit.conftest import PUBLIC_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_token
+from unit.conftest import PUBLIC_KEY_PEM, TEST_ISSUER, TEST_PROJECT_ID, make_runtime, make_token
 
 JWKS_URL = "https://jwks.invalid/keys"
 KNOWN_KID = "test-key-1"
@@ -106,8 +106,7 @@ def probe_app(verifier) -> FastAPI:
         return {"reached": True}
 
     app.include_router(router)
-    app.state.jwt_verifier = verifier
-    app.state.session_factory = _NoIdentitySession
+    app.state.runtime = make_runtime(jwt_verifier=verifier, session_factory=_NoIdentitySession)
     return app
 
 

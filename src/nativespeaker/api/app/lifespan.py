@@ -214,10 +214,8 @@ async def lifespan(app: FastAPI):
         await _prove_database_reachable(db_engine, config.db)
         session_factory: async_sessionmaker[SQLModelAsyncSession] = async_sessionmaker(
             db_engine, class_=SQLModelAsyncSession, expire_on_commit=False)
-        app.state.session_factory = session_factory
 
         jwt_verifier = build_jwt_verifier(config.jwt)
-        app.state.jwt_verifier = jwt_verifier
 
         llm_service = LLMService(model_config=config.model,
                                  api_key=config.openai.api_key,

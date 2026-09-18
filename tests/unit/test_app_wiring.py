@@ -274,8 +274,7 @@ class TestTheAuthDependencyIsResolvedOncePerRequest:
             return {"resolved_user": str(linked.user.id), "subject": admitted.subject}
 
         app.include_router(router)
-        app.state.jwt_verifier = _CountingVerifier()
-        app.state.session_factory = _Session
+        app.state.runtime = make_runtime(jwt_verifier=_CountingVerifier(), session_factory=_Session)
 
         client = TestClient(app, raise_server_exceptions=False)
         response = client.get("/chats/0199a0d0-0000-7000-8000-000000000000",
