@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 50
 current_phase_name: Typed runtime container behind an exit-stack lifespan
 status: executing
-stopped_at: Completed 50-03-PLAN.md
-last_updated: "2026-09-18T08:29:35.982Z"
+stopped_at: Completed 50-04-PLAN.md
+last_updated: "2026-09-18T08:39:12.337Z"
 last_activity: 2026-09-18
 last_activity_desc: Phase 50 execution started
-state_head: a2240a96cb422372af79437286903d54ee6ee62d
+state_head: 5ea537123899ad7825d9258cb0b4815fb60191ad
 progress:
   total_phases: 22
   completed_phases: 20
   total_plans: 151
-  completed_plans: 147
+  completed_plans: 148
   percent: 91
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-17)
 ## Current Position
 
 Phase: 50 (Typed runtime container behind an exit-stack lifespan) — EXECUTING
-Plan: 4 of 7
+Plan: 5 of 7
 Status: Ready to execute
 Progress: [████████████████████] 144/144 plans ([█████████░] 91%)
 
@@ -599,10 +599,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-18T08:29:35.108Z
+**Last session:** 2026-09-18T08:39:11.439Z
 
 Last activity: 2026-09-17
-Stopped at: Completed 50-03-PLAN.md
+Stopped at: Completed 50-04-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -694,6 +694,7 @@ Resume file: None
 | Phase 50 P01 | 13 min | 2 tasks | 9 files |
 | Phase 50 P02 | 17 min | 2 tasks | 5 files |
 | Phase 50 P03 | 10 min | 3 tasks | 5 files |
+| Phase 50 P04 | 14 min | 2 tasks | 11 files |
 
 ## Decisions
 
@@ -928,3 +929,5 @@ Resume file: None
 - [Phase 50]: A test name is part of the rule: when a builder's answer inverts, every case name stating the old answer is renamed in the same commit
 - [Phase 50]: make_runtime sits below FakeFirebaseAdapter in tests/unit/conftest.py, not beside make_test_verifier — Both fakes it builds from are then already on the page; the plan's placement would have read as a forward reference.
 - [Phase 50]: The Runtime stand-in fields in make_runtime default to MagicMock() — MagicMock answers any attribute, so a case that reads runtime.config must pass a real config rather than trust the default.
+- [Phase 50]: 50-04: get_db, get_identity, get_claims and get_quota_service read the container; get_claims keeps Request for the authorization header alone
+- [Phase 50]: 50-04: e2e fixtures save and restore the container FIELD, never the whole container, so nested swaps survive
