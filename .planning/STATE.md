@@ -5,16 +5,16 @@ milestone_name: Authentication & Entitlements
 current_phase: 50
 current_phase_name: Typed runtime container behind an exit-stack lifespan
 status: executing
-stopped_at: Completed 50-04-PLAN.md
-last_updated: "2026-09-18T08:39:12.337Z"
+stopped_at: Completed 50-05-PLAN.md
+last_updated: "2026-09-18T08:51:36.909Z"
 last_activity: 2026-09-18
 last_activity_desc: Phase 50 execution started
-state_head: 5ea537123899ad7825d9258cb0b4815fb60191ad
+state_head: f658615b284ce153bbdad33ca5b4d07306aa29c2
 progress:
   total_phases: 22
   completed_phases: 20
   total_plans: 151
-  completed_plans: 148
+  completed_plans: 149
   percent: 91
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-09-17)
 ## Current Position
 
 Phase: 50 (Typed runtime container behind an exit-stack lifespan) — EXECUTING
-Plan: 5 of 7
+Plan: 6 of 7
 Status: Ready to execute
 Progress: [████████████████████] 144/144 plans ([█████████░] 91%)
 
@@ -599,10 +599,10 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-18T08:39:11.439Z
+**Last session:** 2026-09-18T08:51:36.018Z
 
 Last activity: 2026-09-17
-Stopped at: Completed 50-04-PLAN.md
+Stopped at: Completed 50-05-PLAN.md
 Resume file: None
 
 ## Performance Metrics
@@ -695,6 +695,7 @@ Resume file: None
 | Phase 50 P02 | 17 min | 2 tasks | 5 files |
 | Phase 50 P03 | 10 min | 3 tasks | 5 files |
 | Phase 50 P04 | 14 min | 2 tasks | 11 files |
+| Phase 50 P05 | 10 min | 2 tasks | 14 files |
 
 ## Decisions
 
@@ -931,3 +932,5 @@ Resume file: None
 - [Phase 50]: The Runtime stand-in fields in make_runtime default to MagicMock() — MagicMock answers any attribute, so a case that reads runtime.config must pass a real config rather than trust the default.
 - [Phase 50]: 50-04: get_db, get_identity, get_claims and get_quota_service read the container; get_claims keeps Request for the authorization header alone
 - [Phase 50]: 50-04: e2e fixtures save and restore the container FIELD, never the whole container, so nested swaps survive
+- [Phase 50]: 50-05: the get_runtime override replaced the app.state.runtime assignment in the three precedence files, not joined it — An override of get_runtime bypasses app.state entirely, so a second container would have been a false record of the fixture's intent
+- [Phase 50]: 50-05: the plan's inline ty ignore for a None adapter field was not written — make_runtime takes untyped **overrides, so ty reports nothing there; adding the comment measured as unused-ignore-comment and raised that file from 1 diagnostic to 2
