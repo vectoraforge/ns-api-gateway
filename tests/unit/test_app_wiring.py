@@ -1,10 +1,13 @@
 """App-construction invariants admission depends on, asserted over the real app because runtime hides them."""
+import ast
 from dataclasses import FrozenInstanceError, fields, is_dataclass
+from pathlib import Path
 
 import pytest
 from fastapi import Depends
 from fastapi.routing import APIRoute
 
+from nativespeaker.api.app import dependencies as dependencies_module
 from nativespeaker.api.app.dependencies import (
     get_claims,
     get_db,
@@ -25,6 +28,39 @@ PREAUTH_CALLABLE_PATHS = {"/auth/create-user", "/auth/challenge"}
 PROVIDER_CALLBACK_VERIFIERS = {"/webhooks/app-store": verify_app_store_notification,
                                "/webhooks/google-play/rtdn": verify_google_play_notification}
 PROVIDER_CALLBACK_PATHS = set(PROVIDER_CALLBACK_VERIFIERS)
+
+DEPENDENCIES_MODULE = Path(dependencies_module.__file__)
+
+# Literals, as above: the one untyped read and the two functions allowed to take a `Request`.
+APP_STATE_CHAIN = "request.app.state"
+REQUEST_DECLARING_FUNCTIONS = {"get_runtime", "get_claims"}
+
+
+def _dotted(node: ast.Attribute) -> str:
+    """The attribute chain as text, or `""` when it is not rooted in a plain name."""
+    parts = []
+    current: ast.expr = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return ""
+    parts.append(current.id)
+    return ".".join(reversed(parts))
+
+
+def _dependency_functions() -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Every function `dependencies.py` defines, at any nesting depth."""
+    tree = ast.parse(DEPENDENCIES_MODULE.read_text())
+    return [node for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+def _app_state_chains() -> list[ast.Attribute]:
+    """Every `request.app.state` chain in the module, counted wherever it sits."""
+    tree = ast.parse(DEPENDENCIES_MODULE.read_text())
+    return [node for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute) and _dotted(node) == APP_STATE_CHAIN]
 
 
 def _api_routes() -> list[APIRoute]:
@@ -166,6 +202,31 @@ class TestOnlyTheSignOutRouteReachesTheContainer:
                     if route.path != "/auth/sign-out-all"
                     and get_runtime in _declared(route)]
         assert reaching == [], f"routes declaring the whole container: {reaching}"
+
+
+class TestTheContainerIsTheOneUntypedRead:
+    """Criterion 5, counted over the source. `get_claims` keeps its `Request` for the
+    authorization header alone, which is why the literal above names two functions, not one."""
+
+    def test_the_module_holds_exactly_one_app_state_chain(self):
+        chains = _app_state_chains()
+        assert len(chains) == 1, f"{APP_STATE_CHAIN} is read {len(chains)} times"
+
+    def test_the_one_chain_sits_inside_get_runtime(self):
+        reading = [function.name for function in _dependency_functions()
+                   for node in ast.walk(function)
+                   if isinstance(node, ast.Attribute) and _dotted(node) == APP_STATE_CHAIN]
+        assert reading == ["get_runtime"], f"functions reading {APP_STATE_CHAIN}: {reading}"
+
+    def test_only_those_two_functions_declare_a_request(self):
+        """A dependency that takes a `Request` can reach `app.state` without declaring the container."""
+        declaring = {function.name for function in _dependency_functions()
+                     for argument in (function.args.posonlyargs + function.args.args
+                                      + function.args.kwonlyargs)
+                     if isinstance(argument.annotation, ast.Name)
+                     and argument.annotation.id == "Request"}
+        assert declaring == REQUEST_DECLARING_FUNCTIONS, \
+            f"functions declaring a Request: {sorted(declaring)}"
 
 
 class TestTheProviderCallbackPartition:
