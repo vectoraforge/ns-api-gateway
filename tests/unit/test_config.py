@@ -686,19 +686,28 @@ class TestAnIncompleteConfigurationBootsAndHoldsNoVerifier:
             shutil.rmtree(tmp_dir)
 
 
-class TestEveryAdcFailureCostsOneRouteAndNotTheBoot:
-    """37.4 WR-08. `google.auth.default()` raises `RefreshError` and `TransportError` too, when the
-    GCE metadata server answers but answers badly -- a routine transient at pod start. Catching only
-    `DefaultCredentialsError` let those out of `lifespan` and crashlooped the pod."""
+class TestOnlyAnAbsentAdcCostsARouteAndAnyOtherFailureStopsTheBoot:
+    """D-08. `google.auth.default()` raises `RefreshError` and `TransportError` too, when the
+    GCE metadata server answers but answers badly. Absence means this deployment has no Play
+    credential, so the route answers 503; every other failure now stops the pod, and Kubernetes
+    is the retry."""
 
-    @pytest.mark.parametrize("failure", ["DefaultCredentialsError", "RefreshError",
-                                         "TransportError", "MutualTLSChannelError"])
-    def test_the_credential_reader_answers_none_for_any_of_them(self, monkeypatch, failure):
+    def test_an_absent_credential_answers_none(self, monkeypatch):
+        def raising(*_args, **_kwargs):
+            raise google.auth.exceptions.DefaultCredentialsError("no ADC in this test")
+
+        monkeypatch.setattr(google.auth, "default", raising)
+        assert _play_credential() is None
+
+    @pytest.mark.parametrize("failure", ["RefreshError", "TransportError",
+                                         "MutualTLSChannelError"])
+    def test_a_badly_answered_read_stops_the_boot(self, monkeypatch, failure):
         def raising(*_args, **_kwargs):
             raise getattr(google.auth.exceptions, failure)(f"{failure} in this test")
 
         monkeypatch.setattr(google.auth, "default", raising)
-        assert _play_credential() is None
+        with pytest.raises(RuntimeError):
+            _play_credential()
 
     def test_a_supplied_credential_is_returned_control(self, monkeypatch):
         """The control: a reader that answered None unconditionally would pass every case above."""
@@ -718,13 +727,6 @@ class TestEveryAdcFailureCostsOneRouteAndNotTheBoot:
         monkeypatch.setattr(google.auth, "default", raising)
         assert _play_credential() is None
         return recorded
-
-    @pytest.mark.parametrize("failure", ["RefreshError", "TransportError",
-                                         "MutualTLSChannelError"])
-    def test_a_badly_answered_read_is_told_apart_from_absence(self, monkeypatch, failure):
-        """WR-51: an operator repairs absence, and the next call's rebuild repairs this one, so
-        the boot line that names the missing settings is the wrong line for it."""
-        assert self._warnings(monkeypatch, failure) == ["play_credential_warm_up_failed"]
 
     def test_an_absent_credential_keeps_its_one_boot_line_and_gains_no_second(self, monkeypatch):
         """The control on 44 D-14: absence is already named by `google_play_configuration_absent`."""

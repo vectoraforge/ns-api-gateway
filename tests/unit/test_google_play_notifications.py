@@ -983,8 +983,10 @@ class TestTheClaimPinsArePostDecodeComparisons:
         assert _require_list() == ["exp", "iat", "aud", "iss", "sub"]
 
 
-class TestTheJwksWarmUpGuard:
-    """F-04: the constructor fetches, so an unguarded second verifier is a pod that will not start."""
+class TestAJwksWarmUpFailureStopsTheBoot:
+    """D-08: the constructor fetches. An absent pin is a deployment with no Play push route, so the
+    builder answers `None`. A fetch that fails is transient, so the builder raises and the pod does
+    not start; Kubernetes restarts it."""
 
     def test_an_unreachable_jwks_endpoint_raises_at_construction(self, jwks):
         """Measured, not assumed: this is the raise the builder's guard exists to catch."""
@@ -993,10 +995,11 @@ class TestTheJwksWarmUpGuard:
         with pytest.raises(PyJWKClientConnectionError):
             JWTVerifier(jwks_url=GOOGLE_JWKS_URL, audience=PUSH_AUDIENCE, issuer=GOOGLE_ISSUER)
 
-    def test_the_builder_answers_none_and_lets_the_pod_boot(self, jwks):
+    def test_the_builder_raises_and_stops_the_pod(self, jwks):
         jwks.error = urllib.error.URLError("the JWKS endpoint is unreachable")
 
-        assert build_google_push_verifier(_play_config()) is None
+        with pytest.raises(RuntimeError):
+            build_google_push_verifier(_play_config())
 
     def test_a_2xx_that_is_not_json_raises_inside_the_guarded_family(self, jwks):
         """WR-04/WR-20: `fetch_data` converts `URLError` and `TimeoutError` alone, so a captive
@@ -1007,11 +1010,12 @@ class TestTheJwksWarmUpGuard:
         with pytest.raises(PyJWTError):
             JWTVerifier(jwks_url=GOOGLE_JWKS_URL, audience=PUSH_AUDIENCE, issuer=GOOGLE_ISSUER)
 
-    def test_a_2xx_that_is_not_json_lets_the_pod_boot_too(self, jwks):
-        """The whole point: one route's 503 beats a dead `/chats`, which is what the guard promised."""
+    def test_a_2xx_that_is_not_json_stops_the_pod_too(self, jwks):
+        """A captive portal answering 200 is transient, so the same raise covers it."""
         jwks.body = NOT_JSON
 
-        assert build_google_push_verifier(_play_config()) is None
+        with pytest.raises(RuntimeError):
+            build_google_push_verifier(_play_config())
 
     def test_the_wrapped_failure_carries_neither_the_url_nor_the_body(self, jwks):
         """`JSONDecodeError`'s message quotes what it was reading, and PyJWT's embeds the URL."""
