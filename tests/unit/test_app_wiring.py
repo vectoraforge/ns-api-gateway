@@ -9,6 +9,7 @@ from nativespeaker.api.app.dependencies import (
     get_claims,
     get_db,
     get_identity,
+    get_runtime,
     verify_app_store_notification,
     verify_google_play_notification,
 )
@@ -151,6 +152,20 @@ class TestTheSignOutRouteOpensNoSession:
     def test_sign_out_all_declares_no_database_session(self):
         # `_flattened` walks sub-dependencies, so a session taken through a service is visible here.
         assert get_db not in _flattened(_route_at("/auth/sign-out-all"))
+
+
+class TestOnlyTheSignOutRouteReachesTheContainer:
+    """Criterion 5, D-05. `_declared`, never `_flattened`: after this phase every route reaches
+    `get_runtime` under `get_db` or `get_claims`, so a flattened walk would pass for all of them."""
+
+    def test_sign_out_all_declares_the_container(self):
+        assert get_runtime in _declared(_route_at("/auth/sign-out-all"))
+
+    def test_no_other_route_declares_the_container(self):
+        reaching = [route.path for route in _api_routes()
+                    if route.path != "/auth/sign-out-all"
+                    and get_runtime in _declared(route)]
+        assert reaching == [], f"routes declaring the whole container: {reaching}"
 
 
 class TestTheProviderCallbackPartition:
