@@ -5,11 +5,11 @@ milestone_name: Authentication & Entitlements
 current_phase: 50
 current_phase_name: Typed runtime container behind an exit-stack lifespan
 status: planning
-stopped_at: Phase 49 complete, ready to plan Phase 50
-last_updated: "2026-09-18T01:21:09.646Z"
+stopped_at: Phase 50 context gathered
+last_updated: "2026-09-18T05:17:59.775Z"
 last_activity: 2026-09-17
 last_activity_desc: Phase 49 complete, transitioned to Phase 50
-state_head: 6f7dd71084ba4513148793a5d7c39e42a35df84f
+state_head: 6a23a0670dc05e18b3508aed52ba0c66f2e8d03b
 progress:
   total_phases: 22
   completed_phases: 20
@@ -599,11 +599,11 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ## Session Continuity
 
-**Last session:** 2026-09-17T23:58:40.583Z
+**Last session:** 2026-09-18T05:17:58.906Z
 
 Last activity: 2026-09-17
-Stopped at: Phase 49 complete, ready to plan Phase 50
-Resume file: None
+Stopped at: Phase 50 context gathered
+Resume file: .planning/phases/50-typed-runtime-container-behind-an-exit-stack-lifespan/50-CONTEXT.md
 
 ## Performance Metrics
 
