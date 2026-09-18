@@ -58,9 +58,6 @@ class ChallengesDB:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    def __repr__(self) -> str:
-        return f"ChallengesDB(ttl_seconds={CHALLENGE_TTL_SECONDS})"
-
     async def issue(self, *,
                     operation: AuthOperation,
                     claims: VerifiedClaims,
