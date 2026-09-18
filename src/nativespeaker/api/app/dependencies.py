@@ -109,12 +109,12 @@ def get_chat_service(request: Request,
 
 
 def get_firebase_adapter(request: Request) -> FirebaseAdminLookup:
-    """The provider seam the lifespan built."""
+    """The Firebase lookup the lifespan built."""
     return request.app.state.firebase_adapter
 
 
 def get_devicecheck_adapter(request: Request) -> AppleDeviceCheck:
-    """The device-gate seam the lifespan built, declared like its Firebase sibling above."""
+    """The DeviceCheck adapter the lifespan built."""
     return request.app.state.devicecheck_adapter
 
 
