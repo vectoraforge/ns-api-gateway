@@ -903,7 +903,7 @@ Plans:
 **Goal:** Two rewrites of `app/lifespan.py`, landed as one phase because they touch the same lines. **First, resource handling.** Replace the four `Optional` locals, the outer `try/finally` and the per-step `try/except` teardown blocks with one `contextlib.AsyncExitStack` that wraps the body up to the `yield`. Every resource registers its own teardown at the moment it is created: the httpx clients through `enter_async_context`, the engine's `dispose` through `push_async_callback` registered before the reachability probe so a failed probe still disposes, each Firebase app's `delete_app` through `callback`; the final "shutdown" log is registered first so it runs last. Move each provider's construction and its degraded-mode warning into a builder in the same module, following the existing `build_app_store_verifier` / `build_db_engine` pattern — one each for the session factory, the Firebase adapter, DeviceCheck, App Store notifications and Google Play — each taking its config slice plus the stack when it owns a closeable. Reorder so the database and JWT builders, the two that can fail boot, run before the degraded-tolerant providers. Drop the `shutdown_step_failed` logging; a failing teardown propagates after the remaining callbacks run, which is what the stack does by default. Keep every `*_absent` warning text unchanged and routed through the module logger, because `tests/unit/test_config.py` monkeypatches it and imports four of the existing builders by name; the two warm-up warnings go with the retry (50 D-08). **Second, the container.** Gather the eight objects the lifespan still puts on `app.state` after Phase 49 — config, the session factory, the JWT verifier, the Firebase and DeviceCheck adapters, App Store notifications, Google Play notifications (50 D-09: `PubSubPushTokens` and `PlayDeveloperSubscriptions` merged into `GooglePlayNotifications`) and the LLM service — into one frozen, slotted dataclass in its own small module under `nativespeaker/api/app/` (not under `services/`, which holds request-scoped services), one typed field per object using the types the builders return, each field named as the `app.state` attribute is named today, in build order (`config`, `session_factory`, `jwt_verifier`, `firebase_adapter`, `devicecheck_adapter`, `app_store_notifications`, `google_play_notifications`, `llm_service`), so a reader that moves from the attribute to the field changes only its prefix. The lifespan builds each piece as a local, then assigns the container once, right before `yield`, as the only attribute it puts on `app.state`. In `dependencies.py` exactly one untyped access remains, a `get_runtime` function returning that attribute; every other dependency declares it as a parameter with a `Depends(get_runtime)` default and the container type as its annotation, and reads a field off it. The three one-line getters (`get_session_factory`, `get_firebase_adapter`, `get_devicecheck_adapter`) and every inline `request.app.state.*` read in the config, db, chat, restore, App Store and Google Play dependencies go away, so most of those functions no longer take a `Request`. FastAPI caches a dependency per request, so this costs nothing. **The test pass.** The nine test files that set attributes such as the session factory and the JWT verifier directly on `app.state` instead replace the whole container with one built from fakes, or use `dataclasses.replace` on the real one for a single field. The test-only `opened_sessions` attribute is not built by the lifespan and stays on `app.state`. Follow the project's opening-delimiter alignment style.
 **Requirements:** none mapped — a refactor plus one boot-rule change (50 D-08, D-09)
 **Depends on:** 47, 49 — Phase 47 removes `get_evaluated_at` from `dependencies.py` and Phase 49 removes the challenge store from the lifespan and `get_challenge_store` from `dependencies.py`, so this phase rewrites both files once, in their final shape
-**Plans:** 0 plans
+**Plans:** 7 plans
 **Success criteria:**
 
 1. `lifespan` holds no `Optional` resource local, no `try/finally` and no `try/except` teardown; one `AsyncExitStack` owns every teardown, the engine's `dispose` is registered before the reachability probe, and the "shutdown" log line is registered first
@@ -917,7 +917,38 @@ Plans:
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 50 to break down)
+**Wave 1**
+
+- [ ] 50-01-PLAN.md — the inherited Phase-47 e2e case, then the one `GooglePlayNotifications` class (D-09, D-10)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 50-02-PLAN.md — a failed warm-up stops the pod: the four builders and the `JWTConfig` signature (D-07, D-08)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 50-03-PLAN.md — tracer: `app/runtime.py`, `get_runtime`, `get_chat_service` end to end, the unit `Runtime` factory (D-01 to D-04)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 50-04-PLAN.md — the session factory and the JWT verifier move into the container; `get_session_factory` goes
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 50-05-PLAN.md — the Firebase and DeviceCheck adapters move; `sign_out_all` declares `get_runtime` (D-05)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [ ] 50-06-PLAN.md — the two store seams move; one `app.state` write, one `request.app.state` read; criteria 5 and 6 pinned
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
+- [ ] 50-07-PLAN.md — one `AsyncExitStack`, five builders (D-06); criteria 1, 2, 3 pinned; phase gate
+
+**Cross-cutting constraints:**
+
+- 49 D-08: every commit that changes the `auth/` module, class or function count writes the re-measured `CURRENT` tuple into `tests/unit/test_auth_package_shape.py` in that same commit, read off the failing run's own text.
+- Every plan carries the same note: this directory is a git submodule, not a worktree, and no plan creates, renames or switches a git branch.
 
 ## Progress
 
