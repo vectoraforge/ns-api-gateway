@@ -15,6 +15,7 @@ from nativespeaker.api.crud.challenges import (
     CHALLENGE_TTL_SECONDS,
     ChallengesDB,
     new_challenge_id,
+    verify_binding,
 )
 from nativespeaker.api.errors import ChallengeConsumed, ChallengeIdentityMismatch
 from nativespeaker.api.schemas.auth import LinkedIdentity
@@ -218,7 +219,7 @@ class TestTheCompletionComparison:
                             operation=AuthOperation.claim_registered_grant,
                             bound_external_identity_id=linked.identity.id,
                             expires_at=SEEDED_AT, created_at=SEEDED_AT)
-        assert store(_RecordingSession()).verify_binding(row, claims=claims_for(), linked=linked) is row
+        assert verify_binding(row, claims=claims_for(), linked=linked) is row
 
     def test_a_linked_row_rejects_a_different_identity_row(self):
         row = AuthChallenge(challenge_id=new_challenge_id(),
@@ -226,7 +227,7 @@ class TestTheCompletionComparison:
                             bound_external_identity_id=uuid7(),
                             expires_at=SEEDED_AT, created_at=SEEDED_AT)
         with pytest.raises(ChallengeIdentityMismatch):
-            store(_RecordingSession()).verify_binding(row, claims=claims_for(), linked=linked_identity())
+            verify_binding(row, claims=claims_for(), linked=linked_identity())
 
     def test_a_linked_row_rejects_a_preauth_request(self):
         """A pre-auth request resolved to no identity row, so it must not be waved through for lack of a comparison."""
@@ -235,7 +236,7 @@ class TestTheCompletionComparison:
                             bound_external_identity_id=uuid7(),
                             expires_at=SEEDED_AT, created_at=SEEDED_AT)
         with pytest.raises(ChallengeIdentityMismatch):
-            store(_RecordingSession()).verify_binding(row, claims=claims_for(), linked=None)
+            verify_binding(row, claims=claims_for(), linked=None)
 
     def test_a_preauth_row_matches_the_subject_it_was_issued_for(self):
         row = AuthChallenge(challenge_id=new_challenge_id(),
@@ -243,7 +244,7 @@ class TestTheCompletionComparison:
                             preauth_issuer=ISSUER,
                             preauth_subject=SUBJECT,
                             expires_at=SEEDED_AT, created_at=SEEDED_AT)
-        assert store(_RecordingSession()).verify_binding(row, claims=claims_for(), linked=None) is row
+        assert verify_binding(row, claims=claims_for(), linked=None) is row
 
     def test_a_preauth_row_rejects_a_different_subject(self):
         row = AuthChallenge(challenge_id=new_challenge_id(),
@@ -252,7 +253,7 @@ class TestTheCompletionComparison:
                             preauth_subject=SUBJECT,
                             expires_at=SEEDED_AT, created_at=SEEDED_AT)
         with pytest.raises(ChallengeIdentityMismatch):
-            store(_RecordingSession()).verify_binding(row, claims=claims_for("someone-else"), linked=None)
+            verify_binding(row, claims=claims_for("someone-else"), linked=None)
 
     def test_a_preauth_row_rejects_a_different_issuer(self):
         """A subject is unique only within its issuer, so it alone would admit another provider's subject."""
@@ -262,7 +263,7 @@ class TestTheCompletionComparison:
                             preauth_subject=SUBJECT,
                             expires_at=SEEDED_AT, created_at=SEEDED_AT)
         with pytest.raises(ChallengeIdentityMismatch):
-            store(_RecordingSession()).verify_binding(row, claims=claims_for(), linked=None)
+            verify_binding(row, claims=claims_for(), linked=None)
 
     def test_a_preauth_row_still_matches_a_subject_that_has_since_become_linked(self):
         """What fails a pre-auth binding is a differing subject, not the subject having since become linked."""
@@ -271,8 +272,8 @@ class TestTheCompletionComparison:
                             preauth_issuer=ISSUER,
                             preauth_subject=SUBJECT,
                             expires_at=SEEDED_AT, created_at=SEEDED_AT)
-        assert store(_RecordingSession()).verify_binding(row, claims=claims_for(SUBJECT),
-                                                         linked=linked_identity(SUBJECT)) is row
+        assert verify_binding(row, claims=claims_for(SUBJECT),
+                              linked=linked_identity(SUBJECT)) is row
 
     def test_a_cleared_preauth_subject_takes_the_already_used_rejection(self):
         row = AuthChallenge(challenge_id=new_challenge_id(),
@@ -282,7 +283,7 @@ class TestTheCompletionComparison:
                             consumed_at=SEEDED_AT,
                             expires_at=SEEDED_AT, created_at=SEEDED_AT)
         with pytest.raises(ChallengeConsumed):
-            store(_RecordingSession()).verify_binding(row, claims=claims_for(), linked=None)
+            verify_binding(row, claims=claims_for(), linked=None)
 
     def test_a_cleared_preauth_subject_is_answered_before_the_issuer_is_compared(self):
         """Ordering, not the answer: a mismatched issuer on a cleared row still earns the already-used rejection."""
@@ -293,7 +294,7 @@ class TestTheCompletionComparison:
                             consumed_at=SEEDED_AT,
                             expires_at=SEEDED_AT, created_at=SEEDED_AT)
         with pytest.raises(ChallengeConsumed):
-            store(_RecordingSession()).verify_binding(row, claims=claims_for(), linked=None)
+            verify_binding(row, claims=claims_for(), linked=None)
 
 
 class TestLocateIsByteForByte:

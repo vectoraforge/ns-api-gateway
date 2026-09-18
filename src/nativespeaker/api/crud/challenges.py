@@ -24,6 +24,24 @@ def new_challenge_id() -> str:
     return base64.urlsafe_b64encode(secrets.token_bytes(CHALLENGE_ID_BYTES)).rstrip(b"=").decode()
 
 
+def verify_binding(row: AuthChallenge, claims: VerifiedClaims,
+                   linked: LinkedIdentity | None) -> AuthChallenge:
+    """Return `row` when the caller is the presenter it was bound to, and raise otherwise."""
+    if row.bound_external_identity_id is not None:
+        if linked is not None and linked.identity.id == row.bound_external_identity_id:
+            return row
+        raise ChallengeIdentityMismatch()
+
+    # A cleared subject is never compared: the row takes the already-used answer.
+    if row.preauth_subject is None:
+        raise ChallengeConsumed()
+    if row.preauth_issuer != claims.issuer:
+        raise ChallengeIdentityMismatch()
+    if row.preauth_subject != claims.subject:
+        raise ChallengeIdentityMismatch()
+    return row
+
+
 def _claim_statement(challenge_id: str):
     """The claim UPDATE, module-level so a test compiles this statement rather than a mirror of it."""
     return (update(AuthChallenge)
@@ -91,20 +109,3 @@ class ChallengesDB:
             .values(consumed_at=func.clock_timestamp(), preauth_subject=None)
             .returning(col(AuthChallenge.id)))
         return len(result.all()) == 1
-
-    def verify_binding(self, row: AuthChallenge, claims: VerifiedClaims,
-                       linked: LinkedIdentity | None) -> AuthChallenge:
-        """Return `row` when the caller is the presenter it was bound to, and raise otherwise."""
-        if row.bound_external_identity_id is not None:
-            if linked is not None and linked.identity.id == row.bound_external_identity_id:
-                return row
-            raise ChallengeIdentityMismatch()
-
-        # A cleared subject is never compared: the row takes the already-used answer.
-        if row.preauth_subject is None:
-            raise ChallengeConsumed()
-        if row.preauth_issuer != claims.issuer:
-            raise ChallengeIdentityMismatch()
-        if row.preauth_subject != claims.subject:
-            raise ChallengeIdentityMismatch()
-        return row

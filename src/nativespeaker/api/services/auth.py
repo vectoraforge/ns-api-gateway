@@ -19,6 +19,7 @@ from nativespeaker.api.auth.firebase import (
 )
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud import ChallengesDB, GrantsDB, IdentitiesDB
+from nativespeaker.api.crud.challenges import verify_binding
 from nativespeaker.api.crud.grants import ActivationOutcome
 from nativespeaker.api.errors import (
     ActiveGrantOutsideItsTerm,
@@ -145,7 +146,7 @@ class AuthService:
             raise ChallengeNotFound()
 
         # Every line below reads `challenge`, which only the binding check produces: deleting it is a NameError.
-        challenge = self.challenges_db.verify_binding(located, claims, linked)
+        challenge = verify_binding(located, claims, linked)
         if challenge.operation is not operation:
             raise ChallengeOperationMismatch()
 

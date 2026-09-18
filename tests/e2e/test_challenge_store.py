@@ -12,7 +12,11 @@ from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
 from e2e.conftest import seed_identity
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
-from nativespeaker.api.crud.challenges import ChallengesDB, _claim_statement
+from nativespeaker.api.crud.challenges import (
+    ChallengesDB,
+    _claim_statement,
+    verify_binding,
+)
 from nativespeaker.api.errors import ChallengeConsumed, ChallengeIdentityMismatch
 from nativespeaker.api.schemas.auth import LinkedIdentity
 from nativespeaker.api.tables.auth import AuthChallenge, AuthOperation
@@ -296,10 +300,9 @@ class TestTheBindingAgainstRealRows:
                                 operation=AuthOperation.claim_registered_grant)
 
         row = await read(_db_transaction, handle)
+        assert row is not None
         assert row.bound_external_identity_id == identity.id
-        async with _db_transaction() as session:
-            assert ChallengesDB(session).verify_binding(row, claims=claims_for(),
-                                                        linked=linked) is row
+        assert verify_binding(row, claims=claims_for(), linked=linked) is row
 
     async def test_a_linked_bound_row_rejects_a_different_identity(self, _db_transaction):
         user, identity = await seed_identity(_db_transaction, issuer=ISSUER, subject=SUBJECT)
@@ -312,10 +315,9 @@ class TestTheBindingAgainstRealRows:
                                 operation=AuthOperation.claim_registered_grant)
 
         row = await read(_db_transaction, handle)
-        async with _db_transaction() as session:
-            with pytest.raises(ChallengeIdentityMismatch):
-                ChallengesDB(session).verify_binding(row, claims=claims_for("a-different-subject"),
-                                                     linked=intruder)
+        assert row is not None
+        with pytest.raises(ChallengeIdentityMismatch):
+            verify_binding(row, claims=claims_for("a-different-subject"), linked=intruder)
 
     async def test_a_rejected_binding_leaves_the_challenge_unconsumed(self, _db_transaction):
         """A row bound to another identity is rejected before the claim, so it burns nobody's challenge."""
@@ -328,13 +330,13 @@ class TestTheBindingAgainstRealRows:
         handle, _ = await issue(_db_transaction, linked,
                                 operation=AuthOperation.claim_registered_grant)
 
-        async with _db_transaction() as session:
-            with pytest.raises(ChallengeIdentityMismatch):
-                ChallengesDB(session).verify_binding(await read(_db_transaction, handle),
-                                                     claims=claims_for("a-different-subject"),
-                                                     linked=intruder)
+        presented = await read(_db_transaction, handle)
+        assert presented is not None
+        with pytest.raises(ChallengeIdentityMismatch):
+            verify_binding(presented, claims=claims_for("a-different-subject"), linked=intruder)
 
         row = await read(_db_transaction, handle)
+        assert row is not None
         assert row.claimed_at is None
         assert row.consumed_at is None
 
@@ -343,10 +345,9 @@ class TestTheBindingAgainstRealRows:
         """The subject survives the TEXT round trip unaltered, which is what the comparison depends on."""
         handle, _ = await issue(_db_transaction)
         row = await read(_db_transaction, handle)
+        assert row is not None
         assert row.preauth_subject == SUBJECT
-        async with _db_transaction() as session:
-            assert ChallengesDB(session).verify_binding(row, claims=claims_for(),
-                                                        linked=None) is row
+        assert verify_binding(row, claims=claims_for(), linked=None) is row
 
     async def test_a_consumed_preauth_row_takes_the_already_used_rejection(self, _db_transaction):
         """Consume clears the subject, so the row read back rejects challenge_consumed, not a mismatch."""
@@ -358,9 +359,9 @@ class TestTheBindingAgainstRealRows:
             await session.commit()
 
         row = await read(_db_transaction, handle)
-        async with _db_transaction() as session:
-            with pytest.raises(ChallengeConsumed):
-                ChallengesDB(session).verify_binding(row, claims=claims_for(), linked=None)
+        assert row is not None
+        with pytest.raises(ChallengeConsumed):
+            verify_binding(row, claims=claims_for(), linked=None)
 
 
 @pytest.mark.asyncio(loop_scope="module")
