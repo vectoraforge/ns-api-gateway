@@ -150,6 +150,8 @@ Phase 46 shipped `POST /auth/sign-out-all` and closed SIGNOUT-01 and SIGNOUT-02,
 
 Phase 48 narrowed identity to the verified pair. `AuthIdentity` is deleted. The barrier is two dependencies: `get_claims` verifies the token and reads no table; `get_identity` resolves the account in one statement and raises `PreAuthIdentityNotAllowed` when no row exists. `LinkedIdentity` holds `user` and `identity`, both required. `IdentitiesDB.resolve` lost `allow_preauth` and answers `LinkedIdentity | None`; the refusal for "no row" belongs to the caller. Behavior-preserving: the admission matrix is unchanged, verified 5/5 must-haves, 50/50 UAT checkpoints, Nyquist-compliant with 0 gaps. Suites at close: `-m ''` 2572 passed, `-m e2e` 360, `-m schema` 297, the one failure being the pre-existing restore case (ledger entry 29). Next: Phase 49 (delete the single-implementation auth Protocols).
 
+Phase 49 deleted the four single-implementation Protocols in `auth/` — `PlaySubscriptionSource`, `TokenVerifier`, `DeviceCheckAdapter` and `FirebaseAdminAdapter` — and annotated every former use with the concrete class. `auth/adapters.py` is gone; `VerifiedProviderIdentity` lives in `auth/firebase.py`. `ChallengesDB` takes its session in the constructor like `IdentitiesDB` and `GrantsDB`; `AuthService` builds it as `challenges_db`, the challenge handler builds its own, and `get_challenge_store` and `app.state.challenge_store` no longer exist. The shape tuple in `tests/unit/test_auth_package_shape.py` went `(8, 24, 67)` → `(7, 20, 60)` in six seam commits. Behavior-preserving: verified 5/5 must-haves, no requirement mapped. Suites at close: `-m ''` 2563 passed (17 Protocol-guard cases deleted), `-m e2e` 360, `-m schema` 297, `ty` 306, the one failure being the pre-existing restore case. Code review left 8 advisory warnings in `49-REVIEW.md`, the lead one being the handler that builds a crud class in its body against AGENTS.md. Next: Phase 50 (typed runtime container behind an exit-stack lifespan).
+
 ## Context
 
 Tech stack: Python 3.12, FastAPI, LangChain, SQLAlchemy async, Pydantic v2, PyJWT, structlog, orjson, ruff. Infrastructure: Envoy Gateway (rate limiting, JWT extraction), Kubernetes via Helm chart, PostgreSQL with native enum types.
@@ -232,6 +234,7 @@ Known areas for future work:
 | `POST /auth/sign-out-all` answers 401 `auth_required` on a Firebase "no such user", where the brief puts every non-confirmed revocation on the 503 surface (Phase 46 D-06) | The token verified and the identity row is linked, but no account exists behind the uid, so nothing can be revoked and no token can be minted for it again; a 503 would repeat for up to an hour until the ID token expired. Recorded as a flagged conflict under SIGNOUT-01 | ✓ Good — v2.0, demonstrated on the wire |
 | `AuthService.complete` resolves the caller itself at create-user (Phase 48 D-07, option B) instead of giving create-user the token dependency only | A caller with an active row presents a challenge bound to that row; without the resolve, `verify_binding` would answer 409 `challenge_required` in a loop where the route answers 409 `identity_already_linked` today. The query count does not move | ✓ Good — v2.0, proved on the wire by `tests/e2e/test_create_user.py` |
 | `RevocationUnconfirmed` gets its own retry wrapper and exhaustion leaf beside `lookup_with_retry`, and shares 503 `verification_temporarily_unavailable` with `Unavailable` (Phase 46 D-01, D-05) | One code at one status keeps the wire anti-oracle; the two leaves are told apart by class and by log event, which the unit twins pin so a swallowed exhaustion cannot answer 204 | ✓ Good — v2.0 |
+| The challenge handler builds `ChallengesDB(session)` in its body and the service builds its own (Phase 49 D-01/D-03), against the `Depends`-only rule in AGENTS.md | The lifespan-owned crud object was the one auth crud built outside its session; the phase moved it to the session-in-init shape first. The `get_challenges_db` dependency is the code review's WR-01 and is one small follow-up | ⚠ Open — v2.0, `49-REVIEW.md` WR-01 |
 
 ## Evolution
 
@@ -251,4 +254,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-09-16 after completing Phase 48*
+*Last updated: 2026-09-17 after completing Phase 49*

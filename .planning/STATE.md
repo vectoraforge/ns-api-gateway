@@ -22,17 +22,17 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-09-16)
+See: .planning/PROJECT.md (updated 2026-09-17)
 
 **Core value:** The analysis pipeline must work reliably -- correct LLM invocation, proper resilience under load, and safe per-user data isolation.
-**Current focus:** Phase 49 — Delete the single-implementation auth Protocols
+**Current focus:** Phase 50 — Typed runtime container behind an exit-stack lifespan
 
 ## Current Position
 
 Phase: 50 — Typed runtime container behind an exit-stack lifespan
 Plan: Not started
 Status: Ready to plan
-Progress: [████████████████████] 140/140 plans ([█████████░] 86%)
+Progress: [████████████████████] 144/144 plans ([█████████░] 91%)
 
 <!-- Counts read off disk rather than incremented, as 41-05, 42-07, 43-06, 44-07, 45-05, 45-09 and
      46-05 each did. Read at 2026-09-12T08:05Z, during plan 47-08's Task 3: 132 PLAN files and 131
@@ -462,6 +462,8 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 ### Key Decisions (carry forward)
 
+- Phase 49: no `typing.Protocol` with one implementation survives in `auth/`; parameters name the concrete adapter class, and a test double that must satisfy the annotation is the review's open question (WR-04/05)
+- Phase 49: `ChallengesDB(session)` holds its session like the other crud classes; the service and the handler each build their own, and `app.state.challenge_store` / `get_challenge_store` are gone — Phase 50 shapes the runtime container without them
 - Phase 48: the auth barrier is two dependencies, `get_claims` (token, no table) and `get_identity` (account, one query); `AuthIdentity` is gone and `LinkedIdentity` holds two required rows
 - Phase 48 D-07 option B: `AuthService.complete` resolves the caller itself, so an already-linked caller still earns 409 `identity_already_linked` before the challenge is spent (WINDOWS.md entry 33)
 - Phase 48: a crud read that can find nothing answers `None`; the refusal belongs to the caller that requires a row
@@ -599,7 +601,7 @@ first work: `user_not_found` currently earns 503 where §02 earns 401, and a gen
 
 **Last session:** 2026-09-17T23:58:40.583Z
 
-Last activity: 2026-09-16
+Last activity: 2026-09-17
 Stopped at: Phase 49 complete, ready to plan Phase 50
 Resume file: None
 
