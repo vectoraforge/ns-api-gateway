@@ -12,7 +12,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import object_session
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth.devicecheck import BitState
+from nativespeaker.api.auth.devicecheck import AppleDeviceCheck, BitState
+from nativespeaker.api.auth.firebase import FirebaseAdminLookup
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.errors import AppError
@@ -149,7 +150,7 @@ async def commit_issued_challenge(harness: _Harness, *, identity_id: uuid.UUID,
     return row_id, challenge_id
 
 
-class _NeverSetDevice:
+class _NeverSetDevice(AppleDeviceCheck):
     """The scripted seam: a never-set device for both attempts, so the vendor cannot make a race flaky."""
 
     def __init__(self) -> None:
@@ -260,8 +261,8 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, before_first_flush=N
         attempt.caller_rows_detached = all(
             object_session(row) is None for row in (linked.user, linked.identity))
         service = AuthService(db=session,
-                              adapter=None,  # ty: ignore[invalid-argument-type]
-                              devicecheck=_NeverSetDevice())  # ty: ignore[invalid-argument-type]
+                              adapter=FirebaseAdminLookup({}),
+                              devicecheck=_NeverSetDevice())
         completion = (service.complete_claim_registered_grant
                       if attempt.operation == "claim_registered_grant"
                       else service.complete_claim_anonymous_grant)

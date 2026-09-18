@@ -4,9 +4,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from nativespeaker.api.auth.devicecheck import AppleDeviceCheck
+from nativespeaker.api.auth.firebase import FirebaseAdminLookup
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud import identities as identities_crud
 from nativespeaker.api.crud.violations import UNIQUE_VIOLATION
@@ -22,6 +25,12 @@ from nativespeaker.api.services import auth as auth_service
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider, IdentityState
 from nativespeaker.api.tables.users import User
+
+
+def _unreached_devicecheck() -> AppleDeviceCheck:
+    """An unconfigured device gate: every call fails closed before it reaches Apple."""
+    return AppleDeviceCheck(key_id=None, team_id=None, private_key=None,
+                            client=httpx.AsyncClient())
 
 ISSUER = "https://securetoken.google.com/ns-conflict-test"
 SUBJECT = "conflict-classification-subject"
@@ -124,7 +133,9 @@ def _identity_row(*, state: IdentityState, user_id=None) -> ExternalIdentity:
 
 async def _create(session, *, provider=IdentityProvider.anonymous, provider_uid=None):
     """Drive `AuthService.create_user` over whichever session the case scripted."""
-    service = AuthService(db=session, adapter=None, devicecheck=None)  # ty: ignore[invalid-argument-type]
+    service = AuthService(db=session,
+                          adapter=FirebaseAdminLookup({}),
+                          devicecheck=_unreached_devicecheck())
     return await service.create_user(claims=_claims(),
                                      provider=provider,
                                      provider_uid=provider_uid,

@@ -3,18 +3,26 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth.firebase import VerifiedProviderIdentity
+from nativespeaker.api.auth.devicecheck import AppleDeviceCheck
+from nativespeaker.api.auth.firebase import FirebaseAdminLookup, VerifiedProviderIdentity
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud import identities as identities_crud
 from nativespeaker.api.errors import AppError, IdentityAlreadyLinked
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import IdentityProvider
+
+
+def _unreached_devicecheck() -> AppleDeviceCheck:
+    """An unconfigured device gate: every call fails closed before it reaches Apple."""
+    return AppleDeviceCheck(key_id=None, team_id=None, private_key=None,
+                            client=httpx.AsyncClient())
 
 pytestmark = pytest.mark.schema
 
@@ -126,7 +134,7 @@ async def row(harness: _Harness, sql: str, params: dict | None = None):
         return (await conn.execute(text(sql), params or {})).first()
 
 
-class _ScriptedAdapter:
+class _ScriptedAdapter(FirebaseAdminLookup):
     """The providerData seam, scripted: the completion's remote read is not what this file is about."""
 
     def __init__(self, provider: IdentityProvider, provider_uid: str | None) -> None:
@@ -174,8 +182,8 @@ async def run_creation(harness: _Harness, *, subject: str, provider: IdentityPro
     async with harness.factory() as real_session:
         session = _RacingSession(real_session, after_re_resolution)
         service = AuthService(db=session,
-                              adapter=_ScriptedAdapter(provider, provider_uid),  # ty: ignore[invalid-argument-type]
-                              devicecheck=None)  # ty: ignore[invalid-argument-type]
+                              adapter=_ScriptedAdapter(provider, provider_uid),
+                              devicecheck=_unreached_devicecheck())
         try:
             result = await service.complete(claims=claims, challenge_id=challenge_id_value)
         except AppError as rejection:

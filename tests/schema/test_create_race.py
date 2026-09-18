@@ -4,17 +4,25 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
-from nativespeaker.api.auth.firebase import VerifiedProviderIdentity
+from nativespeaker.api.auth.devicecheck import AppleDeviceCheck
+from nativespeaker.api.auth.firebase import FirebaseAdminLookup, VerifiedProviderIdentity
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.errors import AppError
 from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import IdentityProvider
+
+
+def _unreached_devicecheck() -> AppleDeviceCheck:
+    """An unconfigured device gate: every call fails closed before it reaches Apple."""
+    return AppleDeviceCheck(key_id=None, team_id=None, private_key=None,
+                            client=httpx.AsyncClient())
 
 pytestmark = pytest.mark.schema
 
@@ -99,7 +107,7 @@ async def commit_issued_challenge(harness: _Harness, *,
     return row_id, challenge_id
 
 
-class _ScriptedAdapter:
+class _ScriptedAdapter(FirebaseAdminLookup):
     """The providerData seam, scripted: the completion's remote read is not what this file is about."""
 
     def __init__(self, provider: IdentityProvider, provider_uid: str | None) -> None:
@@ -169,8 +177,8 @@ async def run_attempt(harness: _Harness, attempt: _Attempt, after_re_resolution=
         session = _HookedSession(real_session, after_re_resolution)
         service = AuthService(
             db=session,
-            adapter=_ScriptedAdapter(attempt.provider, attempt.provider_uid),  # ty: ignore[invalid-argument-type]
-            devicecheck=None)  # ty: ignore[invalid-argument-type]
+            adapter=_ScriptedAdapter(attempt.provider, attempt.provider_uid),
+            devicecheck=_unreached_devicecheck())
         try:
             attempt.result = await service.complete(claims=attempt.claims,
                                                     challenge_id=attempt.challenge_id)

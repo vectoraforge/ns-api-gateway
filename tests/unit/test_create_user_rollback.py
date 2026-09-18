@@ -1,9 +1,12 @@
 """Control flow only: a failed insert stops inserting and raises; durability is a schema-test claim."""
 from uuid import UUID
 
+import httpx
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from nativespeaker.api.auth.devicecheck import AppleDeviceCheck
+from nativespeaker.api.auth.firebase import FirebaseAdminLookup
 from nativespeaker.api.auth.jwt_verifier import VerifiedClaims
 from nativespeaker.api.crud.violations import UNIQUE_VIOLATION
 from nativespeaker.api.errors import IdentityAlreadyLinked
@@ -11,6 +14,12 @@ from nativespeaker.api.services.auth import AuthService
 from nativespeaker.api.tables.identities import ExternalIdentity, IdentityProvider
 from nativespeaker.api.tables.purchases import StorePurchaseToken
 from nativespeaker.api.tables.users import User
+
+
+def _unreached_devicecheck() -> AppleDeviceCheck:
+    """An unconfigured device gate: every call fails closed before it reaches Apple."""
+    return AppleDeviceCheck(key_id=None, team_id=None, private_key=None,
+                            client=httpx.AsyncClient())
 
 ISSUER = "https://securetoken.google.com/ns-rollback-test"
 SUBJECT = "rollback-control-flow-subject"
@@ -72,7 +81,9 @@ def _claims() -> VerifiedClaims:
 
 
 async def _create(session) -> UUID:
-    service = AuthService(db=session, adapter=None, devicecheck=None)  # ty: ignore[invalid-argument-type]
+    service = AuthService(db=session,
+                          adapter=FirebaseAdminLookup({}),
+                          devicecheck=_unreached_devicecheck())
     return await service.create_user(claims=_claims(),
                                      provider=IdentityProvider.anonymous,
                                      provider_uid=None,
