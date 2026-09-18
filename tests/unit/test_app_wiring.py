@@ -140,9 +140,15 @@ def _lifespan_with_body() -> list[ast.stmt]:
 
 def _warning_events() -> set[str]:
     """Every event name `lifespan.py` passes to `logger.warning`."""
-    return {node.args[0].value for node in ast.walk(_lifespan_tree())
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "warning" and node.args}
+    events = set()
+    for node in ast.walk(_lifespan_tree()):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "warning" and node.args):
+            continue
+        event = node.args[0]
+        if isinstance(event, ast.Constant):
+            events.add(event.value)
+    return events
 
 
 def _api_routes() -> list[APIRoute]:
@@ -289,10 +295,11 @@ class TestTheStackOwnsEveryTeardown:
         """Registered first, so it runs last."""
         first = _lifespan_with_body()[0]
         assert isinstance(first, ast.Expr) and isinstance(first.value, ast.Call)
-        assert isinstance(first.value.func, ast.Attribute)
-        assert first.value.func.attr == "callback"
-        assert _dotted(first.value.args[0]) == "logger.info"
-        assert [argument.value for argument in first.value.args[1:]] == ["shutdown"]
+        call = first.value
+        assert isinstance(call.func, ast.Attribute) and call.func.attr == "callback"
+        logged, event = call.args
+        assert isinstance(logged, ast.Attribute) and _dotted(logged) == "logger.info"
+        assert isinstance(event, ast.Constant) and event.value == "shutdown"
 
     def test_each_runtime_field_has_a_builder_of_its_own_name(self):
         defined = {node.name for node in ast.walk(_lifespan_tree())
