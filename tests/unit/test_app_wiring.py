@@ -1,13 +1,17 @@
 """App-construction invariants admission depends on, asserted over the real app because runtime hides them."""
 import ast
+from contextlib import asynccontextmanager
 from dataclasses import FrozenInstanceError, fields, is_dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
-from fastapi import Depends
+from fastapi import Depends, FastAPI
 from fastapi.routing import APIRoute
 
 from nativespeaker.api.app import dependencies as dependencies_module
+from nativespeaker.api.app import lifespan as lifespan_module
 from nativespeaker.api.app.dependencies import (
     get_claims,
     get_db,
@@ -30,11 +34,21 @@ PROVIDER_CALLBACK_VERIFIERS = {"/webhooks/app-store": verify_app_store_notificat
 PROVIDER_CALLBACK_PATHS = set(PROVIDER_CALLBACK_VERIFIERS)
 
 DEPENDENCIES_MODULE = Path(dependencies_module.__file__)
+LIFESPAN_MODULE = Path(lifespan_module.__file__)
 TESTS_ROOT = Path(__file__).resolve().parents[1]
 
 # Literals, as above: the one untyped read and the two functions allowed to take a `Request`.
 APP_STATE_CHAIN = "request.app.state"
 REQUEST_DECLARING_FUNCTIONS = {"get_runtime", "get_claims"}
+
+# Literals again: a renamed builder, a reordered boot or a new warning is a visible edit here.
+FIELD_BUILDERS = ("build_session_factory", "build_firebase_adapter", "build_devicecheck_adapter",
+                  "build_app_store_notifications", "build_google_play_notifications")
+BOOT_FATAL_BUILDERS = ("build_session_factory", "build_jwt_verifier")
+DEGRADED_TOLERANT_BUILDERS = ("build_firebase_adapter", "build_devicecheck_adapter",
+                              "build_app_store_notifications", "build_google_play_notifications")
+ABSENT_WARNINGS = {"devicecheck_credential_absent", "app_store_configuration_absent",
+                   "google_play_configuration_absent"}
 
 
 def _dotted(node: ast.Attribute) -> str:
@@ -89,6 +103,46 @@ def _state_assignments(names: set[str]) -> list[str]:
                     found.append(f"{path.relative_to(TESTS_ROOT)}:{node.lineno} "
                                  f"sets .state.{target.attr}")
     return found
+
+
+def _lifespan_tree() -> ast.Module:
+    """The `lifespan.py` source, parsed."""
+    return ast.parse(LIFESPAN_MODULE.read_text())
+
+
+def _function_named(tree: ast.AST, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    """The one function of that name, found at any nesting depth."""
+    found = [node for node in ast.walk(tree)
+             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name]
+    assert len(found) == 1, f"{name} is defined {len(found)} times"
+    return found[0]
+
+
+def _first_call_lines(node: ast.AST) -> dict[str, int]:
+    """The first line each callable is called at under this node, dotted calls keyed on the attribute."""
+    lines: dict[str, int] = {}
+    for inner in sorted((node for node in ast.walk(node) if isinstance(node, ast.Call)),
+                        key=lambda call: call.lineno):
+        if isinstance(inner.func, ast.Name):
+            lines.setdefault(inner.func.id, inner.lineno)
+        elif isinstance(inner.func, ast.Attribute):
+            lines.setdefault(inner.func.attr, inner.lineno)
+    return lines
+
+
+def _lifespan_with_body() -> list[ast.stmt]:
+    """The body of the one `async with` in `lifespan`."""
+    opened = [node for node in ast.walk(_function_named(_lifespan_tree(), "lifespan"))
+              if isinstance(node, ast.AsyncWith)]
+    assert len(opened) == 1, f"lifespan opens {len(opened)} async with blocks"
+    return opened[0].body
+
+
+def _warning_events() -> set[str]:
+    """Every event name `lifespan.py` passes to `logger.warning`."""
+    return {node.args[0].value for node in ast.walk(_lifespan_tree())
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "warning" and node.args}
 
 
 def _api_routes() -> list[APIRoute]:
@@ -208,6 +262,123 @@ class TestTheRuntimeContainerIsFrozenAndSlotted:
 
     def test_the_container_lives_in_its_own_module_under_app(self):
         assert Runtime.__module__ == "nativespeaker.api.app.runtime"
+
+
+class TestTheStackOwnsEveryTeardown:
+    """Criteria 1 and 2, read off the `lifespan.py` source. Every expectation is a literal above,
+    so a reordered boot or a renamed builder has to be written down here to pass."""
+
+    def test_the_module_builds_exactly_one_exit_stack(self):
+        made = [node for node in ast.walk(_lifespan_tree())
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "AsyncExitStack"]
+        assert len(made) == 1, f"AsyncExitStack is built {len(made)} times"
+
+    def test_the_lifespan_holds_no_try_finally(self):
+        """The stack owns the teardown, so a `finally` here would be a second owner of it."""
+        blocks = [node.lineno for node in ast.walk(_function_named(_lifespan_tree(), "lifespan"))
+                  if isinstance(node, ast.Try) and node.finalbody]
+        assert blocks == [], f"lifespan holds a try/finally at line(s) {blocks}"
+
+    def test_dispose_is_registered_before_the_reachability_probe(self):
+        """A probe that raises must still dispose the pool the engine already opened."""
+        lines = _first_call_lines(_function_named(_lifespan_tree(), "build_session_factory"))
+        assert lines["push_async_callback"] < lines["_prove_database_reachable"]
+
+    def test_the_shutdown_log_is_the_first_statement_of_the_stack(self):
+        """Registered first, so it runs last."""
+        first = _lifespan_with_body()[0]
+        assert isinstance(first, ast.Expr) and isinstance(first.value, ast.Call)
+        assert isinstance(first.value.func, ast.Attribute)
+        assert first.value.func.attr == "callback"
+        assert _dotted(first.value.args[0]) == "logger.info"
+        assert [argument.value for argument in first.value.args[1:]] == ["shutdown"]
+
+    def test_each_runtime_field_has_a_builder_of_its_own_name(self):
+        defined = {node.name for node in ast.walk(_lifespan_tree())
+                   if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        assert set(FIELD_BUILDERS) <= defined, f"missing builders: {set(FIELD_BUILDERS) - defined}"
+        assert {name.removeprefix("build_") for name in FIELD_BUILDERS} <= \
+            {field.name for field in fields(Runtime)}
+
+    def test_the_two_boot_fatal_builders_run_before_the_degraded_tolerant_ones(self):
+        """A pod that cannot verify an identity token never reaches the point of building a store reader."""
+        lines = _first_call_lines(_function_named(_lifespan_tree(), "lifespan"))
+        missing = [name for name in BOOT_FATAL_BUILDERS + DEGRADED_TOLERANT_BUILDERS
+                   if name not in lines]
+        assert missing == [], f"not called in lifespan: {missing}"
+        assert max(lines[name] for name in BOOT_FATAL_BUILDERS) < \
+            min(lines[name] for name in DEGRADED_TOLERANT_BUILDERS)
+
+    def test_the_only_warnings_are_the_three_absent_ones(self):
+        """The two warm-up warnings went with the retry, and no builder gained a new one."""
+        assert _warning_events() == ABSENT_WARNINGS
+
+
+def _recording_lifespan(monkeypatch, order: list[str]) -> None:
+    """Point every builder at a stand-in that records its own teardown, one of which raises."""
+    config = MagicMock()
+    config.examples = {"en": "example"}
+    monkeypatch.setattr(lifespan_module, "EnvironmentConfig",
+                        lambda: SimpleNamespace(app_config=config))
+    monkeypatch.setattr(lifespan_module, "setup_logging", lambda **_fields: None)
+    monkeypatch.setattr(lifespan_module, "logger",
+                        SimpleNamespace(info=lambda event, **_fields: order.append(event)))
+    monkeypatch.setattr(lifespan_module, "LLMService", lambda **_fields: MagicMock())
+
+    def note(name):
+        async def _note():
+            order.append(name)
+        return _note
+
+    async def boom():
+        order.append("devicecheck_boom")
+        raise RuntimeError("teardown failed")
+
+    @asynccontextmanager
+    async def closing(name):
+        yield MagicMock()
+        order.append(name)
+
+    async def session_factory(_db, stack):
+        stack.push_async_callback(note("dispose"))
+        return MagicMock()
+
+    def firebase_adapter(_jwt, stack):
+        stack.callback(order.append, "firebase_delete")
+        return MagicMock()
+
+    async def devicecheck_adapter(_devicecheck, stack):
+        stack.push_async_callback(boom)
+        return MagicMock()
+
+    async def play_notifications(_play, stack):
+        return await stack.enter_async_context(closing("play_close"))
+
+    monkeypatch.setattr(lifespan_module, "build_session_factory", session_factory)
+    monkeypatch.setattr(lifespan_module, "build_jwt_verifier", lambda _jwt: MagicMock())
+    monkeypatch.setattr(lifespan_module, "build_firebase_adapter", firebase_adapter)
+    monkeypatch.setattr(lifespan_module, "build_devicecheck_adapter", devicecheck_adapter)
+    monkeypatch.setattr(lifespan_module, "build_app_store_notifications", lambda _store: MagicMock())
+    monkeypatch.setattr(lifespan_module, "build_google_play_notifications", play_notifications)
+
+
+class TestATeardownThatRaisesStopsNoOtherTeardown:
+    """Criterion 3, measured rather than inferred from the deleted logging. The stand-ins register
+    the same three ways the builders do: a callback, an async callback and an entered context."""
+
+    async def test_every_remaining_callback_runs_and_the_failure_propagates(self, monkeypatch):
+        order: list[str] = []
+        app = FastAPI()
+        _recording_lifespan(monkeypatch, order)
+
+        with pytest.raises(RuntimeError, match="teardown failed"):
+            async with lifespan_module.lifespan(app):
+                assert isinstance(app.state.runtime, Runtime)
+                order.append("serving")
+
+        assert order == ["started", "serving", "play_close", "devicecheck_boom",
+                         "firebase_delete", "dispose", "shutdown"]
 
 
 class TestTheSignOutRouteOpensNoSession:
