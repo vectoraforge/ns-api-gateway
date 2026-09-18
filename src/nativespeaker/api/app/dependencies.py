@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
+from nativespeaker.api.app.runtime import Runtime
 from nativespeaker.api.auth.devicecheck import AppleDeviceCheck
 from nativespeaker.api.auth.firebase import FirebaseAdminLookup
 from nativespeaker.api.auth.google_play import (
@@ -16,7 +17,6 @@ from nativespeaker.api.auth.google_play import (
 )
 from nativespeaker.api.auth.jwt_verifier import BoundedReason, VerifiedClaims
 from nativespeaker.api.auth.store_notifications import VerifiedNotification
-from nativespeaker.api.config import AppConfig
 from nativespeaker.api.crud.challenges import ChallengesDB
 from nativespeaker.api.crud.identities import IdentitiesDB
 from nativespeaker.api.crud.purchases import PurchasesDB
@@ -37,8 +37,9 @@ from nativespeaker.api.services import (
 )
 
 
-def get_config(request: Request) -> AppConfig:
-    return request.app.state.config
+def get_runtime(request: Request) -> Runtime:
+    """The container the lifespan built. This is the one read of `app.state`."""
+    return request.app.state.runtime
 
 
 async def get_db(request: Request) -> AsyncGenerator[AsyncSession]:
@@ -96,15 +97,14 @@ def get_quota_service(session_factory: async_sessionmaker = Depends(get_session_
 
 
 # Defined below the dependencies it declares, because its `Depends()` defaults are evaluated at definition time.
-def get_chat_service(request: Request,
+def get_chat_service(runtime: Runtime = Depends(get_runtime),
                      db: AsyncSession = Depends(get_db),
-                     config: AppConfig = Depends(get_config),
                      quota_service: QuotaService = Depends(get_quota_service)) -> ChatService:
     return ChatService(db=db,
-                       llm_service=request.app.state.llm_service,
-                       examples=config.examples,
-                       chats_limit=config.chats_limit,
-                       messages_limit=config.messages_limit,
+                       llm_service=runtime.llm_service,
+                       examples=runtime.config.examples,
+                       chats_limit=runtime.config.chats_limit,
+                       messages_limit=runtime.config.messages_limit,
                        quota_service=quota_service)
 
 

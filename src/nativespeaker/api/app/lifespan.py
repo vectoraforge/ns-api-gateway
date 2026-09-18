@@ -16,6 +16,7 @@ from jwt.exceptions import PyJWTError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlmodel.ext.asyncio.session import AsyncSession as SQLModelAsyncSession
 
+from nativespeaker.api.app.runtime import Runtime
 from nativespeaker.api.auth.app_store import AppStoreNotifications
 from nativespeaker.api.auth.devicecheck import (
     DEVICECHECK_HTTP_TIMEOUT_SECONDS,
@@ -162,7 +163,8 @@ async def lifespan(app: FastAPI):
 
     try:
         firebase_apps = build_admin_apps(config.jwt)
-        app.state.firebase_adapter = FirebaseAdminLookup(firebase_apps)
+        firebase_adapter = FirebaseAdminLookup(firebase_apps)
+        app.state.firebase_adapter = firebase_adapter
 
         devicecheck_key = read_private_key(config.devicecheck.private_key_path)
         if not (config.devicecheck.key_id and config.devicecheck.team_id and devicecheck_key):
@@ -172,10 +174,11 @@ async def lifespan(app: FastAPI):
                                        "with the DeviceCheck key id, team id and private key available "
                                        "in this environment")
         devicecheck_client = httpx.AsyncClient(timeout=DEVICECHECK_HTTP_TIMEOUT_SECONDS)
-        app.state.devicecheck_adapter = AppleDeviceCheck(key_id=config.devicecheck.key_id,
-                                                         team_id=config.devicecheck.team_id,
-                                                         private_key=devicecheck_key,
-                                                         client=devicecheck_client)
+        devicecheck_adapter = AppleDeviceCheck(key_id=config.devicecheck.key_id,
+                                              team_id=config.devicecheck.team_id,
+                                              private_key=devicecheck_key,
+                                              client=devicecheck_client)
+        app.state.devicecheck_adapter = devicecheck_adapter
 
         app_store_verifier = build_app_store_verifier(config.app_store)
         if app_store_verifier is None or not config.app_store.products:
@@ -185,8 +188,9 @@ async def lifespan(app: FastAPI):
                                        "restore until this pod is restarted with the App Store "
                                        "bundle id, environment, product map, app id (production "
                                        "only) and root certificate available in this environment")
-        app.state.app_store_notifications = AppStoreNotifications(verifier=app_store_verifier,
-                                                                  products=config.app_store.products)
+        app_store_notifications = AppStoreNotifications(verifier=app_store_verifier,
+                                                       products=config.app_store.products)
+        app.state.app_store_notifications = app_store_notifications
 
         google_push_verifier = build_google_push_verifier(config.google_play)
         play_credential = _play_credential()
@@ -199,23 +203,36 @@ async def lifespan(app: FastAPI):
                                        "name, product map, push audience, push service account and "
                                        "Application Default Credentials available in this environment")
         play_client = httpx.AsyncClient(timeout=PLAY_HTTP_TIMEOUT_SECONDS)
-        app.state.google_play_notifications = GooglePlayNotifications(
+        google_play_notifications = GooglePlayNotifications(
             verifier=google_push_verifier,
             credential=play_credential,
             client=play_client,
             products=config.google_play.products)
+        app.state.google_play_notifications = google_play_notifications
 
         db_engine = build_db_engine(config.db)
         await _prove_database_reachable(db_engine, config.db)
-        app.state.session_factory = async_sessionmaker(db_engine, class_=SQLModelAsyncSession,
-                                                       expire_on_commit=False)
+        session_factory: async_sessionmaker[SQLModelAsyncSession] = async_sessionmaker(
+            db_engine, class_=SQLModelAsyncSession, expire_on_commit=False)
+        app.state.session_factory = session_factory
 
-        app.state.jwt_verifier = build_jwt_verifier(config.jwt)
+        jwt_verifier = build_jwt_verifier(config.jwt)
+        app.state.jwt_verifier = jwt_verifier
 
-        app.state.llm_service = LLMService(model_config=config.model,
-                                           api_key=config.openai.api_key,
-                                           resilence_config=config.resilience,
-                                           system_prompt=config.prompt)
+        llm_service = LLMService(model_config=config.model,
+                                 api_key=config.openai.api_key,
+                                 resilence_config=config.resilience,
+                                 system_prompt=config.prompt)
+        app.state.llm_service = llm_service
+
+        app.state.runtime = Runtime(config=config,
+                                    session_factory=session_factory,
+                                    jwt_verifier=jwt_verifier,
+                                    firebase_adapter=firebase_adapter,
+                                    devicecheck_adapter=devicecheck_adapter,
+                                    app_store_notifications=app_store_notifications,
+                                    google_play_notifications=google_play_notifications,
+                                    llm_service=llm_service)
 
         logger.info("started", model=config.model.name, concurrency=config.resilience.pool_size,
                     languages=list(config.examples.keys()))
