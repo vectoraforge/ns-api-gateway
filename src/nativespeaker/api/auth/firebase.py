@@ -11,6 +11,7 @@ from firebase_admin import auth, credentials, exceptions
 from starlette.concurrency import run_in_threadpool
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from nativespeaker.api.config import JWTConfig
 from nativespeaker.api.errors import NotLinked, RevocationUnconfirmed, Unavailable, UserNotFound
 from nativespeaker.api.schemas.auth import VerifiedProviderIdentity
 from nativespeaker.api.tables.identities import IdentityProvider
@@ -31,7 +32,7 @@ class RetryableLookupError(Exception):
     """The retry predicate's only target, always converted before it can escape."""
 
 
-def build_admin_apps(config) -> dict[str, firebase_admin.App]:
+def build_admin_apps(jwt: JWTConfig) -> dict[str, firebase_admin.App]:
     """One named Admin app per configured issuer, built once at boot. Never a `[DEFAULT]` one."""
     credential = _application_default_credential()
     if credential is None:
@@ -43,18 +44,23 @@ def build_admin_apps(config) -> dict[str, firebase_admin.App]:
     # Explicit projectId and name, never inferred: with no [DEFAULT] app a forgotten app= fails loudly.
     app = firebase_admin.initialize_app(
         credential,
-        {"projectId": config.jwt.project_id, "httpTimeout": FIREBASE_HTTP_TIMEOUT_SECONDS},
-        name=f"issuer:{config.jwt.issuer}",
+        {"projectId": jwt.project_id, "httpTimeout": FIREBASE_HTTP_TIMEOUT_SECONDS},
+        name=f"issuer:{jwt.issuer}",
     )
-    return {config.jwt.issuer: app}
+    return {jwt.issuer: app}
 
 
 def _application_default_credential() -> credentials.ApplicationDefault | None:
-    """ADC if the environment supplies it, `None` if it does not -- never a raise."""
+    """ADC if the environment supplies it, `None` if it does not. Any other failure to read it is
+    transient, so this raises and the pod does not start."""
     try:
         google.auth.default()
-    except google.auth.exceptions.GoogleAuthError:
+    # `DefaultCredentialsError` subclasses `GoogleAuthError`, so the absent arm is written first.
+    except google.auth.exceptions.DefaultCredentialsError:
         return None
+    except google.auth.exceptions.GoogleAuthError as failure:
+        raise RuntimeError("Application Default Credentials unreadable for Firebase Admin: "
+                           f"{type(failure).__name__}: {failure}") from failure
     logger.info("firebase_admin_using_application_default_credentials")
     return credentials.ApplicationDefault()
 

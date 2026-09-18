@@ -63,8 +63,9 @@ def build_app_store_verifier(store: AppStoreConfig) -> SignedDataVerifier | None
     try:
         root_bytes = root.read_bytes()
         x509.load_der_x509_certificate(root_bytes)  # Parse only. SignedDataVerifier parses its root lazily.
-    except (OSError, ValueError):
-        return None
+    except (OSError, ValueError) as failure:
+        raise RuntimeError(f"App Store root certificate unusable at {store.root_certificate_path}: "
+                           f"{type(failure).__name__}") from failure
     return SignedDataVerifier(root_certificates=[root_bytes],
                               # No network call on the admission path, so `verify` performs no I/O.
                               enable_online_checks=False,
@@ -160,7 +161,7 @@ async def lifespan(app: FastAPI):
     firebase_apps: dict[str, firebase_admin.App] = {}
 
     try:
-        firebase_apps = build_admin_apps(config)
+        firebase_apps = build_admin_apps(config.jwt)
         app.state.firebase_adapter = FirebaseAdminLookup(firebase_apps)
 
         devicecheck_key = read_private_key(config.devicecheck.private_key_path)
