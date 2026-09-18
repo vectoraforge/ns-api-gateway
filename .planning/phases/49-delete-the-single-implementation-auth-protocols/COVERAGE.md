@@ -1,0 +1,1 @@
+No external API integration: the phase deletes four single-implementation auth Protocols and re-annotates call sites with the concrete classes; the plan's API and SDK rows name boundaries that already exist.
