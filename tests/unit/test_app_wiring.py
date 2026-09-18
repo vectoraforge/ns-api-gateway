@@ -1,4 +1,6 @@
 """App-construction invariants admission depends on, asserted over the real app because runtime hides them."""
+from dataclasses import FrozenInstanceError, fields, is_dataclass
+
 import pytest
 from fastapi import Depends
 from fastapi.routing import APIRoute
@@ -11,6 +13,8 @@ from nativespeaker.api.app.dependencies import (
     verify_google_play_notification,
 )
 from nativespeaker.api.app.main import app as real_app
+from nativespeaker.api.app.runtime import Runtime
+from unit.conftest import make_runtime
 
 DOC_PATHS = {"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
 
@@ -111,6 +115,34 @@ class TestEveryRouteIsAuthenticated:
                 wrapped = getattr(call, "__wrapped__", None)
                 assert wrapped not in (get_identity, get_claims), \
                     f"{route.path} declares a wrapper around {getattr(wrapped, '__name__', wrapped)}"
+
+
+class TestTheRuntimeContainerIsFrozenAndSlotted:
+    """Criterion 4. The field list is a literal here, so a reordering is a visible edit in this file."""
+
+    FIELD_NAMES = ("config", "session_factory", "jwt_verifier", "firebase_adapter",
+                   "devicecheck_adapter", "app_store_notifications",
+                   "google_play_notifications", "llm_service")
+
+    def test_the_container_is_a_frozen_slotted_dataclass(self):
+        assert is_dataclass(Runtime)
+        assert Runtime.__dataclass_params__.frozen is True
+        assert hasattr(Runtime, "__slots__")
+
+    def test_the_eight_fields_are_declared_in_build_order(self):
+        assert tuple(field.name for field in fields(Runtime)) == self.FIELD_NAMES
+
+    def test_a_built_container_carries_no_instance_dict(self):
+        """Slotted, so a field the lifespan never built cannot be smuggled onto the container."""
+        assert not hasattr(make_runtime(), "__dict__")
+
+    def test_a_field_cannot_be_reassigned(self):
+        # Frozen `__setattr__` runs before the slots check, so this is not an `AttributeError`.
+        with pytest.raises(FrozenInstanceError):
+            make_runtime().llm_service = None  # ty: ignore[invalid-assignment]
+
+    def test_the_container_lives_in_its_own_module_under_app(self):
+        assert Runtime.__module__ == "nativespeaker.api.app.runtime"
 
 
 class TestTheSignOutRouteOpensNoSession:
