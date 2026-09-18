@@ -782,8 +782,8 @@ class TestEveryRejectedProofOfBothStoresAnswersOneBody:
         # Compared as one set of raw bodies, so an arm that says more than the others fails here.
         assert {answer.content for answer in answers} == {PROOF_REJECTED_BODY}
         assert [(event, fields["stage"]) for event, fields in refusal_records.entries] == [
-            *(("proof_rejected", stage) for stage in APPLE_REJECTION_STAGES),
-            ("proof_rejected", PLAY_REJECTION_STAGE)]
+            *(("purchase_proof_rejected", stage) for stage in APPLE_REJECTION_STAGES),
+            ("purchase_proof_rejected", PLAY_REJECTION_STAGE)]
         assert await _row_counts(_db_transaction, user.id) == before
 
     async def test_a_gone_token_reached_play_and_wrote_nothing(
