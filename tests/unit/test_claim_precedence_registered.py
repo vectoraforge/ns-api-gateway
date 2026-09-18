@@ -134,7 +134,7 @@ def devicecheck(session, timeline) -> _ScriptedDeviceCheck:
 
 
 @pytest.fixture
-def client(store, session, claims, linked, grants, devicecheck):
+def client(challenges_db, session, claims, linked, grants, devicecheck):
     app = FastAPI()
     app.include_router(auth_router)
     register_exception_handlers(app)
@@ -167,208 +167,208 @@ def _claim(client, handle: str = HANDLE):
 class TestTheRejectionsBeforeTheClaimSpendNothing:
     """A wrong presenter must not be able to burn a live handle belonging to someone else."""
 
-    def test_an_unknown_handle_neither_claims_nor_consumes(self, client, store, devicecheck):
-        store.row = None
+    def test_an_unknown_handle_neither_claims_nor_consumes(self, client, challenges_db, devicecheck):
+        challenges_db.row = None
 
         response = _claim(client)
 
         assert response.status_code == 409
         assert response.json() == CHALLENGE_REQUIRED
-        assert store.consume_calls == 0
+        assert challenges_db.consume_calls == 0
         assert devicecheck.read_calls == []
 
     def test_a_handle_bound_to_another_identity_neither_claims_nor_consumes(
-            self, client, store, devicecheck):
-        store.row = _issued(bound_to=uuid4())
+            self, client, challenges_db, devicecheck):
+        challenges_db.row = _issued(bound_to=uuid4())
 
         response = _claim(client)
 
         assert response.status_code == 409
         assert response.json() == CHALLENGE_REQUIRED
         # The rightful owner's row is untouched: this is the property that stops the burn.
-        assert store.row.claimed_at is None
-        assert store.row.consumed_at is None
-        assert store.consume_calls == 0
+        assert challenges_db.row.claimed_at is None
+        assert challenges_db.row.consumed_at is None
+        assert challenges_db.consume_calls == 0
         assert devicecheck.read_calls == []
 
     def test_a_handle_issued_for_another_operation_neither_claims_nor_consumes(
-            self, client, store, account, devicecheck):
+            self, client, challenges_db, account, devicecheck):
         identity_row, _ = account
-        store.row = _issued_row(bound_to=identity_row.id,
+        challenges_db.row = _issued_row(bound_to=identity_row.id,
                                 operation=AuthOperation.claim_anonymous_grant)
 
         response = _claim(client)
 
         assert response.status_code == 409
         assert response.json() == CHALLENGE_REQUIRED
-        assert store.row.claimed_at is None
-        assert store.row.consumed_at is None
-        assert store.consume_calls == 0
+        assert challenges_db.row.claimed_at is None
+        assert challenges_db.row.consumed_at is None
+        assert challenges_db.consume_calls == 0
         assert devicecheck.read_calls == []
 
-    def test_an_expired_handle_loses_the_claim_and_consumes_nothing(self, client, store, account,
+    def test_an_expired_handle_loses_the_claim_and_consumes_nothing(self, client, challenges_db, account,
                                                                      devicecheck):
         identity_row, _ = account
-        store.row = _issued(bound_to=identity_row.id, ttl_seconds=-1)
+        challenges_db.row = _issued(bound_to=identity_row.id, ttl_seconds=-1)
 
         response = _claim(client)
 
         assert response.status_code == 409
         assert response.json() == CHALLENGE_REQUIRED
-        assert store.row.claimed_at is None
-        assert store.consume_calls == 0
+        assert challenges_db.row.claimed_at is None
+        assert challenges_db.consume_calls == 0
         assert devicecheck.read_calls == []
 
     def test_an_already_consumed_handle_loses_the_claim_and_consumes_nothing(
-            self, client, store, account, devicecheck):
+            self, client, challenges_db, account, devicecheck):
         """There is no idempotent replay of a spent handle: the claim loser does no work at all."""
         identity_row, _ = account
-        store.row = _issued(bound_to=identity_row.id, claimed=True, consumed=True)
-        holder = store.row.claimed_at
+        challenges_db.row = _issued(bound_to=identity_row.id, claimed=True, consumed=True)
+        holder = challenges_db.row.claimed_at
 
         response = _claim(client)
 
         assert response.status_code == 409
         assert response.json() == CHALLENGE_REQUIRED
-        assert store.row.claimed_at == holder
-        assert store.consume_calls == 0
+        assert challenges_db.row.claimed_at == holder
+        assert challenges_db.consume_calls == 0
         assert devicecheck.read_calls == []
 
 
 class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
     """Once the claim is won the handle is spent, with no branch on which of the ten outcomes fired."""
 
-    def test_an_anonymous_claimant_is_refused_before_any_grant_is_read(self, client, store,
+    def test_an_anonymous_claimant_is_refused_before_any_grant_is_read(self, client, challenges_db,
                                                                         account, devicecheck,
                                                                         timeline):
         identity_row, _ = account
         identity_row.provider = IdentityProvider.anonymous
         identity_row.provider_uid = None
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
         assert response.status_code == 403
         assert response.json() == REFUSED
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         # The first decision of the post-claim work, so no grant read was ever issued.
         assert "read_effective_grants" not in timeline
         assert devicecheck.read_calls == []
 
     def test_an_active_grant_of_another_source_is_refused_and_still_consumes(
-            self, client, store, account, grants, devicecheck):
+            self, client, challenges_db, account, grants, devicecheck):
         identity_row, _ = account
         grants.held = [_a_grant(AccessGrantSource.manual)]
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
         assert response.status_code == 403
         assert response.json() == REFUSED
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert grants.activates == 0
         assert devicecheck.read_calls == []
 
     def test_a_spent_free_grant_in_history_is_refused_and_still_consumes(
-            self, client, store, account, grants, devicecheck):
+            self, client, challenges_db, account, grants, devicecheck):
         identity_row, _ = account
         grants.prior_free_grant = True
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
         assert response.status_code == 403
         assert response.json() == REFUSED
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert grants.activates == 0
         assert devicecheck.read_calls == []
 
     def test_the_repeat_answers_two_hundred_writes_nothing_and_still_consumes(
-            self, client, store, account, grants, devicecheck):
+            self, client, challenges_db, account, grants, devicecheck):
         identity_row, _ = account
         grants.held = [_a_grant(AccessGrantSource.registered_account_grant)]
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
         assert response.status_code == 200
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert grants.activates == 0
         assert devicecheck.read_calls == []
         assert devicecheck.write_calls == []
 
     def test_the_conversion_reaches_the_writer_without_reaching_apple_and_still_consumes(
-            self, client, store, account, grants, devicecheck):
+            self, client, challenges_db, account, grants, devicecheck):
         identity_row, _ = account
         grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant)]
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
         assert response.status_code == 200
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert grants.activates == 1
         assert grants.tiers == ["registered"]
         assert devicecheck.read_calls == []
         assert devicecheck.write_calls == []
 
     def test_a_spent_registered_slot_refuses_the_conversion_and_still_consumes(
-            self, client, store, account, grants, devicecheck):
+            self, client, challenges_db, account, grants, devicecheck):
         """WR-100: D-09(e) on the conversion arm, where it is the only guard -- the `held == []`
         arm is covered by `has_prior_free_grant` as well, and this one by nothing else."""
         identity_row, _ = account
         grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant)]
         grants.grant_of_source = {AccessGrantSource.registered_account_grant}
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
         assert response.status_code == 403
         assert response.json() == REFUSED
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert grants.activates == 0
         assert devicecheck.read_calls == []
         assert devicecheck.write_calls == []
 
     def test_a_grant_marked_active_outside_this_window_is_refused_and_still_consumes(
-            self, client, store, account, grants, devicecheck):
+            self, client, challenges_db, account, grants, devicecheck):
         """The convertible grant plus a row the one-active index sees and this window cannot: the
         conversion would be refused by that index, so this fails closed rather than racing it."""
         identity_row, _ = account
         grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant)]
         grants.marked_active = [_a_grant(AccessGrantSource.subscription)]
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
         assert response.status_code == 403
         assert response.json() == REFUSED
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert grants.activates == 0
         assert devicecheck.read_calls == []
 
     def test_the_new_grant_reaches_the_writer_after_one_read_and_one_write(
-            self, client, store, account, grants, devicecheck):
+            self, client, challenges_db, account, grants, devicecheck):
         identity_row, _ = account
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
         assert response.status_code == 200
         assert response.json()["entitlement"]["type"] == "registered_account_grant"
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert grants.activates == 1
         assert grants.tiers == ["registered"]
         assert devicecheck.read_calls == [DEVICE_TOKEN]
         # bit0 carried forward from the query, never fabricated.
         assert devicecheck.write_calls == [(DEVICE_TOKEN, False, True)]
 
-    def test_the_other_bit_is_carried_forward_rather_than_fabricated(self, client, store, account,
+    def test_the_other_bit_is_carried_forward_rather_than_fabricated(self, client, challenges_db, account,
                                                                      grants, devicecheck):
         """WR-69: bit0 is this device's anonymous slot, and Apple writes both bits in one call,
         so a fabricated `False` here hands back a slot nothing in this product ever clears."""
         identity_row, _ = account
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
         devicecheck.script(BitState(bit0=True, bit1=False))
 
         response = _claim(client)
@@ -378,72 +378,72 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert devicecheck.write_calls == [(DEVICE_TOKEN, True, True)]
 
     def test_a_failed_bit_write_after_the_commit_is_logged_rather_than_answered(
-            self, client, store, account, grants, devicecheck):
+            self, client, challenges_db, account, grants, devicecheck):
         """CR-60: the grant committed before Apple was told, so the vendor failure is not the answer."""
         identity_row, _ = account
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
         devicecheck.write_answer = Unavailable(stage="devicecheck_write")
 
         response = _claim(client)
 
         assert response.status_code == 200
         assert response.json()["entitlement"]["type"] == "registered_account_grant"
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert grants.activates == 1
         assert devicecheck.write_calls == [(DEVICE_TOKEN, False, True)]
 
-    def test_a_spent_device_slot_is_exhausted_and_still_consumes(self, client, store, account,
+    def test_a_spent_device_slot_is_exhausted_and_still_consumes(self, client, challenges_db, account,
                                                                   grants, devicecheck):
         identity_row, _ = account
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
         devicecheck.script(BitState(bit0=False, bit1=True))
 
         response = _claim(client)
 
         assert response.status_code == 403
         assert response.json() == DEVICE_EXHAUSTED
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert devicecheck.write_calls == []
         assert grants.activates == 0
 
     def test_a_token_apple_refuses_is_a_proof_rejection_that_still_consumes(
-            self, client, store, account, grants, devicecheck):
+            self, client, challenges_db, account, grants, devicecheck):
         identity_row, _ = account
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
         devicecheck.script(PurchaseProofRejected(stage="devicecheck_read", cause="rejected"))
 
         response = _claim(client)
 
         assert response.status_code == 403
         assert response.json() == PROOF_REJECTED
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert grants.activates == 0
 
     def test_an_exhausted_apple_budget_is_unavailable_and_still_consumes(
-            self, client, store, account, grants, devicecheck):
+            self, client, challenges_db, account, grants, devicecheck):
         identity_row, _ = account
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
         devicecheck.script(RetryableDeviceCheckError("scripted transport failure"))
 
         response = _claim(client)
 
         assert response.status_code == 503
         assert response.json() == UNAVAILABLE
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert grants.activates == 0
 
     def test_the_race_loser_rolls_back_answers_two_hundred_and_refreshes_nothing(
-            self, client, store, account, grants, devicecheck, session):
+            self, client, challenges_db, account, grants, devicecheck, session):
         """The unique indexes are the arbiter, and the loser answers exactly as the repeat does."""
         identity_row, _ = account
         grants.outcome = ActivationOutcome.lost_race
         grants.won_by = [_a_grant(AccessGrantSource.registered_account_grant)]
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
         assert response.status_code == 200
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert grants.activates == 1
         assert session.rollbacks >= 1
         # The caller's rows came from a closed session, so a refresh on this arm is the 500 this pins.
@@ -451,70 +451,70 @@ class TestEveryOutcomeFromTheClaimOnwardConsumesExactlyOnce:
         assert devicecheck.write_calls == []
 
     def test_a_race_lost_to_another_source_is_the_refusal_the_preflight_gives(
-            self, client, store, account, grants, devicecheck, session, monkeypatch):
+            self, client, challenges_db, account, grants, devicecheck, session, monkeypatch):
         """WR-60: the one-active index arbitrates every source, so a subscription writer wins this
         insert too -- and D-09(b) answers a held subscription grant with 403, never with 200."""
         records = _handler_warnings(monkeypatch)
         identity_row, _ = account
         grants.outcome = ActivationOutcome.lost_race
         grants.won_by = [_a_grant(AccessGrantSource.subscription)]
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
         assert response.status_code == 403
         assert response.json() == REFUSED
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert session.rollbacks >= 1
         assert devicecheck.write_calls == []
         assert [(line["event"], line.get("cause")) for line in records] == [
             ("claim_refused_under_lock", "lost_race_to_another_source")]
 
     def test_a_refused_write_rolls_back_answers_four_hundred_and_three_and_refreshes_nothing(
-            self, client, store, account, grants, devicecheck, session):
+            self, client, challenges_db, account, grants, devicecheck, session):
         """WR-03: the write was impossible, so there is no row to read back and no 200 to give."""
         identity_row, _ = account
         grants.outcome = ActivationOutcome.refused
         # A readable grant after the rollback, so only the outcome itself can produce the 403 below.
         grants.won_by = [_a_grant(AccessGrantSource.anonymous_device_grant)]
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
         assert response.status_code == 403
         assert response.json() == REFUSED
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert grants.activates == 1
         assert session.rollbacks >= 1
         assert session.refresh_calls == []
 
     def test_a_lost_race_whose_re_read_finds_nothing_is_refused_rather_than_reported_as_a_grant(
-            self, client, store, account, grants, devicecheck, session):
+            self, client, challenges_db, account, grants, devicecheck, session):
         """The backstop: a 200 that reports a grant the caller does not hold is structurally impossible."""
         identity_row, _ = account
         grants.outcome = ActivationOutcome.lost_race
         grants.won_by = []
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
         assert response.status_code == 403
         assert response.json() == REFUSED
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert session.refresh_calls == []
 
     def test_a_second_effective_grant_trips_the_wire_rather_than_choosing_between_them(
-            self, client, store, account, grants, devicecheck):
+            self, client, challenges_db, account, grants, devicecheck):
         """WR-04: the tripwire the two reading services already raise, on the writer's own caller."""
         identity_row, _ = account
         grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant),
                        _a_grant(AccessGrantSource.anonymous_device_grant)]
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
         assert response.status_code == 500
-        assert store.consume_calls == 1
+        assert challenges_db.consume_calls == 1
         assert grants.activates == 0
         assert devicecheck.read_calls == []
 
@@ -523,10 +523,10 @@ class TestThePrecedenceOrderAndNotOnlyTheOutcome:
     """The three facts a copy of the anonymous module would get wrong, each stated as an order."""
 
     def test_an_active_subscription_refuses_before_the_history_read_is_issued(
-            self, client, store, account, grants, devicecheck, timeline):
+            self, client, challenges_db, account, grants, devicecheck, timeline):
         identity_row, _ = account
         grants.held = [_a_grant(AccessGrantSource.subscription)]
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
@@ -537,11 +537,11 @@ class TestThePrecedenceOrderAndNotOnlyTheOutcome:
         assert devicecheck.read_calls == []
 
     def test_a_spent_anonymous_grant_with_no_active_grant_is_refused_by_the_history_read(
-            self, client, store, account, grants, devicecheck, timeline):
+            self, client, challenges_db, account, grants, devicecheck, timeline):
         identity_row, _ = account
         grants.held = []
         grants.prior_free_grant = True
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
@@ -552,13 +552,13 @@ class TestThePrecedenceOrderAndNotOnlyTheOutcome:
         assert devicecheck.write_calls == []
 
     def test_an_active_anonymous_grant_converts_even_though_both_spent_signals_are_true(
-            self, client, store, account, grants, devicecheck):
+            self, client, challenges_db, account, grants, devicecheck):
         """A blanket `free_grant_consumed_at` or `has_prior_free_grant` guard turns this into a 403."""
         identity_row, _ = account
         identity_row.free_grant_consumed_at = datetime.now(UTC)
         grants.held = [_a_grant(AccessGrantSource.anonymous_device_grant)]
         grants.prior_free_grant = True
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
@@ -572,10 +572,10 @@ class TestNoVendorCallHappensUnderALockOrInsideTheTransaction:
     check a connection out of a pool of twelve, and the Apple round trip is up to 24 seconds."""
 
     def test_the_preflight_transaction_ends_before_the_seam_is_reached(
-            self, client, store, account, devicecheck, timeline):
+            self, client, challenges_db, account, devicecheck, timeline):
         """A post-read refusal, chosen because it reaches the seam and then refuses."""
         identity_row, _ = account
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
         devicecheck.script(BitState(bit0=False, bit1=True))
 
         response = _claim(client)
@@ -586,10 +586,10 @@ class TestNoVendorCallHappensUnderALockOrInsideTheTransaction:
         assert devicecheck.transaction_open_during == [False]
 
     def test_neither_seam_call_sees_an_open_transaction_on_the_new_grant_arm(
-            self, client, store, account, devicecheck):
+            self, client, challenges_db, account, devicecheck):
         """The read is preceded by the preflight's rollback; the write follows the activation's commit."""
         identity_row, _ = account
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         response = _claim(client)
 
@@ -675,13 +675,13 @@ class TestTheConsumptionCounterIsOneForEveryPostClaimOutcome:
     """The control: one assertion over every branch, so a new branch that forgets to spend fails here."""
 
     @pytest.mark.parametrize("setup", POST_CLAIM_OUTCOMES, ids=lambda f: f.__name__.strip("_"))
-    def test_each_outcome_consumes_exactly_once(self, setup, client, store, account, grants,
+    def test_each_outcome_consumes_exactly_once(self, setup, client, challenges_db, account, grants,
                                                 devicecheck):
         identity_row, _ = account
         setup(identity_row, grants, devicecheck)
-        store.row = _issued(bound_to=identity_row.id)
+        challenges_db.row = _issued(bound_to=identity_row.id)
 
         _claim(client)
 
-        assert store.consume_calls == 1
-        assert store.row.consumed_at is not None
+        assert challenges_db.consume_calls == 1
+        assert challenges_db.row.consumed_at is not None

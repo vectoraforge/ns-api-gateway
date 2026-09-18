@@ -235,7 +235,7 @@ def fake_firebase_adapter() -> FakeFirebaseAdapter:
 
 class FakeChallengeStore:
     """One in-memory row whose `claim` and `consume` mirror the real conditional updates clause for clause.
-    Defined once and reached by the four precedence suites through the `store` fixture below: two drifting fakes
+    Defined once and reached by the four precedence suites through the `challenges_db` fixture below: two drifting fakes
     of the only serialization point is the hazard, and three copies were what they carried."""
 
     def __init__(self) -> None:
@@ -271,7 +271,7 @@ class FakeChallengeStore:
 
 
 @pytest.fixture
-def store(monkeypatch) -> FakeChallengeStore:
+def challenges_db(monkeypatch) -> FakeChallengeStore:
     """The fake behind the crud class, for the four precedence suites. The binding check stays real."""
     fake = FakeChallengeStore()
 
